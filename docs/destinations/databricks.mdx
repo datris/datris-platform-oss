@@ -32,7 +32,7 @@ HTTP path:     /sql/1.0/warehouses/a1b2c3d4e5f67890
 Warehouse ID:                      a1b2c3d4e5f67890
 ```
 
-This ID is what goes in the destination's `warehouse` field. (Pasting the whole HTTP path into Datris also works — the ID is extracted automatically.)
+This ID goes in the destination's `warehouse` field, or in a `warehouse` field on the platform secret (step 4) so every pipeline using that secret picks it up. (Pasting the whole HTTP path into Datris also works — the ID is extracted automatically.)
 
 On the warehouse's **Permissions**, grant the service principal **Can use**.
 
@@ -66,6 +66,15 @@ GRANT USE SCHEMA, CREATE TABLE, CREATE VOLUME, SELECT, MODIFY
 -- Optional: lets Datris auto-create additional schemas beyond `default`
 GRANT CREATE SCHEMA ON CATALOG datris TO `<sp-application-id>`;
 
+-- Optional: needed only for Unity Catalog metadata (`unityCatalog.enabled`);
+-- without it, tagging is reported as a warning on each run
+GRANT APPLY TAG ON SCHEMA datris.default TO `<sp-application-id>`;
+
+-- Optional: needed only for Unity Catalog lineage (`unityCatalog.lineage`,
+-- on by default when `unityCatalog.enabled`). A separate, metastore-admin-only
+-- step; without it, lineage is reported as a warning on each run
+GRANT CREATE EXTERNAL METADATA ON METASTORE TO `<sp-application-id>`;
+
 -- Recommended: let your own users read what Datris loads. Tables are OWNED
 -- by the service principal that created them, and Unity Catalog gives no
 -- implicit access to anyone else — not even workspace admins — so without
@@ -93,10 +102,11 @@ On **Configuration → Secrets → Platform**, create a secret (for example `dat
 | `clientId`     | yes*     | The service principal's client ID (application ID)                       |
 | `clientSecret` | yes*     | The OAuth secret generated in step 1                                     |
 | `token`        | no       | Personal access token — fallback when no `clientId`/`clientSecret` is present, see below |
+| `warehouse`    | no       | SQL warehouse ID (or its HTTP path). Used when a pipeline's destination leaves `warehouse` out, and by [Unity Catalog](/destinations/unity-catalog) browse. `httpPath`, `http_path` and `DATABRICKS_WAREHOUSE` also work |
 
 *Either the `clientId`/`clientSecret` pair or `token` must be present.
 
-The `host` lives in the secret rather than the pipeline config so it stays bound to the credential that authorizes it. If a required field is missing, the load fails at resolve time with an explicit error naming the secret and the field.
+The `host` lives in the secret rather than the pipeline config so it stays bound to the credential that authorizes it. If a required field is missing, the load fails at resolve time with an explicit error naming the secret and the field. With a `warehouse` field on the secret, pipelines (and agents creating them) can leave the destination's `warehouse` out.
 
 ### Secret rotation
 
@@ -122,7 +132,8 @@ For a quick evaluation you can skip the service principal: generate a PAT (**Set
       "table": "orders",
       "keyFields": ["order_id"]
     }
-  }
+  },
+  "unityCatalog": { "enabled": true }
 }
 ```
 
@@ -132,7 +143,7 @@ For a quick evaluation you can skip the service principal: generate a PAT (**Set
 |-----------------------|----------|---------|--------------------------------------------------------------------|
 | `useDatabricks`       | yes      | `false` | Must be `true` to enable the Databricks destination                |
 | `credentialsSecret`   | yes      |         | Name of the Platform secret holding `host` + auth                  |
-| `warehouse`           | yes      |         | SQL warehouse **ID** — the 16-char hex trailing segment of the HTTP path in **SQL Warehouses → Connection details** (`/sql/1.0/warehouses/<id>`), not the warehouse's display name. A pasted full HTTP path is accepted too |
+| `warehouse`           | if not on secret |  | SQL warehouse **ID** — the 16-char hex trailing segment of the HTTP path in **SQL Warehouses → Connection details** (`/sql/1.0/warehouses/<id>`), not the warehouse's display name. A pasted full HTTP path is accepted too. Optional when the platform secret has a `warehouse` field; the pipeline's value wins when both are set, and a load with neither fails with an error naming both fixes |
 | `dbName`              | yes      |         | Target **Unity Catalog catalog**                                   |
 | `schema`              | yes      |         | Target schema                                                      |
 | `table`               | yes      |         | Target table                                                       |
@@ -143,6 +154,28 @@ For a quick evaluation you can skip the service principal: generate a PAT (**Set
 Note that `dbName` names the Unity Catalog **catalog** — Databricks uses three-level names (`catalog.schema.table`), and `dbName`/`schema`/`table` map onto them in order.
 
 Identifiers follow Unity Catalog's normal resolution rules: names are case-insensitive and stored lowercase, so `Orders` and `orders` are the same table. Names containing characters beyond letters, digits, and underscores are backtick-quoted automatically; prefer simple underscore names.
+
+### Unity Catalog metadata
+
+Set the top-level `"unityCatalog": { "enabled": true }` and every successful load also annotates the table in Unity Catalog, so warehouse users can see in Catalog Explorer which Datris pipeline loaded a table and how to trace it:
+
+- **Comments:** a table comment naming the Datris pipeline and its source (the tap, or `file upload`), plus a fixed comment on each `_datris_*` provenance column the load carries (see [provenance stamping](/provenance)).
+- **Tags:** `datris_pipeline`, `datris_catalog` (only when the pipeline belongs to a catalog), `datris_dq_status` (`pass` or `warn`) and `managed_by = datris`.
+- **Table properties:** `datris.pipeline`, `datris.configVersion`, `datris.lastRunId`, `datris.lastRunAt`, `datris.environment`, `datris.lineagePath` (the Datris lineage API path for the pipeline) and `datris.lastSource` (the tap or the uploaded file name of the last run).
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Turn the metadata push on. Databricks destinations only; any other destination is rejected on save |
+| `comments` | `true` | Write the table and provenance column comments |
+| `tags` | `true` | Write the four tags |
+| `properties` | `true` | Write the table properties |
+| `lineage` | `true` | Publish the tap or upload, the pipeline and the table as external lineage, with column mappings (see [Lineage in Unity Catalog](/destinations/unity-catalog#lineage-in-unity-catalog)) |
+
+The `credentialsSecret`, `catalog`, `schema` and `register` fields of the block apply to object store Iceberg tables only (see [Register Iceberg tables](/destinations/unity-catalog#register-iceberg-tables)); a Databricks pipeline ignores them. Databricks Unity Catalog does not currently keep an object store Iceberg table's pointer in either `catalogMode` (it has no `register` call, and a table created through its REST catalog becomes a Databricks-managed table at a location Databricks chooses); use this destination for tables you want governed in Unity Catalog.
+
+Comments and tags are only re-issued when they change; properties are written on every run. With `manageTableManually: true`, if you drop and recreate the table yourself, Datris re-applies comments and tags only when their content changes. Tagging needs the `GRANT APPLY TAG ON SCHEMA` line from the setup script. Lineage needs the metastore-level `GRANT CREATE EXTERNAL METADATA ON METASTORE` line, which only a metastore admin can run. A metadata failure (a missing grant, a warehouse hiccup) is recorded as a warning on the run and in the audit log; the load itself still succeeds, and the next run retries the failed part. The pipeline detail page shows the last sync or the last error, also available from `GET /api/v1/pipelines/{name}/unity-catalog`. Set `DATRIS_UNITY_CATALOG_SYNC=false` to switch the push off for the whole install.
+
+To see what a Databricks secret can already reach in Unity Catalog, or to search warehouse tables from `find_data`, see [Unity Catalog](/destinations/unity-catalog).
 
 `useTransaction` has no effect on Databricks — Delta has no multi-statement transactions. It doesn't need one: every load path here is a single atomic Delta commit, which is a stronger guarantee than a transaction around a multi-statement load.
 

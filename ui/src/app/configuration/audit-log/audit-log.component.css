@@ -184,6 +184,7 @@
 .outcome-success { color: #00e5a0; }
 .outcome-failure { color: #ffbf00; }
 .outcome-denied { color: #f87171; }
+.outcome-warning { color: #ffbf00; }
 .status { color: #5a6b8a; font-size: 0.75rem; }
 
 .count-badge {

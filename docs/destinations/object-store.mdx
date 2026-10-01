@@ -42,7 +42,7 @@ With the list set, saving a pipeline whose override is not listed is rejected, a
 | `orc`     | Apache ORC columnar format           |
 | `iceberg` | Apache Iceberg table at the prefix: atomic commits, `merge` upserts on `keyFields`, schema evolution. See [Iceberg](/destinations/iceberg) |
 
-Set the format with the `fileFormat` field. `parquet` and `orc` write loose files under the prefix; `iceberg` writes a table there that other engines read by path.
+Set the format with the `fileFormat` field. `parquet` and `orc` write loose files under the prefix; `iceberg` writes a table there that other engines read by path. An Iceberg table can also be registered in Databricks Unity Catalog; see [Register Iceberg tables](/destinations/unity-catalog#register-iceberg-tables).
 
 ## Write Modes
 

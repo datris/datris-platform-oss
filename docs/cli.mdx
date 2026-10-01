@@ -86,7 +86,7 @@ datris ingest <FILE> [OPTIONS]
 | `--table, -t` | Table/collection name (default: pipeline name) |
 | `--database` | Database name (default: `datris`). For `snowflake`: the Snowflake database; for `databricks`: the Unity Catalog name — required for both |
 | `--schema` | Destination schema (`snowflake` default: `PUBLIC`; `databricks` default: `default`) |
-| `--warehouse` | Snowflake warehouse name, or Databricks SQL warehouse ID (required for those destinations) |
+| `--warehouse` | Snowflake warehouse name, or Databricks SQL warehouse ID (required for Snowflake; for Databricks, optional when the secret has a `warehouse` field) |
 | `--credentials-secret` | Platform secret holding destination credentials (required for `snowflake` and `databricks`) |
 | `--ai-validate` | AI data quality rule — plain-English instruction |
 | `--ai-transform` | AI transformation instruction — plain-English instruction |
@@ -248,17 +248,17 @@ datris status my_pipeline
 
 ### `datris delete`
 
-Delete a pipeline configuration and optionally its destination data.
+Delete a pipeline configuration together with its destination data.
 
 ```bash
 datris delete my_pipeline
-datris delete my_pipeline --keep-data
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--keep-data` | Keep destination data (only delete the pipeline config) |
 | `--json` | Return raw JSON |
+
+Deleting a pipeline always deletes its destination data. `--keep-data` is not supported: it exits with an error and deletes nothing. To keep the data, copy it or point a new pipeline at the same prefix before deleting. Any warnings the server returns (for example, a Unity Catalog table an admin still has to drop) are printed after the success line, one per line, prefixed with `⚠`.
 
 ---
 

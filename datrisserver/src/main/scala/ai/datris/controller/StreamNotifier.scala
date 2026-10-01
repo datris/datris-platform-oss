@@ -115,7 +115,7 @@ class StreamNotifier {
         if (config.source.fileAttributes.csvAttributes != null) {
             val csvAttributes = config.source.fileAttributes.csvAttributes
             val trimColumns = config.transformation != null && config.transformation.trimColumnWhitespace
-            val delimiter = csvAttributes.delimiter
+            val delimiter = csvAttributes.effectiveDelimiter
 
             // Read the header line off the stream, then hand the parser the
             // header bytes followed by the rest of the stream so it sees exactly

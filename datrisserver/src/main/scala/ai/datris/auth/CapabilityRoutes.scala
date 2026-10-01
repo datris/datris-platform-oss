@@ -63,6 +63,7 @@ object CapabilityRoutes {
         // Pipelines
         Route("GET", "/api/v1/pipeline", "pipeline", "read"),
         Route("GET", "/api/v1/pipelines", "pipeline", "read"),
+        Route("GET", "/api/v1/pipelines/*/unity-catalog", "pipeline", "read"),
         Route("POST", "/api/v1/pipeline", "pipeline", "create"),
         Route("DELETE", "/api/v1/pipeline", "pipeline", "delete"),
         Route("POST", "/api/v1/pipeline/generate", "pipeline", "create"),
@@ -195,7 +196,12 @@ object CapabilityRoutes {
         Route("GET", "/api/v1/provenance", "metadata", "read"),
         Route("GET", "/api/v1/lineage", "metadata", "read"),
         Route("GET", "/api/v1/lineage/**", "metadata", "read"),
-        Route("GET", "/api/v1/catalog/find", "metadata", "read")
+        Route("GET", "/api/v1/catalog/find", "metadata", "read"),
+        // Unity Catalog browse — read-only warehouse metadata. The controller
+        // additionally requires that the caller could read the named secret
+        // (the list_platform_secrets predicate); an unreadable secret answers
+        // 404 like an unknown one.
+        Route("GET", "/api/v1/unity-catalog/browse", "metadata", "read")
     )
 
     /** Every `resource:action` pair the table grants — the vocabulary the

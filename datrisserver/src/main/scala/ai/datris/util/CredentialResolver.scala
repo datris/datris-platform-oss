@@ -7,6 +7,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.model.{DatrisEnvironment, DatrisException, ObjectStore}
 
+import scala.collection.JavaConverters._
+
 case class ResolvedObjectStoreCredentials(
     accessKey: Option[String],
     secretKey: Option[String],
@@ -35,7 +37,10 @@ case class ResolvedDatabricksCredentials(
     host: String,
     clientId: Option[String],
     clientSecret: Option[String],
-    token: Option[String]
+    token: Option[String],
+    // Every raw field of the secret (e.g. icebergRestPath / icebergRestPrefix
+    // for the Iceberg register); empty when built by hand.
+    extra: Map[String, String] = Map.empty
 )
 
 object CredentialResolver {
@@ -44,7 +49,7 @@ object CredentialResolver {
      *  resolver: the UI's Secrets form leaves naming to the operator, so a
      *  credential pasted in as AWS_ACCESS_KEY shouldn't fail just because the
      *  resolver expects accessKey. */
-    private def secretField(secret: java.util.Map[String, String], canonical: String, aliases: String*): Option[String] = {
+    private[datris] def secretField(secret: java.util.Map[String, String], canonical: String, aliases: String*): Option[String] = {
         val candidates = (canonical +: aliases).flatMap(n => Seq(n, n.toLowerCase, n.toUpperCase))
         candidates.iterator.map(secret.get).find(_ != null)
     }
@@ -177,8 +182,10 @@ object CredentialResolver {
     /** Resolve Databricks destination credentials from the Platform-tab secret
      *  named by `Database.credentialsSecret`. Mirrors resolveSnowflake: same
      *  env-prefixed Vault path, same case/underscore-insensitive field lookup,
-     *  same actionable errors pointing at Configuration → Secrets → Platform. */
-    def resolveDatabricks(secretName: String): ResolvedDatabricksCredentials = {
+     *  same actionable errors pointing at Configuration → Secrets → Platform.
+     *  `requireCredentials = false` (the Iceberg register only) accepts a
+     *  host-only secret, for an Iceberg REST catalog without auth. */
+    def resolveDatabricks(secretName: String, requireCredentials: Boolean = true): ResolvedDatabricksCredentials = {
         if (secretName == null || secretName.trim.isEmpty)
             throw new DatrisException(
                 "Databricks destination requires a credentialsSecret naming a Platform-tab secret (with fields host, and clientId/clientSecret or token). Create it on Configuration → Secrets → Platform, then set it on the destination."
@@ -200,7 +207,7 @@ object CredentialResolver {
         val clientSecret = field("clientSecret", "client_secret", "client-secret", "DATABRICKS_CLIENT_SECRET")
         val token = field("token", "pat", "personalAccessToken", "personal_access_token", "access_token", "DATABRICKS_TOKEN")
 
-        if ((clientId.isEmpty || clientSecret.isEmpty) && token.isEmpty)
+        if (requireCredentials && (clientId.isEmpty || clientSecret.isEmpty) && token.isEmpty)
             throw new DatrisException(
                 "Databricks credentialsSecret '" + secretName + "' must contain either 'clientId' and 'clientSecret' (service principal OAuth, recommended) or 'token' (personal access token, fallback). Neither pair was found."
             )
@@ -209,7 +216,8 @@ object CredentialResolver {
             host = host,
             clientId = clientId,
             clientSecret = clientSecret,
-            token = token
+            token = token,
+            extra = secret.asScala.toMap
         )
     }
 }

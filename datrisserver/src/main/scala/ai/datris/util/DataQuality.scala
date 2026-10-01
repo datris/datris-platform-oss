@@ -114,7 +114,7 @@ class DataQuality(jobContext: JobContext) {
         // Dispatch on the staged format; the script reads the staged file, so
         // the payload never passes through heap.
         val failures = if (data.isDelimited && data.rowCount > 0 && data.header != null) {
-            val delimiter = config.source.fileAttributes.csvAttributes.delimiter
+            val delimiter = CsvAttributes.delimiterOf(config)
             statusUtil.info("processing", "CodeGen rule validating " + data.rowCount + " rows")
             CodeGenRuleEvaluator.evaluateCsv(instruction, data, delimiter)
         } else if (data.isDocument) {

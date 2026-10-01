@@ -266,6 +266,8 @@ class StartupRunner extends ApplicationRunner {
         // their version history isn't empty. Idempotent — skips entities that
         // already have version records.
         ai.datris.util.VersionBackfill.run()
+        // Unity Catalog sync state of pipelines that no longer exist.
+        ai.datris.util.UnityCatalogStaleState.cleanupOrphans()
         if (kafkaConsumerEnabled)
             initKafkaConsumerRunner()
         auditServerStart()

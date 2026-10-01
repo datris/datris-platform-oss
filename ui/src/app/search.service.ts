@@ -31,6 +31,18 @@ export class SearchService {
     return this.http.post<QueryResponse>('/api/v1/query/objectstore', { pipeline, limit });
   }
 
+  /** Read-only SQL against the Databricks workspace the pipeline loads into.
+   *  An empty `sql` makes the server preview the pipeline's destination table. */
+  queryDatabricks(pipeline: string, sql: string, limit: number): Observable<QueryResponse> {
+    return this.http.post<QueryResponse>('/api/v1/query/databricks', { pipeline, sql, limit });
+  }
+
+  /** Read-only SQL against the Snowflake account the pipeline loads into.
+   *  An empty `sql` makes the server preview the pipeline's destination table. */
+  querySnowflake(pipeline: string, sql: string, limit: number): Observable<QueryResponse> {
+    return this.http.post<QueryResponse>('/api/v1/query/snowflake', { pipeline, sql, limit });
+  }
+
   getPipelines(): Observable<any[]> {
     return this.http.get<any[]>('/api/v1/pipelines');
   }

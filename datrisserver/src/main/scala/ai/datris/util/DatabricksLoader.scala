@@ -49,16 +49,28 @@ class DatabricksLoader(jobContext: JobContext) {
 
         var dataFile: Path = null
         try {
-            DatabricksConnectionUtil.withConnection(db, msg => statusUtil.info("processing", msg)) { conn =>
+            DatabricksConnectionUtil.withConnection(db, msg => statusUtil.info("processing", msg), config.name) { conn =>
                 val statement = conn.createStatement()
                 var stagedPath: String = null
                 try {
                     dataFile = createStagingFile()
+                    var tableCreated = false
                     if (!db.manageTableManually)
-                        createTableIfUndefined(statement)
+                        tableCreated = createTableIfUndefined(statement)
                     stagedPath = volumeFilePath()
                     putFile(statement, dataFile, stagedPath)
                     loadData(statement, stagedPath)
+                    // Unity Catalog metadata push (opt-in). Never throws: a
+                    // failure is a warning on the run, not a failed load.
+                    UnityCatalogMetadataSync.sync(
+                        conn,
+                        jobContext,
+                        copyFields().map(_.name).filter(_.toLowerCase.startsWith(ProvenanceStamper.Prefix)),
+                        tableCreated
+                    )
+                    // Unity Catalog lineage publish (REST, not this
+                    // connection). Same guarantees: never fails the load.
+                    UnityCatalogLineagePublisher.sync(jobContext, tableCreated)
                 } finally {
                     if (stagedPath != null)
                         Try(statement.execute("REMOVE '" + sqlLiteral(stagedPath) + "'"))
@@ -254,7 +266,11 @@ class DatabricksLoader(jobContext: JobContext) {
         } else destFields.toSeq
     }
 
-    private def createTableIfUndefined(statement: Statement): Unit = {
+    /** Returns true when this call created the table (known only for pipelines
+     *  that opted into the Unity Catalog push — the existence probe is skipped
+     *  otherwise, so their DDL path is unchanged). A freshly created table has
+     *  none of the metadata a previous sync applied, so the sync re-applies it. */
+    private def createTableIfUndefined(statement: Statement): Boolean = {
         if (db.schema != null && db.schema.nonEmpty)
             statement.execute("CREATE SCHEMA IF NOT EXISTS " + schemaRef())
 
@@ -265,6 +281,9 @@ class DatabricksLoader(jobContext: JobContext) {
 
         val keySet: Set[String] =
             if (db.keyFields != null) db.keyFields.asScala.map(_.toLowerCase).toSet else Set.empty
+
+        val ucSync = config.unityCatalog != null && config.unityCatalog.enabled
+        val tableExisted = !ucSync || UnityCatalogMetadataSync.probeTableExisted(statusUtil)(tableExists(statement))
 
         val sql = new StringBuilder()
         sql.append("CREATE TABLE IF NOT EXISTS " + qualifiedTable() + " (")
@@ -309,6 +328,16 @@ class DatabricksLoader(jobContext: JobContext) {
                 statement.execute(alter)
             }
         })
+        !tableExisted
+    }
+
+    private def tableExists(statement: Statement): Boolean = {
+        val rs = statement.executeQuery(
+            s"""SELECT 1 FROM ${ident(db.dbName)}.information_schema.tables
+               |WHERE lower(table_schema) = '${sqlLiteral(effectiveName(db.schema))}' AND lower(table_name) = '${sqlLiteral(effectiveName(db.table))}'""".stripMargin
+        )
+        try rs.next()
+        finally rs.close()
     }
 
     /** Platform type -> Delta SQL DDL type. Mirrors SnowflakeLoader.snowflakeType;
@@ -331,16 +360,13 @@ class DatabricksLoader(jobContext: JobContext) {
         }
     }
 
-    private def csvDelimiter(): String =
-        if (config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null)
-            config.source.fileAttributes.csvAttributes.delimiter
-        else ","
+    private def csvDelimiter(): String = CsvAttributes.delimiterOf(config)
 
     // Identifier emission and paste-shape normalization live in
     // DatabricksConnectionUtil, shared with the query path.
     private def ident(identifier: String): String = DatabricksConnectionUtil.ident(identifier)
     private def effectiveName(s: String): String = DatabricksConnectionUtil.effectiveName(s)
-    private def sqlLiteral(value: String): String = value.replace("'", "''")
+    private def sqlLiteral(value: String): String = DatabricksConnectionUtil.sqlLiteral(value)
     private def schemaRef(): String = ident(db.dbName) + "." + ident(db.schema)
     private def qualifiedTable(): String = DatabricksConnectionUtil.qualifiedTable(db)
 

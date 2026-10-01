@@ -286,4 +286,22 @@ class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach with Befo
             assert(ObjectStoreSpark.resolveBucket(s3) == "customer-owned-bucket")
         }
     }
+
+    // Live Databricks probe: a catalog reported an s3:// location and Hadoop
+    // had no FileSystem for scheme "s3".
+    test("mapS3Schemes serves s3:// and s3n:// with S3A, leaving an explicit mapping alone") {
+        val conf = new org.apache.hadoop.conf.Configuration(false)
+        ObjectStoreSpark.mapS3Schemes(conf)
+        assert(conf.get("fs.s3.impl") == "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        assert(conf.get("fs.s3n.impl") == "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        val preset = new org.apache.hadoop.conf.Configuration(false)
+        preset.set("fs.s3.impl", "com.example.CustomS3")
+        ObjectStoreSpark.mapS3Schemes(preset)
+        assert(preset.get("fs.s3.impl") == "com.example.CustomS3")
+        assert(preset.get("fs.s3n.impl") == "org.apache.hadoop.fs.s3a.S3AFileSystem")
+    }
+
+    test("evictionUris covers s3a://, s3:// and s3n:// for the bucket (all served by S3A)") {
+        assert(ObjectStoreSpark.evictionUris("lake").map(_.toString) == Seq("s3a://lake", "s3://lake", "s3n://lake"))
+    }
 }

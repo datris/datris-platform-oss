@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisException, JobContext, StagedFormat}
+import ai.datris.model.{CsvAttributes, DatrisException, JobContext, StagedFormat}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.regex.Pattern
@@ -23,13 +23,7 @@ object DestSchemaProjector {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     /** Delimiter from the source csvAttributes, else ",". */
-    def delimiter(jobContext: JobContext): String = {
-        val config = jobContext.config
-        if (config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null)
-            config.source.fileAttributes.csvAttributes.delimiter
-        else
-            ","
-    }
+    def delimiter(jobContext: JobContext): String = CsvAttributes.delimiterOf(jobContext.config)
 
     /** Reorder / drop source columns to match the destination schema. When the
       * schemas already match, `rows` is returned as is. The "Dropped columns"

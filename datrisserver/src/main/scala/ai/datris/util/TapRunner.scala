@@ -5,7 +5,18 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, StagedFormat, StagedPayload, TapConfig, TapDocumentLedger, TapFeedInfo, TapRunLog}
+import ai.datris.model.{
+    CsvAttributes,
+    DatrisEnvironment,
+    DatrisException,
+    GlobalJobContext,
+    StagedFormat,
+    StagedPayload,
+    TapConfig,
+    TapDocumentLedger,
+    TapFeedInfo,
+    TapRunLog
+}
 import ai.datris.controller.{JobRunner, StreamNotifier}
 import com.google.gson.{Gson, JsonArray, JsonElement, JsonParser, JsonPrimitive}
 import org.slf4j.{Logger, LoggerFactory}
@@ -364,9 +375,7 @@ object TapRunner {
         // and the CSV parser run exactly as for an upload. JSON / XML / text
         // pipelines adopt the staged file as-is — no bytes through the heap.
         val jobContext = if (pipelineExpectsCsv) {
-            val delimiter = if (pipelineConfig.source.fileAttributes.csvAttributes.delimiter != null)
-                pipelineConfig.source.fileAttributes.csvAttributes.delimiter
-            else ","
+            val delimiter = CsvAttributes.delimiterOf(pipelineConfig)
             val (feed, filename) = projectForCsv(result, delimiter, "tap-" + tapConfig.name)
             val source = new BufferedInputStream(Files.newInputStream(Paths.get(feed.path)))
             new StreamNotifier().process(source, feed.bytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed)

@@ -296,3 +296,24 @@
 }
 .lineage-chip .material-icons { font-size: 15px; color: var(--text-muted); }
 .lineage-chip.tap:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+
+.uc-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.uc-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--accent-red);
+  color: var(--accent-red);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

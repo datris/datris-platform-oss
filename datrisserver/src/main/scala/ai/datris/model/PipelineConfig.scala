@@ -29,8 +29,61 @@ case class PipelineConfig(
     // default; several need Destination.authoritative to pick one). false ⇒
     // every dataset this pipeline lands is a derived copy (a rollup, a replica,
     // a vector index built from a table). Boxed so "unset" survives Gson.
-    authoritative: java.lang.Boolean = null
+    authoritative: java.lang.Boolean = null,
+    // Opt-in Unity Catalog metadata push (absent/null ⇒ off). Databricks
+    // destinations only (PipelineValidatorUtil). See UnityCatalogMetadataSync.
+    unityCatalog: UnityCatalogSync = null
 )
+
+/** `unityCatalog: {"enabled": true}` — after each successful Databricks load,
+  * push a table comment, `_datris_*` column comments, four stable tags and
+  * run-level TBLPROPERTIES to Unity Catalog, and publish External Lineage
+  * (tap or upload → pipeline → table). Each knob drops its group.
+  *
+  * The knobs are boxed and null means on: Spring's `@RequestBody` Jackson
+  * mapper does not apply Scala default arguments (an absent Boolean arrives
+  * as `false`), and Gson skips constructors on config DB reads. Read them
+  * through `commentsOn` / `tagsOn` / `propertiesOn` / `lineageOn` /
+  * `registerOn`. */
+case class UnityCatalogSync @JsonCreator() (
+    @JsonProperty("enabled") enabled: Boolean = false,
+    @JsonProperty("comments") comments: java.lang.Boolean = null,
+    @JsonProperty("tags") tags: java.lang.Boolean = null,
+    @JsonProperty("properties") properties: java.lang.Boolean = null,
+    // Publish External Metadata + External Lineage (tap/upload → pipeline →
+    // table) over the workspace REST API. See UnityCatalogLineagePublisher.
+    @JsonProperty("lineage") lineage: java.lang.Boolean = null,
+    // Object-store Iceberg destinations only (IcebergCatalogRegistrar): the
+    // Platform secret naming the Unity Catalog workspace, and the UC catalog
+    // and schema the table is registered under as <catalog>.<schema>.<pipeline>.
+    // A Databricks destination ignores these (its coordinates come from Database).
+    @JsonProperty("credentialsSecret") credentialsSecret: String = null,
+    @JsonProperty("catalog") catalog: String = null,
+    // Absent ⇒ null (Jackson/Gson skip Scala defaults); read via schemaOrDefault.
+    @JsonProperty("schema") schema: String = null,
+    @JsonProperty("register") register: java.lang.Boolean = null,
+    // Object-store Iceberg only: `register` (null/absent: register after each
+    // commit, story 4) or `rest` (every commit goes through the Iceberg REST
+    // catalog, IcebergRestSession). Read via catalogModeOrDefault / restMode.
+    @JsonProperty("catalogMode") catalogMode: String = null
+) {
+    def this() = this(false, null, null, null, null, null, null, null, null, null)
+
+    def commentsOn: Boolean = UnityCatalogSync.on(comments)
+    def tagsOn: Boolean = UnityCatalogSync.on(tags)
+    def propertiesOn: Boolean = UnityCatalogSync.on(properties)
+    def lineageOn: Boolean = UnityCatalogSync.on(lineage)
+    def registerOn: Boolean = UnityCatalogSync.on(register)
+    def schemaOrDefault: String = Option(schema).map(_.trim).filter(_.nonEmpty).getOrElse("default")
+    def catalogModeOrDefault: String = Option(catalogMode).map(_.trim.toLowerCase).filter(_.nonEmpty).getOrElse("register")
+    def restMode: Boolean = catalogModeOrDefault == "rest"
+}
+
+object UnityCatalogSync {
+
+    /** Unset (null) ⇒ on; only an explicit `false` drops a group. */
+    def on(b: java.lang.Boolean): Boolean = b == null || b.booleanValue
+}
 
 case class ProvenanceConfig @JsonCreator() (
     @JsonProperty("stamp") stamp: Boolean = false,
@@ -175,11 +228,36 @@ case class FileAttributes(
     readOptions: java.util.Map[String, String] = null
 )
 
+/** `delimiter` may arrive null: Spring's `@RequestBody` Jackson mapper
+  * (ParameterNamesModule, no DefaultScalaModule) ignores Scala default
+  * arguments, so a body that omits it stores null. Every read goes through
+  * `effectiveDelimiter` / `CsvAttributes.delimiterOf`, which fall back to ","
+  * without rewriting the stored config. */
 case class CsvAttributes(
     delimiter: String = ",",
     header: Boolean = true,
     encoding: String = "UTF-8"
-)
+) {
+    def effectiveDelimiter: String = CsvAttributes.resolveDelimiter(delimiter)
+}
+
+object CsvAttributes {
+    val DefaultDelimiter: String = ","
+
+    /** Null or empty ⇒ ",". */
+    def resolveDelimiter(delimiter: String): String =
+        if (delimiter == null || delimiter.isEmpty) DefaultDelimiter else delimiter
+
+    /** The source csvAttributes delimiter of `config`, else "," (null-safe on
+      * config / source / fileAttributes / csvAttributes). */
+    def delimiterOf(config: PipelineConfig): String =
+        if (
+            config != null && config.source != null && config.source.fileAttributes != null
+            && config.source.fileAttributes.csvAttributes != null
+        )
+            config.source.fileAttributes.csvAttributes.effectiveDelimiter
+        else DefaultDelimiter
+}
 
 case class JsonAttributes(
     everyRowContainsObject: Boolean = false,

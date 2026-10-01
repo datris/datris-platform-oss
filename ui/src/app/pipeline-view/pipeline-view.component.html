@@ -76,6 +76,44 @@
     </div>
   </div>
 
+  <!-- Unity Catalog sync (Databricks metadata push, object-store Iceberg register; opt-in via unityCatalog.enabled). -->
+  <div class="uc-panel" *ngIf="showUnityCatalog()">
+    <div class="lineage-row">
+      <span class="lineage-label">Unity Catalog</span>
+      <span class="fresh-chip" [class.fresh]="unityCatalog.state === 'synced'" [class.stale]="unityCatalog.state === 'error'">{{ unityCatalog.state === 'never' ? 'never synced' : unityCatalog.state }}</span>
+      <span class="lineage-detail" *ngIf="unityCatalog.coordinates?.qualified">{{ unityCatalog.coordinates.qualified }}</span>
+    </div>
+    <div class="lineage-row" *ngIf="unityCatalog.state !== 'never'">
+      <span class="lineage-label">Last sync</span>
+      <span class="lineage-detail">{{ unityCatalog.lastSyncAt }}<ng-container *ngIf="unityCatalog.lastRunId"> · run {{ unityCatalog.lastRunId }}</ng-container></span>
+    </div>
+    <div class="lineage-row" *ngIf="unityCatalog.state === 'never'">
+      <span class="lineage-detail">Metadata is pushed after the next successful load.</span>
+    </div>
+    <div class="lineage-row" *ngIf="unityCatalog.registerEnabled">
+      <span class="lineage-label">Registered</span>
+      <span class="fresh-chip fresh" *ngIf="unityCatalog.catalogMode === 'rest'">rest</span>
+      <span class="lineage-detail" *ngIf="unityCatalog.register === 'rest' && unityCatalog.lastRestCommitAt">kept current at {{ unityCatalog.lastRestCommitAt }}</span>
+      <ng-container *ngIf="unityCatalog.register !== 'rest'">
+        <span class="lineage-detail" *ngIf="unityCatalog.lastRegisterAt">registered in Unity Catalog at {{ unityCatalog.lastRegisterAt }}</span>
+        <span class="lineage-detail" *ngIf="!unityCatalog.lastRegisterAt">not registered yet</span>
+      </ng-container>
+      <span class="fresh-chip stale" *ngIf="unityCatalog.register === 'stale'">stale</span>
+      <span class="fresh-chip stale" *ngIf="unityCatalog.register === 'error'">error</span>
+      <span class="fresh-chip stale" *ngIf="unityCatalog.register === 'refused'" [title]="unityCatalog.restRefusedReason || ''">refused</span>
+    </div>
+    <div class="lineage-row">
+      <span class="lineage-label">Lineage</span>
+      <span class="lineage-detail" *ngIf="config.unityCatalog.lineage === false">off</span>
+      <ng-container *ngIf="config.unityCatalog.lineage !== false">
+        <span class="lineage-detail" *ngIf="unityCatalog.lastLineageAt">published {{ unityCatalog.lastLineageAt }}</span>
+        <span class="lineage-detail" *ngIf="!unityCatalog.lastLineageAt">not published yet</span>
+        <span class="fresh-chip stale" *ngIf="unityCatalog.lineage === 'error'">error</span>
+      </ng-container>
+    </div>
+    <pre class="uc-error" *ngIf="unityCatalog.state === 'error' && unityCatalog.lastError">{{ unityCatalog.lastError }}</pre>
+  </div>
+
   <div class="config-container" *ngIf="configJson">
     <pre class="config-json" [innerText]="configJson"></pre>
   </div>

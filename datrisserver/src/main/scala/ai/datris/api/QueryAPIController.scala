@@ -11,6 +11,7 @@ import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext}
 import ai.datris.util.{
     AIUtil,
     APIKeyValidator,
+    DatabricksErrorText,
     DatabricksQueryUtil,
     ObjectStoreQueryUtil,
     PostgresQueryUtil,
@@ -42,11 +43,7 @@ class QueryAPIController {
                 .getOrElse(throw new ai.datris.model.DatrisException("'sql' parameter is required"))
             val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
             else Option(body.get("database")).map(_.toString).getOrElse(DatrisEnvironment.current.postgresDatabase)
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(100)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val results = PostgresQueryUtil.query(sql, database, limit)
 
@@ -56,6 +53,9 @@ class QueryAPIController {
             response.put("count", results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("queryPostgres: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
@@ -79,11 +79,7 @@ class QueryAPIController {
             val projection = Option(body.get("projection"))
                 .map(_.asInstanceOf[java.util.Map[String, Any]])
                 .orNull
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(20)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 20)
 
             val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
             else Option(body.get("database")).map(_.toString).orNull
@@ -100,6 +96,9 @@ class QueryAPIController {
             response.put("count", parsedResults.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("queryMongoDB: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
@@ -117,15 +116,14 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(100)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = ObjectStoreQueryUtil.query(pipelineName, limit)
             new ResponseEntity[String](QueryAPIController.objectStoreResponseJson(pipelineName, result), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("queryObjectStore: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: DatrisException =>
                 logger.warn("query/objectstore: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
@@ -147,11 +145,7 @@ class QueryAPIController {
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             val sql = Option(body.get("sql")).map(_.toString)
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(100)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = SnowflakeQueryUtil.query(pipelineName, sql, limit)
 
@@ -163,9 +157,18 @@ class QueryAPIController {
             response.put("count", result.results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("querySnowflake: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: DatrisException =>
                 logger.warn("query/snowflake: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
+            case e: Exception if QueryAPIController.isSqlFailure(e) =>
+                // Warehouse driver failures (SQLException) carry the whole
+                // server stack in the message: answer with a short message.
+                logger.error("query/snowflake: " + Throwables.getStackTraceAsString(e))
+                val (status, body) = QueryAPIController.snowflakeQueryError(e)
+                ResponseEntity.status(status).body[String](body)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
@@ -184,11 +187,7 @@ class QueryAPIController {
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             val sql = Option(body.get("sql")).map(_.toString)
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(100)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = DatabricksQueryUtil.query(pipelineName, sql, limit)
 
@@ -200,9 +199,18 @@ class QueryAPIController {
             response.put("count", result.results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("queryDatabricks: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: DatrisException =>
                 logger.warn("query/databricks: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
+            case e: Exception if QueryAPIController.isSqlFailure(e) =>
+                // Warehouse driver failures (SQLException) carry the whole
+                // server stack in the message: answer with a short message.
+                logger.error("query/databricks: " + Throwables.getStackTraceAsString(e))
+                val (status, body) = QueryAPIController.databricksQueryError(e)
+                ResponseEntity.status(status).body[String](body)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
@@ -334,6 +342,59 @@ class QueryAPIController {
 }
 
 object QueryAPIController {
+
+    /** A `limit` request field that is not an integer. */
+    final class InvalidLimitException(message: String) extends DatrisException(message)
+
+    /** The request's `limit` (JSON number or numeric string) as an Int, or
+      *  `default` when absent. Anything else throws
+      *  [[InvalidLimitException]], which the handlers answer with 400. */
+    private[api] def parseLimit(raw: Any, default: Int): Int = raw match {
+        case null => default
+        case d: java.lang.Double => d.intValue()
+        case i: java.lang.Integer => i.intValue()
+        case other =>
+            try other.toString.trim.toInt
+            catch {
+                case _: NumberFormatException =>
+                    throw new InvalidLimitException("limit must be an integer (got \"" + other.toString + "\")")
+            }
+    }
+
+    private[api] def jsonError(message: String): String = "{\"error\": " + new Gson().toJson(message) + "}"
+
+    /** Status and `{"error": ...}` body for a SQLException failure of
+      *  `POST /query/databricks`: the Databricks error class and first
+      *  sentence (404 not found, 400 INVALID_PARAMETER_VALUE, 403 permission,
+      *  else 502), never the driver's Thrift dump or stack frames. */
+    private[api] def databricksQueryError(e: Throwable): (Int, String) = {
+        val (status, message) = DatabricksErrorText.translateWarehouseError(e)
+        (status, jsonError(message))
+    }
+
+    /** True when `e` or anything in its cause chain is a JDBC
+      *  [[java.sql.SQLException]] — the only failures the warehouse
+      *  translators handle; everything else stays a 500. */
+    private[api] def isSqlFailure(e: Throwable): Boolean =
+        Iterator.iterate(e)(_.getCause).takeWhile(_ != null).take(32).exists(_.isInstanceOf[java.sql.SQLException])
+
+    private val SnowflakeQueryErrorRe = """(?i)SQL compilation error|SQL access control error|does not exist""".r
+
+    /** Status and `{"error": ...}` body for a SQLException failure of
+      *  `POST /query/snowflake`: the message's text before any stack frame,
+      *  lines joined (Snowflake splits "SQL compilation error:" from the
+      *  reason), capped at [[DatabricksErrorText.MaxMessageLength]]. 400 for
+      *  compilation / access-control / missing-object errors, else 502. */
+    private[api] def snowflakeQueryError(e: Throwable): (Int, String) = {
+        val text = if (e == null) "" else DatabricksErrorText.fullText(e)
+        val joined = DatabricksErrorText.stripStack(text).linesIterator.map(_.trim).filter(_.nonEmpty).mkString(" ")
+        val message = if (joined.nonEmpty) DatabricksErrorText.cap(joined)
+        else if (e == null) "Snowflake query failed" else e.getClass.getSimpleName
+        // Compilation/access/missing-object errors are the caller's to fix (400);
+        // anything else (transport, suspended warehouse) is upstream (502).
+        val status = if (SnowflakeQueryErrorRe.findFirstIn(text).isDefined) 400 else 502
+        (status, jsonError(message))
+    }
 
     /** The body every catch-all 500 in this controller and PipelineAPIController
       *  returns: `{"error": "<message>"}` on one line. The full stack trace is

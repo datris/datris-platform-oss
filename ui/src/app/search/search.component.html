@@ -30,6 +30,10 @@
         <optgroup label="Object Store">
           <option value="objectstore" *ngIf="healthService.isAvailable('minio')">Object Store (MinIO / S3 — Parquet, ORC, or Iceberg)</option>
         </optgroup>
+        <optgroup label="Warehouse" *ngIf="hasWarehousePipelines('databricks') || hasWarehousePipelines('snowflake')">
+          <option value="databricks" *ngIf="hasWarehousePipelines('databricks')">Databricks</option>
+          <option value="snowflake" *ngIf="hasWarehousePipelines('snowflake')">Snowflake</option>
+        </optgroup>
         <optgroup label="Vector Search">
           <option value="qdrant" *ngIf="healthService.isAvailable('qdrant')">Qdrant</option>
           <option value="weaviate" *ngIf="healthService.isAvailable('weaviate')">Weaviate</option>
@@ -133,6 +137,34 @@
       </div>
     </ng-container>
 
+    <!-- Warehouse (Databricks / Snowflake) fields -->
+    <ng-container *ngIf="isWarehouse()">
+      <div class="form-row-inline">
+        <div class="form-field" style="flex: 3">
+          <label class="form-label">Pipeline</label>
+          <select class="form-input" [(ngModel)]="whSelectedPipeline">
+            <option value="">Select a pipeline...</option>
+            <option *ngFor="let p of warehousePipelines()" [value]="p.name">{{ p.name }}</option>
+          </select>
+        </div>
+        <div class="form-field" style="flex: 1">
+          <label class="form-label">Limit</label>
+          <input class="form-input" type="number" [(ngModel)]="whLimit">
+        </div>
+      </div>
+      <div class="form-row" *ngIf="selectedWarehouseMeta() as meta">
+        <p class="form-hint">
+          Querying <code>{{ meta.qualified }}</code>
+          ({{ meta.kind === 'databricks' ? 'Databricks' : 'Snowflake' }}).
+        </p>
+      </div>
+      <div class="form-row">
+        <label class="form-label">SQL Query</label>
+        <textarea class="form-input form-textarea" [(ngModel)]="whSql" [placeholder]="warehouseSqlPlaceholder()" rows="4"></textarea>
+        <p class="form-hint">Read-only: queries must start with SELECT, WITH, SHOW, or DESCRIBE, without semicolons or comments. Runs on the pipeline's warehouse with its credentials. Leave empty to preview the destination table up to the limit.</p>
+      </div>
+    </ng-container>
+
     <!-- Vector search fields -->
     <ng-container *ngIf="isVectorSearch()">
       <div class="form-row">
@@ -192,6 +224,13 @@
     <pre>{{ error }}</pre>
   </div>
 
+  <!-- Executed, no rows -->
+  <div class="results-section" *ngIf="executed && !loading && !error && results.length === 0">
+    <div class="results-header">
+      <span class="results-count">0 results</span>
+    </div>
+  </div>
+
   <!-- Results -->
   <div class="results-section" *ngIf="results.length > 0">
     <div class="results-header">
@@ -208,7 +247,7 @@
         <tbody>
           <tr *ngFor="let row of results">
             <td *ngFor="let col of columns">
-              <span class="cell-value" [class.score-cell]="col === '_score'">{{ row[col] }}</span>
+              <span class="cell-value" [class.score-cell]="col === '_score'">{{ isStructured(row[col]) ? (row[col] | json) : row[col] }}</span>
             </td>
           </tr>
         </tbody>

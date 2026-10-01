@@ -210,17 +210,7 @@ class ScratchLoader(jobContext: JobContext, settings: ScratchLoader.Settings) {
       * delimiter (literal, so "|" works) and padding short rows with "". */
     private def csvRecords(data: Data): CloseableIterator[String] = {
         val header = data.header
-        val delimiter = {
-            if (
-                config.source != null
-                && config.source.fileAttributes != null
-                && config.source.fileAttributes.csvAttributes != null
-                && config.source.fileAttributes.csvAttributes.delimiter != null
-            )
-                config.source.fileAttributes.csvAttributes.delimiter
-            else
-                ","
-        }
+        val delimiter = CsvAttributes.delimiterOf(config)
         val splitter = Pattern.quote(delimiter)
         val rows = data.rowIterator()
         CloseableIterator(

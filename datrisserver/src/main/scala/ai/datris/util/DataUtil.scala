@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{PipelineConfig, PipelineMetadata, DatrisException, SchemaField, StagedFormat, StagedPayload}
+import ai.datris.model.{CsvAttributes, PipelineConfig, PipelineMetadata, DatrisException, SchemaField, StagedFormat, StagedPayload}
 import ai.datris.model.Data
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -102,7 +102,8 @@ object DataUtil {
       * schema with garbage columns — writing the config — and only then fail in
       * the parser. Now the parser's own message is thrown first and nothing is
       * written. Returns the lower-cased column names, as the callers always did. */
-    def validatedCsvHeader(headerLine: String, delimiter: String, pipelineName: String): List[String] = {
+    def validatedCsvHeader(headerLine: String, rawDelimiter: String, pipelineName: String): List[String] = {
+        val delimiter = CsvAttributes.resolveDelimiter(rawDelimiter)
         val format = CSVFormat.RFC4180.builder().setDelimiter(delimiter).build()
         val records =
             try {
@@ -157,7 +158,7 @@ object DataUtil {
         if (config.source.fileAttributes.csvAttributes != null) {
             val csvAttributes = config.source.fileAttributes.csvAttributes
             val trimColumns = config.transformation != null && config.transformation.trimColumnWhitespace
-            val delimiter = csvAttributes.delimiter
+            val delimiter = csvAttributes.effectiveDelimiter
 
             // Read the actual header from the first file if header=true
             val sourceColumns = {

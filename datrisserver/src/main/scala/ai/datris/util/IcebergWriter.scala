@@ -8,10 +8,12 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.model.DatrisException
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
+import org.apache.iceberg.catalog.{Catalog, TableIdentifier}
 import org.apache.iceberg.hadoop.HadoopTables
 import org.apache.iceberg.spark.{SparkCachedTableCatalog, SparkCatalog, SparkSchemaUtil, SparkTableCache}
-import org.apache.iceberg.{PartitionSpec, Schema, Snapshot, Table, TableProperties}
+import org.apache.iceberg.{HasTableOperations, PartitionSpec, Schema, Table, TableProperties}
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.types.StructType
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -19,8 +21,15 @@ import java.util.UUID
 import scala.collection.JavaConverters._
 
 /** All Apache Iceberg write logic for objectStore destinations. Tables are
-  *  addressed purely by path (`file://`, `s3a://`): no catalog registration,
+  *  addressed purely by path (`file://`, `s3a://`): no catalog in the write path,
   *  metadata lives at `<location>/metadata/`, data under `<location>/data/`.
+  *  When the pipeline opts in (`unityCatalog`), IcebergCatalogRegistrar
+  *  registers the table in Unity Catalog after the commit, from
+  *  `WriteResult.metadataLocation`.
+  *  The one exception is `catalogMode: rest` (a `RestTarget`): the table is
+  *  created, loaded and committed through a catalog identifier (the Unity
+  *  Catalog Iceberg REST catalog in production) at the same explicit location,
+  *  so the catalog's pointer is current after every commit.
   *
   *  Uses `df.sparkSession` rather than `SparkSessionManager.getOrCreate()` so
   *  it runs wherever the caller's session runs (including a plain local
@@ -33,7 +42,60 @@ object IcebergWriter {
     /** Table property naming the pipeline that owns the table. */
     val PipelineProperty = "datris.pipeline"
 
-    final case class WriteResult(snapshotId: Long, addedRecords: Long, deletedRecords: Long, totalRecords: Long)
+    /** `metadataLocation` is the table's current metadata file after the write
+      * (null only when it cannot be read). */
+    final case class WriteResult(snapshotId: Long, addedRecords: Long, deletedRecords: Long, totalRecords: Long, metadataLocation: String = null)
+
+    /** Commit through a catalog instead of by path. `sparkCatalogName` is the
+      * Spark catalog (`spark.sql.catalog.<name>`) that SQL and `writeTo`
+      * address, `catalog` the Iceberg catalog the writer creates and loads
+      * through (both must see the same tables). `sparkConf` is set on the
+      * thread-active session when `spark.sql.catalog.<name>` is absent. */
+    final case class RestTarget(
+        sparkCatalogName: String,
+        ident: TableIdentifier,
+        catalog: Catalog,
+        sparkConf: Map[String, String] = Map.empty,
+        // Called once right after a catalog create whose location checked
+        // out, before any data is written (IcebergRestSession records the
+        // table so a later failure still leaves it known).
+        onCreated: Table => Unit = _ => ()
+    ) {
+        def sql: String = (sparkCatalogName +: ident.namespace().levels().toSeq :+ ident.name()).map(quote).mkString(".")
+    }
+
+    /** The catalog's table is not at the pipeline's table root (Databricks
+      * creates managed Iceberg tables and ignores the requested location).
+      * Thrown before any data is written through the catalog. */
+    final class RestLocationRefused(val tableLocation: String, val requested: String, val created: Boolean = false)
+        extends DatrisException(
+            "the catalog placed the table at " + tableLocation + ", outside this pipeline's table root " + requested + "; nothing was written through the catalog"
+        )
+
+    /** Same table location, with `s3a://` / `s3n://` equal to `s3://` (a
+      * catalog may answer in the `s3://` spelling) and trailing slashes and
+      * `file:` spellings normalised. */
+    private[util] def sameRestLocation(a: String, b: String): Boolean =
+        a != null && b != null && LocationParts(normS3(a)) == LocationParts(normS3(b))
+
+    private def normS3(loc: String): String = loc.trim.replaceFirst("(?i)^s3[an]://", "s3://")
+
+    /** Rest-mode sibling of assertTableLocation: a table elsewhere is a
+      * refusal (RestLocationRefused), a manifest list on another
+      * bucket is a hard error as in path mode. */
+    private[util] def assertRestTableLocation(table: Table, requested: String, created: Boolean = false): Unit = {
+        if (!sameRestLocation(table.location(), requested)) throw new RestLocationRefused(table.location(), requested, created)
+        val snapshot = table.currentSnapshot()
+        if (snapshot != null && snapshot.manifestListLocation() != null) {
+            val want = LocationParts(normS3(requested))
+            val manifests = LocationParts(normS3(snapshot.manifestListLocation()))
+            if (manifests.scheme != want.scheme || manifests.authority != want.authority)
+                throw new DatrisException(
+                    "Iceberg table at " + requested + " has a snapshot whose manifest list lives elsewhere (" +
+                        snapshot.manifestListLocation() + "); refusing to read or write it"
+                )
+        }
+    }
 
     /** Write `df` to the Iceberg table at `location`, creating it if absent.
       *
@@ -63,6 +125,20 @@ object IcebergWriter {
         destSchema: StructType,
         statusUtil: StatusUtil,
         pipelineName: String
+    ): WriteResult = write(df, location, writeMode, partitionBy, keyFields, destSchema, statusUtil, pipelineName, None)
+
+    /** As above; with `restCatalog` every create, load and commit goes through
+      * the catalog identifier (`catalogMode: rest`), at the same `location`. */
+    def write(
+        df: DataFrame,
+        location: String,
+        writeMode: String,
+        partitionBy: Seq[String],
+        keyFields: Seq[String],
+        destSchema: StructType,
+        statusUtil: StatusUtil,
+        pipelineName: String,
+        restCatalog: Option[RestTarget]
     ): WriteResult = {
         val spark = df.sparkSession
         // The catalog lookups behind format("iceberg") and MERGE read the
@@ -70,6 +146,7 @@ object IcebergWriter {
         // one that created the session (see SparkSessionManager.getOrCreate).
         SparkSession.setActiveSession(spark)
         ensureCatalogs(spark, location)
+        restCatalog.foreach(r => ensureRestCatalog(spark, r))
         val conf = spark.sessionState.newHadoopConf()
         val tables = new HadoopTables(conf)
         val mode = Option(writeMode).map(_.trim.toLowerCase).filter(_.nonEmpty).getOrElse("append")
@@ -79,13 +156,16 @@ object IcebergWriter {
         if (mode == "merge" && keyFields.isEmpty)
             throw new DatrisException("writeMode 'merge' requires keyFields (the MERGE ON columns)")
 
-        val exists = tables.exists(location)
-        if (!exists) guardPrefix(conf, location)
+        val exists = restCatalog match {
+            case Some(r) => r.catalog.tableExists(r.ident)
+            case None => tables.exists(location)
+        }
+        if (!exists) guardPrefix(conf, location, statusUtil)
 
         if (exists && mode == "ignore") {
-            val table = loadChecked(tables, location)
+            val table = loadChecked(tables, location, restCatalog)
             statusUtil.info("processing", "Iceberg table exists at " + location + "; writeMode ignore, nothing written")
-            return resultOf(table.currentSnapshot())
+            return resultOf(table)
         }
         if (exists && mode == "errorifexists")
             throw new DatrisException("Iceberg table already exists at " + location + " and writeMode is errorifexists")
@@ -93,13 +173,13 @@ object IcebergWriter {
         var evolved: Seq[String] = Nil
         val table: Table =
             if (exists) {
-                val t = loadChecked(tables, location)
+                val t = loadChecked(tables, location, restCatalog)
                 evolved = evolveSchema(t, destSchema, statusUtil)
                 t
             } else
-                createTable(tables, location, destSchema, partitionBy, pipelineName, statusUtil)
+                createTable(tables, location, destSchema, partitionBy, pipelineName, statusUtil, restCatalog)
 
-        try writeData(df, table, location, mode, exists, keyFields, statusUtil)
+        try writeData(df, table, location, mode, exists, keyFields, statusUtil, restCatalog)
         catch {
             case e: Exception if evolved.nonEmpty =>
                 // The schema change is its own committed metadata update; the
@@ -114,9 +194,17 @@ object IcebergWriter {
         }
 
         table.refresh()
-        assertTableLocation(table, location)
-        val snapshot = table.currentSnapshot()
-        val result = resultOf(snapshot)
+        // After the commit: a location change now is a failure, not a
+        // refusal (RestLocationRefused means nothing was written).
+        if (restCatalog.isDefined) {
+            if (!sameRestLocation(table.location(), location))
+                throw new DatrisException(
+                    "Iceberg table " + restCatalog.get.ident + " moved to " + table.location() + " during the write, outside this pipeline's table root " +
+                        location + "; the commit went through the catalog, so the run fails rather than write by path"
+                )
+            assertRestTableLocation(table, location)
+        } else assertTableLocation(table, location)
+        val result = resultOf(table)
         statusUtil.info(
             "processing",
             "Iceberg commit at " + location + ": snapshot " + result.snapshotId +
@@ -133,9 +221,18 @@ object IcebergWriter {
         mode: String,
         exists: Boolean,
         keyFields: Seq[String],
-        statusUtil: StatusUtil
+        statusUtil: StatusUtil,
+        restCatalog: Option[RestTarget]
     ): Unit =
         mode match {
+            case "overwrite" if exists && restCatalog.isDefined =>
+                // Through the catalog identifier: a path save would commit via
+                // default_iceberg's HadoopTableOperations and bypass the catalog.
+                val partitioned = table.spec().isPartitioned
+                statusUtil.info("processing", "Iceberg " + (if (partitioned) "overwritePartitions" else "replace") + " at " + location)
+                val w = df.writeTo(restCatalog.get.sql)
+                if (partitioned) w.overwritePartitions() else w.overwrite(lit(true))
+
             case "overwrite" if exists =>
                 // One snapshot either way: dynamic partition overwrite replaces only
                 // the partitions present in df; unpartitioned replaces all rows in
@@ -146,7 +243,11 @@ object IcebergWriter {
                 (if (partitioned) writer.option("overwrite-mode", "dynamic") else writer).save(location)
 
             case "merge" if exists =>
-                merge(df, table, location, keyFields, statusUtil)
+                merge(df, table, location, keyFields, statusUtil, restCatalog)
+
+            case _ if restCatalog.isDefined =>
+                statusUtil.info("processing", "Iceberg append to " + location)
+                df.writeTo(restCatalog.get.sql).append()
 
             case _ =>
                 // append, plus any mode against a table that did not exist yet
@@ -188,9 +289,21 @@ object IcebergWriter {
             spark.conf.set(cache, classOf[SparkCachedTableCatalog].getName)
     }
 
-    private def loadChecked(tables: HadoopTables, location: String): Table = {
-        val table = tables.load(location)
-        assertTableLocation(table, location)
+    /** Register the target's Spark catalog on the (thread-active) session
+      * when it is not defined yet. */
+    private def ensureRestCatalog(spark: SparkSession, target: RestTarget): Unit = {
+        val root = "spark.sql.catalog." + target.sparkCatalogName
+        if (spark.conf.getOption(root).isEmpty && target.sparkConf.nonEmpty)
+            target.sparkConf.foreach { case (k, v) => spark.conf.set(k, v) }
+    }
+
+    private def loadChecked(tables: HadoopTables, location: String, restCatalog: Option[RestTarget]): Table = {
+        val table = restCatalog match {
+            case Some(r) => r.catalog.loadTable(r.ident)
+            case None => tables.load(location)
+        }
+        // Before any read or write through it.
+        if (restCatalog.isDefined) assertRestTableLocation(table, location) else assertTableLocation(table, location)
         table
     }
 
@@ -238,12 +351,24 @@ object IcebergWriter {
 
     /** Refuse to create a table over a prefix that already holds non-Iceberg
       *  objects (an existing non-iceberg pipeline output, for example). */
-    private def guardPrefix(conf: Configuration, location: String): Unit = {
+    private def guardPrefix(conf: Configuration, location: String, statusUtil: StatusUtil): Unit = {
         val path = new Path(location)
         val fs = path.getFileSystem(conf)
         if (!fs.exists(path)) return
         val children = fs.listStatus(path)
         if (children.isEmpty) return
+        if (children.length == 1 && children(0).isDirectory && children(0).getPath.getName == "metadata") {
+            val metadataEntries = fs.listStatus(children(0).getPath)
+            val names = metadataEntries.filter(_.isFile).map(_.getPath.getName).toSeq
+            if (metadataEntries.forall(_.isFile) && orphanCatalogMetadata(Seq("metadata"), names)) {
+                statusUtil.info(
+                    "processing",
+                    "ignoring orphan catalog metadata file(s) at " + location + "/metadata (" + names.mkString(", ") +
+                        "): left by a catalog create that did not complete; no data files exist under the prefix"
+                )
+                return
+            }
+        }
         if (children.exists(_.getPath.getName == "metadata"))
             throw new DatrisException(
                 "prefix " + location + " has an Iceberg metadata/ directory but no loadable table (missing or corrupt version-hint); " +
@@ -254,13 +379,30 @@ object IcebergWriter {
         )
     }
 
+    /** Catalog-style metadata file name: `<5+ digits>-<uuid>.metadata.json`
+      *  (optionally compressed), as a REST catalog writes on create. */
+    private val CatalogMetadataFile =
+        "^\\d{5,}-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(\\.gz)?\\.metadata\\.json(\\.gz)?$".r
+
+    /** A prefix whose only entry is `metadata/`, holding only catalog-style
+      *  metadata files (no `version-hint.text`, no `v<N>.metadata.json`, no
+      *  manifests): the leftover of a catalog create that failed. No data file
+      *  exists, so a path-based create over it loses nothing. Conservative:
+      *  anything else under the prefix is not an orphan. */
+    private[util] def orphanCatalogMetadata(rootChildren: Seq[String], metadataFiles: Seq[String]): Boolean =
+        rootChildren == Seq("metadata") && metadataFiles.exists(isCatalogMetadataFile) &&
+            metadataFiles.forall(n => isCatalogMetadataFile(n) || (n.startsWith(".") && n.endsWith(".crc") && isCatalogMetadataFile(n.drop(1).dropRight(4))))
+
+    private def isCatalogMetadataFile(n: String): Boolean = CatalogMetadataFile.pattern.matcher(n).matches()
+
     private def createTable(
         tables: HadoopTables,
         location: String,
         destSchema: StructType,
         partitionBy: Seq[String],
         pipelineName: String,
-        statusUtil: StatusUtil
+        statusUtil: StatusUtil,
+        restCatalog: Option[RestTarget]
     ): Table = {
         val schema: Schema = SparkSchemaUtil.convert(destSchema)
         val missing = partitionBy.filterNot(p => schema.findField(p) != null)
@@ -277,7 +419,18 @@ object IcebergWriter {
             "Creating Iceberg table at " + location +
                 (if (partitionBy.nonEmpty) " partitioned by " + partitionBy.mkString(", ") else "")
         )
-        tables.create(schema, spec, props, location)
+        restCatalog match {
+            case Some(r) =>
+                // Explicit location, passed unchanged: the table lives at the
+                // pipeline's prefix whatever the catalog's default would be.
+                val created = r.catalog.buildTable(r.ident, schema).withPartitionSpec(spec).withLocation(location).withProperties(props).create()
+                // A catalog may ignore the requested location (Databricks
+                // creates a managed table): check before any data is written.
+                assertRestTableLocation(created, location, created = true)
+                r.onCreated(created)
+                created
+            case None => tables.create(schema, spec, props, location)
+        }
     }
 
     /** Owner name when the caller did not pass a pipeline name (the story-1
@@ -331,7 +484,14 @@ object IcebergWriter {
         added.map(_.name)
     }
 
-    private def merge(df: DataFrame, table: Table, location: String, keyFields: Seq[String], statusUtil: StatusUtil): Unit = {
+    private def merge(
+        df: DataFrame,
+        table: Table,
+        location: String,
+        keyFields: Seq[String],
+        statusUtil: StatusUtil,
+        restCatalog: Option[RestTarget]
+    ): Unit = {
         val spark = df.sparkSession
         // keyFields are persisted lowercased by the pipeline normaliser while
         // the table keeps the dest schema's spelling, so resolve them
@@ -349,12 +509,13 @@ object IcebergWriter {
         // Iceberg's own Spark actions solve this with SparkTableCache + the
         // cached-table catalog: park the loaded Table under a one-off key and
         // address it as `datris_cache`.`<key>` for the statement.
+        // A RestTarget has a real identifier, so the cache is skipped there.
         val key = "datris_merge_" + UUID.randomUUID().toString.replace("-", "")
         val source = key + "_src"
-        SparkTableCache.get().add(key, table)
+        if (restCatalog.isEmpty) SparkTableCache.get().add(key, table)
         df.createOrReplaceTempView(source)
         try {
-            val target = CacheCatalog + "." + quote(key)
+            val target = restCatalog.map(_.sql).getOrElse(CacheCatalog + "." + quote(key))
             val on = onColumns.map(k => "t." + quote(k) + " = s." + quote(k)).mkString(" AND ")
             val sql =
                 "MERGE INTO " + target + " t USING " + source + " s ON " + on +
@@ -364,17 +525,23 @@ object IcebergWriter {
             spark.sql(sql)
         } finally {
             spark.catalog.dropTempView(source)
-            SparkTableCache.get().remove(key)
+            if (restCatalog.isEmpty) SparkTableCache.get().remove(key)
         }
     }
 
-    private def resultOf(snapshot: Snapshot): WriteResult =
-        if (snapshot == null) WriteResult(-1L, 0L, 0L, 0L)
+    private def resultOf(table: Table): WriteResult = {
+        val metadataLocation = table match {
+            case t: HasTableOperations => Option(t.operations().current()).map(_.metadataFileLocation()).orNull
+            case _ => null
+        }
+        val snapshot = table.currentSnapshot()
+        if (snapshot == null) WriteResult(-1L, 0L, 0L, 0L, metadataLocation)
         else {
             val summary = snapshot.summary()
             def count(key: String): Long = Option(summary.get(key)).map(_.toLong).getOrElse(0L)
-            WriteResult(snapshot.snapshotId(), count("added-records"), count("deleted-records"), count("total-records"))
+            WriteResult(snapshot.snapshotId(), count("added-records"), count("deleted-records"), count("total-records"), metadataLocation)
         }
+    }
 
     private def quote(name: String): String = "`" + name.replace("`", "``") + "`"
 }

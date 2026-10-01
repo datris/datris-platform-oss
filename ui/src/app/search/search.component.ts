@@ -19,6 +19,8 @@ export class SearchComponent implements OnInit, OnDestroy {
   results: any[] = [];
   columns: string[] = [];
   resultCount = 0;
+  /** True once a query has succeeded (drives the "0 results" line). */
+  executed = false;
   /** Iceberg snapshot id carried by the last object-store query, if any. */
   snapshotId: string | null = null;
   snapshotTimestamp: string | null = null;
@@ -60,6 +62,13 @@ export class SearchComponent implements OnInit, OnDestroy {
   osPipelines: { name: string; bucket: string; prefix: string; format: string; provider: string }[] = [];
   osSelectedPipeline = '';
   osLimit = 100;
+
+  // Warehouse (Databricks / Snowflake) fields. Remote warehouses are not in
+  // the health check, so the options are gated on pipelines alone.
+  whPipelines: { name: string; kind: 'databricks' | 'snowflake'; qualified: string }[] = [];
+  whSelectedPipeline = '';
+  whSql = '';
+  whLimit = 100;
 
   isTrial = false;
   private routerSub: Subscription | null = null;
@@ -148,9 +157,52 @@ export class SearchComponent implements OnInit, OnDestroy {
         if (this.osPipelines.length > 0 && !this.osSelectedPipeline) {
           this.osSelectedPipeline = this.osPipelines[0].name;
         }
+        this.setWarehousePipelines(configs);
       },
-      error: () => { this.osPipelines = []; }
+      error: () => { this.osPipelines = []; this.whPipelines = []; }
     });
+  }
+
+  /** Databricks and Snowflake pipelines from the same /pipelines response the
+   * object-store picker uses. Both name their target as dbName.schema.table
+   * (Databricks: dbName is the Unity Catalog catalog). */
+  private setWarehousePipelines(configs: any[]): void {
+    this.whPipelines = (configs || [])
+      .filter(c => c && c.destination && c.destination.database &&
+        (c.destination.database.useDatabricks || c.destination.database.useSnowflake))
+      .map(c => {
+        const db = c.destination.database;
+        return {
+          name: c.name,
+          kind: (db.useDatabricks ? 'databricks' : 'snowflake') as 'databricks' | 'snowflake',
+          qualified: [db.dbName, db.schema, db.table].filter((p: any) => !!p).join('.')
+        };
+      });
+    if (this.isWarehouse()) this.ensureWarehousePipelineSelected();
+  }
+
+  warehousePipelines(kind: string = this.queryType): { name: string; kind: string; qualified: string }[] {
+    return this.whPipelines.filter(p => p.kind === kind);
+  }
+
+  hasWarehousePipelines(kind: string): boolean {
+    return this.warehousePipelines(kind).length > 0;
+  }
+
+  selectedWarehouseMeta(): { name: string; kind: string; qualified: string } | null {
+    return this.warehousePipelines().find(p => p.name === this.whSelectedPipeline) || null;
+  }
+
+  warehouseSqlPlaceholder(): string {
+    const meta = this.selectedWarehouseMeta();
+    return 'SELECT * FROM ' + (meta && meta.qualified ? meta.qualified : 'catalog.schema.table') + ' LIMIT 10';
+  }
+
+  private ensureWarehousePipelineSelected(): void {
+    const list = this.warehousePipelines();
+    if (!list.some(p => p.name === this.whSelectedPipeline)) {
+      this.whSelectedPipeline = list.length > 0 ? list[0].name : '';
+    }
   }
 
   selectedObjectStoreMeta(): { bucket: string; prefix: string; format: string; provider: string } | null {
@@ -255,15 +307,18 @@ export class SearchComponent implements OnInit, OnDestroy {
     this.columns = [];
     this.error = '';
     this.resultCount = 0;
+    this.executed = false;
     this.snapshotId = null;
     this.snapshotTimestamp = null;
     this.vectorSecretName = this.getDefaultVectorSecret();
+    if (this.isWarehouse()) this.ensureWarehousePipelineSelected();
   }
 
   /** If health gating hid the currently-selected query type, fall back to the
    * first visible option (dropdown order) so the select never sits on a value
    * that has no matching <option>. */
   private ensureQueryTypeAvailable(): void {
+    if (this.isWarehouse()) return;
     const healthKey: Record<string, string> = {
       postgres: 'postgres', mongodb: 'mongodb', objectstore: 'minio',
       qdrant: 'qdrant', weaviate: 'weaviate', milvus: 'milvus', chroma: 'chroma', pgvector: 'pgvector'
@@ -282,6 +337,10 @@ export class SearchComponent implements OnInit, OnDestroy {
 
   isObjectStore(): boolean {
     return this.queryType === 'objectstore';
+  }
+
+  isWarehouse(): boolean {
+    return this.queryType === 'databricks' || this.queryType === 'snowflake';
   }
 
   retrieveAllMongo(): void {
@@ -320,8 +379,13 @@ export class SearchComponent implements OnInit, OnDestroy {
       this.error = 'Please select a pipeline with an Object Store destination';
       return;
     }
+    if (this.isWarehouse() && !this.whSelectedPipeline) {
+      this.error = 'Please select a pipeline with a ' + (this.queryType === 'databricks' ? 'Databricks' : 'Snowflake') + ' destination';
+      return;
+    }
 
     this.loading = true;
+    this.executed = false;
     this.results = [];
     this.columns = [];
 
@@ -354,6 +418,12 @@ export class SearchComponent implements OnInit, OnDestroy {
       case 'objectstore':
         request = this.searchService.queryObjectstore(this.osSelectedPipeline, this.osLimit);
         break;
+      case 'databricks':
+        request = this.searchService.queryDatabricks(this.whSelectedPipeline, this.whSql.trim(), this.whLimit);
+        break;
+      case 'snowflake':
+        request = this.searchService.querySnowflake(this.whSelectedPipeline, this.whSql.trim(), this.whLimit);
+        break;
       default:
         this.loading = false;
         return;
@@ -363,6 +433,7 @@ export class SearchComponent implements OnInit, OnDestroy {
       next: (response: QueryResponse) => {
         this.results = response.results || [];
         this.resultCount = response.count || 0;
+        this.executed = true;
         this.snapshotId = response.snapshotId ? String(response.snapshotId) : null;
         this.snapshotTimestamp = response.snapshotTimestamp || null;
         if (this.results.length > 0) {
@@ -376,10 +447,29 @@ export class SearchComponent implements OnInit, OnDestroy {
         }
       },
       error: (err: any) => {
-        this.error = err.error || err.message || 'An error occurred';
+        this.error = this.errorMessage(err);
         this.loading = false;
       }
     });
+  }
+
+  /** Message for the error box. Query endpoints answer {"error": "..."};
+   *  some answer {"message": "..."}; a network failure (status 0) carries a
+   *  ProgressEvent body, which is never rendered. */
+  private errorMessage(err: any): string {
+    const body = err ? err.error : null;
+    if (body && typeof body === 'object') {
+      if (typeof body.error === 'string' && body.error) return body.error;
+      if (typeof body.message === 'string' && body.message) return body.message;
+    }
+    if (typeof body === 'string' && body) return body;
+    if (err && typeof err.message === 'string' && err.message) return err.message;
+    return 'An error occurred';
+  }
+
+  /** Objects and arrays render through the json pipe, not "[object Object]". */
+  isStructured(value: any): boolean {
+    return value !== null && typeof value === 'object';
   }
 
   askAI(): void {

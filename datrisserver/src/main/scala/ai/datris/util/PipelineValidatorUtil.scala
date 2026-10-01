@@ -52,10 +52,55 @@ object PipelineValidatorUtil {
         if (config.source.fileAttributes == null && config.source.databaseAttributes == null)
             throw new DatrisException("Either 'source.fileAttributes' or 'source.databaseAttributes must be defined")
 
+        validateUnityCatalog(config)
+
         if (config.source.fileAttributes != null && config.source.fileAttributes.unstructuredAttributes != null)
             validateUnstructured(config)
         else
             validateStructuredAndSemiStructured(config)
+    }
+
+    /** `unityCatalog.enabled` is meaningful for a Databricks destination
+      * (metadata push + lineage) and for an object-store Iceberg destination
+      * (the table is registered in Unity Catalog, which needs the secret and
+      * the UC catalog). Any object-store provider is accepted: registering
+      * only records a location. `enabled:false` is accepted anywhere (a
+      * harmless leftover). `catalogMode` (object-store Iceberg only) is
+      * `register` or `rest`; `rest` needs the register knob on and the same
+      * secret + catalog. */
+    private def validateUnityCatalog(config: PipelineConfig): Unit = {
+        val uc = config.unityCatalog
+        if (uc == null || !uc.enabled) return
+        val databricks = config.destination != null && config.destination.database != null &&
+            config.destination.database.useDatabricks
+        // catalogMode first: Databricks returns early below.
+        if (uc.catalogMode != null) {
+            if (databricks)
+                throw new DatrisException("'unityCatalog.catalogMode' applies to object-store Iceberg destinations only")
+            val mode = uc.catalogModeOrDefault
+            if (mode != "register" && mode != "rest")
+                throw new DatrisException("'unityCatalog.catalogMode' must be 'register' or 'rest'")
+            if (mode == "rest" && !uc.registerOn)
+                throw new DatrisException("'unityCatalog.catalogMode: rest' requires the register knob on")
+        }
+        if (databricks) return
+        val objectStore = if (config.destination != null) config.destination.objectStore else null
+        if (objectStore != null) {
+            val iceberg = objectStore.fileFormat != null && objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")
+            if (!iceberg)
+                throw new DatrisException(
+                    "'unityCatalog.enabled' on an object store requires fileFormat 'iceberg' (parquet and orc tables cannot be registered)"
+                )
+            def blank(v: String) = v == null || v.trim.isEmpty
+            if (blank(uc.credentialsSecret) || blank(uc.catalog))
+                throw new DatrisException(
+                    "'unityCatalog.credentialsSecret' and 'unityCatalog.catalog' are required for an object-store Iceberg destination"
+                )
+            return
+        }
+        throw new DatrisException(
+            "'unityCatalog.enabled' is only supported for a Databricks destination (destination.database.useDatabricks=true) or an object-store Iceberg destination"
+        )
     }
 
     private def validateUnstructured(config: PipelineConfig): Unit = {
@@ -319,7 +364,10 @@ object PipelineValidatorUtil {
             if (!config.destination.database.useMongoDB) {
                 validateSqlIdentifier(config.destination.database.schema, "destination.database.schema")
                 validateSqlIdentifier(config.destination.database.table, "destination.database.table")
-                if (config.destination.database.warehouse != null)
+                // Databricks: a blank warehouse means "use the secret's", not an error.
+                val blankDatabricksWarehouse =
+                    config.destination.database.useDatabricks && Option(config.destination.database.warehouse).forall(_.trim.isEmpty)
+                if (config.destination.database.warehouse != null && !blankDatabricksWarehouse)
                     validateSqlIdentifier(config.destination.database.warehouse, "destination.database.warehouse")
             }
             // COPY options legitimately hold SQL option syntax (FORMAT csv,
@@ -378,10 +426,9 @@ object PipelineValidatorUtil {
                     throw new DatrisException(
                         "When 'destination.database.useDatabricks' is true, 'credentialsSecret' is required — the name of a Platform secret holding 'host', plus 'clientId'/'clientSecret' (service principal OAuth) or 'token' (personal access token). Create it on Configuration → Secrets → Platform"
                     )
-                if (config.destination.database.warehouse == null)
-                    throw new DatrisException(
-                        "When 'destination.database.useDatabricks' is true, 'warehouse' is required — the Databricks SQL warehouse ID (SQL Warehouses → Connection details, the trailing segment of the HTTP path)"
-                    )
+                // 'warehouse' is optional: when blank it resolves at connection time
+                // from the secret's 'warehouse' field (DatabricksWarehouse.effective).
+                // Validation never reads Vault, so a missing value surfaces there.
             }
         }
 

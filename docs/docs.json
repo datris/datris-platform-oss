@@ -75,6 +75,7 @@
               "destinations/mongodb",
               "destinations/snowflake",
               "destinations/databricks",
+              "destinations/unity-catalog",
               "destinations/kafka",
               "destinations/object-store",
               "destinations/s3",

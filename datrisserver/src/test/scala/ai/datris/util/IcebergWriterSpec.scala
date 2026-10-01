@@ -6,8 +6,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.DatrisException
-import org.apache.iceberg.hadoop.HadoopTables
-import org.apache.iceberg.{Snapshot, Table, TableUtil}
+import org.apache.iceberg.catalog.{Catalog, TableIdentifier}
+import org.apache.iceberg.hadoop.{HadoopCatalog, HadoopTables}
+import org.apache.iceberg.{HasTableOperations, Schema, Snapshot, Table, TableUtil}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.scalatest.BeforeAndAfterAll
@@ -20,7 +21,10 @@ import scala.collection.mutable.ListBuffer
 /** Go/no-go gate for the Iceberg destination: proves the embedded Spark 3.5 /
   *  Scala 2.12 session can create, append to, overwrite, MERGE INTO and evolve
   *  an Iceberg table addressed purely by path (no catalog registration), on the
-  *  pinned iceberg-spark-runtime jar.
+  *  pinned iceberg-spark-runtime jar. The "rest target" cases at the end
+  *  (Unity Catalog 5, `catalogMode: rest`) cover the one exception: with a
+  *  `RestTarget` every commit goes through a catalog identifier, exercised
+  *  against a path-backed HadoopCatalog stand-in instead of a REST server.
   *
   *  Expected API surface (plans/stories/iceberg-runtime-and-writer-spec.md, step 4):
   *
@@ -78,6 +82,50 @@ import scala.collection.mutable.ListBuffer
   *  Docker runtime are Temurin 17; on a newer dev JDK point sbt at a 17/21 JDK:
   *    JAVA_HOME=/path/to/jdk-17 sbt "testOnly ai.datris.util.IcebergWriterSpec"
   */
+/** Path-backed stand-in for the Unity Catalog REST catalog (Unity Catalog 5,
+  *  Step 5): a HadoopCatalog that records, per catalog name, every table it
+  *  loads and every table builder it hands out. Spark instantiates it through
+  *  `spark.sql.catalog.<name>.catalog-impl` (so `writeTo` / `MERGE INTO`
+  *  against `<name>.<schema>.<table>` show up as loads under `<name>`), and the
+  *  spec instantiates a second one directly as `RestTarget.catalog`. */
+class RecordingHadoopCatalog extends HadoopCatalog {
+    override def loadTable(ident: TableIdentifier): Table = {
+        RecordingHadoopCatalog.loads.add(name() + ":" + ident)
+        super.loadTable(ident)
+    }
+    override def buildTable(ident: TableIdentifier, schema: Schema): Catalog.TableBuilder = {
+        RecordingHadoopCatalog.builds.add(name() + ":" + ident)
+        super.buildTable(ident, schema)
+    }
+}
+
+object RecordingHadoopCatalog {
+    val loads = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+    val builds = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+    def clear(): Unit = { loads.clear(); builds.clear() }
+}
+
+/** Stand-in for a catalog that ignores the requested location (Databricks
+  *  creates a managed Iceberg table in the schema's storage): the table
+  *  builder drops `withLocation`, so the table lands at the HadoopCatalog
+  *  default `<warehouse>/<schema>/<table>`. */
+class IgnoringLocationCatalog extends HadoopCatalog {
+    override def buildTable(ident: TableIdentifier, schema: Schema): Catalog.TableBuilder = {
+        val inner = super.buildTable(ident, schema)
+        new Catalog.TableBuilder {
+            override def withPartitionSpec(spec: org.apache.iceberg.PartitionSpec): Catalog.TableBuilder = { inner.withPartitionSpec(spec); this }
+            override def withSortOrder(order: org.apache.iceberg.SortOrder): Catalog.TableBuilder = { inner.withSortOrder(order); this }
+            override def withLocation(location: String): Catalog.TableBuilder = this
+            override def withProperties(props: java.util.Map[String, String]): Catalog.TableBuilder = { inner.withProperties(props); this }
+            override def withProperty(key: String, value: String): Catalog.TableBuilder = { inner.withProperty(key, value); this }
+            override def create(): Table = inner.create()
+            override def createTransaction(): org.apache.iceberg.Transaction = inner.createTransaction()
+            override def replaceTransaction(): org.apache.iceberg.Transaction = inner.replaceTransaction()
+            override def createOrReplaceTransaction(): org.apache.iceberg.Transaction = inner.createOrReplaceTransaction()
+        }
+    }
+}
+
 class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
 
     private var warehouse: Path = _
@@ -171,6 +219,30 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(first.addedRecords == 2)
         assert(second.addedRecords == 1)
         assert(second.totalRecords == 3)
+    }
+
+    // Story: Unity Catalog 4: Iceberg register spike (plans/stories/unity-catalog-4-iceberg-register.md),
+    // Acceptance bullet 3. WriteResult gains `metadataLocation: String = null`,
+    // read from HasTableOperations.operations().current().metadataFileLocation().
+    test("result carries the current metadata file location, which advances on the next commit") {
+        val location = newLocation("metadata-location/t")
+
+        val first = write(df((1L, "east", 1.0)), location, "append")
+        assert(first.metadataLocation != null, s"$first")
+        assert(first.metadataLocation.endsWith(".metadata.json"), first.metadataLocation)
+        assert(first.metadataLocation.contains("/metadata/"), first.metadataLocation)
+        val onDisk = new java.io.File(java.net.URI.create(first.metadataLocation))
+        assert(onDisk.isFile, s"metadata file must exist on disk: ${first.metadataLocation}")
+        // Under this table's root.
+        val root = new java.io.File(java.net.URI.create(location)).getCanonicalPath
+        assert(onDisk.getCanonicalPath.startsWith(root + java.io.File.separator + "metadata" + java.io.File.separator), s"${onDisk.getCanonicalPath} vs $root")
+
+        val second = write(df((2L, "west", 2.0)), location, "append")
+        assert(second.metadataLocation != null && second.metadataLocation != first.metadataLocation, s"$first vs $second")
+        assert(new java.io.File(java.net.URI.create(second.metadataLocation)).isFile, second.metadataLocation)
+
+        val current = loadTable(location).asInstanceOf[org.apache.iceberg.HasTableOperations].operations().current().metadataFileLocation()
+        assert(second.metadataLocation == current, s"${second.metadataLocation} vs $current")
     }
 
     // ---- Acceptance bullet 2: overwrite ---------------------------------
@@ -606,5 +678,260 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         write(df((2L, "west", 2.0)), location, "append")
         val result = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
         assert(result.rows.size() == 2)
+    }
+
+    // ---- Story: Unity Catalog 5: Iceberg via RESTCatalog --------------------
+    // (plans/stories/unity-catalog-5-iceberg-restcatalog.md), Acceptance bullet 3.
+    //
+    // Seam this block pins:
+    //   IcebergWriter.RestTarget(sparkCatalogName: String, ident: TableIdentifier,
+    //                            catalog: org.apache.iceberg.catalog.Catalog)
+    //   IcebergWriter.write(df, location, writeMode, partitionBy, keyFields, destSchema,
+    //                       statusUtil, pipelineName, restCatalog: Option[RestTarget]): WriteResult
+    //
+    // The stand-in: a Spark catalog `catalog-impl=RecordingHadoopCatalog` over
+    // a temp warehouse (so Spark SQL resolves `<name>.<schema>.<table>`), and a
+    // second RecordingHadoopCatalog instance over the same warehouse as
+    // RestTarget.catalog. HadoopCatalog only accepts its default location
+    // (<warehouse>/<schema>/<table>), so that is the location the writer is
+    // given. Loads recorded under the Spark catalog's name prove append and
+    // MERGE addressed the identifier; a path write (format("iceberg").save)
+    // resolves through default_iceberg and would not appear there.
+
+    private val RestSparkCatalog = "datris_uc_writer_spec"
+    private val RestJavaCatalog = "java_side"
+    private val RestSchema = "sales"
+
+    private lazy val restWarehouse: String = {
+        val dir = Files.createDirectories(warehouse.resolve("rest-warehouse")).toRealPath()
+        val uri = dir.toUri.toString.stripSuffix("/")
+        val root = "spark.sql.catalog." + RestSparkCatalog
+        spark.conf.set(root, "org.apache.iceberg.spark.SparkCatalog")
+        spark.conf.set(root + ".catalog-impl", classOf[RecordingHadoopCatalog].getName)
+        spark.conf.set(root + ".warehouse", uri)
+        spark.conf.set(root + ".cache-enabled", "false")
+        uri
+    }
+
+    private def javaCatalog(): RecordingHadoopCatalog = {
+        val c = new RecordingHadoopCatalog
+        c.setConf(spark.sessionState.newHadoopConf())
+        c.initialize(RestJavaCatalog, Map("warehouse" -> restWarehouse).asJava)
+        c
+    }
+
+    private def restIdent(table: String): TableIdentifier = TableIdentifier.of(RestSchema, table)
+    private def restLocation(table: String): String = restWarehouse + "/" + RestSchema + "/" + table
+    private def restSql(table: String): String = s"`$RestSparkCatalog`.`$RestSchema`.`$table`"
+
+    private def restWrite(
+        data: DataFrame,
+        table: String,
+        catalog: Catalog,
+        writeMode: String,
+        keyFields: Seq[String] = Nil,
+        pipelineName: String = null,
+        status: StatusUtil = new RecordingStatusUtil
+    ): IcebergWriter.WriteResult =
+        IcebergWriter.write(
+            data,
+            restLocation(table),
+            writeMode,
+            Nil,
+            keyFields,
+            baseSchema,
+            status,
+            pipelineName,
+            Some(IcebergWriter.RestTarget(sparkCatalogName = RestSparkCatalog, ident = restIdent(table), catalog = catalog))
+        )
+
+    private def currentMetadata(catalog: Catalog, table: String): String =
+        catalog.loadTable(restIdent(table)).asInstanceOf[HasTableOperations].operations().current().metadataFileLocation()
+
+    test("rest target: create through the catalog lands metadata under the requested location") {
+        val table = "rest_create"
+        val catalog = javaCatalog()
+        RecordingHadoopCatalog.clear()
+        assert(!catalog.tableExists(restIdent(table)))
+
+        val result = restWrite(df((1L, "east", 1.0), (2L, "west", 2.0)), table, catalog, "append", pipelineName = "Rest Create")
+
+        assert(
+            RecordingHadoopCatalog.builds.asScala.exists(_ == s"$RestJavaCatalog:$RestSchema.$table"),
+            s"the table must be created through RestTarget.catalog: builds=${RecordingHadoopCatalog.builds}"
+        )
+        assert(catalog.tableExists(restIdent(table)), "the catalog must know the table after the first write")
+        val loaded = catalog.loadTable(restIdent(table))
+        val want = new java.io.File(java.net.URI.create(restLocation(table))).getCanonicalPath
+        val have = new java.io.File(java.net.URI.create(loaded.location().replaceFirst("^file:/+", "file:///"))).getCanonicalPath
+        assert(have == want, s"table location ${loaded.location()} vs requested ${restLocation(table)}")
+        assert(loaded.properties().get(IcebergWriter.PipelineProperty) == "Rest Create", loaded.properties())
+        assert(TableUtil.formatVersion(loaded) == 2)
+        assert(loaded.properties().get("write.format.default") == "parquet")
+
+        assert(result.metadataLocation != null, s"$result")
+        val meta = new java.io.File(java.net.URI.create(result.metadataLocation.replaceFirst("^file:/+", "file:///")))
+        assert(meta.isFile, result.metadataLocation)
+        assert(meta.getCanonicalPath.startsWith(want + java.io.File.separator + "metadata" + java.io.File.separator), s"${meta.getCanonicalPath} vs $want")
+        assert(result.metadataLocation == currentMetadata(catalog, table), s"${result.metadataLocation} vs catalog")
+        assert(result.addedRecords == 2 && result.totalRecords == 2, s"$result")
+        assert(spark.table(restSql(table)).count() == 2)
+    }
+
+    test("rest target: append and MERGE commit through the catalog identifier and resultOf advances") {
+        val table = "rest_merge"
+        val catalog = javaCatalog()
+        val first = restWrite(df((1L, "east", 1.0), (2L, "west", 2.0)), table, catalog, "append")
+
+        RecordingHadoopCatalog.clear()
+        val second = restWrite(df((3L, "north", 3.0)), table, catalog, "append")
+        val sparkLoads = RecordingHadoopCatalog.loads.asScala.toList
+        assert(
+            sparkLoads.contains(s"$RestSparkCatalog:$RestSchema.$table"),
+            s"append must go through writeTo(<catalog>.<schema>.<table>), not a path save: loads=$sparkLoads"
+        )
+        assert(second.metadataLocation != null && second.metadataLocation != first.metadataLocation, s"$first vs $second")
+        assert(second.metadataLocation == currentMetadata(catalog, table), s"${second.metadataLocation} vs catalog")
+        assert(second.snapshotId != first.snapshotId && second.totalRecords == 3, s"$second")
+
+        RecordingHadoopCatalog.clear()
+        val status = new RecordingStatusUtil
+        val third = restWrite(df((1L, "east", 10.0), (4L, "south", 4.0)), table, catalog, "merge", keyFields = Seq("id"), status = status)
+        val mergeLoads = RecordingHadoopCatalog.loads.asScala.toList
+        assert(
+            mergeLoads.contains(s"$RestSparkCatalog:$RestSchema.$table"),
+            s"MERGE must target the catalog identifier, not the datris_cache table: loads=$mergeLoads"
+        )
+        assert(status.messages.exists(_._2.toLowerCase.contains("merge")), status.messages.mkString("\n"))
+        assert(third.metadataLocation != second.metadataLocation, s"$second vs $third")
+        assert(third.metadataLocation == currentMetadata(catalog, table), s"${third.metadataLocation} vs catalog")
+        assert(third.snapshotId == catalog.loadTable(restIdent(table)).currentSnapshot().snapshotId(), s"$third")
+
+        val rows = spark.table(restSql(table)).collect().map(r => r.getLong(0) -> r.getDouble(2)).toMap
+        assert(rows == Map(1L -> 10.0, 2L -> 2.0, 3L -> 3.0, 4L -> 4.0), s"$rows")
+        assert(third.totalRecords == 4, s"$third")
+    }
+
+    // ---- Unity Catalog 5 E2E follow-ups -------------------------------------
+    // A table committed through a catalog is read at the catalog's current
+    // metadata file, never through version-hint.text (REST commits do not
+    // update it). The stand-in commits through a path-backed HadoopCatalog,
+    // then rewinds the hint to simulate a REST catalog.
+
+    test("catalog-committed table is read at its current snapshot, not the version hint") {
+        val table = "rest_read"
+        val catalog = javaCatalog()
+        restWrite(df((1L, "east", 1.0), (2L, "west", 2.0)), table, catalog, "append")
+        val last = restWrite(df((3L, "north", 3.0)), table, catalog, "append")
+        val current = currentMetadata(catalog, table)
+        assert(last.metadataLocation == current, s"$last vs $current")
+
+        // Make the last commit look like a REST commit: a uuid-named metadata
+        // file that version-hint.text does not know about (HadoopTableOperations
+        // also probes v<N+1>, so the v3 name must go), hint at v2.
+        val metaDir = new java.io.File(java.net.URI.create(restLocation(table) + "/metadata"))
+        val v3 = new java.io.File(java.net.URI.create(current.replaceFirst("^file:/+", "file:///")))
+        assert(v3.getName == "v3.metadata.json", v3.getName)
+        val restStyle = new java.io.File(metaDir, "00003-5d6c7b8a-9e0f-4a1b-8c2d-3e4f5a6b7c8d.metadata.json")
+        Files.move(v3.toPath, restStyle.toPath)
+        Files.deleteIfExists(new java.io.File(metaDir, ".v3.metadata.json.crc").toPath)
+        Files.write(new java.io.File(metaDir, "version-hint.text").toPath, "2".getBytes("UTF-8"))
+        Files.deleteIfExists(new java.io.File(metaDir, ".version-hint.text.crc").toPath)
+        val restCurrent = restStyle.toURI.toString
+
+        val byPath = ObjectStoreQueryUtil.readPath(spark, restLocation(table), "iceberg", 100)
+        assert(byPath.rows.size() == 2, s"the stand-in must reproduce the stale path read: ${byPath.rows}")
+
+        val byCatalog = ObjectStoreQueryUtil.readPath(spark, restLocation(table), "iceberg", 100, Some(restCurrent))
+        assert(byCatalog.rows.size() == 3, s"${byCatalog.rows}")
+        assert(byCatalog.snapshotId == java.lang.Long.valueOf(last.snapshotId), s"${byCatalog.snapshotId} vs ${last.snapshotId}")
+        assert(byCatalog.path == restLocation(table))
+    }
+
+    test("orphan catalog metadata (uuid-named file only, no data) does not block a path-based create") {
+        val location = newLocation("orphan/t")
+        val metaDir = new java.io.File(java.net.URI.create(location + "/metadata"))
+        metaDir.mkdirs()
+        Files.write(new java.io.File(metaDir, "00000-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b.metadata.json").toPath, "{}".getBytes("UTF-8"))
+
+        val status = new RecordingStatusUtil
+        val result = write(df((1L, "east", 1.0)), location, "append", status = status)
+        assert(result.totalRecords == 1, s"$result")
+        assert(status.messages.exists(_._2.contains("ignoring orphan catalog metadata file(s)")), status.messages.mkString("\n"))
+    }
+
+    test("a prefix with an orphan metadata file AND data/ is still refused") {
+        val location = newLocation("orphan-data/t")
+        val metaDir = new java.io.File(java.net.URI.create(location + "/metadata"))
+        metaDir.mkdirs()
+        Files.write(new java.io.File(metaDir, "00000-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b.metadata.json").toPath, "{}".getBytes("UTF-8"))
+        val dataDir = new java.io.File(java.net.URI.create(location + "/data"))
+        dataDir.mkdirs()
+        Files.write(new java.io.File(dataDir, "part-0.parquet").toPath, "x".getBytes("UTF-8"))
+        val e = intercept[DatrisException](write(df((1L, "east", 1.0)), location, "append"))
+        assert(e.getMessage.contains("no loadable table"), e.getMessage)
+    }
+
+    test("orphanCatalogMetadata: only uuid-named catalog metadata files under a lone metadata/") {
+        val orphan = "00000-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b.metadata.json"
+        assert(IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan)))
+        assert(IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "." + orphan + ".crc")))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Nil))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata", "data"), Seq(orphan)))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "version-hint.text")))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "v1.metadata.json")))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "snap-1-1-abc.avro")))
+    }
+
+    // ---- Live Databricks probe follow-ups -----------------------------------
+
+    test("rest target: a catalog that ignores the requested location is refused before any data is written") {
+        val table = "rest_managed"
+        val catalog = new IgnoringLocationCatalog
+        catalog.setConf(spark.sessionState.newHadoopConf())
+        catalog.initialize("managed_side", Map("warehouse" -> restWarehouse).asJava)
+        val requested = newLocation("requested-elsewhere/t")
+        val created = scala.collection.mutable.ListBuffer[Table]()
+        val target = IcebergWriter.RestTarget(RestSparkCatalog, restIdent(table), catalog, onCreated = t => created += t)
+
+        val e = intercept[IcebergWriter.RestLocationRefused] {
+            IcebergWriter.write(df((1L, "east", 1.0)), requested, "append", Nil, Nil, baseSchema, new RecordingStatusUtil, "p", Some(target))
+        }
+        assert(IcebergWriter.sameRestLocation(e.tableLocation, restLocation(table)), s"${e.tableLocation}")
+        assert(e.requested == requested)
+        assert(e.created, "the refusal follows a catalog create")
+        assert(created.isEmpty, "onCreated must not run for a refused table")
+        // The catalog holds the (empty) table; nothing was written, anywhere.
+        assert(catalog.loadTable(restIdent(table)).currentSnapshot() == null, "no data may be committed through the catalog")
+        assert(!new java.io.File(java.net.URI.create(requested)).exists(), "nothing written at the requested location either")
+    }
+
+    test("rest target: onCreated runs once, after a create at the requested location and before the data commit") {
+        val table = "rest_oncreated"
+        val catalog = javaCatalog()
+        val seen = scala.collection.mutable.ListBuffer[(String, Boolean)]()
+        val target = IcebergWriter.RestTarget(
+            RestSparkCatalog,
+            restIdent(table),
+            catalog,
+            onCreated = t => seen += ((t.location(), t.currentSnapshot() == null))
+        )
+        val r = IcebergWriter.write(df((1L, "east", 1.0)), restLocation(table), "append", Nil, Nil, baseSchema, new RecordingStatusUtil, "p", Some(target))
+        assert(seen.size == 1, s"$seen")
+        assert(IcebergWriter.sameRestLocation(seen.head._1, restLocation(table)), s"$seen")
+        assert(seen.head._2, "called before any data commit")
+        assert(r.totalRecords == 1)
+        // A second write loads the existing table: onCreated is not called again.
+        IcebergWriter.write(df((2L, "west", 2.0)), restLocation(table), "append", Nil, Nil, baseSchema, new RecordingStatusUtil, "p", Some(target))
+        assert(seen.size == 1, s"$seen")
+    }
+
+    test("sameRestLocation: s3/s3a/s3n equal, trailing slash tolerant, different prefix or bucket not equal") {
+        assert(IcebergWriter.sameRestLocation("s3://datris/uc/probe/t", "s3a://datris/uc/probe/t/"))
+        assert(IcebergWriter.sameRestLocation("s3n://datris/uc/probe/t", "s3a://datris/uc/probe/t"))
+        assert(!IcebergWriter.sameRestLocation("s3://datris/uc/__unitystorage/schemas/a/tables/b", "s3a://datris/uc/probe/t"))
+        assert(!IcebergWriter.sameRestLocation("s3://other/uc/probe/t", "s3a://datris/uc/probe/t"))
+        assert(!IcebergWriter.sameRestLocation("s3a://datris/uc/probe/t/sub", "s3a://datris/uc/probe/t"))
+        assert(!IcebergWriter.sameRestLocation(null, "s3a://datris/uc/probe/t"))
     }
 }

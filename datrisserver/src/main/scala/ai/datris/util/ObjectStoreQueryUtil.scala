@@ -100,7 +100,13 @@ object ObjectStoreQueryUtil {
         // NoSuchMethodError, etc.) leaves Spark's internal Promise uncompleted
         // and the driver thread would block forever — the timeout is our only
         // safety net for that bug class.
-        val readFuture: Future[QueryResult] = Future(readPath(spark, path, format, cappedLimit))(queryEC)
+        // An Iceberg table committed through the Unity Catalog REST catalog is
+        // read at the catalog's current metadata file, not the version hint.
+        // Resolved inside the future so the catalog calls share the timeout.
+        val readFuture: Future[QueryResult] = Future {
+            val metadataLocation = if (format == "iceberg") IcebergTableResolver.forPipeline(pipelineConfig, path) else None
+            readPath(spark, path, format, cappedLimit, metadataLocation)
+        }(queryEC)
 
         try Await.result(readFuture, queryTimeoutSec.seconds)
         catch {
@@ -128,12 +134,18 @@ object ObjectStoreQueryUtil {
       *  Package-private so the spec can drive it with a file:// path; `query`
       *  owns config lookup, per-bucket S3A config, limit capping and the
       *  wall-clock timeout. */
-    private[util] def readPath(spark: SparkSession, path: String, format: String, limit: Int): QueryResult = {
+    private[util] def readPath(spark: SparkSession, path: String, format: String, limit: Int): QueryResult =
+        readPath(spark, path, format, limit, None)
+
+    /** As above; `metadataLocation` (Iceberg only) reads the table at that
+      * metadata file instead of through the version hint
+      * (IcebergTableResolver: catalog-committed tables). */
+    private[util] def readPath(spark: SparkSession, path: String, format: String, limit: Int, metadataLocation: Option[String]): QueryResult = {
         // Runs on the objectstore-query pool, which never created the session;
         // the Iceberg source resolves its catalog through the thread-active one.
         SparkSession.setActiveSession(spark)
         try {
-            if (format == "iceberg") readIceberg(spark, path, limit)
+            if (format == "iceberg") readIceberg(spark, path, limit, metadataLocation)
             else {
                 val df = spark.read.format(format).load(path)
                 val columns = df.columns.toList.asJava
@@ -167,15 +179,18 @@ object ObjectStoreQueryUtil {
       *  a wrong access key as NoSuchTableException, which would turn an auth
       *  error into an HTTP 200 with 0 rows. Once `metadata/` is known to
       *  exist, any load failure (corrupt table, denied reads) propagates. */
-    private def readIceberg(spark: SparkSession, path: String, limit: Int): QueryResult = {
+    private def readIceberg(spark: SparkSession, path: String, limit: Int, metadataLocation: Option[String]): QueryResult = {
         IcebergWriter.ensureCatalogs(spark, path)
         val conf = spark.sessionState.newHadoopConf()
         val metadataDir = new Path(path, "metadata")
-        if (!metadataDir.getFileSystem(conf).exists(metadataDir)) {
+        if (metadataLocation.isEmpty && !metadataDir.getFileSystem(conf).exists(metadataDir)) {
             logger.info(s"ObjectStoreQuery: no Iceberg metadata/ at $path yet — returning empty result")
             return emptyResult(path, "iceberg")
         }
-        val table = new HadoopTables(conf).load(path)
+        // A `.metadata.json` location loads that exact metadata (read-only);
+        // the table path loads through the version hint.
+        val source = metadataLocation.getOrElse(path)
+        val table = new HadoopTables(conf).load(source)
         IcebergWriter.assertTableLocation(table, path)
         val snapshot = table.currentSnapshot()
         if (snapshot == null) {
@@ -187,7 +202,7 @@ object ObjectStoreQueryUtil {
                 "iceberg"
             )
         }
-        val df = spark.read.format("iceberg").option("snapshot-id", snapshot.snapshotId()).load(path)
+        val df = spark.read.format("iceberg").option("snapshot-id", snapshot.snapshotId()).load(source)
         val columns = df.columns.toList.asJava
         val rows = df.limit(limit).collectAsList().asScala.map(row => rowToMap(row, df.columns)).asJava
         QueryResult(

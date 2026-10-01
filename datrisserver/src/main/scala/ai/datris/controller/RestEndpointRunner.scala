@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.Gson
-import ai.datris.model.{DatrisException, RestEndpoint, StagedFormat}
+import ai.datris.model.{CsvAttributes, DatrisException, RestEndpoint, StagedFormat}
 import ai.datris.util.{CloseableIterator, HttpUtil, PayloadStager}
 import ai.datris.model.{Data, JobContext}
 import org.slf4j.LoggerFactory
@@ -328,10 +328,7 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
             headerWithSchema = original.headerWithSchema,
             rows = Option(dataMap.get("rows")).map(_.asInstanceOf[java.util.List[String]].asScala.toList).getOrElse(original.rows),
             rawData = Option(dataMap.get("rawData")).map(_.asInstanceOf[String]).getOrElse(original.rawData),
-            delimiter = {
-                val fa = if (jobContext.config.source != null) jobContext.config.source.fileAttributes else null
-                if (fa != null && fa.csvAttributes != null && fa.csvAttributes.delimiter != null) fa.csvAttributes.delimiter else ","
-            }
+            delimiter = CsvAttributes.delimiterOf(jobContext.config)
         )
     }
 }

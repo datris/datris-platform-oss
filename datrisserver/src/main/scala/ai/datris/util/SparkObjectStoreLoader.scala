@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.Gson
-import ai.datris.model.{DatrisEnvironment, DatrisException, Notification, SchemaField, StagedFormat}
+import ai.datris.model.{CsvAttributes, DatrisEnvironment, DatrisException, Notification, SchemaField, StagedFormat}
 import ai.datris.model.JobContext
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
@@ -111,15 +111,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         val schemaFields = config.destination.schemaProperties.fields.asScala.toList
         val sparkSchema = SparkObjectStoreLoader.buildSchema(schemaFields)
 
-        val delimiter = {
-            if (
-                config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null
-                && config.source.fileAttributes.csvAttributes.delimiter != null
-            )
-                config.source.fileAttributes.csvAttributes.delimiter
-            else
-                ","
-        }
+        val delimiter = CsvAttributes.delimiterOf(config)
 
         // Read the staged file directly (no driver-side row list). Only a
         // delimited payload has rows to write (the old `data.rows` was null —
@@ -151,7 +143,14 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         // the output path so two pipelines sharing a prefix serialise too.
         // Iceberg commits would otherwise race on metadata; parquet and ORC part
         // files would interleave.
+        var restPlan: IcebergRestSession.Plan = IcebergRestSession.Inactive
         val iceberg: Option[IcebergWriter.WriteResult] = SparkObjectStoreLoader.withPipelineWriteLock(outputPath) {
+            // catalogMode rest (IcebergRestSession): decided BEFORE the
+            // delete-before-write, which it refuses on a table the catalog
+            // holds (for any format: a parquet flip must not delete it either). Inactive for every other pipeline (path write). Throws
+            // only when a path write would fork a catalog-committed table.
+            if (fileFormat == "iceberg" || objectStore.deleteBeforeWrite)
+                restPlan = IcebergRestSession.prepare(jobContext, outputPath, objectStore.deleteBeforeWrite)
             // Delete existing data if requested. Route through the Hadoop FileSystem
             // (S3A) rather than the MinIO Java SDK, so it honors the per-bucket config
             // we just applied and works for both MinIO and AWS S3. Using the MinIO SDK
@@ -180,7 +179,26 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 // MERGE uses UPDATE SET * / INSERT *, so the source must carry
                 // exactly the dest schema's columns in its order.
                 val projected = df.select(sparkSchema.fieldNames.map(df.col): _*)
-                Some(IcebergWriter.write(projected, outputPath, writeModeName, partitions, keyFields, sparkSchema, statusUtil, config.name))
+                def writeIceberg(): IcebergWriter.WriteResult =
+                    IcebergWriter.write(projected, outputPath, writeModeName, partitions, keyFields, sparkSchema, statusUtil, config.name, restPlan.target)
+                try Some(writeIceberg())
+                catch {
+                    // Lost a create race for the identifier: re-decide once
+                    // (ours ⇒ retry through the catalog; foreign ⇒ path write).
+                    case e: org.apache.iceberg.exceptions.AlreadyExistsException if restPlan.created =>
+                        restPlan = IcebergRestSession.afterCreateConflict(jobContext, restPlan, e)
+                        try Some(writeIceberg())
+                        catch {
+                            case r: IcebergWriter.RestLocationRefused if restPlan.target.isDefined =>
+                                restPlan = IcebergRestSession.afterLocationRefused(jobContext, restPlan, r)
+                                Some(writeIceberg())
+                        }
+                    // The catalog's table is outside our root (a managed
+                    // table): nothing was written through it; write by path.
+                    case r: IcebergWriter.RestLocationRefused if restPlan.target.isDefined =>
+                        restPlan = IcebergRestSession.afterLocationRefused(jobContext, restPlan, r)
+                        Some(writeIceberg())
+                } finally restPlan.close()
             } else {
                 val writeMode = writeModeName match {
                     case "overwrite" => SaveMode.Overwrite
@@ -210,6 +228,16 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         // ignore on an empty table): no snapshot to report.
         val snapshotId: Option[Long] = iceberg.map(_.snapshotId).filter(_ >= 0L)
         sendNotification(outputPath, snapshotId)
+        // Unity Catalog registration (opt-in) runs before the `end` line:
+        // nothing may follow it. A no-op unless the pipeline opted in; never
+        // throws. In catalogMode rest the commit already went through the
+        // catalog, so the register hook is skipped and the REST state recorded.
+        if (
+            config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.registerOn && fileFormat == "iceberg" &&
+            !config.unityCatalog.restMode
+        )
+            iceberg.filter(_.snapshotId >= 0L).foreach(r => IcebergCatalogRegistrar.sync(jobContext, r))
+        IcebergRestSession.record(jobContext, iceberg, restPlan)
         iceberg match {
             case Some(r) if r.snapshotId >= 0L =>
                 statusUtil.info(

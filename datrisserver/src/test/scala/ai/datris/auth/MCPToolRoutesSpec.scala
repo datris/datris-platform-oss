@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 77)
+        assert(MCPToolRoutes.allToolNames.size == 78)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 
@@ -42,6 +42,18 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(CapabilityRoutes.lookup("GET", "/api/v1/lineage") == RouteCheck.Require("metadata", "read"))
         assert(CapabilityRoutes.lookup("GET", "/api/v1/lineage/pipeline/example") == RouteCheck.Require("metadata", "read"))
         assert(CapabilityRoutes.lookup("GET", "/api/v1/catalog/find") == RouteCheck.Require("metadata", "read"))
+        // Story: Unity Catalog 2: discovery (plans/stories/unity-catalog-2-discovery.md).
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/unity-catalog/browse") == RouteCheck.Require("metadata", "read"))
+    }
+
+    // Story: Unity Catalog 2: discovery. browse_unity_catalog is a metadata read,
+    // mapped like find_data, and hidden from keys without metadata:read (fail-closed).
+    test("browse_unity_catalog is a metadata:read tool mapped to GET /api/v1/unity-catalog/browse") {
+        assert(MCPToolRoutes.tools.toMap.get("browse_unity_catalog") == Some(MCPToolRoutes.Mapped("GET", "/api/v1/unity-catalog/browse")))
+        assert(MCPToolRoutes.allowedTools(key("metadata:read")).contains("browse_unity_catalog"))
+        assert(!MCPToolRoutes.allowedTools(key("secret:read")).contains("browse_unity_catalog"))
+        assert(!MCPToolRoutes.allowedTools(key("pipeline:read")).contains("browse_unity_catalog"))
+        assert(MCPToolRoutes.allowedTools(legacyKey).contains("browse_unity_catalog"))
     }
 
     test("doctor route is capability-mapped as config:read, not public") {

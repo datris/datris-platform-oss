@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{PipelineConfig, DatrisException}
+import ai.datris.model.{CsvAttributes, PipelineConfig, DatrisException}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
@@ -14,7 +14,7 @@ object RowUtil {
     def getRowAsMap(row: String, config: PipelineConfig, header: List[String]): mutable.ListMap[String, Any] = {
         // Build a header name -> column position map (case-insensitive)
         val headerIndex: Map[String, Int] = header.zipWithIndex.map { case (name, idx) => name.toLowerCase -> idx }.toMap
-        val columns = row.split(config.source.fileAttributes.csvAttributes.delimiter).toList
+        val columns = row.split(CsvAttributes.delimiterOf(config)).toList
 
         val columnMap = mutable.ListMap[String, Any]()
         config.source.schemaProperties.fields.asScala.foreach(column => {

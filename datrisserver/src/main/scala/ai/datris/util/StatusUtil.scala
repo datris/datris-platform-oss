@@ -24,7 +24,7 @@ class StatusUtil {
     private var filename: Option[String] = None
     private var hadWarning: Boolean = false
     private var hadError: Boolean = false
-    private var recordCount: Int = 0
+    private var recordCountValue: Int = 0
     private var dataType: Option[String] = None
 
     def init(tableName: String, processName: String): StatusUtil = {
@@ -58,7 +58,7 @@ class StatusUtil {
 
     def setRecordCount(recordCount: Int): Unit = {
         if (recordCount >= 0)
-            this.recordCount = recordCount
+            this.recordCountValue = recordCount
     }
 
     def setDataType(dataType: String): Unit = {
@@ -74,6 +74,12 @@ class StatusUtil {
         hadWarning = true
         send(state, "warning", description)
     }
+
+    /** True once any warning has been recorded on this run (e.g. a DQ warn). */
+    def hasWarning: Boolean = hadWarning
+
+    /** Record count set by JobRunner before the loaders run (0 when unset). */
+    def recordCount: Int = this.recordCountValue
 
     def error(state: String, description: String): Unit = {
         hadError = true
@@ -231,7 +237,7 @@ class StatusUtil {
                 // Preserve the prior count when the current event hasn't published
                 // one (e.g. an intermediate "processing" status from a loader emitted
                 // before JobRunner records the final count).
-                if (this.recordCount > 0) this.recordCount else pipelineStatusSummary.recordCount,
+                if (this.recordCountValue > 0) this.recordCountValue else pipelineStatusSummary.recordCount,
                 this.dataType.orElse(Option(pipelineStatusSummary.dataType)).orNull,
                 // Preserve a previously stamped suggestion headline unless this
                 // event carries a fresh one.
@@ -260,7 +266,7 @@ class StatusUtil {
                 utcFormatter.format(nowTimestamp),
                 "0 seconds",
                 "processing",
-                this.recordCount,
+                this.recordCountValue,
                 this.dataType.orNull,
                 if (fix != null) fix.summary else null
             )

@@ -356,7 +356,7 @@ def pipeline_result(token, offset, limit, out, json_output):
 @click.option("--table", "-t", default=None, help="Table/collection name (default: pipeline name)")
 @click.option("--database", default="datris", help="Database name (for snowflake: the Snowflake database; for databricks: the Unity Catalog name — required for both)")
 @click.option("--schema", default=None, help="Destination schema (snowflake default: PUBLIC; databricks default: default)")
-@click.option("--warehouse", default=None, help="Snowflake warehouse name, or Databricks SQL warehouse ID (required for those destinations)")
+@click.option("--warehouse", default=None, help="Snowflake warehouse name, or Databricks SQL warehouse ID (required for Snowflake; for Databricks, optional when the secret has a `warehouse` field)")
 @click.option("--credentials-secret", default=None, help="Platform secret holding destination credentials (required for snowflake and databricks)")
 @click.option("--ai-validate", default=None, help="AI data quality rule (plain English, e.g. 'all prices must be positive')")
 @click.option("--ai-transform", default=None, help="AI transformation instruction (plain English, e.g. 'convert dates to YYYY/MM/DD')")
@@ -685,15 +685,28 @@ def status(pipeline_name, json_output):
 
 @cli.command()
 @click.argument("pipeline_name")
-@click.option("--keep-data", is_flag=True, help="Keep destination data")
+@click.option("--keep-data", is_flag=True, help="Not supported: deleting a pipeline always deletes its destination data")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
 def delete(pipeline_name, keep_data, json_output):
     """Delete a pipeline and its data."""
+    if keep_data:
+        # The server always deletes a pipeline's destination data with its
+        # configuration; refuse before anything is deleted.
+        click.echo(
+            "Datris deletes a pipeline's destination data together with its configuration; --keep-data is not supported. "
+            "To keep the data, copy it or point a new pipeline at the same prefix before deleting.",
+            err=True,
+        )
+        sys.exit(1)
     result = mcp("delete_pipeline", {"pipeline": pipeline_name})
     if json_output:
         click.echo(json.dumps(result, indent=2))
         return
-    click.echo(f"  ✓ Pipeline '{pipeline_name}' deleted" + (" (data kept)" if keep_data else ""))
+    click.echo(f"  ✓ Pipeline '{pipeline_name}' deleted")
+    # e.g. a Unity Catalog table an admin still has to drop
+    warnings = result.get("warnings") if isinstance(result, dict) else None
+    for warning in warnings or []:
+        click.echo(f"  ⚠ {warning}")
 
 
 @cli.command()

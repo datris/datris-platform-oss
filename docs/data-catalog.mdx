@@ -9,6 +9,8 @@ description: "A logical grouping for related taps and pipelines"
 
 A **Data Catalog** is a named bucket that groups related [taps](/taps) and [pipelines](/pipeline-configuration). It's pure metadata — assigning a tap to a catalog doesn't change how the tap runs or where its data lands. Catalogs exist to make a busy platform browsable: instead of a flat list of 40 taps, you see "Stock Prices (12)", "Weather (6)", "Earnings (8)" and so on.
 
+A Datris catalog is not a Databricks Unity Catalog catalog. On a Databricks pipeline, `destination.database.dbName` names the Unity Catalog catalog the table lands in; the Datris catalog is a separate grouping label, carried to Databricks as the `datris_catalog` tag when the Unity Catalog metadata push is on. See [Unity Catalog](/destinations/unity-catalog).
+
 ## When to use a catalog
 
 Use one whenever you have more than a handful of related taps that should travel together — same source, same domain, same project.

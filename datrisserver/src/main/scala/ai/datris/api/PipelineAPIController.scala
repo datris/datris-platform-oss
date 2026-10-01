@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.common.base.Throwables
-import com.google.gson.Gson
+import com.google.gson.{Gson, JsonObject}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
 import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
@@ -37,6 +37,122 @@ class PipelineAPIController {
             val gson = new Gson
             val json = gson.toJson(config)
             new ResponseEntity[String](json, HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    /** Unity Catalog sync state for one pipeline: the last sync doc (or
+      * `state: "never"`), whether the pipeline opted in, lineage and Iceberg
+      * register status, and the three-level table coordinates (Databricks
+      * table, or the registered Iceberg table for an object store). 404 for
+      * an unknown pipeline. */
+    @GetMapping(path = Array("/pipelines/{name}/unity-catalog"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getUnityCatalogState(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable("name") name: String
+    ): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /pipelines/" + name + "/unity-catalog called")
+            APIKeyValidator.validate(apiKey)
+
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name)
+            if (config == null)
+                return ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
+
+            val out = new JsonObject
+            out.addProperty("pipeline", config.name)
+            out.addProperty("enabled", config.unityCatalog != null && config.unityCatalog.enabled)
+
+            val db = if (config.destination != null) config.destination.database else null
+            if (db != null && db.useDatabricks) {
+                val coords = new JsonObject
+                coords.addProperty("catalog", db.dbName)
+                coords.addProperty("schema", db.schema)
+                coords.addProperty("table", db.table)
+                coords.addProperty("qualified", DatabricksConnectionUtil.qualifiedTable(db))
+                out.add("coordinates", coords)
+            }
+
+            // Object-store Iceberg pipelines register as <catalog>.<schema>.<pipeline>.
+            val uc = config.unityCatalog
+            val objectStore = if (config.destination != null) config.destination.objectStore else null
+            val icebergStore = objectStore != null && objectStore.fileFormat != null && objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")
+            if (icebergStore && uc != null && uc.catalog != null && uc.catalog.trim.nonEmpty) {
+                val coords = new JsonObject
+                val table = IcebergCatalogRegistrar.tableName(config.name)
+                coords.addProperty("catalog", uc.catalog)
+                coords.addProperty("schema", uc.schemaOrDefault)
+                coords.addProperty("table", table)
+                coords.addProperty("qualified", uc.catalog + "." + uc.schemaOrDefault + "." + table)
+                coords.addProperty("kind", "iceberg")
+                val location =
+                    try "s3a://" + ObjectStoreSpark.resolveBucket(objectStore) + "/" + objectStore.prefixKey
+                    catch { case scala.util.control.NonFatal(_) => null }
+                coords.addProperty("location", location)
+                out.add("coordinates", coords)
+            }
+
+            val state = UnityCatalogSyncIO.read(config.name)
+            val registerEnabled = icebergStore && uc != null && uc.enabled && uc.registerOn
+            out.addProperty("registerEnabled", registerEnabled)
+            // Iceberg register status: off | never | registered | stale | error
+            // | rest | refused. stale/error come from the uc-register: lines in
+            // lastError; the stale warning carries the fixed "Unity Catalog still
+            // points at" text. In catalogMode rest, `rest` = the last run
+            // committed through the catalog (no stale pointer possible) and
+            // `refused` = it wrote path-based (restRefusedReason says why).
+            val restMode = uc != null && uc.restMode
+            if (icebergStore && uc != null) out.addProperty("catalogMode", uc.catalogModeOrDefault)
+            val registerLines =
+                if (state != null && state.lastError != null)
+                    state.lastError.split("\n").filter(_.startsWith(IcebergCatalogRegistrar.ErrorPrefix)).toSeq
+                else Nil
+            val registerStatus =
+                if (!registerEnabled) "off"
+                else if (restMode && state != null && state.catalogMode == "rest") "rest"
+                else if (restMode && state != null && state.catalogMode == "refused") "refused"
+                else if (registerLines.exists(!_.contains("Unity Catalog still points at"))) "error"
+                else if (registerLines.nonEmpty) "stale"
+                else if (state != null && state.registeredMetadataLocation != null) "registered"
+                else "never"
+            out.addProperty("register", registerStatus)
+            if (state != null) {
+                out.addProperty("registeredMetadataLocation", state.registeredMetadataLocation)
+                out.addProperty("lastRegisterAt", state.lastRegisterAt)
+                out.addProperty("restMetadataLocation", state.restMetadataLocation)
+                out.addProperty("lastRestCommitAt", state.lastRestCommitAt)
+                out.addProperty("restRefusedReason", state.restRefusedReason)
+                out.addProperty("restCreatedTable", state.restCreatedTable)
+            }
+            val lineageEnabled = config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.lineageOn
+            out.addProperty("lineageEnabled", lineageEnabled)
+            // Lineage publish status: off (knob/opt-in) | never | error | published.
+            out.addProperty(
+                "lineage",
+                if (!lineageEnabled) "off"
+                else if (state != null && state.lastError != null && state.lastError.split("\n").exists(_.startsWith(UnityCatalogLineagePublisher.ErrorPrefix)))
+                    "error"
+                else if (state != null && state.lastLineageAt != null) "published"
+                else "never"
+            )
+            if (state == null) out.addProperty("state", "never")
+            else {
+                out.addProperty("state", UnityCatalogStaleState.topLevelState(state, registerStatus))
+                out.addProperty("lastSyncAt", state.lastSyncAt)
+                out.addProperty("lastRunId", state.lastRunId)
+                out.addProperty("commentsHash", state.commentsHash)
+                out.addProperty("tagsHash", state.tagsHash)
+                out.addProperty("propertiesHash", state.propertiesHash)
+                out.addProperty("lastError", state.lastError)
+                out.addProperty("lineageHash", state.lineageHash)
+                out.addProperty("lastLineageAt", state.lastLineageAt)
+            }
+            new ResponseEntity[String](new Gson().toJson(out), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -155,6 +271,9 @@ class PipelineAPIController {
             }
             val note = if (changeNote != null && changeNote.nonEmpty) changeNote
             else if (existing != null) "updated" else "created"
+            // A new pipeline must not inherit Unity Catalog sync state left by
+            // an earlier pipeline of the same name (deleted out of band).
+            if (existing == null) UnityCatalogStaleState.clearOnCreate(preserved)
             PipelineConfigIO.writeVersioned(preserved, note, VersionActor.resolve(request))
 
             // If the source is a database, initialize the pipeline pull table
@@ -185,9 +304,13 @@ class PipelineAPIController {
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
-            deletePipelineInternal(config, request, deleteData, deleteConfig)
+            val warnings = deletePipelineInternal(config, request, deleteData, deleteConfig)
 
-            new ResponseEntity[String](HttpStatus.OK)
+            val out = new JsonObject
+            val arr = new com.google.gson.JsonArray
+            warnings.foreach(arr.add(_))
+            out.add("warnings", arr)
+            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -200,14 +323,15 @@ class PipelineAPIController {
       * Shared with the catalog cascade delete (`CatalogAPIController`), which
       * deletes pipelines with their data as the UI does. Throws on failure.
       * `checkScope=false` only when the caller has already run a fuller
-      * (owner + catalog) scope check on this config. */
+      * (owner + catalog) scope check on this config. Returns warnings for the
+      * caller (e.g. a Unity Catalog table that still has to be dropped). */
     def deletePipelineInternal(
         config: PipelineConfig,
         request: HttpServletRequest,
         deleteData: String = "true",
         deleteConfig: String = "true",
         checkScope: Boolean = true
-    ): Unit = {
+    ): Seq[String] = {
         val pipeline = config.name
         // Scope check: a key with `pipeline:delete:owner=self` may only
         // delete pipelines it created. Loaded resource provides the
@@ -224,9 +348,21 @@ class PipelineAPIController {
         if (deleteConfigBool && config.source.databaseAttributes != null)
             PipelinePullTableUtil.deleteEntryIfExists(config.name)
 
+        // Unity Catalog state, read before anything is deleted: a table
+        // committed through the REST catalog is not dropped by Datris.
+        val ucPrevious = unityCatalogStateForDelete(config)
+        val warnings = Seq.newBuilder[String]
+        var ucTableFilesKept = false
+
         // Clean up destination data
         if (deleteDataBool && config.destination != null) {
-            cleanupDestinationData(config)
+            val objectStoreDataDeleted = cleanupDestinationData(config)
+            UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
+                warnings += advice
+                ucTableFilesKept = !objectStoreDataDeleted
+                logger.warn("Pipeline delete: " + pipeline + ": " + advice)
+                auditUnityCatalogDelete(request, pipeline, advice)
+            }
             // Wipe document-tap ledgers/staged files for any tap targeting this
             // pipeline. The ledger records "already-processed URIs"; leaving it
             // intact after the destination is emptied would cause the next tap
@@ -244,8 +380,49 @@ class PipelineAPIController {
             } catch {
                 case ex: Exception => logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
             }
+            // Unity Catalog sync state for this pipeline (<env>-uc-sync).
+            // Kept while the catalog-committed table's files still exist, so
+            // a pipeline recreated at the same name and prefix keeps the
+            // guard against a path write forking the catalog's history.
+            if (ucPrevious != null && !ucTableFilesKept) {
+                try UnityCatalogSyncIO.delete(pipeline)
+                catch {
+                    case ex: Exception => logger.warn("Unity Catalog state cleanup failed for " + pipeline + ": " + ex.getMessage)
+                }
+            }
         }
+        warnings.result()
     }
+
+    /** The pipeline's Unity Catalog sync state, or null (none, or unreadable:
+      * the delete goes ahead without the advice). */
+    private def unityCatalogStateForDelete(config: PipelineConfig): ai.datris.model.UnityCatalogSyncState =
+        try UnityCatalogSyncIO.read(config.name)
+        catch {
+            case ex: Exception =>
+                logger.warn("Could not read Unity Catalog state for pipeline " + config.name + " on delete: " + ex.getMessage)
+                null
+        }
+
+    private def auditUnityCatalogDelete(request: HttpServletRequest, pipeline: String, advice: String): Unit =
+        try {
+            if (ai.datris.audit.AuditLog.enabled)
+                ai.datris.audit.AuditLog.submit(
+                    ai.datris.audit.AuditEntry(
+                        ts = java.time.Instant.now(),
+                        actor = ai.datris.audit.AuditActor.resolve(request),
+                        category = "unity-catalog",
+                        action = "pipeline-delete",
+                        resourceType = Some("pipeline"),
+                        resourceName = Some(pipeline),
+                        outcome = "warning",
+                        errorMessage = Some(advice),
+                        request = Some(ai.datris.audit.AuditLog.requestInfo(request))
+                    )
+                )
+        } catch {
+            case ex: Exception => logger.warn("Audit of Unity Catalog delete advice failed for " + pipeline + ": " + ex.getMessage)
+        }
 
     /**
      * Clear tap-ledger entries and MinIO-staged files for every document tap
@@ -282,8 +459,11 @@ class PipelineAPIController {
         }
     }
 
-    private def cleanupDestinationData(config: PipelineConfig): Unit = {
+    /** Returns true when the object-store destination's files were deleted
+      * (false when there is none, the prefix is shared, or the delete failed). */
+    private def cleanupDestinationData(config: PipelineConfig): Boolean = {
         val dest = config.destination
+        var objectStoreDataDeleted = false
 
         // PostgreSQL — DROP TABLE
         if (dest.database != null && dest.database.usePostgres) {
@@ -356,7 +536,7 @@ class PipelineAPIController {
         // shared datris_staging volume is left alone — other pipelines use it.
         if (dest.database != null && dest.database.useDatabricks) {
             try {
-                DatabricksConnectionUtil.withConnection(dest.database) { conn =>
+                DatabricksConnectionUtil.withConnection(dest.database, pipelineName = config.name) { conn =>
                     val stmt = conn.createStatement()
                     try {
                         stmt.execute("DROP TABLE IF EXISTS " + DatabricksConnectionUtil.qualifiedTable(dest.database))
@@ -549,6 +729,7 @@ class PipelineAPIController {
                     )
                 } else {
                     ObjectStoreSpark.deleteDestinationData(dest.objectStore)
+                    objectStoreDataDeleted = true
                 }
             } catch {
                 case e: Exception => logger.warn("Failed to delete object store data: " + e.getMessage)
@@ -569,6 +750,7 @@ class PipelineAPIController {
                 case e: Exception => logger.warn("Failed to delete scratch data for pipeline '" + config.name + "': " + e.getMessage)
             }
         }
+        objectStoreDataDeleted
     }
 
     /** Names of other pipelines whose objectStore destination would be hit by a

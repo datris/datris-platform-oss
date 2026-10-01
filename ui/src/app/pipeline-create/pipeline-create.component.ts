@@ -120,6 +120,9 @@ export class PipelineCreateComponent implements OnInit {
   sfKeyFields: string[] = [];
   dbxCredentialsSecret = '';
   dbxWarehouse = '';
+  /** True when the selected Databricks secret has a warehouse-like field
+   *  (names only); the destination's warehouse may then be left blank. */
+  dbxSecretHasWarehouse = false;
   dbxCatalog = '';
   dbxSchema = 'default';
   dbxTable = '';
@@ -153,6 +156,23 @@ export class PipelineCreateComponent implements OnInit {
   fieldTypes = ['string', 'int', 'bigint', 'float', 'double', 'boolean', 'date', 'timestamp'];
 
   isTrial = false;
+
+  /** Look up the Databricks secret's field NAMES (values are discarded) to
+   *  show whether its warehouse will be used when the field is left blank. */
+  checkDbxSecretWarehouse(): void {
+    const name = this.dbxCredentialsSecret.trim();
+    this.dbxSecretHasWarehouse = false;
+    if (!name) return;
+    this.http.get<any>('/api/v1/secrets/' + encodeURIComponent(name)).subscribe({
+      next: (data) => {
+        if (name !== this.dbxCredentialsSecret.trim()) return;
+        const wanted = ['warehouse', 'httppath', 'http_path', 'databricks_warehouse'];
+        const fields = (data && typeof data.fields === 'object' && data.fields) || {};
+        this.dbxSecretHasWarehouse = Object.keys(fields).some(k => wanted.includes(k.toLowerCase()) && String(fields[k] ?? '').trim() !== '');
+      },
+      error: () => { this.dbxSecretHasWarehouse = false; }
+    });
+  }
 
   constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private tapService: TapService, private route: ActivatedRoute, private router: Router, private http: HttpClient) { }
 
@@ -345,6 +365,7 @@ export class PipelineCreateComponent implements OnInit {
       this.dbxTable = dest.database.table || '';
       this.dbxWarehouse = dest.database.warehouse || '';
       this.dbxCredentialsSecret = dest.database.credentialsSecret || '';
+      this.checkDbxSecretWarehouse();
       this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
       this.dbxKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
     } else if (dest?.objectStore) {
@@ -882,7 +903,7 @@ export class PipelineCreateComponent implements OnInit {
         if (!this.sfTable.trim()) { this.error = 'Table name is required'; return; }
       } else if (this.destType === 'databricks') {
         if (!this.dbxCredentialsSecret.trim()) { this.error = 'Credentials secret is required for Databricks'; return; }
-        if (!this.dbxWarehouse.trim()) { this.error = 'SQL warehouse ID is required'; return; }
+        // Warehouse is optional: blank → the server uses the secret's 'warehouse' field.
         if (!this.dbxCatalog.trim()) { this.error = 'Catalog is required'; return; }
         if (!this.dbxSchema.trim()) { this.error = 'Schema is required'; return; }
         if (!this.dbxTable.trim()) { this.error = 'Table name is required'; return; }
@@ -1139,11 +1160,11 @@ export class PipelineCreateComponent implements OnInit {
         dbName: this.dbxCatalog.trim(),
         schema: this.dbxSchema.trim(),
         table: this.dbxTable.trim(),
-        warehouse: this.dbxWarehouse.trim(),
         credentialsSecret: this.dbxCredentialsSecret.trim(),
         useDatabricks: true,
         truncateBeforeWrite: this.dbTruncateBeforeWrite
       };
+      if (this.dbxWarehouse.trim()) dbxDb.warehouse = this.dbxWarehouse.trim();
       const dbxKeys = this.dbxKeyFields.filter(k => k && k.trim());
       if (dbxKeys.length > 0) dbxDb.keyFields = dbxKeys;
       config.destination.database = dbxDb;

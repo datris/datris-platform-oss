@@ -22,6 +22,9 @@ object SparkSessionManager {
                 .master("local[*]")
                 .appName("pipeline-oss")
                 .config("spark.ui.enabled", "false")
+                // Spark's default redaction regex omits `credential`, which the
+                // Unity Catalog REST catalog conf carries (IcebergRestCatalogConfig).
+                .config("spark.redaction.regex", "(?i)secret|password|token|access[.]key|credential")
                 // Apache Iceberg: the extension enables row-level SQL (MERGE INTO,
                 // UPDATE, DELETE) on Iceberg tables; the `datris` hadoop catalog
                 // gives SQL a catalog to address Iceberg tables through. Both are
@@ -51,6 +54,9 @@ object SparkSessionManager {
                     .config("spark.hadoop.fs.s3a.secret.key", minIOConfig.secretKey)
                     .config("spark.hadoop.fs.s3a.path.style.access", "true")
                     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+                    // Catalogs may report s3:// locations (ObjectStoreSpark.mapS3Schemes).
+                    .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+                    .config("spark.hadoop.fs.s3n.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
                     .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
             }
 

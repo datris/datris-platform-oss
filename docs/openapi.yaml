@@ -28,6 +28,65 @@ components:
       description: Optional API key for authentication (enabled via application.yaml)
 
   schemas:
+    UnityCatalogSync:
+      type: object
+      description: >-
+        Opt-in Unity Catalog sync. On a Databricks destination: metadata push
+        (comments, tags, table properties) and lineage publish. On an
+        object-store destination with `fileFormat: iceberg`: the table is
+        registered in Unity Catalog as `<catalog>.<schema>.<pipeline>`
+        (requires `credentialsSecret` and `catalog`). Rejected on any other
+        destination when `enabled` is true. Omitted booleans are treated as
+        true.
+      properties:
+        enabled:
+          type: boolean
+          default: false
+          description: Turn Unity Catalog sync on for this pipeline
+        comments:
+          type: boolean
+          default: true
+          description: Databricks only. Write the table and provenance column comments
+        tags:
+          type: boolean
+          default: true
+          description: Databricks only. Write the datris_* and managed_by tags
+        properties:
+          type: boolean
+          default: true
+          description: Databricks only. Write the datris.* table properties
+        lineage:
+          type: boolean
+          default: true
+          description: Databricks only. Publish External Lineage (tap or upload → pipeline → table)
+        credentialsSecret:
+          type: string
+          description: >-
+            Object-store Iceberg only. Platform secret for the Unity Catalog
+            workspace (`host`, plus `clientId`/`clientSecret` or `token`;
+            optional `icebergRestPath`/`icebergRestPrefix` for testing and
+            non-Databricks catalogs). Ignored on Databricks.
+        catalog:
+          type: string
+          description: Object-store Iceberg only. Unity Catalog catalog the table is registered under. Ignored on Databricks.
+        schema:
+          type: string
+          default: default
+          description: Object-store Iceberg only. Unity Catalog schema the table is registered under. Ignored on Databricks.
+        register:
+          type: boolean
+          default: true
+          description: Object-store Iceberg only. Set false to keep the block but skip registration.
+        catalogMode:
+          type: string
+          enum: [register, rest]
+          description: >-
+            Object-store Iceberg only (400 on a Databricks destination).
+            Absent means `register`: write by path and register the table once.
+            `rest` commits every write through the Unity Catalog Iceberg REST
+            catalog so its pointer stays current; it needs the register knob on.
+            Case-insensitive. Switching from `rest` back to `register` after a
+            catalog commit fails the next run.
     CatalogFailure:
       type: object
       properties:
@@ -836,13 +895,15 @@ paths:
                   description: |
                     Destination configuration (database, objectStore, kafka, activeMQ, restEndpoint, qdrant, weaviate, milvus, chroma, pgvector).
 
-                    The database destination selects its engine with exactly one of `usePostgres`, `useMongoDB`, `useSnowflake`, or `useDatabricks`. Snowflake and Databricks additionally take `credentialsSecret` (a Platform secret) and `warehouse` (Snowflake warehouse name / Databricks SQL warehouse ID); for Databricks, `dbName` names the Unity Catalog catalog.
+                    The database destination selects its engine with exactly one of `usePostgres`, `useMongoDB`, `useSnowflake`, or `useDatabricks`. Snowflake and Databricks additionally take `credentialsSecret` (a Platform secret) and `warehouse` (Snowflake warehouse name / Databricks SQL warehouse ID); for Databricks, `dbName` names the Unity Catalog catalog. For Databricks, `warehouse` may be omitted when the credentials secret has a `warehouse` field (aliases `httpPath`, `http_path`, `DATABRICKS_WAREHOUSE`).
 
                     objectStore supports two providers via the `provider` field: `minio` (default, uses the built-in MinIO credentials) and `s3` (AWS S3). For `provider: s3`, set `destinationBucketOverride` (required), `credentialsSecret` (Vault secret with `accessKey`/`secretKey`/`region` and optional `sessionToken`), and optionally `endpoint` (must be https://). Region lives in the credentials secret, not on the objectStore config.
 
                     `fileFormat` accepts `parquet` (default), `orc`, or `iceberg`; with `iceberg`, `writeMode` may also be `merge`, which upserts on the `keyFields` array (each a destination schema column).
 
                     restEndpoint takes `endpoint`, `async`, `bearerToken`, `apiKey`, `timeoutMs` and an optional `batchSize` (default `0` = one call carrying every row). With `batchSize > 0`, row-based payloads are POSTed in batches of that many rows, each request also carrying top-level `batch` (1-based) and `ofBatches`.
+                unityCatalog:
+                  $ref: '#/components/schemas/UnityCatalogSync'
       responses:
         '200':
           description: Pipeline created/updated
@@ -865,7 +926,7 @@ paths:
           schema:
             type: string
             default: "true"
-          description: Delete destination data (default true)
+          description: Delete destination data (default true). Only takes effect with deleteConfig=false; deleting the configuration always deletes the data, so deleteData=false alone still removes it.
         - name: deleteConfig
           in: query
           required: false
@@ -875,7 +936,16 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warnings:
+                    type: array
+                    items:
+                      type: string
         '500':
           description: Error
 
@@ -997,6 +1067,124 @@ paths:
                 type: array
                 items:
                   type: object
+        '500':
+          description: Error
+
+  /api/v1/pipelines/{name}/unity-catalog:
+    get:
+      tags: [Pipelines]
+      summary: Unity Catalog sync state for a pipeline
+      description: >-
+        Whether the pipeline opted into Unity Catalog sync, its three-level
+        table coordinates (Databricks destinations, or the registered table of
+        an object-store Iceberg destination with `unityCatalog.catalog` set),
+        the last sync (`state` is `never`, `synced` or `error`), the lineage
+        publish status (`lineage` is `off`, `never`, `published` or `error`;
+        lineage failures appear in `lastError` as lines prefixed `uc-lineage:`),
+        and the Iceberg register status (`register` is `off`, `never`,
+        `registered`, `stale`, `error`, `rest` or `refused`; register warnings
+        appear in `lastError` as lines prefixed `uc-register:`).
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sync state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  enabled:
+                    type: boolean
+                  coordinates:
+                    type: object
+                    properties:
+                      catalog:
+                        type: string
+                      schema:
+                        type: string
+                      table:
+                        type: string
+                      qualified:
+                        type: string
+                      kind:
+                        type: string
+                        description: '`iceberg` for an object-store Iceberg table; absent for Databricks'
+                      location:
+                        type: string
+                        description: Table root of an object-store Iceberg table (s3a://bucket/prefix)
+                  state:
+                    type: string
+                    enum: [never, synced, error]
+                  lastSyncAt:
+                    type: string
+                  lastRunId:
+                    type: string
+                  commentsHash:
+                    type: string
+                  tagsHash:
+                    type: string
+                  propertiesHash:
+                    type: string
+                  lastError:
+                    type: string
+                  lineageEnabled:
+                    type: boolean
+                    description: unityCatalog.enabled and the lineage knob (default on)
+                  lineage:
+                    type: string
+                    enum: ['off', never, published, error]
+                  lineageHash:
+                    type: string
+                    description: Hash of the last published lineage definition; null until published
+                  lastLineageAt:
+                    type: string
+                    description: ISO-8601 UTC time lineage was last published
+                  registerEnabled:
+                    type: boolean
+                    description: Object-store Iceberg destination with unityCatalog.enabled and the register knob (default on)
+                  register:
+                    type: string
+                    enum: ['off', never, registered, stale, error, rest, refused]
+                    description: >-
+                      Iceberg register status. `stale` means Unity Catalog still
+                      points at an older metadata file of the table. With
+                      `catalogMode: rest`, `rest` means the last run committed
+                      through the catalog and `refused` means it wrote by path
+                      instead (see `restRefusedReason`).
+                  registeredMetadataLocation:
+                    type: string
+                    description: The table's metadata file at the last register (or stale-pointer check); null until registered
+                  lastRegisterAt:
+                    type: string
+                    description: ISO-8601 UTC time the table was registered
+                  catalogMode:
+                    type: string
+                    enum: [register, rest]
+                    description: The pipeline's unityCatalog.catalogMode (absent means register); object-store Iceberg only
+                  restMetadataLocation:
+                    type: string
+                    description: The table's metadata file after the last commit through the catalog; null until then
+                  lastRestCommitAt:
+                    type: string
+                    description: ISO-8601 UTC time of the last commit through the catalog
+                  restRefusedReason:
+                    type: string
+                    description: Why the last catalogMode rest run wrote by path instead of through the catalog; null otherwise
+                  restCreatedTable:
+                    type: string
+                    description: >-
+                      catalog.schema.table of a table the catalog created for this pipeline at a location
+                      Datris refused (for example a Databricks managed table); never written to, still held
+                      by the catalog until an admin drops it. Null otherwise.
+        '404':
+          description: Pipeline not configured
         '500':
           description: Error
 
@@ -4949,6 +5137,23 @@ paths:
             type: boolean
             default: false
           description: Rerank the top candidates with the primary AI model
+        - in: query
+          name: includeUnityCatalog
+          schema:
+            type: boolean
+            default: false
+          description: >-
+            Also search the Unity Catalog tables visible to every Databricks
+            Platform secret the key can read. Unity Catalog hits follow the
+            Datris hits with `source: unity-catalog`; every hit then carries
+            `source`, and the response adds a `unityCatalog` block. A secret
+            with no resolvable warehouse or a failed connection is listed under
+            `unityCatalog.skipped`, never an error; so is a secret whose
+            search exceeds the per-secret time limit
+            (`DATRIS_UNITY_CATALOG_SEARCH_TIMEOUT_SECONDS`, default 45; reason
+            "timed out after Ns"). `limit` applies separately: up to `limit`
+            Datris hits plus up to `limit` additional Unity Catalog hits.
+            Without this flag the response is unchanged.
       responses:
         '200':
           description: Ranked hits
@@ -4965,5 +5170,125 @@ paths:
                     type: integer
                   totalMatches:
                     type: integer
+                  unityCatalog:
+                    type: object
+                    description: Present only with includeUnityCatalog=true
+                    properties:
+                      searched:
+                        type: array
+                        items:
+                          type: string
+                      skipped:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            secret:
+                              type: string
+                            reason:
+                              type: string
         '400':
           description: query missing
+
+  /api/v1/unity-catalog/browse:
+    get:
+      tags: [Provenance]
+      summary: Browse Unity Catalog with a Databricks Platform secret
+      description: >-
+        Read-only walk of what a Databricks Platform secret can see, one level
+        per call: no `catalog` lists catalogs; `catalog` lists schemas;
+        `catalog` + `schema` lists tables (tables tagged `datris_pipeline`
+        carry `datrisPipeline`); adding `table` returns columns (name, type,
+        comment) and tags. Catalog and schema listings are cached for 5
+        minutes per secret. Requires `metadata:read` plus read access to the
+        named secret. Every call is audit-logged as `unity-catalog` / `browse`.
+        The SQL warehouse is the `warehouse` param, else the secret's optional
+        `warehouse` field (aliases `httpPath`, `http_path`,
+        `DATABRICKS_WAREHOUSE`), else the warehouse of the first Databricks
+        pipeline using the secret.
+      parameters:
+        - in: query
+          name: secret
+          required: true
+          schema:
+            type: string
+          description: Name of a Platform secret holding Databricks credentials
+        - in: query
+          name: warehouse
+          schema:
+            type: string
+          description: SQL warehouse ID, HTTP path, or JDBC URL
+        - in: query
+          name: catalog
+          schema:
+            type: string
+        - in: query
+          name: schema
+          schema:
+            type: string
+          description: Requires catalog
+        - in: query
+          name: table
+          schema:
+            type: string
+          description: Requires catalog and schema
+      responses:
+        '200':
+          description: One level of the Unity Catalog tree
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret:
+                    type: string
+                  level:
+                    type: string
+                    enum: [catalogs, schemas, tables, columns]
+                  catalogs:
+                    type: array
+                    items:
+                      type: string
+                  schemas:
+                    type: array
+                    items:
+                      type: string
+                  tables:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        datrisPipeline:
+                          type: string
+                  columns:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        comment:
+                          type: string
+                  tags:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  tagsAvailable:
+                    type: boolean
+                  datrisPipeline:
+                    type: string
+        '400':
+          description: secret missing, schema/table without their parent level, or no resolvable warehouse (the message lists the three options)
+        '401':
+          description: Missing or invalid API key
+        '404':
+          description: >-
+            No Databricks Platform secret with that name, or the key may not
+            read it (same response either way; the audit log records the
+            latter as denied)
+        '502':
+          description: Warehouse connection or metadata query failed
