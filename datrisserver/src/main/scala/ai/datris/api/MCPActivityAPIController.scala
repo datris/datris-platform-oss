@@ -93,15 +93,17 @@ class MCPActivityAPIController {
                 if (code >= 200 && code < 300) {
                     new ResponseEntity[String]("", HttpStatus.NO_CONTENT)
                 } else {
-                    new ResponseEntity[String]("mcp-server returned " + code, HttpStatus.BAD_GATEWAY)
+                    ResponseEntity.status(HttpStatus.BAD_GATEWAY).body[String](ApiErrors.errorBody("mcp-server returned " + code))
                 }
             } finally {
                 connection.disconnect()
             }
         } catch {
+            case e: Exception if APIKeyValidator.isKeyRejection(e) =>
+                ApiErrors.internal(e)
             case e: Exception =>
                 logger.warn("mcp-server activity clear failed: " + e.getMessage)
-                new ResponseEntity[String](e.getMessage, HttpStatus.BAD_GATEWAY)
+                ResponseEntity.status(HttpStatus.BAD_GATEWAY).body[String](ApiErrors.errorBody(ApiErrors.firstLine(e)))
         }
     }
 

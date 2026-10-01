@@ -1080,7 +1080,7 @@ export class McpComponent implements OnInit {
           this.playgroundLoading = false;
         },
         error: (err) => {
-          this.playgroundError = typeof err.error === 'string' ? err.error : (err.message || 'Execution failed');
+          this.playgroundError = httpErrorText(err, 'Execution failed');
           this.playgroundLoading = false;
         }
       });

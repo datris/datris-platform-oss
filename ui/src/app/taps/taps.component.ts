@@ -5,6 +5,7 @@ import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
 import { isColumnDragActive } from '../shared/resizable-columns.directive';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-taps',
@@ -402,13 +403,13 @@ export class TapsComponent implements OnInit, OnDestroy {
           },
           error: (err: any) => {
             this.scriptEditorSaving = false;
-            this.scriptEditorError = 'Test failed: ' + (typeof err.error === 'string' ? err.error : err.message).substring(0, 300);
+            this.scriptEditorError = 'Test failed: ' + httpErrorText(err).substring(0, 300);
           }
         });
       },
       error: (err: any) => {
         this.scriptEditorSaving = false;
-        this.scriptEditorError = 'Failed to save: ' + (typeof err.error === 'string' ? err.error : err.message).substring(0, 200);
+        this.scriptEditorError = 'Failed to save: ' + httpErrorText(err).substring(0, 200);
       }
     });
   }
@@ -722,7 +723,7 @@ export class TapsComponent implements OnInit, OnDestroy {
         this.generatingCron = false;
       },
       error: (err) => {
-        this.cronEditError = 'Failed to generate CRON: ' + (typeof err.error === 'string' ? err.error : err.message || '').substring(0, 200);
+        this.cronEditError = 'Failed to generate CRON: ' + httpErrorText(err).substring(0, 200);
         this.generatingCron = false;
       }
     });

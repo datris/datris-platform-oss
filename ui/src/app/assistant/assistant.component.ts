@@ -4,6 +4,7 @@ import { AssistantStateService, AssistantTurn, ToolCard, TextSegment } from './a
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
 import { ApprovalsService, PolicyToolOutcome } from '../approvals.service';
+import { httpErrorText } from '../shared/http-error';
 
 interface StarterPrompt {
   label: string;
@@ -517,7 +518,7 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
       },
       error: (err) => {
         sr.submitting = false;
-        sr.errorMessage = 'Save failed: ' + (typeof err?.error === 'string' ? err.error : (err?.message || 'unknown'));
+        sr.errorMessage = 'Save failed: ' + httpErrorText(err, 'unknown');
       }
     });
   }
