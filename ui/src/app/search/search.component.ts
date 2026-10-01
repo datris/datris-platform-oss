@@ -61,6 +61,13 @@ export class SearchComponent implements OnInit, OnDestroy {
   osSelectedPipeline = '';
   osLimit = 100;
 
+  // Warehouse (Databricks / Snowflake) fields. Remote warehouses are not in
+  // the health check, so the options are gated on pipelines alone.
+  whPipelines: { name: string; kind: 'databricks' | 'snowflake'; qualified: string }[] = [];
+  whSelectedPipeline = '';
+  whSql = '';
+  whLimit = 100;
+
   isTrial = false;
   private routerSub: Subscription | null = null;
 
@@ -148,9 +155,52 @@ export class SearchComponent implements OnInit, OnDestroy {
         if (this.osPipelines.length > 0 && !this.osSelectedPipeline) {
           this.osSelectedPipeline = this.osPipelines[0].name;
         }
+        this.setWarehousePipelines(configs);
       },
-      error: () => { this.osPipelines = []; }
+      error: () => { this.osPipelines = []; this.whPipelines = []; }
     });
+  }
+
+  /** Databricks and Snowflake pipelines from the same /pipelines response the
+   * object-store picker uses. Both name their target as dbName.schema.table
+   * (Databricks: dbName is the Unity Catalog catalog). */
+  private setWarehousePipelines(configs: any[]): void {
+    this.whPipelines = (configs || [])
+      .filter(c => c && c.destination && c.destination.database &&
+        (c.destination.database.useDatabricks || c.destination.database.useSnowflake))
+      .map(c => {
+        const db = c.destination.database;
+        return {
+          name: c.name,
+          kind: (db.useDatabricks ? 'databricks' : 'snowflake') as 'databricks' | 'snowflake',
+          qualified: [db.dbName, db.schema, db.table].filter((p: any) => !!p).join('.')
+        };
+      });
+    if (this.isWarehouse()) this.ensureWarehousePipelineSelected();
+  }
+
+  warehousePipelines(kind: string = this.queryType): { name: string; kind: string; qualified: string }[] {
+    return this.whPipelines.filter(p => p.kind === kind);
+  }
+
+  hasWarehousePipelines(kind: string): boolean {
+    return this.warehousePipelines(kind).length > 0;
+  }
+
+  selectedWarehouseMeta(): { name: string; kind: string; qualified: string } | null {
+    return this.warehousePipelines().find(p => p.name === this.whSelectedPipeline) || null;
+  }
+
+  warehouseSqlPlaceholder(): string {
+    const meta = this.selectedWarehouseMeta();
+    return 'SELECT * FROM ' + (meta && meta.qualified ? meta.qualified : 'catalog.schema.table') + ' LIMIT 10';
+  }
+
+  private ensureWarehousePipelineSelected(): void {
+    const list = this.warehousePipelines();
+    if (!list.some(p => p.name === this.whSelectedPipeline)) {
+      this.whSelectedPipeline = list.length > 0 ? list[0].name : '';
+    }
   }
 
   selectedObjectStoreMeta(): { bucket: string; prefix: string; format: string; provider: string } | null {
@@ -258,12 +308,14 @@ export class SearchComponent implements OnInit, OnDestroy {
     this.snapshotId = null;
     this.snapshotTimestamp = null;
     this.vectorSecretName = this.getDefaultVectorSecret();
+    if (this.isWarehouse()) this.ensureWarehousePipelineSelected();
   }
 
   /** If health gating hid the currently-selected query type, fall back to the
    * first visible option (dropdown order) so the select never sits on a value
    * that has no matching <option>. */
   private ensureQueryTypeAvailable(): void {
+    if (this.isWarehouse()) return;
     const healthKey: Record<string, string> = {
       postgres: 'postgres', mongodb: 'mongodb', objectstore: 'minio',
       qdrant: 'qdrant', weaviate: 'weaviate', milvus: 'milvus', chroma: 'chroma', pgvector: 'pgvector'
@@ -282,6 +334,10 @@ export class SearchComponent implements OnInit, OnDestroy {
 
   isObjectStore(): boolean {
     return this.queryType === 'objectstore';
+  }
+
+  isWarehouse(): boolean {
+    return this.queryType === 'databricks' || this.queryType === 'snowflake';
   }
 
   retrieveAllMongo(): void {
@@ -320,6 +376,10 @@ export class SearchComponent implements OnInit, OnDestroy {
       this.error = 'Please select a pipeline with an Object Store destination';
       return;
     }
+    if (this.isWarehouse() && !this.whSelectedPipeline) {
+      this.error = 'Please select a pipeline with a ' + (this.queryType === 'databricks' ? 'Databricks' : 'Snowflake') + ' destination';
+      return;
+    }
 
     this.loading = true;
     this.results = [];
@@ -354,6 +414,12 @@ export class SearchComponent implements OnInit, OnDestroy {
       case 'objectstore':
         request = this.searchService.queryObjectstore(this.osSelectedPipeline, this.osLimit);
         break;
+      case 'databricks':
+        request = this.searchService.queryDatabricks(this.whSelectedPipeline, this.whSql.trim(), this.whLimit);
+        break;
+      case 'snowflake':
+        request = this.searchService.querySnowflake(this.whSelectedPipeline, this.whSql.trim(), this.whLimit);
+        break;
       default:
         this.loading = false;
         return;
@@ -376,7 +442,13 @@ export class SearchComponent implements OnInit, OnDestroy {
         }
       },
       error: (err: any) => {
-        this.error = err.error || err.message || 'An error occurred';
+        // Warehouse endpoints answer {"error": "..."}; show the message, not the object.
+        const body = err.error;
+        if (this.isWarehouse() && body && typeof body === 'object' && body.error) {
+          this.error = String(body.error);
+        } else {
+          this.error = err.error || err.message || 'An error occurred';
+        }
         this.loading = false;
       }
     });

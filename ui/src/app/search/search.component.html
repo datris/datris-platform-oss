@@ -30,6 +30,10 @@
         <optgroup label="Object Store">
           <option value="objectstore" *ngIf="healthService.isAvailable('minio')">Object Store (MinIO / S3 — Parquet, ORC, or Iceberg)</option>
         </optgroup>
+        <optgroup label="Warehouse" *ngIf="hasWarehousePipelines('databricks') || hasWarehousePipelines('snowflake')">
+          <option value="databricks" *ngIf="hasWarehousePipelines('databricks')">Databricks</option>
+          <option value="snowflake" *ngIf="hasWarehousePipelines('snowflake')">Snowflake</option>
+        </optgroup>
         <optgroup label="Vector Search">
           <option value="qdrant" *ngIf="healthService.isAvailable('qdrant')">Qdrant</option>
           <option value="weaviate" *ngIf="healthService.isAvailable('weaviate')">Weaviate</option>
@@ -130,6 +134,34 @@
       </div>
       <div class="form-row" *ngIf="osPipelines.length === 0">
         <p class="form-hint">No pipelines with an Object Store destination yet. Create one from the Pipelines tab — choose <em>Object Store (MinIO or S3)</em> as the destination.</p>
+      </div>
+    </ng-container>
+
+    <!-- Warehouse (Databricks / Snowflake) fields -->
+    <ng-container *ngIf="isWarehouse()">
+      <div class="form-row-inline">
+        <div class="form-field" style="flex: 3">
+          <label class="form-label">Pipeline</label>
+          <select class="form-input" [(ngModel)]="whSelectedPipeline">
+            <option value="">Select a pipeline...</option>
+            <option *ngFor="let p of warehousePipelines()" [value]="p.name">{{ p.name }}</option>
+          </select>
+        </div>
+        <div class="form-field" style="flex: 1">
+          <label class="form-label">Limit</label>
+          <input class="form-input" type="number" [(ngModel)]="whLimit">
+        </div>
+      </div>
+      <div class="form-row" *ngIf="selectedWarehouseMeta() as meta">
+        <p class="form-hint">
+          Querying <code>{{ meta.qualified }}</code>
+          ({{ meta.kind === 'databricks' ? 'Databricks' : 'Snowflake' }}).
+        </p>
+      </div>
+      <div class="form-row">
+        <label class="form-label">SQL Query</label>
+        <textarea class="form-input form-textarea" [(ngModel)]="whSql" [placeholder]="warehouseSqlPlaceholder()" rows="4"></textarea>
+        <p class="form-hint">Read-only: queries must start with SELECT, WITH, SHOW, or DESCRIBE, without semicolons or comments. Runs on the pipeline's warehouse with its credentials. Leave empty to preview the destination table up to the limit.</p>
       </div>
     </ng-container>
 
