@@ -34,4 +34,11 @@ class CapabilityInterceptorRejectedKeySpec extends AnyFunSuite {
         assert(!TenantInterceptor.presented("  "))
         assert(TenantInterceptor.presented("abc"))
     }
+
+    test("metadata outage maps to 503, any other rejection to 401") {
+        val (s503, b503) = CapabilityInterceptor.rejectionResponse(ai.datris.util.APIKeyValidator.MetadataUnavailableMessage)
+        assert(s503 == 503 && b503 == "{\"error\":\"API key metadata unavailable\"}")
+        val (s401, b401) = CapabilityInterceptor.rejectionResponse("API key 'k' is revoked")
+        assert(s401 == 401 && b401 == "{\"error\":\"API key is revoked or invalid\"}")
+    }
 }

@@ -20,6 +20,22 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
         }
     }
 
+    /** Absent path (Vault 404, or no data) → Success(None); any other read
+      * error → Failure, so callers can fail closed. */
+    override def tryGetSecretMap(secretName: String): scala.util.Try[Option[java.util.Map[String, String]]] = {
+        try {
+            val response = vault.logical().read(s"secret/$secretName")
+            val data = response.getData
+            scala.util.Success(if (data == null || data.isEmpty) None else Some(data))
+        } catch {
+            case e: io.github.jopenlibs.vault.VaultException if e.getHttpStatusCode == 404 =>
+                scala.util.Success(None)
+            case e: Exception =>
+                logger.error("Vault read failed for secret path: secret/" + secretName, e)
+                scala.util.Failure(e)
+        }
+    }
+
     def getSecretField(secretName: String, field: String): Option[String] = {
         getSecretMap(secretName).flatMap(map => Option(map.get(field)))
     }

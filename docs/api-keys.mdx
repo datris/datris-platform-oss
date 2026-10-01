@@ -105,7 +105,7 @@ The previous value stops working the moment Rotate returns.
 
 From the **API-Keys** tab, click **Revoke**. The key's metadata is marked revoked; the underlying value stays in `oss/api-keys` so failed auth attempts log as "revoked key" rather than "unknown key" — useful for tracking compromised credential reuse.
 
-A revoked key is rejected immediately on every request with `401 {"error":"API key is revoked or invalid"}`, recorded in the audit log as a security denial.
+A revoked key is rejected on every request; on capability-mapped routes the response is `401 {"error":"API key is revoked or invalid"}` and the denial is recorded in the audit log as a security event.
 
 Revoked keys cannot be un-revoked. Issue a new key instead.
 

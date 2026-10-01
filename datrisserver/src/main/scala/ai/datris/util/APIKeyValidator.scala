@@ -12,6 +12,7 @@ import com.google.gson.JsonParser
 
 import java.util.concurrent.TimeUnit
 import scala.collection.JavaConverters._
+import scala.util.{Failure, Success, Try}
 
 object APIKeyValidator {
 
@@ -66,7 +67,7 @@ object APIKeyValidator {
       * `metadata` is by-name: it is only read once the value is known. */
     private[util] def validateAgainst(apiKey: String, keys: Map[String, String], metadata: => Map[String, String]): Unit = {
         val label = labelForValue(keys, apiKey)
-            .getOrElse(throw new DatrisException("Invalid x-api-key: " + apiKey))
+            .getOrElse(throw new DatrisException("Invalid x-api-key"))
         metadata.get(label).foreach { json =>
             val (revoked, _, _) = parseMetadata(label, json)
             if (revoked) throw new DatrisException("API key is revoked")
@@ -76,10 +77,23 @@ object APIKeyValidator {
     private def labelForValue(keys: Map[String, String], apiKey: String): Option[String] =
         keys.find { case (_, v) => v == apiKey }.map(_._1)
 
+    /** Error message when `oss/api-key-metadata` cannot be read. The
+      * interceptor maps a rejection with this reason to 503. */
+    val MetadataUnavailableMessage: String = "API key metadata unavailable"
+
     private def readMetadataMap(): Map[String, String] =
-        SecretsUtil.getSecretMap(apiKeyMetadataSecretName)
-            .map(_.asScala.toMap)
-            .getOrElse(Map.empty[String, String])
+        metadataFrom(SecretsUtil.tryGetSecretMap(apiKeyMetadataSecretName))
+
+    /** An ABSENT metadata secret (fresh install, legacy keys only) means no
+      * key has metadata → legacy full access, as before. A read FAILURE must
+      * fail closed: treating it as absent would turn every revoked or scoped
+      * key into a full-access legacy key. */
+    private[util] def metadataFrom(result: Try[Option[java.util.Map[String, String]]]): Map[String, String] =
+        result match {
+            case Success(Some(m)) => m.asScala.toMap
+            case Success(None) => Map.empty[String, String]
+            case Failure(_) => throw new DatrisException(MetadataUnavailableMessage)
+        }
 
     /** Validates the API key and resolves the tenant environment name.
       * Returns Some(environmentName) when multiTenant is true, None otherwise. */

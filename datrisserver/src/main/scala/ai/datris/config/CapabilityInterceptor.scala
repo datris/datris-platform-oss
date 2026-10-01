@@ -19,6 +19,17 @@ object CapabilityInterceptor {
     /** Body returned when a presented x-api-key failed resolution. */
     val RejectedKeyBody: String = "{\"error\":\"API key is revoked or invalid\"}"
 
+    /** Body returned when the key could not be checked because the key
+      * metadata secret was unreadable (secret-store outage). */
+    val MetadataUnavailableBody: String = "{\"error\":\"" + APIKeyValidator.MetadataUnavailableMessage + "\"}"
+
+    /** Status and body for a rejected key: 503 when the rejection is a
+      * metadata-store outage (a transient server condition), 401 otherwise. */
+    def rejectionResponse(reason: String): (Int, String) =
+        if (reason == APIKeyValidator.MetadataUnavailableMessage)
+            (HttpServletResponse.SC_SERVICE_UNAVAILABLE, MetadataUnavailableBody)
+        else (HttpServletResponse.SC_UNAUTHORIZED, RejectedKeyBody)
+
     /** Pure decision for the no-ResolvedKey case. Deny only when the request
       * presented a key AND TenantInterceptor recorded that it could not be
       * resolved (revoked/unknown/malformed) AND no other identity (session)
@@ -102,14 +113,18 @@ class CapabilityInterceptor extends HandlerInterceptor {
                             "capability check: route={} {} required={}:{} outcome=rejected-key",
                             Array[AnyRef](method, path, resource, action): _*
                         )
-                        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED)
+                        val (status, body) = CapabilityInterceptor.rejectionResponse(
+                            String.valueOf(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr))
+                        )
+                        response.setStatus(status)
                         response.setContentType("application/json")
-                        response.getWriter.write(CapabilityInterceptor.RejectedKeyBody)
+                        response.getWriter.write(body)
                         response.getWriter.flush()
                         AuditLog.denied(
                             request,
-                            "API key is revoked or invalid",
-                            HttpServletResponse.SC_UNAUTHORIZED,
+                            if (status == HttpServletResponse.SC_SERVICE_UNAVAILABLE) APIKeyValidator.MetadataUnavailableMessage
+                            else "API key is revoked or invalid",
+                            status,
                             required = Some(resource + ":" + action)
                         )
                         false
