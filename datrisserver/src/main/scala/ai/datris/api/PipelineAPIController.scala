@@ -6,9 +6,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.common.base.Throwables
-import com.google.gson.{Gson, JsonObject}
+import com.google.gson.{Gson, GsonBuilder, JsonObject}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
-import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion}
+import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion, UnityCatalogSync}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
@@ -66,7 +66,10 @@ class PipelineAPIController {
 
             val out = new JsonObject
             out.addProperty("pipeline", config.name)
-            out.addProperty("enabled", config.unityCatalog != null && config.unityCatalog.enabled)
+            // Block or install default (DATRIS_UNITY_CATALOG_DEFAULT): UnityCatalogSync.effective.
+            val (ucEnabled, ucEnabledBy, lineageEnabled) = UnityCatalogSync.stateFields(config, UnityCatalogSync.defaultEnabledFromEnv)
+            out.addProperty("enabled", ucEnabled)
+            out.addProperty("enabledBy", ucEnabledBy)
 
             val db = if (config.destination != null) config.destination.database else null
             if (db != null && db.useDatabricks) {
@@ -79,6 +82,7 @@ class PipelineAPIController {
             }
 
             // Object-store Iceberg pipelines register as <catalog>.<schema>.<pipeline>.
+            // Read the block directly: the install default never applies to Iceberg.
             val uc = config.unityCatalog
             val objectStore = if (config.destination != null) config.destination.objectStore else null
             val icebergStore = objectStore != null && objectStore.fileFormat != null && objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")
@@ -128,7 +132,6 @@ class PipelineAPIController {
                 out.addProperty("restRefusedReason", state.restRefusedReason)
                 out.addProperty("restCreatedTable", state.restCreatedTable)
             }
-            val lineageEnabled = config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.lineageOn
             out.addProperty("lineageEnabled", lineageEnabled)
             // Lineage publish status: off (knob/opt-in) | never | error | published.
             out.addProperty(
@@ -151,7 +154,10 @@ class PipelineAPIController {
                 out.addProperty("lineageHash", state.lineageHash)
                 out.addProperty("lastLineageAt", state.lastLineageAt)
             }
-            new ResponseEntity[String](new Gson().toJson(out), HttpStatus.OK)
+            // enabledBy is an explicit JSON null when Unity Catalog is off; every
+            // other null field stays omitted, as before.
+            out.entrySet.asScala.filter(e => e.getValue.isJsonNull && e.getKey != "enabledBy").map(_.getKey).toList.foreach(out.remove)
+            new ResponseEntity[String](new GsonBuilder().serializeNulls().create().toJson(out), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

@@ -282,7 +282,8 @@ class DatabricksLoader(jobContext: JobContext) {
         val keySet: Set[String] =
             if (db.keyFields != null) db.keyFields.asScala.map(_.toLowerCase).toSet else Set.empty
 
-        val ucSync = config.unityCatalog != null && config.unityCatalog.enabled
+        // Effective (block or install default): a defaulted pipeline needs the probe too.
+        val ucSync = UnityCatalogSync.effective(config, UnityCatalogSync.defaultEnabledFromEnv).isDefined
         val tableExisted = !ucSync || UnityCatalogMetadataSync.probeTableExisted(statusUtil)(tableExists(statement))
 
         val sql = new StringBuilder()

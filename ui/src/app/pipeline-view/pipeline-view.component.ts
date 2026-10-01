@@ -53,9 +53,10 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** The card shows only for pipelines that opted in (unityCatalog.enabled). */
+  /** The card shows when the state endpoint says Unity Catalog is on: an explicit
+   *  opt-in (enabledBy 'pipeline') or the install default (enabledBy 'default'). */
   showUnityCatalog(): boolean {
-    return !!this.unityCatalog && !!this.config?.unityCatalog?.enabled;
+    return !!this.unityCatalog?.enabled;
   }
 
   upstreamNodes(): any[] {

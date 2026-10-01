@@ -489,4 +489,98 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
         val next = runSync(new FakeWarehouse(), render(), previous = synced.copy(restCreatedTable = "main.uc.t"), status = new RecordingStatusUtil)
         assert(next.restCreatedTable == "main.uc.t", s"$next")
     }
+
+    // Story: Unity Catalog metadata on by default (plans/stories/uc-default-enabled.md),
+    // Acceptance bullet 2. `sync` gates on UnityCatalogSync.effective(config,
+    // UnityCatalogSync.defaultEnabledFromEnv); the kill switch is checked after
+    // the effective gate. State I/O is a logged no-op here (no DatrisEnvironment),
+    // so "state written" is covered by the live check; this pins the statements.
+
+    private def withProps[T](kv: (String, String)*)(body: => T): T = {
+        val old = kv.map { case (k, _) => k -> Option(System.getProperty(k)) }
+        kv.foreach { case (k, v) => if (v == null) System.clearProperty(k) else System.setProperty(k, v) }
+        try body
+        finally old.foreach { case (k, o) => o match { case Some(v) => System.setProperty(k, v); case None => System.clearProperty(k) } }
+    }
+
+    private def dbxJobContext(status: StatusUtil, uc: UnityCatalogSync): JobContext =
+        JobContext(
+            pipelineToken = RUN_ID,
+            metadata = PipelineMetadata(PIPELINE, "orders.csv", "/tmp/orders.csv", "pub-1", bulkUpload = false),
+            data = null,
+            config = PipelineConfig(name = PIPELINE, catalog = "sales", destination = Destination(database = db), unityCatalog = uc),
+            pipelineProperties = null,
+            state = null,
+            thread = null,
+            statusUtil = status
+        )
+
+    /** Statement shape per group, ignoring run-dependent values. */
+    private def shape(executed: Seq[String]): List[String] =
+        executed.map { sql =>
+            if (sql.startsWith("COMMENT ON TABLE")) "table-comment"
+            else if (sql.startsWith("COMMENT ON COLUMN")) "column-comment"
+            else if (sql.contains("SET TAGS")) "tags"
+            else if (sql.contains("SET TBLPROPERTIES")) "properties"
+            else sql
+        }.toList
+
+    test("default enabled, no block: syncs like an explicit opt-in") {
+        val defaulted = new FakeWarehouse()
+        val defaultedStatus = new RecordingStatusUtil
+        withProps("datris.unityCatalogDefault" -> "enabled", "datris.unityCatalogSync" -> null) {
+            UnityCatalogMetadataSync.sync(defaulted.connection, dbxJobContext(defaultedStatus, uc = null), ProvenanceStamper.AllFields)
+        }
+        assert(tableComments(defaulted.executed.map("" -> _).toList).size == 1, defaulted.executed.mkString("\n"))
+        assert(defaulted.executed.exists(_.contains("SET TAGS")), defaulted.executed.mkString("\n"))
+        assert(defaulted.executed.exists(_.contains("SET TBLPROPERTIES")), defaulted.executed.mkString("\n"))
+        assert(defaultedStatus.infos.exists(_.startsWith("uc-sync: comments applied")), defaultedStatus.messages.mkString("\n"))
+
+        val explicit = new FakeWarehouse()
+        withProps("datris.unityCatalogDefault" -> null, "datris.unityCatalogSync" -> null) {
+            UnityCatalogMetadataSync.sync(
+                explicit.connection,
+                dbxJobContext(new RecordingStatusUtil, UnityCatalogSync(enabled = true)),
+                ProvenanceStamper.AllFields
+            )
+        }
+        assert(explicit.executed.nonEmpty, "explicit opt-in baseline must sync")
+        assert(
+            shape(defaulted.executed) == shape(explicit.executed),
+            s"defaulted:\n${defaulted.executed.mkString("\n")}\nexplicit:\n${explicit.executed.mkString("\n")}"
+        )
+    }
+
+    test("default disabled (unset), no block: no calls, no lines") {
+        val wh = new FakeWarehouse()
+        val status = new RecordingStatusUtil
+        withProps("datris.unityCatalogDefault" -> "disabled", "datris.unityCatalogSync" -> null) {
+            UnityCatalogMetadataSync.sync(wh.connection, dbxJobContext(status, uc = null), ProvenanceStamper.AllFields)
+        }
+        assert(wh.executed.isEmpty, wh.executed.mkString("\n"))
+        assert(status.messages.isEmpty, status.messages.mkString("\n"))
+    }
+
+    test("default enabled + explicit {enabled:false}: opt-out wins, no calls, no lines") {
+        val wh = new FakeWarehouse()
+        val status = new RecordingStatusUtil
+        withProps("datris.unityCatalogDefault" -> "enabled", "datris.unityCatalogSync" -> null) {
+            UnityCatalogMetadataSync.sync(wh.connection, dbxJobContext(status, UnityCatalogSync(enabled = false)), ProvenanceStamper.AllFields)
+        }
+        assert(wh.executed.isEmpty, wh.executed.mkString("\n"))
+        assert(status.messages.isEmpty, status.messages.mkString("\n"))
+    }
+
+    test("kill switch false + default enabled: one info line naming DATRIS_UNITY_CATALOG_SYNC, no calls") {
+        val wh = new FakeWarehouse()
+        val status = new RecordingStatusUtil
+        withProps("datris.unityCatalogDefault" -> "enabled", "datris.unityCatalogSync" -> "false") {
+            UnityCatalogMetadataSync.sync(wh.connection, dbxJobContext(status, uc = null), ProvenanceStamper.AllFields)
+        }
+        assert(wh.executed.isEmpty, wh.executed.mkString("\n"))
+        assert(status.messages.size == 1, status.messages.mkString("\n"))
+        val (code, _, text) = status.messages.head
+        assert(code == "info", status.messages.head)
+        assert(text.contains("switched off") && text.contains("DATRIS_UNITY_CATALOG_SYNC"), text)
+    }
 }

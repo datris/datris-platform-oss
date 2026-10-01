@@ -76,6 +76,7 @@ object IcebergTableResolver {
                             "); cannot tell whether the Iceberg table is committed through the catalog"
                     )
             }
+        // Block only: the install default (DATRIS_UNITY_CATALOG_DEFAULT) never applies to Iceberg.
         val uc = config.unityCatalog
         val restActive = uc != null && uc.enabled && uc.registerOn && uc.throughCatalog && UnityCatalogMetadataSync.switchedOn
         resolve(previous, tableRoot, () => if (restActive) IcebergRestSession.catalogCurrentMetadata(config) else None)

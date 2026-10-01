@@ -359,3 +359,110 @@ def test_databricks_prerequisites_no_longer_say_planned():
     assert body is not None
     assert "planned" not in body, body[:300]
     assert "managed" in body, body[:300]
+
+
+# ======================================================================
+# Unity Catalog metadata on by default (plans/stories/uc-default-enabled.md),
+# Acceptance bullet 6 (and the `enabledBy` field from bullet 3).
+# DATRIS_UNITY_CATALOG_DEFAULT=enabled makes a Databricks pipeline with no
+# unityCatalog block behave as {"enabled": true}; unset = disabled; the kill
+# switch DATRIS_UNITY_CATALOG_SYNC=false still wins; {"enabled": false} opts out.
+# ======================================================================
+
+DEFAULT_VAR = "DATRIS_UNITY_CATALOG_DEFAULT"
+SYNC_VAR = "DATRIS_UNITY_CATALOG_SYNC"
+SERVER_PY = os.path.join(REPO_ROOT, "mcp-server", "server.py")
+ENV_EXAMPLE = os.path.join(REPO_ROOT, ".env.example")
+COMPOSE = os.path.join(REPO_ROOT, "docker-compose.yml")
+COMPOSE_STANDALONE = os.path.join(REPO_ROOT, "docker-compose.standalone.yml")
+PIPELINE_API_MDX = os.path.join(DOCS, "api-reference", "pipeline-api.mdx")
+
+
+def _unity_catalog_arg_description():
+    """The `unity_catalog` create_pipeline argument description in server.py."""
+    src = _read(SERVER_PY)
+    m = re.search(r'"unity_catalog":\s*\{[^{}]*?"description":\s*"((?:[^"\\]|\\.)*)"', src, re.DOTALL)
+    assert m, "server.py has no unity_catalog argument description"
+    return m.group(1)
+
+
+def test_configuration_reference_has_default_row_under_sync_row():
+    lines = _read(CONFIG_REFERENCE_MDX).splitlines()
+    sync_idx = [i for i, l in enumerate(lines) if l.startswith(f"| `{SYNC_VAR}`")]
+    default_idx = [i for i, l in enumerate(lines) if l.startswith(f"| `{DEFAULT_VAR}`")]
+    assert sync_idx, f"no {SYNC_VAR} row"
+    assert default_idx, f"no {DEFAULT_VAR} row in configuration-reference.mdx"
+    assert default_idx[0] == sync_idx[0] + 1, f"{DEFAULT_VAR} row must sit directly under the {SYNC_VAR} row"
+    row = lines[default_idx[0]]
+    cells = [c.strip() for c in row.strip().strip("|").split("|")]
+    assert cells[1] == "`disabled`", f"default column must be `disabled`: {cells[1]!r}"
+    # Precedence in the new row: kill switch beats it, an explicit opt-out beats it,
+    # object-store Iceberg is not defaulted.
+    assert SYNC_VAR in row, row
+    assert re.search(r"`?\"?enabled\"?:\s*false`?", row), row
+    assert re.search(r"[Oo]bject.store|Iceberg", row), row
+    # And the sync row now names the default.
+    assert DEFAULT_VAR in lines[sync_idx[0]], lines[sync_idx[0]]
+
+
+def test_databricks_page_unity_catalog_metadata_section_mentions_default_and_opt_out():
+    body = _section(_read(DATABRICKS_MDX), r"^Unity Catalog metadata$")
+    assert body is not None
+    assert DEFAULT_VAR in body, "databricks.mdx Unity Catalog metadata section must describe the install default"
+    assert re.search(r'"enabled":\s*false', body), "databricks.mdx must show the {\"enabled\": false} opt-out"
+
+
+def test_unity_catalog_page_mentions_default():
+    assert DEFAULT_VAR in _read(UNITY_CATALOG_MDX)
+
+
+def test_pipeline_config_reference_mentions_install_default():
+    ref = server.PIPELINE_CONFIG_REFERENCE
+    assert DEFAULT_VAR in ref, "PIPELINE_CONFIG_REFERENCE must mention the install default"
+    i = ref.index(DEFAULT_VAR)
+    near = ref[max(0, i - 600): i + 600]
+    assert re.search(r"opt out|opt-out", near), near
+
+
+def test_unity_catalog_arg_mentions_install_default_and_enabled_by():
+    desc = _unity_catalog_arg_description()
+    assert "enabledBy" in desc, desc
+    assert re.search(r"by default|" + DEFAULT_VAR, desc), desc
+
+
+def test_env_example_lists_default_next_to_sync():
+    text = _read(ENV_EXAMPLE)
+    assert re.search(r"^#\s*" + DEFAULT_VAR + r"=disabled\s*$", text, re.MULTILINE), (
+        f".env.example must carry a commented `# {DEFAULT_VAR}=disabled`"
+    )
+    lines = text.splitlines()
+    d = next(i for i, l in enumerate(lines) if re.match(r"^#\s*" + DEFAULT_VAR + "=", l))
+    s = next(i for i, l in enumerate(lines) if re.match(r"^#\s*" + SYNC_VAR + "=", l))
+    assert abs(d - s) <= 15, f"{DEFAULT_VAR} must sit next to {SYNC_VAR} in .env.example (lines {d}, {s})"
+
+
+def test_both_compose_files_forward_default_with_disabled():
+    for path in (COMPOSE, COMPOSE_STANDALONE):
+        text = _read(path)
+        name = os.path.basename(path)
+        assert re.search(
+            r"^\s*" + DEFAULT_VAR + r':\s*"\$\{' + DEFAULT_VAR + r':-disabled\}"\s*$', text, re.MULTILINE
+        ), f"{name} must forward {DEFAULT_VAR}: \"${{{DEFAULT_VAR}:-disabled}}\""
+
+
+def test_openapi_unity_catalog_state_has_enabled_by():
+    import yaml
+
+    spec = yaml.safe_load(_read(OPENAPI_YAML))
+    get = spec["paths"]["/api/v1/pipelines/{name}/unity-catalog"]["get"]
+    props = get["responses"]["200"]["content"]["application/json"]["schema"].get("properties", {})
+    assert "enabledBy" in props, sorted(props)
+    field = props["enabledBy"]
+    assert field.get("enum", [])[:2] == ["pipeline", "default"] or set(e for e in field.get("enum", []) if e is not None) == {"pipeline", "default"}, field
+    assert field.get("nullable") is True or None in field.get("enum", []) or "null" in str(field.get("type")), (
+        f"enabledBy must be nullable (null = Unity Catalog off): {field}"
+    )
+
+
+def test_pipeline_api_page_documents_enabled_by():
+    assert "enabledBy" in _read(PIPELINE_API_MDX)

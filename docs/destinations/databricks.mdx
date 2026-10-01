@@ -163,9 +163,17 @@ Set the top-level `"unityCatalog": { "enabled": true }` and every successful loa
 - **Tags:** `datris_pipeline`, `datris_catalog` (only when the pipeline belongs to a catalog), `datris_dq_status` (`pass` or `warn`) and `managed_by = datris`.
 - **Table properties:** `datris.pipeline`, `datris.configVersion`, `datris.lastRunId`, `datris.lastRunAt`, `datris.environment`, `datris.lineagePath` (the Datris lineage API path for the pipeline) and `datris.lastSource` (the tap or the uploaded file name of the last run).
 
+**On by default for the install:** set `DATRIS_UNITY_CATALOG_DEFAULT=enabled` on the Datris server and every Databricks pipeline without a `unityCatalog` block behaves as if it had `{"enabled": true}`, with all the knobs below on. `GET /api/v1/pipelines/{name}/unity-catalog` then reports `enabledBy: "default"` and the pipeline page marks the card "enabled by default". A pipeline's own block always wins, so to opt one pipeline out set:
+
+```json
+"unityCatalog": { "enabled": false }
+```
+
+`DATRIS_UNITY_CATALOG_SYNC=false` still switches everything off. The default is `disabled`, and it never applies to object store Iceberg pipelines.
+
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Turn the metadata push on. Databricks destinations only; any other destination is rejected on save |
+| `enabled` | `false` (`true` for a pipeline with no block when `DATRIS_UNITY_CATALOG_DEFAULT=enabled`) | Turn the metadata push on. Databricks destinations only; any other destination is rejected on save |
 | `comments` | `true` | Write the table and provenance column comments |
 | `tags` | `true` | Write the four tags |
 | `properties` | `true` | Write the table properties |

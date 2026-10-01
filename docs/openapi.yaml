@@ -1079,7 +1079,10 @@ paths:
       tags: [Pipelines]
       summary: Unity Catalog sync state for a pipeline
       description: >-
-        Whether the pipeline opted into Unity Catalog sync, its three-level
+        Whether Unity Catalog sync is on for the pipeline (`enabledBy`:
+        `pipeline` for its own block, `default` when DATRIS_UNITY_CATALOG_DEFAULT
+        turned on a Databricks pipeline with no block, null when off with no
+        block), its three-level
         table coordinates (Databricks destinations, or the registered table of
         an object-store Iceberg destination with `unityCatalog.catalog` set),
         the last sync (`state` is `never`, `synced` or `error`), the lineage
@@ -1106,6 +1109,16 @@ paths:
                     type: string
                   enabled:
                     type: boolean
+                  enabledBy:
+                    type: string
+                    nullable: true
+                    enum: [pipeline, default]
+                    description: >-
+                      Who decided `enabled`: `pipeline` (the pipeline's own
+                      unityCatalog block, including an `enabled: false`
+                      opt-out), `default` (DATRIS_UNITY_CATALOG_DEFAULT=enabled
+                      filled in a missing block on a Databricks pipeline), or
+                      null (off, no block).
                   coordinates:
                     type: object
                     properties:

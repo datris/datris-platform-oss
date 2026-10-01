@@ -17,7 +17,7 @@ The two are independent. A pipeline in the Datris catalog `finance` can load int
 
 ## What Datris writes
 
-With `"unityCatalog": { "enabled": true }` on a Databricks pipeline, every successful load annotates the table: a table comment naming the pipeline and source, comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog`, `datris_dq_status` and `managed_by = datris`, and `datris.*` table properties. See [Unity Catalog metadata](/destinations/databricks#unity-catalog-metadata) for the fields, the grant it needs, and `GET /api/v1/pipelines/{name}/unity-catalog`.
+With `"unityCatalog": { "enabled": true }` on a Databricks pipeline, every successful load annotates the table: a table comment naming the pipeline and source, comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog`, `datris_dq_status` and `managed_by = datris`, and `datris.*` table properties. See [Unity Catalog metadata](/destinations/databricks#unity-catalog-metadata) for the fields, the grant it needs, and `GET /api/v1/pipelines/{name}/unity-catalog`. To turn it on for every Databricks pipeline without a block, set `DATRIS_UNITY_CATALOG_DEFAULT=enabled` on the server; a pipeline opts out with `"unityCatalog": { "enabled": false }`.
 
 The `datris_pipeline` tag is what discovery uses to recognize a table Datris loaded.
 
@@ -39,7 +39,7 @@ Lineage uses the workspace REST API with the same Databricks secret as the load,
 - `MODIFY` on the external metadata objects Datris creates (the creator owns them, so this holds unless ownership changes).
 - `MODIFY` on the table, for the pipeline-to-table relationship. The setup grants on the schema already cover it.
 
-A missing privilege, a wrong host or a workspace without the external lineage API is recorded as a warning on the run and in the audit log, never a failed load, and the next run retries. The pipeline detail page shows when lineage was last published. To keep the comments, tags and properties but skip lineage, set `"unityCatalog": { "enabled": true, "lineage": false }`. `DATRIS_UNITY_CATALOG_SYNC=false` switches lineage off along with the rest of the push.
+A missing privilege, a wrong host or a workspace without the external lineage API is recorded as a warning on the run and in the audit log, never a failed load, and the next run retries. The pipeline detail page shows when lineage was last published. To keep the comments, tags and properties but skip lineage, set `"unityCatalog": { "enabled": true, "lineage": false }`. `DATRIS_UNITY_CATALOG_SYNC=false` switches lineage off along with the rest of the push. Pipelines turned on by `DATRIS_UNITY_CATALOG_DEFAULT=enabled` publish lineage too.
 
 ## Register Iceberg tables
 
