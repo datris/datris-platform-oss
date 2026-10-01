@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.common.base.Throwables
-import com.google.gson.{Gson, GsonBuilder, JsonObject}
+import com.google.gson.{Gson, JsonObject}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
 import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion, UnityCatalogSync}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
@@ -155,9 +155,8 @@ class PipelineAPIController {
                 out.addProperty("lastLineageAt", state.lastLineageAt)
             }
             // enabledBy is an explicit JSON null when Unity Catalog is off; every
-            // other null field stays omitted, as before.
-            out.entrySet.asScala.filter(e => e.getValue.isJsonNull && e.getKey != "enabledBy").map(_.getKey).toList.foreach(out.remove)
-            new ResponseEntity[String](new GsonBuilder().serializeNulls().create().toJson(out), HttpStatus.OK)
+            // other null field (nested ones included) stays omitted, as before.
+            new ResponseEntity[String](UnityCatalogStateJson.toJson(out), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

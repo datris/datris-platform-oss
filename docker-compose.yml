@@ -339,7 +339,7 @@ services:
       DATRIS_ENV: "${DATRIS_ENV:-}"
       DATRIS_ALLOW_PLAINTEXT_DB: "${DATRIS_ALLOW_PLAINTEXT_DB:-false}"
       DATRIS_ALLOW_PRIVATE_EGRESS: "${DATRIS_ALLOW_PRIVATE_EGRESS:-false}"
-      # Unity Catalog metadata push for Databricks pipelines that opt in (unityCatalog.enabled).
+      # Unity Catalog metadata for Databricks pipelines: global off switch and opt-in default.
       DATRIS_UNITY_CATALOG_SYNC: "${DATRIS_UNITY_CATALOG_SYNC:-true}"
       DATRIS_UNITY_CATALOG_DEFAULT: "${DATRIS_UNITY_CATALOG_DEFAULT:-disabled}"
       # Comma-separated MinIO buckets a pipeline's destinationBucketOverride may target (unset = any).
