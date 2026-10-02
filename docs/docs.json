@@ -34,6 +34,7 @@
               "mcp-server",
               "configuring-claude",
               "configuring-openclaw",
+              "agent-skill",
               "cli"
             ]
           },
@@ -178,6 +179,7 @@
               "mcp-server",
               "configuring-claude",
               "configuring-openclaw",
+              "agent-skill",
               "cli"
             ]
           }

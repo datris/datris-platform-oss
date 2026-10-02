@@ -118,6 +118,10 @@ To add an API key (`USE_API_KEYS=true`), append `"--header", "x-api-key:<your-ke
 }
 ```
 
+## Give Claude the Datris skill
+
+Connecting the MCP server gives Claude the tools. The [datris-platform skill](/agent-skill) tells Claude when to use them during ordinary project work: it triggers on data ingestion, storage, search, scheduling and provenance tasks and steers Claude to Datris instead of hand-written loaders, cron jobs or vector-store code. Copy it into `.claude/skills/` in the project, or into `~/.claude/skills/` for every project.
+
 ## Talking to Claude
 
 Once the MCP server is configured, just talk to Claude naturally. Claude sees every Datris tool and picks the right one based on your request.
