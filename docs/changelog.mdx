@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.41.1" description="October 2, 2026">
+  **Security dependency updates and a skill that teaches your coding agents to use Datris.**
+
+  - **Security: updated third-party libraries.** Dependency updates close several published vulnerabilities, including high-severity ones, in libraries the server and the UI build use. No Datris behaviour changes. Shared installs should upgrade soon.
+  - **A skill for your project's coding agents.** The new `datris-platform` skill tells Claude Code, Codex, Hermes, OpenClaw and similar agents to use Datris for data work in your own projects, with MCP tools first and the REST API only for code written into the project. See [Agent Skill](/agent-skill) for install commands.
+
+  **Upgrading:** `docker compose pull && docker compose up -d --force-recreate`. The server, UI and MCP server images changed. No configuration changes are required.
+</Update>
+
 <Update label="v1.41.0" description="October 2, 2026">
   **Iceberg tables that work on Databricks, Unity Catalog metadata on by default, and a security fix for API keys.**
 
