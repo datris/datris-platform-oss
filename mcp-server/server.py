@@ -750,7 +750,7 @@ A source field may carry `protect` to pseudonymize, mask, redact, or drop it. Th
 - `redact`: the value becomes a fixed marker.
 - `drop`: the column (or top-level JSON key) is removed.
 
-Rules: `hmac`, `mask`, and `redact` need a `string` field (source and destination). `drop` takes any type but cannot remove a keyFields column. Reserved methods (`fpe`, `encrypt`, `tokenize`) are rejected as not yet supported. Delimited and JSON sources only (JSON: top-level keys). Once the protected copy exists the raw ingest object is deleted, unless the pipeline sets `"protection": {"purgeSource": false}`. On `create_pipeline`, pass the `protect` map (field name → policy) instead of editing the schema.
+Rules: `hmac`, `mask`, and `redact` need a `string` field (source and destination). `drop` takes any type but cannot remove a keyFields column. Reserved methods (`fpe`, `encrypt`, `tokenize`) are rejected as not yet supported. Delimited and JSON sources only (JSON: top-level keys). For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Once the protected copy exists the raw ingest object is deleted, unless the pipeline sets `"protection": {"purgeSource": false}`. On `create_pipeline`, pass the `protect` map (field name → policy) instead of editing the schema.
 
 Only protect when the user asks. Confirm with the user exactly which fields to protect and with which method; never guess from column names.
 
@@ -1760,7 +1760,7 @@ def _base_tools():
                             },
                             "required": ["method"]
                         },
-                        "description": "OMIT BY DEFAULT. Field name → protection policy, e.g. {\"account_id\": {\"method\": \"hmac\"}, \"contact_email\": {\"method\": \"mask\", \"preserve\": \"domain\"}}. Each policy is set as `protect` on the matching schema field (case-insensitive name match); a name not in the detected schema is an error and nothing is saved. Protected fields are rewritten before data quality, transformation, and every destination, so no AI stage sees their raw values. hmac = deterministic pseudonym, mask = asterisks (preserve last4/domain/year keeps that part), redact = fixed marker, drop = remove the column. hmac/mask/redact need string fields; drop cannot remove a keyFields column. The raw ingest object is deleted once the protected copy exists. Only set this when the user asked to protect fields, and confirm with them which fields and methods — never guess from column names."
+                        "description": "OMIT BY DEFAULT. Field name → protection policy, e.g. {\"account_id\": {\"method\": \"hmac\"}, \"contact_email\": {\"method\": \"mask\", \"preserve\": \"domain\"}}. Each policy is set as `protect` on the matching schema field (case-insensitive name match); a name not in the detected schema is an error and nothing is saved. For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Protected fields are rewritten before data quality, transformation, and every destination, so no AI stage sees their raw values. hmac = deterministic pseudonym, mask = asterisks (preserve last4/domain/year keeps that part), redact = fixed marker, drop = remove the column. hmac/mask/redact need string fields; drop cannot remove a keyFields column. The raw ingest object is deleted once the protected copy exists. Only set this when the user asked to protect fields, and confirm with them which fields and methods — never guess from column names."
                     },
                     "codegen_transform": {
                         "type": "string",
@@ -3649,6 +3649,9 @@ def _dispatch(name: str, args: dict) -> str:
             for f in fields:
                 if isinstance(f, dict) and isinstance(f.get("name"), str):
                     by_name.setdefault(f["name"].lower(), f)
+            reserved = [n for n in protect if n.lower() in ("_json", "_xml")]
+            if reserved:
+                return json.dumps({"error": "protect names top-level keys, not the `_json` document field: " + ", ".join(reserved)})
             unknown = [n for n in protect if n.lower() not in by_name]
             if unknown and not is_json:
                 known = ", ".join(f.get("name") for f in fields if isinstance(f, dict))

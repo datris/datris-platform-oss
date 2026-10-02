@@ -151,3 +151,49 @@ def test_field_match_is_case_insensitive(captured):
     assert fields["ssn"].get("protect") == {"method": "drop"}, fields["ssn"]
     # The schema's own spelling is kept; no duplicate field is added.
     assert sorted(fields) == ["email", "mrn", "ssn"], sorted(fields)
+
+
+# ------------------------------------------------------------- JSON source ---
+
+class _CapturedJson(_Captured):
+    """The generate call returns a JSON-source schema: the single `_json` field."""
+
+    def upload_content(self, path, content_b64, filename, data=None):
+        assert path == "/api/v1/pipeline/generate"
+        return json.dumps({
+            "name": data["pipeline"],
+            "source": {
+                "fileAttributes": {"jsonAttributes": {"everyRowContainsObject": True}},
+                "schemaProperties": {"fields": [{"name": "_json", "type": "string"}]},
+            },
+        })
+
+
+@pytest.fixture
+def captured_json(monkeypatch):
+    c = _CapturedJson()
+    monkeypatch.setattr(server, "_upload_content", c.upload_content)
+    monkeypatch.setattr(server, "_call", c.call)
+    return c
+
+
+def _json_args(**extra):
+    return _args(destination="mongodb", filename="x.json",
+                 content_text='{"account_id": "a1", "amount": 3}\n', **extra)
+
+
+def test_json_source_protect_adds_top_level_key_beside_json(captured_json):
+    out = json.loads(server._dispatch("create_pipeline", _json_args(protect={"account_id": {"method": "hmac"}})))
+    assert "error" not in out, out
+    assert captured_json.posted["source"]["schemaProperties"]["fields"] == [
+        {"name": "_json", "type": "string"},
+        {"name": "account_id", "type": "string", "protect": {"method": "hmac"}},
+    ]
+
+
+@pytest.mark.parametrize("name", ["_json", "_XML"])
+def test_protect_on_document_field_is_an_error_and_nothing_is_posted(captured_json, name):
+    raw = server._dispatch("create_pipeline", _json_args(protect={name: {"method": "hmac"}}))
+    assert server._is_error_payload(raw), raw
+    assert name in json.loads(raw)["error"]
+    assert captured_json.post_count == 0
