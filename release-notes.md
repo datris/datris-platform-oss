@@ -1,19 +1,16 @@
 # Release Notes
 
-## v1.40.0 — October 1, 2026
+## v1.41.0 — October 2, 2026
 
-**Unity Catalog integration for Databricks, warehouse queries in the Search tab, and less to configure for Databricks pipelines.**
+**Iceberg tables that work on Databricks, Unity Catalog metadata on by default, and a security fix for API keys.**
 
-- **Datris annotates your Databricks tables in Unity Catalog.** Turn on Unity Catalog for a pipeline and, after every successful load, its table gets a description, stable tags (which pipeline loaded it, its data-quality status, managed by Datris) and run details in the table properties, all visible in Catalog Explorer. Nothing is written unless a pipeline opts in, and a metadata problem is reported as a warning while the load still succeeds.
-- **Lineage appears in Unity Catalog too.** The same opt-in publishes source → pipeline → table lineage, with column mappings, to the table's Lineage tab.
-- **Agents can look around Unity Catalog before building a pipeline.** A new tool lists the catalogs, schemas, tables and columns a connection can see, and data discovery can include warehouse tables in its results, marking the ones Datris loaded.
-- **Iceberg tables can be registered with, or committed through, an Iceberg REST catalog.** Object-store pipelines writing Iceberg can keep an external catalog current. Databricks Unity Catalog does not yet accept tables at a location you choose; Datris detects this, warns, and keeps writing safely. Use the Databricks destination for governed Databricks tables.
-- **Query Databricks and Snowflake from the Search tab.** Pick a pipeline, run read-only SQL and see the results in place. Error messages across every query type are now short and specific.
-- **Less to configure for Databricks.** A pipeline no longer needs the SQL warehouse in its configuration when the connection secret provides it, and assistants stop asking for it.
-- **Deleting a pipeline tells you when a catalog still references its table.** The CLI shows the same notice. Its keep-data option, which never kept data, now refuses instead of deleting silently.
-- **Editors and viewers can run read-only queries** against object-store, Snowflake and Databricks destinations.
-- **Fix: uploads to pipelines that leave out the CSV delimiter no longer fail.**
+- **Iceberg pipelines can now target Databricks Unity Catalog.** A new managed mode lets the catalog choose where the table lives while Datris writes to it through the catalog, so Iceberg output on Databricks is governed, queryable and kept current after every run. The pipeline status shows the table and its location. Deleting the pipeline leaves the catalog's data in place.
+- **Unity Catalog metadata is on by default for Databricks pipelines.** Descriptions, tags, properties and lineage are written without a per-pipeline opt-in. A pipeline can still turn it off explicitly, and a single environment setting restores the previous opt-in behaviour. The status endpoint tells you where the setting came from.
+- **Clearer guidance when a catalog cannot do what you asked.** Deleting a catalog reports any Unity Catalog cleanup it could not complete, and saving a pipeline that points an Iceberg register mode at Databricks warns right away and names the mode that works.
+- **Safer Iceberg history for adopted tables.** Tables Datris adopts from an existing catalog keep a longer metadata history and record where they came from.
+- **Security: revoked API keys are now rejected immediately.** Revoke a key and every request made with it is refused from that moment, and the refusal is recorded in the audit log under the key's name. We recommend upgrading.
+- **API errors are returned as JSON.** Server errors no longer come back as raw text; clients, the UI and the CLI get a short, readable message. Agents calling tools over MCP see failures flagged as errors instead of ordinary results, and the CLI explains when its key was rejected.
 
 **Upgrading**
 
-Run `docker compose pull && docker compose up -d --force-recreate`. All four images changed. No configuration changes are required: the Unity Catalog features stay off until a pipeline opts in, and a global off switch is documented. To write tags and lineage, the Databricks service principal needs two additional grants. See [Unity Catalog](/destinations/unity-catalog).
+Run `docker compose pull && docker compose up -d --force-recreate`. The server, UI and MCP server images changed. Databricks pipelines that never configured Unity Catalog now get metadata written after each load; set `DATRIS_UNITY_CATALOG_DEFAULT=disabled` to keep the old opt-in behaviour, or add `unityCatalog: {enabled: false}` to an individual pipeline. See [Unity Catalog](/destinations/unity-catalog).
