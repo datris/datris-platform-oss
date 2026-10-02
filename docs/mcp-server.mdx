@@ -226,6 +226,8 @@ The platform's [capability framework](/api-keys#the-capability-model) enforces w
   For long-form tap workflow guidance — params, scheduling, validation, error handling, the Quartz CRON cookbook — agents can re-read the `datris://tap-workflow-reference` resource on demand at any point in a session.
 </Note>
 
+For project-level guidance that goes beyond the connect-time instructions, install the [datris-platform skill](/agent-skill) in the project. It tells a coding agent when to reach for Datris at all, and to use these MCP tools first and the REST API only for code it writes into the project.
+
 ### Ingest a CSV file directly
 
 1. **Check for an existing pipeline** — `list_pipelines`. If one already fits the data, skip to step 3.

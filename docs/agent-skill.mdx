@@ -1,0 +1,65 @@
+---
+title: "Give your coding agent the Datris skill"
+sidebarTitle: "Agent Skill"
+description: "Install the datris-platform skill in a project so Claude Code, Codex, Hermes, OpenClaw and other coding agents use Datris for data work instead of writing their own loaders, schedulers and vector stores."
+---
+
+Connecting an agent to the [MCP server](/mcp-server) gives it the tools. The **datris-platform skill** gives it the judgment: when to reach for Datris during ordinary project work, in what order to access it, and the rules that keep every run verifiable.
+
+A skill is a folder with a `SKILL.md` file that an agent loads when a task matches its description. This one triggers whenever the work involves getting data in from a file, an API, a website, a database or a document set; validating, transforming or landing it; building a semantic-search index; scheduling a recurring pull; querying data the project already landed; or tracing where a dataset came from. The agent does not need to be told to use Datris each time.
+
+The skill lives in the Datris repository at [`skills/datris-platform`](https://github.com/datris/datris-platform-oss/tree/main/skills/datris-platform).
+
+## What the skill tells the agent
+
+- **Access order.** Use the MCP tools for every action the agent takes itself. Use the REST API only for code it writes into the project, which runs later without an agent, or when a capability has no MCP tool. Never shell out to the CLI; it is a tool for people at a terminal.
+- **First contact.** Confirm the MCP connection, read the server version and budgets, read the [agent policy](/agent-policy), pick one [Data Catalog](/data-catalog) for the project, and look for existing pipelines, taps and secrets before creating anything.
+- **What to use Datris for.** A table mapping project needs (load a file, pull from an API on a schedule, store a credential, validate rows, land data in a warehouse, build a document index, preview rows without keeping them, find and query existing data, trace provenance) to the Datris capability that does it.
+- **Working rules.** Verify completion by polling the job rollup rather than trusting a response body, read a tap run's `persisted` flag before anything else, test a tap before running or scheduling it, schedule inside Datris, keep configs to source plus destination, respect approval gates, and only act on what the user asked for in the current turn.
+
+Reference files alongside the skill carry the full tool catalog, the REST endpoints a service needs, a destination chooser, step-by-step workflows and setup. The agent reads those on demand, so the skill itself stays short.
+
+## Install
+
+Copy the folder into the project where the agent looks for skills. Pick the lines for your agent.
+
+```bash
+git clone --depth 1 https://github.com/datris/datris-platform-oss.git /tmp/datris-oss
+
+# Claude Code (project)
+mkdir -p .claude/skills && cp -r /tmp/datris-oss/skills/datris-platform .claude/skills/
+
+# Claude Code (every project on this machine)
+cp -r /tmp/datris-oss/skills/datris-platform ~/.claude/skills/
+
+# OpenAI Codex, Hermes, Cursor and other agents that read the .agents convention (project)
+mkdir -p .agents/skills && cp -r /tmp/datris-oss/skills/datris-platform .agents/skills/
+
+# Hermes (user-wide), or install straight from GitHub without cloning
+cp -r /tmp/datris-oss/skills/datris-platform ~/.hermes/skills/
+hermes skills install datris/datris-platform-oss/skills/datris-platform
+
+# OpenClaw (user-wide)
+cp -r /tmp/datris-oss/skills/datris-platform ~/.openclaw/workspace/skills/
+```
+
+Codex also reads `AGENTS.md` at the project root. One line there makes the skill discoverable before any task triggers it:
+
+```
+Datris is this project's data platform. Read .agents/skills/datris-platform/SKILL.md before any data ingestion, storage, search or scheduling work.
+```
+
+### Agents without a skills loader
+
+For an agent that accepts project or system instructions but has no skills directory, paste the body of `SKILL.md` (everything below the frontmatter) into those instructions and keep the `references/` folder in the repository so the agent can read the tool catalog and workflows when it needs them.
+
+## Before the agent starts
+
+The skill assumes the agent can reach a Datris MCP server. Set that up first:
+
+1. [Install Datris](/installation) and connect the agent: [Claude Desktop and Claude Code](/configuring-claude), [OpenClaw](/configuring-openclaw), or the generic snippet on the [MCP server](/mcp-server#configuring-claude) page.
+2. For any shared install, turn on [API keys](/api-keys), the [agent policy](/agent-policy) and the [audit log](/audit-log), and issue the agent its own scoped key. The [Claude Code to PostgreSQL recipe](/recipes/claude-code-postgres) walks through this in about fifteen minutes.
+
+## Keeping the skill current
+
+The skill's tool catalog mirrors the [MCP server tool list](/mcp-server#available-tools). Re-copy the folder when you upgrade Datris so the agent learns about new tools. If you edit the skill for your project, keep your copy under version control alongside the project.
