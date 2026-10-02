@@ -737,6 +737,23 @@ Set `source.fileAttributes` to one of these (create_pipeline does this automatic
 
 Supported field types: `string`, `int`, `bigint`, `float`, `double`, `boolean`, `date`, `timestamp`
 
+### Field protection (optional)
+
+A source field may carry `protect` to pseudonymize, mask, redact, or drop it. The stage runs after the preprocessor and BEFORE data quality, transformation, Live Read, and every destination, so no AI stage and no destination ever sees the raw value of a protected field.
+
+```json
+{"name": "account_id", "type": "string", "protect": {"method": "hmac"}}
+```
+
+- `hmac`: deterministic keyed pseudonym (equal inputs give equal outputs, so joins still work).
+- `mask`: every character becomes `*`; with `"preserve": "last4"`, `"domain"`, or `"year"` that part is kept.
+- `redact`: the value becomes a fixed marker.
+- `drop`: the column (or top-level JSON key) is removed.
+
+Rules: `hmac`, `mask`, and `redact` need a `string` field (source and destination). `drop` takes any type but cannot remove a keyFields column. Reserved methods (`fpe`, `encrypt`, `tokenize`) are rejected as not yet supported. Delimited and JSON sources only (JSON: top-level keys). Once the protected copy exists the raw ingest object is deleted, unless the pipeline sets `"protection": {"purgeSource": false}`. On `create_pipeline`, pass the `protect` map (field name → policy) instead of editing the schema.
+
+Only protect when the user asks. Confirm with the user exactly which fields to protect and with which method; never guess from column names.
+
 ### streamAttributes (optional, for streaming sources like Kafka)
 
 ```json
@@ -1627,7 +1644,7 @@ def _base_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline. FOUR destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token) and database (the Unity Catalog name), plus warehouse (the SQL warehouse ID) unless the Databricks secret has a `warehouse` field — in that case omit warehouse and do NOT ask the human for it (list_platform_secrets / get_platform_secret_fields show the field names). OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. LIVE READ (a Live Read pipeline, destination `scratch`) — same sample-required shape as structured, nothing is landed; the run's rows come back on the status rollup (`resultPreview`) and via get_pipeline_result; results expire — use it when the user wants an answer now, a validation result, or a transformed view with no reason to keep the rows (see the KEEP-OR-READ-LIVE RULE). SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
+            description="Create a pipeline. FOUR destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token) and database (the Unity Catalog name), plus warehouse (the SQL warehouse ID) unless the Databricks secret has a `warehouse` field — in that case omit warehouse and do NOT ask the human for it (list_platform_secrets / get_platform_secret_fields show the field names). OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. LIVE READ (a Live Read pipeline, destination `scratch`) — same sample-required shape as structured, nothing is landed; the run's rows come back on the status rollup (`resultPreview`) and via get_pipeline_result; results expire — use it when the user wants an answer now, a validation result, or a transformed view with no reason to keep the rows (see the KEEP-OR-READ-LIVE RULE). SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you. FIELD PROTECTION: when the user asks to protect sensitive fields, pass `protect` (field name → {method: hmac|mask|redact|drop}) so those fields are protected before any AI stage or destination sees them; confirm the fields with the user, never guess.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1732,6 +1749,18 @@ def _base_tools():
                     "codegen_rule": {
                         "type": "string",
                         "description": "Optional data quality validation rule as a plain-English instruction. Only add when the user explicitly requests validation. Datris will generate a Python validation script from this instruction and run it locally against all data. Example: 'Validate that all dates are YYYY-MM-DD format and all email addresses are valid'"
+                    },
+                    "protect": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "method": {"type": "string", "enum": ["hmac", "mask", "redact", "drop"]},
+                                "preserve": {"type": "string", "enum": ["last4", "domain", "year"]}
+                            },
+                            "required": ["method"]
+                        },
+                        "description": "OMIT BY DEFAULT. Field name → protection policy, e.g. {\"account_id\": {\"method\": \"hmac\"}, \"contact_email\": {\"method\": \"mask\", \"preserve\": \"domain\"}}. Each policy is set as `protect` on the matching schema field (case-insensitive name match); a name not in the detected schema is an error and nothing is saved. Protected fields are rewritten before data quality, transformation, and every destination, so no AI stage sees their raw values. hmac = deterministic pseudonym, mask = asterisks (preserve last4/domain/year keeps that part), redact = fixed marker, drop = remove the column. hmac/mask/redact need string fields; drop cannot remove a keyFields column. The raw ingest object is deleted once the protected copy exists. Only set this when the user asked to protect fields, and confirm with them which fields and methods — never guess from column names."
                     },
                     "codegen_transform": {
                         "type": "string",
@@ -3601,6 +3630,36 @@ def _dispatch(name: str, args: dict) -> str:
             dest["database"] = {"dbName": db_name, "schema": "public", "table": table_name, "usePostgres": True}
 
         config["destination"] = dest
+
+        # Step 2a: Optional field protection. Each policy is set verbatim as
+        # `protect` on the schema field whose name matches case-insensitively;
+        # an unmatched name is an error and nothing is posted. A JSON source's
+        # schema is the single `_json` field, so there an unmatched name is a
+        # top-level key and gets its own entry beside `_json`.
+        protect = args.get("protect")
+        if protect:
+            if not isinstance(protect, dict) or not all(isinstance(v, dict) for v in protect.values()):
+                return json.dumps({"error": "protect must be an object mapping field name to a policy object such as {\"method\": \"hmac\"}"})
+            source = config.get("source") or {}
+            fields = (source.get("schemaProperties") or {}).get("fields")
+            is_json = "jsonAttributes" in (source.get("fileAttributes") or {})
+            if not isinstance(fields, list) or not fields:
+                return json.dumps({"error": "protect needs a structured source schema; this destination has no schema fields to protect: " + ", ".join(protect)})
+            by_name = {}
+            for f in fields:
+                if isinstance(f, dict) and isinstance(f.get("name"), str):
+                    by_name.setdefault(f["name"].lower(), f)
+            unknown = [n for n in protect if n.lower() not in by_name]
+            if unknown and not is_json:
+                known = ", ".join(f.get("name") for f in fields if isinstance(f, dict))
+                return json.dumps({"error": "protect names field(s) not in the detected schema: " + ", ".join(unknown) + ". Schema fields: " + known})
+            for n, policy in protect.items():
+                f = by_name.get(n.lower())
+                if f is None:
+                    f = {"name": n, "type": "string"}
+                    fields.append(f)
+                    by_name[n.lower()] = f
+                f["protect"] = policy
 
         # Step 2b: Add optional CodeGen data quality rule
         if args.get("codegen_rule"):

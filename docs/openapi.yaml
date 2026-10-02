@@ -28,6 +28,63 @@ components:
       description: Optional API key for authentication (enabled via application.yaml)
 
   schemas:
+    FieldProtectionPolicy:
+      type: object
+      description: >-
+        Per-field protection applied after the preprocessor and before data
+        quality, transformation, Live Read and every destination. `hmac`,
+        `mask` and `redact` require a `string` field on the source and on the
+        destination schema; `drop` takes any type but cannot remove a
+        `keyFields` column. Reserved methods (`fpe`, `encrypt`, `tokenize`)
+        are rejected as not yet supported. Empty values stay empty.
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [hmac, mask, redact, drop]
+          description: >-
+            `hmac`: keyed HMAC-SHA256 pseudonym (lowercase hex) under the
+            per-environment key; equal inputs give equal outputs. `mask`:
+            replace characters with `*` (see `preserve`). `redact`: the value
+            becomes `[REDACTED]`. `drop`: remove the column (or top-level JSON
+            key) entirely.
+        preserve:
+          type: string
+          enum: [last4, domain, year]
+          description: >-
+            Only with `method: mask`. `last4` keeps the last four characters,
+            `domain` keeps `@` and the part after it, `year` keeps a leading
+            4-digit year.
+        params:
+          type: object
+          description: Reserved for method-specific options.
+          additionalProperties:
+            type: string
+    SchemaField:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        protect:
+          $ref: '#/components/schemas/FieldProtectionPolicy'
+    ProtectionConfig:
+      type: object
+      description: >-
+        Options for field protection; only read when a source field carries
+        `protect`.
+      properties:
+        purgeSource:
+          type: boolean
+          default: true
+          description: >-
+            When any field is protected, the raw staged file is always deleted
+            as soon as the protected copy exists. With `purgeSource` true (the
+            default) the ingest object is deleted too, for bucket drops, Kafka
+            temp objects and archive drops (the archive and its extracted
+            files). Set to false to keep the ingest object.
     UnityCatalogSync:
       type: object
       description: >-
@@ -879,6 +936,13 @@ paths:
     post:
       tags: [Pipelines]
       summary: Create or update a pipeline configuration
+      description: >-
+        Saves (upserts) a pipeline configuration. Invalid field protection is
+        rejected at save time (unknown or not-yet-supported `protect.method`,
+        `preserve` outside `mask`, a string-producing method on a non-string
+        field, dropping a `keyFields` column, or a source that is not
+        delimited or JSON). Like every other validator error, the rejection
+        returns HTTP 500 with `{"error": "..."}` naming the field.
       requestBody:
         required: true
         content:
@@ -893,6 +957,17 @@ paths:
                 source:
                   type: object
                   description: Source configuration (fileAttributes, schemaProperties)
+                  properties:
+                    schemaProperties:
+                      type: object
+                      properties:
+                        fields:
+                          type: array
+                          description: Source fields. A field may carry `protect`; see Field Protection in the docs.
+                          items:
+                            $ref: '#/components/schemas/SchemaField'
+                protection:
+                  $ref: '#/components/schemas/ProtectionConfig'
                 preprocessor:
                   type: object
                   description: |

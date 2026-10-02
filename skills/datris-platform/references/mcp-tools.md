@@ -24,7 +24,7 @@ Grouped by purpose. Tool names are exact. Every tool that changes state accepts 
 | Tool | Notes |
 |---|---|
 | `list_pipelines`, `get_pipeline` | Check these before creating anything. |
-| `create_pipeline` | From a base64 sample; schema auto-detected. Destination categories: structured (postgres, mongodb, snowflake, databricks), object store (Parquet, ORC or Iceberg in MinIO or S3), vector (pgvector, qdrant, weaviate, milvus, chroma), plus `scratch` for Live Read. External destinations reference a platform `credentialsSecret` by name. Set `catalog`. |
+| `create_pipeline` | From a base64 sample; schema auto-detected. Destination categories: structured (postgres, mongodb, snowflake, databricks), object store (Parquet, ORC or Iceberg in MinIO or S3), vector (pgvector, qdrant, weaviate, milvus, chroma), plus `scratch` for Live Read. External destinations reference a platform `credentialsSecret` by name. Set `catalog`. Optional `protect` (field name to `{"method": ...}` with hmac, mask, redact or drop; `preserve` for mask) protects fields before any AI stage; confirm the fields with the user first. |
 | `upload_data` | Base64 content to a pipeline. New CSV columns are added to the schema automatically. Returns a pipeline token. |
 | `get_job_status` | With `pipeline_token`: a `{rollup, events}` body; poll `rollup.allDone`, then `rollup.status` and per-job `lastError`. With `pipeline_name`: a paged summary of recent jobs. |
 | `get_pipeline_status` | Same rollup shape, keyed by `publisherToken` (covers every job a tap run submitted) or a single `pipelineToken`. |

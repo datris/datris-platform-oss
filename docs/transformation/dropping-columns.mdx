@@ -3,7 +3,17 @@ title: "Dropping Columns"
 description: "Remove columns from data"
 ---
 
-You can exclude columns from the output by defining a **destination schema** that omits unwanted columns. No special configuration is needed — simply remove the columns from the destination schema that you don't want in the output.
+## Prefer `protect: {"method": "drop"}`
+
+To keep a column out of every later stage and destination, mark it on the source schema with `"protect": {"method": "drop"}`. It is removed right after the preprocessor, before data quality, transformation, and any AI stage, and it works for every destination, including the object store, MongoDB, and JSON pipelines (top-level keys). See [Field Protection](/transformation/field-protection) for the other methods (`hmac`, `mask`, `redact`).
+
+```json
+{"name": "internal_code", "type": "string", "protect": {"method": "drop"}}
+```
+
+## Destination schema projection
+
+You can also exclude columns from the output by defining a **destination schema** that omits unwanted columns. No special configuration is needed — simply remove the columns from the destination schema that you don't want in the output.
 
 ## How It Works
 
