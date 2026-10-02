@@ -64,7 +64,8 @@ class FieldCipherSpec extends AnyFunSuite {
         Seq(Value, "x", "Ünïcødé 名前 ✓", "a,b;\"c\"\n" * 20).foreach { v =>
             val t = FieldCipher.encrypt(K1, 1, "patients", "email", v)
             assert(t != v)
-            assert(!t.contains(v), "ciphertext never carries the plaintext")
+            // Only for longer values: a 1-char value appears in ~half of random base64url payloads.
+            if (v.length >= 8) assert(!t.contains(v), "ciphertext never carries the plaintext")
             assert(FieldCipher.decrypt(lookup, "patients", "email", t) == v)
         }
         // Independent JCE decrypt: AES/GCM/NoPadding, 12-byte IV prefix, 128-bit tag, AAD pipeline\u0000field.
