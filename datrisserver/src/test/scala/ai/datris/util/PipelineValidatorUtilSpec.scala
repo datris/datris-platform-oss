@@ -926,6 +926,22 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         assert(err.exists(e => e.contains("ssn") && e.toLowerCase.contains("drop") && !e.contains("Key field: ")), s"got: $err")
     }
 
+    test("mask or redact on a keyFields column is rejected; hmac is accepted") {
+        Seq("""{"method":"mask","preserve":"last4"}""", """{"method":"redact"}""").foreach { policy =>
+            val cfg = protectConfig(
+                s"""[{"name":"id","type":"string"},{"name":"Account_No","type":"string","protect":$policy}]""",
+                keyFields = """["account_no"]"""
+            )
+            val err = validationError(cfg)
+            assert(err.exists(e => e.contains("Account_No") && e.contains("only hmac keeps rows distinct")), s"$policy got: $err")
+        }
+        val ok = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"account_no","type":"string","protect":{"method":"hmac"}}]""",
+            keyFields = """["account_no"]"""
+        )
+        assert(validationError(ok).isEmpty, s"got: ${validationError(ok)}")
+    }
+
     test("protect on an XML source is rejected") {
         val cfg = parse(
             """{"name":"fp",

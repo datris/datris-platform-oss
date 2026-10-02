@@ -940,7 +940,7 @@ paths:
         Saves (upserts) a pipeline configuration. Invalid field protection is
         rejected at save time (unknown or not-yet-supported `protect.method`,
         `preserve` outside `mask`, a string-producing method on a non-string
-        field, dropping a `keyFields` column, or a source that is not
+        field, any method but `hmac` on a `keyFields` column, or a source that is not
         delimited or JSON). Like every other validator error, the rejection
         returns HTTP 500 with `{"error": "..."}` naming the field.
       requestBody:

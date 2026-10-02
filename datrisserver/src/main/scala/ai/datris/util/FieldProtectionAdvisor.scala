@@ -54,6 +54,12 @@ object FieldProtectionAdvisor {
           |Example output:
           |[{"name": "id_a", "method": "hmac", "preserve": null, "reason": "stable identifier"}, {"name": "contact_b", "method": "mask", "preserve": "domain", "reason": "contact address; the domain is still useful"}, {"name": "count_c", "method": "none", "preserve": null, "reason": "a count"}]""".stripMargin
 
+    /** Upper bound per call: one answer line per field must fit the model's output budget. */
+    val MaxFields = 150
+
+    /** A key column may only carry hmac: mask/redact would merge rows, drop would remove the key. */
+    val KeyColumnReason = "key column; only hmac keeps rows distinct"
+
     /** Document fields (`_json`, `_xml`) hold a whole record; protect names its top-level keys instead. */
     val DocumentFields: Set[String] = Set("_json", "_xml")
     val DocumentFieldReason = "document field; protect its top-level keys instead"
@@ -107,6 +113,8 @@ object FieldProtectionAdvisor {
     ): FieldProtectionSuggestion = {
         val input = Option(fields).getOrElse(Nil).filter(f => f != null && f.name != null && f.name.trim.nonEmpty)
         if (input.isEmpty) throw new DatrisException("No fields to suggest protection for")
+        if (input.size > MaxFields)
+            throw new DatrisException("Too many fields for one suggestion call (" + input.size + "); pass a subset through 'fields'")
 
         def isDocument(f: SchemaField): Boolean = DocumentFields.contains(f.name.trim.toLowerCase)
         val asked = input.filterNot(isDocument)
@@ -129,8 +137,8 @@ object FieldProtectionAdvisor {
                     case Some((method, preserve, reason)) =>
                         val policy = clamp(f.`type`, method, preserve)
                         if (policy == null) Suggested(f.name, f.`type`, f.protect, null, reason)
-                        else if (policy.method == "drop" && keys.contains(key))
-                            Suggested(f.name, f.`type`, f.protect, null, "key column; drop would remove it")
+                        else if (policy.method != "hmac" && keys.contains(key))
+                            Suggested(f.name, f.`type`, f.protect, null, KeyColumnReason)
                         else if (policy.method != "drop" && dest.get(key).exists(t => !isString(t)))
                             Suggested(f.name, f.`type`, f.protect, null, "destination type is " + dest(key).trim + "; " + policy.method + " produces a string")
                         else Suggested(f.name, f.`type`, f.protect, policy, reason)

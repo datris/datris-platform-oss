@@ -113,8 +113,9 @@ object PipelineValidatorUtil {
       * save, so a pipeline can never silently store plaintext: unknown and
       * reversible (not yet supported) methods, `preserve` outside `mask` or
       * outside last4/domain/year, a string-producing method on a non-string
-      * source or destination field, dropping a key field, and any source that
-      * is not delimited or JSON. */
+      * source or destination field, any method but hmac on a key field (mask
+      * and redact would make rows share a key, drop removes it), and any
+      * source that is not delimited or JSON. */
     private def validateFieldProtection(config: PipelineConfig): Unit = {
         val sp = config.source.schemaProperties
         if (sp == null || sp.fields == null) return
@@ -161,10 +162,15 @@ object PipelineValidatorUtil {
                         "Field '" + f.name + "': unknown protect.preserve '" + p.preserve + "' (last4, domain, year)"
                     )
             }
-            if (method == "drop") {
-                if (f.name != null && keyFields.contains(f.name.toLowerCase))
+            if (f.name != null && keyFields.contains(f.name.toLowerCase)) {
+                if (method == "drop")
                     throw new DatrisException("Field '" + f.name + "': protect.method 'drop' cannot remove a keyFields column")
-            } else {
+                if (method != "hmac")
+                    throw new DatrisException(
+                        "Field '" + f.name + "': protect.method '" + method + "' on a keyFields column would make different rows share a key; only hmac keeps rows distinct"
+                    )
+            }
+            if (method != "drop") {
                 if (!isString(f.`type`))
                     throw new DatrisException(
                         "Field '" + f.name + "': protect.method '" + method + "' produces a string; the source field type must be 'string'"

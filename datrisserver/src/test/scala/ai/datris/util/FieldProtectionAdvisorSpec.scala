@@ -256,4 +256,32 @@ class FieldProtectionAdvisorSpec extends AnyFunSuite {
         val fenced = "```json\n" + """[{"name": "mrn", "method": "redact", "reason": "x"}]""" + "\n```"
         assert(method(byName(run(List(f("mrn", "string")), fenced)._1)("mrn")) == "redact")
     }
+
+    // ---- e2e round 1 ---------------------------------------------------------
+
+    test("a keyFields column keeps only an hmac suggestion") {
+        val fields = List(f("a", "string"), f("b", "string"), f("c", "string"))
+        val answer =
+            """[
+              |  {"name": "a", "method": "mask", "preserve": "last4", "reason": "x"},
+              |  {"name": "b", "method": "redact", "reason": "x"},
+              |  {"name": "c", "method": "hmac", "reason": "id"}
+              |]""".stripMargin
+        val m = byName(runWith(fields, answer, Set("a", "B", "c"), Map.empty))
+        assert(method(m("a")) == "none" && m("a").reason == FieldProtectionAdvisor.KeyColumnReason)
+        assert(method(m("b")) == "none")
+        assert(method(m("c")) == "hmac")
+    }
+
+    test("more than MaxFields fields is refused before any model call") {
+        val many = (1 to FieldProtectionAdvisor.MaxFields + 1).map(i => f("f" + i, "string")).toList
+        val calls = ListBuffer[String]()
+        val e = intercept[DatrisException] {
+            FieldProtectionAdvisor.suggest(many, (_: String, u: String) => { calls += u; "[]" }, Model)
+        }
+        assert(e.getMessage.contains("Too many fields") && e.getMessage.contains(String.valueOf(many.size)), e.getMessage)
+        assert(calls.isEmpty)
+        val atLimit = many.take(FieldProtectionAdvisor.MaxFields)
+        assert(run(atLimit, "[]")._1.fields.size == FieldProtectionAdvisor.MaxFields)
+    }
 }
