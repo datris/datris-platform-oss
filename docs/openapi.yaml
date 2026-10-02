@@ -1445,7 +1445,10 @@ paths:
         nothing is saved. Every suggestion passes the pipeline validator, so
         confirm the ones you want and save them as `protect` on the source
         fields. Pass either `pipeline` (its stored source schema is used) or
-        `fields`. Needs the same capability as reading a pipeline.
+        `fields`. At most 150 fields per call (more returns 400 before the
+        model is called); with `pipeline`, keyFields columns are only
+        suggested hmac or none and non-string destination fields only drop
+        or none. Needs the same capability as reading a pipeline.
       requestBody:
         required: true
         content:

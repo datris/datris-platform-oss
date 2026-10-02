@@ -130,7 +130,7 @@ object PipelineValidatorUtil {
             if (config.destination != null && config.destination.schemaProperties != null && config.destination.schemaProperties.fields != null)
                 config.destination.schemaProperties.fields.asScala
                     .filter(f => f != null && f.name != null)
-                    .map(f => f.name.toLowerCase -> f)
+                    .map(f => f.name.trim.toLowerCase -> f)
                     .toMap
             else Map.empty
 
@@ -139,7 +139,7 @@ object PipelineValidatorUtil {
             val os = if (config.destination != null && config.destination.objectStore != null) config.destination.objectStore.keyFields else null
             (Option(db).map(_.asScala.toList).getOrElse(Nil) ++ Option(os).map(_.asScala.toList).getOrElse(Nil))
                 .filter(_ != null)
-                .map(_.toLowerCase)
+                .map(_.trim.toLowerCase)
                 .toSet
         }
 
@@ -162,7 +162,7 @@ object PipelineValidatorUtil {
                         "Field '" + f.name + "': unknown protect.preserve '" + p.preserve + "' (last4, domain, year)"
                     )
             }
-            if (f.name != null && keyFields.contains(f.name.toLowerCase)) {
+            if (f.name != null && keyFields.contains(f.name.trim.toLowerCase)) {
                 if (method == "drop")
                     throw new DatrisException("Field '" + f.name + "': protect.method 'drop' cannot remove a keyFields column")
                 if (method != "hmac")
@@ -175,7 +175,7 @@ object PipelineValidatorUtil {
                     throw new DatrisException(
                         "Field '" + f.name + "': protect.method '" + method + "' produces a string; the source field type must be 'string'"
                     )
-                destFields.get(Option(f.name).map(_.toLowerCase).getOrElse("")).foreach { d =>
+                destFields.get(Option(f.name).map(_.trim.toLowerCase).getOrElse("")).foreach { d =>
                     if (!isString(d.`type`))
                         throw new DatrisException(
                             "Field '" + d.name + "': protect.method '" + method + "' produces a string; the destination field type must be 'string'"
