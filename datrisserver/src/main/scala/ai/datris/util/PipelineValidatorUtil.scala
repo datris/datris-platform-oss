@@ -53,6 +53,7 @@ object PipelineValidatorUtil {
             throw new DatrisException("Either 'source.fileAttributes' or 'source.databaseAttributes must be defined")
 
         validateUnityCatalog(config)
+        validateFieldProtection(config)
 
         if (config.source.fileAttributes != null && config.source.fileAttributes.unstructuredAttributes != null)
             validateUnstructured(config)
@@ -106,6 +107,76 @@ object PipelineValidatorUtil {
         throw new DatrisException(
             "'unityCatalog.enabled' is only supported for a Databricks destination (destination.database.useDatabricks=true) or an object-store Iceberg destination"
         )
+    }
+
+    /** Source fields carrying `protect` (FieldProtection). Refused here, at
+      * save, so a pipeline can never silently store plaintext: unknown and
+      * reversible (not yet supported) methods, `preserve` outside `mask` or
+      * outside last4/domain/year, a string-producing method on a non-string
+      * source or destination field, dropping a key field, and any source that
+      * is not delimited or JSON. */
+    private def validateFieldProtection(config: PipelineConfig): Unit = {
+        val sp = config.source.schemaProperties
+        if (sp == null || sp.fields == null) return
+        val protectedFields = sp.fields.asScala.filter(f => f != null && f.protect != null).toList
+        if (protectedFields.isEmpty) return
+
+        val fa = config.source.fileAttributes
+        if (fa != null && (fa.xmlAttributes != null || fa.unstructuredAttributes != null))
+            throw new DatrisException("Field protection needs a delimited or JSON source")
+
+        val destFields: Map[String, SchemaField] =
+            if (config.destination != null && config.destination.schemaProperties != null && config.destination.schemaProperties.fields != null)
+                config.destination.schemaProperties.fields.asScala
+                    .filter(f => f != null && f.name != null)
+                    .map(f => f.name.toLowerCase -> f)
+                    .toMap
+            else Map.empty
+
+        val keyFields: Set[String] = {
+            val db = if (config.destination != null && config.destination.database != null) config.destination.database.keyFields else null
+            val os = if (config.destination != null && config.destination.objectStore != null) config.destination.objectStore.keyFields else null
+            (Option(db).map(_.asScala.toList).getOrElse(Nil) ++ Option(os).map(_.asScala.toList).getOrElse(Nil))
+                .filter(_ != null)
+                .map(_.toLowerCase)
+                .toSet
+        }
+
+        def isString(t: String): Boolean = t != null && t.trim.equalsIgnoreCase("string")
+
+        protectedFields.foreach { f =>
+            val p = f.protect
+            val method = if (p.method == null) "" else p.method.trim.toLowerCase
+            if (ProtectionPolicy.Reserved.contains(method))
+                throw new DatrisException("Field '" + f.name + "': protect.method '" + method + "' is not yet supported")
+            if (!ProtectionPolicy.Methods.contains(method))
+                throw new DatrisException(
+                    "Field '" + f.name + "': unknown protect.method '" + Option(p.method).getOrElse("") + "' (hmac, mask, redact, drop)"
+                )
+            if (p.preserve != null) {
+                if (method != "mask")
+                    throw new DatrisException("Field '" + f.name + "': protect.preserve is only valid with method 'mask'")
+                if (!ProtectionPolicy.Preserves.contains(p.preserve.trim.toLowerCase))
+                    throw new DatrisException(
+                        "Field '" + f.name + "': unknown protect.preserve '" + p.preserve + "' (last4, domain, year)"
+                    )
+            }
+            if (method == "drop") {
+                if (f.name != null && keyFields.contains(f.name.toLowerCase))
+                    throw new DatrisException("Field '" + f.name + "': protect.method 'drop' cannot remove a keyFields column")
+            } else {
+                if (!isString(f.`type`))
+                    throw new DatrisException(
+                        "Field '" + f.name + "': protect.method '" + method + "' produces a string; the source field type must be 'string'"
+                    )
+                destFields.get(Option(f.name).map(_.toLowerCase).getOrElse("")).foreach { d =>
+                    if (!isString(d.`type`))
+                        throw new DatrisException(
+                            "Field '" + d.name + "': protect.method '" + method + "' produces a string; the destination field type must be 'string'"
+                        )
+                }
+            }
+        }
     }
 
     private def validateUnstructured(config: PipelineConfig): Unit = {
@@ -550,16 +621,22 @@ object PipelineValidatorUtil {
     private def validateSemiStructured(config: PipelineConfig): Unit = {
         val message =
             "For JSON and XML pipelines, the source schema must have only one field named '_json' or '_xml' according to the source file type, with a field type of 'string'"
-        if (config.source.schemaProperties.fields.size != 1)
+        // A JSON source may also list fields that carry `protect`: they name
+        // the top-level keys FieldProtection rewrites (and strips from the
+        // in-memory schemas after the stage, so loaders still see only `_json`).
+        val isJson = config.source.fileAttributes != null && config.source.fileAttributes.jsonAttributes != null
+        val docFields = config.source.schemaProperties.fields.asScala.toList
+            .filterNot(f => isJson && f != null && f.protect != null)
+        if (docFields.size != 1)
             throw new DatrisException(message)
-        if (config.source.schemaProperties.fields.get(0).`type`.compareToIgnoreCase("string") != 0)
+        if (docFields.head.`type` == null || docFields.head.`type`.compareToIgnoreCase("string") != 0)
             throw new DatrisException(message)
-        if (config.source.fileAttributes != null && config.source.fileAttributes.jsonAttributes != null) {
-            if (config.source.schemaProperties.fields.get(0).name.compareToIgnoreCase("_json") != 0)
+        if (isJson) {
+            if (docFields.head.name.compareToIgnoreCase("_json") != 0)
                 throw new DatrisException(message)
         }
         if (config.source.fileAttributes != null && config.source.fileAttributes.xmlAttributes != null) {
-            if (config.source.schemaProperties.fields.get(0).name.compareToIgnoreCase("_xml") != 0)
+            if (docFields.head.name.compareToIgnoreCase("_xml") != 0)
                 throw new DatrisException(message)
         }
 
@@ -585,7 +662,8 @@ object PipelineValidatorUtil {
         val sourceSchemaProperties = {
             if (config.source.schemaProperties != null) {
                 val fields =
-                    config.source.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, field.`type`.toLowerCase)).toList.asJava
+                    config.source.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, field.`type`.toLowerCase, field.protect))
+                        .toList.asJava
                 SchemaProperties(config.source.schemaProperties.dbName, fields)
             } else
                 null

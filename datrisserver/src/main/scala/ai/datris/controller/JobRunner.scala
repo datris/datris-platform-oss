@@ -145,16 +145,23 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     jobContext
             }
 
+            // Field protection: source fields with `protect` are rewritten
+            // (hmac / mask / redact / drop) before any DataQuality or
+            // transformation stage, so no AI sampler, row function or loader
+            // ever sees the original value. Purges the raw copies once the
+            // protected one exists. No-op (same context) without `protect`.
+            val jobContextProtected = FieldProtection.apply(jobContextPreprocessed)
+
             // Do data quality?
             if (config.dataQuality != null)
-                new DataQuality(jobContextPreprocessed).process()
+                new DataQuality(jobContextProtected).process()
 
             // Transformations?
             val jobContextTransform = {
                 if (config.transformation != null)
-                    new Transformation(jobContextPreprocessed).process()
+                    new Transformation(jobContextProtected).process()
                 else
-                    jobContextPreprocessed
+                    jobContextProtected
             }
 
             // Provenance stamp (opt-in per pipeline): constant per-run fields

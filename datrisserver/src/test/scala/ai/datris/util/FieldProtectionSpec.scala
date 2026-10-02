@@ -251,7 +251,8 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
     // ==========================================================================
 
     test("delimited rows are rewritten through a new staged file and quoted delimiters survive") {
-        val cfg = csvConfig(jlist(field("id"), field("name"), field("mrn", policy("hmac")), field("email", policy("mask", "domain")), field("ssn", policy("redact"))))
+        val cfg =
+            csvConfig(jlist(field("id"), field("name"), field("mrn", policy("hmac")), field("email", policy("mask", "domain")), field("ssn", policy("redact"))))
         val ctx = delimitedCtx(cfg)
         val before = ctx.data.staged.path
         val out = FieldProtection.apply(ctx)
@@ -372,12 +373,14 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
     }
 
     test("bulk upload runs delete every listed object but not the metadata file") {
-        store = new FakeStore(listing = List(
-            "bulk/run-9/",
-            "bulk/run-9/part-1.csv",
-            "bulk/run-9/part-2.csv",
-            "bulk/run-9/patients.metadata.json"
-        ))
+        store = new FakeStore(listing =
+            List(
+                "bulk/run-9/",
+                "bulk/run-9/part-1.csv",
+                "bulk/run-9/part-2.csv",
+                "bulk/run-9/patients.metadata.json"
+            )
+        )
         FieldProtection.objectStoreOverride = store
         val bulk = PipelineMetadata("patients", null, "s3://" + Bucket + "/bulk/run-9/", "pub-1", bulkUpload = true)
         FieldProtection.apply(delimitedCtx(csvConfig(protectedSourceFields), bulk))

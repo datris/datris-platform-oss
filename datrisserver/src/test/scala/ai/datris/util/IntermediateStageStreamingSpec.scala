@@ -743,7 +743,8 @@ class IntermediateStageStreamingSpec extends AnyFunSuite with BeforeAndAfterAll 
         override def info(state: String, description: String): Unit = synchronized(messages += ((process, "info", state, description)))
         override def warn(state: String, description: String): Unit = synchronized(messages += ((process, "warning", state, description)))
         override def error(state: String, description: String): Unit = synchronized(messages += ((process, "error", state, description)))
-        override def errorAs(processName: String, state: String, description: String): Unit = synchronized(messages += ((processName, "error", state, description)))
+        override def errorAs(processName: String, state: String, description: String): Unit =
+            synchronized(messages += ((processName, "error", state, description)))
         override def scratchResult(result: ScratchResult): Unit = ()
         override def suggestion(fix: FixSuggestion): Unit = ()
     }

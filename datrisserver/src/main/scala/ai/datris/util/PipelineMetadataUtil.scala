@@ -58,11 +58,16 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
         }
     }
 
-    def getFiles(metadata: PipelineMetadata): List[String] = {
+    /** The `s3://bucket/key` objects a run reads: the one data file, or every
+      * object under a bulk upload's prefix (folder markers and the
+      * `.metadata.json` companion excluded). `store` defaults to the
+      * ObjectStoreUtil singleton; FieldProtection's purge passes its own. */
+    def getFiles(metadata: PipelineMetadata, store: ObjectStoreUtility = null): List[String] = {
         if (metadata.bulkUpload) {
+            val os = if (store != null) store else ObjectStoreUtil
             statusUtil.info("processing", "Bulk file upload")
-            val keys = ObjectStoreUtil.listObjects(ObjectStoreUtil.getBucket(metadata.dataFilePath), ObjectStoreUtil.getKey(metadata.dataFilePath))
-            keys.map(key => "s3://" + ObjectStoreUtil.getBucket(metadata.dataFilePath) + "/" + key)
+            val keys = os.listObjects(os.getBucket(metadata.dataFilePath), os.getKey(metadata.dataFilePath))
+            keys.map(key => "s3://" + os.getBucket(metadata.dataFilePath) + "/" + key)
                 .filterNot(_.endsWith("/"))
                 .filterNot(_.endsWith(".metadata.json"))
         } else

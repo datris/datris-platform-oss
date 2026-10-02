@@ -140,7 +140,10 @@ class ColumnLineageServiceSpec extends AnyFunSuite {
         assert(t.contains((List("email"), "email", "derive", "exact", "mask:domain")), s"$t")
         assert(t.contains((List("phone"), "phone", "derive", "exact", "mask")), s"$t")
         assert(t.contains((List("notes"), "notes", "derive", "exact", "redact")), s"$t")
-        assert(!t.exists(e => e._3 == "passthrough" && Set("mrn", "email", "phone", "notes", "ssn").contains(e._2)), s"protected fields are not passthrough: $t")
+        assert(
+            !t.exists(e => e._3 == "passthrough" && Set("mrn", "email", "phone", "notes", "ssn").contains(e._2)),
+            s"protected fields are not passthrough: $t"
+        )
         assert(unresolved.isEmpty)
         // Same with a declared destination.
         val (declared, _, label) = ColumnLineageService.deterministic(protectedCfg(

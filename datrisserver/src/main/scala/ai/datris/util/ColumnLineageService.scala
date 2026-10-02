@@ -104,6 +104,8 @@ object ColumnLineageService {
             o.addProperty("instruction", t.aiTransformation.instruction)
         } else if (t != null && t.rowFunctions != null && !t.rowFunctions.isEmpty) {
             o.addProperty("kind", "rowFunctions")
+        } else if (FieldProtection.protectedFields(c).nonEmpty) {
+            o.addProperty("kind", "protect")
         } else if (c.preprocessor != null) {
             o.addProperty("kind", "preprocessor")
         } else {
@@ -124,7 +126,19 @@ object ColumnLineageService {
                 val sel = Option(c.provenance.fields).map(_.asScala.toSet).filter(_.nonEmpty)
                 ProvenanceStamper.AllFields.filter(f => sel.forall(_.contains(f)))
             } else Nil
-        val hasTransformation = transformationInfo(c).get("kind").getAsString != "none"
+        // Field protection is deterministic and per-field, so it does not
+        // make the field mapping unknowable the way a transformation does.
+        val hasTransformation = {
+            val t = c.transformation
+            (t != null && t.aiTransformation != null && t.aiTransformation.instruction != null) ||
+            (t != null && t.rowFunctions != null && !t.rowFunctions.isEmpty) ||
+            c.preprocessor != null
+        }
+        val protectedBy: Map[String, ProtectionPolicy] =
+            FieldProtection.protectedFields(c).map(f => f.name -> f.protect).toMap
+        val dropped: Set[String] = protectedBy.collect {
+            case (n, p) if p.method != null && p.method.trim.equalsIgnoreCase("drop") => n
+        }.toSet
 
         val (dst, schemaLabel) =
             if (declaredDst.nonEmpty) (declaredDst.filterNot(_.startsWith(ProvenanceStamper.Prefix)), "declared")
@@ -135,12 +149,19 @@ object ColumnLineageService {
         val unresolved = List.newBuilder[String]
         val srcSet = src.toSet
         dst.foreach { d =>
-            if (srcSet.contains(d)) edges += ColumnEdge(List(d).asJava, d, "passthrough", "exact")
+            // A dropped field never lands, even when the destination lists it.
+            if (dropped.contains(d)) ()
+            else if (srcSet.contains(d))
+                protectedBy.get(d) match {
+                    case Some(p) => edges += ColumnEdge(List(d).asJava, d, "derive", "exact", p.label)
+                    case None => edges += ColumnEdge(List(d).asJava, d, "passthrough", "exact")
+                }
             else unresolved += d
         }
+        src.filter(dropped.contains).foreach(s => edges += ColumnEdge(List(s).asJava, "", "drop", "exact"))
         if (!hasTransformation && dst.nonEmpty) {
             val dstSet = dst.toSet
-            src.filterNot(dstSet.contains).foreach(s => edges += ColumnEdge(List(s).asJava, "", "drop", "exact"))
+            src.filterNot(s => dstSet.contains(s) || dropped.contains(s)).foreach(s => edges += ColumnEdge(List(s).asJava, "", "drop", "exact"))
         }
         stamped.foreach(f => edges += ColumnEdge(new java.util.ArrayList[String](), f, "system", "system", "provenance stamp"))
         (edges.result(), unresolved.result(), schemaLabel)
