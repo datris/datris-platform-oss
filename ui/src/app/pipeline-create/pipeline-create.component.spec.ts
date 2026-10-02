@@ -23,7 +23,7 @@ import { CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { provideHttpClient } from '@angular/common/http';
-import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { of } from 'rxjs';
 
 import { PipelineCreateComponent } from './pipeline-create.component';
@@ -412,5 +412,400 @@ describe('PipelineCreateComponent — Live Read destination', () => {
     expect(c.catalog).not.toBe('E2E_NM_E');
     expect(c.newCatalogError).toContain("'e2e_nm_e' already exists with different capitalisation.");
     expect(c.availableCatalogs).toEqual(['DatrisFund', 'e2e_a', 'e2e_nm_e']);
+  });
+});
+
+/**
+ * Story: Field protection 4 — Protect column in the wizard schema step +
+ * Suggest button (plans/stories/field-protection-4-wizard-ui.md), Acceptance
+ * bullet 1 (the nine pipeline-create.component.spec.ts cases), plus the
+ * story-3 rule that a keyFields column may carry only hmac.
+ *
+ * DOM contract (from the story's Files section): on the Source Schema step
+ * (step 3) each `.field-row` holds a `select.field-protect` (None + hmac, mask,
+ * redact, drop) and, only when its method is mask, a `select.field-preserve`
+ * (Mask all, last 4, email domain, year). A suggested field shows a
+ * `.field-suggestion` line carrying the reason; a type-guard reset shows a
+ * `.field-error` line. The "Suggest protection" control is a `button` whose
+ * text is "Suggest protection". Options are read by their visible text, so
+ * either `[value]` or `[ngValue]` bindings satisfy the contract; an option the
+ * user cannot pick (removed or `disabled`) counts as not offered.
+ *
+ * New members (protect / suggested on SchemaField, onProtectChange,
+ * suggestProtection, keepSuggestion, clearSuggestion, preserveOptions,
+ * PipelineService.suggestFieldProtection) are reached through `any` so this
+ * file compiles before they exist and fails on behaviour.
+ */
+describe('PipelineCreateComponent — field protection', () => {
+  let fixture: ComponentFixture<PipelineCreateComponent>;
+  let component: PipelineCreateComponent;
+  let el: HTMLElement;
+  let suggestSpy: jasmine.Spy;
+
+  const SUGGEST_RESPONSE = {
+    model: 'claude-opus-5-5',
+    fields: [
+      { name: 'mrn', type: 'string', current: null, suggested: { method: 'hmac', preserve: null }, reason: 'stable identifier' },
+      { name: 'email', type: 'string', current: null, suggested: { method: 'mask', preserve: 'domain' }, reason: 'contact address; the domain is still useful' },
+      { name: 'notes', type: 'string', current: { method: 'drop' }, suggested: { method: 'redact', preserve: null }, reason: 'free text' },
+      { name: 'visit_count', type: 'int', current: null, suggested: null, reason: 'a count' }
+    ]
+  };
+
+  beforeEach(async () => {
+    suggestSpy = jasmine.createSpy('suggestFieldProtection').and.returnValue(of(SUGGEST_RESPONSE));
+    await TestBed.configureTestingModule({
+      declarations: [PipelineCreateComponent],
+      imports: [FormsModule],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: PipelineService, useValue: {
+            getAvailableDestinations: () => of(['postgres', 'mongodb', 'objectstore', 'snowflake', 'databricks']),
+            getPipelines: () => of([]),
+            getPipeline: () => of({}),
+            suggestFieldProtection: suggestSpy
+        } },
+        { provide: SearchService, useValue: { getPipelines: () => of([]) } },
+        { provide: HealthService, useValue: { isAvailable: () => true, refresh: () => Promise.resolve() } },
+        { provide: TapService, useValue: { getTaps: () => of([]) } },
+        { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap({}), paramMap: convertToParamMap({}) } } }
+      ]
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(PipelineCreateComponent);
+    component = fixture.componentInstance;
+    el = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+  });
+
+  function csvConfig(fields: any[], destination: any = {}): any {
+    return {
+      name: 'patients',
+      source: { fileAttributes: { csvAttributes: { delimiter: ',' } }, schemaProperties: { dbName: 'datris', fields } },
+      destination
+    };
+  }
+
+  /** Load a CSV pipeline through the edit-mode entry point and show the Source Schema step. */
+  async function onSchemaStep(fields: any[], destination: any = {}): Promise<void> {
+    component.loadFromConfig(csvConfig(fields, destination));
+    component.step = 3;
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  function fieldRows(): HTMLElement[] {
+    return Array.from(el.querySelectorAll('.field-row')) as HTMLElement[];
+  }
+
+  function rowFor(name: string): HTMLElement {
+    const row = fieldRows().find(r => (r.querySelector('input.field-name') as HTMLInputElement | null)?.value === name);
+    expect(row).withContext('field row for ' + name).toBeDefined();
+    return row!;
+  }
+
+  /** Visible, pickable option texts of a select. */
+  function offered(select: Element | null): string[] {
+    return Array.from(select?.querySelectorAll('option') || [])
+      .filter(o => !(o as HTMLOptionElement).disabled)
+      .map(o => (o.textContent || '').trim());
+  }
+
+  function selectedText(select: Element | null): string {
+    const opt = Array.from(select?.querySelectorAll('option') || []).find(o => (o as HTMLOptionElement).selected);
+    return (opt?.textContent || '').trim();
+  }
+
+  /** What actually goes over the wire (drops undefined-valued keys). */
+  function wire(v: any): any {
+    return JSON.parse(JSON.stringify(v));
+  }
+
+  function keyFieldsOptions(): string[] {
+    const rows = Array.from(el.querySelectorAll('.form-row, .form-field')) as HTMLElement[];
+    const row = rows.find(r => /key\s*fields/i.test((r.querySelector('label.form-label')?.textContent || '').trim()));
+    expect(row).withContext('Key Fields row on the destination step').toBeDefined();
+    // Option text, not value: the ngModel multi-select accessor rewrites values to "0: 'id'".
+    return Array.from(row!.querySelectorAll('select[multiple] option')).map(o => (o.textContent || '').trim());
+  }
+
+  it('schema step renders a Protect select per field', async () => {
+    await onSchemaStep([{ name: 'mrn', type: 'string' }, { name: 'email', type: 'string' }, { name: 'visit_count', type: 'int' }]);
+    const rows = fieldRows();
+    expect(rows.length).toBe(3);
+    for (const r of rows) {
+      const sel = r.querySelector('select.field-protect');
+      expect(sel).withContext('select.field-protect in every field row').not.toBeNull();
+      const texts = offered(sel).map(t => t.toLowerCase());
+      expect(texts.length).withContext('None + four methods: ' + texts.join(',')).toBe(5);
+      expect(texts[0]).toMatch(/^none/);
+      expect(texts.some(t => /^hmac/.test(t))).withContext('hmac offered').toBeTrue();
+      expect(texts.some(t => /^mask/.test(t))).withContext('mask offered').toBeTrue();
+      expect(texts.some(t => /^redact/.test(t))).withContext('redact offered').toBeTrue();
+      expect(texts.some(t => /^drop/.test(t))).withContext('drop offered').toBeTrue();
+      // A pipeline without protect shows None everywhere (backward compat).
+      expect(selectedText(sel).toLowerCase()).toMatch(/^none/);
+    }
+  });
+
+  it('choosing mask reveals a Keep select', async () => {
+    await onSchemaStep([{ name: 'mrn', type: 'string' }, { name: 'email', type: 'string' }]);
+    expect(el.querySelector('select.field-preserve')).withContext('no Keep select while nothing is masked').toBeNull();
+
+    const c: any = component;
+    const email = c.schemaFields[1];
+    email.protect = { ...(email.protect || {}), method: 'mask' };
+    c.onProtectChange(email);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(rowFor('mrn').querySelector('select.field-preserve')).withContext('unmasked row has no Keep select').toBeNull();
+    const keep = rowFor('email').querySelector('select.field-preserve');
+    expect(keep).withContext('masked row shows select.field-preserve').not.toBeNull();
+    const texts = offered(keep).map(t => t.toLowerCase());
+    expect(texts.length).toBe(4);
+    expect(texts[0]).toMatch(/mask(ed)? all|all masked/);
+    expect(texts.some(t => /last\s*4/.test(t))).toBeTrue();
+    expect(texts.some(t => /domain/.test(t))).toBeTrue();
+    expect(texts.some(t => /year/.test(t))).toBeTrue();
+    expect((c.preserveOptions || []).map((o: any) => o.value)).toEqual([null, 'last4', 'domain', 'year']);
+    expect(c.protectMethods).toEqual(['hmac', 'mask', 'redact', 'drop']);
+  });
+
+  it('buildConfig emits protect only for fields with a method and omits preserve when null', () => {
+    component.loadFromConfig(csvConfig([{ name: 'id', type: 'string' }]));
+    const c: any = component;
+    c.schemaFields = [
+      { name: 'mrn', type: 'string', protect: { method: 'hmac', preserve: null } },
+      { name: 'email', type: 'string', protect: { method: 'mask', preserve: 'domain' } },
+      { name: 'card', type: 'string', protect: { method: 'mask', preserve: null } },
+      { name: 'ssn', type: 'string', protect: { method: 'drop' } },
+      { name: 'city', type: 'string', protect: { method: '', preserve: null } },
+      { name: 'zip', type: 'string', protect: { method: null } },
+      { name: 'visits', type: 'int' }
+    ];
+    const fields = wire(component.buildConfig()).source.schemaProperties.fields;
+    expect(fields).toEqual([
+      { name: 'mrn', type: 'string', protect: { method: 'hmac' } },
+      { name: 'email', type: 'string', protect: { method: 'mask', preserve: 'domain' } },
+      { name: 'card', type: 'string', protect: { method: 'mask' } },
+      { name: 'ssn', type: 'string', protect: { method: 'drop' } },
+      { name: 'city', type: 'string' },
+      { name: 'zip', type: 'string' },
+      { name: 'visits', type: 'int' }
+    ]);
+  });
+
+  it('a pipeline without protect saves the same source fields as today (no protect key anywhere)', async () => {
+    const original = [{ name: 'id', type: 'string' }, { name: 'amount', type: 'double' }];
+    await onSchemaStep(original);
+    const cfg = wire(component.buildConfig());
+    expect(cfg.source.schemaProperties.fields).toEqual(original);
+    expect(JSON.stringify(cfg)).not.toContain('protect');
+    expect(JSON.stringify(cfg)).not.toContain('suggested');
+  });
+
+  it('a saved pipeline reopens with its protect values', async () => {
+    const saved = [
+      { name: 'mrn', type: 'string', protect: { method: 'hmac' } },
+      { name: 'email', type: 'string', protect: { method: 'mask', preserve: 'domain' } },
+      { name: 'ssn', type: 'string', protect: { method: 'drop' } },
+      { name: 'city', type: 'string' }
+    ];
+    await onSchemaStep(saved);
+    const c: any = component;
+    expect(c.schemaFields[0].protect?.method).toBe('hmac');
+    expect(c.schemaFields[1].protect?.method).toBe('mask');
+    expect(c.schemaFields[1].protect?.preserve).toBe('domain');
+    expect(c.schemaFields[2].protect?.method).toBe('drop');
+    expect(c.schemaFields[3].protect?.method || null).toBeNull();
+
+    expect(selectedText(rowFor('mrn').querySelector('select.field-protect')).toLowerCase()).toMatch(/^hmac/);
+    expect(selectedText(rowFor('email').querySelector('select.field-protect')).toLowerCase()).toMatch(/^mask/);
+    expect(selectedText(rowFor('email').querySelector('select.field-preserve')).toLowerCase()).toMatch(/domain/);
+    expect(selectedText(rowFor('ssn').querySelector('select.field-protect')).toLowerCase()).toMatch(/^drop/);
+    expect(selectedText(rowFor('city').querySelector('select.field-protect')).toLowerCase()).toMatch(/^none/);
+
+    // Saving untouched round-trips the same fields.
+    expect(wire(component.buildConfig()).source.schemaProperties.fields).toEqual(saved);
+  });
+
+  it('hmac on an int field resets to None and shows an error', async () => {
+    await onSchemaStep([{ name: 'mrn', type: 'string' }, { name: 'visit_count', type: 'int' }]);
+    const c: any = component;
+    const f = c.schemaFields[1];
+    f.protect = { ...(f.protect || {}), method: 'hmac' };
+    c.onProtectChange(f);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(f.protect?.method || null).withContext('method reset to None').toBeNull();
+    expect(typeof f.protectError === 'string' && f.protectError.length > 0).withContext('protectError set').toBeTrue();
+    const err = Array.from(el.querySelectorAll('.field-error')).map(e => (e.textContent || '').trim()).join(' ');
+    expect(err).withContext('inline .field-error line').toContain(f.protectError);
+    expect(selectedText(rowFor('visit_count').querySelector('select.field-protect')).toLowerCase()).toMatch(/^none/);
+    expect(wire(component.buildConfig()).source.schemaProperties.fields[1].protect).toBeUndefined();
+
+    // drop is allowed on a non-string field.
+    f.protect = { ...(f.protect || {}), method: 'drop' };
+    c.onProtectChange(f);
+    expect(f.protect.method).toBe('drop');
+    expect(f.protectError || '').toBe('');
+  });
+
+  it('a key-field column offers only None and hmac', async () => {
+    await onSchemaStep(
+      [{ name: 'account_no', type: 'string' }, { name: 'email', type: 'string' }],
+      {
+        schemaProperties: { fields: [{ name: 'account_no', type: 'string' }, { name: 'email', type: 'string' }] },
+        database: { dbName: 'datris', schema: 'public', table: 'accounts', usePostgres: true, keyFields: ['account_no'] }
+      }
+    );
+    expect(component.destType).toBe('postgres');
+    const keyTexts = offered(rowFor('account_no').querySelector('select.field-protect')).map(t => t.toLowerCase());
+    expect(keyTexts.length).withContext('key column offers: ' + keyTexts.join(',')).toBe(2);
+    expect(keyTexts[0]).toMatch(/^none/);
+    expect(keyTexts[1]).toMatch(/^hmac/);
+    // A non-key column still offers everything.
+    expect(offered(rowFor('email').querySelector('select.field-protect')).length).toBe(5);
+  });
+
+  it('a dropped field is absent from the Key Fields select', () => {
+    const dests: Array<[string, () => void]> = [
+      ['postgres', () => {}],
+      ['snowflake', () => {}],
+      ['databricks', () => {}],
+      ['mongodb', () => {}],
+      ['objectstore', () => { component.osFormat = 'iceberg'; (component as any).osWriteMode = 'merge'; }]
+    ];
+    for (const [destType, extra] of dests) {
+      component.loadFromConfig(csvConfig([
+        { name: 'id', type: 'string' },
+        { name: 'ssn', type: 'string', protect: { method: 'drop' } },
+        { name: 'email', type: 'string', protect: { method: 'hmac' } }
+      ], { schemaProperties: { fields: [{ name: 'id', type: 'string' }, { name: 'ssn', type: 'string' }, { name: 'email', type: 'string' }] } }));
+      component.sourceType = 'csv';
+      component.step = 8;
+      component.destType = destType;
+      extra();
+      fixture.detectChanges();
+      expect(keyFieldsOptions()).withContext(destType + ' Key Fields').toEqual(['id', 'email']);
+    }
+    expect((component as any).keyFieldCandidates.map((f: any) => f.name ?? f)).toEqual(['id', 'email']);
+  });
+
+  it('Suggest protection calls the service with names and types only and marks fields as suggested', async () => {
+    await onSchemaStep([
+      { name: 'mrn', type: 'string' },
+      { name: 'email', type: 'string' },
+      { name: 'notes', type: 'string', protect: { method: 'drop' } },
+      { name: 'visit_count', type: 'int' }
+    ]);
+    const btn = (Array.from(el.querySelectorAll('button')) as HTMLButtonElement[])
+      .find(b => /^suggest protection$/i.test((b.textContent || '').trim()));
+    expect(btn).withContext('"Suggest protection" button on the schema step').toBeDefined();
+    expect(btn!.disabled).toBeFalse();
+    expect(el.textContent || '').toContain('Sends field names and types only, never data.');
+    btn!.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(suggestSpy).toHaveBeenCalledTimes(1);
+    expect(suggestSpy.calls.mostRecent().args[0]).toEqual([
+      { name: 'mrn', type: 'string' },
+      { name: 'email', type: 'string' },
+      { name: 'notes', type: 'string' },
+      { name: 'visit_count', type: 'int' }
+    ]);
+
+    const f: any[] = (component as any).schemaFields;
+    expect(f[0].suggested).toEqual(jasmine.objectContaining({ method: 'hmac', reason: 'stable identifier' }));
+    expect(f[0].protect?.method).toBe('hmac');
+    expect(f[1].suggested).toEqual(jasmine.objectContaining({ method: 'mask', preserve: 'domain' }));
+    expect(f[1].protect?.method).toBe('mask');
+    expect(f[1].protect?.preserve).toBe('domain');
+    // A value the user already chose is not overwritten by the suggestion.
+    expect(f[2].suggested).toEqual(jasmine.objectContaining({ method: 'redact', reason: 'free text' }));
+    expect(f[2].protect?.method).toBe('drop');
+    // No suggestion -> no marker, no protect.
+    expect(f[3].suggested).toBeFalsy();
+    expect(f[3].protect?.method || null).toBeNull();
+    expect((component as any).suggestingProtection).toBeFalse();
+
+    const lines = Array.from(el.querySelectorAll('.field-suggestion')).map(e => (e.textContent || '').trim());
+    expect(lines.length).withContext('one .field-suggestion per suggested field').toBe(3);
+    expect(lines.join(' ')).toContain('stable identifier');
+    expect(lines.join(' ')).toContain('contact address; the domain is still useful');
+  });
+
+  it('Clear removes a suggestion and its protect value; Keep removes only the suggested marker', async () => {
+    await onSchemaStep([{ name: 'mrn', type: 'string' }, { name: 'email', type: 'string' }]);
+    const c: any = component;
+    c.suggestProtection();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.field-suggestion').length).toBe(2);
+
+    c.keepSuggestion(0);
+    c.clearSuggestion(1);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(c.schemaFields[0].suggested).toBeFalsy();
+    expect(c.schemaFields[0].protect?.method).toBe('hmac');
+    expect(c.schemaFields[1].suggested).toBeFalsy();
+    expect(c.schemaFields[1].protect?.method || null).toBeNull();
+    expect(el.querySelectorAll('.field-suggestion').length).toBe(0);
+    expect(wire(component.buildConfig()).source.schemaProperties.fields).toEqual([
+      { name: 'mrn', type: 'string', protect: { method: 'hmac' } },
+      { name: 'email', type: 'string' }
+    ]);
+  });
+
+  it('json source shows no Protect select', async () => {
+    // Same wizard, CSV first: the Protect column and the Suggest button are there...
+    await onSchemaStep([{ name: 'mrn', type: 'string' }]);
+    expect(el.querySelector('select.field-protect')).withContext('csv shows the Protect select').not.toBeNull();
+    // ...and a JSON pipeline (single _json field) shows neither.
+    component.loadFromConfig({
+      name: 'events',
+      source: { fileAttributes: { jsonAttributes: { everyRowContainsObject: true } }, schemaProperties: { fields: [{ name: '_json', type: 'string' }] } },
+      destination: {}
+    });
+    expect(component.sourceType).toBe('json');
+    component.step = 3;
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('select.field-protect')).toBeNull();
+    const btn = (Array.from(el.querySelectorAll('button')) as HTMLButtonElement[])
+      .find(b => /suggest protection/i.test(b.textContent || ''));
+    expect(btn).withContext('no Suggest button for json').toBeUndefined();
+    expect(JSON.stringify(wire(component.buildConfig()))).not.toContain('protect');
+  });
+});
+
+describe('PipelineService.suggestFieldProtection', () => {
+  it('posts {fields} to /api/v1/pipeline/protect/suggest', () => {
+    TestBed.configureTestingModule({ providers: [PipelineService, provideHttpClient(), provideHttpClientTesting()] });
+    const svc: any = TestBed.inject(PipelineService);
+    const http = TestBed.inject(HttpTestingController);
+    let got: any = null;
+    const fields = [{ name: 'mrn', type: 'string' }];
+    expect(typeof svc.suggestFieldProtection).withContext('PipelineService.suggestFieldProtection').toBe('function');
+    svc.suggestFieldProtection(fields).subscribe((r: any) => got = r);
+    const req = http.expectOne('/api/v1/pipeline/protect/suggest');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ fields });
+    req.flush({ model: 'm', fields: [] });
+    expect(got).toEqual({ model: 'm', fields: [] });
+    http.verify();
   });
 });
