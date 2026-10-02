@@ -769,6 +769,44 @@ describe('PipelineCreateComponent — field protection', () => {
     ]);
   });
 
+  it('Keep adopts a suggestion over a value the user had already chosen', async () => {
+    await onSchemaStep([
+      { name: 'mrn', type: 'string' },
+      { name: 'notes', type: 'string', protect: { method: 'drop' } }
+    ]);
+    const c: any = component;
+    c.suggestProtection();
+    // The user's drop survives Suggest; the redact suggestion is only shown.
+    expect(c.schemaFields[1].protect?.method).toBe('drop');
+    expect(c.schemaFields[1].suggested).toEqual(jasmine.objectContaining({ method: 'redact' }));
+
+    c.keepSuggestion(1);
+    fixture.detectChanges();
+    expect(c.schemaFields[1].suggested).toBeFalsy();
+    expect(c.schemaFields[1].protect?.method).toBe('redact');
+    expect(wire(component.buildConfig()).source.schemaProperties.fields).toEqual([
+      { name: 'mrn', type: 'string', protect: { method: 'hmac' } },
+      { name: 'notes', type: 'string', protect: { method: 'redact' } }
+    ]);
+  });
+
+  it('an iceberg key field outside merge mode is not treated as a key column', async () => {
+    await onSchemaStep([{ name: 'email', type: 'string' }]);
+    const c: any = component;
+    c.destType = 'objectstore';
+    c.osFormat = 'iceberg';
+    c.osKeyFields = ['email'];
+    c.osWriteMode = 'merge';
+    expect(c.isKeyField('email')).toBeTrue();
+    c.osWriteMode = 'append';
+    expect(c.isKeyField('email')).toBeFalse();
+    const f = c.schemaFields[0];
+    f.protect = { method: 'mask', preserve: null };
+    c.onProtectChange(f);
+    expect(f.protect.method).toBe('mask');
+    expect(f.protectError || '').toBe('');
+  });
+
   it('json source shows no Protect select', async () => {
     // Same wizard, CSV first: the Protect column and the Suggest button are there...
     await onSchemaStep([{ name: 'mrn', type: 'string' }]);

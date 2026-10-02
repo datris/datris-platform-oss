@@ -690,7 +690,7 @@ export class PipelineCreateComponent implements OnInit {
       case 'mongodb': return this.mongoKeyFields;
       case 'snowflake': return this.sfKeyFields;
       case 'databricks': return this.dbxKeyFields;
-      case 'objectstore': return this.osFormat === 'iceberg' ? this.osKeyFields : [];
+      case 'objectstore': return this.osFormat === 'iceberg' && this.osWriteMode === 'merge' ? this.osKeyFields : [];
       default: return [];
     }
   }
@@ -785,10 +785,17 @@ export class PipelineCreateComponent implements OnInit {
     });
   }
 
-  /** Keep a suggestion: the protect value stays, the suggested marker goes. */
+  /** Keep a suggestion. When Suggest already filled protect, only the marker
+   *  goes; when the user had a different value, Keep adopts the suggestion
+   *  (through the same type guard) and then removes the marker. */
   keepSuggestion(index: number): void {
     const f = this.schemaFields[index];
-    if (f) f.suggested = null;
+    if (!f || !f.suggested) return;
+    if (!f.suggested.applied) {
+      f.protect = { method: f.suggested.method, preserve: f.suggested.preserve ?? null };
+      this.onProtectChange(f);
+    }
+    f.suggested = null;
   }
 
   /** Clear a suggestion: the marker goes, and so does the protect value when the
