@@ -1,6 +1,6 @@
 ---
 title: "Field Protection (PII / PHI)"
-description: "Pseudonymize, mask, redact, or drop sensitive fields before any AI stage or destination sees them"
+description: "Pseudonymize, mask, redact, encrypt, or drop sensitive fields before any AI stage or destination sees them"
 ---
 
 Field protection rewrites sensitive columns as the very first step after ingest, so every later stage only ever sees the protected value. You opt in per field with a `protect` object on the source schema.
@@ -9,7 +9,7 @@ Field protection rewrites sensitive columns as the very first step after ingest,
 
 Datris sends samples of your data to an AI provider when a pipeline uses an [AI rule](/data-quality/ai-rules), an [AI transformation](/transformation/ai-transformation), or error explanation. Field protection runs **before** all of them. A protected column reaches the AI provider, Live Read, and every destination only in its protected form, so the raw value of that column is never sent to a model provider. That means you do not need a business associate agreement (or a similar data-processing agreement) with the provider for the columns you protect. Columns you do not protect are sent as they are.
 
-Protection is deterministic and local: no value leaves the Datris server to be protected, and no status line, error message, or log line carries a raw value.
+Protection is local: no value leaves the Datris server to be protected, and no status line, error message, or log line carries a raw value.
 
 ## Methods
 
@@ -22,8 +22,11 @@ Protection is deterministic and local: no value leaves the Datris server to be p
 | `mask` + `"preserve": "year"` | A leading 4-digit year is kept; every letter and digit after it is masked and separators stay. A value without a leading year is masked entirely. | `1987-06-05` | `1987-**-**` |
 | `redact` | The value becomes `[REDACTED]`. | `anything` | `[REDACTED]` |
 | `drop` | The column (or top-level JSON key) is removed and never reaches a later stage or destination. | | |
+| `encrypt` | AES-256-GCM ciphertext under the environment's current encryption key, with a fresh random IV per value and bound to the pipeline and field name. Equal inputs give different outputs. The only reversible method: an authorized caller can [reveal](#revealing-a-value) the original. | `jane@example.com` | `enc:v1:Qm9…x3A` |
 
 Empty values stay empty for every method.
+
+An `encrypt` value is longer than its input: `enc:v<n>:` followed by the base64url of the input's UTF-8 bytes plus 28 bytes (a 12-byte IV and a 16-byte authentication tag). A 20-character email becomes 71 characters. If the destination column is a `varchar(n)`, size it for the ciphertext, not the original value.
 
 ## Config example
 
@@ -40,6 +43,7 @@ Empty values stay empty for every method.
         {"name": "email", "type": "string", "protect": {"method": "mask", "preserve": "domain"}},
         {"name": "dob", "type": "string", "protect": {"method": "mask", "preserve": "year"}},
         {"name": "notes", "type": "string", "protect": {"method": "redact"}},
+        {"name": "phone", "type": "string", "protect": {"method": "encrypt"}},
         {"name": "ssn", "type": "string", "protect": {"method": "drop"}},
         {"name": "visit_date", "type": "string"},
         {"name": "amount", "type": "string"}
@@ -63,7 +67,7 @@ From an agent, `create_pipeline` takes the same policies as a `protect` map keye
 
 ## Suggestions
 
-Datris can propose a starting point. The configured CodeGen model receives the field **names and types only** (one `name:type` line per field) and returns, for each field, `hmac`, `mask` with an optional `preserve`, `redact`, `drop`, or no protection, with a one-line reason. No row value is sent, and nothing is saved: you confirm the fields you want and then save them as `protect`.
+Datris can propose a starting point. The configured CodeGen model receives the field **names and types only** (one `name:type` line per field) and returns, for each field, `hmac`, `mask` with an optional `preserve`, `redact`, `drop`, or no protection (it never suggests `encrypt`; choose that yourself), with a one-line reason. No row value is sent, and nothing is saved: you confirm the fields you want and then save them as `protect`.
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/pipeline/protect/suggest \
@@ -91,17 +95,54 @@ Each run that protects data adds one status line such as `Protected 3 fields: mr
 
 ## Type rules
 
-- `hmac`, `mask`, and `redact` produce a string, so the field must be `string` in the source schema and, when a destination schema lists it, `string` there too.
+- `hmac`, `mask`, `redact`, and `encrypt` produce a string, so the field must be `string` in the source schema and, when a destination schema lists it, `string` there too.
 - `drop` works on a field of any type.
-- A column named in the destination's `keyFields` may only use `hmac`: `mask` and `redact` would give different rows the same key (so upserts would merge them), and `drop` would remove the key.
+- A column named in the destination's `keyFields` may only use `hmac`: `mask` and `redact` would give different rows the same key (so upserts would merge them), `encrypt` gives the same value a different ciphertext on every run (so upserts would never match), and `drop` would remove the key.
 - The source must be delimited (CSV and similar) or JSON. For JSON pipelines the source schema lists `_json` plus one entry for each protected **top-level** key; nested keys are not supported yet.
-- Unknown methods, `preserve` on anything but `mask`, and the reserved methods `fpe`, `encrypt`, and `tokenize` are rejected when the pipeline is saved. Like other validation errors, the save returns HTTP 500 with `{"error": "..."}` naming the field.
+- Unknown methods, `preserve` on anything but `mask`, and the reserved methods `fpe` and `tokenize` are rejected when the pipeline is saved. Like other validation errors, the save returns HTTP 500 with `{"error": "..."}` naming the field.
 
 ## The key
 
 `hmac` uses one key per environment, stored in Vault as the secret `<environment>/field-protection`, field `key`. The server issues it the first time a protected run needs it and records an `key / issue / field-protection` event in the [audit log](/audit-log).
 
 The key is read fail-closed: if Vault cannot be read, the run fails rather than writing data with a new key. Datris never rotates the key automatically. Rotating it yourself changes every pseudonym, so new values will no longer match or join with data already landed.
+
+`encrypt` uses separate, versioned keys in the same secret: fields `enc.v1`, `enc.v2`, and so on, with `encCurrent` naming the version new values are encrypted with. The server issues `enc.v1` the first time an `encrypt` run needs it (audited as `key / issue / field-protection`). Keys never leave the server and no user ever holds one. See [Key rotation](#key-rotation).
+
+## Revealing a value
+
+`encrypt` is the one reversible method. To read an original value back, send the ciphertexts you read from the destination to the reveal endpoint:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/protect/reveal \
+  -H "x-api-key: <key with protect:reveal>" -H "Content-Type: application/json" \
+  -d '{"pipeline": "patients", "field": "phone", "values": ["enc:v1:Qm9…x3A"]}'
+```
+
+The response has one slot per input value, in order:
+
+```json
+{"pipeline": "patients", "field": "phone", "values": ["555-0142"], "revealed": 1, "failed": 0, "errors": []}
+```
+
+- **Who can call it:** an API key granted `protect:reveal`, or an admin session. No key template and neither the editor nor the viewer role carries it, so it must be granted explicitly in the API Keys tab (the `full-access` template and legacy unscoped keys hold it through `*:*`). There is no MCP tool, Assistant action, CLI command, or UI button for it, and the recovery agent's key does not have it, so an agent can never reveal a value.
+- **What is checked:** the field must carry `protect` with method `encrypt` (otherwise HTTP 400). Each ciphertext is bound to its pipeline and field name, so a value copied to another pipeline or column does not reveal: that slot is `null` and `errors` gets `{"index", "message"}`, and the rest of the call still succeeds.
+- **Limit:** at most 1000 values per call (more returns HTTP 400).
+- **What is logged:** every call is a `protect / reveal` event in the [audit log](/audit-log) naming who called, the pipeline, the field, and how many values were requested, revealed, and failed (outcome `warning` when any failed). The values themselves and the ciphertexts are never logged or recorded. A call without the capability is refused with HTTP 403 and recorded as a `security` denied event.
+
+Reveal is stateless: Datris never queries a destination to find the values, so you choose exactly which rows to reveal.
+
+## Key rotation
+
+To start encrypting with a new key, rotate it with a key that has `protect:admin` (or an admin session):
+
+```bash
+curl -X POST http://localhost:8080/api/v1/protect/keys/rotate -H "x-api-key: <admin key>"
+```
+
+The response is `{"version": 2}`. Runs after this write `enc:v2:` values. The old versions stay in the secret, so rows already landed with `enc:v1:` still reveal; Datris does not re-encrypt landed rows. The rotation is recorded as a `key / rotate / field-protection` event. The `hmac` key is never rotated by this endpoint.
+
+To retire an old version, delete its `enc.v<n>` field from the `<environment>/field-protection` secret by hand (never the `key`, `encCurrent`, or the current version's field). After that, every value encrypted with that version can no longer be revealed; re-landing those rows from the original source is the only way back. A retired version number is never reused.
 
 ## Source retention
 
@@ -131,7 +172,7 @@ Run these on synthetic rows that have the same shape as your data, or use an AI 
 
 ## Not yet supported
 
-- Reversible methods (format-preserving encryption, encryption, tokenization).
+- Format-preserving encryption and tokenization.
 - Nested JSON keys.
 - XML sources.
 - Vector destinations.

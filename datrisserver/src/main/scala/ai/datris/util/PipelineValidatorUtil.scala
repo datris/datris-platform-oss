@@ -111,11 +111,12 @@ object PipelineValidatorUtil {
 
     /** Source fields carrying `protect` (FieldProtection). Refused here, at
       * save, so a pipeline can never silently store plaintext: unknown and
-      * reversible (not yet supported) methods, `preserve` outside `mask` or
-      * outside last4/domain/year, a string-producing method on a non-string
-      * source or destination field, any method but hmac on a key field (mask
-      * and redact would make rows share a key, drop removes it), and any
-      * source that is not delimited or JSON. */
+      * reserved (not yet supported: fpe, tokenize) methods, `preserve` outside
+      * `mask` or outside last4/domain/year, a string-producing method (encrypt
+      * included) on a non-string source or destination field, any method but
+      * hmac on a key field (mask and redact would make rows share a key,
+      * encrypt's fresh IV per value would split one key into many, drop
+      * removes it), and any source that is not delimited or JSON. */
     private def validateFieldProtection(config: PipelineConfig): Unit = {
         val sp = config.source.schemaProperties
         if (sp == null || sp.fields == null) return
@@ -152,7 +153,7 @@ object PipelineValidatorUtil {
                 throw new DatrisException("Field '" + f.name + "': protect.method '" + method + "' is not yet supported")
             if (!ProtectionPolicy.Methods.contains(method))
                 throw new DatrisException(
-                    "Field '" + f.name + "': unknown protect.method '" + Option(p.method).getOrElse("") + "' (hmac, mask, redact, drop)"
+                    "Field '" + f.name + "': unknown protect.method '" + Option(p.method).getOrElse("") + "' (hmac, mask, redact, drop, encrypt)"
                 )
             if (p.preserve != null) {
                 if (method != "mask")

@@ -157,11 +157,16 @@ object FieldProtectionAdvisor {
 
     private def isString(t: String): Boolean = t != null && t.trim.equalsIgnoreCase("string")
 
+    /** Methods a suggestion may carry: every accepted method except
+      * `encrypt`, which is reversible and so a deliberate choice by a person
+      * (field-protection-5), never a model's proposal. */
+    private val Suggestable: Set[String] = ProtectionPolicy.Methods - "encrypt"
+
     /** Validator rules: known method; preserve only with mask and only from
       * the allowed set; string-producing methods only on string fields. */
     private def clamp(fieldType: String, method: String, preserve: String): ProtectionPolicy = {
         val m = Option(method).map(_.trim.toLowerCase).getOrElse("")
-        if (!ProtectionPolicy.Methods.contains(m)) return null
+        if (!Suggestable.contains(m)) return null
         if (m != "drop" && !isString(fieldType)) return null
         val p =
             if (m == "mask") Option(preserve).map(_.trim.toLowerCase).filter(ProtectionPolicy.Preserves.contains).orNull

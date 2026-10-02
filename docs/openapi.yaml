@@ -33,21 +33,25 @@ components:
       description: >-
         Per-field protection applied after the preprocessor and before data
         quality, transformation, Live Read and every destination. `hmac`,
-        `mask` and `redact` require a `string` field on the source and on the
-        destination schema; `drop` takes any type but cannot remove a
-        `keyFields` column. Reserved methods (`fpe`, `encrypt`, `tokenize`)
-        are rejected as not yet supported. Empty values stay empty.
+        `mask`, `redact` and `encrypt` require a `string` field on the source
+        and on the destination schema; `drop` takes any type but cannot remove
+        a `keyFields` column, and a `keyFields` column may only use `hmac`.
+        Reserved methods (`fpe`, `tokenize`) are rejected as not yet
+        supported. Empty values stay empty.
       required: [method]
       properties:
         method:
           type: string
-          enum: [hmac, mask, redact, drop]
+          enum: [hmac, mask, redact, drop, encrypt]
           description: >-
             `hmac`: keyed HMAC-SHA256 pseudonym (lowercase hex) under the
             per-environment key; equal inputs give equal outputs. `mask`:
             replace characters with `*` (see `preserve`). `redact`: the value
             becomes `[REDACTED]`. `drop`: remove the column (or top-level JSON
-            key) entirely.
+            key) entirely. `encrypt`: AES-256-GCM ciphertext
+            `enc:v<n>:<base64url>` bound to the pipeline and field, longer
+            than the input; reversible only through `POST /api/v1/protect/reveal`
+            with the `protect:reveal` capability.
         preserve:
           type: string
           enum: [last4, domain, year]
@@ -1530,6 +1534,103 @@ paths:
 
   # ── File Upload & AI ────────────────────────────────────────
 
+  /api/v1/protect/reveal:
+    post:
+      tags: [Pipelines]
+      summary: Reveal values of an encrypt-protected field
+      description: >-
+        Decrypts `enc:v<n>:` ciphertexts that a pipeline's `encrypt` field
+        protection wrote to a destination. Stateless: send the ciphertexts you
+        read from the destination; Datris never queries a destination. A
+        ciphertext is bound to its pipeline and field, so one copied to another
+        pipeline or column fails. Needs the `protect:reveal` capability, which
+        no key template or editor/viewer role carries; admins, the
+        `full-access` template and legacy unscoped keys hold it through `*:*`.
+        Not available as an MCP tool. Every call is recorded in the audit log
+        as `protect / reveal` (field name and counts only, never a value), with
+        outcome `warning` when any value failed; denied calls are recorded as
+        `security` events.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipeline, field, values]
+              properties:
+                pipeline:
+                  type: string
+                  description: Pipeline name
+                field:
+                  type: string
+                  description: Source field name; it must carry `protect` with method `encrypt`
+                values:
+                  type: array
+                  maxItems: 1000
+                  items:
+                    type: string
+                  description: Ciphertexts (`enc:v<n>:...`), at most 1000 per call
+      responses:
+        '200':
+          description: >-
+            One slot per input value, in input order. A value that is not a
+            Datris ciphertext for this pipeline and field (or whose key version
+            no longer exists) yields `null` in its slot and an entry in
+            `errors`; the rest are still revealed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  field:
+                    type: string
+                  values:
+                    type: array
+                    items:
+                      type: string
+                      nullable: true
+                  revealed:
+                    type: integer
+                  failed:
+                    type: integer
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index:
+                          type: integer
+                        message:
+                          type: string
+        '400':
+          description: Missing `pipeline`, `field` or `values`, more than 1000 values, unknown pipeline, or a field not protected with `encrypt`
+        '403':
+          description: The caller lacks `protect:reveal`
+  /api/v1/protect/keys/rotate:
+    post:
+      tags: [Pipelines]
+      summary: Rotate the field protection encryption key
+      description: >-
+        Issues a new version of the environment's `encrypt` key and makes it
+        current; runs after this encrypt with the new version (`enc:v<n>:`).
+        Older versions stay in the secret, so values encrypted with them still
+        reveal. The `hmac` key is never rotated. Needs `protect:admin`.
+        Recorded in the audit log as `key / rotate` with resource
+        `field-protection`.
+      responses:
+        '200':
+          description: The new current version
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: integer
+        '403':
+          description: The caller lacks `protect:admin`
   /api/v1/pipeline/upload:
     post:
       tags: [Ingestion]

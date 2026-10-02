@@ -28,6 +28,10 @@ import scala.collection.JavaConverters._
   *  - `redact` the value becomes `[REDACTED]`.
   *  - `drop`   the column (delimited) or top-level key (JSON) is removed, and
   *             the field leaves the in-memory source and destination schemas.
+  *  - `encrypt` `enc:v<n>:` AES-256-GCM token ([[FieldCipher]]) under the
+  *             current versioned key (FieldProtectionKey.encryptionKey), bound
+  *             to the pipeline name and the source field name; reversible
+  *             only through the audited reveal endpoint.
   *
   * Empty values stay empty for every method. Deterministic and local: no
   * value ever leaves the process, and no status line, exception message or
@@ -47,6 +51,9 @@ object FieldProtection {
 
     /** Fixed HMAC key instead of FieldProtectionKey.ensure() (no Vault in unit tests). */
     @volatile private[datris] var keyOverride: Array[Byte] = null
+
+    /** Fixed (version, key) instead of FieldProtectionKey.encryptionKey() (no Vault in unit tests). */
+    @volatile private[datris] var encryptionKeyOverride: (Int, Array[Byte]) = null
 
     /** Object store for the purge's bulk listing and deletes (null → ObjectStoreUtil). */
     @volatile private[datris] var objectStoreOverride: ObjectStoreUtility = null
@@ -68,19 +75,31 @@ object FieldProtection {
     private def failure(field: String, p: ProtectionPolicy): DatrisException =
         new DatrisException("Field protection failed on field '" + field + "' (" + Option(p).map(_.label).getOrElse("null") + ")")
 
-    /** One value through one policy. Pure. `key` is only read by `hmac`. */
-    private[datris] def protectValue(policy: ProtectionPolicy, value: String, key: Array[Byte]): String = {
+    /** The keys one run needs: `hmac` (null unless a field uses hmac) and the
+      * current encryption key (null unless a field uses encrypt), plus the
+      * pipeline name `encrypt` binds each ciphertext to. */
+    private[datris] case class RunKeys(hmac: Array[Byte], enc: (Int, Array[Byte]), pipeline: String)
+
+    /** One value through one policy. Pure. `key` is only read by `hmac`; `encrypt` needs `keys`. */
+    private[datris] def protectValue(policy: ProtectionPolicy, value: String, key: Array[Byte]): String =
+        protectValue(policy, value, RunKeys(key, null, null), null)
+
+    private[datris] def protectValue(policy: ProtectionPolicy, value: String, keys: RunKeys, field: String): String = {
         val method = methodOf(policy)
         if (ProtectionPolicy.Reserved.contains(method))
             throw new DatrisException("Field protection method '" + method + "' is not yet supported")
         if (!ProtectionPolicy.Methods.contains(method))
-            throw new DatrisException("Unknown field protection method '" + method + "' (hmac, mask, redact, drop)")
+            throw new DatrisException("Unknown field protection method '" + method + "' (hmac, mask, redact, drop, encrypt)")
         if (value == null || value.isEmpty) return value
         method match {
-            case "hmac" => hmac(value, key)
+            case "hmac" => hmac(value, if (keys == null) null else keys.hmac)
             case "mask" => mask(value, policy.preserve)
             case "redact" => Redacted
             case "drop" => null
+            case "encrypt" =>
+                if (keys == null || keys.enc == null || keys.pipeline == null || field == null)
+                    throw new DatrisException("Field protection: no encryption key")
+                FieldCipher.encrypt(keys.enc._2, keys.enc._1, keys.pipeline, field, value)
         }
     }
 
@@ -148,11 +167,17 @@ object FieldProtection {
         val previous = if (ctx.data != null) ctx.data.staged else null
         val (protectedCtx, applied) =
             try {
-                val key: Array[Byte] =
+                val hmacKey: Array[Byte] =
                     if (fields.exists(f => methodOf(f.protect) == "hmac")) {
                         val k = keyOverride
                         if (k != null) k else FieldProtectionKey.ensure()
                     } else null
+                val encKey: (Int, Array[Byte]) =
+                    if (fields.exists(f => methodOf(f.protect) == "encrypt")) {
+                        val k = encryptionKeyOverride
+                        if (k != null) k else FieldProtectionKey.encryptionKey()
+                    } else null
+                val key = RunKeys(hmacKey, encKey, ctx.config.name)
 
                 val data = ctx.data
                 if (data == null || data.staged == null || data.staged.isEmpty) (withSchemas(ctx, fields), fields)
@@ -177,7 +202,7 @@ object FieldProtection {
     }
 
     /** Rewrite each delimited row by header index into a new staged file. */
-    private def protectDelimited(ctx: JobContext, fields: List[SchemaField], key: Array[Byte]): (JobContext, List[SchemaField]) = {
+    private def protectDelimited(ctx: JobContext, fields: List[SchemaField], key: RunKeys): (JobContext, List[SchemaField]) = {
         val data = ctx.data
         val delimiter = data.delimiter
         val header: List[String] =
@@ -200,7 +225,7 @@ object FieldProtection {
                     byIndex.get(i) match {
                         case Some(f) =>
                             val p =
-                                try protectValue(f.protect, v, key)
+                                try protectValue(f.protect, v, key, f.name)
                                 catch { case _: Exception => throw failure(f.name, f.protect) }
                             Some(ProvenanceStamper.csvEncode(if (p == null) "" else p, delimiter))
                         case None => Some(ProvenanceStamper.csvEncode(v, delimiter))
@@ -227,7 +252,7 @@ object FieldProtection {
     }
 
     /** Rewrite / remove top-level keys of each NDJSON object into a new staged file. */
-    private def protectNdJson(ctx: JobContext, fields: List[SchemaField], key: Array[Byte]): JobContext = {
+    private def protectNdJson(ctx: JobContext, fields: List[SchemaField], key: RunKeys): JobContext = {
         val source = ctx.data.staged
         val byKey: Map[String, SchemaField] = fields.map(f => f.name.toLowerCase -> f).toMap
         val gson = PayloadStager.gson
@@ -264,7 +289,7 @@ object FieldProtection {
         withSchemas(ctx.copy(data = ctx.data.withStaged(staged)), fields)
     }
 
-    private def protectObject(obj: JsonObject, byKey: Map[String, SchemaField], key: Array[Byte]): Unit = {
+    private def protectObject(obj: JsonObject, byKey: Map[String, SchemaField], key: RunKeys): Unit = {
         // Copy the key set: drop removes while iterating.
         val keys = new java.util.ArrayList[String](obj.keySet())
         keys.asScala.foreach { k =>
@@ -275,7 +300,7 @@ object FieldProtection {
                     if (v != null && !v.isJsonNull) {
                         val text = if (v.isJsonPrimitive) v.getAsString else v.toString
                         val p =
-                            try protectValue(f.protect, text, key)
+                            try protectValue(f.protect, text, key, f.name)
                             catch { case _: Exception => throw failure(f.name, f.protect) }
                         obj.add(k, new JsonPrimitive(if (p == null) "" else p))
                     }

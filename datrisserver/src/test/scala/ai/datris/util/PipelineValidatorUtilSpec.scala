@@ -876,7 +876,7 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val cfg = protectConfig("""[{"name":"mrn","type":"string","protect":{"method":"scramble"}}]""")
         parsesProtect(cfg)
         val err = validationError(cfg)
-        assert(err.contains("Field 'mrn': unknown protect.method 'scramble' (hmac, mask, redact, drop)"), s"got: $err")
+        assert(err.contains("Field 'mrn': unknown protect.method 'scramble' (hmac, mask, redact, drop, encrypt)"), s"got: $err")
     }
 
     // Story 5 (field-protection-5-encrypt-reveal): encrypt is accepted; fpe and tokenize stay reserved.

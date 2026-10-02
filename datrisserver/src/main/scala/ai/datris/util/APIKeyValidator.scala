@@ -283,7 +283,12 @@ object APIKeyValidator {
     /** Maps a user role to the capability bundle the role grants. Kept
       * conservative — admins are functionally legacy `*:*`, editors can
       * create and modify but not edit secrets or platform config, viewers
-      * can read everything but write nothing. */
+      * can read everything but write nothing.
+      *
+      * Neither the editor nor the viewer bundle carries `protect:*`: reveal
+      * returns the original value of an `encrypt` field (PHI/PII) and admin
+      * rotates its key, so both are granted explicitly on a key or held by
+      * admins through FullAccess. Do not add them here. */
     private def roleToCapabilities(role: String): Seq[Capability] = role match {
         case User.RoleAdmin =>
             Seq(Capability.FullAccess)

@@ -38,8 +38,8 @@ case class ProtectionPolicy @JsonCreator() (
 }
 
 object ProtectionPolicy {
-    val Methods: Set[String] = Set("hmac", "mask", "redact", "drop")
-    val Reserved: Set[String] = Set("fpe", "encrypt", "tokenize")
+    val Methods: Set[String] = Set("hmac", "mask", "redact", "drop", "encrypt")
+    val Reserved: Set[String] = Set("fpe", "tokenize")
     val Preserves: Set[String] = Set("last4", "domain", "year")
 }
 

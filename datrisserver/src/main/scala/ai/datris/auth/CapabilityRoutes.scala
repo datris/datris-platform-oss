@@ -83,6 +83,12 @@ object CapabilityRoutes {
         Route("POST", "/api/v1/pipeline/dest-types", "pipeline", "update"),
         // Field protection suggestions: stateless, names and types only, saves nothing.
         Route("POST", "/api/v1/pipeline/protect/suggest", "pipeline", "read"),
+        // Field protection reveal (decrypts `encrypt` ciphertext) and key
+        // rotation. REST only, no MCP tool; `protect:*` is in no template,
+        // role bundle or agent key, so only admins, `*:*` keys and keys
+        // granted it explicitly pass.
+        Route("POST", "/api/v1/protect/reveal", "protect", "reveal"),
+        Route("POST", "/api/v1/protect/keys/rotate", "protect", "admin"),
         // Catalog operations (rename / detach-or-cascade delete). One route
         // row per method; members are owner-scope checked in the controller.
         Route("PUT", "/api/v1/catalog/**", "pipeline", "update"),

@@ -7,9 +7,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.AuditLog
 import ai.datris.model.{DatrisEnvironment, DatrisException, SchemaField}
-import ai.datris.util.{APIKeyValidator, FieldProtectionAdvisor, PipelineConfigIO}
+import ai.datris.util.{APIKeyValidator, FieldCipher, FieldProtectionAdvisor, FieldProtectionKey, PipelineConfigIO}
 import com.google.common.base.Throwables
-import com.google.gson.{Gson, JsonArray, JsonObject}
+import com.google.gson.{Gson, JsonArray, JsonNull, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -19,7 +19,13 @@ import scala.collection.JavaConverters._
 
 /** Field protection suggestions (plans/stories/field-protection-3-classifier.md).
   * Stateless and read-only: asks the CodeGen model which fields should carry
-  * `protect`, from field names and types only. Nothing is saved. */
+  * `protect`, from field names and types only. Nothing is saved.
+  *
+  * Reveal and encryption-key rotation (plans/stories/field-protection-5-encrypt-reveal.md):
+  * REST only, gated by `protect:reveal` / `protect:admin` in CapabilityRoutes,
+  * never exposed as an MCP tool. Reveal is stateless (the caller supplies the
+  * ciphertext it read from the destination) and always audited; neither a
+  * value nor a ciphertext is ever logged or written to audit metadata. */
 @RestController
 @RequestMapping(Array("/api/v1"))
 class FieldProtectionAPIController {
@@ -89,7 +95,175 @@ class FieldProtectionAPIController {
                 ApiErrors.internal(e)
         }
     }
+
+    /** Body: `{"pipeline": "<name>", "field": "<name>", "values": ["enc:v1:...", ...]}`.
+      * Response: `{"pipeline", "field", "values": [plaintext | null], "revealed", "failed", "errors": [{index, message}]}`. */
+    @PostMapping(
+        path = Array("/protect/reveal"),
+        consumes = Array(MediaType.APPLICATION_JSON_VALUE),
+        produces = Array(MediaType.APPLICATION_JSON_VALUE)
+    )
+    def reveal(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: RevealRequest,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        val pipeline = Option(body).flatMap(b => Option(b.pipeline)).map(_.trim).filter(_.nonEmpty).orNull
+        val fieldName = Option(body).flatMap(b => Option(b.field)).map(_.trim).filter(_.nonEmpty).orNull
+        val requested = Option(body).flatMap(b => Option(b.values)).map(_.size).getOrElse(0)
+
+        // Names and counts only: never a value or a ciphertext.
+        def audit(outcome: String, status: Int, revealed: Int, failed: Int, error: String): Unit =
+            try {
+                val md = new JsonObject()
+                if (fieldName != null) md.addProperty("field", fieldName)
+                md.addProperty("requested", requested)
+                md.addProperty("revealed", revealed)
+                md.addProperty("failed", failed)
+                AuditLog.record(request, "protect", "reveal", "pipeline", pipeline, outcome, status, md, error)
+            } catch { case e: Exception => logger.warn("audit record failed: " + e.getMessage) }
+
+        try {
+            logger.info("API endpoint POST /protect/reveal called" + Option(pipeline).map(" for pipeline: " + _).getOrElse(""))
+            APIKeyValidator.validate(apiKey)
+            if (pipeline == null) throw new DatrisException("'pipeline' is required")
+            if (fieldName == null) throw new DatrisException("'field' is required")
+            if (body.values == null) throw new DatrisException("'values' is required (an array of enc:v<n>: ciphertexts)")
+            if (requested > FieldProtectionAPIController.MaxRevealValues)
+                throw new DatrisException(
+                    "At most " + FieldProtectionAPIController.MaxRevealValues + " values per reveal call (got " + requested + ")"
+                )
+
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
+            if (config == null)
+                throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
+            val sp = if (config.source != null) config.source.schemaProperties else null
+            val sourceField: SchemaField =
+                Option(sp).flatMap(s => Option(s.fields)).map(_.asScala.toList).getOrElse(Nil)
+                    .find(f => f != null && f.name != null && f.name.trim.equalsIgnoreCase(fieldName))
+                    .orNull
+            val isEncrypt = sourceField != null && sourceField.protect != null && sourceField.protect.method != null &&
+                sourceField.protect.method.trim.equalsIgnoreCase("encrypt")
+            if (!isEncrypt)
+                throw new DatrisException("Field '" + fieldName + "' of pipeline '" + pipeline + "' is not protected with method 'encrypt'")
+
+            // The ciphertext is bound to the names the run used: the stored
+            // pipeline name and the source field name.
+            val boundPipeline = Option(config.name).getOrElse(pipeline)
+            val boundField = sourceField.name
+
+            // One secret read per key version per call, not per value. A
+            // read failure is a server error, not a bad ciphertext.
+            val keys = scala.collection.mutable.Map[Int, Array[Byte]]()
+            var keyStoreError: DatrisException = null
+            val lookup: Int => Array[Byte] = v =>
+                keys.getOrElseUpdate(
+                    v,
+                    try FieldProtectionKey.encryptionKey(v)
+                    catch {
+                        case e: DatrisException =>
+                            if (e.getMessage != null && e.getMessage.contains("could not read")) keyStoreError = e
+                            null
+                    }
+                )
+
+            val values = new JsonArray()
+            val errors = new JsonArray()
+            var revealed = 0
+            var failed = 0
+            body.values.asScala.zipWithIndex.foreach { case (token, i) =>
+                try {
+                    val plain = FieldCipher.decrypt(lookup, boundPipeline, boundField, token)
+                    if (plain == null) values.add(JsonNull.INSTANCE) else values.add(plain)
+                    revealed += 1
+                } catch {
+                    case e: Exception =>
+                        values.add(JsonNull.INSTANCE)
+                        failed += 1
+                        val err = new JsonObject()
+                        err.addProperty("index", i)
+                        err.addProperty(
+                            "message",
+                            e match {
+                                case d: DatrisException => d.getMessage
+                                case _ => "Value could not be revealed"
+                            }
+                        )
+                        errors.add(err)
+                }
+            }
+            if (keyStoreError != null) throw keyStoreError
+
+            audit(if (failed > 0) "warning" else "success", 200, revealed, failed, null)
+            val response = new JsonObject()
+            response.addProperty("pipeline", pipeline)
+            response.addProperty("field", fieldName)
+            response.add("values", values)
+            response.addProperty("revealed", revealed)
+            response.addProperty("failed", failed)
+            response.add("errors", errors)
+            new ResponseEntity[String](new Gson().toJson(response), HttpStatus.OK)
+        } catch {
+            case e: DatrisException if e.getMessage != null && e.getMessage.startsWith("Field protection: could not read") =>
+                logger.error("Field protection reveal: " + e.getMessage)
+                audit("failure", 500, 0, 0, e.getMessage)
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
+            case e: DatrisException =>
+                logger.warn("Field protection reveal refused: " + e.getMessage)
+                audit("failure", 400, 0, 0, e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
+            case e: Exception =>
+                // Class name only: an underlying message could quote a value.
+                logger.error("Field protection reveal failed (" + e.getClass.getName + ")")
+                audit("failure", 500, 0, 0, "Reveal failed (" + e.getClass.getSimpleName + ")")
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String]("{\"error\": \"Reveal failed\"}")
+        }
+    }
+
+    /** Issue a new encryption key version and make it current; older versions
+      * stay readable. Response: `{"version": n}`. Audited as `key / rotate`. */
+    @PostMapping(path = Array("/protect/keys/rotate"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def rotateKey(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /protect/keys/rotate called")
+            APIKeyValidator.validate(apiKey)
+            val version = FieldProtectionKey.rotateEncryptionKey((action: String, field: String) =>
+                try AuditLog.record(request, "key", action, "field-protection", field)
+                catch { case e: Exception => logger.warn("audit record failed: " + e.getMessage) }
+            )
+            val response = new JsonObject()
+            response.addProperty("version", version)
+            new ResponseEntity[String](new Gson().toJson(response), HttpStatus.OK)
+        } catch {
+            case e: DatrisException =>
+                logger.warn("Field protection key rotation refused: " + e.getMessage)
+                try AuditLog.record(request, "key", "rotate", "field-protection", null, "failure", 400, null, e.getMessage)
+                catch { case _: Exception => () }
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                try AuditLog.record(request, "key", "rotate", "field-protection", null, "failure", 500, null, e.getMessage)
+                catch { case _: Exception => () }
+                ApiErrors.internal(e)
+        }
+    }
 }
+
+object FieldProtectionAPIController {
+
+    /** Values per reveal call. */
+    val MaxRevealValues = 1000
+}
+
+/** Reveal request body. */
+case class RevealRequest(
+    pipeline: String = null,
+    field: String = null,
+    values: java.util.List[String] = null
+)
 
 /** Request body — bound the same way ApplyDestTypesRequest is. */
 case class SuggestProtectionRequest(

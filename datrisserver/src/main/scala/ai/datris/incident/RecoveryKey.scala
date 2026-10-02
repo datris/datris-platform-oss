@@ -47,6 +47,8 @@ object RecoveryKey {
         "approval:read:owner=self",
         // run_doctor (GET /api/v1/doctor) during diagnosis — read-only.
         "config:read"
+        // `protect:*` is deliberately absent: an agent never reveals an
+        // encrypted field value or rotates its key (ProtectCapabilityTemplatesSpec).
     )
 
     private val logger = LoggerFactory.getLogger(getClass)
