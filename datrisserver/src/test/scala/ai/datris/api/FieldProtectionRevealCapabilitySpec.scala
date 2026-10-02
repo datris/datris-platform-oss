@@ -65,4 +65,18 @@ class FieldProtectionRevealCapabilitySpec extends AnyFunSuite {
         intercept[CapabilityDeniedException](FieldProtectionAPIController.requireCapability(req(Some(key(Seq("protect:reveal")))), "admin"))
         intercept[CapabilityDeniedException](FieldProtectionAPIController.requireCapability(req(Some(key(Seq("protect:admin")))), "reveal"))
     }
+
+    test("reveal counts only non-empty values as revealed; empty and null pass through") {
+        val k: Array[Byte] = Array.tabulate[Byte](32)(i => i.toByte)
+        val t = ai.datris.util.FieldCipher.encrypt(k, 1, "patients", "email", "jane@example.com")
+        val lookup: Int => Array[Byte] = v => if (v == 1) k else null
+        val (values, errors, revealed, failed) =
+            FieldProtectionAPIController.decryptAll(lookup, "patients", "email", Seq("", null, t, "enc:v1:AAAA"))
+        assert(revealed == 1 && failed == 1, s"revealed=$revealed failed=$failed")
+        assert(values.get(0).getAsString == "" && values.get(1).isJsonNull)
+        assert(values.get(2).getAsString == "jane@example.com" && values.get(3).isJsonNull)
+        assert(errors.size == 1 && errors.get(0).getAsJsonObject.get("index").getAsInt == 3)
+        val (_, _, r2, f2) = FieldProtectionAPIController.decryptAll(lookup, "patients", "email", Seq("", null))
+        assert(r2 == 0 && f2 == 0)
+    }
 }

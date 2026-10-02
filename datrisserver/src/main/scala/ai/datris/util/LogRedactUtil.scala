@@ -15,9 +15,10 @@ object LogRedactUtil {
 
     /** Field-name pattern for JSON / query-string redaction. Deliberately a
       * substring match rather than an exact list so a new endpoint that takes
-      * a `clientSecret`, `refreshToken`, or `x-api-key` still gets caught. */
+      * a `clientSecret`, `refreshToken`, or `x-api-key` still gets caught.
+      * `enc.v<n>` is a field-protection encryption key (FieldProtectionKey). */
     private val sensitiveFieldPattern =
-        "(?i)(password|passwd|secret|token|api[_-]?key|apikey|authorization|cookie|credential|private[_-]?key)".r
+        "(?i)(password|passwd|secret|token|api[_-]?key|apikey|authorization|cookie|credential|private[_-]?key|enc\\.v\\d)".r
 
     def isSensitiveField(name: String): Boolean =
         name != null && sensitiveFieldPattern.findFirstIn(name).isDefined

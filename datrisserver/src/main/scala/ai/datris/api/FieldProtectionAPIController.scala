@@ -170,31 +170,8 @@ class FieldProtectionAPIController {
                     }
                 )
 
-            val values = new JsonArray()
-            val errors = new JsonArray()
-            var revealed = 0
-            var failed = 0
-            values0.asScala.zipWithIndex.foreach { case (token, i) =>
-                try {
-                    val plain = FieldCipher.decrypt(lookup, boundPipeline, boundField, token)
-                    if (plain == null) values.add(JsonNull.INSTANCE) else values.add(plain)
-                    revealed += 1
-                } catch {
-                    case e: Exception =>
-                        values.add(JsonNull.INSTANCE)
-                        failed += 1
-                        val err = new JsonObject()
-                        err.addProperty("index", i)
-                        err.addProperty(
-                            "message",
-                            e match {
-                                case d: DatrisException => d.getMessage
-                                case _ => "Value could not be revealed"
-                            }
-                        )
-                        errors.add(err)
-                }
-            }
+            val (values, errors, revealed, failed) =
+                FieldProtectionAPIController.decryptAll(lookup, boundPipeline, boundField, values0.asScala.toSeq)
             if (keyStoreError != null) throw keyStoreError
 
             audit(if (failed > 0) "warning" else "success", 200, revealed, failed, null)
@@ -264,6 +241,44 @@ object FieldProtectionAPIController {
 
     /** Values per reveal call. */
     val MaxRevealValues = 1000
+
+    /** Decrypt each token for (pipeline, field): a bad one yields `null` in
+      * its slot plus `{index, message}` in errors and the rest still reveal.
+      * Empty and null inputs pass through unchanged and count as neither
+      * revealed nor failed. Returns (values, errors, revealed, failed). */
+    private[api] def decryptAll(
+        lookup: Int => Array[Byte],
+        pipeline: String,
+        field: String,
+        tokens: Seq[String]
+    ): (JsonArray, JsonArray, Int, Int) = {
+        val values = new JsonArray()
+        val errors = new JsonArray()
+        var revealed = 0
+        var failed = 0
+        tokens.zipWithIndex.foreach { case (token, i) =>
+            try {
+                val plain = FieldCipher.decrypt(lookup, pipeline, field, token)
+                if (plain == null) values.add(JsonNull.INSTANCE) else values.add(plain)
+                if (token != null && token.nonEmpty) revealed += 1
+            } catch {
+                case e: Exception =>
+                    values.add(JsonNull.INSTANCE)
+                    failed += 1
+                    val err = new JsonObject()
+                    err.addProperty("index", i)
+                    err.addProperty(
+                        "message",
+                        e match {
+                            case d: DatrisException => d.getMessage
+                            case _ => "Value could not be revealed"
+                        }
+                    )
+                    errors.add(err)
+            }
+        }
+        (values, errors, revealed, failed)
+    }
 
     /** Defence in depth behind CapabilityInterceptor: reveal decrypts PHI and
       * admin rotates its key, so the controller enforces `protect:<action>`

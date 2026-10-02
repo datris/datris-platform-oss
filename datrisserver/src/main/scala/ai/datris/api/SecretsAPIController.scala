@@ -127,20 +127,7 @@ class SecretsAPIController {
                     val result = new java.util.LinkedHashMap[String, Any]()
                     result.put("name", name)
 
-                    val fields = new java.util.LinkedHashMap[String, String]()
-                    data.asScala.foreach { case (key, value) =>
-                        if (isSensitive(key) && value != null && value.nonEmpty) {
-                            fields.put(key, "••••••••")
-                        } else {
-                            // Value-level redaction for credential-bearing URLs/DSNs
-                            // whose field NAME doesn't trip a sensitive marker
-                            // (connectionString, jdbcUrl, uri, ...). redactJdbcUrl
-                            // strips embedded user:pass@ / password= and leaves
-                            // plain values untouched.
-                            fields.put(key, ai.datris.util.LogRedactUtil.redactJdbcUrl(value))
-                        }
-                    }
-                    result.put("fields", fields)
+                    result.put("fields", SecretsAPIController.maskedFields(name, data.asScala.toSeq))
 
                     val gson = new Gson
                     new ResponseEntity[String](gson.toJson(result), HttpStatus.OK)
@@ -407,6 +394,38 @@ object SecretsAPIController {
         "createdbykeylabel" // matches "key" but stores a label, not a credential value
     )
 
+    /** The field-protection key secret (FieldProtectionKey): `key` (hmac) and
+      * every `enc.v<n>` are raw key material, and anyone holding an `enc.v<n>`
+      * could decrypt an `encrypt` column offline without `protect:reveal` and
+      * without a reveal audit entry. Every field is masked except the
+      * `encCurrent` version number. */
+    private val FieldProtectionSecret = "field-protection"
+    private val FieldProtectionPlain = Set("encCurrent")
+
+    /** `isSensitive(fieldName)` plus per-secret rules: every field of the
+      * field-protection secret except `encCurrent`. */
+    private[api] def isSensitive(secretName: String, fieldName: String): Boolean =
+        (secretName == FieldProtectionSecret && !FieldProtectionPlain.contains(fieldName)) || isSensitive(fieldName)
+
+    /** The `fields` object GET /secrets/{name} returns: sensitive values
+      * become the mask, everything else passes through redactJdbcUrl. */
+    private[api] def maskedFields(name: String, data: Seq[(String, String)]): java.util.LinkedHashMap[String, String] = {
+        val fields = new java.util.LinkedHashMap[String, String]()
+        data.foreach { case (key, value) =>
+            if (isSensitive(name, key) && value != null && value.nonEmpty) {
+                fields.put(key, MASK)
+            } else {
+                // Value-level redaction for credential-bearing URLs/DSNs
+                // whose field NAME doesn't trip a sensitive marker
+                // (connectionString, jdbcUrl, uri, ...). redactJdbcUrl
+                // strips embedded user:pass@ / password= and leaves
+                // plain values untouched.
+                fields.put(key, ai.datris.util.LogRedactUtil.redactJdbcUrl(value))
+            }
+        }
+        fields
+    }
+
     private[api] def isSensitive(fieldName: String): Boolean = {
         val normalized = fieldName.toLowerCase.replaceAll("[_-]", "")
         if (ALWAYS_PLAIN.contains(normalized)) false
@@ -443,7 +462,7 @@ object SecretsAPIController {
         incoming.foreach { case (key, strValue) =>
             val preserves =
                 if (isAiKeys) strValue == MASK
-                else isSensitive(key) && (strValue == MASK || strValue.trim.isEmpty)
+                else isSensitive(name, key) && (strValue == MASK || strValue.trim.isEmpty)
             if (preserves) {
                 existing.get(key).filter(_.nonEmpty) match {
                     case Some(stored) =>
