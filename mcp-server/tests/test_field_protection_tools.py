@@ -197,3 +197,93 @@ def test_protect_on_document_field_is_an_error_and_nothing_is_posted(captured_js
     assert server._is_error_payload(raw), raw
     assert name in json.loads(raw)["error"]
     assert captured_json.post_count == 0
+
+
+# ===================================================== story 3: suggestions ---
+# plans/stories/field-protection-3-classifier.md. suggest_field_protection takes
+# `pipeline` (string) or `fields` (array of {name, type}), one required, POSTs to
+# /api/v1/pipeline/protect/suggest and renders one line per field:
+#   "mrn (string): hmac — stable identifier" / "visit_count (int): none"
+
+SUGGEST_PATH = "/api/v1/pipeline/protect/suggest"
+
+SUGGEST_RESPONSE = {
+    "model": "stub-model",
+    "fields": [
+        {"name": "mrn", "type": "string", "current": None,
+         "suggested": {"method": "hmac"}, "reason": "stable identifier"},
+        {"name": "email", "type": "string", "current": None,
+         "suggested": {"method": "mask", "preserve": "domain"}, "reason": "contact field"},
+        {"name": "notes", "type": "string", "current": None,
+         "suggested": {"method": "redact"}, "reason": "free text"},
+        {"name": "visit_count", "type": "int", "current": None,
+         "suggested": None, "reason": "a count"},
+    ],
+}
+
+
+class _SuggestCaptured:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, method, path, timeout=300, **kwargs):
+        self.calls.append((method, path, kwargs))
+        if method == "post" and path == SUGGEST_PATH:
+            return json.dumps(SUGGEST_RESPONSE)
+        raise AssertionError(f"unexpected call {method} {path}")
+
+
+@pytest.fixture
+def suggest_captured(monkeypatch):
+    c = _SuggestCaptured()
+    monkeypatch.setattr(server, "_call", c.call)
+    return c
+
+
+def _posts(c):
+    return [(m, p, kw) for (m, p, kw) in c.calls if m == "post" and p == SUGGEST_PATH]
+
+
+def test_suggest_tool_is_registered_with_pipeline_and_fields_args():
+    tool = _tool("suggest_field_protection")
+    props = tool.inputSchema["properties"]
+    assert props["pipeline"]["type"] == "string", props
+    assert props["fields"]["type"] == "array", props
+
+
+def test_suggest_by_pipeline_posts_the_pipeline_name(suggest_captured):
+    server._dispatch("suggest_field_protection", {"pipeline": "fp_demo"})
+    posts = _posts(suggest_captured)
+    assert len(posts) == 1, suggest_captured.calls
+    assert posts[0][2].get("json") == {"pipeline": "fp_demo"}, posts[0][2]
+
+
+def test_suggest_by_fields_posts_the_fields(suggest_captured):
+    fields = [{"name": "mrn", "type": "string"}, {"name": "visit_count", "type": "int"}]
+    server._dispatch("suggest_field_protection", {"fields": fields})
+    posts = _posts(suggest_captured)
+    assert len(posts) == 1, suggest_captured.calls
+    assert posts[0][2].get("json") == {"fields": fields}, posts[0][2]
+
+
+def test_suggest_with_neither_argument_is_an_error(suggest_captured):
+    raw = server._dispatch("suggest_field_protection", {})
+    assert server._is_error_payload(raw), raw
+    err = json.loads(raw)["error"]
+    # The error tells the caller what to pass (not a generic "Unknown tool").
+    assert "pipeline" in err and "fields" in err, err
+    assert suggest_captured.calls == [], suggest_captured.calls
+
+
+def test_suggest_rendered_text_has_one_line_per_field_with_its_method(suggest_captured):
+    text = server._dispatch("suggest_field_protection", {"pipeline": "fp_demo"})
+    assert not server._is_error_payload(text), text
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    expected = {"mrn": "hmac", "email": "mask", "notes": "redact", "visit_count": "none"}
+    for name, method in expected.items():
+        hits = [ln for ln in lines if ln.startswith(name + " (")]
+        assert len(hits) == 1, f"expected one line for {name}, got {hits}\n{text}"
+        assert method in hits[0], f"{name} line lacks {method}: {hits[0]}"
+    assert any(ln.startswith("mrn (string): hmac") and "stable identifier" in ln for ln in lines), text
+    assert any(ln.startswith("visit_count (int): none") for ln in lines), text
+    assert any("domain" in ln for ln in lines if ln.startswith("email (")), text
