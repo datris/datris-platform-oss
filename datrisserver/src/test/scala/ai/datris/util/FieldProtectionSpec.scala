@@ -402,6 +402,22 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(!Files.exists(raw), "the raw staged file is still removed")
     }
 
+    test("tap or stream metadata without an ingest object purges only the staged file") {
+        val noPath = PipelineMetadata("patients", "patients.csv", null, "tok", bulkUpload = false)
+        val noName = PipelineMetadata("patients", null, "s3://" + Bucket + "/uploads/", "tok", bulkUpload = false)
+        List(noPath, noName).foreach { md =>
+            val status = new RecordingStatusUtil
+            val ctx = delimitedCtx(csvConfig(protectedSourceFields), md, status)
+            val raw = Paths.get(ctx.data.staged.path)
+            FieldProtection.apply(ctx)
+            assert(!Files.exists(raw), "the raw staged file is still removed")
+            assert(store.deleted.isEmpty, s"no object delete for $md")
+            assert(!status.messages.exists(_._1 == "warning"), status.messages.mkString("\n"))
+            assert(!status.descriptions.exists(_.toLowerCase.contains("purge")), status.descriptions.mkString("\n"))
+            assert(audits.isEmpty, s"no audit entry for $md: $audits")
+        }
+    }
+
     test("a failed object delete is a warning line and an audit entry, and the run continues") {
         store = new FakeStore(failDeletes = true)
         FieldProtection.objectStoreOverride = store

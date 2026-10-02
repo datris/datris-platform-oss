@@ -326,7 +326,13 @@ object FieldProtection {
             catch { case e: Exception => logger.warn("FieldProtection: could not delete the raw staged file: " + e.getMessage) }
         }
 
-        if (!ProtectionConfig.purgeSourceOn(ctx.config) || ctx.metadata == null) return
+        // Only runs read from an ingest object have one to purge. Tap- and
+        // stream-fed runs carry metadata with no dataFilePath (or no file name).
+        val md = ctx.metadata
+        if (
+            !ProtectionConfig.purgeSourceOn(ctx.config) || md == null || md.dataFilePath == null ||
+            (!md.bulkUpload && md.dataFileName == null)
+        ) return
 
         val name = ctx.config.name
         val store = Option(objectStoreOverride).getOrElse(ObjectStoreUtil)
