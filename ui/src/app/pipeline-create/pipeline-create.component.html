@@ -255,9 +255,15 @@
           </div>
           <div class="field-suggestion" *ngIf="field.suggested">
             <span class="material-icons">auto_awesome</span>
-            <span>Suggested {{ field.suggested.method }}<ng-container *ngIf="field.suggested.preserve"> ({{ field.suggested.preserve }})</ng-container>: {{ field.suggested.reason }}</span>
-            <button class="link-btn" (click)="keepSuggestion(i)">Keep</button>
-            <button class="link-btn" (click)="clearSuggestion(i)">Clear</button>
+            <ng-container *ngIf="field.suggested.method; else refusedSuggestion">
+              <span>Suggested {{ field.suggested.method }}<ng-container *ngIf="field.suggested.preserve"> ({{ field.suggested.preserve }})</ng-container>: {{ field.suggested.reason }}</span>
+              <button class="link-btn" (click)="keepSuggestion(i)">Keep</button>
+              <button class="link-btn" (click)="clearSuggestion(i)">Clear</button>
+            </ng-container>
+            <ng-template #refusedSuggestion>
+              <span>Suggested {{ field.suggested.refused?.method }} not applied: {{ field.suggested.refused?.problem }}<ng-container *ngIf="field.suggested.reason"> ({{ field.suggested.reason }})</ng-container></span>
+              <button class="link-btn" (click)="clearSuggestion(i)">Dismiss</button>
+            </ng-template>
           </div>
           <div class="field-error" *ngIf="field.protectError">{{ field.protectError }}</div>
         </ng-container>

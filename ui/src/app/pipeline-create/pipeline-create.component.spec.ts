@@ -860,6 +860,79 @@ describe('PipelineCreateComponent — field protection', () => {
     expect((rowFor('account_no').querySelector('select.field-protect') as HTMLSelectElement).value).toBe('hmac');
   });
 
+  it('Keep keeps the user value when the adopted suggestion is refused', async () => {
+    await onSchemaStep(
+      [{ name: 'account_no', type: 'string', protect: { method: 'hmac' } }, { name: 'visits', type: 'int', protect: { method: 'drop' } }],
+      {
+        schemaProperties: { fields: [{ name: 'account_no', type: 'string' }, { name: 'visits', type: 'int' }] },
+        database: { dbName: 'datris', schema: 'public', table: 'accounts', usePostgres: true }
+      }
+    );
+    const c: any = component;
+    // Unapplied suggestions that became invalid after Suggest ran.
+    c.schemaFields[0].suggested = { method: 'mask', preserve: 'last4', reason: 'r', applied: false };
+    c.schemaFields[1].suggested = { method: 'redact', preserve: null, reason: 'r', applied: false };
+    c.pgKeyFields = ['account_no'];
+
+    c.keepSuggestion(0);
+    c.keepSuggestion(1);
+    fixture.detectChanges();
+
+    expect(c.schemaFields[0].protect.method).toBe('hmac');
+    expect(c.schemaFields[0].protectError).toContain('key field');
+    expect(c.schemaFields[0].suggested).toBeFalsy();
+    expect(c.schemaFields[1].protect.method).toBe('drop');
+    expect(c.schemaFields[1].protectError).toContain('applies only to string fields');
+    expect(wire(component.buildConfig()).source.schemaProperties.fields).toEqual([
+      { name: 'account_no', type: 'string', protect: { method: 'hmac' } },
+      { name: 'visits', type: 'int', protect: { method: 'drop' } }
+    ]);
+  });
+
+  it('a suggestion the guard would refuse is shown with its reason and offers no Keep', async () => {
+    suggestSpy.and.returnValue(of({
+      model: 'm',
+      fields: [
+        { name: 'visits', type: 'int', current: { method: 'drop' }, suggested: { method: 'redact', preserve: null }, reason: 'free text' },
+        { name: 'age', type: 'int', current: null, suggested: { method: 'hmac', preserve: null }, reason: 'identifier' },
+        { name: 'account_no', type: 'string', current: null, suggested: { method: 'mask', preserve: 'last4' }, reason: 'account number' }
+      ]
+    }));
+    await onSchemaStep(
+      [{ name: 'visits', type: 'int', protect: { method: 'drop' } }, { name: 'age', type: 'int' }, { name: 'account_no', type: 'string' }],
+      {
+        schemaProperties: { fields: [{ name: 'visits', type: 'int' }, { name: 'age', type: 'int' }, { name: 'account_no', type: 'string' }] },
+        database: { dbName: 'datris', schema: 'public', table: 'accounts', usePostgres: true, keyFields: ['account_no'] }
+      }
+    );
+    const c: any = component;
+    c.suggestProtection();
+    fixture.detectChanges();
+
+    const f: any[] = c.schemaFields;
+    expect(f[0].protect.method).toBe('drop');
+    expect(f[1].protect.method || null).toBeNull();
+    expect(f[2].protect.method || null).toBeNull();
+    for (const x of f) {
+      expect(x.suggested?.method || null).withContext(x.name + ' has no Keep target').toBeNull();
+      expect(x.suggested?.refused?.problem).withContext(x.name + ' refusal reason').toBeTruthy();
+      expect(x.protectError || '').toBe('');
+    }
+    const lines = Array.from(el.querySelectorAll('.field-suggestion')) as HTMLElement[];
+    expect(lines.length).toBe(3);
+    for (const line of lines) {
+      const buttons = Array.from(line.querySelectorAll('button')).map(b => (b.textContent || '').trim());
+      expect(buttons).not.toContain('Keep');
+      expect(line.textContent || '').toContain('not applied');
+    }
+    expect(lines[1].textContent || '').toContain('hmac applies only to string fields; age is int.');
+    expect(lines[2].textContent || '').toContain('account_no is a key field');
+
+    c.clearSuggestion(1);
+    expect(f[1].suggested).toBeFalsy();
+    expect(f[1].protect.method || null).toBeNull();
+  });
+
   it('json source shows no Protect select', async () => {
     // Same wizard, CSV first: the Protect column and the Suggest button are there...
     await onSchemaStep([{ name: 'mrn', type: 'string' }]);

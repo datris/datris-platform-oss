@@ -21,7 +21,12 @@ interface SchemaField {
   protect?: FieldProtect;
   // Classifier suggestion shown until the user keeps or clears it. `applied` is
   // true when the suggestion filled an empty protect (Clear then wipes it).
-  suggested?: { method: string; preserve?: string | null; reason: string; applied?: boolean } | null;
+  // `refused` is set when the guard would refuse the suggested method for this
+  // field (method is then '' and there is nothing to Keep).
+  suggested?: {
+    method: string; preserve?: string | null; reason: string; applied?: boolean;
+    refused?: { method: string; problem: string };
+  } | null;
   protectError?: string;
 }
 
@@ -726,12 +731,7 @@ export class PipelineCreateComponent implements OnInit {
     if (!field.protect) field.protect = { method: '', preserve: null };
     const method = field.protect.method || '';
     field.protectError = '';
-    let problem = '';
-    if (method && STRING_ONLY_METHODS.includes(method) && field.type !== 'string') {
-      problem = `${method} applies only to string fields; ${field.name || 'this field'} is ${field.type}.`;
-    } else if (method && method !== 'hmac' && this.isKeyField(field.name)) {
-      problem = `${field.name} is a key field; key fields can only use hmac.`;
-    }
+    const problem = this.protectProblem(field, method);
     if (problem) {
       field.protectError = problem;
       field.protect = { method: '', preserve: null };
@@ -744,6 +744,18 @@ export class PipelineCreateComponent implements OnInit {
       return;
     }
     if (method !== 'mask') field.protect.preserve = null;
+  }
+
+  /** Why a protect method is refused for a field ('' when it is allowed):
+   *  hmac/mask/redact need a string field and a key column takes only hmac. */
+  protectProblem(field: SchemaField, method: string): string {
+    if (method && STRING_ONLY_METHODS.includes(method) && field.type !== 'string') {
+      return `${method} applies only to string fields; ${field.name || 'this field'} is ${field.type}.`;
+    }
+    if (method && method !== 'hmac' && this.isKeyField(field.name)) {
+      return `${field.name} is a key field; key fields can only use hmac.`;
+    }
+    return '';
   }
 
   /** Re-run the protect check after a type change on a protected field. */
@@ -770,17 +782,26 @@ export class PipelineCreateComponent implements OnInit {
           const s = byName.get((f.name || '').trim().toLowerCase());
           if (!s || !s.suggested || !s.suggested.method) continue;
           if (!f.protect) f.protect = { method: '', preserve: null };
+          // Guard the suggestion up front (as on a scratch copy): a refused one is
+          // shown with its reason but is never applied and offers no Keep.
+          const problem = this.protectProblem(f, s.suggested.method);
+          if (problem) {
+            f.suggested = {
+              method: '', preserve: null, reason: s.reason || '', applied: false,
+              refused: { method: s.suggested.method, problem }
+            };
+            continue;
+          }
           const empty = !f.protect.method;
           f.suggested = {
             method: s.suggested.method,
-            preserve: s.suggested.preserve ?? null,
+            preserve: s.suggested.method === 'mask' ? (s.suggested.preserve ?? null) : null,
             reason: s.reason || '',
             applied: empty
           };
           if (empty) {
-            f.protect = { method: s.suggested.method, preserve: s.suggested.preserve ?? null };
-            this.onProtectChange(f);
-            if (!f.protect.method) f.suggested.applied = false;
+            f.protect = { method: f.suggested.method, preserve: f.suggested.preserve ?? null };
+            f.protectError = '';
           }
         }
         this.suggestingProtection = false;
@@ -794,13 +815,17 @@ export class PipelineCreateComponent implements OnInit {
 
   /** Keep a suggestion. When Suggest already filled protect, only the marker
    *  goes; when the user had a different value, Keep adopts the suggestion
-   *  (through the same type guard) and then removes the marker. */
+   *  (through the same type guard) and then removes the marker. If the guard
+   *  refuses it (the field or key fields changed since Suggest), the user's
+   *  prior value stays and the reason is shown. */
   keepSuggestion(index: number): void {
     const f = this.schemaFields[index];
     if (!f || !f.suggested) return;
-    if (!f.suggested.applied) {
+    if (!f.suggested.applied && f.suggested.method) {
+      const prior: FieldProtect = { method: f.protect?.method || '', preserve: f.protect?.preserve ?? null };
       f.protect = { method: f.suggested.method, preserve: f.suggested.preserve ?? null };
       this.onProtectChange(f);
+      if (!f.protect.method && prior.method) f.protect = prior;  // protectError stays set
     }
     f.suggested = null;
   }
