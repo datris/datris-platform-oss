@@ -26,14 +26,7 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
             val json = ObjectStoreUtil.readBucketObject(bucket, key).getOrElse(
                 throw new DatrisException("Could not read metadata file: " + key + ", from bucket: " + bucket)
             )
-            val gson = new Gson
-            val metadata = gson.fromJson(json, classOf[PipelineMetadata])
-            if (metadata == null)
-                throw new DatrisException("Could not parse json metadata in the file: " + key)
-            if (metadata.dataFilePath != null)
-                metadata.copy(bulkUpload = true)
-            else
-                metadata.copy(bulkUpload = false)
+            fromCompanionJson(json, key)
         } else if (
             key.toLowerCase.endsWith(".zip") ||
             key.toLowerCase.endsWith(".gz") ||
@@ -56,6 +49,16 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
                     )
             }
         }
+    }
+
+    /** Parse an uploader-supplied `.metadata.json`. `sourceObject` is never
+      * taken from it: only `uncompress` may name an archive for the
+      * field-protection purge to delete. */
+    private[util] def fromCompanionJson(json: String, key: String): PipelineMetadata = {
+        val metadata = new Gson().fromJson(json, classOf[PipelineMetadata])
+        if (metadata == null)
+            throw new DatrisException("Could not parse json metadata in the file: " + key)
+        metadata.copy(bulkUpload = metadata.dataFilePath != null, sourceObject = null)
     }
 
     /** The `s3://bucket/key` objects a run reads: the one data file, or every

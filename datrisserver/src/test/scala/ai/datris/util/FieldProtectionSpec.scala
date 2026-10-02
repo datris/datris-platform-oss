@@ -418,6 +418,16 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
+    test("without a preprocessor the raw payload passed as rawStaged is purged once, with no warning") {
+        val status = new RecordingStatusUtil
+        val ctx = delimitedCtx(csvConfig(protectedSourceFields), status = status)
+        val raw = Paths.get(ctx.data.staged.path)
+        val out = FieldProtection.apply(ctx, rawStaged = ctx.data.staged)
+        assert(Files.exists(Paths.get(out.data.staged.path)), "protected file exists")
+        assert(!Files.exists(raw), "raw staged file deleted")
+        assert(!status.messages.exists(_._1 == "warning"), status.messages.mkString("\n"))
+    }
+
     test("the pre-preprocessor staged file is purged with the preprocessor output") {
         val raw = delimitedCtx(csvConfig(protectedSourceFields)) // the notifier's payload
         val preprocessed = delimitedCtx(csvConfig(protectedSourceFields)) // a preprocessor's output
