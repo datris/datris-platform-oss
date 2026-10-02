@@ -68,12 +68,12 @@ Datris can propose a starting point. The configured CodeGen model receives the f
 ```bash
 curl -X POST http://localhost:8080/api/v1/pipeline/protect/suggest \
   -H "x-api-key: <key>" -H "Content-Type: application/json" \
-  -d '{"pipeline": "patients"}'
+  -d '{"pipeline": "fp_demo"}'
 ```
 
 Pass `{"pipeline": "<name>"}` to use a saved pipeline's source schema, or `{"fields": [{"name": "...", "type": "..."}]}` for a schema you have not saved yet. Each entry in the response has `name`, `type`, `suggested` (`{"method", "preserve"}`, or `null` for no protection), `reason`, and `current`: the field's existing `protect`, so running it again on a protected pipeline never reads as an overwrite. The `model` field names the model that answered.
 
-Every suggestion follows the [type rules](#type-rules): a field that is not `string` is only ever suggested `drop` or nothing, and `preserve` only comes with `mask`. The call needs the same permission as reading a pipeline, is recorded as a `pipeline / protect-suggest` event in the [audit log](/audit-log) (field names only), and returns HTTP 400 with `{"error": "..."}` when AI is not configured.
+Every suggestion follows the [type rules](#type-rules): a field that is not `string` is only ever suggested `drop` or nothing, and `preserve` only comes with `mask`. With `pipeline`, the saved destination is checked too: a `keyFields` column is never suggested `drop`, and a field whose destination type is not `string` is only suggested `drop` or nothing. A JSON pipeline's `_json` field is not sent to the model; list its top-level keys in `fields` instead. The call needs the same permission as reading a pipeline, is recorded as a `pipeline / protect-suggest` event in the [audit log](/audit-log) (field names only, failed calls included), and returns HTTP 400 with `{"error": "..."}` when AI is not configured.
 
 Names can mislead, so treat the answer as a proposal. From an agent, the `suggest_field_protection` tool returns one line per field; the agent shows them to you and asks which to accept before passing any of them as `protect` to `create_pipeline`.
 

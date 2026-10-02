@@ -187,4 +187,73 @@ class FieldProtectionAdvisorSpec extends AnyFunSuite {
         assert(method(m("ssn")) == "hmac", "suggested is reported next to current, not merged into it")
         assert(m("mrn").current == null || m("mrn").current.method == null)
     }
+
+    // ---- review round 1 ------------------------------------------------------
+
+    private def runWith(
+        fields: List[SchemaField],
+        answer: String,
+        keyFields: Set[String],
+        destTypes: Map[String, String]
+    ): FieldProtectionSuggestion =
+        FieldProtectionAdvisor.suggest(fields, (_: String, _: String) => answer, Model, keyFields, destTypes)
+
+    test("drop on a keyFields column becomes none, matching the validator") {
+        val fields = List(f("Account_Id", "string"), f("notes", "string"))
+        val answer =
+            """[{"name": "account_id", "method": "drop", "reason": "x"}, {"name": "notes", "method": "drop", "reason": "x"}]"""
+        val m = byName(runWith(fields, answer, Set("account_id"), Map.empty))
+        assert(method(m("Account_Id")) == "none")
+        assert(method(m("notes")) == "drop")
+    }
+
+    test("a string-producing method on a field whose destination type is not string becomes none") {
+        val fields = List(f("account_id", "string"), f("email", "string"), f("legacy", "string"))
+        val answer =
+            """[
+              |  {"name": "account_id", "method": "hmac", "reason": "x"},
+              |  {"name": "email", "method": "mask", "preserve": "domain", "reason": "x"},
+              |  {"name": "legacy", "method": "drop", "reason": "x"}
+              |]""".stripMargin
+        val dest = Map("ACCOUNT_ID" -> "bigint", "email" -> "string", "legacy" -> "int")
+        val m = byName(runWith(fields, answer, Set.empty, dest))
+        assert(method(m("account_id")) == "none")
+        assert(method(m("email")) == "mask" && preserve(m("email")) == "domain")
+        assert(method(m("legacy")) == "drop", "drop takes any destination type")
+    }
+
+    test("constraintsOf reads keyFields from database and objectStore and destination field types") {
+        val config = PipelineConfig(
+            name = "p",
+            source = Source(schemaProperties = SchemaProperties("db", java.util.Arrays.asList(SchemaField("id", "string")))),
+            destination = Destination(
+                schemaProperties = SchemaProperties("db", java.util.Arrays.asList(SchemaField("ID", "bigint"), SchemaField("name", "string"))),
+                database = Database(keyFields = java.util.Arrays.asList("Id")),
+                objectStore = ObjectStore(keyFields = java.util.Arrays.asList("region"))
+            )
+        )
+        val (keys, dest) = FieldProtectionAdvisor.constraintsOf(config)
+        assert(keys == Set("id", "region"))
+        assert(dest == Map("id" -> "bigint", "name" -> "string"))
+    }
+
+    test("a document field is not sent to the model and gets no suggestion") {
+        val fields = List(f("_json", "string"), f("mrn", "string"))
+        val (r, calls) = run(fields, """[{"name": "_json", "method": "redact", "reason": "x"}, {"name": "mrn", "method": "hmac", "reason": "id"}]""")
+        assert(calls.size == 1)
+        assert(!calls.head._2.contains("_json"), calls.head._2)
+        val m = byName(r)
+        assert(method(m("_json")) == "none" && m("_json").reason != null)
+        assert(method(m("mrn")) == "hmac")
+        val (onlyDoc, docCalls) = run(List(f("_JSON", "string")), "not json")
+        assert(docCalls.isEmpty, "no model call when only a document field is given")
+        assert(method(onlyDoc.fields.head) == "none")
+    }
+
+    test("a bracketed preamble or a code fence around the array still parses") {
+        val preamble = "[Analysis] Two fields.\n" + """[{"name": "mrn", "method": "hmac", "reason": "id"}]"""
+        assert(method(byName(run(List(f("mrn", "string")), preamble)._1)("mrn")) == "hmac")
+        val fenced = "```json\n" + """[{"name": "mrn", "method": "redact", "reason": "x"}]""" + "\n```"
+        assert(method(byName(run(List(f("mrn", "string")), fenced)._1)("mrn")) == "redact")
+    }
 }

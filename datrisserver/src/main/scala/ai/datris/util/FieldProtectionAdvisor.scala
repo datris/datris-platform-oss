@@ -54,32 +54,89 @@ object FieldProtectionAdvisor {
           |Example output:
           |[{"name": "id_a", "method": "hmac", "preserve": null, "reason": "stable identifier"}, {"name": "contact_b", "method": "mask", "preserve": "domain", "reason": "contact address; the domain is still useful"}, {"name": "count_c", "method": "none", "preserve": null, "reason": "a count"}]""".stripMargin
 
-    /** Production: the CodeGen model (`ai.codegen.*`, else the primary config). */
-    def suggest(fields: List[SchemaField]): FieldProtectionSuggestion = {
+    /** Document fields (`_json`, `_xml`) hold a whole record; protect names its top-level keys instead. */
+    val DocumentFields: Set[String] = Set("_json", "_xml")
+    val DocumentFieldReason = "document field; protect its top-level keys instead"
+
+    /** Config-dependent validator rules for a stored pipeline: lowercased
+      * keyFields (database ++ objectStore) and destination field types. */
+    def constraintsOf(config: PipelineConfig): (Set[String], Map[String, String]) = {
+        if (config == null || config.destination == null) return (Set.empty, Map.empty)
+        val d = config.destination
+        val db = if (d.database != null) d.database.keyFields else null
+        val os = if (d.objectStore != null) d.objectStore.keyFields else null
+        val keys = (Option(db).map(_.asScala.toList).getOrElse(Nil) ++ Option(os).map(_.asScala.toList).getOrElse(Nil))
+            .filter(_ != null)
+            .map(_.trim.toLowerCase)
+            .toSet
+        val destTypes =
+            if (d.schemaProperties != null && d.schemaProperties.fields != null)
+                d.schemaProperties.fields.asScala
+                    .filter(f => f != null && f.name != null && f.`type` != null)
+                    .map(f => f.name.trim.toLowerCase -> f.`type`)
+                    .toMap
+            else Map.empty[String, String]
+        (keys, destTypes)
+    }
+
+    /** Production: the CodeGen model (`ai.codegen.*`, else the primary config).
+      * `keyFields` / `destTypes` (lowercased names) come from a stored
+      * pipeline, so suggestions also respect the validator's config rules. */
+    def suggest(
+        fields: List[SchemaField],
+        keyFields: Set[String],
+        destTypes: Map[String, String]
+    ): FieldProtectionSuggestion = {
         val cfg = DatrisEnvironment.aiConfigForCodegen
         val ai: (String, String) => String = (system, user) => {
             val response = AIUtil.callAIWithSystem(system, user, cfg)
             AIUtil.extractText(response, cfg)
         }
-        suggest(fields, ai, if (cfg == null) null else cfg.model)
+        suggest(fields, ai, if (cfg == null) null else cfg.model, keyFields, destTypes)
     }
 
+    def suggest(fields: List[SchemaField]): FieldProtectionSuggestion = suggest(fields, Set.empty[String], Map.empty[String, String])
+
     /** `ai(systemPrompt, userPrompt)` returns the model's extracted text (a JSON array). */
-    private[datris] def suggest(fields: List[SchemaField], ai: (String, String) => String, model: String): FieldProtectionSuggestion = {
+    private[datris] def suggest(
+        fields: List[SchemaField],
+        ai: (String, String) => String,
+        model: String,
+        keyFields: Set[String] = Set.empty,
+        destTypes: Map[String, String] = Map.empty
+    ): FieldProtectionSuggestion = {
         val input = Option(fields).getOrElse(Nil).filter(f => f != null && f.name != null && f.name.trim.nonEmpty)
         if (input.isEmpty) throw new DatrisException("No fields to suggest protection for")
 
-        val user = userPrompt(input)
-        logger.info("Field protection suggest: asking model for " + input.size + " field(s), names and types only")
-        val answer = parseAnswer(ai(SystemPrompt, user))
+        def isDocument(f: SchemaField): Boolean = DocumentFields.contains(f.name.trim.toLowerCase)
+        val asked = input.filterNot(isDocument)
+
+        val answer =
+            if (asked.isEmpty) Map.empty[String, (String, String, String)]
+            else {
+                logger.info("Field protection suggest: asking model for " + asked.size + " field(s), names and types only")
+                parseAnswer(ai(SystemPrompt, userPrompt(asked)))
+            }
+
+        val keys = keyFields.map(_.toLowerCase)
+        val dest = destTypes.map { case (k, v) => k.toLowerCase -> v }
 
         val result = input.map { f =>
-            answer.get(f.name.trim.toLowerCase) match {
-                case Some((method, preserve, reason)) =>
-                    Suggested(f.name, f.`type`, f.protect, clamp(f.`type`, method, preserve), reason)
-                case None =>
-                    Suggested(f.name, f.`type`, f.protect, null, null)
-            }
+            val key = f.name.trim.toLowerCase
+            if (isDocument(f)) Suggested(f.name, f.`type`, f.protect, null, DocumentFieldReason)
+            else
+                answer.get(key) match {
+                    case Some((method, preserve, reason)) =>
+                        val policy = clamp(f.`type`, method, preserve)
+                        if (policy == null) Suggested(f.name, f.`type`, f.protect, null, reason)
+                        else if (policy.method == "drop" && keys.contains(key))
+                            Suggested(f.name, f.`type`, f.protect, null, "key column; drop would remove it")
+                        else if (policy.method != "drop" && dest.get(key).exists(t => !isString(t)))
+                            Suggested(f.name, f.`type`, f.protect, null, "destination type is " + dest(key).trim + "; " + policy.method + " produces a string")
+                        else Suggested(f.name, f.`type`, f.protect, policy, reason)
+                    case None =>
+                        Suggested(f.name, f.`type`, f.protect, null, null)
+                }
         }
         FieldProtectionSuggestion(result, model)
     }
@@ -109,18 +166,38 @@ object FieldProtectionAdvisor {
         if (e == null || e.isJsonNull || !e.isJsonPrimitive) null else e.getAsString
     }
 
-    /** lowercased name → (method, preserve, reason); the first entry per name wins. */
-    private def parseAnswer(text: String): Map[String, (String, String, String)] = {
-        val raw = Option(text).getOrElse("")
-        val start = raw.indexOf('[')
-        val end = raw.lastIndexOf(']')
+    private val ArrayStart = "\\[\\s*[\\{\\]]".r
+    private val Fence = "(?s)^```[a-zA-Z]*\\s*(.*?)\\s*```$".r
+
+    /** The model's text as a JSON array: the whole (fence-stripped) text when
+      * it parses, else the slice from the first `[{` / `[]` to the last `]`,
+      * so a bracketed preamble such as "[Analysis]" does not break parsing. */
+    private[datris] def extractArray(text: String): JsonArray = {
+        val trimmed = Option(text).getOrElse("").trim
+        val body = trimmed match {
+            case Fence(inner) => inner.trim
+            case other => other
+        }
+        val whole =
+            try {
+                val e = JsonParser.parseString(body)
+                if (e != null && e.isJsonArray) e.getAsJsonArray else null
+            } catch { case _: Exception => null }
+        if (whole != null) return whole
+
+        val start = ArrayStart.findFirstMatchIn(body).map(_.start).getOrElse(-1)
+        val end = body.lastIndexOf(']')
         if (start < 0 || end <= start)
             throw new DatrisException("The AI model returned no field protection suggestions")
-        val arr: JsonArray =
-            try JsonParser.parseString(raw.substring(start, end + 1)).getAsJsonArray
-            catch {
-                case _: Exception => throw new DatrisException("The AI model returned malformed field protection suggestions")
-            }
+        try JsonParser.parseString(body.substring(start, end + 1)).getAsJsonArray
+        catch {
+            case _: Exception => throw new DatrisException("The AI model returned malformed field protection suggestions")
+        }
+    }
+
+    /** lowercased name → (method, preserve, reason); the first entry per name wins. */
+    private def parseAnswer(text: String): Map[String, (String, String, String)] = {
+        val arr = extractArray(text)
         val out = scala.collection.mutable.LinkedHashMap[String, (String, String, String)]()
         arr.asScala.foreach { e: JsonElement =>
             if (e != null && e.isJsonObject) {
