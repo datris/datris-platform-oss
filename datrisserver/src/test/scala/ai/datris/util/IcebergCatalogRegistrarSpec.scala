@@ -326,7 +326,7 @@ class IcebergCatalogRegistrarSpec extends AnyFunSuite {
     }
 
     // Live Databricks probe: Unity Catalog has no Iceberg REST register verb.
-    test("404 ENDPOINT_NOT_FOUND → no register endpoint, use catalogMode rest; other 404s keep their wording") {
+    test("404 ENDPOINT_NOT_FOUND → no register endpoint, use catalogMode managed; other 404s keep their wording") {
         val text = failureText(
             new FakeCatalog(registerResp =
                 (
@@ -336,7 +336,9 @@ class IcebergCatalogRegistrarSpec extends AnyFunSuite {
             )
         )
         assert(text.contains("this catalog has no Iceberg REST register endpoint (Databricks Unity Catalog does not implement it)"), text)
-        assert(text.contains("catalogMode: \"rest\""), text)
+        assert(text.contains("catalogMode: \"managed\""), text)
+        assert(text.contains("databricks destination"), text)
+        assert(!text.contains("catalogMode: \"rest\""), text)
         assert(!text.contains("icebergRestPath"), s"the generic 404 wording must not apply: $text")
     }
 

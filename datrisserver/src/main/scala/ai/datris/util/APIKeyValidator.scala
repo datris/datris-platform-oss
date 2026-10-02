@@ -12,6 +12,12 @@ import com.google.gson.JsonParser
 
 import java.util.concurrent.TimeUnit
 import scala.collection.JavaConverters._
+import scala.util.{Failure, Success, Try}
+
+/** A presented key value that matches a known key whose metadata is flagged
+  * revoked. Carries the label (never the value) so the audit log can name
+  * which revoked key was used. */
+class RevokedKeyException(val label: String) extends DatrisException(s"API key '$label' is revoked")
 
 object APIKeyValidator {
 
@@ -49,16 +55,85 @@ object APIKeyValidator {
             if (TapRunTokens.lookup(apiKey).isDefined) return
 
             if (apiKey == null)
-                throw new DatrisException("x-api-key does not exist or is invalid")
+                throw new DatrisException(MissingKeyMessage)
 
-            val apiKeysMap = ai.datris.util.SecretsUtil.getSecretMap(DatrisEnvironment.values.apiKeysSecretName)
-                .getOrElse(throw new DatrisException("The Secrets Manager entry for value: " + DatrisEnvironment.values.apiKeysSecretName + " was not found"))
-            val apiKeys = apiKeysMap.asScala.map { case (key, value) => value }.toList
-
-            if (!apiKeys.contains(apiKey))
-                throw new DatrisException("Invalid x-api-key: " + apiKey)
+            validateAgainst(apiKey, readKeysMap(), readMetadataMap())
         }
     }
+
+    /** Pure core of [[validate]] for a presented key value: the value must be
+      * a known key AND its metadata (if any) must not be revoked. Revocation
+      * only flags metadata — the value stays in `oss/api-keys` for listing and
+      * audit — so checking membership alone would let a revoked key through.
+      * Keys with no metadata entry are legacy full-access and stay valid.
+      * `metadata` is by-name: it is only read once the value is known. */
+    private[util] def validateAgainst(apiKey: String, keys: Map[String, String], metadata: => Map[String, String]): Unit = {
+        val label = labelForValue(keys, apiKey)
+            .getOrElse(throw new DatrisException(InvalidKeyMessage))
+        metadata.get(label).foreach { json =>
+            val (revoked, _, _) = parseMetadata(label, json)
+            if (revoked) throw new RevokedKeyException(label)
+        }
+    }
+
+    private def labelForValue(keys: Map[String, String], apiKey: String): Option[String] =
+        keys.find { case (_, v) => v == apiKey }.map(_._1)
+
+    /** Error message when `oss/api-key-metadata` cannot be read. The
+      * interceptor maps a rejection with this reason to 503. */
+    val MetadataUnavailableMessage: String = "API key metadata unavailable"
+
+    /** Error message when the key store (`oss/api-keys`) itself cannot be
+      * read — a secret-store outage, not a bad key. Also mapped to 503. */
+    val KeyStoreUnavailableMessage: String = "API key store unavailable"
+
+    /** True when the rejection reason is a secret-store outage rather than a
+      * bad key, i.e. the caller should see 503 instead of 401. */
+    def isStoreOutage(reason: String): Boolean =
+        reason == MetadataUnavailableMessage || reason == KeyStoreUnavailableMessage
+
+    /** Thrown when a key is required and none was presented. */
+    val MissingKeyMessage: String = "x-api-key does not exist or is invalid"
+
+    /** Thrown when the presented value matches no known key. Never echoes the value. */
+    val InvalidKeyMessage: String = "Invalid x-api-key"
+
+    /** True when `e` is one of this validator's own rejections (missing,
+      * unknown, revoked, or store outage) — an authentication failure a
+      * controller should answer with 401/503, never a 500. */
+    def isKeyRejection(e: Throwable): Boolean = e match {
+        case _: RevokedKeyException => true
+        case d: DatrisException =>
+            val m = d.getMessage
+            m == InvalidKeyMessage || m == MissingKeyMessage || isStoreOutage(m)
+        case _ => false
+    }
+
+    /** `oss/api-keys` read that fails closed: absent → "not found" (no key
+      * can be valid), read failure → store outage. */
+    private def readKeysMap(): Map[String, String] =
+        SecretsUtil.tryGetSecretMap(DatrisEnvironment.values.apiKeysSecretName) match {
+            case Success(Some(m)) => m.asScala.toMap
+            case Success(None) =>
+                throw new DatrisException(
+                    "The Secrets Manager entry for value: " + DatrisEnvironment.values.apiKeysSecretName + " was not found"
+                )
+            case Failure(_) => throw new DatrisException(KeyStoreUnavailableMessage)
+        }
+
+    private def readMetadataMap(): Map[String, String] =
+        metadataFrom(SecretsUtil.tryGetSecretMap(apiKeyMetadataSecretName))
+
+    /** An ABSENT metadata secret (fresh install, legacy keys only) means no
+      * key has metadata → legacy full access, as before. A read FAILURE must
+      * fail closed: treating it as absent would turn every revoked or scoped
+      * key into a full-access legacy key. */
+    private[util] def metadataFrom(result: Try[Option[java.util.Map[String, String]]]): Map[String, String] =
+        result match {
+            case Success(Some(m)) => m.asScala.toMap
+            case Success(None) => Map.empty[String, String]
+            case Failure(_) => throw new DatrisException(MetadataUnavailableMessage)
+        }
 
     /** Validates the API key and resolves the tenant environment name.
       * Returns Some(environmentName) when multiTenant is true, None otherwise. */
@@ -113,11 +188,11 @@ object APIKeyValidator {
     private def doResolve(apiKey: String): ResolvedKey = {
         if (DatrisEnvironment.values.multiTenant) {
             if (apiKey == null || apiKey.isEmpty)
-                throw new DatrisException("x-api-key does not exist or is invalid")
+                throw new DatrisException(MissingKeyMessage)
             val mappings = SecretsUtil.getSecretMap("api-key-mappings")
                 .getOrElse(throw new DatrisException("api-key-mappings secret not found"))
             val env = mappings.asScala.get(apiKey)
-                .getOrElse(throw new DatrisException("Invalid x-api-key"))
+                .getOrElse(throw new DatrisException(InvalidKeyMessage))
             // Multi-tenant labels are not tracked per-key in v1; the env name
             // doubles as the label and all multi-tenant keys are legacy.
             return ResolvedKey(Some(env), env, Seq(Capability.FullAccess), isLegacyFullAccess = true)
@@ -131,27 +206,24 @@ object APIKeyValidator {
         }
 
         if (apiKey == null || apiKey.isEmpty)
-            throw new DatrisException("x-api-key does not exist or is invalid")
+            throw new DatrisException(MissingKeyMessage)
 
         // Single-tenant with API keys enabled: find the label by value.
-        val keysMap = SecretsUtil.getSecretMap(DatrisEnvironment.values.apiKeysSecretName)
-            .getOrElse(throw new DatrisException(
-                "The Secrets Manager entry for value: " + DatrisEnvironment.values.apiKeysSecretName + " was not found"
-            ))
-        val label = keysMap.asScala
-            .find { case (_, v) => v == apiKey }
-            .map(_._1)
-            .getOrElse(throw new DatrisException("Invalid x-api-key"))
+        resolveAgainst(apiKey, readKeysMap(), readMetadataMap())
+    }
+
+    /** Pure core of the single-tenant, keys-enabled branch of [[resolveKey]]:
+      * unknown value → "Invalid x-api-key"; revoked metadata → "is revoked";
+      * no metadata → legacy full access. */
+    private[util] def resolveAgainst(apiKey: String, keys: Map[String, String], metadata: => Map[String, String]): ResolvedKey = {
+        val label = labelForValue(keys, apiKey)
+            .getOrElse(throw new DatrisException(InvalidKeyMessage))
 
         // Look up per-key metadata. Absence = legacy full-access.
-        val metadataMap = SecretsUtil.getSecretMap(apiKeyMetadataSecretName)
-            .map(_.asScala.toMap)
-            .getOrElse(Map.empty[String, String])
-
-        metadataMap.get(label) match {
+        metadata.get(label) match {
             case Some(json) =>
                 val (revoked, capabilities, keyId) = parseMetadata(label, json)
-                if (revoked) throw new DatrisException(s"API key '$label' is revoked")
+                if (revoked) throw new RevokedKeyException(label)
                 ResolvedKey(None, label, capabilities, isLegacyFullAccess = false, keyId = keyId)
             case None =>
                 ResolvedKey(None, label, Seq(Capability.FullAccess), isLegacyFullAccess = true)

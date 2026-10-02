@@ -105,6 +105,8 @@ The previous value stops working the moment Rotate returns.
 
 From the **API-Keys** tab, click **Revoke**. The key's metadata is marked revoked; the underlying value stays in `oss/api-keys` so failed auth attempts log as "revoked key" rather than "unknown key" — useful for tracking compromised credential reuse.
 
+A revoked key is rejected with `401 {"error":"API key is revoked or invalid"}` on every authenticated route, and the denial is recorded in the audit log as a security event whose actor is the revoked key's label (an unknown key value is recorded as `unknown-key`, never the value itself). If the secret store itself cannot be read, keys are not resolved at all and the response is `503` rather than falling back to full access.
+
 Revoked keys cannot be un-revoked. Issue a new key instead.
 
 ## How requests get logged

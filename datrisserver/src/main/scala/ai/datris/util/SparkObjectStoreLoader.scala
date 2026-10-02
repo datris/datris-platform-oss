@@ -175,7 +175,11 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 // table schema case-insensitively. An empty list means absent.
                 val keyFields = Option(config.destination.objectStore.keyFields).map(_.asScala.toList.filter(k => k != null && k.trim.nonEmpty)).getOrElse(Nil)
                 if (partitions.nonEmpty) statusUtil.info("processing", "Partitioning by: " + partitions.mkString(", "))
-                statusUtil.info("processing", "Writing iceberg (" + writeModeName + ") to: " + outputPath)
+                statusUtil.info(
+                    "processing",
+                    "Writing iceberg (" + writeModeName + ") to: " +
+                        (if (restPlan.managed) restPlan.qualified + " through Unity Catalog (catalogMode managed)" else outputPath)
+                )
                 // MERGE uses UPDATE SET * / INSERT *, so the source must carry
                 // exactly the dest schema's columns in its order.
                 val projected = df.select(sparkSchema.fieldNames.map(df.col): _*)
@@ -190,11 +194,16 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                         try Some(writeIceberg())
                         catch {
                             case r: IcebergWriter.RestLocationRefused if restPlan.target.isDefined =>
+                                // catalogMode managed: afterLocationRefused fails
+                                // the run (never a path write).
                                 restPlan = IcebergRestSession.afterLocationRefused(jobContext, restPlan, r)
                                 Some(writeIceberg())
                         }
                     // The catalog's table is outside our root (a managed
                     // table): nothing was written through it; write by path.
+                    // catalogMode managed never falls back: the table must be
+                    // in the pipeline's bucket, else afterLocationRefused
+                    // records it, audits and fails the run.
                     case r: IcebergWriter.RestLocationRefused if restPlan.target.isDefined =>
                         restPlan = IcebergRestSession.afterLocationRefused(jobContext, restPlan, r)
                         Some(writeIceberg())
@@ -227,26 +236,39 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         // A WriteResult with snapshotId -1 means nothing was committed (writeMode
         // ignore on an empty table): no snapshot to report.
         val snapshotId: Option[Long] = iceberg.map(_.snapshotId).filter(_ >= 0L)
-        sendNotification(outputPath, snapshotId)
+        // catalogMode managed: the table lives where the catalog put it.
+        val notifyPath = iceberg match {
+            case Some(r) if restPlan.managed && r.metadataLocation != null => IcebergRestSession.tableLocationOf(r.metadataLocation)
+            case _ => outputPath
+        }
+        sendNotification(notifyPath, snapshotId)
         // Unity Catalog registration (opt-in) runs before the `end` line:
         // nothing may follow it. A no-op unless the pipeline opted in; never
-        // throws. In catalogMode rest the commit already went through the
-        // catalog, so the register hook is skipped and the REST state recorded.
+        // throws. In catalogMode rest and managed the commit already went
+        // through the catalog, so the register hook is skipped and the REST
+        // state recorded.
         if (
             config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.registerOn && fileFormat == "iceberg" &&
-            !config.unityCatalog.restMode
+            !config.unityCatalog.throughCatalog
         )
             iceberg.filter(_.snapshotId >= 0L).foreach(r => IcebergCatalogRegistrar.sync(jobContext, r))
         IcebergRestSession.record(jobContext, iceberg, restPlan)
+        // catalogMode managed: the rows live at the catalog-chosen location,
+        // not under prefixKey.
+        val writtenTo = iceberg match {
+            case Some(r) if restPlan.managed && r.metadataLocation != null =>
+                IcebergRestSession.tableLocationOf(r.metadataLocation) + " (" + restPlan.qualified + ", through Unity Catalog)"
+            case _ => outputPath
+        }
         iceberg match {
             case Some(r) if r.snapshotId >= 0L =>
                 statusUtil.info(
                     "end",
-                    "Process completed, wrote " + r.addedRecords + " rows to " + outputPath +
+                    "Process completed, wrote " + r.addedRecords + " rows to " + writtenTo +
                         ", snapshot " + r.snapshotId + " (deleted " + r.deletedRecords + ", total " + r.totalRecords + " rows)"
                 )
             case _ =>
-                statusUtil.info("end", "Process completed, wrote " + jobContext.data.rowCount + " rows to " + outputPath)
+                statusUtil.info("end", "Process completed, wrote " + jobContext.data.rowCount + " rows to " + writtenTo)
         }
     }
 

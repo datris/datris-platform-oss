@@ -156,7 +156,8 @@ object IcebergCatalogRegistrar {
                 "or the principal lacks EXTERNAL USE SCHEMA on " + catalog + "." + schema + " (the catalog owner grants it)." + head(body)
         else if (status == 404 && b.contains("endpoint_not_found"))
             "this catalog has no Iceberg REST register endpoint (Databricks Unity Catalog does not implement it); " +
-                "use `catalogMode: \"rest\"` so Datris commits through the catalog instead (status 404)." + head(body)
+                "set `catalogMode: \"managed\"` so Unity Catalog creates the table in its managed storage (or use the databricks destination) (status 404)." +
+                head(body)
         else if (status == 404)
             "no Iceberg REST register at " + url + " (status 404): check the host, the secret's " + RestPathField + "/" + RestPrefixField +
                 " fields, and that external data access is enabled." + head(body)

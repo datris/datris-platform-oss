@@ -30,6 +30,13 @@ import scala.collection.JavaConverters._
   *  created, loaded and committed through a catalog identifier (the Unity
   *  Catalog Iceberg REST catalog in production) at the same explicit location,
   *  so the catalog's pointer is current after every commit.
+  *  `catalogMode: managed` (a managed `RestTarget`) also commits through the
+  *  catalog, but lets the catalog choose the location (Databricks puts it
+  *  under the schema's MANAGED LOCATION); the table must then be in the
+  *  pipeline's bucket, and nothing is written under the pipeline's prefix.
+  *  Every created table carries `write.metadata.previous-versions-max=1000`
+  *  and an adopted one also `datris.adopted-from`, so the adoption stays
+  *  recognisable without Datris' own state doc.
   *
   *  Uses `df.sparkSession` rather than `SparkSessionManager.getOrCreate()` so
   *  it runs wherever the caller's session runs (including a plain local
@@ -41,6 +48,16 @@ object IcebergWriter {
 
     /** Table property naming the pipeline that owns the table. */
     val PipelineProperty = "datris.pipeline"
+
+    /** Table property set when `catalogMode: rest` adopts a path-written table:
+      * the path metadata file that was registered (where the frozen
+      * `version-hint.text` still points). */
+    val AdoptedFromProperty = "datris.adopted-from"
+
+    /** `write.metadata.previous-versions-max` on every table Datris creates or
+      * adopts (Iceberg default 100): a longer metadata log keeps the
+      * "catalog is ahead of the path table" signal alive for longer. */
+    val PreviousVersionsMax = "1000"
 
     /** `metadataLocation` is the table's current metadata file after the write
       * (null only when it cannot be read). */
@@ -59,7 +76,12 @@ object IcebergWriter {
         // Called once right after a catalog create whose location checked
         // out, before any data is written (IcebergRestSession records the
         // table so a later failure still leaves it known).
-        onCreated: Table => Unit = _ => ()
+        onCreated: Table => Unit = _ => (),
+        // catalogMode managed: create without a location (the catalog
+        // chooses), never guard or write the pipeline's prefix, and accept the
+        // table wherever the catalog put it as long as it is in `bucket`.
+        managed: Boolean = false,
+        bucket: String = null
     ) {
         def sql: String = (sparkCatalogName +: ident.namespace().levels().toSeq :+ ident.name()).map(quote).mkString(".")
     }
@@ -69,8 +91,14 @@ object IcebergWriter {
       * Thrown before any data is written through the catalog. */
     final class RestLocationRefused(val tableLocation: String, val requested: String, val created: Boolean = false)
         extends DatrisException(
-            "the catalog placed the table at " + tableLocation + ", outside this pipeline's table root " + requested + "; nothing was written through the catalog"
+            "the catalog placed the table at " + tableLocation + ", outside " +
+                (if (requested != null && requested.endsWith(ManagedBucketSuffix)) requested.stripSuffix(ManagedBucketSuffix) + ", the pipeline's bucket"
+                 else "this pipeline's table root " + requested) +
+                "; nothing was written through the catalog"
         )
+
+    /** Marks a managed-mode RestLocationRefused.requested (the bucket). */
+    private val ManagedBucketSuffix = " (the pipeline's bucket)"
 
     /** Same table location, with `s3a://` / `s3n://` equal to `s3://` (a
       * catalog may answer in the `s3://` spelling) and trailing slashes and
@@ -79,6 +107,17 @@ object IcebergWriter {
         a != null && b != null && LocationParts(normS3(a)) == LocationParts(normS3(b))
 
     private def normS3(loc: String): String = loc.trim.replaceFirst("(?i)^s3[an]://", "s3://")
+
+    /** The bucket (lowercased authority) of a location, s3/s3a/s3n equal; ""
+      * for a location without an authority (`file://`), null for null. */
+    private[util] def bucketOf(loc: String): String =
+        if (loc == null || loc.trim.isEmpty) null else LocationParts(normS3(loc)).authority
+
+    /** `loc` is in `bucket` (case-insensitive; null bucket = ""). */
+    private[util] def inBucket(loc: String, bucket: String): Boolean = {
+        val b = bucketOf(loc)
+        b != null && b == Option(bucket).map(_.trim.toLowerCase).getOrElse("")
+    }
 
     /** Rest-mode sibling of assertTableLocation: a table elsewhere is a
       * refusal (RestLocationRefused), a manifest list on another
@@ -92,6 +131,29 @@ object IcebergWriter {
             if (manifests.scheme != want.scheme || manifests.authority != want.authority)
                 throw new DatrisException(
                     "Iceberg table at " + requested + " has a snapshot whose manifest list lives elsewhere (" +
+                        snapshot.manifestListLocation() + "); refusing to read or write it"
+                )
+        }
+    }
+
+    /** Managed-mode sibling of assertRestTableLocation: the catalog chose the
+      * table's location, which must be in the pipeline's `bucket` (s3/s3a/s3n
+      * equal, case-insensitive; a location without an authority, such as
+      * `file://`, has bucket ""). Another bucket is a refusal
+      * (RestLocationRefused naming both); a manifest list outside the
+      * table's own scheme and bucket is a hard error as in the other modes. */
+    def assertManagedLocation(table: Table, bucket: String, created: Boolean = false): Unit = {
+        val want = Option(bucket).map(_.trim.toLowerCase).getOrElse("")
+        val loc = table.location()
+        val have = Option(loc).map(l => LocationParts(normS3(l)))
+        if (!have.exists(_.authority == want))
+            throw new RestLocationRefused(loc, "s3://" + Option(bucket).map(_.trim).getOrElse("") + "/" + ManagedBucketSuffix, created)
+        val snapshot = table.currentSnapshot()
+        if (snapshot != null && snapshot.manifestListLocation() != null) {
+            val manifests = LocationParts(normS3(snapshot.manifestListLocation()))
+            if (manifests.scheme != have.get.scheme || manifests.authority != want)
+                throw new DatrisException(
+                    "Iceberg table at " + loc + " has a snapshot whose manifest list lives elsewhere (" +
                         snapshot.manifestListLocation() + "); refusing to read or write it"
                 )
         }
@@ -156,19 +218,23 @@ object IcebergWriter {
         if (mode == "merge" && keyFields.isEmpty)
             throw new DatrisException("writeMode 'merge' requires keyFields (the MERGE ON columns)")
 
+        val managed = restCatalog.exists(_.managed)
         val exists = restCatalog match {
             case Some(r) => r.catalog.tableExists(r.ident)
             case None => tables.exists(location)
         }
-        if (!exists) guardPrefix(conf, location, statusUtil)
+        // Managed: the pipeline's prefix holds nothing and is never written.
+        if (!exists && !managed) guardPrefix(conf, location, statusUtil)
 
         if (exists && mode == "ignore") {
             val table = loadChecked(tables, location, restCatalog)
-            statusUtil.info("processing", "Iceberg table exists at " + location + "; writeMode ignore, nothing written")
+            statusUtil.info("processing", "Iceberg table exists at " + (if (managed) table.location() else location) + "; writeMode ignore, nothing written")
             return resultOf(table)
         }
         if (exists && mode == "errorifexists")
-            throw new DatrisException("Iceberg table already exists at " + location + " and writeMode is errorifexists")
+            throw new DatrisException(
+                "Iceberg table already exists at " + (if (managed) restCatalog.get.ident.toString else location) + " and writeMode is errorifexists"
+            )
 
         var evolved: Seq[String] = Nil
         val table: Table =
@@ -178,15 +244,18 @@ object IcebergWriter {
                 t
             } else
                 createTable(tables, location, destSchema, partitionBy, pipelineName, statusUtil, restCatalog)
+        // Where the table lives: the pipeline's prefix, or (managed) wherever
+        // the catalog put it, captured at load/create.
+        val tableLocation = if (managed) table.location() else location
 
-        try writeData(df, table, location, mode, exists, keyFields, statusUtil, restCatalog)
+        try writeData(df, table, tableLocation, mode, exists, keyFields, statusUtil, restCatalog)
         catch {
             case e: Exception if evolved.nonEmpty =>
                 // The schema change is its own committed metadata update; the
                 // data write that followed is not. Say so rather than retry:
                 // the next run finds the column already present and just appends.
                 val wrapped = new DatrisException(
-                    "Iceberg schema evolved at " + location + " (added column(s) " + evolved.mkString(", ") +
+                    "Iceberg schema evolved at " + tableLocation + " (added column(s) " + evolved.mkString(", ") +
                         ") but the data write failed; the schema change is committed and the next run will only write data. Cause: " + e.getMessage
                 )
                 wrapped.initCause(e)
@@ -197,17 +266,18 @@ object IcebergWriter {
         // After the commit: a location change now is a failure, not a
         // refusal (RestLocationRefused means nothing was written).
         if (restCatalog.isDefined) {
-            if (!sameRestLocation(table.location(), location))
+            if (!sameRestLocation(table.location(), tableLocation))
                 throw new DatrisException(
-                    "Iceberg table " + restCatalog.get.ident + " moved to " + table.location() + " during the write, outside this pipeline's table root " +
-                        location + "; the commit went through the catalog, so the run fails rather than write by path"
+                    "Iceberg table " + restCatalog.get.ident + " moved to " + table.location() + " during the write, away from " +
+                        tableLocation + "; the commit went through the catalog, so the run fails rather than write by path"
                 )
-            assertRestTableLocation(table, location)
+            if (managed) assertManagedLocation(table, restCatalog.get.bucket)
+            else assertRestTableLocation(table, location)
         } else assertTableLocation(table, location)
         val result = resultOf(table)
         statusUtil.info(
             "processing",
-            "Iceberg commit at " + location + ": snapshot " + result.snapshotId +
+            "Iceberg commit at " + tableLocation + ": snapshot " + result.snapshotId +
                 ", added " + result.addedRecords + ", deleted " + result.deletedRecords +
                 ", total " + result.totalRecords + " rows"
         )
@@ -303,7 +373,11 @@ object IcebergWriter {
             case None => tables.load(location)
         }
         // Before any read or write through it.
-        if (restCatalog.isDefined) assertRestTableLocation(table, location) else assertTableLocation(table, location)
+        restCatalog match {
+            case Some(r) if r.managed => assertManagedLocation(table, r.bucket)
+            case Some(_) => assertRestTableLocation(table, location)
+            case None => assertTableLocation(table, location)
+        }
         table
     }
 
@@ -412,15 +486,23 @@ object IcebergWriter {
         val props = Map(
             TableProperties.FORMAT_VERSION -> "2",
             TableProperties.DEFAULT_FILE_FORMAT -> "parquet",
+            TableProperties.METADATA_PREVIOUS_VERSIONS_MAX -> PreviousVersionsMax,
             PipelineProperty -> Option(pipelineName).map(_.trim).filter(_.nonEmpty).getOrElse(pipelineNameFrom(location))
         ).asJava
-        statusUtil.info(
-            "processing",
-            "Creating Iceberg table at " + location +
-                (if (partitionBy.nonEmpty) " partitioned by " + partitionBy.mkString(", ") else "")
-        )
+        val partitionNote = if (partitionBy.nonEmpty) " partitioned by " + partitionBy.mkString(", ") else ""
         restCatalog match {
+            case Some(r) if r.managed =>
+                statusUtil.info("processing", "Creating Iceberg table " + r.ident + " through the catalog (the catalog chooses the location)" + partitionNote)
+                // No location: the catalog places the table (Databricks: under
+                // the schema's MANAGED LOCATION). It must be in the pipeline's
+                // bucket, checked before any data is written.
+                val created = r.catalog.buildTable(r.ident, schema).withPartitionSpec(spec).withProperties(props).create()
+                assertManagedLocation(created, r.bucket, created = true)
+                statusUtil.info("processing", "The catalog placed " + r.ident + " at " + created.location())
+                r.onCreated(created)
+                created
             case Some(r) =>
+                statusUtil.info("processing", "Creating Iceberg table at " + location + partitionNote)
                 // Explicit location, passed unchanged: the table lives at the
                 // pipeline's prefix whatever the catalog's default would be.
                 val created = r.catalog.buildTable(r.ident, schema).withPartitionSpec(spec).withLocation(location).withProperties(props).create()
@@ -429,7 +511,9 @@ object IcebergWriter {
                 assertRestTableLocation(created, location, created = true)
                 r.onCreated(created)
                 created
-            case None => tables.create(schema, spec, props, location)
+            case None =>
+                statusUtil.info("processing", "Creating Iceberg table at " + location + partitionNote)
+                tables.create(schema, spec, props, location)
         }
     }
 

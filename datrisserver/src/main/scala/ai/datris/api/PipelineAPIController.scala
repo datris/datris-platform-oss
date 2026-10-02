@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
-import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion}
+import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion, UnityCatalogSync}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
@@ -66,7 +66,12 @@ class PipelineAPIController {
 
             val out = new JsonObject
             out.addProperty("pipeline", config.name)
-            out.addProperty("enabled", config.unityCatalog != null && config.unityCatalog.enabled)
+            // Block or install default (DATRIS_UNITY_CATALOG_DEFAULT): UnityCatalogSync.effective.
+            val (ucEnabled, ucEnabledBy, lineageEnabled) = UnityCatalogSync.stateFields(config, UnityCatalogSync.defaultEnabledFromEnv)
+            out.addProperty("enabled", ucEnabled)
+            out.addProperty("enabledBy", ucEnabledBy)
+            // DATRIS_UNITY_CATALOG_SYNC=false: enabled may be true, but nothing is written.
+            out.addProperty("syncSwitchedOff", UnityCatalogMetadataSync.syncSwitchedOff)
 
             val db = if (config.destination != null) config.destination.database else null
             if (db != null && db.useDatabricks) {
@@ -79,9 +84,11 @@ class PipelineAPIController {
             }
 
             // Object-store Iceberg pipelines register as <catalog>.<schema>.<pipeline>.
+            // Read the block directly: the install default never applies to Iceberg.
             val uc = config.unityCatalog
             val objectStore = if (config.destination != null) config.destination.objectStore else null
             val icebergStore = objectStore != null && objectStore.fileFormat != null && objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")
+            val state = UnityCatalogSyncIO.read(config.name)
             if (icebergStore && uc != null && uc.catalog != null && uc.catalog.trim.nonEmpty) {
                 val coords = new JsonObject
                 val table = IcebergCatalogRegistrar.tableName(config.name)
@@ -90,14 +97,18 @@ class PipelineAPIController {
                 coords.addProperty("table", table)
                 coords.addProperty("qualified", uc.catalog + "." + uc.schemaOrDefault + "." + table)
                 coords.addProperty("kind", "iceberg")
-                val location =
+                // catalogMode managed: the table lives where the catalog put
+                // it (known after the first commit), not under prefixKey.
+                val location = UnityCatalogStaleState.reportedLocation(
+                    state,
+                    uc.managedMode,
                     try "s3a://" + ObjectStoreSpark.resolveBucket(objectStore) + "/" + objectStore.prefixKey
                     catch { case scala.util.control.NonFatal(_) => null }
+                )
                 coords.addProperty("location", location)
                 out.add("coordinates", coords)
             }
 
-            val state = UnityCatalogSyncIO.read(config.name)
             val registerEnabled = icebergStore && uc != null && uc.enabled && uc.registerOn
             out.addProperty("registerEnabled", registerEnabled)
             // Iceberg register status: off | never | registered | stale | error
@@ -106,20 +117,14 @@ class PipelineAPIController {
             // points at" text. In catalogMode rest, `rest` = the last run
             // committed through the catalog (no stale pointer possible) and
             // `refused` = it wrote path-based (restRefusedReason says why).
-            val restMode = uc != null && uc.restMode
-            if (icebergStore && uc != null) out.addProperty("catalogMode", uc.catalogModeOrDefault)
-            val registerLines =
-                if (state != null && state.lastError != null)
-                    state.lastError.split("\n").filter(_.startsWith(IcebergCatalogRegistrar.ErrorPrefix)).toSeq
-                else Nil
-            val registerStatus =
-                if (!registerEnabled) "off"
-                else if (restMode && state != null && state.catalogMode == "rest") "rest"
-                else if (restMode && state != null && state.catalogMode == "refused") "refused"
-                else if (registerLines.exists(!_.contains("Unity Catalog still points at"))) "error"
-                else if (registerLines.nonEmpty) "stale"
-                else if (state != null && state.registeredMetadataLocation != null) "registered"
-                else "never"
+            // In catalogMode managed, `managed` = the last run committed
+            // through the catalog at the catalog-chosen location.
+            // A doc recording a managed commit wins over the config's current
+            // mode (UnityCatalogStaleState.registerStatus).
+            val configMode = if (uc != null) uc.catalogModeOrDefault else null
+            if (icebergStore && (uc != null || IcebergRestSession.managedCommitted(state)))
+                out.addProperty("catalogMode", UnityCatalogStaleState.reportedCatalogMode(state, configMode))
+            val registerStatus = UnityCatalogStaleState.registerStatus(state, registerEnabled, configMode)
             out.addProperty("register", registerStatus)
             if (state != null) {
                 out.addProperty("registeredMetadataLocation", state.registeredMetadataLocation)
@@ -129,7 +134,6 @@ class PipelineAPIController {
                 out.addProperty("restRefusedReason", state.restRefusedReason)
                 out.addProperty("restCreatedTable", state.restCreatedTable)
             }
-            val lineageEnabled = config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.lineageOn
             out.addProperty("lineageEnabled", lineageEnabled)
             // Lineage publish status: off (knob/opt-in) | never | error | published.
             out.addProperty(
@@ -152,7 +156,9 @@ class PipelineAPIController {
                 out.addProperty("lineageHash", state.lineageHash)
                 out.addProperty("lastLineageAt", state.lastLineageAt)
             }
-            new ResponseEntity[String](new Gson().toJson(out), HttpStatus.OK)
+            // enabledBy is an explicit JSON null when Unity Catalog is off; every
+            // other null field (nested ones included) stays omitted, as before.
+            new ResponseEntity[String](UnityCatalogStateJson.toJson(out), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -280,7 +286,28 @@ class PipelineAPIController {
             if (modifiedConfig.source.databaseAttributes != null)
                 PipelinePullTableUtil.initialize(modifiedConfig.name, modifiedConfig.source.databaseAttributes.cronExpression)
 
-            new ResponseEntity[String](HttpStatus.OK)
+            // Advisory only: the pipeline is saved either way. Unity Catalog on
+            // Databricks cannot serve register/rest modes for an object-store
+            // Iceberg table; say so now rather than at the first run.
+            // The hint names the secret's workspace host, so it is only built
+            // for a secret this caller may read (same predicate as
+            // list_platform_secrets); otherwise it would be an existence and
+            // host oracle for secrets behind a narrower read scope.
+            val canReadSecret: String => Boolean = s =>
+                scala.util.Try(
+                    SecretsUtil.getSecretMap(DatrisEnvironment.current.environment + "/" + s)
+                        .exists(f => UnityCatalogAPIController.canRead(request, f))
+                ).getOrElse(false)
+            val warnings = UnityCatalogSaveHints.forConfig(
+                preserved,
+                PipelineAPIController.hintHostOf(canReadSecret, UnityCatalogSaveHints.resolveHost)
+            )
+            warnings.foreach(w => logger.warn("POST /pipeline " + preserved.name + ": " + w))
+            val out = new JsonObject
+            val arr = new com.google.gson.JsonArray
+            warnings.foreach(arr.add(_))
+            out.add("warnings", arr)
+            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -352,14 +379,16 @@ class PipelineAPIController {
         // committed through the REST catalog is not dropped by Datris.
         val ucPrevious = unityCatalogStateForDelete(config)
         val warnings = Seq.newBuilder[String]
-        var ucTableFilesKept = false
+        // A managed commit's doc always survives (the table lives on in Unity
+        // Catalog and a recreated pipeline continues it).
+        var ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, dataDeleted = true, adviceGiven = false)
 
         // Clean up destination data
         if (deleteDataBool && config.destination != null) {
             val objectStoreDataDeleted = cleanupDestinationData(config)
             UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
                 warnings += advice
-                ucTableFilesKept = !objectStoreDataDeleted
+                ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, objectStoreDataDeleted, adviceGiven = true)
                 logger.warn("Pipeline delete: " + pipeline + ": " + advice)
                 auditUnityCatalogDelete(request, pipeline, advice)
             }
@@ -383,7 +412,8 @@ class PipelineAPIController {
             // Unity Catalog sync state for this pipeline (<env>-uc-sync).
             // Kept while the catalog-committed table's files still exist, so
             // a pipeline recreated at the same name and prefix keeps the
-            // guard against a path write forking the catalog's history.
+            // guard against a path write forking the catalog's history, and
+            // always for a catalogMode managed commit (keepStateOnDelete).
             if (ucPrevious != null && !ucTableFilesKept) {
                 try UnityCatalogSyncIO.delete(pipeline)
                 catch {
@@ -728,6 +758,10 @@ class PipelineAPIController {
                             dest.objectStore.prefixKey + "' overlaps with pipeline(s): " + sharedWith.mkString(", ")
                     )
                 } else {
+                    // Deletes only s3a://<bucket>/<prefixKey>. A catalogMode
+                    // managed table lives where Unity Catalog put it (e.g.
+                    // __unitystorage), never under prefixKey, so it is never
+                    // touched here (UnityCatalogDeleteAdvice says so).
                     ObjectStoreSpark.deleteDestinationData(dest.objectStore)
                     objectStoreDataDeleted = true
                 }
@@ -769,4 +803,13 @@ class PipelineAPIController {
             )
             .map(_.name)
     }
+}
+
+object PipelineAPIController {
+
+    /** Host lookup for the save-time Unity Catalog hint: the secret's host
+      * only when the caller may read the secret, else None (no hint). The
+      * readability check runs first so an unreadable secret is never resolved. */
+    private[api] def hintHostOf(canRead: String => Boolean, resolve: String => Option[String]): String => Option[String] =
+        s => if (canRead(s)) resolve(s) else None
 }

@@ -2,6 +2,7 @@ import { Component, Input, Output, EventEmitter, OnChanges, SimpleChanges } from
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { Observable } from 'rxjs';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-version-history',
@@ -85,7 +86,7 @@ export class VersionHistoryComponent implements OnChanges {
       },
       error: (err) => {
         this.loading = false;
-        this.error = 'Failed to load version history: ' + (err.error || err.message || '');
+        this.error = 'Failed to load version history: ' + httpErrorText(err, '');
       }
     });
   }
@@ -108,7 +109,7 @@ export class VersionHistoryComponent implements OnChanges {
       },
       error: (err) => {
         this.snapshotLoading = false;
-        this.error = 'Failed to load snapshot: ' + (err.error || err.message || '');
+        this.error = 'Failed to load snapshot: ' + httpErrorText(err, '');
       }
     });
   }
@@ -126,7 +127,7 @@ export class VersionHistoryComponent implements OnChanges {
       },
       error: (err) => {
         this.diffLoading = false;
-        this.error = 'Failed to load diff: ' + (err.error || err.message || '');
+        this.error = 'Failed to load diff: ' + httpErrorText(err, '');
       }
     });
   }
@@ -177,7 +178,7 @@ export class VersionHistoryComponent implements OnChanges {
       },
       error: (err) => {
         this.restoring = false;
-        this.error = 'Failed to restore: ' + (err.error || err.message || '');
+        this.error = 'Failed to restore: ' + httpErrorText(err, '');
       }
     });
   }

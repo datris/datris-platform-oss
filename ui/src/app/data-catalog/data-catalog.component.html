@@ -53,6 +53,19 @@
     </div>
   </div>
 
+  <div class="op-failures-banner warn" *ngIf="opWarnings.length > 0">
+    <div class="op-failures-head">
+      <span class="material-icons">info</span>
+      <span>{{ opWarningsLabel }}: {{ opWarnings.length }} pipeline{{ opWarnings.length !== 1 ? 's' : '' }} left a table in Unity Catalog.</span>
+      <button class="move-error-close" (click)="dismissOpWarnings()" title="Dismiss">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <ul class="op-failures-list">
+      <li *ngFor="let w of opWarnings"><strong>{{ w.pipeline }}</strong>: {{ w.message }}</li>
+    </ul>
+  </div>
+
   <div class="empty-state" *ngIf="!loading && catalogs.length === 0">
     <span class="material-icons empty-icon">folder_open</span>
     <p>No catalogs yet. Use <strong>Create Catalog</strong> above, or assign a tap or pipeline to a new catalog when creating it.</p>

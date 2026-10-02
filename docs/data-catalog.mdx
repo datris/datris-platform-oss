@@ -70,7 +70,7 @@ Catalogs are a field on the Tap and Pipeline configs. You read and write single 
 Two endpoints act on a whole catalog:
 
 - `PUT /api/v1/catalog/{name}` with body `{"newName": "<label>"}` renames the catalog. If `newName` already exists the request is refused with 409 and nothing changes; move items to combine catalogs. The response lists the items `renamed`, any `failed` items with their error, and `affectedKeys`: API keys still scoped to the old name.
-- `DELETE /api/v1/catalog/{name}?mode=detach` removes the catalog and moves its items to Uncataloged. `mode=cascade&confirm=<name>` deletes the items and their data as well; `confirm` must equal the catalog name. Uncataloged cannot be renamed or deleted.
+- `DELETE /api/v1/catalog/{name}?mode=detach` removes the catalog and moves its items to Uncataloged. `mode=cascade&confirm=<name>` deletes the items and their data as well; `confirm` must equal the catalog name. The cascade response's `warnings` lists each deleted pipeline whose Unity Catalog table Datris did not drop, as `{pipeline, message}` with the pipeline name and the table an admin has to drop in Unity Catalog; the Data Catalog page shows these in a banner until dismissed. Uncataloged cannot be renamed or deleted.
 
 From an MCP agent:
 

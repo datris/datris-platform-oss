@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { TapService } from '../tap.service';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-tap-run',
@@ -89,7 +90,7 @@ export class TapRunComponent implements OnInit, OnDestroy {
       },
       error: (err) => {
         this.status = 'failure';
-        this.error = typeof err.error === 'string' ? err.error.substring(0, 500) : (err.message || 'Unknown error');
+        this.error = httpErrorText(err, 'Unknown error').substring(0, 500);
         this.running = false;
         this.hasRun = true;
       }

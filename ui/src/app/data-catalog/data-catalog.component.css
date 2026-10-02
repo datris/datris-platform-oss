@@ -738,6 +738,12 @@
   color: #fbbf24;
 }
 
+.op-failures-banner.warn {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+}
+
 .affected-keys-banner {
   display: flex;
   align-items: center;

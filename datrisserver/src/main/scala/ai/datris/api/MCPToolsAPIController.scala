@@ -48,12 +48,12 @@ class MCPToolsAPIController {
                     // resolves (including anonymous mode); absence means keys
                     // are required and this one is missing or invalid.
                     ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body[String]("""{"error":"x-api-key does not exist or is invalid"}""")
+                        .body[String](ApiErrors.AuthenticationRequiredBody)
             }
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
         }
     }
 }

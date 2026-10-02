@@ -382,11 +382,13 @@ object UnityCatalogLineagePublisher {
     }
 
     /** Loader hook: runs after the metadata sync on a successful Databricks
-      * load. No-op unless the pipeline opted in with `lineage` on; one info
+      * load. No-op unless Unity Catalog is effectively on for the pipeline
+      * (UnityCatalogSync.effective: its block, or the install default) with
+      * `lineage` on; one info
       * line when the kill switch is off. Never throws. */
     def sync(jobContext: JobContext, tableCreated: Boolean = false): Unit = {
         val config = jobContext.config
-        if (config == null || config.unityCatalog == null || !config.unityCatalog.enabled || !config.unityCatalog.lineageOn) return
+        if (!UnityCatalogSync.effective(config, UnityCatalogSync.defaultEnabledFromEnv).exists(_._1.lineageOn)) return
         val statusUtil = jobContext.statusUtil
         if (!UnityCatalogMetadataSync.switchedOn) {
             statusUtil.info("processing", "uc-lineage: Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false); skipped")

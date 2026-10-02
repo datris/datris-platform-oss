@@ -37,17 +37,36 @@ object UnityCatalogStaleState {
       * pipeline's own table (committed at its root, and the prefix still has
       * or may have the table's metadata), or when it records a table the
       * catalog created for this name (`restCreatedTable`), so the "created by
-      * Datris but never written to" delete warning survives. */
-    def keepOnCreate(doc: UnityCatalogSyncState, tableRoot: Option[String], prefixHasMetadata: () => Option[Boolean]): Boolean =
-        doc != null && (doc.restCreatedTable != null ||
+      * Datris but never written to" delete warning survives. A managed
+      * commit (`catalogMode: managed`) is kept when the new pipeline has a
+      * usable unityCatalog block (`hasCatalogBlock`): its table lives where
+      * the catalog put it, so an empty prefix says nothing (never probed).
+      * Without a block the new pipeline cannot reach that table, and the
+      * doc would only fail its runs, so it is forgotten. */
+    def keepOnCreate(
+        doc: UnityCatalogSyncState,
+        tableRoot: Option[String],
+        prefixHasMetadata: () => Option[Boolean],
+        hasCatalogBlock: Boolean = true
+    ): Boolean =
+        doc != null && (doc.restCreatedTable != null || (IcebergRestSession.managedCommitted(doc) && hasCatalogBlock) ||
             (tableRoot.exists(r => IcebergRestSession.restCommitted(doc, r)) && !prefixHasMetadata().contains(false)))
+
+    /** A unityCatalog block that can reach a catalog: present, with a
+      * non-blank `catalog` and `credentialsSecret`. */
+    def hasCatalogBlock(uc: ai.datris.model.UnityCatalogSync): Boolean = {
+        def blank(s: String) = s == null || s.trim.isEmpty
+        uc != null && !blank(uc.catalog) && !blank(uc.credentialsSecret)
+    }
 
     /** Docs to delete on startup: no pipeline of that name, and neither a
       * catalog-committed doc (those guard files a delete kept) nor one that
       * records a catalog-created table (`restCreatedTable`). */
     def orphanDocs(docs: Seq[UnityCatalogSyncState], existingPipelines: Set[String]): Seq[String] =
         docs.filter(d => d != null && d.pipeline != null && !existingPipelines.contains(d.pipeline))
-            .filterNot(d => d.catalogMode == "rest" && d.restMetadataLocation != null && d.lastRestCommitAt != null)
+            .filterNot(d =>
+                (d.catalogMode == "rest" || d.catalogMode == "managed") && d.restMetadataLocation != null && d.lastRestCommitAt != null
+            )
             .filterNot(_.restCreatedTable != null)
             .map(_.pipeline)
 
@@ -57,14 +76,61 @@ object UnityCatalogStaleState {
     def topLevelState(state: UnityCatalogSyncState, register: String): String =
         if (state == null) "never"
         else if (state.lastError != null || register == "refused") "error"
+        // A catalog-committed table whose last run failed before writing
+        // (refused by the guard, or a managed refusal): the table committed
+        // earlier is still current, but the pipeline is not running.
+        else if (state.restRefusedReason != null && (register == "managed" || register == "rest" || isCatalogCommitDoc(state))) "error"
         else "synced"
+
+    private def isCatalogCommitDoc(state: UnityCatalogSyncState): Boolean =
+        state != null && (state.catalogMode == "rest" || state.catalogMode == "managed") && state.restMetadataLocation != null &&
+            state.lastRestCommitAt != null
+
+    /** `register` of the state endpoint. A doc that records a managed commit
+      * wins over the config's current mode (the table is the catalog's
+      * whatever the config now says): `managed`, or `refused` when the last
+      * run was refused (`restRefusedReason`). Otherwise as before: `off`
+      * without the register knob, `rest` / `managed` / `refused` from the
+      * doc in the matching config mode, then `error` / `stale` from the
+      * uc-register: lines, `registered`, `never`. */
+    def registerStatus(state: UnityCatalogSyncState, registerEnabled: Boolean, configMode: String): String = {
+        val restMode = configMode == "rest"
+        val managedMode = configMode == "managed"
+        val registerLines =
+            if (state != null && state.lastError != null) state.lastError.split("\n").filter(_.startsWith(IcebergCatalogRegistrar.ErrorPrefix)).toSeq
+            else Nil
+        if (IcebergRestSession.managedCommitted(state)) { if (state.restRefusedReason != null) "refused" else "managed" }
+        else if (!registerEnabled) "off"
+        else if (restMode && state != null && state.catalogMode == "rest") "rest"
+        else if (managedMode && state != null && state.catalogMode == "managed") "managed"
+        else if ((restMode || managedMode) && state != null && state.catalogMode == "refused") "refused"
+        else if (registerLines.exists(!_.contains("Unity Catalog still points at"))) "error"
+        else if (registerLines.nonEmpty) "stale"
+        else if (state != null && state.registeredMetadataLocation != null) "registered"
+        else "never"
+    }
+
+    /** `catalogMode` of the state endpoint: `managed` when the doc records a
+      * managed commit, else the config's mode. */
+    def reportedCatalogMode(state: UnityCatalogSyncState, configMode: String): String =
+        if (IcebergRestSession.managedCommitted(state)) "managed" else configMode
+
+    /** `coordinates.location`: the managed table's directory when the doc
+      * records a managed commit; null for a managed config before its first
+      * commit; else the pipeline's prefix. */
+    def reportedLocation(state: UnityCatalogSyncState, configManaged: Boolean, prefixLocation: => String): String =
+        if (IcebergRestSession.managedCommitted(state)) IcebergRestSession.tableLocationOf(state.restMetadataLocation)
+        else if (configManaged) null
+        else prefixLocation
 
     /** Run-time stale check: when `previous` records a catalog commit at
       * `tableRoot` but the catalog has no table and the prefix no metadata,
       * persist the doc without its catalog-commit fields (`write`) and return
       * it. None (probes not run) when the doc is not committed there; None
       * when either probe finds the table or cannot tell. A `write` failure
-      * propagates: the run must not continue with a stale doc on disk. */
+      * propagates: the run must not continue with a stale doc on disk. A
+      * managed doc (any root) is stale when the catalog is known to have no
+      * table; its prefix holds nothing and is never probed. */
     def clearIfStale(
         previous: UnityCatalogSyncState,
         tableRoot: String,
@@ -72,12 +138,30 @@ object UnityCatalogStaleState {
         prefixHasMetadata: () => Option[Boolean],
         write: UnityCatalogSyncState => Unit
     ): Option[UnityCatalogSyncState] = {
-        if (!IcebergRestSession.restCommitted(previous, tableRoot)) return None
-        if (!staleCommitted(committed = true, catalogHasTable(), prefixHasMetadata())) return None
+        if (IcebergRestSession.managedCommitted(previous)) {
+            if (!catalogHasTable().contains(false)) return None
+        } else {
+            if (!IcebergRestSession.restCommitted(previous, tableRoot)) return None
+            if (!staleCommitted(committed = true, catalogHasTable(), prefixHasMetadata())) return None
+        }
         val cleared = withoutRestCommit(previous)
         write(cleared)
         Some(cleared)
     }
+
+    /** The run-time warning when [[clearIfStale]] cleared `previous`. A
+      * managed doc names the table it recorded: the catalog has no table at
+      * `qualified` (the catalog or schema changed, or an admin dropped it),
+      * so the run starts a new table and the old record is forgotten.
+      * `qualified` null: the pipeline has no usable unityCatalog block. */
+    def staleWarning(previous: UnityCatalogSyncState, qualified: String): String =
+        if (IcebergRestSession.managedCommitted(previous) && qualified == null)
+            "state doc recorded a managed table at " + IcebergRestSession.tableLocationOf(previous.restMetadataLocation) +
+                ", but this pipeline has no Unity Catalog block; writing by path and forgetting the old table (an admin can drop it in Unity Catalog)"
+        else if (IcebergRestSession.managedCommitted(previous))
+            "state doc recorded a managed table at " + IcebergRestSession.tableLocationOf(previous.restMetadataLocation) + " that is not at " +
+                qualified + "; starting a new table and forgetting the old one (an admin can drop the old table in Unity Catalog)"
+        else "state doc says committed but neither the catalog nor the prefix has the table; ignoring stale state"
 
     def withoutRestCommit(doc: UnityCatalogSyncState): UnityCatalogSyncState =
         doc.copy(catalogMode = null, restMetadataLocation = null, lastRestCommitAt = null, restRefusedReason = null)
@@ -122,13 +206,19 @@ object UnityCatalogStaleState {
             val doc = UnityCatalogSyncIO.read(config.name)
             if (doc == null) return
             val root = tableRootOf(config)
-            if (keepOnCreate(doc, root, () => root.flatMap(r => prefixMetadataFor(config, r)))) {
+            val block = hasCatalogBlock(config.unityCatalog)
+            if (keepOnCreate(doc, root, () => root.flatMap(r => prefixMetadataFor(config, r)), block)) {
                 logger.info(
                     "kept Unity Catalog sync state for " + config.name + ": its catalog-committed table's files may still exist at " + root.orNull
                 )
             } else {
                 UnityCatalogSyncIO.delete(config.name)
-                logger.info("cleared stale Unity Catalog sync state for " + config.name)
+                if (IcebergRestSession.managedCommitted(doc) && !block)
+                    logger.warn(
+                        "forgetting managed table at " + IcebergRestSession.tableLocationOf(doc.restMetadataLocation) + " for recreated pipeline " +
+                            config.name + " (no Unity Catalog block); drop it in Unity Catalog if unwanted"
+                    )
+                else logger.info("cleared stale Unity Catalog sync state for " + config.name)
             }
         } catch {
             case NonFatal(e) => logger.warn("Unity Catalog sync state check on create failed for " + config.name + ": " + e.getMessage)

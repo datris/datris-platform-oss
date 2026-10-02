@@ -48,6 +48,15 @@ def _next_id():
 
 _REJECTED_KEY_MSG = "MCP server rejected DATRIS_API_KEY (Configuration → API-Keys → Issue new key)"
 
+# Error texts the platform uses when the presented key is missing, unknown
+# or revoked. The interceptor and controllers answer with the middle one;
+# the first is the historical controller message, kept for older servers.
+_REJECTED_KEY_ERRORS = ("Invalid x-api-key", "API key is revoked or invalid", "Authentication required")
+
+
+def _is_rejected_key_error(message):
+    return isinstance(message, str) and any(message.startswith(p) for p in _REJECTED_KEY_ERRORS)
+
 
 def _auth_headers():
     """x-api-key header from DATRIS_API_KEY, read at call time (not import)."""
@@ -149,7 +158,7 @@ async def _call_tool(name, arguments=None):
 
     if "error" in resp:
         message = resp["error"].get("message", str(resp["error"]))
-        if "Invalid x-api-key" in message:
+        if _is_rejected_key_error(message):
             raise click.ClickException(_REJECTED_KEY_MSG)
         return {"error": message}
 
@@ -164,8 +173,7 @@ async def _call_tool(name, arguments=None):
     # top-level {"error": "Invalid x-api-key..."}. Match only that shape so
     # tool data that merely contains the phrase is not misreported. Never echo
     # the key back.
-    if isinstance(parsed, dict) and isinstance(parsed.get("error"), str) \
-            and parsed["error"].startswith("Invalid x-api-key"):
+    if isinstance(parsed, dict) and _is_rejected_key_error(parsed.get("error")):
         raise click.ClickException(_REJECTED_KEY_MSG)
     return parsed
 

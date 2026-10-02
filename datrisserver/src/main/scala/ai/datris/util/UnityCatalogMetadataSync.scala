@@ -55,6 +55,11 @@ object UnityCatalogMetadataSync {
         !sys.props.get("datris.unityCatalogSync").orElse(sys.env.get("DATRIS_UNITY_CATALOG_SYNC"))
             .exists(_.trim.equalsIgnoreCase("false"))
 
+    /** State endpoint `syncSwitchedOff`: true only while the kill switch is off,
+      * so a pipeline reported enabled (by its block or the install default)
+      * is known to write nothing. */
+    def syncSwitchedOff: Boolean = !switchedOn
+
     /** Single-quoted Databricks string literal. Databricks SQL processes
       * backslash escapes inside literals, so backslashes are doubled before
       * quotes; otherwise a trailing `\` would un-terminate the literal. */
@@ -224,11 +229,16 @@ object UnityCatalogMetadataSync {
     }
 
     /** Loader hook: runs after a successful Databricks load on the same
-      * connection. No-op unless the pipeline opted in; one info line when the
-      * kill switch is off. Never throws. */
+      * connection. No-op unless Unity Catalog is effectively on for the
+      * pipeline (its own block, or the install default for a Databricks
+      * pipeline with no block: UnityCatalogSync.effective); one info line when
+      * the kill switch is off. Never throws. */
     def sync(conn: Connection, jobContext: JobContext, presentProvenanceColumns: Seq[String], tableCreated: Boolean = false): Unit = {
         val config = jobContext.config
-        if (config == null || config.unityCatalog == null || !config.unityCatalog.enabled) return
+        val knobs = UnityCatalogSync.effective(config, UnityCatalogSync.defaultEnabledFromEnv) match {
+            case Some((block, _)) => block
+            case None => return
+        }
         val statusUtil = jobContext.statusUtil
         if (!switchedOn) {
             statusUtil.info("processing", "uc-sync: Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false); skipped")
@@ -255,7 +265,7 @@ object UnityCatalogMetadataSync {
                 configVersion = config.version,
                 dqStatus = if (statusUtil.hasWarning) "warn" else "pass",
                 environment = env,
-                knobs = config.unityCatalog,
+                knobs = knobs,
                 source = source,
                 lastSource = lastSource
             )

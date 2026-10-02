@@ -44,7 +44,15 @@ case class PipelineConfig(
   * mapper does not apply Scala default arguments (an absent Boolean arrives
   * as `false`), and Gson skips constructors on config DB reads. Read them
   * through `commentsOn` / `tagsOn` / `propertiesOn` / `lineageOn` /
-  * `registerOn`. */
+  * `registerOn`.
+  *
+  * Install default (`DATRIS_UNITY_CATALOG_DEFAULT=enabled`): a Databricks
+  * pipeline with NO block behaves as `{"enabled": true}` (every knob on).
+  * An explicit block always decides (`{"enabled": false}` opts out); the
+  * kill switch `DATRIS_UNITY_CATALOG_SYNC=false` still beats everything; and
+  * object-store Iceberg pipelines are never defaulted (registration needs a
+  * per-pipeline credentialsSecret + catalog). Runtime readers resolve this
+  * through `UnityCatalogSync.effective`. */
 case class UnityCatalogSync @JsonCreator() (
     @JsonProperty("enabled") enabled: Boolean = false,
     @JsonProperty("comments") comments: java.lang.Boolean = null,
@@ -63,8 +71,11 @@ case class UnityCatalogSync @JsonCreator() (
     @JsonProperty("schema") schema: String = null,
     @JsonProperty("register") register: java.lang.Boolean = null,
     // Object-store Iceberg only: `register` (null/absent: register after each
-    // commit, story 4) or `rest` (every commit goes through the Iceberg REST
-    // catalog, IcebergRestSession). Read via catalogModeOrDefault / restMode.
+    // commit, story 4), `rest` (every commit goes through the Iceberg REST
+    // catalog at the pipeline's prefix, IcebergRestSession) or `managed` (the
+    // catalog chooses the table's location in the pipeline's bucket, e.g. a
+    // Databricks managed table; commits go through the catalog). Read via
+    // catalogModeOrDefault / restMode / managedMode / throughCatalog.
     @JsonProperty("catalogMode") catalogMode: String = null
 ) {
     def this() = this(false, null, null, null, null, null, null, null, null, null)
@@ -77,12 +88,66 @@ case class UnityCatalogSync @JsonCreator() (
     def schemaOrDefault: String = Option(schema).map(_.trim).filter(_.nonEmpty).getOrElse("default")
     def catalogModeOrDefault: String = Option(catalogMode).map(_.trim.toLowerCase).filter(_.nonEmpty).getOrElse("register")
     def restMode: Boolean = catalogModeOrDefault == "rest"
+    def managedMode: Boolean = catalogModeOrDefault == "managed"
+
+    /** Every commit goes through the Iceberg REST catalog (rest or managed). */
+    def throughCatalog: Boolean = restMode || managedMode
 }
 
 object UnityCatalogSync {
 
     /** Unset (null) ⇒ on; only an explicit `false` drops a group. */
     def on(b: java.lang.Boolean): Boolean = b == null || b.booleanValue
+
+    /** `enabledBy` values: an explicit pipeline block decided, or the install default filled in a missing block. */
+    object EnabledBy {
+        val Pipeline = "pipeline"
+        val Default = "default"
+    }
+
+    /** The block the install default fills in: enabled, every knob on (null). */
+    val DefaultBlock: UnityCatalogSync = UnityCatalogSync(enabled = true)
+
+    /** The one place the per-pipeline block and the install default are
+      * resolved. Some((block, enabledBy)) when Unity Catalog metadata is on for
+      * this pipeline, None when off. An explicit block always decides (so
+      * `{"enabled": false}` opts out of the default); a missing block is
+      * defaulted on only for a Databricks destination. The kill switch
+      * (`DATRIS_UNITY_CATALOG_SYNC`) is not part of this; hooks check it after. */
+    def effective(config: PipelineConfig, defaultEnabled: Boolean): Option[(UnityCatalogSync, String)] = {
+        if (config == null) return None
+        val uc = config.unityCatalog
+        if (uc != null) {
+            if (uc.enabled) Some((uc, EnabledBy.Pipeline)) else None
+        } else if (defaultEnabled && isDatabricks(config)) Some((DefaultBlock, EnabledBy.Default))
+        else None
+    }
+
+    /** `GET /pipelines/{name}/unity-catalog` fields from `effective`:
+      * (enabled, enabledBy, lineageEnabled). enabledBy is "pipeline" whenever
+      * the pipeline has its own block (including an `{"enabled": false}`
+      * opt-out), "default" when the install default turned it on, null when
+      * Unity Catalog is off and the pipeline has no block. */
+    def stateFields(config: PipelineConfig, defaultEnabled: Boolean): (Boolean, String, Boolean) = {
+        val eff = effective(config, defaultEnabled)
+        val enabledBy =
+            if (config != null && config.unityCatalog != null) EnabledBy.Pipeline
+            else eff.map(_._2).orNull
+        (eff.isDefined, enabledBy, eff.exists(_._1.lineageOn))
+    }
+
+    private def isDatabricks(config: PipelineConfig): Boolean =
+        config.destination != null && config.destination.database != null && config.destination.database.useDatabricks
+
+    /** `DATRIS_UNITY_CATALOG_DEFAULT` (or the `datris.unityCatalogDefault`
+      * system property, which wins): `enabled` (any case, trimmed) turns the
+      * install default on; unset, blank or anything else is `disabled`. Read on
+      * every call. */
+    def defaultEnabledFromEnv: Boolean =
+        sys.props
+            .get("datris.unityCatalogDefault")
+            .orElse(sys.env.get("DATRIS_UNITY_CATALOG_DEFAULT"))
+            .exists(_.trim.equalsIgnoreCase("enabled"))
 }
 
 case class ProvenanceConfig @JsonCreator() (

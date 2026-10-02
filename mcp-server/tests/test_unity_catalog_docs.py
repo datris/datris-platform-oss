@@ -253,7 +253,8 @@ def test_openapi_unity_catalog_sync_has_catalog_mode_enum():
     fields = spec["components"]["schemas"]["UnityCatalogSync"]["properties"]
     assert "catalogMode" in fields, sorted(fields)
     assert fields["catalogMode"].get("type") == "string", fields["catalogMode"]
-    assert fields["catalogMode"].get("enum") == ["register", "rest"], fields["catalogMode"]
+    # Unity Catalog 7 adds `managed` (Databricks).
+    assert fields["catalogMode"].get("enum") == ["register", "rest", "managed"], fields["catalogMode"]
 
 
 def test_openapi_unity_catalog_state_lists_catalog_mode_and_rest_fields():
@@ -267,6 +268,9 @@ def test_openapi_unity_catalog_state_lists_catalog_mode_and_rest_fields():
         assert field in props, f"{field} must be in the /pipelines/{{name}}/unity-catalog schema: {sorted(props)}"
     register_enum = props["register"].get("enum", [])
     assert "rest" in register_enum and "refused" in register_enum, register_enum
+    # Unity Catalog 7: `register` gains `managed`, and so does the state's catalogMode.
+    assert "managed" in register_enum, register_enum
+    assert props["catalogMode"].get("enum") == ["register", "rest", "managed"], props["catalogMode"]
     # Story-4 values are kept.
     for old in ("off", "never", "registered", "stale", "error"):
         assert old in register_enum, register_enum
@@ -279,38 +283,62 @@ def test_pipeline_config_reference_mentions_catalog_mode():
 
 
 # ======================================================================
-# Live Databricks probe (story 5 follow-up): Databricks Unity Catalog has no
-# Iceberg REST register endpoint, so register mode cannot work there.
+# Live Databricks probe (story 5 follow-up), rewritten by Unity Catalog 7
+# (plans/stories/unity-catalog-7-managed-iceberg.md), Acceptance bullet 8:
+# Databricks Unity Catalog has no register call and ignores the requested
+# location, so Databricks uses `catalogMode: "managed"` (the catalog chooses
+# the location). The "neither mode works" wording is gone.
 # ======================================================================
 
-def test_unity_catalog_page_states_databricks_limits_honestly():
-    # Superseded "Databricks requires rest" (live probe: Databricks creates a
-    # MANAGED table and ignores the requested location).
+MANAGED_HEADING = r"^Databricks:\s*`?catalogMode:?\s*\"?managed\"?`?$"
+
+
+def test_unity_catalog_page_has_databricks_catalog_mode_managed_section():
     text = _read(UNITY_CATALOG_MDX)
-    assert 'With Databricks, `catalogMode: "rest"` is required.' not in text
-    assert "does not implement the Iceberg REST `register` call" in text
-    assert "ignores the requested location" in text
-    assert 'does not currently work against Databricks Unity Catalog' in text
-    assert "refuses to write into the managed location" in text
-    assert "[Databricks destination](/destinations/databricks)" in text
-    assert "not confirmed" not in text
-    # Adopting an existing path table is impossible there; the way out is stated.
-    assert "not possible on Databricks" in text
-    assert "start from a new prefix" in text and "deleteBeforeWrite" in text
-    # Both modes still described as working where the catalog supports them.
+    headings = [l.strip() for l in text.splitlines() if l.startswith("#")]
+    body = _section(text, MANAGED_HEADING)
+    assert body is not None, headings
+    # Prerequisites: a schema on MANAGED LOCATION in the pipeline's bucket, provider s3.
+    assert "MANAGED LOCATION" in body, body
+    assert '"provider": "s3"' in body or "`provider: s3`" in body or "provider `s3`" in body, body
+    # MinIO only with a custom icebergRestPath secret (a non-Databricks catalog).
+    assert "icebergRestPath" in body and "minio" in body.lower(), body
+    # Behaviour: the catalog chooses the location, prefixKey holds no data,
+    # a refusal before the write fails the run, deleteBeforeWrite is rejected,
+    # deleting the pipeline leaves the table and its files to Unity Catalog.
+    assert "prefixKey" in body, body
+    assert re.search(r"fails the run|the run fails", body), body
+    assert "deleteBeforeWrite" in body, body
+    assert "__unitystorage" in body or "chooses the location" in body, body
+    # Example config.
+    assert '"catalogMode": "managed"' in body, body
+    assert '"destinationBucketOverride"' in body, body
+
+
+def test_unity_catalog_page_no_longer_says_neither_mode_works_on_databricks():
+    text = _read(UNITY_CATALOG_MDX)
+    assert "supports neither mode" not in text
+    assert "**Databricks today.**" not in text
+    assert "**On Databricks.**" not in text
+    assert "Neither mode currently keeps Databricks Unity Catalog" not in text
+    assert "does not currently work against Databricks Unity Catalog" not in text
+    assert "is planned" not in text
+    # register/rest still described for catalogs that honour the requested location.
     assert "Apache Iceberg REST" in text
-    # The example uses the real bucket field.
-    assert '"destinationBucketOverride": "my-lake"' in text
     assert '"bucket": "my-lake"' not in text
 
 
-def test_pipeline_config_reference_and_mcp_arg_state_databricks_limits():
+def test_pipeline_config_reference_and_mcp_args_say_databricks_uses_managed():
     ref = server.PIPELINE_CONFIG_REFERENCE
-    assert "has no Iceberg REST `register` call" in ref
-    assert "Databricks-managed" in ref
+    assert "supports neither mode" not in ref
+    assert "planned managed-table support" not in ref
+    assert re.search(r'"catalogMode":\s*"managed"', ref), "PIPELINE_CONFIG_REFERENCE must give the managed recipe"
     src = _read(os.path.join(REPO_ROOT, "mcp-server", "server.py"))
     assert "Databricks requires rest" not in src
-    assert "use destination=databricks" in src
+    # Neither the unity_catalog nor the unity_catalog_mode description may keep
+    # the "does not work in either mode" wording.
+    assert "in either mode" not in src
+    assert "with either mode" not in src
 
 
 def test_unity_catalog_page_requires_managed_location_schema():
@@ -321,10 +349,120 @@ def test_unity_catalog_page_requires_managed_location_schema():
     assert "SCHEMA_DB_STORAGE" in text
 
 
-def test_databricks_limits_precede_the_prerequisites():
+def test_databricks_prerequisites_no_longer_say_planned():
+    # Unity Catalog 7: managed-table support exists; the grants intro says so.
     ref = server.PIPELINE_CONFIG_REFERENCE
-    assert ref.index("supports neither mode") < ref.index("Databricks-side grants"), ref
+    grants = ref[ref.index("Databricks-side grants"):]
+    assert "planned" not in grants[:300], grants[:300]
     text = _read(UNITY_CATALOG_MDX)
     body = _section(text, r"^Databricks prerequisites$")
     assert body is not None
-    assert body.strip().startswith("These are the grants the planned Databricks managed-table support"), body[:200]
+    assert "planned" not in body, body[:300]
+    assert "managed" in body, body[:300]
+
+
+# ======================================================================
+# Unity Catalog metadata on by default (plans/stories/uc-default-enabled.md),
+# Acceptance bullet 6 (and the `enabledBy` field from bullet 3).
+# DATRIS_UNITY_CATALOG_DEFAULT=enabled makes a Databricks pipeline with no
+# unityCatalog block behave as {"enabled": true}; unset = disabled; the kill
+# switch DATRIS_UNITY_CATALOG_SYNC=false still wins; {"enabled": false} opts out.
+# ======================================================================
+
+DEFAULT_VAR = "DATRIS_UNITY_CATALOG_DEFAULT"
+SYNC_VAR = "DATRIS_UNITY_CATALOG_SYNC"
+SERVER_PY = os.path.join(REPO_ROOT, "mcp-server", "server.py")
+ENV_EXAMPLE = os.path.join(REPO_ROOT, ".env.example")
+COMPOSE = os.path.join(REPO_ROOT, "docker-compose.yml")
+COMPOSE_STANDALONE = os.path.join(REPO_ROOT, "docker-compose.standalone.yml")
+PIPELINE_API_MDX = os.path.join(DOCS, "api-reference", "pipeline-api.mdx")
+
+
+def _unity_catalog_arg_description():
+    """The `unity_catalog` create_pipeline argument description in server.py."""
+    src = _read(SERVER_PY)
+    m = re.search(r'"unity_catalog":\s*\{[^{}]*?"description":\s*"((?:[^"\\]|\\.)*)"', src, re.DOTALL)
+    assert m, "server.py has no unity_catalog argument description"
+    return m.group(1)
+
+
+def test_configuration_reference_has_default_row_under_sync_row():
+    lines = _read(CONFIG_REFERENCE_MDX).splitlines()
+    sync_idx = [i for i, l in enumerate(lines) if l.startswith(f"| `{SYNC_VAR}`")]
+    default_idx = [i for i, l in enumerate(lines) if l.startswith(f"| `{DEFAULT_VAR}`")]
+    assert sync_idx, f"no {SYNC_VAR} row"
+    assert default_idx, f"no {DEFAULT_VAR} row in configuration-reference.mdx"
+    assert default_idx[0] == sync_idx[0] + 1, f"{DEFAULT_VAR} row must sit directly under the {SYNC_VAR} row"
+    row = lines[default_idx[0]]
+    cells = [c.strip() for c in row.strip().strip("|").split("|")]
+    assert cells[1] == "`disabled`", f"default column must be `disabled`: {cells[1]!r}"
+    # Precedence in the new row: kill switch beats it, an explicit opt-out beats it,
+    # object-store Iceberg is not defaulted.
+    assert SYNC_VAR in row, row
+    assert re.search(r"`?\"?enabled\"?:\s*false`?", row), row
+    assert re.search(r"[Oo]bject.store|Iceberg", row), row
+    # And the sync row now names the default.
+    assert DEFAULT_VAR in lines[sync_idx[0]], lines[sync_idx[0]]
+
+
+def test_databricks_page_unity_catalog_metadata_section_mentions_default_and_opt_out():
+    body = _section(_read(DATABRICKS_MDX), r"^Unity Catalog metadata$")
+    assert body is not None
+    assert DEFAULT_VAR in body, "databricks.mdx Unity Catalog metadata section must describe the install default"
+    assert re.search(r'"enabled":\s*false', body), "databricks.mdx must show the {\"enabled\": false} opt-out"
+
+
+def test_unity_catalog_page_mentions_default():
+    assert DEFAULT_VAR in _read(UNITY_CATALOG_MDX)
+
+
+def test_pipeline_config_reference_mentions_install_default():
+    ref = server.PIPELINE_CONFIG_REFERENCE
+    assert DEFAULT_VAR in ref, "PIPELINE_CONFIG_REFERENCE must mention the install default"
+    i = ref.index(DEFAULT_VAR)
+    near = ref[max(0, i - 600): i + 600]
+    assert re.search(r"opt out|opt-out", near), near
+
+
+def test_unity_catalog_arg_mentions_install_default_and_enabled_by():
+    desc = _unity_catalog_arg_description()
+    assert "enabledBy" in desc, desc
+    assert re.search(r"by default|" + DEFAULT_VAR, desc), desc
+
+
+def test_env_example_lists_default_next_to_sync():
+    text = _read(ENV_EXAMPLE)
+    assert re.search(r"^#\s*" + DEFAULT_VAR + r"=disabled\s*$", text, re.MULTILINE), (
+        f".env.example must carry a commented `# {DEFAULT_VAR}=disabled`"
+    )
+    lines = text.splitlines()
+    d = next(i for i, l in enumerate(lines) if re.match(r"^#\s*" + DEFAULT_VAR + "=", l))
+    s = next(i for i, l in enumerate(lines) if re.match(r"^#\s*" + SYNC_VAR + "=", l))
+    assert abs(d - s) <= 15, f"{DEFAULT_VAR} must sit next to {SYNC_VAR} in .env.example (lines {d}, {s})"
+
+
+def test_both_compose_files_forward_default_with_disabled():
+    for path in (COMPOSE, COMPOSE_STANDALONE):
+        text = _read(path)
+        name = os.path.basename(path)
+        assert re.search(
+            r"^\s*" + DEFAULT_VAR + r':\s*"\$\{' + DEFAULT_VAR + r':-disabled\}"\s*$', text, re.MULTILINE
+        ), f"{name} must forward {DEFAULT_VAR}: \"${{{DEFAULT_VAR}:-disabled}}\""
+
+
+def test_openapi_unity_catalog_state_has_enabled_by():
+    import yaml
+
+    spec = yaml.safe_load(_read(OPENAPI_YAML))
+    get = spec["paths"]["/api/v1/pipelines/{name}/unity-catalog"]["get"]
+    props = get["responses"]["200"]["content"]["application/json"]["schema"].get("properties", {})
+    assert "enabledBy" in props, sorted(props)
+    field = props["enabledBy"]
+    assert field.get("enum", [])[:2] == ["pipeline", "default"] or set(e for e in field.get("enum", []) if e is not None) == {"pipeline", "default"}, field
+    assert field.get("nullable") is True or None in field.get("enum", []) or "null" in str(field.get("type")), (
+        f"enabledBy must be nullable (null = Unity Catalog off): {field}"
+    )
+
+
+def test_pipeline_api_page_documents_enabled_by():
+    assert "enabledBy" in _read(PIPELINE_API_MDX)

@@ -166,4 +166,122 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
         val gone = created.copy(pipeline = "gone_created")
         assert(S.orphanDocs(Seq(gone, doc("gone_plain", mode = null, loc = null, at = null)), Set.empty) == Seq("gone_plain"))
     }
+
+    // ---- Story: Unity Catalog 7: Databricks-managed Iceberg mode -----------
+    // (plans/stories/unity-catalog-7-managed-iceberg.md), Acceptance bullet 6
+    // (Step 7). A managed doc (`catalogMode: "managed"` + a recorded commit)
+    // guards the catalog's table, which never lives under prefixKey.
+
+    private val MANAGED_LOC = "s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b/metadata/00002-e5f6.metadata.json"
+    private def managedDoc(name: String = "orders_daily"): UnityCatalogSyncState = doc(name, mode = "managed", loc = MANAGED_LOC)
+
+    test("orphanDocs keeps a managed-committed doc") {
+        val docs = Seq(
+            managedDoc("gone_managed"),
+            doc("gone_managed_uncommitted", mode = "managed", loc = MANAGED_LOC, at = null),
+            doc("gone_plain", mode = null, loc = null, at = null)
+        )
+        assert(S.orphanDocs(docs, Set.empty) == Seq("gone_managed_uncommitted", "gone_plain"))
+    }
+
+    test("keepOnCreate keeps a managed-committed doc even with an empty prefix (it holds no data in managed mode)") {
+        assert(S.keepOnCreate(managedDoc(), Some(ROOT), () => Some(false)), "prefix empty is normal for managed: keep")
+        assert(S.keepOnCreate(managedDoc(), Some("s3a://lake/orders_v2"), () => Some(false)), "root-independent: keep")
+        assert(!S.keepOnCreate(doc(mode = "managed", loc = MANAGED_LOC, at = null), Some(ROOT), () => Some(false)), "no commit: clear")
+    }
+
+    test("clearIfStale on a managed doc: stale when the catalog is known to have no table; the prefix is never probed") {
+        val written = scala.collection.mutable.ListBuffer[UnityCatalogSyncState]()
+        val cleared = S.clearIfStale(managedDoc(), ROOT, () => Some(false), () => fail("managed: prefix never probed"), written += _)
+        assert(cleared.isDefined, "catalog has no table: stale")
+        assert(written.size == 1 && written.head == cleared.get, s"$written")
+        assert(!IcebergRestSession.managedCommitted(written.head), "the persisted doc no longer reads as committed")
+
+        written.clear()
+        assert(S.clearIfStale(managedDoc(), ROOT, () => Some(true), () => fail("probe"), written += _).isEmpty, "catalog has the table")
+        assert(S.clearIfStale(managedDoc(), ROOT, () => None, () => fail("probe"), written += _).isEmpty, "catalog unknown")
+        assert(written.isEmpty, s"$written")
+    }
+
+    test("staleWarning: a managed doc names the old table's location and the new identifier; rest keeps the old wording") {
+        val m = S.staleWarning(managedDoc(), "main.prod.orders_daily")
+        assert(
+            m == "state doc recorded a managed table at s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b that is not at main.prod.orders_daily; " +
+                "starting a new table and forgetting the old one (an admin can drop the old table in Unity Catalog)",
+            m
+        )
+        assert(S.staleWarning(doc(), "main.prod.orders_daily").startsWith("state doc says committed but neither the catalog nor the prefix"))
+    }
+
+    test("topLevelState: a managed doc with restRefusedReason reads error; managed without one reads synced") {
+        assert(S.topLevelState(managedDoc(), "managed") == "synced")
+        assert(S.topLevelState(managedDoc().copy(restRefusedReason = "uc-rest: refused"), "managed") == "error")
+    }
+
+    test("managedRefusedState: a managed commit keeps its commit fields and gains the reason; otherwise the doc says refused") {
+        val kept = IcebergRestSession.managedRefusedState(managedDoc(), "orders_daily", "uc-rest: why")
+        assert(IcebergRestSession.managedCommitted(kept) && kept.restRefusedReason == "uc-rest: why", s"$kept")
+        assert(kept.restMetadataLocation == MANAGED_LOC)
+        val fresh = IcebergRestSession.managedRefusedState(null, "orders_daily", "uc-rest: why")
+        assert(fresh.catalogMode == "refused" && fresh.restRefusedReason == "uc-rest: why" && fresh.pipeline == "orders_daily", s"$fresh")
+        val created = doc(mode = "refused", loc = null, at = null).copy(restCreatedTable = "main.sales.orders_daily")
+        assert(IcebergRestSession.managedRefusedState(created, "orders_daily", "x").restCreatedTable == "main.sales.orders_daily")
+    }
+
+    test("keepOnCreate: a managed doc is kept only when the recreated pipeline has a usable unityCatalog block") {
+        assert(S.keepOnCreate(managedDoc(), Some(ROOT), () => fail("managed: prefix never probed"), hasCatalogBlock = true))
+        assert(!S.keepOnCreate(managedDoc(), Some(ROOT), () => Some(false), hasCatalogBlock = false), "no block: forget the managed doc")
+        assert(!S.keepOnCreate(managedDoc(), None, () => fail("no object store"), hasCatalogBlock = false))
+        // rest and restCreatedTable rules do not depend on the block.
+        assert(S.keepOnCreate(doc(), Some(ROOT), () => Some(true), hasCatalogBlock = false))
+        assert(S.keepOnCreate(managedDoc().copy(restCreatedTable = "main.sales.orders_daily"), Some(ROOT), () => None, hasCatalogBlock = false))
+    }
+
+    test("hasCatalogBlock: present with non-blank catalog and credentialsSecret") {
+        import ai.datris.model.UnityCatalogSync
+        assert(S.hasCatalogBlock(UnityCatalogSync(enabled = true, credentialsSecret = "dbx", catalog = "main", catalogMode = "managed")))
+        assert(!S.hasCatalogBlock(null))
+        assert(!S.hasCatalogBlock(UnityCatalogSync(enabled = true, credentialsSecret = " ", catalog = "main")))
+        assert(!S.hasCatalogBlock(UnityCatalogSync(enabled = true, credentialsSecret = "dbx", catalog = null)))
+    }
+
+    test("staleWarning without a qualified name: the managed table is forgotten because the pipeline has no Unity Catalog block") {
+        val m = S.staleWarning(managedDoc(), null)
+        assert(m.contains("s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b") && m.contains("no Unity Catalog block") && m.contains("writing by path"), m)
+    }
+
+    test("registerStatus: a managed-commit doc wins over the config's mode; refused when the guard refused the last run") {
+        val reason = "uc-rest: " + IcebergRestSession.switchFromManagedMessage("main.sales.orders_daily")
+        // Config switched to rest (or register): the doc still says managed.
+        assert(S.registerStatus(managedDoc(), registerEnabled = true, configMode = "rest") == "managed")
+        assert(S.registerStatus(managedDoc(), registerEnabled = true, configMode = "register") == "managed")
+        val refused = managedDoc().copy(restRefusedReason = reason, registeredMetadataLocation = MANAGED_LOC)
+        assert(S.registerStatus(refused, registerEnabled = true, configMode = "rest") == "refused")
+        assert(S.registerStatus(refused, registerEnabled = false, configMode = "register") == "refused")
+        assert(S.topLevelState(refused, S.registerStatus(refused, registerEnabled = true, configMode = "rest")) == "error")
+        assert(S.reportedCatalogMode(refused, "rest") == "managed")
+        // Unchanged for everything else.
+        assert(S.registerStatus(doc(), registerEnabled = true, configMode = "rest") == "rest")
+        assert(S.registerStatus(doc(mode = "refused", loc = null, at = null), registerEnabled = true, configMode = "rest") == "refused")
+        assert(S.registerStatus(doc(mode = null, loc = null, at = null).copy(registeredMetadataLocation = "r"), true, "register") == "registered")
+        assert(S.registerStatus(null, registerEnabled = true, configMode = "register") == "never")
+        assert(S.registerStatus(doc(), registerEnabled = false, configMode = "rest") == "off")
+        assert(S.reportedCatalogMode(doc(), "rest") == "rest")
+        assert(S.reportedCatalogMode(null, null) == null)
+    }
+
+    test("topLevelState: a rest-committed doc refused by the guard reads error, even in register mode") {
+        val refusedRest = doc().copy(restRefusedReason = "uc-rest: switch back", registeredMetadataLocation = "r")
+        assert(S.topLevelState(refusedRest, S.registerStatus(refusedRest, registerEnabled = true, configMode = "register")) == "error")
+        // A leftover reason on a plain register doc does not.
+        val plain = doc(mode = null, loc = null, at = null).copy(restRefusedReason = "old", registeredMetadataLocation = "r")
+        assert(S.topLevelState(plain, "registered") == "synced")
+    }
+
+    test("reportedLocation: the managed table's directory whatever the config mode; null for a managed config before its first commit") {
+        assert(S.reportedLocation(managedDoc(), configManaged = false, "s3a://lake/orders_daily") == "s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b")
+        assert(S.reportedLocation(managedDoc(), configManaged = true, fail("prefix not needed")) == "s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b")
+        assert(S.reportedLocation(null, configManaged = true, fail("prefix not needed")) == null)
+        assert(S.reportedLocation(doc(), configManaged = false, "s3a://lake/orders_daily") == "s3a://lake/orders_daily")
+    }
 }

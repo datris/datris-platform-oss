@@ -14,6 +14,31 @@ import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import org.springframework.web.servlet.HandlerInterceptor
 
+object CapabilityInterceptor {
+
+    /** Body returned when a presented x-api-key failed resolution. */
+    val RejectedKeyBody: String = "{\"error\":\"API key is revoked or invalid\"}"
+
+    /** Body returned when the key could not be checked because the key
+      * metadata secret was unreadable (secret-store outage). */
+    val MetadataUnavailableBody: String = "{\"error\":\"" + APIKeyValidator.MetadataUnavailableMessage + "\"}"
+
+    /** Status and body for a rejected key: 503 when the rejection is a
+      * metadata-store outage (a transient server condition), 401 otherwise. */
+    def rejectionResponse(reason: String): (Int, String) =
+        if (APIKeyValidator.isStoreOutage(reason))
+            (HttpServletResponse.SC_SERVICE_UNAVAILABLE, "{\"error\":\"" + reason + "\"}")
+        else (HttpServletResponse.SC_UNAUTHORIZED, RejectedKeyBody)
+
+    /** Pure decision for the no-ResolvedKey case. Deny only when the request
+      * presented a key AND TenantInterceptor recorded that it could not be
+      * resolved (revoked/unknown/malformed) AND no other identity (session)
+      * was found. No key at all → pass through unchanged; a resolved key
+      * (legacy full access or scoped) → normal capability check. */
+    def denyPresentedButUnresolved(presentedKey: Boolean, resolved: Boolean, rejection: Option[String]): Boolean =
+        presentedKey && !resolved && rejection.isDefined
+}
+
 /** Checks every request against the capability declared for its route in
   * [[CapabilityRoutes]]. Reads the [[ResolvedKey]] attached by
   * [[TenantInterceptor]] and verifies the key holds the required capability.
@@ -50,6 +75,44 @@ class CapabilityInterceptor extends HandlerInterceptor {
         if (enforce) "enforce" else "log-only"
     )
 
+    private def presentedButRejected(request: HttpServletRequest): Boolean =
+        CapabilityInterceptor.denyPresentedButUnresolved(
+            TenantInterceptor.presented(request.getHeader("x-api-key")),
+            resolved = readResolvedKey(request).isDefined,
+            Option(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr)).map(_.toString)
+        )
+
+    /** Writes the 401/503 rejection, audits it as security:denied, and
+      * returns false so the controller never runs. */
+    private def rejectPresentedKey(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        method: String,
+        path: String,
+        required: Option[String]
+    ): Boolean = {
+        logger.info(
+            "capability check: route={} {} required={} outcome=rejected-key",
+            Array[AnyRef](method, path, required.getOrElse("-")): _*
+        )
+        val (status, body) = CapabilityInterceptor.rejectionResponse(
+            String.valueOf(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr))
+        )
+        response.setStatus(status)
+        response.setContentType("application/json")
+        response.getWriter.write(body)
+        response.getWriter.flush()
+        AuditLog.denied(
+            request,
+            if (status == HttpServletResponse.SC_SERVICE_UNAVAILABLE)
+                String.valueOf(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr))
+            else "API key is revoked or invalid",
+            status,
+            required = required
+        )
+        false
+    }
+
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
         val method = request.getMethod
         val path = request.getRequestURI
@@ -57,6 +120,13 @@ class CapabilityInterceptor extends HandlerInterceptor {
         CapabilityRoutes.lookup(method, path) match {
             case RouteCheck.Skip =>
                 true
+
+            case RouteCheck.Unmapped if presentedButRejected(request) =>
+                // A revoked or unknown key on a route the table does not
+                // classify yet. Authentication failure regardless of mapping:
+                // without this the controller's own validate() threw and the
+                // caller got a 500 with a stack trace instead of a 401.
+                rejectPresentedKey(request, response, method, path, required = None)
 
             case RouteCheck.Unmapped =>
                 // No mapping for this route. In log-only mode this is just
@@ -72,6 +142,15 @@ class CapabilityInterceptor extends HandlerInterceptor {
             case RouteCheck.Require(resource, action) =>
                 val resolvedOpt = readResolvedKey(request)
                 resolvedOpt match {
+                    case None if presentedButRejected(request) =>
+                        // A key WAS presented but could not be resolved
+                        // (revoked, unknown, malformed). Authentication
+                        // failure, not a capability question — denied in both
+                        // enforce and log-only modes. Without this the request
+                        // fell into the no-key branch below and skipped the
+                        // capability check entirely.
+                        rejectPresentedKey(request, response, method, path, required = Some(resource + ":" + action))
+
                     case None =>
                         // No ResolvedKey on the request. This happens for
                         // routes that don't require a key, or when auth is

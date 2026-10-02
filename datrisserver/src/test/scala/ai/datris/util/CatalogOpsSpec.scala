@@ -279,4 +279,93 @@ class CatalogOpsSpec extends AnyFunSuite {
         t.join(5000)
         assert(!t.isAlive, "lock was not released after an exception")
     }
+
+    // ------------------------------------------------------ Story: Catalog cascade delete surfaces Unity Catalog warnings
+    // (plans/stories/uc-catalog-cascade-delete-warnings.md)
+    //   - `CatalogOps.Result` gains `warnings: Seq[(String, String)] = Nil` (name -> message)
+    //   - `CatalogOps.executeCollecting(names: Seq[String])(write: String => Seq[String]): Result`
+    //   - `execute` delegates to it, so it never yields warnings
+
+    test("executeCollecting keeps every returned string as a (name, message) warning and continues past failures") {
+        val written = scala.collection.mutable.ArrayBuffer.empty[String]
+        val result = CatalogOps.executeCollecting(Seq("a", "b", "c", "d")) { name =>
+            written += name
+            name match {
+                case "a" => Seq("a needs an admin", "a second note")
+                case "b" => throw new RuntimeException("boom on b")
+                case "c" => Nil
+                case _ => Seq("d needs an admin")
+            }
+        }
+        assert(written == Seq("a", "b", "c", "d"), "members after the failing one must still be written")
+        assert(result.ok == Seq("a", "c", "d"))
+        assert(result.failed == Seq(("b", "boom on b")))
+        assert(result.warnings == Seq(("a", "a needs an admin"), ("a", "a second note"), ("d", "d needs an admin")))
+    }
+
+    test("executeCollecting with no returned strings yields no warnings") {
+        val result = CatalogOps.executeCollecting(Seq("x", "y"))(_ => Nil)
+        assert(result.ok == Seq("x", "y"))
+        assert(result.failed.isEmpty)
+        assert(result.warnings.isEmpty)
+    }
+
+    test("execute yields no warnings and the same ok/failed as before") {
+        val result = CatalogOps.execute(Seq("a", "b", "c")) { name =>
+            if (name == "b") throw new RuntimeException("boom on b")
+        }
+        assert(result.ok == Seq("a", "c"))
+        assert(result.failed == Seq(("b", "boom on b")))
+        assert(result.warnings.isEmpty)
+        assert(result == CatalogOps.Result(ok = Seq("a", "c"), failed = Seq(("b", "boom on b")), warnings = Nil))
+    }
+
+    test("skipped yields no warnings") {
+        val r = CatalogOps.skipped(Seq("p1", "p2"), "skipped: tap deletions in this catalog failed")
+        assert(r.ok.isEmpty)
+        assert(r.failed.map(_._1) == Seq("p1", "p2"))
+        assert(r.warnings.isEmpty)
+    }
+
+    test("a cascade pipeline committed through the REST catalog becomes a (pipeline, advice) warning") {
+        import ai.datris.model.{Destination, ObjectStore, UnityCatalogSync, UnityCatalogSyncState}
+        val restPipe = PipelineConfig(
+            name = "orders_daily",
+            catalog = "cascade_demo",
+            destination = Destination(objectStore =
+                ObjectStore(prefixKey = "orders_daily", fileFormat = "iceberg", destinationBucketOverride = "lake")
+            ),
+            unityCatalog = UnityCatalogSync(enabled = true, catalog = "main", schema = "sales", catalogMode = "rest")
+        )
+        val restState = UnityCatalogSyncState(
+            "orders_daily",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            catalogMode = "rest",
+            restMetadataLocation = "s3://lake/orders_daily/metadata/00003-ab.metadata.json",
+            lastRestCommitAt = "2026-09-29T10:00:03Z"
+        )
+        val plainPipe = pipeline("plain_pg", "cascade_demo")
+        val states = Map[String, UnityCatalogSyncState]("orders_daily" -> restState)
+        val byName = Map("orders_daily" -> restPipe, "plain_pg" -> plainPipe)
+        // Stand-in for deletePipelineInternal: returns forPipeline's advice as its Seq[String].
+        val result = CatalogOps.executeCollecting(Seq("plain_pg", "orders_daily")) { n =>
+            UnityCatalogDeleteAdvice.forPipeline(byName(n), states.getOrElse(n, null)).toSeq
+        }
+        assert(result.ok == Seq("plain_pg", "orders_daily"))
+        assert(result.failed.isEmpty)
+        assert(result.warnings == Seq(("orders_daily", "Unity Catalog still holds main.sales.orders_daily; have an admin drop it")))
+    }
+
+    test("a cascade whose pipelines have no Unity Catalog state yields warnings empty") {
+        val result = CatalogOps.executeCollecting(Seq("p1", "p2")) { n =>
+            UnityCatalogDeleteAdvice.forPipeline(pipeline(n, "cascade_demo"), null).toSeq
+        }
+        assert(result.ok == Seq("p1", "p2"))
+        assert(result.warnings.isEmpty)
+    }
 }

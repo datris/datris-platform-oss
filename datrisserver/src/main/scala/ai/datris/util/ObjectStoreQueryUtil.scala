@@ -104,8 +104,8 @@ object ObjectStoreQueryUtil {
         // read at the catalog's current metadata file, not the version hint.
         // Resolved inside the future so the catalog calls share the timeout.
         val readFuture: Future[QueryResult] = Future {
-            val metadataLocation = if (format == "iceberg") IcebergTableResolver.forPipeline(pipelineConfig, path) else None
-            readPath(spark, path, format, cappedLimit, metadataLocation)
+            val resolved = if (format == "iceberg") IcebergTableResolver.forPipeline(pipelineConfig, path) else None
+            readPath(spark, path, format, cappedLimit, resolved, bucket)
         }(queryEC)
 
         try Await.result(readFuture, queryTimeoutSec.seconds)
@@ -140,12 +140,25 @@ object ObjectStoreQueryUtil {
     /** As above; `metadataLocation` (Iceberg only) reads the table at that
       * metadata file instead of through the version hint
       * (IcebergTableResolver: catalog-committed tables). */
-    private[util] def readPath(spark: SparkSession, path: String, format: String, limit: Int, metadataLocation: Option[String]): QueryResult = {
+    private[util] def readPath(spark: SparkSession, path: String, format: String, limit: Int, metadataLocation: Option[String]): QueryResult =
+        readPath(spark, path, format, limit, metadataLocation.map(IcebergTableResolver.Resolved(_, managed = false)), null)
+
+    /** As above with the resolver's answer: a managed table
+      * (`catalogMode: managed`) lives where the catalog put it, so instead of
+      * the table-root check its location must be in the pipeline's `bucket`. */
+    private[util] def readPath(
+        spark: SparkSession,
+        path: String,
+        format: String,
+        limit: Int,
+        resolved: Option[IcebergTableResolver.Resolved],
+        bucket: String
+    ): QueryResult = {
         // Runs on the objectstore-query pool, which never created the session;
         // the Iceberg source resolves its catalog through the thread-active one.
         SparkSession.setActiveSession(spark)
         try {
-            if (format == "iceberg") readIceberg(spark, path, limit, metadataLocation)
+            if (format == "iceberg") readIceberg(spark, path, limit, resolved, bucket)
             else {
                 val df = spark.read.format(format).load(path)
                 val columns = df.columns.toList.asJava
@@ -179,7 +192,8 @@ object ObjectStoreQueryUtil {
       *  a wrong access key as NoSuchTableException, which would turn an auth
       *  error into an HTTP 200 with 0 rows. Once `metadata/` is known to
       *  exist, any load failure (corrupt table, denied reads) propagates. */
-    private def readIceberg(spark: SparkSession, path: String, limit: Int, metadataLocation: Option[String]): QueryResult = {
+    private def readIceberg(spark: SparkSession, path: String, limit: Int, resolved: Option[IcebergTableResolver.Resolved], bucket: String): QueryResult = {
+        val metadataLocation = resolved.map(_.metadataLocation)
         IcebergWriter.ensureCatalogs(spark, path)
         val conf = spark.sessionState.newHadoopConf()
         val metadataDir = new Path(path, "metadata")
@@ -191,14 +205,18 @@ object ObjectStoreQueryUtil {
         // the table path loads through the version hint.
         val source = metadataLocation.getOrElse(path)
         val table = new HadoopTables(conf).load(source)
-        IcebergWriter.assertTableLocation(table, path)
+        if (resolved.exists(_.managed)) IcebergWriter.assertManagedLocation(table, bucket)
+        else IcebergWriter.assertTableLocation(table, path)
+        // catalogMode managed: the rows live where the catalog put the table,
+        // not under prefixKey; report that location.
+        val reported = if (resolved.exists(_.managed)) Option(table.location()).getOrElse(path) else path
         val snapshot = table.currentSnapshot()
         if (snapshot == null) {
             // Table created but nothing ever committed: no rows, no snapshot.
             return QueryResult(
                 table.schema().columns().asScala.map(_.name()).toList.asJava,
                 new java.util.ArrayList[java.util.Map[String, Any]](),
-                path,
+                reported,
                 "iceberg"
             )
         }
@@ -208,7 +226,7 @@ object ObjectStoreQueryUtil {
         QueryResult(
             columns,
             rows,
-            path,
+            reported,
             "iceberg",
             java.lang.Long.valueOf(snapshot.snapshotId()),
             java.time.Instant.ofEpochMilli(snapshot.timestampMillis()).toString

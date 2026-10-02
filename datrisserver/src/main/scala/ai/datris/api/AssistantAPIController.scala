@@ -233,6 +233,8 @@ class AssistantAPIController {
 
             new ResponseEntity[String](new Gson().toJson(payload), HttpStatus.OK)
         } catch {
+            case e: DatrisException if APIKeyValidator.isKeyRejection(e) =>
+                ApiErrors.internal(e)
             case e: DatrisException =>
                 new ResponseEntity[String]("{\"error\":\"" + escape(e.getMessage) + "\"}", HttpStatus.BAD_REQUEST)
             case e: Exception =>

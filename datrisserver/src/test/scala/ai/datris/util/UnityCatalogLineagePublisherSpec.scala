@@ -535,4 +535,47 @@ class UnityCatalogLineagePublisherSpec extends AnyFunSuite {
         assert(s2.lineageHash == s1.lineageHash && s2.lastLineageAt != null, s"$s2")
         assert(!status.messages.exists(_._1 == "warning"), status.messages)
     }
+
+    // Story: Unity Catalog metadata on by default (plans/stories/uc-default-enabled.md),
+    // Acceptance bullet 2 (lineage half). `sync` gates on the effective block.
+
+    private def withProps[T](kv: (String, String)*)(body: => T): T = {
+        val old = kv.map { case (k, _) => k -> Option(System.getProperty(k)) }
+        kv.foreach { case (k, v) => if (v == null) System.clearProperty(k) else System.setProperty(k, v) }
+        try body
+        finally old.foreach { case (k, o) => o match { case Some(v) => System.setProperty(k, v); case None => System.clearProperty(k) } }
+    }
+
+    private def dbxJobContext(status: StatusUtil, uc: UnityCatalogSync): JobContext =
+        JobContext(
+            pipelineToken = "run-token-0001",
+            metadata = uploadMd,
+            data = null,
+            config = config.copy(unityCatalog = uc),
+            pipelineProperties = null,
+            state = null,
+            thread = null,
+            statusUtil = status
+        )
+
+    test("kill switch false + default enabled, no block: one uc-lineage info line naming DATRIS_UNITY_CATALOG_SYNC") {
+        val status = new RecordingStatusUtil
+        withProps("datris.unityCatalogDefault" -> "enabled", "datris.unityCatalogSync" -> "false") {
+            P.sync(dbxJobContext(status, uc = null))
+        }
+        assert(status.messages.size == 1, status.messages.mkString("\n"))
+        val (code, _, text) = status.messages.head
+        assert(code == "info" && text.startsWith("uc-lineage:"), status.messages.head)
+        assert(text.contains("switched off") && text.contains("DATRIS_UNITY_CATALOG_SYNC"), text)
+    }
+
+    test("default enabled + {enabled:true, lineage:false} or {enabled:false}: lineage stays off, no lines") {
+        Seq(UnityCatalogSync(enabled = true, lineage = false), UnityCatalogSync(enabled = false)).foreach { uc =>
+            val status = new RecordingStatusUtil
+            withProps("datris.unityCatalogDefault" -> "enabled", "datris.unityCatalogSync" -> "false") {
+                P.sync(dbxJobContext(status, uc))
+            }
+            assert(status.messages.isEmpty, s"$uc: ${status.messages.mkString("\n")}")
+        }
+    }
 }

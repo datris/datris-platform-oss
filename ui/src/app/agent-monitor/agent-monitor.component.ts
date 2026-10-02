@@ -1,5 +1,6 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked } from '@angular/core';
 import { AgentMonitorService, AgentSession, AgentCall } from '../agent-monitor.service';
+import { httpErrorText } from '../shared/http-error';
 
 interface AgentNode {
   session: AgentSession;
@@ -115,7 +116,7 @@ export class AgentMonitorComponent implements OnInit, OnDestroy, AfterViewChecke
         this.error = '';
       },
       error: (err) => {
-        this.error = err?.error || err?.message || 'Failed to clear activity log';
+        this.error = httpErrorText(err, 'Failed to clear activity log');
       }
     });
   }

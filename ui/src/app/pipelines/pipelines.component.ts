@@ -6,6 +6,7 @@ import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { PipelineStatusService } from '../pipeline-status.service';
 import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-pipelines',
@@ -109,13 +110,13 @@ export class PipelinesComponent implements OnInit, OnDestroy {
             });
           },
           error: (err) => {
-            alert('Failed to rename: ' + (err.error || err.message));
+            alert('Failed to rename: ' + httpErrorText(err));
             this.loadPipelines();
           }
         });
       },
       error: (err) => {
-        alert('Failed to load pipeline for rename: ' + (err.error || err.message));
+        alert('Failed to load pipeline for rename: ' + httpErrorText(err));
         this.loadPipelines();
       }
     });
@@ -150,7 +151,7 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     const updated = { ...pipeline, catalog: catalogValue };
     this.pipelineService.createPipeline(updated).subscribe({
       next: () => this.loadPipelines(),
-      error: (err) => alert('Failed to move: ' + (err.error || err.message))
+      error: (err) => alert('Failed to move: ' + httpErrorText(err))
     });
   }
 
@@ -331,12 +332,12 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     if (deleteConfig) {
       this.pipelineService.deletePipeline(name).subscribe({
         next: () => { done(); this.loadPipelines(); },
-        error: (err) => { alert('Failed to delete: ' + (err.error || err.message)); done(); }
+        error: (err) => { alert('Failed to delete: ' + httpErrorText(err)); done(); }
       });
     } else {
       this.pipelineService.deletePipelineData(name).subscribe({
         next: () => done(),
-        error: (err) => { alert('Failed to delete data: ' + (err.error || err.message)); done(); }
+        error: (err) => { alert('Failed to delete data: ' + httpErrorText(err)); done(); }
       });
     }
   }
@@ -428,7 +429,7 @@ export class PipelinesComponent implements OnInit, OnDestroy {
         this.uploading = false;
       },
       error: (err) => {
-        this.uploadError = err.error || err.message || 'Upload failed';
+        this.uploadError = httpErrorText(err, 'Upload failed');
         this.uploading = false;
       }
     });

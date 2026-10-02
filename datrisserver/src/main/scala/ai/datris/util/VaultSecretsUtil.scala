@@ -20,6 +20,29 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
         }
     }
 
+    /** Absent path (Vault 404, or no data) → Success(None); any other read
+      * error → Failure, so callers can fail closed.
+      *
+      * The vault-java-driver does NOT throw for 4xx statuses (other than
+      * 412): a 403 from an expired server token comes back as a response
+      * with empty data, indistinguishable from an absent secret unless the
+      * HTTP status is inspected. So the decision is made on the status, not
+      * on exceptions. */
+    override def tryGetSecretMap(secretName: String): scala.util.Try[Option[java.util.Map[String, String]]] = {
+        try {
+            val response = vault.logical().read(s"secret/$secretName")
+            // A missing RestResponse is unknown, not success: -1 fails closed.
+            val status = Option(response.getRestResponse).map(_.getStatus).getOrElse(-1)
+            val result = VaultSecretsUtil.readResult(status, response.getData)
+            result.failed.foreach(e => logger.error("Vault read failed for secret path: secret/" + secretName + ": " + e.getMessage))
+            result
+        } catch {
+            case e: Exception =>
+                logger.error("Vault read failed for secret path: secret/" + secretName, e)
+                scala.util.Failure(e)
+        }
+    }
+
     def getSecretField(secretName: String, field: String): Option[String] = {
         getSecretMap(secretName).flatMap(map => Option(map.get(field)))
     }
@@ -47,6 +70,18 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
     override def deleteSecret(secretName: String): Unit = {
         vault.logical().delete(s"secret/$secretName")
     }
+}
+
+object VaultSecretsUtil {
+
+    /** Pure classification of a Vault KV read: 200 with data → Some, 200
+      * without data or 404 → None (absent), anything else → Failure. */
+    def readResult(status: Int, data: java.util.Map[String, String]): scala.util.Try[Option[java.util.Map[String, String]]] =
+        status match {
+            case 200 => scala.util.Success(if (data == null || data.isEmpty) None else Some(data))
+            case 404 => scala.util.Success(None)
+            case other => scala.util.Failure(new ai.datris.model.DatrisException(s"Vault read returned HTTP $other"))
+        }
 }
 
 object VaultSecretsUtilBuilder {

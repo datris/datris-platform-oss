@@ -79,14 +79,18 @@ components:
           description: Object-store Iceberg only. Set false to keep the block but skip registration.
         catalogMode:
           type: string
-          enum: [register, rest]
+          enum: [register, rest, managed]
           description: >-
             Object-store Iceberg only (400 on a Databricks destination).
             Absent means `register`: write by path and register the table once.
             `rest` commits every write through the Unity Catalog Iceberg REST
-            catalog so its pointer stays current; it needs the register knob on.
-            Case-insensitive. Switching from `rest` back to `register` after a
-            catalog commit fails the next run.
+            catalog at the pipeline's prefix so its pointer stays current.
+            `managed` (the mode for Databricks Unity Catalog) lets the catalog
+            choose the table's location in the pipeline's bucket and commits
+            every write through it; any refusal fails the run, and
+            deleteBeforeWrite is rejected (400). `rest` and `managed` need the
+            register knob on. Case-insensitive. Switching a catalog-committed
+            table to another mode fails the next run.
     CatalogFailure:
       type: object
       properties:
@@ -130,6 +134,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CatalogFailure'
+        warnings:
+          type: array
+          description: Cascade only (always present there, possibly empty; absent for detach). Follow-up actions for pipelines that were deleted, such as a Unity Catalog table committed through the REST catalog that an admin has to drop. Never affects the 200/207 status.
+          items:
+            type: object
+            properties:
+              pipeline:
+                type: string
+                description: Name of the deleted pipeline.
+              message:
+                type: string
+                description: What is left behind and what to do, e.g. `Unity Catalog still holds main.sales.orders; have an admin drop it`.
     Incident:
       type: object
       properties:
@@ -906,7 +922,17 @@ paths:
                   $ref: '#/components/schemas/UnityCatalogSync'
       responses:
         '200':
-          description: Pipeline created/updated
+          description: Pipeline created/updated. `warnings` is advisory; the pipeline is saved either way (empty array when there is nothing to say). Today it warns when an object-store Iceberg pipeline's Unity Catalog secret points at a Databricks workspace with catalogMode register or rest, which Databricks cannot serve; set catalogMode managed or use the databricks destination.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warnings:
+                    type: array
+                    description: Advisory messages about the saved configuration; the pipeline is saved regardless.
+                    items:
+                      type: string
         '500':
           description: Error
 
@@ -936,7 +962,7 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop.
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop, or a catalogMode managed table Unity Catalog owns (Datris deleted nothing there).
           content:
             application/json:
               schema:
@@ -1011,7 +1037,7 @@ paths:
       tags: [Pipelines]
       summary: Delete a catalog (detach or cascade)
       description: |
-        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`.
+        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop; warnings never change the status code.
       parameters:
         - name: name
           in: path
@@ -1075,7 +1101,10 @@ paths:
       tags: [Pipelines]
       summary: Unity Catalog sync state for a pipeline
       description: >-
-        Whether the pipeline opted into Unity Catalog sync, its three-level
+        Whether Unity Catalog sync is on for the pipeline (`enabledBy`:
+        `pipeline` for its own block, `default` when DATRIS_UNITY_CATALOG_DEFAULT
+        turned on a Databricks pipeline with no block, null when off with no
+        block), its three-level
         table coordinates (Databricks destinations, or the registered table of
         an object-store Iceberg destination with `unityCatalog.catalog` set),
         the last sync (`state` is `never`, `synced` or `error`), the lineage
@@ -1102,6 +1131,21 @@ paths:
                     type: string
                   enabled:
                     type: boolean
+                  enabledBy:
+                    type: string
+                    nullable: true
+                    enum: [pipeline, default]
+                    description: >-
+                      Who decided `enabled`: `pipeline` (the pipeline's own
+                      unityCatalog block, including an `enabled: false`
+                      opt-out), `default` (DATRIS_UNITY_CATALOG_DEFAULT=enabled
+                      filled in a missing block on a Databricks pipeline), or
+                      null (off, no block).
+                  syncSwitchedOff:
+                    type: boolean
+                    description: >-
+                      True while DATRIS_UNITY_CATALOG_SYNC=false: nothing is
+                      written to Unity Catalog even when `enabled` is true.
                   coordinates:
                     type: object
                     properties:
@@ -1151,13 +1195,16 @@ paths:
                     description: Object-store Iceberg destination with unityCatalog.enabled and the register knob (default on)
                   register:
                     type: string
-                    enum: ['off', never, registered, stale, error, rest, refused]
+                    enum: ['off', never, registered, stale, error, rest, managed, refused]
                     description: >-
                       Iceberg register status. `stale` means Unity Catalog still
                       points at an older metadata file of the table. With
                       `catalogMode: rest`, `rest` means the last run committed
                       through the catalog and `refused` means it wrote by path
-                      instead (see `restRefusedReason`).
+                      instead (see `restRefusedReason`). With `catalogMode:
+                      managed`, `managed` means the last run committed through
+                      the catalog at the catalog-chosen location (see
+                      `restMetadataLocation`).
                   registeredMetadataLocation:
                     type: string
                     description: The table's metadata file at the last register (or stale-pointer check); null until registered
@@ -1166,7 +1213,7 @@ paths:
                     description: ISO-8601 UTC time the table was registered
                   catalogMode:
                     type: string
-                    enum: [register, rest]
+                    enum: [register, rest, managed]
                     description: The pipeline's unityCatalog.catalogMode (absent means register); object-store Iceberg only
                   restMetadataLocation:
                     type: string

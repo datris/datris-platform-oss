@@ -5,6 +5,7 @@ import { Subscription } from 'rxjs';
 import { filter } from 'rxjs/operators';
 import { SearchService, QueryResponse } from '../search.service';
 import { HealthService } from '../health.service';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-search',
@@ -490,7 +491,7 @@ export class SearchComponent implements OnInit, OnDestroy {
         this.aiLoading = false;
       },
       error: (err: any) => {
-        this.aiError = err.error || err.message || 'AI answer failed';
+        this.aiError = httpErrorText(err, 'AI answer failed');
         this.aiLoading = false;
       }
     });
