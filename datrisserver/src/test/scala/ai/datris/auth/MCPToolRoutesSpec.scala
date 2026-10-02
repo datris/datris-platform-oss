@@ -216,4 +216,23 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         val none = key("nonexistent:nothing")
         assert(MCPToolRoutes.allowedTools(none) == Seq("get_version", "check_service_health", "wait_seconds"))
     }
+
+    // Story: Field protection 5 (plans/stories/field-protection-5-encrypt-reveal.md).
+    // Calls CapabilityRoutes.lookup, MCPToolRoutes.tools / allowedTools only.
+    test("POST /api/v1/protect/reveal requires protect:reveal") {
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/protect/reveal") == RouteCheck.Require("protect", "reveal"))
+        // Reveal is REST only: no MCP tool maps to it, so no agent key ever sees one.
+        assert(!MCPToolRoutes.tools.exists { case (_, m) => m == MCPToolRoutes.Mapped("POST", "/api/v1/protect/reveal") })
+        assert(!MCPToolRoutes.allToolNames.exists(_.toLowerCase.contains("reveal")))
+        assert(!ragBuilder.matchesResourceAction("protect", "reveal"), "the rag-builder template does not carry reveal")
+        assert(key("protect:reveal").matchesResourceAction("protect", "reveal"))
+    }
+
+    test("POST /api/v1/protect/keys/rotate requires protect:admin") {
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/protect/keys/rotate") == RouteCheck.Require("protect", "admin"))
+        assert(!MCPToolRoutes.tools.exists { case (_, m) => m == MCPToolRoutes.Mapped("POST", "/api/v1/protect/keys/rotate") })
+        // reveal does not imply admin, and the reverse.
+        assert(!key("protect:reveal").matchesResourceAction("protect", "admin"))
+        assert(!key("protect:admin").matchesResourceAction("protect", "reveal"))
+    }
 }

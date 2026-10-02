@@ -879,8 +879,9 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         assert(err.contains("Field 'mrn': unknown protect.method 'scramble' (hmac, mask, redact, drop)"), s"got: $err")
     }
 
-    test("fpe is rejected as not yet supported") {
-        Seq("fpe", "encrypt", "tokenize").foreach { m =>
+    // Story 5 (field-protection-5-encrypt-reveal): encrypt is accepted; fpe and tokenize stay reserved.
+    test("fpe and tokenize are still rejected as not yet supported") {
+        Seq("fpe", "tokenize").foreach { m =>
             val cfg = protectConfig(s"""[{"name":"mrn","type":"string","protect":{"method":"$m"}}]""")
             parsesProtect(cfg)
             val err = validationError(cfg)
@@ -979,5 +980,46 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
             fileAttributes = """"jsonAttributes":{}"""
         )
         assert(validationError(json).isEmpty, s"JSON source: ${validationError(json)}")
+    }
+
+    // --- Field protection 5: encrypt (plans/stories/field-protection-5-encrypt-reveal.md) ---
+    // Calls only PipelineValidatorUtil (through `validationError`); encrypt keeps
+    // story 1's string-in/string-out rule.
+
+    test("encrypt on a string field passes") {
+        val cfg = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"email","type":"string","protect":{"method":"encrypt"}}]""",
+            destFields = """[{"name":"id","type":"string"},{"name":"email","type":"string"}]""",
+            keyFields = """["id"]"""
+        )
+        parsesProtect(cfg)
+        assert(validationError(cfg).isEmpty, s"got: ${validationError(cfg)}")
+        val json = protectConfig(
+            """[{"name":"_json","type":"string"},{"name":"email","type":"string","protect":{"method":"encrypt"}}]""",
+            fileAttributes = """"jsonAttributes":{}"""
+        )
+        assert(validationError(json).isEmpty, s"JSON source: ${validationError(json)}")
+    }
+
+    test("encrypt on an int field is rejected") {
+        val src = protectConfig("""[{"name":"ssn","type":"int","protect":{"method":"encrypt"}}]""")
+        parsesProtect(src)
+        val err = validationError(src)
+        assert(err.exists(e => e.contains("'ssn'") && e.contains("'encrypt'") && e.contains("string") && !e.contains("not yet supported")), s"got: $err")
+        val dst = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"ssn","type":"string","protect":{"method":"encrypt"}}]""",
+            destFields = """[{"name":"id","type":"string"},{"name":"ssn","type":"int"}]"""
+        )
+        val err2 = validationError(dst)
+        assert(err2.exists(e => e.contains("ssn") && e.contains("destination field type must be 'string'")), s"got: $err2")
+    }
+
+    test("encrypt on a keyFields column is rejected (a fresh IV per value would split one key into many)") {
+        val cfg = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"account_no","type":"string","protect":{"method":"encrypt"}}]""",
+            keyFields = """["account_no"]"""
+        )
+        val err = validationError(cfg)
+        assert(err.exists(e => e.contains("account_no") && e.contains("only hmac keeps rows distinct")), s"got: $err")
     }
 }

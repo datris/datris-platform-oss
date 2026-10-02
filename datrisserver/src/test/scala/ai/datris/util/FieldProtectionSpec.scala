@@ -41,11 +41,24 @@ import scala.collection.mutable.ListBuffer
   *
   * `hmac` is lowercase hex of HMAC-SHA256 keyed with the bytes `ensure()` (or
   * `keyOverride`) returns, over the UTF-8 value.
+  *
+  * Story 5 (plans/stories/field-protection-5-encrypt-reveal.md) adds `encrypt`
+  * and one more seam on `object FieldProtection`:
+  *
+  * {{{
+  *     // fixed (version, key) instead of FieldProtectionKey.encryptionKey() (no Vault in unit tests)
+  *     @volatile private[datris] var encryptionKeyOverride: (Int, Array[Byte]) = null
+  * }}}
+  *
+  * and checks the column with `FieldCipher.decrypt(keyLookup, pipeline, field, token)`
+  * (see FieldCipherSpec), bound to `ctx.config.name` and the source field name.
   */
 class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     private val Key: Array[Byte] = "0123456789abcdef0123456789abcdef".getBytes(StandardCharsets.UTF_8)
     private val OtherKey: Array[Byte] = "fedcba9876543210fedcba9876543210".getBytes(StandardCharsets.UTF_8)
+
+    private val EncKey: Array[Byte] = Array.tabulate[Byte](32)(i => (i * 7 + 3).toByte)
 
     private val Bucket = "datris-raw"
 
@@ -83,12 +96,14 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
         audits.clear()
         store = new FakeStore()
         FieldProtection.keyOverride = Key
+        FieldProtection.encryptionKeyOverride = (1, EncKey)
         FieldProtection.objectStoreOverride = store
         FieldProtection.auditOverride = (c, a, rt, rn, md, o, e) => audits += ((c, a, rt, rn, md, o, e))
     }
 
     override def afterEach(): Unit = {
         FieldProtection.keyOverride = null
+        FieldProtection.encryptionKeyOverride = null
         FieldProtection.objectStoreOverride = null
         FieldProtection.auditOverride = null
     }
@@ -237,12 +252,13 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
     }
 
     test("reserved methods throw DatrisException") {
-        (List("fpe", "encrypt", "tokenize") ++ List("rot13")).foreach { m =>
+        // Story 5: encrypt leaves the reserved list.
+        (List("fpe", "tokenize") ++ List("rot13")).foreach { m =>
             val e = intercept[DatrisException](FieldProtection.protectValue(policy(m), "MRN-001", Key))
             assert(!e.getMessage.contains("MRN-001"), s"the message must not carry the value, got: ${e.getMessage}")
         }
-        assert(ProtectionPolicy.Reserved == Set("fpe", "encrypt", "tokenize"))
-        assert(ProtectionPolicy.Methods == Set("hmac", "mask", "redact", "drop"))
+        assert(ProtectionPolicy.Reserved == Set("fpe", "tokenize"))
+        assert(ProtectionPolicy.Methods == Set("hmac", "mask", "redact", "drop", "encrypt"))
         assert(ProtectionPolicy.Preserves == Set("last4", "domain", "year"))
     }
 
@@ -498,5 +514,74 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(store.deleted.isEmpty, "no ingest object deleted when the stage fails")
         assert(!status.descriptions.exists(_.startsWith("Purged raw source")))
         assert(audits.isEmpty)
+    }
+
+    // ==========================================================================
+    // Story 5: encrypt (plans/stories/field-protection-5-encrypt-reveal.md)
+    // ==========================================================================
+
+    /** id, name unprotected; email=encrypt; mrn=hmac; ssn=drop. */
+    private def encryptSourceFields: java.util.List[SchemaField] = jlist(
+        field("id"),
+        field("name"),
+        field("mrn", policy("hmac")),
+        field("email", policy("encrypt")),
+        field("ssn", policy("drop"))
+    )
+
+    private def reveal(pipeline: String, fieldName: String, token: String): String =
+        FieldCipher.decrypt(v => if (v == 1) EncKey else null, pipeline, fieldName, token)
+
+    test("encrypt rewrites the column with enc: tokens and the purge still runs") {
+        val status = new RecordingStatusUtil
+        val ctx = delimitedCtx(csvConfig(encryptSourceFields), uploadMetadata, status)
+        val raw = Paths.get(ctx.data.staged.path)
+        val out = FieldProtection.apply(ctx)
+
+        assert(out.data.header == List("id", "name", "mrn", "email"))
+        val rows = rowsOf(out.data).map(r => CodeGenTransformationEvaluator.splitLine(r, ","))
+        assert(rows.forall(_.size == 4), s"$rows")
+        val emails = rows.map(_(3))
+        assert(emails(0).startsWith("enc:v1:") && emails(1).startsWith("enc:v1:"), s"$emails")
+        assert(emails(2) == "", "empty stays empty")
+        // Bound to the pipeline name and the source field name.
+        assert(reveal("patients", "email", emails(0)) == "jane@example.com")
+        assert(reveal("patients", "email", emails(1)) == "bob@example.org")
+        intercept[DatrisException](reveal("patients", "mrn", emails(0)))
+        intercept[DatrisException](reveal("other", "email", emails(0)))
+        // Other methods on the same run are unchanged.
+        assert(rows(0)(2) == hmacHex(Key, "MRN-001"))
+        val text = rowsOf(out.data).mkString("\n")
+        RawValues.foreach(v => assert(!text.contains(v), s"raw value $v must not survive"))
+
+        // The purge from story 1 still runs.
+        assert(!Files.exists(raw), "raw staged file deleted")
+        assert(store.deleted.toList == List((Bucket, "uploads/patients.pub-1.a.pipeline.csv")))
+        assert(audits.exists(a => a._2 == "purge-source" && a._6 == "success"), s"$audits")
+    }
+
+    test("encrypt rewrites a JSON top-level key with enc: tokens") {
+        val cfg = jsonConfig(jlist(field("_json"), field("email", policy("encrypt"))))
+        val lines = List("""{"id":1,"email":"jane@example.com"}""", """{"id":2,"email":""}""")
+        val out = FieldProtection.apply(ndjsonCtx(cfg, lines))
+        val got = {
+            val it = out.data.recordIterator()
+            try it.toList
+            finally it.close()
+        }
+        val first = JsonParser.parseString(got(0)).getAsJsonObject.get("email").getAsString
+        assert(first.startsWith("enc:v1:"), first)
+        assert(reveal("patients_json", "email", first) == "jane@example.com")
+        assert(JsonParser.parseString(got(1)).getAsJsonObject.get("email").getAsString == "")
+    }
+
+    test("status line shows field=encrypt and no value") {
+        val status = new RecordingStatusUtil
+        FieldProtection.apply(delimitedCtx(csvConfig(encryptSourceFields), status = status))
+        val lines = status.descriptions.filter(_.startsWith("Protected "))
+        assert(lines == List("Protected 3 fields: mrn=hmac, email=encrypt, ssn=drop"), status.descriptions.mkString("\n"))
+        val all = status.descriptions.mkString("\n")
+        RawValues.foreach(v => assert(!all.contains(v), s"status lines must never carry a value ($v): $all"))
+        assert(!all.contains("enc:v"), s"status lines never carry a ciphertext either: $all")
     }
 }

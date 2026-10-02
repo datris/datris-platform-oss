@@ -81,4 +81,20 @@ class APIKeyValidatorSpec extends AnyFunSuite {
         assert(APIKeyValidator.resolveAgainst("val-legacy", keys, md).isLegacyFullAccess)
         intercept[DatrisException](APIKeyValidator.resolveAgainst("val-reader", keys, md))
     }
+
+    // Story: Field protection 5 (plans/stories/field-protection-5-encrypt-reveal.md).
+    // Calls APIKeyValidator.resolveFromSession(User(...)) only. Reveal and key
+    // rotation must be granted explicitly; no role bundle carries protect:*.
+    test("editor and viewer bundles do not include protect capabilities") {
+        Seq(ai.datris.model.User.RoleEditor, ai.datris.model.User.RoleViewer).foreach { role =>
+            val resolved = APIKeyValidator.resolveFromSession(ai.datris.model.User("u", "h", role, null, null, null))
+            val raw = resolved.capabilities.map(_.raw)
+            assert(!raw.exists(c => c.startsWith("protect:") || c.startsWith("*:")), s"$role: $raw")
+            assert(!resolved.matchesResourceAction("protect", "reveal"), s"$role must not reveal")
+            assert(!resolved.matchesResourceAction("protect", "admin"), s"$role must not rotate")
+        }
+        // Admins hold FullAccess and therefore can reveal and rotate.
+        val admin = APIKeyValidator.resolveFromSession(ai.datris.model.User("u", "h", ai.datris.model.User.RoleAdmin, null, null, null))
+        assert(admin.matchesResourceAction("protect", "reveal") && admin.matchesResourceAction("protect", "admin"))
+    }
 }

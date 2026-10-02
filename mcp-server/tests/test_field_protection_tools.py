@@ -287,3 +287,43 @@ def test_suggest_rendered_text_has_one_line_per_field_with_its_method(suggest_ca
     assert any(ln.startswith("mrn (string): hmac") and "stable identifier" in ln for ln in lines), text
     assert any(ln.startswith("visit_count (int): none") for ln in lines), text
     assert any("domain" in ln for ln in lines if ln.startswith("email (")), text
+
+
+# ======================================================= story 5: encrypt ---
+# plans/stories/field-protection-5-encrypt-reveal.md. Calls server._base_tools()
+# (via _tool), server._dispatch("create_pipeline", ...) and the registered
+# server.list_tools() handler. `encrypt` is reversible on the server only, by an
+# operator with protect:reveal; there is no MCP reveal tool.
+
+
+def _method_enum():
+    policy = _tool("create_pipeline").inputSchema["properties"]["protect"]["additionalProperties"]
+    return policy["properties"]["method"]["enum"]
+
+
+def test_protect_method_enum_accepts_encrypt():
+    enum = _method_enum()
+    assert "encrypt" in enum, enum
+    for m in ("hmac", "mask", "redact", "drop"):
+        assert m in enum, enum
+    # fpe and tokenize are still not offered.
+    assert "fpe" not in enum and "tokenize" not in enum, enum
+
+
+def test_encrypt_policy_is_merged_onto_the_schema_field(captured):
+    posted = _create(captured, protect={"email": {"method": "encrypt"}})
+    assert _fields(posted)["email"].get("protect") == {"method": "encrypt"}
+
+
+def test_list_tools_has_no_reveal_tool(monkeypatch):
+    import asyncio
+    monkeypatch.setattr(server, "_allowed_tool_names", lambda: None)
+    tools = asyncio.run(server.list_tools())
+    assert tools, "list_tools returned nothing"
+    names = [t.name for t in tools]
+    assert not [n for n in names if "reveal" in n.lower()], names
+    assert not [t.name for t in server._base_tools() if "reveal" in t.name.lower()]
+    for t in tools:
+        props = (t.inputSchema or {}).get("properties", {})
+        assert "/api/v1/protect/reveal" not in (t.description or ""), t.name
+        assert "reveal" not in {k.lower() for k in props}, t.name
