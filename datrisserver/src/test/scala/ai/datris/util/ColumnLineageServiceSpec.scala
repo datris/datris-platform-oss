@@ -108,4 +108,60 @@ class ColumnLineageServiceSpec extends AnyFunSuite {
         )).get("kind").getAsString == "rowFunctions")
         assert(ColumnLineageService.transformationInfo(cfg(Seq("a")).copy(preprocessor = RestEndpoint("http://x"))).get("kind").getAsString == "preprocessor")
     }
+
+    // --- Field protection (story: field-protection-1-stage) ------------------
+    // Parsed with Gson so the fixture is the same document a stored pipeline is.
+
+    private def protectedCfg(destFields: String = null): PipelineConfig = {
+        val dst = if (destFields == null) "" else s""","schemaProperties":{"fields":$destFields}"""
+        new com.google.gson.Gson().fromJson(
+            s"""{"name":"p",
+               |"source":{"fileAttributes":{"csvAttributes":{}},"schemaProperties":{"fields":[
+               |{"name":"id","type":"string"},
+               |{"name":"mrn","type":"string","protect":{"method":"hmac"}},
+               |{"name":"email","type":"string","protect":{"method":"mask","preserve":"domain"}},
+               |{"name":"phone","type":"string","protect":{"method":"mask"}},
+               |{"name":"notes","type":"string","protect":{"method":"redact"}},
+               |{"name":"ssn","type":"string","protect":{"method":"drop"}}]}},
+               |"destination":{"database":{"dbName":"d","schema":"public","table":"t","usePostgres":true}$dst}}""".stripMargin,
+            classOf[PipelineConfig]
+        )
+    }
+
+    private def edgeTuples(edges: List[ColumnEdge]) = edges.map(e => (e.from.asScala.toList, e.to, e.op, e.confidence, e.evidence))
+
+    test("protected fields are derive edges with the method as evidence") {
+        val c = protectedCfg()
+        assert(ColumnLineageService.transformationInfo(c).get("kind").getAsString == "protect")
+        val (edges, unresolved, _) = ColumnLineageService.deterministic(c)
+        val t = edgeTuples(edges)
+        assert(t.contains((List("id"), "id", "passthrough", "exact", null)), s"$t")
+        assert(t.contains((List("mrn"), "mrn", "derive", "exact", "hmac")), s"$t")
+        assert(t.contains((List("email"), "email", "derive", "exact", "mask:domain")), s"$t")
+        assert(t.contains((List("phone"), "phone", "derive", "exact", "mask")), s"$t")
+        assert(t.contains((List("notes"), "notes", "derive", "exact", "redact")), s"$t")
+        assert(!t.exists(e => e._3 == "passthrough" && Set("mrn", "email", "phone", "notes", "ssn").contains(e._2)), s"protected fields are not passthrough: $t")
+        assert(unresolved.isEmpty)
+        // Same with a declared destination.
+        val (declared, _, label) = ColumnLineageService.deterministic(protectedCfg(
+            """[{"name":"id","type":"string"},{"name":"mrn","type":"string"},{"name":"email","type":"string"}]"""
+        ))
+        assert(label == "declared")
+        assert(edgeTuples(declared).contains((List("mrn"), "mrn", "derive", "exact", "hmac")), s"${edgeTuples(declared)}")
+    }
+
+    test("dropped fields are drop edges even when declared in the destination") {
+        val (edges, unresolved, _) = ColumnLineageService.deterministic(protectedCfg(
+            """[{"name":"id","type":"string"},{"name":"mrn","type":"string"},{"name":"ssn","type":"string"}]"""
+        ))
+        val t = edgeTuples(edges)
+        assert(t.exists(e => e._1 == List("ssn") && e._2 == "" && e._3 == "drop" && e._4 == "exact"), s"$t")
+        assert(!t.exists(_._2 == "ssn"), s"nothing lands in ssn: $t")
+        assert(!unresolved.contains("ssn"))
+        // And with no declared destination.
+        val (inherited, _, _) = ColumnLineageService.deterministic(protectedCfg())
+        val ti = edgeTuples(inherited)
+        assert(ti.exists(e => e._1 == List("ssn") && e._2 == "" && e._3 == "drop"), s"$ti")
+        assert(!ti.exists(_._2 == "ssn"), s"$ti")
+    }
 }
