@@ -77,6 +77,12 @@ Every suggestion follows the [type rules](#type-rules): a field that is not `str
 
 Names can mislead, so treat the answer as a proposal. From an agent, the `suggest_field_protection` tool returns one line per field; the agent shows them to you and asks which to accept before passing any of them as `protect` to `create_pipeline`.
 
+## In the wizard
+
+In the pipeline wizard's **Source Schema** step, every field has a **Protect** select (None, `hmac`, `mask`, `redact`, `drop`), and choosing `mask` adds a **Keep** select (mask all, last 4, email domain, year). A choice the [type rules](#type-rules) do not allow, such as `hmac` on an `int` field or anything but `hmac` on a column you chose as a key field, switches back to None with the reason shown under the field, and a field protected with anything but `hmac` is left out of the destination's **Key Fields** list.
+
+**Suggest protection** sends the field names and types only, never data, to the [suggestions](#suggestions) endpoint and fills each empty Protect select with its suggestion, marked with the reason until you **Keep** or **Clear** it; nothing is saved until you save the pipeline. JSON and XML pipelines show no Protect column, so set `protect` on a JSON pipeline's top-level keys in the config JSON instead. The pipeline's detail page lists its protected fields and their methods.
+
 ## Where it runs
 
 The stage runs once per job, **after the [preprocessor](/preprocessor)** and **before** data quality, transformation, Live Read, and every destination. The preprocessor still sees raw values; if your preprocessor endpoint must not receive them, protect the data upstream or do not use a preprocessor on that pipeline.

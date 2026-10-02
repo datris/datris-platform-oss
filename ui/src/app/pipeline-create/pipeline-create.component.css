@@ -248,6 +248,41 @@ option {
   flex: 1;
 }
 
+/* Field protection */
+.field-protect {
+  flex: 1;
+}
+
+.field-preserve {
+  flex: 1;
+}
+
+.field-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.field-suggestion .material-icons {
+  font-size: 14px;
+  color: var(--accent-cyan);
+}
+
+.field-error {
+  margin: -4px 0 8px;
+  font-size: 12px;
+  color: var(--accent-red);
+}
+
+.field-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .remove-field-btn {
   background: none;
   border: none;

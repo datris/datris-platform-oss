@@ -236,16 +236,36 @@
 
       <div class="form-row" *ngIf="sourceType !== 'json' && sourceType !== 'xml'">
         <label class="form-label">Fields</label>
-        <div class="field-row" *ngFor="let field of schemaFields; let i = index">
-          <input class="form-input field-name" [(ngModel)]="field.name" placeholder="field_name">
-          <select class="form-input field-type" [(ngModel)]="field.type">
-            <option *ngFor="let t of fieldTypes" [value]="t">{{ t }}</option>
-          </select>
-          <button class="remove-field-btn" (click)="removeField(i)" *ngIf="schemaFields.length > 1">
-            <span class="material-icons">close</span>
-          </button>
+        <ng-container *ngFor="let field of schemaFields; let i = index">
+          <div class="field-row">
+            <input class="form-input field-name" [(ngModel)]="field.name" placeholder="field_name">
+            <select class="form-input field-type" [(ngModel)]="field.type" (ngModelChange)="onFieldTypeChange(field)">
+              <option *ngFor="let t of fieldTypes" [value]="t">{{ t }}</option>
+            </select>
+            <select class="form-input field-protect" *ngIf="field.protect as p" [(ngModel)]="p.method" (ngModelChange)="onProtectChange(field)" title="Protect">
+              <option value="">None</option>
+              <option *ngFor="let m of protectMethods" [value]="m" [disabled]="m !== 'hmac' && isKeyField(field.name)">{{ m }}</option>
+            </select>
+            <select class="form-input field-preserve" *ngIf="field.protect?.method === 'mask' && field.protect as p" [(ngModel)]="p.preserve" title="Keep">
+              <option *ngFor="let o of preserveOptions" [ngValue]="o.value">{{ o.label }}</option>
+            </select>
+            <button class="remove-field-btn" (click)="removeField(i)" *ngIf="schemaFields.length > 1">
+              <span class="material-icons">close</span>
+            </button>
+          </div>
+          <div class="field-suggestion" *ngIf="field.suggested">
+            <span class="material-icons">auto_awesome</span>
+            <span>Suggested {{ field.suggested.method }}<ng-container *ngIf="field.suggested.preserve"> ({{ field.suggested.preserve }})</ng-container>: {{ field.suggested.reason }}</span>
+            <button class="link-btn" (click)="keepSuggestion(i)">Keep</button>
+            <button class="link-btn" (click)="clearSuggestion(i)">Clear</button>
+          </div>
+          <div class="field-error" *ngIf="field.protectError">{{ field.protectError }}</div>
+        </ng-container>
+        <div class="field-actions">
+          <button class="secondary-btn add-field-btn" (click)="addField()">+ Add Field</button>
+          <button class="secondary-btn" (click)="suggestProtection()" [disabled]="suggestingProtection || !schemaFields[0]?.name">{{ suggestingProtection ? 'Suggesting...' : 'Suggest protection' }}</button>
         </div>
-        <button class="secondary-btn add-field-btn" (click)="addField()">+ Add Field</button>
+        <p class="form-hint">Sends field names and types only, never data.</p>
       </div>
 
       <div *ngIf="sourceType === 'json'" class="info-box">
@@ -518,7 +538,7 @@
           <label class="form-label">Key Fields (optional)</label>
           <p class="form-hint">Select one or more destination columns that uniquely identify a row. Used for upserts. Hold Cmd/Ctrl to select multiple.</p>
           <select class="form-input" multiple [(ngModel)]="pgKeyFields" size="6">
-            <option *ngFor="let f of destSchemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+            <option *ngFor="let f of keyFieldCandidates" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
           </select>
         </div>
         <div class="form-row">
@@ -565,7 +585,7 @@
           <label class="form-label">Key Fields (optional)</label>
           <p class="form-hint">Select one or more destination columns that uniquely identify a row. Used for upserts (MERGE). Hold Cmd/Ctrl to select multiple.</p>
           <select class="form-input" multiple [(ngModel)]="sfKeyFields" size="6">
-            <option *ngFor="let f of destSchemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+            <option *ngFor="let f of keyFieldCandidates" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
           </select>
         </div>
         <div class="form-row">
@@ -608,7 +628,7 @@
           <label class="form-label">Key Fields (optional)</label>
           <p class="form-hint">Select one or more destination columns that uniquely identify a row. Used for upserts (MERGE). Hold Cmd/Ctrl to select multiple.</p>
           <select class="form-input" multiple [(ngModel)]="dbxKeyFields" size="6">
-            <option *ngFor="let f of destSchemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+            <option *ngFor="let f of keyFieldCandidates" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
           </select>
         </div>
         <div class="form-row">
@@ -638,7 +658,7 @@
           <label class="form-label">Key Fields (optional)</label>
           <p class="form-hint">Select one or more fields that uniquely identify a document. Used for upserts. Hold Cmd/Ctrl to select multiple.</p>
           <select class="form-input" multiple [(ngModel)]="mongoKeyFields" size="6">
-            <option *ngFor="let f of schemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+            <option *ngFor="let f of keyFieldCandidates" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
           </select>
         </div>
         <div class="form-row">
@@ -706,7 +726,7 @@
           <!-- Bound by hand (no ngModel): the multi-select value accessor rewrites option
                values to "0: 'id'", which breaks plain DOM reads of the selected names. -->
           <select class="form-input" multiple size="10" [disabled]="osWriteMode !== 'merge'" (change)="onOsKeyFieldsChange($event.target)">
-            <option *ngFor="let f of destSchemaFields" [value]="f.name" [selected]="osKeyFields.includes(f.name)" [disabled]="!f.name">{{ f.name }}</option>
+            <option *ngFor="let f of keyFieldCandidates" [value]="f.name" [selected]="osKeyFields.includes(f.name)" [disabled]="!f.name">{{ f.name }}</option>
           </select>
         </div>
         <div class="form-row" *ngIf="destSchemaFields.length > 0 && destSchemaFields[0].name">
