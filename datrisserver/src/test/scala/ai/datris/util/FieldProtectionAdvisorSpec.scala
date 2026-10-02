@@ -84,8 +84,10 @@ class FieldProtectionAdvisorSpec extends AnyFunSuite {
         assert(calls.size == 1, s"expected exactly one model call, got ${calls.size}")
         val user = calls.head._2
         val lines = user.split("\r?\n").map(_.trim).filter(_.nonEmpty).toList
-        assert(lines == List("mrn:string", "email:string", "notes:string", "visit_count:int", "ssn:string"),
-            s"user prompt must be name:type lines only, got:\n$user")
+        assert(
+            lines == List("mrn:string", "email:string", "notes:string", "visit_count:int", "ssn:string"),
+            s"user prompt must be name:type lines only, got:\n$user"
+        )
         assert(!user.contains("last4") && !user.contains("mask"), user)
     }
 

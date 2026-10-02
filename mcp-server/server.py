@@ -750,9 +750,9 @@ A source field may carry `protect` to pseudonymize, mask, redact, or drop it. Th
 - `redact`: the value becomes a fixed marker.
 - `drop`: the column (or top-level JSON key) is removed.
 
-Rules: `hmac`, `mask`, and `redact` need a `string` field (source and destination). `drop` takes any type but cannot remove a keyFields column. Reserved methods (`fpe`, `encrypt`, `tokenize`) are rejected as not yet supported. Delimited and JSON sources only (JSON: top-level keys). For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Once the protected copy exists the raw ingest object is deleted, unless the pipeline sets `"protection": {"purgeSource": false}`. On `create_pipeline`, pass the `protect` map (field name → policy) instead of editing the schema.
+Rules: `hmac`, `mask`, and `redact` need a `string` field (source and destination). `drop` takes any type but cannot remove a keyFields column. Reserved methods (`fpe`, `encrypt`, `tokenize`) are rejected as not yet supported. Delimited and JSON sources only (JSON: top-level keys). For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Once the protected copy exists the raw ingest object is deleted, unless the pipeline sets `"protection": {"purgeSource": false}`. On `create_pipeline`, pass the `protect` map (field name → policy) instead of editing the schema. To get a starting point, call `suggest_field_protection` (pipeline name or fields): it asks the CodeGen model from field names and types only, saves nothing, and its suggestions must be shown to the user and confirmed before any of them is passed as `protect`.
 
-Only protect when the user asks. Confirm with the user exactly which fields to protect and with which method; never guess from column names.
+Only protect when the user asks. Confirm with the user exactly which fields to protect and with which method; never decide from column names on your own (a `suggest_field_protection` result is a proposal for the user to accept or reject, not a decision).
 
 ### streamAttributes (optional, for streaming sources like Kafka)
 
@@ -1760,7 +1760,7 @@ def _base_tools():
                             },
                             "required": ["method"]
                         },
-                        "description": "OMIT BY DEFAULT. Field name → protection policy, e.g. {\"account_id\": {\"method\": \"hmac\"}, \"contact_email\": {\"method\": \"mask\", \"preserve\": \"domain\"}}. Each policy is set as `protect` on the matching schema field (case-insensitive name match); a name not in the detected schema is an error and nothing is saved. For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Protected fields are rewritten before data quality, transformation, and every destination, so no AI stage sees their raw values. hmac = deterministic pseudonym, mask = asterisks (preserve last4/domain/year keeps that part), redact = fixed marker, drop = remove the column. hmac/mask/redact need string fields; drop cannot remove a keyFields column. The raw ingest object is deleted once the protected copy exists. Only set this when the user asked to protect fields, and confirm with them which fields and methods — never guess from column names."
+                        "description": "OMIT BY DEFAULT. Field name → protection policy, e.g. {\"account_id\": {\"method\": \"hmac\"}, \"contact_email\": {\"method\": \"mask\", \"preserve\": \"domain\"}}. Each policy is set as `protect` on the matching schema field (case-insensitive name match); a name not in the detected schema is an error and nothing is saved. For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Protected fields are rewritten before data quality, transformation, and every destination, so no AI stage sees their raw values. hmac = deterministic pseudonym, mask = asterisks (preserve last4/domain/year keeps that part), redact = fixed marker, drop = remove the column. hmac/mask/redact need string fields; drop cannot remove a keyFields column. The raw ingest object is deleted once the protected copy exists. Only set this when the user asked to protect fields, and confirm with them which fields and methods — never decide from column names yourself. suggest_field_protection can propose policies; pass only the ones the user accepted."
                     },
                     "codegen_transform": {
                         "type": "string",
@@ -2013,6 +2013,31 @@ def _base_tools():
                     },
                 },
                 "required": ["pipeline"]
+            }
+        ),
+        Tool(
+            name="suggest_field_protection",
+            description="Suggest per-field protection (hmac, mask with an optional preserve, redact, drop, or none, each with a one-line reason) for a pipeline's source fields, computed by the configured CodeGen model from field NAMES and TYPES ONLY: no row value is sent to the model. Stateless: nothing is saved or changed. Pass `pipeline` (an existing pipeline name; its stored source schema is used) or `fields` (an array of {name, type}, e.g. the schema you are about to create). A field that already carries `protect` shows it as `current` next to the suggestion. Show the suggestions to the user and ask which to accept before passing any of them as the `protect` map to `create_pipeline`; never apply them on your own.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pipeline": {
+                        "type": "string",
+                        "description": "Existing pipeline name (use this OR fields)"
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "Fields to classify (use this OR pipeline): [{\"name\": ..., \"type\": ...}]",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "type": {"type": "string"}
+                            },
+                            "required": ["name", "type"]
+                        }
+                    },
+                },
             }
         ),
         Tool(
@@ -3294,6 +3319,48 @@ def _base_tools():
     ]
 
 
+def _protect_label(policy):
+    """`hmac`, `mask:domain`, ... for one {"method","preserve"} dict; "none" when absent."""
+    if not isinstance(policy, dict):
+        return "none"
+    method = policy.get("method")
+    if not method or method == "none":
+        return "none"
+    preserve = policy.get("preserve")
+    return f"{method}:{preserve}" if method == "mask" and preserve else method
+
+
+def _render_protect_suggestions(raw):
+    """One line per field: `mrn (string): hmac — stable identifier`.
+    Errors and anything unparseable pass through unchanged."""
+    if _is_error_payload(raw):
+        return raw
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(data, dict) or not isinstance(data.get("fields"), list):
+        return raw
+    lines = []
+    for f in data["fields"]:
+        if not isinstance(f, dict):
+            continue
+        line = f"{f.get('name')} ({f.get('type')}): {_protect_label(f.get('suggested'))}"
+        if f.get("reason"):
+            line += f" — {f['reason']}"
+        if isinstance(f.get("current"), dict) and f["current"].get("method"):
+            line += f" [current: {_protect_label(f['current'])}]"
+        lines.append(line)
+    header = "Suggested field protection"
+    if data.get("model"):
+        header += f" (model: {data['model']}; names and types only, nothing saved)"
+    else:
+        header += " (names and types only, nothing saved)"
+    footer = ("Show these to the user and ask which to accept; pass only the accepted ones "
+              "as the `protect` map to create_pipeline.")
+    return "\n".join([header + ":"] + lines + ["", footer])
+
+
 def _is_error_payload(text):
     """True when a tool result is a REST error body rather than data.
 
@@ -3768,6 +3835,24 @@ def _dispatch(name: str, args: dict) -> str:
 
     elif name == "get_dest_types":
         return _call("get", "/api/v1/pipeline/dest-types", params={"pipeline": args["pipeline"]})
+
+    elif name == "suggest_field_protection":
+        pipeline = args.get("pipeline")
+        fields = args.get("fields")
+        if isinstance(fields, str) and fields.strip():
+            # The MCP tab's playground sends array params as text.
+            try:
+                fields = json.loads(fields)
+            except ValueError:
+                fields = None
+        if isinstance(pipeline, str) and pipeline.strip():
+            body = {"pipeline": pipeline.strip()}
+        elif isinstance(fields, list) and fields:
+            body = {"fields": fields}
+        else:
+            return json.dumps({"error": "suggest_field_protection needs either 'pipeline' (a pipeline name) or 'fields' (an array of {name, type})"})
+        raw = _call("post", "/api/v1/pipeline/protect/suggest", json=body)
+        return _render_protect_suggestions(raw)
 
     elif name == "apply_dest_types":
         return _call("post", "/api/v1/pipeline/dest-types",

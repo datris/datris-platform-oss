@@ -1433,6 +1433,98 @@ paths:
         '500':
           description: Error
 
+  /api/v1/pipeline/protect/suggest:
+    post:
+      tags: [Pipelines]
+      summary: Suggest field protection from field names and types
+      description: >-
+        Asks the configured CodeGen model which source fields should carry
+        `protect` (hmac, mask with an optional preserve, redact, drop, or
+        none), with a one-line reason per field. Only field names and types
+        are sent to the model; no row value leaves the server. Stateless:
+        nothing is saved. Every suggestion passes the pipeline validator, so
+        confirm the ones you want and save them as `protect` on the source
+        fields. Pass either `pipeline` (its stored source schema is used) or
+        `fields`. Needs the same capability as reading a pipeline.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [pipeline]
+                  properties:
+                    pipeline:
+                      type: string
+                      description: Existing pipeline name
+                - type: object
+                  required: [fields]
+                  properties:
+                    fields:
+                      type: array
+                      items:
+                        type: object
+                        required: [name, type]
+                        properties:
+                          name:
+                            type: string
+                          type:
+                            type: string
+                          protect:
+                            $ref: '#/components/schemas/FieldProtectionPolicy'
+      responses:
+        '200':
+          description: One entry per input field, in input order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    type: string
+                    description: The model that produced the suggestions
+                  fields:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        current:
+                          nullable: true
+                          description: The field's existing `protect`, or null
+                          allOf:
+                            - $ref: '#/components/schemas/FieldProtectionPolicy'
+                        suggested:
+                          type: object
+                          nullable: true
+                          description: Null when no protection is suggested
+                          properties:
+                            method:
+                              type: string
+                              enum: [hmac, mask, redact, drop]
+                            preserve:
+                              type: string
+                              nullable: true
+                              enum: [last4, domain, year, null]
+                        reason:
+                          type: string
+                          nullable: true
+        '400':
+          description: Neither pipeline nor fields given, pipeline not found, AI not configured, or an unusable model answer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '500':
+          description: Error
+
   # ── File Upload & AI ────────────────────────────────────────
 
   /api/v1/pipeline/upload:

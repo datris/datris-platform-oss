@@ -61,6 +61,22 @@ To keep the ingest object after protection, add `"protection": {"purgeSource": f
 
 From an agent, `create_pipeline` takes the same policies as a `protect` map keyed by field name, for example `{"mrn": {"method": "hmac"}, "ssn": {"method": "drop"}}`.
 
+## Suggestions
+
+Datris can propose a starting point. The configured CodeGen model receives the field **names and types only** (one `name:type` line per field) and returns, for each field, `hmac`, `mask` with an optional `preserve`, `redact`, `drop`, or no protection, with a one-line reason. No row value is sent, and nothing is saved: you confirm the fields you want and then save them as `protect`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline/protect/suggest \
+  -H "x-api-key: <key>" -H "Content-Type: application/json" \
+  -d '{"pipeline": "patients"}'
+```
+
+Pass `{"pipeline": "<name>"}` to use a saved pipeline's source schema, or `{"fields": [{"name": "...", "type": "..."}]}` for a schema you have not saved yet. Each entry in the response has `name`, `type`, `suggested` (`{"method", "preserve"}`, or `null` for no protection), `reason`, and `current`: the field's existing `protect`, so running it again on a protected pipeline never reads as an overwrite. The `model` field names the model that answered.
+
+Every suggestion follows the [type rules](#type-rules): a field that is not `string` is only ever suggested `drop` or nothing, and `preserve` only comes with `mask`. The call needs the same permission as reading a pipeline, is recorded as a `pipeline / protect-suggest` event in the [audit log](/audit-log) (field names only), and returns HTTP 400 with `{"error": "..."}` when AI is not configured.
+
+Names can mislead, so treat the answer as a proposal. From an agent, the `suggest_field_protection` tool returns one line per field; the agent shows them to you and asks which to accept before passing any of them as `protect` to `create_pipeline`.
+
 ## Where it runs
 
 The stage runs once per job, **after the [preprocessor](/preprocessor)** and **before** data quality, transformation, Live Read, and every destination. The preprocessor still sees raw values; if your preprocessor endpoint must not receive them, protect the data upstream or do not use a preprocessor on that pipeline.

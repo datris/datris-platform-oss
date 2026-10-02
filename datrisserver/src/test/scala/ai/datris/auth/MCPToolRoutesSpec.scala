@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 78)
+        assert(MCPToolRoutes.allToolNames.size == 79)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 
@@ -64,6 +64,16 @@ class MCPToolRoutesSpec extends AnyFunSuite {
 
     // Story: Scratch results over MCP and the CLI (plans/stories/scratch-mcp-cli-prompts.md).
     // get_pipeline_result is a job read, classified exactly like get_pipeline_status.
+    // Story: Field protection 3 (plans/stories/field-protection-3-classifier.md).
+    test("suggest_field_protection is a pipeline:read tool mapped to POST /api/v1/pipeline/protect/suggest") {
+        assert(
+            MCPToolRoutes.tools.toMap.get("suggest_field_protection") == Some(MCPToolRoutes.Mapped("POST", "/api/v1/pipeline/protect/suggest"))
+        )
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/pipeline/protect/suggest") == RouteCheck.Require("pipeline", "read"))
+        assert(MCPToolRoutes.allowedTools(key("pipeline:read")).contains("suggest_field_protection"))
+        assert(!MCPToolRoutes.allowedTools(key("job:read")).contains("suggest_field_protection"))
+    }
+
     test("get_pipeline_result is a job:read tool mapped to GET /api/v1/pipeline/result") {
         assert(MCPToolRoutes.tools.toMap.get("get_pipeline_result") == Some(MCPToolRoutes.Mapped("GET", "/api/v1/pipeline/result")))
         assert(CapabilityRoutes.lookup("GET", "/api/v1/pipeline/result") == RouteCheck.Require("job", "read"))
