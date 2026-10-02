@@ -6,8 +6,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.AuditLog
+import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException}
 import ai.datris.model.{DatrisEnvironment, DatrisException, SchemaField}
-import ai.datris.util.{APIKeyValidator, FieldCipher, FieldProtectionAdvisor, FieldProtectionKey, PipelineConfigIO}
+import ai.datris.util.{APIKeyValidator, CatalogOps, FieldCipher, FieldProtectionAdvisor, FieldProtectionKey, PipelineConfigIO}
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonNull, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
@@ -110,7 +111,8 @@ class FieldProtectionAPIController {
     ): ResponseEntity[String] = {
         val pipeline = Option(body).flatMap(b => Option(b.pipeline)).map(_.trim).filter(_.nonEmpty).orNull
         val fieldName = Option(body).flatMap(b => Option(b.field)).map(_.trim).filter(_.nonEmpty).orNull
-        val requested = Option(body).flatMap(b => Option(b.values)).map(_.size).getOrElse(0)
+        val values0: java.util.List[String] = Option(body).map(_.values).orNull
+        val requested = Option(values0).map(_.size).getOrElse(0)
 
         // Names and counts only: never a value or a ciphertext.
         def audit(outcome: String, status: Int, revealed: Int, failed: Int, error: String): Unit =
@@ -125,10 +127,11 @@ class FieldProtectionAPIController {
 
         try {
             logger.info("API endpoint POST /protect/reveal called" + Option(pipeline).map(" for pipeline: " + _).getOrElse(""))
+            FieldProtectionAPIController.requireCapability(request, "reveal")
             APIKeyValidator.validate(apiKey)
             if (pipeline == null) throw new DatrisException("'pipeline' is required")
             if (fieldName == null) throw new DatrisException("'field' is required")
-            if (body.values == null) throw new DatrisException("'values' is required (an array of enc:v<n>: ciphertexts)")
+            if (values0 == null) throw new DatrisException("'values' is required (an array of enc:v<n>: ciphertexts)")
             if (requested > FieldProtectionAPIController.MaxRevealValues)
                 throw new DatrisException(
                     "At most " + FieldProtectionAPIController.MaxRevealValues + " values per reveal call (got " + requested + ")"
@@ -171,7 +174,7 @@ class FieldProtectionAPIController {
             val errors = new JsonArray()
             var revealed = 0
             var failed = 0
-            body.values.asScala.zipWithIndex.foreach { case (token, i) =>
+            values0.asScala.zipWithIndex.foreach { case (token, i) =>
                 try {
                     val plain = FieldCipher.decrypt(lookup, boundPipeline, boundField, token)
                     if (plain == null) values.add(JsonNull.INSTANCE) else values.add(plain)
@@ -204,6 +207,8 @@ class FieldProtectionAPIController {
             response.add("errors", errors)
             new ResponseEntity[String](new Gson().toJson(response), HttpStatus.OK)
         } catch {
+            case e: CapabilityDeniedException =>
+                FieldProtectionAPIController.denied(request, e, "reveal")
             case e: DatrisException if e.getMessage != null && e.getMessage.startsWith("Field protection: could not read") =>
                 logger.error("Field protection reveal: " + e.getMessage)
                 audit("failure", 500, 0, 0, e.getMessage)
@@ -229,6 +234,7 @@ class FieldProtectionAPIController {
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /protect/keys/rotate called")
+            FieldProtectionAPIController.requireCapability(request, "admin")
             APIKeyValidator.validate(apiKey)
             val version = FieldProtectionKey.rotateEncryptionKey((action: String, field: String) =>
                 try AuditLog.record(request, "key", action, "field-protection", field)
@@ -238,6 +244,8 @@ class FieldProtectionAPIController {
             response.addProperty("version", version)
             new ResponseEntity[String](new Gson().toJson(response), HttpStatus.OK)
         } catch {
+            case e: CapabilityDeniedException =>
+                FieldProtectionAPIController.denied(request, e, "admin")
             case e: DatrisException =>
                 logger.warn("Field protection key rotation refused: " + e.getMessage)
                 try AuditLog.record(request, "key", "rotate", "field-protection", null, "failure", 400, null, e.getMessage)
@@ -256,6 +264,23 @@ object FieldProtectionAPIController {
 
     /** Values per reveal call. */
     val MaxRevealValues = 1000
+
+    /** Defence in depth behind CapabilityInterceptor: reveal decrypts PHI and
+      * admin rotates its key, so the controller enforces `protect:<action>`
+      * itself and CAPABILITY_ENFORCEMENT=log-only never opens either route.
+      * Runs before anything is read. A no-op when the request carries no
+      * resolved key (the platform-wide auth-disabled posture). */
+    private[api] def requireCapability(request: HttpServletRequest, action: String): Unit =
+        CapabilityCheck.assertScope(request, "protect", action, Map.empty)
+
+    /** 403 in the CapabilityInterceptor's shape, recorded once as a
+      * `security` denied entry (no `protect` entry for a denied call). */
+    private[api] def denied(request: HttpServletRequest, e: CapabilityDeniedException, action: String): ResponseEntity[String] = {
+        LoggerFactory.getLogger(classOf[FieldProtectionAPIController]).warn("Field protection " + action + " denied: " + e.getMessage)
+        try AuditLog.denied(request, e.getMessage, 403, Some("protect:" + action))
+        catch { case _: Exception => () }
+        ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON).body[String](CatalogOps.capabilityDeniedBody(e.getMessage))
+    }
 }
 
 /** Reveal request body. */
