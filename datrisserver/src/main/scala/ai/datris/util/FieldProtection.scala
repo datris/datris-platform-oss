@@ -127,8 +127,11 @@ object FieldProtection {
 
     // ---- stage ---------------------------------------------------------------
 
-    /** Protect the run's data. Returns `ctx` itself when no source field has `protect`. */
-    def apply(ctx: JobContext): JobContext = {
+    /** Protect the run's data. Returns `ctx` itself when no source field has `protect`.
+      * `rawStaged` is the run's payload as it was before the preprocessor
+      * (JobRunner passes it); it is purged with the preprocessor's output so
+      * no raw staged copy outlives the protected one. */
+    def apply(ctx: JobContext, rawStaged: StagedPayload = null): JobContext = {
         if (ctx == null) return ctx
         val fields = protectedFields(ctx.config)
         if (fields.isEmpty) return ctx
@@ -143,7 +146,7 @@ object FieldProtection {
         }
 
         val previous = if (ctx.data != null) ctx.data.staged else null
-        val protectedCtx =
+        val (protectedCtx, applied) =
             try {
                 val key: Array[Byte] =
                     if (fields.exists(f => methodOf(f.protect) == "hmac")) {
@@ -152,9 +155,9 @@ object FieldProtection {
                     } else null
 
                 val data = ctx.data
-                if (data == null || data.staged == null || data.staged.isEmpty) withSchemas(ctx, fields)
+                if (data == null || data.staged == null || data.staged.isEmpty) (withSchemas(ctx, fields), fields)
                 else if (data.isDelimited) protectDelimited(ctx, fields, key)
-                else if (data.isNdJson) protectNdJson(ctx, fields, key)
+                else if (data.isNdJson) (protectNdJson(ctx, fields, key), fields)
                 else throw new DatrisException("Field protection needs a delimited or JSON source")
             } catch {
                 case e: DatrisException => throw e
@@ -165,16 +168,16 @@ object FieldProtection {
         if (ctx.statusUtil != null)
             ctx.statusUtil.info(
                 "processing",
-                "Protected " + fields.size + " field" + (if (fields.size == 1) "" else "s") + ": " +
-                    fields.map(f => f.name + "=" + f.protect.label).mkString(", ")
+                "Protected " + applied.size + " field" + (if (applied.size == 1) "" else "s") + ": " +
+                    applied.map(f => f.name + "=" + f.protect.label).mkString(", ")
             )
 
-        purgeRaw(protectedCtx, previous)
+        purgeRaw(protectedCtx, previous, rawStaged)
         protectedCtx
     }
 
     /** Rewrite each delimited row by header index into a new staged file. */
-    private def protectDelimited(ctx: JobContext, fields: List[SchemaField], key: Array[Byte]): JobContext = {
+    private def protectDelimited(ctx: JobContext, fields: List[SchemaField], key: Array[Byte]): (JobContext, List[SchemaField]) = {
         val data = ctx.data
         val delimiter = data.delimiter
         val header: List[String] =
@@ -218,7 +221,9 @@ object FieldProtection {
             else data.headerWithSchema
 
         val withData = ctx.copy(data = data.withStaged(newStaged).copy(header = keptHeader, headerWithSchema = keptWithSchema))
-        withSchemas(withData, fields)
+        // Only the protected fields actually in the data are named on the status line.
+        val applied = fields.filter(f => byIndex.values.exists(_ eq f))
+        (withSchemas(withData, fields), applied)
     }
 
     /** Rewrite / remove top-level keys of each NDJSON object into a new staged file. */
@@ -316,13 +321,14 @@ object FieldProtection {
     }
 
     /** Remove the raw copies once the protected copy is in `ctx`: the
-      * previous staged file, then (purgeSource on, upload/tap runs only) the
-      * ingest object(s). Never throws. */
-    private[datris] def purgeRaw(ctx: JobContext, previousStaged: StagedPayload): Unit = {
+      * previous staged file (and the pre-preprocessor payload, when given),
+      * then (purgeSource on, upload runs only) the ingest object(s) and the
+      * archive they were extracted from. Never throws. */
+    private[datris] def purgeRaw(ctx: JobContext, previousStaged: StagedPayload, rawStaged: StagedPayload = null): Unit = {
         val status = ctx.statusUtil
         val current = if (ctx.data != null && ctx.data.staged != null) ctx.data.staged.path else null
-        if (previousStaged != null && previousStaged.path != null && previousStaged.path != current) {
-            try Files.deleteIfExists(Paths.get(previousStaged.path))
+        List(previousStaged, rawStaged).filter(p => p != null && p.path != null && p.path != current).map(_.path).distinct.foreach { path =>
+            try Files.deleteIfExists(Paths.get(path))
             catch { case e: Exception => logger.warn("FieldProtection: could not delete the raw staged file: " + e.getMessage) }
         }
 
@@ -336,15 +342,18 @@ object FieldProtection {
 
         val name = ctx.config.name
         val store = Option(objectStoreOverride).getOrElse(ObjectStoreUtil)
-        val urls: List[String] =
+        val listed: List[String] =
             try new PipelineMetadataUtil(status).getFiles(ctx.metadata, store)
             catch {
                 case e: Exception =>
                     val msg = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
                     if (status != null) status.warn("processing", "Could not purge raw source: " + msg)
                     audit("purge-source", name, null, "warning", msg)
-                    return
+                    Nil
             }
+        // An archive drop: the bulk files are extracted copies; the archive
+        // object itself is the original raw source.
+        val urls = (listed ++ Option(md.sourceObject).filter(_.nonEmpty).toList).distinct
 
         val purged = List.newBuilder[String]
         urls.foreach { url =>

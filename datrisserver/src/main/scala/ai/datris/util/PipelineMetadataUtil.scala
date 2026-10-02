@@ -134,7 +134,8 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
             null,
             tempWriteDirectory,
             publisherToken,
-            bulkUpload = true
+            bulkUpload = true,
+            sourceObject = "s3://" + bucket + "/" + key
         )
     }
 

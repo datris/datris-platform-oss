@@ -418,6 +418,46 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
+    test("the pre-preprocessor staged file is purged with the preprocessor output") {
+        val raw = delimitedCtx(csvConfig(protectedSourceFields)) // the notifier's payload
+        val preprocessed = delimitedCtx(csvConfig(protectedSourceFields)) // a preprocessor's output
+        val rawPath = Paths.get(raw.data.staged.path)
+        val prePath = Paths.get(preprocessed.data.staged.path)
+        val out = FieldProtection.apply(preprocessed, rawStaged = raw.data.staged)
+        assert(Files.exists(Paths.get(out.data.staged.path)), "protected file exists")
+        assert(!Files.exists(prePath), "preprocessor output deleted")
+        assert(!Files.exists(rawPath), "pre-preprocessor raw payload deleted")
+    }
+
+    test("archive drops purge the original archive object with the extracted files") {
+        store = new FakeStore(listing = List("temp/u1/a.tmp", "temp/u1/b.tmp"))
+        FieldProtection.objectStoreOverride = store
+        val status = new RecordingStatusUtil
+        val md = PipelineMetadata(
+            "patients",
+            null,
+            "s3://" + Bucket + "/temp/u1/",
+            "pub-1",
+            bulkUpload = true,
+            sourceObject = "s3://" + Bucket + "/drops/patients.pub-1.x.pipeline.zip"
+        )
+        FieldProtection.apply(delimitedCtx(csvConfig(protectedSourceFields), md, status))
+        assert(
+            store.deleted.toSet == Set((Bucket, "temp/u1/a.tmp"), (Bucket, "temp/u1/b.tmp"), (Bucket, "drops/patients.pub-1.x.pipeline.zip")),
+            s"${store.deleted}"
+        )
+        assert(status.descriptions.exists(d => d.startsWith("Purged raw source: ") && d.contains("drops/patients.pub-1.x.pipeline.zip")))
+    }
+
+    test("the status line names only protected fields present in the data") {
+        val status = new RecordingStatusUtil
+        val fields = protectedSourceFields
+        fields.add(field("phone", policy("mask", "last4")))
+        FieldProtection.apply(delimitedCtx(csvConfig(fields), status = status))
+        val lines = status.descriptions.filter(_.startsWith("Protected "))
+        assert(lines == List("Protected 3 fields: mrn=hmac, email=mask:domain, ssn=drop"), status.descriptions.mkString("\n"))
+    }
+
     test("a failed object delete is a warning line and an audit entry, and the run continues") {
         store = new FakeStore(failDeletes = true)
         FieldProtection.objectStoreOverride = store

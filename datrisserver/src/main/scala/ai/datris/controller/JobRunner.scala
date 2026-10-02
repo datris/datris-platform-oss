@@ -150,7 +150,8 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             // transformation stage, so no AI sampler, row function or loader
             // ever sees the original value. Purges the raw copies once the
             // protected one exists. No-op (same context) without `protect`.
-            val jobContextProtected = FieldProtection.apply(jobContextPreprocessed)
+            val jobContextProtected =
+                FieldProtection.apply(jobContextPreprocessed, rawStaged = if (jobContext.data != null) jobContext.data.staged else null)
 
             // Do data quality?
             if (config.dataQuality != null)
