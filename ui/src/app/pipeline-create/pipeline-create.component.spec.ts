@@ -807,6 +807,59 @@ describe('PipelineCreateComponent — field protection', () => {
     expect(f.protectError || '').toBe('');
   });
 
+  /** Pick an option the way a user does: set the select's DOM value and fire change. */
+  async function pick(select: HTMLSelectElement, value: string): Promise<void> {
+    select.value = value;
+    select.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  it('a refused choice made in the select resets the select itself to None (type guard)', async () => {
+    await onSchemaStep([{ name: 'mrn', type: 'string' }, { name: 'age', type: 'int' }]);
+    const c: any = component;
+    const sel = rowFor('age').querySelector('select.field-protect') as HTMLSelectElement;
+    await pick(sel, 'hmac');
+
+    expect(c.schemaFields[1].protect?.method || null).toBeNull();
+    expect(c.schemaFields[1].protectError).toContain('hmac applies only to string fields');
+    const after = rowFor('age').querySelector('select.field-protect') as HTMLSelectElement;
+    expect(after.value).withContext('select DOM value after the refused choice').toBe('');
+    expect(selectedText(after).toLowerCase()).toMatch(/^none/);
+    expect(el.textContent || '').toContain('hmac applies only to string fields; age is int.');
+
+    // A second refused pick of the same method still resets the select.
+    await pick(after, 'hmac');
+    expect((rowFor('age').querySelector('select.field-protect') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('a refused choice made in the select resets the select itself to None (key column)', async () => {
+    await onSchemaStep(
+      [{ name: 'account_no', type: 'string' }],
+      {
+        schemaProperties: { fields: [{ name: 'account_no', type: 'string' }] },
+        database: { dbName: 'datris', schema: 'public', table: 'accounts', usePostgres: true, keyFields: ['account_no'] }
+      }
+    );
+    const c: any = component;
+    // The option is disabled in the UI; force it through the DOM anyway.
+    const sel = rowFor('account_no').querySelector('select.field-protect') as HTMLSelectElement;
+    await pick(sel, 'mask');
+
+    expect(c.schemaFields[0].protect?.method || null).toBeNull();
+    expect(c.schemaFields[0].protectError).toContain('key field');
+    const after = rowFor('account_no').querySelector('select.field-protect') as HTMLSelectElement;
+    expect(after.value).withContext('select DOM value after the refused choice').toBe('');
+    expect(selectedText(after).toLowerCase()).toMatch(/^none/);
+    expect(rowFor('account_no').querySelector('select.field-preserve')).toBeNull();
+
+    // hmac is still accepted on the key column.
+    await pick(after, 'hmac');
+    expect(c.schemaFields[0].protect?.method).toBe('hmac');
+    expect((rowFor('account_no').querySelector('select.field-protect') as HTMLSelectElement).value).toBe('hmac');
+  });
+
   it('json source shows no Protect select', async () => {
     // Same wizard, CSV first: the Protect column and the Suggest button are there...
     await onSchemaStep([{ name: 'mrn', type: 'string' }]);

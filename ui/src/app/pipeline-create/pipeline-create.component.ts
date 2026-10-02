@@ -722,18 +722,25 @@ export class PipelineCreateComponent implements OnInit {
 
   /** Type guard for a protect choice: hmac/mask/redact need a string field and a
    *  key column takes only hmac. An invalid choice resets to None with a reason. */
-  onProtectChange(field: SchemaField): void {
+  onProtectChange(field: SchemaField, model?: { control: { setValue(value: any, options?: any): void } }): void {
     if (!field.protect) field.protect = { method: '', preserve: null };
     const method = field.protect.method || '';
     field.protectError = '';
+    let problem = '';
     if (method && STRING_ONLY_METHODS.includes(method) && field.type !== 'string') {
-      field.protectError = `${method} applies only to string fields; ${field.name || 'this field'} is ${field.type}.`;
-      field.protect = { method: '', preserve: null };
-      return;
+      problem = `${method} applies only to string fields; ${field.name || 'this field'} is ${field.type}.`;
+    } else if (method && method !== 'hmac' && this.isKeyField(field.name)) {
+      problem = `${field.name} is a key field; key fields can only use hmac.`;
     }
-    if (method && method !== 'hmac' && this.isKeyField(field.name)) {
-      field.protectError = `${field.name} is a key field; key fields can only use hmac.`;
+    if (problem) {
+      field.protectError = problem;
       field.protect = { method: '', preserve: null };
+      // Called from the select's (ngModelChange): the bound value goes '' -> ''
+      // as far as change detection can tell, so ngModel would never write the
+      // reset back and the select would keep showing the refused method.
+      // Push '' through the form control so the select shows None, without
+      // re-emitting ngModelChange (that would re-enter here and clear the error).
+      model?.control.setValue('', { emitViewToModelChange: false });
       return;
     }
     if (method !== 'mask') field.protect.preserve = null;

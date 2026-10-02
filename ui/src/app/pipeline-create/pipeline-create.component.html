@@ -242,7 +242,7 @@
             <select class="form-input field-type" [(ngModel)]="field.type" (ngModelChange)="onFieldTypeChange(field)">
               <option *ngFor="let t of fieldTypes" [value]="t">{{ t }}</option>
             </select>
-            <select class="form-input field-protect" *ngIf="field.protect as p" [(ngModel)]="p.method" (ngModelChange)="onProtectChange(field)" title="Protect">
+            <select class="form-input field-protect" *ngIf="field.protect as p" [(ngModel)]="p.method" #protectModel="ngModel" (ngModelChange)="onProtectChange(field, protectModel)" title="Protect">
               <option value="">None</option>
               <option *ngFor="let m of protectMethods" [value]="m" [disabled]="m !== 'hmac' && isKeyField(field.name)">{{ m }}</option>
             </select>
