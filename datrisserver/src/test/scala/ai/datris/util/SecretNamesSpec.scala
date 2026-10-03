@@ -12,7 +12,18 @@ import org.scalatest.funsuite.AnyFunSuite
 
 /** A secret name or Vault path can only address the secret it names: the
   * Vault driver puts the path into a URI unencoded, so `?` / `#` / `%` would
-  * alias another secret. */
+  * alias another secret.
+  *
+  * Tap secret scope (plans/stories/field-protection-8-tap-secret-scope.md)
+  * pins on SecretNames:
+  *   - `tapScope: String` — "any" or "tap", read at call time from the
+  *     system property `datris.tapSecretScope`, else env
+  *     `DATRIS_TAP_SECRET_SCOPE`; trimmed, lowercased; default and any
+  *     unknown value -> "tap".
+  *   - `tapScopeEnforced: Boolean` — tapScope != "any".
+  *   - `tapSecretProblem(tapName: String, secretName: String,
+  *     storedType: Option[String], enforced: Boolean): Option[String]` — the
+  *     refusal message when enforced and storedType != Some("tap"). */
 class SecretNamesSpec extends AnyFunSuite {
 
     private val unsafe = Seq(
@@ -104,5 +115,88 @@ class SecretNamesSpec extends AnyFunSuite {
         assert(SecretNames.referenceProblem("github-token").isEmpty)
         assert(SecretNames.referenceProblem("oss/embedding").isEmpty)
         assert(SecretNames.referenceProblem(null).isEmpty)
+    }
+
+    // ---- Field protection 8: tap secret scope
+
+    private val ScopeProperty = "datris.tapSecretScope"
+
+    private def withTapScope[A](value: Option[String])(body: => A): A = {
+        val previous = sys.props.get(ScopeProperty)
+        value match {
+            case Some(v) => sys.props(ScopeProperty) = v
+            case None => sys.props -= ScopeProperty
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(ScopeProperty) = v
+                case None => sys.props -= ScopeProperty
+            }
+    }
+
+    private val expectedRefusal =
+        "Tap 'weather' uses secret 'ai-primary', which is a platform secret. Taps may only use tap secrets " +
+            "(Configuration → Secrets → Tap). Create a tap secret with the fields this tap needs and select it, " +
+            "or set DATRIS_TAP_SECRET_SCOPE=any to allow platform secrets."
+
+    test("a tap-typed secret is allowed") {
+        assert(SecretNames.tapSecretProblem("weather", "weather-api", Some("tap"), enforced = true).isEmpty)
+        assert(SecretNames.tapSecretProblem("weather", "weather-api", Some("tap"), enforced = false).isEmpty)
+    }
+
+    test("a platform secret is refused when enforced, naming the tap, the secret and the opt-out") {
+        val p = SecretNames.tapSecretProblem("weather", "ai-primary", Some("ai-provider"), enforced = true)
+        assert(p.contains(expectedRefusal), p.toString)
+        // A secret with no _type (a hand-made legacy one) counts as a platform secret.
+        val untyped = SecretNames.tapSecretProblem("weather", "ai-primary", None, enforced = true)
+        assert(untyped.contains(expectedRefusal), untyped.toString)
+        // Only exactly "tap" passes.
+        for (t <- Seq("TAP", " tap", "taps", "", "platform")) {
+            val q = SecretNames.tapSecretProblem("t1", "s1", Some(t), enforced = true)
+            assert(q.exists(m => m.contains("Tap 't1'") && m.contains("'s1'") && m.contains("DATRIS_TAP_SECRET_SCOPE=any")), s"[$t] -> $q")
+        }
+    }
+
+    test("a platform secret is allowed when the scope is any") {
+        assert(SecretNames.tapSecretProblem("weather", "ai-primary", Some("ai-provider"), enforced = false).isEmpty)
+        assert(SecretNames.tapSecretProblem("weather", "ai-primary", None, enforced = false).isEmpty)
+        withTapScope(Some("any")) {
+            assert(!SecretNames.tapScopeEnforced)
+            assert(SecretNames.tapSecretProblem("weather", "ai-primary", None, SecretNames.tapScopeEnforced).isEmpty)
+        }
+    }
+
+    test("a missing secret is left to the existing missing-secret error") {
+        // tapSecretProblem's storedType cannot tell a missing secret from an
+        // untyped one (both None), so the "missing" decision is the caller's:
+        // a lookup that says the secret does not exist (outer None) yields no
+        // scope problem, leaving the existing "missing or empty" error to fire.
+        assert(SecretNames.tapSecretProblem("weather", "weather-api", Some("tap"), enforced = true).isEmpty)
+        assert(
+            ai.datris.api.TapAPIController.tapSecretSaveProblem(
+                ai.datris.model.TapConfig(name = "weather", description = "d", targetPipeline = "p", secretName = "not-there"),
+                _ => None,
+                enforced = true
+            ).isEmpty
+        )
+    }
+
+    test("tapScope defaults to tap and treats unknown values as tap") {
+        assume(sys.env.get("DATRIS_TAP_SECRET_SCOPE").isEmpty, "DATRIS_TAP_SECRET_SCOPE is set in this environment")
+        withTapScope(None) {
+            assert(SecretNames.tapScope == "tap")
+            assert(SecretNames.tapScopeEnforced)
+        }
+        for (v <- Seq("bogus", "", "all", "none", "tap")) withTapScope(Some(v)) {
+            assert(SecretNames.tapScope == "tap", s"[$v]")
+            assert(SecretNames.tapScopeEnforced, s"[$v]")
+        }
+        for (v <- Seq("any", "ANY", " Any ")) withTapScope(Some(v)) {
+            assert(SecretNames.tapScope == "any", s"[$v]")
+            assert(!SecretNames.tapScopeEnforced, s"[$v]")
+        }
+        // Read at call time, not cached.
+        withTapScope(Some("any"))(assert(SecretNames.tapScope == "any"))
+        withTapScope(Some("tap"))(assert(SecretNames.tapScope == "tap"))
     }
 }

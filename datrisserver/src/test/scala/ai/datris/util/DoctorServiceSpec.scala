@@ -41,8 +41,11 @@ class DoctorServiceSpec extends AnyFunSuite {
         var overrides: List[(String, String, String)] = Nil,
         // Phase 5 (plans/stories/streaming-pipeline-phase5.md): the staging area.
         var staging: StagingAreaState = StagingAreaState("/tmp/datris-staging", exists = true, writable = true, usableBytes = 10L * GB),
-        var orphans: (List[String], Long) = (Nil, 0L)
+        var orphans: (List[String], Long) = (Nil, 0L),
+        // Field protection 8: (tap, secret, stored _type) for taps with a secret.
+        var tapRefs: List[(String, String, Option[String])] = Nil
     ) extends Probes {
+        def tapSecretRefs(): List[(String, String, Option[String])] = tapRefs
         def stagingArea(): StagingAreaState = staging
         def stagingOrphans(): (List[String], Long) = orphans
         def vaultLookupSelf(): Option[Map[String, String]] = lookup
@@ -452,7 +455,7 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(full.checks.map(_.id).contains("staging.orphans"), full.checks.map(_.id).toString)
         val quickIds = DoctorService.run("quick", Set.empty, Map.empty, p, slots, "1.28.2").checks.map(_.id)
         assert(quickIds.contains("staging.area") && quickIds.contains("staging.orphans"), "startup-safe: " + quickIds)
-        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans")) == Seq(
+        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans", "tap-secret-scope")) == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
             "jdbc.mssql_driver",
@@ -489,5 +492,71 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(r.detail.contains("TAP_SCRIPT_TIMEOUT_SECONDS"), r.detail)
         assert(r.detail.contains("TAP_RUN_TIMEOUT_SECONDS"), r.detail)
         assert(!r.detail.contains("unset: TAP_"), "both were set: " + r.detail)
+    }
+
+    // tap-secret-scope — plans/stories/field-protection-8-tap-secret-scope.md.
+    // Pinned: check id "tap-secret-scope", startupSafe = true, registered in
+    // DoctorService.checks (position not pinned; found by id so the class name
+    // is free), reading Probes.tapSecretRefs(): List[(tap, secret, Option[_type])]
+    // and SecretNames.tapScopeEnforced (system property `datris.tapSecretScope`,
+    // set/cleared here with try/finally).
+
+    private def withTapScope[A](value: Option[String])(body: => A): A = {
+        val key = "datris.tapSecretScope"
+        val previous = sys.props.get(key)
+        value match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    private def tapScopeCheck(p: FakeProbes): Check = {
+        val all = DoctorService.checks(p, slots, "1.28.2", Map.empty)
+        all.find(_.id == "tap-secret-scope").getOrElse(fail("no tap-secret-scope check in " + all.map(_.id)))
+    }
+
+    private val offendingRefs = List(
+        ("weather", "weather-api", Some("tap")),
+        ("leaky", "ai-primary", Some("ai-provider")),
+        ("legacy", "databricks", None)
+    )
+
+    test("tap-secret-scope is ok with no offenders") {
+        withTapScope(Some("tap")) {
+            val c = tapScopeCheck(new FakeProbes())
+            assert(c.startupSafe)
+            assert(c.run().status == "ok")
+            val onlyTap = new FakeProbes(tapRefs = List(("weather", "weather-api", Some("tap"))))
+            assert(tapScopeCheck(onlyTap).run().status == "ok")
+            val quickIds = DoctorService.run("quick", Set.empty, Map.empty, new FakeProbes(), slots, "1.28.2").checks.map(_.id)
+            assert(quickIds.contains("tap-secret-scope"), "startup-safe: " + quickIds)
+        }
+    }
+
+    test("tap-secret-scope is an error listing offenders when enforced") {
+        withTapScope(Some("tap")) {
+            val r = tapScopeCheck(new FakeProbes(tapRefs = offendingRefs)).run()
+            assert(r.status == "error", r.detail)
+            assert(r.detail.contains("leaky") && r.detail.contains("ai-primary"), r.detail)
+            assert(r.detail.contains("legacy") && r.detail.contains("databricks"), r.detail)
+            assert(!r.detail.contains("weather"), "a tap on a tap secret is not an offender: " + r.detail)
+            assert(r.remediation.contains("tap secret"), r.remediation)
+            assert(r.remediation.contains("DATRIS_TAP_SECRET_SCOPE=any"), r.remediation)
+        }
+    }
+
+    test("tap-secret-scope is a warning when the opt-out is on") {
+        withTapScope(Some("any")) {
+            val r = tapScopeCheck(new FakeProbes(tapRefs = offendingRefs)).run()
+            assert(r.status == "warn", r.detail)
+            assert(r.detail.contains("leaky") && r.detail.contains("legacy"), r.detail)
+            assert((r.detail + " " + r.remediation).contains("DATRIS_TAP_SECRET_SCOPE=any"), r.detail + " | " + r.remediation)
+            assert(tapScopeCheck(new FakeProbes()).run().status == "ok", "no offenders with the opt-out is still ok")
+        }
     }
 }
