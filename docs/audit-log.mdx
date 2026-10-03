@@ -69,7 +69,7 @@ Writes, runs, deletes, logins, key and user management, and every denied request
 | `code-repo` | repository connection changes |
 | `auth` | login (success and failure), logout, password change |
 | `user` | create, update (role change, password reset), delete |
-| `key` | issue, revoke, rotate; `issue` with resource `field-protection` (system event) when the server issues the environment's [field protection](/transformation/field-protection) hmac or encryption key on the first protected run; `rotate` with resource `field-protection` when an operator rotates the field protection encryption key |
+| `key` | issue, revoke, rotate; `issue` with resource `field-protection` (system event) when the server issues the environment's [field protection](/transformation/field-protection) hmac or encryption key on the first protected run; `rotate` with resource `field-protection` when an operator rotates the field protection encryption key or adds or changes an `enc.v<n>` through the secrets API; `retire` and `set-current` with resource `field-protection` when a `protect:admin` key removes an `enc.v<n>` or moves `encCurrent` through the secrets API (resource name lists the changed fields, never values) |
 | `protect` | reveal: an [`encrypt`-protected value](/transformation/field-protection#revealing-a-value) read back, with the pipeline, the field name, and the counts requested, revealed, and failed (never a value); outcome `warning` when any value failed |
 | `security` | any denied request — insufficient role, missing capability, expired session, and a non-`ui` key attempting to act on behalf of a user |
 | `system` | server start and stop |

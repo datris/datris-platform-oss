@@ -7,6 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonParser}
+import ai.datris.audit.AuditLog
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess}
 import ai.datris.config.RequiresRole
 import ai.datris.model.DatrisEnvironment
@@ -22,7 +23,7 @@ import scala.collection.JavaConverters._
 @RequestMapping(Array("/api/v1"))
 @RequiresRole(Array("admin"))
 class SecretsAPIController {
-    import SecretsAPIController.{isSensitive, mergeIncoming}
+    import SecretsAPIController.{isSensitive, mergeIncoming, FieldProtectionSecret}
 
     private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
 
@@ -197,95 +198,114 @@ class SecretsAPIController {
                 }
                 val incoming = mergeIncoming(name, existing.toMap, primitiveEntries)
 
-                // Special-case the codegen secret: if the request omits or blanks out apiKey,
-                // copy it from the AI primary secret at {env}/ai-primary. This lets the UI
-                // omit the apiKey when the user wants codegen to reuse the main key without
-                // re-entering it.
-                if (name == "codegen") {
-                    val providedApiKey = Option(incoming.get("apiKey")).map(_.asInstanceOf[String]).getOrElse("")
-                    if (providedApiKey.isEmpty) {
-                        val mainKey = SecretsUtil.getSecretMap(env + "/ai-primary")
-                            .flatMap(m => Option(m.get("apiKey")))
-                            .filter(_.nonEmpty)
-                        mainKey.foreach(k => incoming.put("apiKey", k))
-                    }
-                }
+                // Field protection 7: the key secret's hmac `key` cannot be changed
+                // or removed here (409); enc.v<n> / encCurrent edits need
+                // protect:admin (403), must be well formed (400) and are audited.
+                // A round-trip of masks/blanks passes with plain secret:write.
+                val guard: Either[ResponseEntity[String], Option[(String, Set[String])]] =
+                    if (name == FieldProtectionSecret) fieldProtectionGuard(request, existing.toMap, incoming)
+                    else Right(None)
 
-                // Provider-change apiKey clearing — applies to every AI section. When
-                // the user switches a section's provider (e.g. Anthropic → OpenAI), the
-                // masked-preservation step above blindly keeps the OLD provider's
-                // apiKey, which would fail with 401 at runtime. Drop the preserved key
-                // so the loader either picks it up from the env-var fallback (single
-                // tenant) or fails closed (multi-tenant — tenant must re-enter).
-                //
-                // BUT only clear a *preserved* (masked/absent) key — never a fresh key
-                // the user typed for the NEW provider in this same request. The
-                // masked-preservation step above can't tell the two apart, so we look
-                // at the raw request: a real, non-masked apiKey means the user is
-                // switching provider AND supplying the new provider's key at once.
-                if (Set("ai-primary", "codegen", "embedding", "web-search").contains(name)) {
-                    val incomingProvider = Option(incoming.get("provider")).map(_.asInstanceOf[String].toLowerCase).getOrElse("")
-                    val existingProvider = existing.get("provider").map(_.toLowerCase).getOrElse("")
-                    val rawRequestApiKey =
-                        if (json.has("apiKey") && json.get("apiKey").isJsonPrimitive) json.get("apiKey").getAsString
-                        else ""
-                    val freshApiKeyProvided = rawRequestApiKey.nonEmpty && rawRequestApiKey != "••••••••"
-                    if (
-                        existingProvider.nonEmpty && incomingProvider.nonEmpty &&
-                        existingProvider != incomingProvider && !freshApiKeyProvided
-                    ) {
-                        logger.info(
-                            "PUT /secrets/" + name + ": provider changed from '" + existingProvider + "' to '" + incomingProvider + "' — clearing preserved apiKey (will resolve from env var if available)"
-                        )
-                        incoming.remove("apiKey")
-                    }
-                }
-
-                // Owner-tag the secret with the issuing key's label. Preserve on
-                // update so ownership reflects who created the secret, not who
-                // last edited it. Skip if the existing secret already has a
-                // value to avoid clobbering.
-                val existingOwner = existing.get("createdByKeyLabel").filter(_.nonEmpty)
-                existingOwner match {
-                    case Some(prior) =>
-                        incoming.put("createdByKeyLabel", prior)
-                    case None =>
-                        ResolvedKeyAccess.keyLabel(request).foreach(label =>
-                            incoming.put("createdByKeyLabel", label)
-                        )
-                }
-
-                SecretsUtil.writeSecret(secretPath, incoming)
-
-                // Mirror the UI identity's key value into oss/api-keys under
-                // the reserved `ui` label so it actually validates at the auth
-                // layer. Without this, saving a new value here would break the
-                // UI and the Assistant on the next request (key not recognized).
-                if (name == "ui-api-key") {
-                    val incomingValue = Option(incoming.get("apiKey")).map(_.asInstanceOf[String]).filter(_.nonEmpty)
-                    incomingValue.foreach { v =>
-                        try mirrorUiKeyIntoApiKeys(env, v)
-                        catch {
-                            case e: Exception =>
-                                logger.warn("Failed to mirror ui-api-key into oss/api-keys: " + e.getMessage)
+                guard match {
+                    case Left(refused) => refused
+                    case Right(keyAudit) =>
+                        // Special-case the codegen secret: if the request omits or blanks out apiKey,
+                        // copy it from the AI primary secret at {env}/ai-primary. This lets the UI
+                        // omit the apiKey when the user wants codegen to reuse the main key without
+                        // re-entering it.
+                        if (name == "codegen") {
+                            val providedApiKey = Option(incoming.get("apiKey")).map(_.asInstanceOf[String]).getOrElse("")
+                            if (providedApiKey.isEmpty) {
+                                val mainKey = SecretsUtil.getSecretMap(env + "/ai-primary")
+                                    .flatMap(m => Option(m.get("apiKey")))
+                                    .filter(_.nonEmpty)
+                                mainKey.foreach(k => incoming.put("apiKey", k))
+                            }
                         }
-                    }
-                    APIKeyValidator.invalidateCache()
+
+                        // Provider-change apiKey clearing — applies to every AI section. When
+                        // the user switches a section's provider (e.g. Anthropic → OpenAI), the
+                        // masked-preservation step above blindly keeps the OLD provider's
+                        // apiKey, which would fail with 401 at runtime. Drop the preserved key
+                        // so the loader either picks it up from the env-var fallback (single
+                        // tenant) or fails closed (multi-tenant — tenant must re-enter).
+                        //
+                        // BUT only clear a *preserved* (masked/absent) key — never a fresh key
+                        // the user typed for the NEW provider in this same request. The
+                        // masked-preservation step above can't tell the two apart, so we look
+                        // at the raw request: a real, non-masked apiKey means the user is
+                        // switching provider AND supplying the new provider's key at once.
+                        if (Set("ai-primary", "codegen", "embedding", "web-search").contains(name)) {
+                            val incomingProvider = Option(incoming.get("provider")).map(_.asInstanceOf[String].toLowerCase).getOrElse("")
+                            val existingProvider = existing.get("provider").map(_.toLowerCase).getOrElse("")
+                            val rawRequestApiKey =
+                                if (json.has("apiKey") && json.get("apiKey").isJsonPrimitive) json.get("apiKey").getAsString
+                                else ""
+                            val freshApiKeyProvided = rawRequestApiKey.nonEmpty && rawRequestApiKey != "••••••••"
+                            if (
+                                existingProvider.nonEmpty && incomingProvider.nonEmpty &&
+                                existingProvider != incomingProvider && !freshApiKeyProvided
+                            ) {
+                                logger.info(
+                                    "PUT /secrets/" + name + ": provider changed from '" + existingProvider + "' to '" + incomingProvider + "' — clearing preserved apiKey (will resolve from env var if available)"
+                                )
+                                incoming.remove("apiKey")
+                            }
+                        }
+
+                        // Owner-tag the secret with the issuing key's label. Preserve on
+                        // update so ownership reflects who created the secret, not who
+                        // last edited it. Skip if the existing secret already has a
+                        // value to avoid clobbering.
+                        val existingOwner = existing.get("createdByKeyLabel").filter(_.nonEmpty)
+                        existingOwner match {
+                            case Some(prior) =>
+                                incoming.put("createdByKeyLabel", prior)
+                            case None =>
+                                ResolvedKeyAccess.keyLabel(request).foreach(label =>
+                                    incoming.put("createdByKeyLabel", label)
+                                )
+                        }
+
+                        SecretsUtil.writeSecret(secretPath, incoming)
+
+                        // Field protection 7: an admin edit of the key material is audited
+                        // with the field names only, never the values.
+                        keyAudit.foreach { case (action, fields) =>
+                            try AuditLog.record(request, "key", action, FieldProtectionSecret, fields.toSeq.sorted.mkString(","))
+                            catch { case e: Exception => logger.warn("audit record failed: " + e.getMessage) }
+                        }
+
+                        // Mirror the UI identity's key value into oss/api-keys under
+                        // the reserved `ui` label so it actually validates at the auth
+                        // layer. Without this, saving a new value here would break the
+                        // UI and the Assistant on the next request (key not recognized).
+                        if (name == "ui-api-key") {
+                            val incomingValue = Option(incoming.get("apiKey")).map(_.asInstanceOf[String]).filter(_.nonEmpty)
+                            incomingValue.foreach { v =>
+                                try mirrorUiKeyIntoApiKeys(env, v)
+                                catch {
+                                    case e: Exception =>
+                                        logger.warn("Failed to mirror ui-api-key into oss/api-keys: " + e.getMessage)
+                                }
+                            }
+                            APIKeyValidator.invalidateCache()
+                        }
+
+                        // Hot-reload AI config when an AI secret changes — no restart required.
+                        // web-search rides the same reload because reloadAiConfig() refreshes the
+                        // webSearchConfig field too.
+                        if (Set("ai-primary", "codegen", "web-search", "ai-keys").contains(name)) {
+                            DatrisEnvironment.reloadAiConfig()
+                            logger.info("AI configuration reloaded from Vault after PUT /secrets/" + name)
+                        }
+
+                        // No .env write-back: Vault now persists on a disk-backed volume
+                        // (see docker/vault.hcl + vault-bootstrap.sh), so UI saves stick
+                        // across restarts directly. `.env` is first-boot seed only.
+
+                        new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
                 }
-
-                // Hot-reload AI config when an AI secret changes — no restart required.
-                // web-search rides the same reload because reloadAiConfig() refreshes the
-                // webSearchConfig field too.
-                if (Set("ai-primary", "codegen", "web-search", "ai-keys").contains(name)) {
-                    DatrisEnvironment.reloadAiConfig()
-                    logger.info("AI configuration reloaded from Vault after PUT /secrets/" + name)
-                }
-
-                // No .env write-back: Vault now persists on a disk-backed volume
-                // (see docker/vault.hcl + vault-bootstrap.sh), so UI saves stick
-                // across restarts directly. `.env` is first-boot seed only.
-
-                new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
             }
         } catch {
             case e: CapabilityDeniedException =>
@@ -324,8 +344,17 @@ class SecretsAPIController {
                 else Map.empty[String, String]
                 CapabilityCheck.assertScope(request, "secret", "write", scopeContext)
 
-                SecretsUtil.deleteSecret(secretPath)
-                new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
+                // Deleting the field-protection secret would mint a new hmac key
+                // on the next protected run and orphan every ciphertext: refused
+                // for everyone, the same 409 as a `key` change.
+                if (name == FieldProtectionSecret) {
+                    logger.warn("DELETE /secrets/" + name + " refused: the field-protection key secret cannot be deleted through the API")
+                    ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
+                        .body[String]("{\"error\": " + new Gson().toJson(FieldProtectionSecretGuard.KeyChangeMessage) + "}")
+                } else {
+                    SecretsUtil.deleteSecret(secretPath)
+                    new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
+                }
             }
         } catch {
             case e: CapabilityDeniedException =>
@@ -339,6 +368,51 @@ class SecretsAPIController {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ApiErrors.internal(e)
+        }
+    }
+
+    /** Field protection 7 (plans/stories/field-protection-7-secret-write-guard.md):
+      * map FieldProtectionSecretGuard's Decision for a PUT of the
+      * field-protection secret to a refusal (Left) or to the key audit to
+      * record after the write (Right). `incoming` is the merged map; key
+      * fields still holding a mask or blank (encCurrent is not a sensitive
+      * field, so mergeIncoming writes it verbatim) are restored from the
+      * stored secret first, so "unchanged" really is unchanged on disk. */
+    private def fieldProtectionGuard(
+        request: HttpServletRequest,
+        existing: Map[String, String],
+        incoming: java.util.LinkedHashMap[String, Object]
+    ): Either[ResponseEntity[String], Option[(String, Set[String])]] = {
+        import FieldProtectionSecretGuard._
+        incoming.asScala.toSeq.foreach { case (k, v) =>
+            if (isKeyField(k) && isUnchanged(String.valueOf(v))) {
+                existing.get(k).filter(_.nonEmpty) match {
+                    case Some(stored) => incoming.put(k, stored)
+                    case None => incoming.remove(k)
+                }
+            }
+        }
+        val merged = incoming.asScala.toMap.map { case (k, v) => k -> String.valueOf(v) }
+        val d = diff(existing, merged)
+        decide(d, merged, FieldProtectionAPIController.holdsCapability(request, "admin")) match {
+            case Reject409(message) =>
+                logger.warn("PUT /secrets/" + FieldProtectionSecret + " refused: hmac key change or removal")
+                Left(ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
+                    .body[String]("{\"error\": " + new Gson().toJson(message) + "}"))
+            case Deny403 =>
+                // The reveal controller's 403 shape and single security/denied entry.
+                val e =
+                    try {
+                        FieldProtectionAPIController.requireCapability(request, "admin")
+                        new CapabilityDeniedException("capability denied: protect:admin is required to change field-protection key material")
+                    } catch { case denied: CapabilityDeniedException => denied }
+                Left(FieldProtectionAPIController.denied(request, e, "admin"))
+            case Invalid400(message) =>
+                logger.warn("PUT /secrets/" + FieldProtectionSecret + " refused: " + message)
+                Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                    .body[String]("{\"error\": " + new Gson().toJson(message) + "}"))
+            case Allow(Some(action), fields) => Right(Some(action -> fields))
+            case Allow(None, _) => Right(None)
         }
     }
 
@@ -399,7 +473,7 @@ object SecretsAPIController {
       * could decrypt an `encrypt` column offline without `protect:reveal` and
       * without a reveal audit entry. Every field is masked except the
       * `encCurrent` version number. */
-    private val FieldProtectionSecret = "field-protection"
+    private[api] val FieldProtectionSecret = "field-protection"
     private val FieldProtectionPlain = Set("encCurrent")
 
     /** `isSensitive(fieldName)` plus per-secret rules: every field of the

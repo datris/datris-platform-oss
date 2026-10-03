@@ -288,6 +288,12 @@ object FieldProtectionAPIController {
     private[api] def requireCapability(request: HttpServletRequest, action: String): Unit =
         CapabilityCheck.assertScope(request, "protect", action, Map.empty)
 
+    /** Boolean form of [[requireCapability]]: true when the request's resolved
+      * key holds `protect:<action>`, and true when no resolved key is on the
+      * request (auth disabled). */
+    private[api] def holdsCapability(request: HttpServletRequest, action: String): Boolean =
+        CapabilityCheck.grants(request, "protect", action, Map.empty)
+
     /** 403 in the CapabilityInterceptor's shape, recorded once as a
       * `security` denied entry (no `protect` entry for a denied call). */
     private[api] def denied(request: HttpServletRequest, e: CapabilityDeniedException, action: String): ResponseEntity[String] = {
