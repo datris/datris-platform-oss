@@ -474,12 +474,21 @@ object KeysAPIController {
         ("approval", Seq("read", "decide"), Seq("owner")),
         // Recovery-agent incidents: read for dashboards/agents; abandon is a
         // person's call (role-gated; the controller refuses agents).
-        ("incident", Seq("read", "abandon"), Seq.empty)
+        ("incident", Seq("read", "abandon"), Seq.empty),
+        // Field protection: reveal decrypts `encrypt` ciphertext, admin rotates
+        // the encryption key. Never in a template or role bundle; granted
+        // explicitly, or held through `*:*` (admins, full-access, legacy keys).
+        ("protect", Seq("reveal", "admin"), Seq.empty)
     )
 
     /** Capability templates the Keys-UI wizard offers as starting points.
       * Each is (name, description, capability list). Operators pick a
-      * template and edit from there. */
+      * template and edit from there.
+      *
+      * No template lists `protect:reveal` or `protect:admin` (field
+      * protection reveal / key rotation): reading PHI back must be granted
+      * explicitly, key by key. `full-access` (`*:*`) is admin-equivalent and
+      * holds them through the wildcard (ProtectCapabilityTemplatesSpec). */
     private[api] val Templates: Seq[(String, String, Seq[String])] = Seq(
         (
             "read-only",

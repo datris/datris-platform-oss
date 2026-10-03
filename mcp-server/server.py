@@ -737,6 +737,24 @@ Set `source.fileAttributes` to one of these (create_pipeline does this automatic
 
 Supported field types: `string`, `int`, `bigint`, `float`, `double`, `boolean`, `date`, `timestamp`
 
+### Field protection (optional)
+
+A source field may carry `protect` to pseudonymize, mask, redact, encrypt, or drop it. The stage runs after the preprocessor and BEFORE data quality, transformation, Live Read, and every destination, so no AI stage and no destination ever sees the raw value of a protected field.
+
+```json
+{"name": "account_id", "type": "string", "protect": {"method": "hmac"}}
+```
+
+- `hmac`: deterministic keyed pseudonym (equal inputs give equal outputs, so joins still work).
+- `mask`: every character becomes `*`; with `"preserve": "last4"`, `"domain"`, or `"year"` that part is kept.
+- `redact`: the value becomes a fixed marker.
+- `drop`: the column (or top-level JSON key) is removed.
+- `encrypt`: AES-256-GCM ciphertext (`enc:v1:...`), longer than the input; reversible on the Datris server only, by an operator holding the `protect:reveal` capability, never by an agent.
+
+Rules: `hmac`, `mask`, `redact`, and `encrypt` need a `string` field (source and destination). `drop` takes any type. A keyFields column may only use `hmac` (mask/redact would merge rows on upsert; encrypt gives every value a fresh ciphertext; drop removes the key). `encrypt` stores AES-256-GCM ciphertext (`enc:v1:...`); it is reversible on the Datris server only, by an operator holding the `protect:reveal` capability, never by an agent. Reserved methods (`fpe`, `tokenize`) are rejected as not yet supported. Delimited and JSON sources only (JSON: top-level keys). For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Once the protected copy exists the raw ingest object is deleted, unless the pipeline sets `"protection": {"purgeSource": false}`. On `create_pipeline`, pass the `protect` map (field name → policy) instead of editing the schema. To get a starting point, call `suggest_field_protection` (pipeline name or fields): it asks the CodeGen model from field names and types only, saves nothing, and its suggestions must be shown to the user and confirmed before any of them is passed as `protect`.
+
+Only protect when the user asks. Confirm with the user exactly which fields to protect and with which method; never decide from column names on your own (a `suggest_field_protection` result is a proposal for the user to accept or reject, not a decision).
+
 ### streamAttributes (optional, for streaming sources like Kafka)
 
 ```json
@@ -1286,6 +1304,8 @@ ids = json.loads(ids_json)
 | Date windows, page cursors, id lists, batch sizes | Things the user would refuse to paste into chat | Regions, bucket names, account IDs, project IDs, base URLs, table/schema names |
 | Anything the user might want to override on an ad-hoc run | Things you'd never want to change just to trigger a one-off | Things that don't change between runs and aren't sensitive |
 
+`secret_name` must be a tap secret (see `list_tap_secrets` / `create_tap_secret`); a platform secret is refused by the server.
+
 **The "is this a secret?" test:** would the user reasonably refuse to type this value into the chat? An access key, password, or signed token? Yes — that's a secret, ask via `request_tap_secret_from_user`. A region, container/bucket/database name, account/project/tenant ID, base URL, or endpoint URL? No — that's config, hardcode it in the script or pass as a `run_tap(params=...)` value.
 
 **Anti-pattern 1:** rewriting a secret on every run to smuggle per-call params through. This clobbers concurrent runs, pollutes audit history, and wastes Vault writes. Use `params` instead. If an existing script doesn't yet read a param, update it by calling `create_tap` again with the same name and a revised `script` — create_tap upserts by name and replaces the existing script.
@@ -1627,7 +1647,7 @@ def _base_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline. FOUR destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token) and database (the Unity Catalog name), plus warehouse (the SQL warehouse ID) unless the Databricks secret has a `warehouse` field — in that case omit warehouse and do NOT ask the human for it (list_platform_secrets / get_platform_secret_fields show the field names). OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. LIVE READ (a Live Read pipeline, destination `scratch`) — same sample-required shape as structured, nothing is landed; the run's rows come back on the status rollup (`resultPreview`) and via get_pipeline_result; results expire — use it when the user wants an answer now, a validation result, or a transformed view with no reason to keep the rows (see the KEEP-OR-READ-LIVE RULE). SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
+            description="Create a pipeline. FOUR destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token) and database (the Unity Catalog name), plus warehouse (the SQL warehouse ID) unless the Databricks secret has a `warehouse` field — in that case omit warehouse and do NOT ask the human for it (list_platform_secrets / get_platform_secret_fields show the field names). OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. LIVE READ (a Live Read pipeline, destination `scratch`) — same sample-required shape as structured, nothing is landed; the run's rows come back on the status rollup (`resultPreview`) and via get_pipeline_result; results expire — use it when the user wants an answer now, a validation result, or a transformed view with no reason to keep the rows (see the KEEP-OR-READ-LIVE RULE). SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you. FIELD PROTECTION: when the user asks to protect sensitive fields, pass `protect` (field name → {method: hmac|mask|redact|drop|encrypt}) so those fields are protected before any AI stage or destination sees them; confirm the fields with the user, never guess.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1732,6 +1752,18 @@ def _base_tools():
                     "codegen_rule": {
                         "type": "string",
                         "description": "Optional data quality validation rule as a plain-English instruction. Only add when the user explicitly requests validation. Datris will generate a Python validation script from this instruction and run it locally against all data. Example: 'Validate that all dates are YYYY-MM-DD format and all email addresses are valid'"
+                    },
+                    "protect": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "method": {"type": "string", "enum": ["hmac", "mask", "redact", "drop", "encrypt"]},
+                                "preserve": {"type": "string", "enum": ["last4", "domain", "year"]}
+                            },
+                            "required": ["method"]
+                        },
+                        "description": "OMIT BY DEFAULT. Field name → protection policy, e.g. {\"account_id\": {\"method\": \"hmac\"}, \"contact_email\": {\"method\": \"mask\", \"preserve\": \"domain\"}}. Each policy is set as `protect` on the matching schema field (case-insensitive name match); a name not in the detected schema is an error and nothing is saved. For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Protected fields are rewritten before data quality, transformation, and every destination, so no AI stage sees their raw values. hmac = deterministic pseudonym, mask = asterisks (preserve last4/domain/year keeps that part), redact = fixed marker, drop = remove the column, encrypt = ciphertext reversible on the Datris server only, by an operator holding the protect:reveal capability, never by an agent. hmac/mask/redact/encrypt need string fields; a keyFields column may only use hmac. The raw ingest object is deleted once the protected copy exists. Only set this when the user asked to protect fields, and confirm with them which fields and methods — never decide from column names yourself. suggest_field_protection can propose policies; pass only the ones the user accepted."
                     },
                     "codegen_transform": {
                         "type": "string",
@@ -1984,6 +2016,31 @@ def _base_tools():
                     },
                 },
                 "required": ["pipeline"]
+            }
+        ),
+        Tool(
+            name="suggest_field_protection",
+            description="Suggest per-field protection (hmac, mask with an optional preserve, redact, drop, or none, each with a one-line reason) for a pipeline's source fields, computed by the configured CodeGen model from field NAMES and TYPES ONLY: no row value is sent to the model. Stateless: nothing is saved or changed. Pass `pipeline` (an existing pipeline name; its stored source schema is used) or `fields` (an array of {name, type}, e.g. the schema you are about to create). A field that already carries `protect` shows it as `current` next to the suggestion. Show the suggestions to the user and ask which to accept before passing any of them as the `protect` map to `create_pipeline`; never apply them on your own.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pipeline": {
+                        "type": "string",
+                        "description": "Existing pipeline name (use this OR fields)"
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "Fields to classify (use this OR pipeline): [{\"name\": ..., \"type\": ...}]",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "type": {"type": "string"}
+                            },
+                            "required": ["name", "type"]
+                        }
+                    },
+                },
             }
         ),
         Tool(
@@ -2565,7 +2622,7 @@ def _base_tools():
                     },
                     "secret_name": {
                         "type": "string",
-                        "description": "Vault secret name containing API keys/credentials the script needs for the EXTERNAL source. Never for the platform's own databases — scripts reach platform data credential-free via the auto-injected DATRIS_PLATFORM_* env vars and the /api/v1/query/* callback."
+                        "description": "Vault secret name containing API keys/credentials the script needs for the EXTERNAL source. Never for the platform's own databases — scripts reach platform data credential-free via the auto-injected DATRIS_PLATFORM_* env vars and the /api/v1/query/* callback. Must be a tap secret (see list_tap_secrets / create_tap_secret); a platform secret is refused by the server."
                     },
                     "tap_type": {
                         "type": "string",
@@ -3265,6 +3322,48 @@ def _base_tools():
     ]
 
 
+def _protect_label(policy):
+    """`hmac`, `mask:domain`, ... for one {"method","preserve"} dict; "none" when absent."""
+    if not isinstance(policy, dict):
+        return "none"
+    method = policy.get("method")
+    if not method or method == "none":
+        return "none"
+    preserve = policy.get("preserve")
+    return f"{method}:{preserve}" if method == "mask" and preserve else method
+
+
+def _render_protect_suggestions(raw):
+    """One line per field: `mrn (string): hmac — stable identifier`.
+    Errors and anything unparseable pass through unchanged."""
+    if _is_error_payload(raw):
+        return raw
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(data, dict) or not isinstance(data.get("fields"), list):
+        return raw
+    lines = []
+    for f in data["fields"]:
+        if not isinstance(f, dict):
+            continue
+        line = f"{f.get('name')} ({f.get('type')}): {_protect_label(f.get('suggested'))}"
+        if f.get("reason"):
+            line += f" — {f['reason']}"
+        if isinstance(f.get("current"), dict) and f["current"].get("method"):
+            line += f" [current: {_protect_label(f['current'])}]"
+        lines.append(line)
+    header = "Suggested field protection"
+    if data.get("model"):
+        header += f" (model: {data['model']}; names and types only, nothing saved)"
+    else:
+        header += " (names and types only, nothing saved)"
+    footer = ("Show these to the user and ask which to accept; pass only the accepted ones "
+              "as the `protect` map to create_pipeline.")
+    return "\n".join([header + ":"] + lines + ["", footer])
+
+
 def _is_error_payload(text):
     """True when a tool result is a REST error body rather than data.
 
@@ -3602,6 +3701,39 @@ def _dispatch(name: str, args: dict) -> str:
 
         config["destination"] = dest
 
+        # Step 2a: Optional field protection. Each policy is set verbatim as
+        # `protect` on the schema field whose name matches case-insensitively;
+        # an unmatched name is an error and nothing is posted. A JSON source's
+        # schema is the single `_json` field, so there an unmatched name is a
+        # top-level key and gets its own entry beside `_json`.
+        protect = args.get("protect")
+        if protect:
+            if not isinstance(protect, dict) or not all(isinstance(v, dict) for v in protect.values()):
+                return json.dumps({"error": "protect must be an object mapping field name to a policy object such as {\"method\": \"hmac\"}"})
+            source = config.get("source") or {}
+            fields = (source.get("schemaProperties") or {}).get("fields")
+            is_json = "jsonAttributes" in (source.get("fileAttributes") or {})
+            if not isinstance(fields, list) or not fields:
+                return json.dumps({"error": "protect needs a structured source schema; this destination has no schema fields to protect: " + ", ".join(protect)})
+            by_name = {}
+            for f in fields:
+                if isinstance(f, dict) and isinstance(f.get("name"), str):
+                    by_name.setdefault(f["name"].lower(), f)
+            reserved = [n for n in protect if n.lower() in ("_json", "_xml")]
+            if reserved:
+                return json.dumps({"error": "protect names top-level keys, not the `_json` document field: " + ", ".join(reserved)})
+            unknown = [n for n in protect if n.lower() not in by_name]
+            if unknown and not is_json:
+                known = ", ".join(f.get("name") for f in fields if isinstance(f, dict))
+                return json.dumps({"error": "protect names field(s) not in the detected schema: " + ", ".join(unknown) + ". Schema fields: " + known})
+            for n, policy in protect.items():
+                f = by_name.get(n.lower())
+                if f is None:
+                    f = {"name": n, "type": "string"}
+                    fields.append(f)
+                    by_name[n.lower()] = f
+                f["protect"] = policy
+
         # Step 2b: Add optional CodeGen data quality rule
         if args.get("codegen_rule"):
             config["dataQuality"] = {"aiRule": {"instruction": args["codegen_rule"], "onFailureIsError": True}}
@@ -3706,6 +3838,24 @@ def _dispatch(name: str, args: dict) -> str:
 
     elif name == "get_dest_types":
         return _call("get", "/api/v1/pipeline/dest-types", params={"pipeline": args["pipeline"]})
+
+    elif name == "suggest_field_protection":
+        pipeline = args.get("pipeline")
+        fields = args.get("fields")
+        if isinstance(fields, str) and fields.strip():
+            # The MCP tab's playground sends array params as text.
+            try:
+                fields = json.loads(fields)
+            except ValueError:
+                fields = None
+        if isinstance(pipeline, str) and pipeline.strip():
+            body = {"pipeline": pipeline.strip()}
+        elif isinstance(fields, list) and fields:
+            body = {"fields": fields}
+        else:
+            return json.dumps({"error": "suggest_field_protection needs either 'pipeline' (a pipeline name) or 'fields' (an array of {name, type})"})
+        raw = _call("post", "/api/v1/pipeline/protect/suggest", json=body)
+        return _render_protect_suggestions(raw)
 
     elif name == "apply_dest_types":
         return _call("post", "/api/v1/pipeline/dest-types",

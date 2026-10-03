@@ -147,7 +147,7 @@ object ProvenanceStamper {
     }
 
     /** Same quoting rule CSVReader applies at ingest. */
-    private[util] def csvEncode(value: String, delimiter: String): String = {
+    private[datris] def csvEncode(value: String, delimiter: String): String = {
         if (value.contains(delimiter) || value.contains("\"") || value.contains("\n"))
             "\"" + value.replace("\"", "\"\"") + "\""
         else value

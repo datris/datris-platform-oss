@@ -43,7 +43,7 @@ object MilvusSearchUtil extends VectorSearchUtility {
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
-        val milvusSecret = SecretsUtil.getSecretMap(milvusSecretName)
+        val milvusSecret = SecretsRetrieverUtil.userSecret(milvusSecretName)
             .getOrElse(throw new DatrisException("Milvus secret not found: " + milvusSecretName))
         val host = milvusSecret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Milvus secret: " + milvusSecretName)

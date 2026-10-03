@@ -104,6 +104,7 @@
             "pages": [
               "transformation/ai-transformation",
               "transformation/dropping-columns",
+              "transformation/field-protection",
               "preprocessor"
             ]
           },

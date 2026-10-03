@@ -17,7 +17,12 @@ case class PipelineMetadata(
     tapName: String = null,
     tapRunTime: String = null,
     tapScriptSha: String = null,
-    tapSource: String = null
+    tapSource: String = null,
+    // Archive drops only (.zip/.gz/.tar/.jar): `s3://bucket/key` of the
+    // archive the bulk files were extracted from, so FieldProtection's purge
+    // removes the original too. Null everywhere else (and on metadata
+    // written before it existed).
+    sourceObject: String = null
 )
 
 /** Carrier for tap-run identity from TapRunner into StreamNotifier, so a

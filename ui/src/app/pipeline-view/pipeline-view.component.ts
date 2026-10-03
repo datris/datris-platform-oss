@@ -60,6 +60,21 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
     return !!this.unityCatalog?.enabled;
   }
 
+  /** Source fields carrying a `protect` rule, as `name → method` labels for the
+   *  "Protected fields" row (drop reads "dropped"; mask shows its preserve). */
+  get protectedFields(): Array<{ name: string; label: string }> {
+    const fields = this.config?.source?.schemaProperties?.fields;
+    if (!Array.isArray(fields)) return [];
+    return fields
+      .filter((f: any) => f && f.protect && f.protect.method)
+      .map((f: any) => {
+        const m = f.protect.method;
+        const label = m === 'drop' ? 'dropped'
+          : (m === 'mask' && f.protect.preserve ? `mask (${f.protect.preserve})` : m);
+        return { name: f.name, label };
+      });
+  }
+
   upstreamNodes(): any[] {
     return (this.lineage?.upstream || []).filter(n => n.type === 'tap' || n.type === 'source');
   }

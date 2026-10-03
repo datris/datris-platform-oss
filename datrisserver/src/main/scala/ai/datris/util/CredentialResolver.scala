@@ -110,6 +110,7 @@ object CredentialResolver {
         // SecretsAPIController and TapScriptRunner. The agent / wizard passes
         // the bare name (matches what list_platform_secrets returns); we add
         // the environment prefix here.
+        SecretNames.requireNotServerManaged(secretName)
         val secretPath = DatrisEnvironment.current.environment + "/" + secretName
         val secret = SecretsUtil.getSecretMap(secretPath)
             .getOrElse(throw new DatrisException(
@@ -147,6 +148,7 @@ object CredentialResolver {
                 "Snowflake destination requires a credentialsSecret naming a Platform-tab secret (with fields account, user, and privateKey or password). Create it on Configuration → Secrets → Platform, then set it on the destination."
             )
 
+        SecretNames.requireNotServerManaged(secretName)
         val secretPath = DatrisEnvironment.current.environment + "/" + secretName
         val secret = SecretsUtil.getSecretMap(secretPath)
             .getOrElse(throw new DatrisException(
@@ -191,6 +193,7 @@ object CredentialResolver {
                 "Databricks destination requires a credentialsSecret naming a Platform-tab secret (with fields host, and clientId/clientSecret or token). Create it on Configuration → Secrets → Platform, then set it on the destination."
             )
 
+        SecretNames.requireNotServerManaged(secretName)
         val secretPath = DatrisEnvironment.current.environment + "/" + secretName
         val secret = SecretsUtil.getSecretMap(secretPath)
             .getOrElse(throw new DatrisException(

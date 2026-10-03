@@ -44,6 +44,16 @@ case class TapScriptResult(
 object TapScriptRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
+    /** Field protection 8: a tap may only use a secret tagged `_type=tap`
+      * unless DATRIS_TAP_SECRET_SCOPE=any. Throws before any field becomes an
+      * env var or token. A missing secret (None) is left to the existing
+      * "missing or empty" error. */
+    private[util] def requireTapScopedSecret(tapConfig: TapConfig, secretMap: Option[java.util.Map[String, String]]): Unit =
+        secretMap.foreach { m =>
+            SecretNames.tapSecretProblem(tapConfig.name, tapConfig.secretName, Option(m.get("_type")), SecretNames.tapScopeEnforced)
+                .foreach(msg => throw new DatrisException(msg))
+        }
+
     /** The wall-clock ceiling in force for one execution, plus the knob that
       * raises it. A tap TEST is bounded by tapScriptTimeoutSeconds
       * (TAP_SCRIPT_TIMEOUT_SECONDS, default 300) so a bad script fails fast; a
@@ -1024,9 +1034,12 @@ object TapScriptRunner {
             // subsystem (StartupRunner, the vector loaders, etc.) treats a missing secret.
             // Only the secret NAME appears in the message — never a value.
             val secretEnvVars: Seq[(String, String)] = if (tapConfig.secretName != null && tapConfig.secretName.nonEmpty) {
+                SecretNames.requireNotServerManaged(tapConfig.secretName)
                 val secretPath = DatrisEnvironment.current.environment + "/" + tapConfig.secretName
                 logger.info("TapScriptRunner: loading secrets from: " + secretPath)
-                val fields = SecretsUtil.getSecretMap(secretPath)
+                val secretMap = SecretsUtil.getSecretMap(secretPath)
+                TapScriptRunner.requireTapScopedSecret(tapConfig, secretMap)
+                val fields = secretMap
                     .map(_.asScala.filterNot(_._1 == "_type").toSeq)
                     .getOrElse(Seq.empty)
                 if (fields.isEmpty)
@@ -1430,8 +1443,11 @@ object TapScriptRunner {
             // whose credentials can't be injected is a loud misconfiguration, not a
             // silent unauthenticated call. Only endpoint_token is ever forwarded.
             val endpointToken: Option[String] = if (tapConfig.secretName != null && tapConfig.secretName.nonEmpty) {
+                SecretNames.requireNotServerManaged(tapConfig.secretName)
                 val secretPath = DatrisEnvironment.current.environment + "/" + tapConfig.secretName
-                val fields = SecretsUtil.getSecretMap(secretPath)
+                val secretMap = SecretsUtil.getSecretMap(secretPath)
+                TapScriptRunner.requireTapScopedSecret(tapConfig, secretMap)
+                val fields = secretMap
                     .map(_.asScala.filterNot(_._1 == "_type").toMap)
                     .getOrElse(Map.empty[String, String])
                 if (fields.isEmpty)

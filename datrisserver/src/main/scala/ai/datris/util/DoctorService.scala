@@ -143,6 +143,14 @@ object DoctorService {
 
         /** One-input embedding request → (status, bodySnippet). Throws on timeout/IO. */
         def probeEmbedding(provider: String, endpoint: String, model: String, apiKey: String, timeoutMs: Int): (Int, String)
+
+        /** (tap, secret, stored `_type`) for every saved tap whose secret exists. */
+        def tapSecretRefs(): List[(String, String, Option[String])]
+
+        /** The tap secret scan: refs plus the secret names whose read failed.
+          * Throws when the taps themselves cannot be listed. The default has
+          * no failed reads; LiveProbes overrides it with one real scan. */
+        def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.Result(tapSecretRefs(), Nil)
     }
 
     private val Day = 86400L
@@ -426,6 +434,42 @@ object DoctorService {
         }
     }
 
+    /** Taps whose secret is not tagged `_type=tap`
+      * (plans/stories/field-protection-8-tap-secret-scope.md): error when the
+      * scope is enforced (they fail to run), warn under
+      * DATRIS_TAP_SECRET_SCOPE=any (they can read platform secrets). */
+    class TapSecretScopeCheck(probes: Probes) extends Check {
+        val id = "tap.secret_scope"
+        val startupSafe = true
+        def run(): CheckResult = {
+            // A failure to list the taps propagates: runOne makes it an error row.
+            val result = probes.tapSecretScan()
+            val offenders = result.offenders.map { case (tap, secret) => tap + "→" + secret }
+            val unreadable =
+                if (result.unreadable.isEmpty) ""
+                else "could not read " + result.unreadable.size + " secret(s): " + result.unreadable.mkString(", ")
+            val unreadableFix = "Check that Vault is reachable and the server token can read those secrets, then rerun doctor."
+            if (offenders.isEmpty && unreadable.isEmpty) return ok("every tap with a secret uses a tap secret")
+            if (offenders.isEmpty) return warn(unreadable, unreadableFix)
+            val list = offenders.mkString(", ")
+            val n = offenders.size + " tap(s) use a platform secret"
+            val also = if (unreadable.isEmpty) "" else "; also " + unreadable
+            val alsoFix = if (unreadable.isEmpty) "" else " " + unreadableFix
+            val fix = "Create a tap secret (Configuration → Secrets → Tap) with the fields each tap needs and select it, " +
+                "or add `_type: tap` to a hand-made tap secret."
+            if (SecretNames.tapScopeEnforced)
+                error(
+                    n + " and will fail to run: " + list + also,
+                    fix + " Or set " + SecretNames.TapScopeEnv + "=any to allow platform secrets." + alsoFix
+                )
+            else
+                warn(
+                    n + ", allowed by " + SecretNames.TapScopeEnv + "=any; these taps can read platform secrets: " + list + also,
+                    fix + " Then remove " + SecretNames.TapScopeEnv + "=any." + alsoFix
+                )
+        }
+    }
+
     /** Compares the server's version with whatever versions the calling
       * clients report (`?cli=`, `?mcp=`, `?ui=`). Major.minor must match. */
     class VersionSkewCheck(serverVersion: String, clients: Map[String, String]) extends Check {
@@ -577,6 +621,7 @@ object DoctorService {
             new DiskUsageCheck(probes, Seq(System.getProperty("user.dir"), System.getProperty("java.io.tmpdir"))),
             new StagingAreaCheck(probes, StagingArea.payloadBudgetMB),
             new StagingOrphansCheck(probes),
+            new TapSecretScopeCheck(probes),
             new VersionSkewCheck(serverVersion, clients),
             new EnvSeenCheck(probes),
             new AiModelReachableCheck(probes, slots)
@@ -741,6 +786,10 @@ object DoctorService {
 
         def envSeen(names: Seq[String]): Map[String, Boolean] =
             names.map(n => n -> sys.env.get(n).exists(_.nonEmpty)).toMap
+
+        def tapSecretRefs(): List[(String, String, Option[String])] = tapSecretScan().refs
+
+        override def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.liveScan()
 
         def stagingArea(): StagingAreaState = {
             val root = StagingArea.root

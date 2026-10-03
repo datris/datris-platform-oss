@@ -448,6 +448,16 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'suggest_field_protection',
+      description: 'Suggest per-field protection (hmac, mask, redact, drop, or none, with a reason) from field names and types only; no values are sent to the model and nothing is saved. Pass a pipeline name or a fields array. Show the suggestions and ask before passing them as protect to create_pipeline.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'pipeline', type: 'string', description: 'Existing pipeline name (use this OR fields)', required: false, inputType: 'text' },
+        { name: 'fields', type: 'array', description: 'Fields as [{"name": ..., "type": ...}] (use this OR pipeline)', required: false, inputType: 'textarea' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'apply_dest_types',
       description: 'Apply destination column types to an all-string pipeline. REQUIRES explicit user approval first. Landed data is migrated before the config changes; any value that will not cast fails the whole apply with the column named and nothing changed. `fields` must list EVERY destination column with its intended type.',
       category: 'Pipeline Management',

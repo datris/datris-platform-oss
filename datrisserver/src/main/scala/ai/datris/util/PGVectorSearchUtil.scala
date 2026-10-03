@@ -47,7 +47,7 @@ object PGVectorSearchUtil extends VectorSearchUtility {
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
-        val pgSecret = SecretsUtil.getSecretMap(postgresSecretName)
+        val pgSecret = SecretsRetrieverUtil.userSecret(postgresSecretName)
             .getOrElse(throw new DatrisException("PostgreSQL secret not found: " + postgresSecretName))
         val rawJdbcUrl = pgSecret.get("jdbcUrl")
         if (rawJdbcUrl == null) throw new DatrisException("'jdbcUrl' not found in pgvector secret: " + postgresSecretName)

@@ -68,4 +68,13 @@ class PipelineMetadataUtilKeySpec extends AnyFunSuite {
         val e = intercept[DatrisException](util.read("oss-raw", "in/noprefix-single-token"))
         assert(e.getMessage.startsWith("Could not parse the pipeline and/or filename"))
     }
+
+    test("a .metadata.json companion cannot set sourceObject") {
+        val md = util.fromCompanionJson(
+            """{"pipeline":"p","dataFilePath":"s3://b/bulk/","publisherToken":"t","sourceObject":"s3://b/other/secret.csv"}""",
+            "bulk/p.metadata.json"
+        )
+        assert(md.sourceObject == null)
+        assert(md.bulkUpload && md.dataFilePath == "s3://b/bulk/")
+    }
 }

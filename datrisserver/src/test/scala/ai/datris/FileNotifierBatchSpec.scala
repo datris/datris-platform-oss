@@ -54,6 +54,22 @@ class FileNotifierBatchSpec extends AnyFunSuite {
         assert(ScheduledBatchTasks.recordsOf(msg) == Seq(("oss-raw", "a.x.pipeline.csv"), ("oss-raw", "b.x.pipeline.csv")))
     }
 
+    test("recordsOf: only object-created events are kept (removals are ignored)") {
+        def rec(event: String, key: String): String =
+            s"""{"eventVersion":"2.0","eventSource":"aws:s3",""" + (if (event == null) "" else s""""eventName":"$event",""") +
+                s""""s3":{"s3SchemaVersion":"1.0","configurationId":"Config","bucket":{"name":"oss-raw","arn":"arn:aws:s3:::oss-raw"},""" +
+                s""""object":{"key":"$key","size":10,"eTag":"e","sequencer":"1"}}}"""
+        val body = "{\"Records\":[" + Seq(
+            rec("ObjectCreated:Put", "a.x.pipeline.csv"),
+            rec("ObjectRemoved:Delete", "b.x.pipeline.csv"),
+            rec("s3:ObjectRemoved:Delete", "c.x.pipeline.csv"),
+            rec("s3:ObjectCreated:CompleteMultipartUpload", "d.x.pipeline.csv"),
+            rec(null, "e.x.pipeline.csv")
+        ).mkString(",") + "]}"
+        val msg = QueueMessage("m4", body, "r4")
+        assert(ScheduledBatchTasks.recordsOf(msg) == Seq(("oss-raw", "a.x.pipeline.csv"), ("oss-raw", "d.x.pipeline.csv"), ("oss-raw", "e.x.pipeline.csv")))
+    }
+
     test("recordsOf: a null Records array returns empty") {
         val msg = QueueMessage("m2", """{"Records":null}""", "r2")
         assert(ScheduledBatchTasks.recordsOf(msg).isEmpty)

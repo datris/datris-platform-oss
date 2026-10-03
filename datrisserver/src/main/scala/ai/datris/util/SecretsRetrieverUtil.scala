@@ -47,6 +47,17 @@ object SecretsRetrieverUtil {
         )
     }
 
+    /** Read a secret whose name comes from user-authored configuration (a
+      * pipeline, a tap, a code-repo setting, a vector store or embedding
+      * reference). Refuses the server-managed secrets (SecretNames.ServerManaged)
+      * with a DatrisException before any read, so a saved config that names
+      * one fails closed instead of handing its values to a destination or a
+      * script. Server-internal reads of its own secrets use SecretsUtil. */
+    def userSecret(name: String): Option[java.util.Map[String, String]] = {
+        SecretNames.requireNotServerManaged(name)
+        SecretsUtil.getSecretMap(name)
+    }
+
     /** Name → fields for every Platform-tab secret in the current environment:
      *  all secrets NOT tagged _type=tap. Secrets without a _type predate the
      *  tag and count as platform. Single source of the filter behind the UI's
@@ -54,7 +65,9 @@ object SecretsRetrieverUtil {
      *  external-SaaS credential scan on GET /destinations/available. */
     def platformSecrets(): List[(String, java.util.Map[String, String])] = {
         val env = DatrisEnvironment.current.environment
-        SecretsUtil.listSecrets(env).flatMap(name => {
+        // A name created directly in Vault that SecretNames refuses cannot be
+        // read through the secret store; skip it rather than fail the list.
+        SecretsUtil.listSecrets(env).filter(name => SecretNames.isSafePath(env + "/" + name)).flatMap(name => {
             SecretsUtil.getSecretMap(env + "/" + name)
                 .filter(m => {
                     val t = m.get("_type")

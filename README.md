@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/ba3de886-1413-4d92-92bb-99018cfaff38
 
 Your agents already acquire, validate, and load data. Without a control plane, they do it badly. Datris puts that work behind one governed surface:
 
-- **One MCP door** — 78 tools behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 78 integrations
+- **One MCP door** — 79 tools behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 79 integrations
 - **Vault-brokered credentials** — the agent references a secret by name and never holds a key; agent-written code runs in an isolated container with no keys inside
 - **Scoped keys, approval gates, audit log** — each agent gets its own API key limited to the capabilities you grant; an [agent policy](https://docs.datris.ai/agent-policy) decides per action whether an agent runs it, waits for a person to approve, or is refused; an [audit log](https://docs.datris.ai/audit-log) records who did what
 - **Every run recorded** — job state, row counts, and provenance for every run; every generated script versioned in git
@@ -136,6 +136,7 @@ datris doctor               # operational self-check; prints the fix for every f
 ```
 Source (Tap / File Upload / MinIO Event / Database Pull / Kafka)
   → Preprocessor (optional REST endpoint)
+  → Field Protection (pseudonymize, mask, redact, encrypt, or drop sensitive fields)
   → Data Quality (AI rules, header validation, schema validation)
   → Transformation (AI transformation, destination schema)
   → Destinations (in parallel):
@@ -149,7 +150,7 @@ Source (Tap / File Upload / MinIO Event / Database Pull / Kafka)
 
 | Feature | Description |
 |---------|-------------|
-| **MCP Server** | 78 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps, catalogs, provenance |
+| **MCP Server** | 79 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps, catalogs, provenance |
 | **Taps** | Describe a source in plain English — AI generates a Python script that fetches it on demand or on a schedule, run in an isolated container |
 | **Assistant** | Conversational tap and pipeline creation, operations, and configuration in the UI |
 | **AI Data Quality** | Plain English validation rules — AI generates and runs a validation script |
@@ -159,6 +160,7 @@ Source (Tap / File Upload / MinIO Event / Database Pull / Kafka)
 | **AI Error Explanation** | Job failures explained in plain English |
 | **Natural Language Query** | Ask questions in English, get SQL results |
 | **RAG Pipeline** | Chunk, embed, and search across 5 vector databases |
+| **Field Protection** | Pseudonymize, mask, redact, encrypt, or drop sensitive fields before any AI stage or destination sees them |
 
 ### Supported Formats
 

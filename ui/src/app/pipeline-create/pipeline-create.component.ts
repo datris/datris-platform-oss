@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, HostListener } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { PipelineService } from '../pipeline.service';
@@ -8,10 +8,40 @@ import { TapService } from '../tap.service';
 import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, tapCatalogName, sanitizeIdentifier } from '../shared/sanitize';
 import { httpErrorText } from '../shared/http-error';
 
+interface FieldProtect {
+  method: string;
+  preserve?: string | null;
+}
+
 interface SchemaField {
   name: string;
   type: string;
+  // Wizard-only state: protect is always an object here (method '' = None) so the
+  // select can bind to it; buildConfig() emits it only when a method is set.
+  protect?: FieldProtect;
+  // Classifier suggestion shown until the user keeps or clears it. `applied` is
+  // true when the suggestion filled an empty protect (Clear then wipes it).
+  // `refused` is set when the guard would refuse the suggested method for this
+  // field (method is then '' and there is nothing to Keep).
+  suggested?: {
+    method: string; preserve?: string | null; reason: string; applied?: boolean;
+    refused?: { method: string; problem: string };
+  } | null;
+  protectError?: string;
 }
+
+/** Normalise a source field for the wizard: name, type and a protect object. */
+function wizardField(f: any): SchemaField {
+  const p = f?.protect;
+  return {
+    name: f?.name ?? '',
+    type: f?.type ?? 'string',
+    protect: { method: (p && p.method) || '', preserve: (p && p.preserve) || null }
+  };
+}
+
+/** Protect methods that only apply to string fields (drop works on any type). */
+const STRING_ONLY_METHODS = ['hmac', 'mask', 'redact', 'encrypt'];
 
 @Component({
     selector: 'app-pipeline-create',
@@ -64,8 +94,38 @@ export class PipelineCreateComponent implements OnInit {
 
   // Step 3 — Schema
   schemaDbName = 'datris';
-  schemaFields: SchemaField[] = [{ name: '', type: 'string' }];
+  schemaFields: SchemaField[] = [wizardField({})];
   schemaFile: File | null = null;
+
+  // Field protection (Source Schema step)
+  protectMethods = ['hmac', 'mask', 'redact', 'drop', 'encrypt'];
+  /** One line per Protect option, shown from the info button on the column header. */
+  protectHelp: { method: string; text: string }[] = [
+    { method: 'None', text: 'The value is written unchanged.' },
+    { method: 'hmac', text: 'Replaced by a keyed one-way hash (64 hex chars). The same input always gives the same token, so joins, grouping and upserts still work. The original cannot be recovered. Use for identifiers; the only option for a key field.' },
+    { method: 'mask', text: 'Mostly replaced by asterisks; Keep picks what stays readable: nothing, the last 4 characters, an email domain, or a leading year. One-way, not stable for joins.' },
+    { method: 'redact', text: 'Replaced by the fixed text [REDACTED]. Nothing of the value survives.' },
+    { method: 'drop', text: 'The column is removed from the data and from the destination table.' },
+    { method: 'encrypt', text: 'Stored as AES-256-GCM ciphertext (enc:v1:…), longer than the input. The only reversible option: an operator with the protect:reveal capability can decrypt it through an audited endpoint. Never suggested automatically.' }
+  ];
+  protectHelpOpen = false;
+
+  toggleProtectHelp(event: MouseEvent): void {
+    event.stopPropagation();
+    this.protectHelpOpen = !this.protectHelpOpen;
+  }
+
+  @HostListener('document:click')
+  closeProtectHelp(): void {
+    this.protectHelpOpen = false;
+  }
+  preserveOptions: Array<{ value: string | null; label: string }> = [
+    { value: null, label: 'Mask all' },
+    { value: 'last4', label: 'Keep last 4' },
+    { value: 'domain', label: 'Keep email domain' },
+    { value: 'year', label: 'Keep year' }
+  ];
+  suggestingProtection = false;
 
   // Step 7 — Destination Schema (CSV only)
   destSchemaFields: SchemaField[] = [];
@@ -288,9 +348,7 @@ export class PipelineCreateComponent implements OnInit {
     if (config.source?.schemaProperties) {
       this.schemaDbName = config.source.schemaProperties.dbName || 'datris';
       if (config.source.schemaProperties.fields) {
-        this.schemaFields = config.source.schemaProperties.fields.map((f: any) => ({
-          name: f.name, type: f.type
-        }));
+        this.schemaFields = config.source.schemaProperties.fields.map((f: any) => wizardField(f));
       }
     }
 
@@ -534,19 +592,19 @@ export class PipelineCreateComponent implements OnInit {
 
   onSourceTypeChange(): void {
     if (this.sourceType === 'json') {
-      this.schemaFields = [{ name: '_json', type: 'string' }];
+      this.schemaFields = [wizardField({ name: '_json' })];
       // JSON can't go to PostgreSQL, Snowflake, Databricks, or Object Store
       if (this.destType === 'postgres' || this.destType === 'snowflake' || this.destType === 'databricks' || this.destType === 'objectstore') {
         this.destType = 'mongodb';
       }
     } else if (this.sourceType === 'xml') {
-      this.schemaFields = [{ name: '_xml', type: 'string' }];
+      this.schemaFields = [wizardField({ name: '_xml' })];
       // XML can go to PostgreSQL or vector stores
       if (this.destType === 'objectstore' || this.destType === 'kafka' || this.destType === 'activemq' || this.destType === 'restendpoint' || this.destType === 'mongodb') {
         this.destType = 'postgres';
       }
     } else if (this.sourceType === 'csv') {
-      this.schemaFields = [{ name: '', type: 'string' }];
+      this.schemaFields = [wizardField({})];
     }
     // For unstructured, destination must be a vector DB
     if (this.sourceType === 'unstructured') {
@@ -573,21 +631,21 @@ export class PipelineCreateComponent implements OnInit {
     if (dataType === 'csv') {
       this.sourceType = 'csv';
       if (columns.length > 0) {
-        this.schemaFields = columns.map((name: string) => ({ name, type: 'string' }));
+        this.schemaFields = columns.map((name: string) => wizardField({ name }));
       }
     } else if (dataType === 'json') {
       this.sourceType = 'json';
-      this.schemaFields = [{ name: '_json', type: 'string' }];
+      this.schemaFields = [wizardField({ name: '_json' })];
     } else if (dataType === 'xml') {
       this.sourceType = 'xml';
-      this.schemaFields = [{ name: '_xml', type: 'string' }];
+      this.schemaFields = [wizardField({ name: '_xml' })];
     }
 
     this.sampleFileDetected = true;
     this.onSourceTypeChange();
     // Restore columns after onSourceTypeChange resets them for csv
     if (dataType === 'csv' && columns.length > 0) {
-      this.schemaFields = columns.map((name: string) => ({ name, type: 'string' }));
+      this.schemaFields = columns.map((name: string) => wizardField({ name }));
     }
   }
 
@@ -635,17 +693,185 @@ export class PipelineCreateComponent implements OnInit {
       this.selectedTapName = '';
       this.sampleFileDetected = false;
       this.sourceType = 'csv';
-      this.schemaFields = [{ name: '', type: 'string' }];
+      this.schemaFields = [wizardField({})];
     } else if (this.pipelineSource === 'manual') {
       this.selectedTapName = '';
       this.sampleFileDetected = true; // skip file upload requirement, user defines everything by hand
       this.sourceType = 'csv';
-      this.schemaFields = [{ name: '', type: 'string' }];
+      this.schemaFields = [wizardField({})];
     }
   }
 
   addField(): void {
-    this.schemaFields.push({ name: '', type: 'string' });
+    this.schemaFields.push(wizardField({}));
+  }
+
+  // --- Field protection -------------------------------------------------------
+
+  /** Key Fields list for the active destination's key list (case-insensitive). */
+  private activeKeyFields(): string[] {
+    switch (this.destType) {
+      case 'postgres': return this.pgKeyFields;
+      case 'mongodb': return this.mongoKeyFields;
+      case 'snowflake': return this.sfKeyFields;
+      case 'databricks': return this.dbxKeyFields;
+      case 'objectstore': return this.osFormat === 'iceberg' && this.osWriteMode === 'merge' ? this.osKeyFields : [];
+      default: return [];
+    }
+  }
+
+  /** True when a source field is chosen under the destination's Key Fields:
+   *  the server allows only hmac on a key column. */
+  isKeyField(name: string): boolean {
+    const n = (name || '').trim().toLowerCase();
+    return !!n && this.activeKeyFields().some(k => (k || '').toLowerCase() === n);
+  }
+
+  /** Protect method of the source field with this name (case-insensitive). */
+  private protectMethodOf(name: string): string {
+    const n = (name || '').trim().toLowerCase();
+    const f = this.schemaFields.find(s => (s.name || '').trim().toLowerCase() === n);
+    return f?.protect?.method || '';
+  }
+
+  /** Fields offered under Key Fields on the destination step: MongoDB keys on
+   *  source fields, the other destinations on destination-schema columns. A
+   *  field protected with anything but hmac cannot be a key, so it is left out. */
+  get keyFieldCandidates(): SchemaField[] {
+    const list = this.destType === 'mongodb' ? this.schemaFields : this.destSchemaFields;
+    return list.filter(f => {
+      const m = this.protectMethodOf(f.name);
+      return !m || m === 'hmac';
+    });
+  }
+
+  /** Type guard for a protect choice: hmac/mask/redact need a string field and a
+   *  key column takes only hmac. An invalid choice resets to None with a reason. */
+  onProtectChange(field: SchemaField, model?: { control: { setValue(value: any, options?: any): void } }): void {
+    if (!field.protect) field.protect = { method: '', preserve: null };
+    const method = field.protect.method || '';
+    field.protectError = '';
+    const problem = this.protectProblem(field, method);
+    if (problem) {
+      field.protectError = problem;
+      field.protect = { method: '', preserve: null };
+      // Called from the select's (ngModelChange): the bound value goes '' -> ''
+      // as far as change detection can tell, so ngModel would never write the
+      // reset back and the select would keep showing the refused method.
+      // Push '' through the form control so the select shows None, without
+      // re-emitting ngModelChange (that would re-enter here and clear the error).
+      model?.control.setValue('', { emitViewToModelChange: false });
+      return;
+    }
+    if (method !== 'mask') field.protect.preserve = null;
+  }
+
+  /** Why a protect method is refused for a field ('' when it is allowed):
+   *  hmac/mask/redact need a string field and a key column takes only hmac. */
+  protectProblem(field: SchemaField, method: string): string {
+    if (method && STRING_ONLY_METHODS.includes(method) && field.type !== 'string') {
+      return `${method} applies only to string fields; ${field.name || 'this field'} is ${field.type}.`;
+    }
+    if (method && method !== 'hmac' && this.isKeyField(field.name)) {
+      return `${field.name} is a key field; key fields can only use hmac.`;
+    }
+    return '';
+  }
+
+  /** Re-run the protect check after a type change on a protected field. */
+  onFieldTypeChange(field: SchemaField): void {
+    if (field.protect?.method) this.onProtectChange(field);
+    else field.protectError = '';
+  }
+
+  /** Ask the classifier for suggestions. Sends field names and types only. */
+  suggestProtection(): void {
+    const fields = this.schemaFields
+      .filter(f => f.name && f.name.trim())
+      .map(({ name, type }) => ({ name, type }));
+    if (fields.length === 0) return;
+    this.suggestingProtection = true;
+    this.error = '';
+    this.pipelineService.suggestFieldProtection(fields).subscribe({
+      next: (resp: any) => {
+        const byName = new Map<string, any>();
+        for (const s of (resp?.fields || [])) {
+          if (s?.name) byName.set(String(s.name).toLowerCase(), s);
+        }
+        for (const f of this.schemaFields) {
+          const s = byName.get((f.name || '').trim().toLowerCase());
+          if (!s || !s.suggested || !s.suggested.method) continue;
+          if (!f.protect) f.protect = { method: '', preserve: null };
+          // Guard the suggestion up front (as on a scratch copy): a refused one is
+          // shown with its reason but is never applied and offers no Keep.
+          const problem = this.protectProblem(f, s.suggested.method);
+          if (problem) {
+            f.suggested = {
+              method: '', preserve: null, reason: s.reason || '', applied: false,
+              refused: { method: s.suggested.method, problem }
+            };
+            continue;
+          }
+          const empty = !f.protect.method;
+          f.suggested = {
+            method: s.suggested.method,
+            preserve: s.suggested.method === 'mask' ? (s.suggested.preserve ?? null) : null,
+            reason: s.reason || '',
+            applied: empty
+          };
+          if (empty) {
+            f.protect = { method: f.suggested.method, preserve: f.suggested.preserve ?? null };
+            f.protectError = '';
+          }
+        }
+        this.suggestingProtection = false;
+      },
+      error: (err: any) => {
+        this.error = 'Protection suggestions failed: ' + httpErrorText(err);
+        this.suggestingProtection = false;
+      }
+    });
+  }
+
+  /** Keep a suggestion. When Suggest already filled protect, only the marker
+   *  goes; when the user had a different value, Keep adopts the suggestion
+   *  (through the same type guard) and then removes the marker. If the guard
+   *  refuses it (the field or key fields changed since Suggest), the user's
+   *  prior value stays and the reason is shown. */
+  keepSuggestion(index: number): void {
+    const f = this.schemaFields[index];
+    if (!f || !f.suggested) return;
+    if (!f.suggested.applied && f.suggested.method) {
+      const prior: FieldProtect = { method: f.protect?.method || '', preserve: f.protect?.preserve ?? null };
+      f.protect = { method: f.suggested.method, preserve: f.suggested.preserve ?? null };
+      this.onProtectChange(f);
+      if (!f.protect.method && prior.method) f.protect = prior;  // protectError stays set
+    }
+    f.suggested = null;
+  }
+
+  /** Clear a suggestion: the marker goes, and so does the protect value when the
+   *  suggestion is what set it (a value the user chose before Suggest stays). */
+  clearSuggestion(index: number): void {
+    const f = this.schemaFields[index];
+    if (!f) return;
+    if (f.suggested?.applied) {
+      f.protect = { method: '', preserve: null };
+      f.protectError = '';
+    }
+    f.suggested = null;
+  }
+
+  /** A source field as it goes into the saved config: protect only when set,
+   *  preserve only when not null; wizard-only state is stripped. */
+  private configField(f: SchemaField): any {
+    const out: any = { name: f.name, type: f.type };
+    const method = f.protect?.method;
+    if (method) {
+      out.protect = { method };
+      if (method === 'mask' && f.protect?.preserve) out.protect.preserve = f.protect.preserve;
+    }
+    return out;
   }
 
   removeField(index: number): void {
@@ -769,9 +995,7 @@ export class PipelineCreateComponent implements OnInit {
       ).subscribe({
         next: (response: any) => {
           if (response.source?.schemaProperties?.fields) {
-            this.schemaFields = response.source.schemaProperties.fields.map((f: any) => ({
-              name: f.name, type: f.type
-            }));
+            this.schemaFields = response.source.schemaProperties.fields.map((f: any) => wizardField(f));
           }
           this.generatingSchema = false;
         },
@@ -795,9 +1019,7 @@ export class PipelineCreateComponent implements OnInit {
     ).subscribe({
       next: (response: any) => {
         if (response.source?.schemaProperties?.fields) {
-          this.schemaFields = response.source.schemaProperties.fields.map((f: any) => ({
-            name: f.name, type: f.type
-          }));
+          this.schemaFields = response.source.schemaProperties.fields.map((f: any) => wizardField(f));
         }
         this.generatingSchema = false;
       },
@@ -1084,7 +1306,7 @@ export class PipelineCreateComponent implements OnInit {
     if (!this.isUnstructured()) {
       config.source.schemaProperties = {
         dbName: this.schemaDbName,
-        fields: this.schemaFields.filter(f => f.name.trim())
+        fields: this.schemaFields.filter(f => f.name.trim()).map(f => this.configField(f))
       };
     }
 

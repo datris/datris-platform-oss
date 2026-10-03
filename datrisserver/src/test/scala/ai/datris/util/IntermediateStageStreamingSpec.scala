@@ -730,4 +730,72 @@ class IntermediateStageStreamingSpec extends AnyFunSuite with BeforeAndAfterAll 
             assert(data.materialized.isEmpty, s"NDJSON stamping materialized the payload via ${data.materialized}")
         }
     }
+
+    // ==========================================================================
+    // Field protection ordering (plans/stories/field-protection-1-stage.md)
+    // ==========================================================================
+
+    /** Records each status line with the process name that was current when it was written. */
+    private class ProcessTrackingStatusUtil extends StatusUtil {
+        @volatile private var process = ""
+        val messages = new ListBuffer[(String, String, String, String)]() // (process, code, state, description)
+        override def overrideProcessName(processName: String): Unit = process = processName
+        override def info(state: String, description: String): Unit = synchronized(messages += ((process, "info", state, description)))
+        override def warn(state: String, description: String): Unit = synchronized(messages += ((process, "warning", state, description)))
+        override def error(state: String, description: String): Unit = synchronized(messages += ((process, "error", state, description)))
+        override def errorAs(processName: String, state: String, description: String): Unit =
+            synchronized(messages += ((processName, "error", state, description)))
+        override def scratchResult(result: ScratchResult): Unit = ()
+        override def suggestion(fix: FixSuggestion): Unit = ()
+    }
+
+    test("JobRunner: the protect status line precedes every DataQuality and Transformation line, and those stages receive the protected context") {
+        reset()
+        val key = "0123456789abcdef0123456789abcdef".getBytes(StandardCharsets.UTF_8)
+        def hmacHex(v: String): String = {
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(new javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+            mac.doFinal(v.getBytes(StandardCharsets.UTF_8)).map(b => f"${b & 0xff}%02x").mkString
+        }
+        FieldProtection.keyOverride = key
+        try {
+            val srcFields = new java.util.ArrayList[SchemaField](List(
+                SchemaField("id", "string"),
+                SchemaField("mrn", "string", ProtectionPolicy("hmac", null, null)),
+                SchemaField("ssn", "string", ProtectionPolicy("drop", null, null))
+            ).asJava)
+            val cfg = PipelineConfig(
+                name = "fp_order",
+                source = Source(schemaProperties = SchemaProperties("db", srcFields), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+                // No loader: the run ends after transformation.
+                destination = Destination(schemaProperties = SchemaProperties("db", fields("id", "mrn", "ssn"))),
+                dataQuality = ai.datris.model.DataQuality(),
+                transformation = ai.datris.model.Transformation(rowFunctions =
+                    new java.util.ArrayList[RowFunction](List(RowFunction("restEndpoint", List(url("/rowfn"), "batch").asJava)).asJava)
+                )
+            )
+            val data = withCap(256)(delimitedData(List("1,MRN-001,123-45-6789", "2,MRN-002,987-65-4321"), List("id", "mrn", "ssn")))
+            val status = new ProcessTrackingStatusUtil
+            val jc = JobContext("job-token-fp-order", null, data, cfg, null, null, null, status, env(256))
+
+            new ai.datris.controller.JobRunner(jc).run()
+
+            val msgs = status.messages.toList
+            assert(!msgs.exists(_._2 == "error"), msgs.mkString("\n"))
+            val protectIdx = msgs.indexWhere(_._4.startsWith("Protected 2 fields: mrn=hmac, ssn=drop"))
+            assert(protectIdx >= 0, s"no protect status line: ${msgs.mkString("\n")}")
+            val firstDq = msgs.indexWhere(_._1 == "DataQuality")
+            val firstTx = msgs.indexWhere(_._1 == "Transformation")
+            assert(firstDq >= 0 && firstTx >= 0, s"DQ and transformation ran: ${msgs.mkString("\n")}")
+            assert(protectIdx < firstDq, s"protect line must precede DataQuality: ${msgs.mkString("\n")}")
+            assert(protectIdx < firstTx, s"protect line must precede Transformation: ${msgs.mkString("\n")}")
+
+            // The transformation stage got the protected rows: tokens, no raw values, no ssn.
+            val bodies = requestBodies.toList.mkString("\n")
+            assert(requestBodies.nonEmpty, "the row function was called")
+            assert(bodies.contains(hmacHex("MRN-001")) && bodies.contains(hmacHex("MRN-002")), bodies)
+            assert(!bodies.contains("MRN-001") && !bodies.contains("MRN-002"), s"raw mrn reached the transformation: $bodies")
+            assert(!bodies.contains("6789") && !bodies.contains("4321"), s"dropped ssn reached the transformation: $bodies")
+        } finally FieldProtection.keyOverride = null
+    }
 }

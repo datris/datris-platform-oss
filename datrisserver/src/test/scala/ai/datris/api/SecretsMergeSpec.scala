@@ -146,4 +146,33 @@ class SecretsMergeSpec extends AnyFunSuite {
         )
         assert(out.keySet().asScala.toList == List("REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "_type"), out.toString)
     }
+
+    // --- Field protection 5 (e2e): the field-protection key secret ------------
+
+    private val fpHmac = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    private val fpV1 = "4ccbadf2aa11bb22cc33dd44ee55ff6600112233445566778899aabbccb5e0a7"
+    private val fpV2 = "af479a6b00112233445566778899aabbccddeeff0011223344556677ff31a789"
+    private val storedFp = Map("key" -> fpHmac, "enc.v1" -> fpV1, "enc.v2" -> fpV2, "encCurrent" -> "2")
+
+    test("field-protection: every enc.v<n> and the hmac key are masked on read; encCurrent stays visible") {
+        val shown = SecretsAPIController.maskedFields("field-protection", storedFp.toSeq).asScala.toMap
+        assert(shown("enc.v1") == Mask && shown("enc.v2") == Mask && shown("key") == Mask, shown.toString)
+        assert(shown("encCurrent") == "2", shown.toString)
+        Seq(fpHmac, fpV1, fpV2).foreach(v => assert(!shown.values.exists(_.contains(v)), "no key material in the response"))
+        // Any future field of that secret is masked too (per-secret rule, not a name marker).
+        assert(SecretsAPIController.maskedFields("field-protection", Seq("enc.v9" -> "ab", "somethingNew" -> "cd")).asScala.values.forall(_ == Mask))
+        // The per-secret rule does not mask ordinary fields of other secrets.
+        assert(SecretsAPIController.maskedFields("other", Seq("encCurrent" -> "2", "region" -> "x")).asScala.toMap == Map("encCurrent" -> "2", "region" -> "x"))
+    }
+
+    test("field-protection: an edit that sends the masks back preserves every key") {
+        val out = merge("field-protection", storedFp, "key" -> Mask, "enc.v1" -> Mask, "enc.v2" -> Mask, "encCurrent" -> "2")
+        assert(out == storedFp, out.toString)
+        // A blank box never wipes a key either.
+        val blank = merge("field-protection", storedFp, "key" -> "", "enc.v1" -> " ", "enc.v2" -> Mask, "encCurrent" -> "2")
+        assert(blank == storedFp, blank.toString)
+        // Retiring a version is omitting its field (documented manual step).
+        val retired = merge("field-protection", storedFp, "key" -> Mask, "enc.v2" -> Mask, "encCurrent" -> "2")
+        assert(retired == storedFp - "enc.v1", retired.toString)
+    }
 }

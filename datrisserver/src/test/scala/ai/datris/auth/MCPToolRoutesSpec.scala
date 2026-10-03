@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 78)
+        assert(MCPToolRoutes.allToolNames.size == 79)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 
@@ -64,6 +64,16 @@ class MCPToolRoutesSpec extends AnyFunSuite {
 
     // Story: Scratch results over MCP and the CLI (plans/stories/scratch-mcp-cli-prompts.md).
     // get_pipeline_result is a job read, classified exactly like get_pipeline_status.
+    // Story: Field protection 3 (plans/stories/field-protection-3-classifier.md).
+    test("suggest_field_protection is a pipeline:read tool mapped to POST /api/v1/pipeline/protect/suggest") {
+        assert(
+            MCPToolRoutes.tools.toMap.get("suggest_field_protection") == Some(MCPToolRoutes.Mapped("POST", "/api/v1/pipeline/protect/suggest"))
+        )
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/pipeline/protect/suggest") == RouteCheck.Require("pipeline", "read"))
+        assert(MCPToolRoutes.allowedTools(key("pipeline:read")).contains("suggest_field_protection"))
+        assert(!MCPToolRoutes.allowedTools(key("job:read")).contains("suggest_field_protection"))
+    }
+
     test("get_pipeline_result is a job:read tool mapped to GET /api/v1/pipeline/result") {
         assert(MCPToolRoutes.tools.toMap.get("get_pipeline_result") == Some(MCPToolRoutes.Mapped("GET", "/api/v1/pipeline/result")))
         assert(CapabilityRoutes.lookup("GET", "/api/v1/pipeline/result") == RouteCheck.Require("job", "read"))
@@ -205,5 +215,24 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     test("a key with no capabilities still sees the local tools") {
         val none = key("nonexistent:nothing")
         assert(MCPToolRoutes.allowedTools(none) == Seq("get_version", "check_service_health", "wait_seconds"))
+    }
+
+    // Story: Field protection 5 (plans/stories/field-protection-5-encrypt-reveal.md).
+    // Calls CapabilityRoutes.lookup, MCPToolRoutes.tools / allowedTools only.
+    test("POST /api/v1/protect/reveal requires protect:reveal") {
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/protect/reveal") == RouteCheck.Require("protect", "reveal"))
+        // Reveal is REST only: no MCP tool maps to it, so no agent key ever sees one.
+        assert(!MCPToolRoutes.tools.exists { case (_, m) => m == MCPToolRoutes.Mapped("POST", "/api/v1/protect/reveal") })
+        assert(!MCPToolRoutes.allToolNames.exists(_.toLowerCase.contains("reveal")))
+        assert(!ragBuilder.matchesResourceAction("protect", "reveal"), "the rag-builder template does not carry reveal")
+        assert(key("protect:reveal").matchesResourceAction("protect", "reveal"))
+    }
+
+    test("POST /api/v1/protect/keys/rotate requires protect:admin") {
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/protect/keys/rotate") == RouteCheck.Require("protect", "admin"))
+        assert(!MCPToolRoutes.tools.exists { case (_, m) => m == MCPToolRoutes.Mapped("POST", "/api/v1/protect/keys/rotate") })
+        // reveal does not imply admin, and the reverse.
+        assert(!key("protect:reveal").matchesResourceAction("protect", "admin"))
+        assert(!key("protect:admin").matchesResourceAction("protect", "reveal"))
     }
 }

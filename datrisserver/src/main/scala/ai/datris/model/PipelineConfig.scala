@@ -24,6 +24,9 @@ case class PipelineConfig(
     tags: java.util.List[String] = null,
     // Opt-in provenance stamping (absent/null ⇒ off). See ProvenanceStamper.
     provenance: ProvenanceConfig = null,
+    // Field protection options (absent/null ⇒ defaults). Only read when a
+    // source field carries `protect`. See FieldProtection.
+    protection: ProtectionConfig = null,
     // Source of authority (lineage L5b). null/true ⇒ the pipeline's datasets may
     // be the system of record (a single destination is authoritative by
     // default; several need Destination.authoritative to pick one). false ⇒
@@ -148,6 +151,24 @@ object UnityCatalogSync {
             .get("datris.unityCatalogDefault")
             .orElse(sys.env.get("DATRIS_UNITY_CATALOG_DEFAULT"))
             .exists(_.trim.equalsIgnoreCase("enabled"))
+}
+
+/** `protection: {"purgeSource": false}` keeps the ingest object(s) a
+  * protected run was read from. Boxed and null means on, for the same reason
+  * as `UnityCatalogSync` (Jackson skips Scala defaults, Gson skips
+  * constructors); read through `ProtectionConfig.purgeSourceOn`. */
+case class ProtectionConfig @JsonCreator() (
+    @JsonProperty("purgeSource") purgeSource: java.lang.Boolean = null
+) {
+    def this() = this(null)
+}
+
+object ProtectionConfig {
+
+    /** True unless the pipeline sets `protection.purgeSource` to false. */
+    def purgeSourceOn(config: PipelineConfig): Boolean =
+        config == null || config.protection == null || config.protection.purgeSource == null ||
+            config.protection.purgeSource.booleanValue()
 }
 
 case class ProvenanceConfig @JsonCreator() (

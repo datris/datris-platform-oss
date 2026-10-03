@@ -254,6 +254,10 @@ class StartupRunner extends ApplicationRunner {
                 logger.info("Recovery agent enabled: collection=" + environment + "-incident; mode comes from the agent policy's recovery.mode (off until set)")
             }
         }
+        // Field protection 8: name every tap on a platform secret (fails to run
+        // when enforced). Never blocks boot.
+        try ai.datris.util.TapSecretScopeScan.logAtStartup()
+        catch { case scala.util.control.NonFatal(e) => logger.warn("Tap secret scope scan failed (continuing): " + e.getMessage) }
         if (useAgentPolicy)
             logger.info(
                 "Agent policy enabled: collections=" + environment + "-agent-policy, " + environment + "-pending-action; approvals replay to port " + serverPort

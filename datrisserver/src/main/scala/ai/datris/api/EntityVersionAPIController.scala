@@ -22,6 +22,16 @@ import org.springframework.web.bind.annotation._
   *
   * Distinct from [[VersionAPIController]], which serves the server BUILD version
   * at `GET /version`. */
+object EntityVersionAPIController {
+
+    /** Field protection 8: restoring a tap version is a save, so a snapshot
+      * whose secretName is a platform secret (or a server-managed one) is
+      * refused like POST /tap. Same contract as
+      * [[TapAPIController.tapSecretSaveProblem]]. */
+    def tapRestoreProblem(restored: TapConfig, typeOf: String => Option[Option[String]], enforced: Boolean): Option[String] =
+        TapAPIController.tapSecretSaveProblem(restored, typeOf, enforced)
+}
+
 @RestController
 @RequestMapping(Array("/api/v1"))
 class EntityVersionAPIController {
@@ -102,8 +112,16 @@ class EntityVersionAPIController {
                 val cronError = TapCronValidation.check(restored.name, restored.cronExpression)
                 // Test-before-cron gate: restoring a snapshot whose script bytes differ
                 // from the tested stamp while a cron is set is refused, same as a save.
+                lazy val secretProblem = EntityVersionAPIController.tapRestoreProblem(
+                    restored,
+                    TapAPIController.liveSecretType,
+                    SecretNames.tapScopeEnforced
+                )
                 if (cronError.isDefined)
                     ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](TapCronValidation.errorBody(cronError.get))
+                else if (secretProblem.isDefined)
+                    ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                        .body[String]("{\"error\": " + gson.toJson(secretProblem.get) + "}")
                 else TapCronGate.check(live, restored) match {
                     case Some(msg) =>
                         ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")

@@ -90,6 +90,13 @@ export class PipelineService {
     return this.http.post<any>('/api/v1/pipeline/dest-types', { pipeline: name, fields });
   }
 
+  // --- Field protection ---------------------------------------------------------
+  // Classifier suggestions from field names and types only (never data).
+  // Response: {model, fields: [{name, type, current, suggested: {method, preserve} | null, reason}]}
+  suggestFieldProtection(fields: Array<{name: string, type: string}>): Observable<any> {
+    return this.http.post<any>('/api/v1/pipeline/protect/suggest', { fields });
+  }
+
   // --- Definition version history -------------------------------------------
   getPipelineVersions(name: string): Observable<any[]> {
     return this.http.get<any[]>('/api/v1/pipeline/versions?name=' + encodeURIComponent(name));

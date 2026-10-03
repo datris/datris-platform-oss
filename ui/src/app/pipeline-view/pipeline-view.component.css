@@ -317,3 +317,16 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Field protection summary */
+.protected-fields-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.protected-fields-list {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}

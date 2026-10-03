@@ -49,4 +49,15 @@ class LogRedactUtilSpec extends AnyFunSuite {
         val url = "jdbc:postgresql://bob@db:5432/datris"
         assert(LogRedactUtil.redactJdbcUrl(url) == url)
     }
+
+    test("field-protection encryption key fields (enc.v<n>) are sensitive in logs and audit metadata") {
+        Seq("enc.v1", "enc.v2", "ENC.V12").foreach(n => assert(LogRedactUtil.isSensitiveField(n), n))
+        assert(!LogRedactUtil.isSensitiveField("encCurrent"))
+        val o = new com.google.gson.JsonObject()
+        o.addProperty("enc.v1", "4ccbadf2")
+        o.addProperty("field", "email")
+        val red = LogRedactUtil.redactJson(o).getAsJsonObject
+        assert(!red.toString.contains("4ccbadf2"), red.toString)
+        assert(red.get("field").getAsString == "email")
+    }
 }

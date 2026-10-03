@@ -39,7 +39,7 @@ object GithubClient {
 
     private def token(config: CodeRepoConfig): String = {
         val secretName = DatrisEnvironment.current.environment + "/" + config.authSecretName
-        SecretsUtil.getSecretMap(secretName)
+        SecretsRetrieverUtil.userSecret(secretName)
             .flatMap(m => Option(m.get("token")))
             .filter(_.nonEmpty)
             .getOrElse(throw new DatrisException(

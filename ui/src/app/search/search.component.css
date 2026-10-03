@@ -215,6 +215,85 @@ option {
 
 .results-header {
   margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Field protection: ciphertext badges and Reveal */
+.reveal-controls {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reveal-pipeline.form-input {
+  width: auto;
+  min-width: 200px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.reveal-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.reveal-btn .material-icons {
+  font-size: 16px;
+}
+
+.reveal-btn:hover:not(:disabled) {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 12px var(--shadow-blue);
+}
+
+.reveal-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.reveal-error {
+  margin: -4px 0 12px;
+  font-size: 13px;
+  color: var(--accent-red);
+}
+
+.cell-encrypted,
+.cell-revealed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cell-encrypted {
+  color: var(--text-muted);
+}
+
+.cell-revealed {
+  color: var(--accent-green);
+}
+
+.cell-encrypted .material-icons,
+.cell-revealed .material-icons {
+  font-size: 14px;
 }
 
 .results-count {

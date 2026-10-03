@@ -244,6 +244,23 @@ Tap secrets are stored in HashiCorp Vault and injected as environment variables 
 
 Tap secrets are tagged with `_type=tap` and only appear in the tap dropdown — not mixed with system secrets like database credentials.
 
+### Taps can only use tap secrets
+
+A tap's secret must be a tap secret. Platform secrets (AI provider keys, warehouse and database credentials, the GitHub token, anything without `_type=tap`) hold values the Secrets API never shows in clear text, and every field of a tap's secret is handed to the script, so a tap on a platform secret would expose them. Saving a tap that names one returns HTTP 400, and a tap saved that way before this rule fails its next run (scheduled runs included) with the same message, before any value is injected:
+
+```
+Tap 'my-tap' uses secret 'ai-primary', which is a platform secret. Taps may only use tap secrets (Configuration → Secrets → Tap). Create a tap secret with the fields this tap needs and select it, or set DATRIS_TAP_SECRET_SCOPE=any to allow platform secrets.
+```
+
+To fix an affected tap:
+
+- **Create a tap secret** under Configuration → Secrets → Tap with the fields the script reads, and select it on the tap.
+- **Tag a hand-made tap secret.** A secret you created for a tap outside the wizard, without `_type=tap`, counts as a platform secret. Add the field `_type` with the value `tap` to it in the Secrets tab. Tagging a secret as a tap secret makes its values readable by any tap, so only an admin should do it, and only for credentials a tap is meant to use.
+
+The server names every affected tap in one warning line at startup, and the `tap.secret_scope` [doctor](/doctor) check lists them.
+
+**Opt-out.** `DATRIS_TAP_SECRET_SCOPE=any` lets taps use platform secrets again. It re-opens the exposure above: anyone who can create and run a tap (an editor, or an API key that can create taps) can read any platform secret's values. Use it only as a bridge while you move affected taps to tap secrets. The server-managed secrets (field protection keys, API-key stores) stay refused whatever the setting. See the [Configuration Reference](/configuration-reference).
+
 **Never hardcode credentials in scripts.** Always use `os.environ.get('KEY_NAME')`.
 
 ## Running Taps

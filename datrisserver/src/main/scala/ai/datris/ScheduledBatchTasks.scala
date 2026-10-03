@@ -232,7 +232,13 @@ object ScheduledBatchTasks {
         val eventMessage = new Gson().fromJson(message.body, classOf[ObjectStoreEventMessage])
         if (eventMessage == null || eventMessage.Records == null) Seq.empty
         else {
-            val pairs = eventMessage.Records.asScala.toSeq.map(record => {
+            // Only object-created events are uploads. An S3 bucket notification
+            // that also sends ObjectRemoved (e.g. the field-protection purge
+            // deleting an ingest object) must not re-dispatch the deleted key.
+            val created = eventMessage.Records.asScala.toSeq.filter(r =>
+                r != null && (r.eventName == null || r.eventName.startsWith("ObjectCreated") || r.eventName.startsWith("s3:ObjectCreated"))
+            )
+            val pairs = created.map(record => {
                 val key = URLDecoder.decode(record.s3.`object`.key, StandardCharsets.UTF_8.name())
                 (record.s3.bucket.name, key)
             })

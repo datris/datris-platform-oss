@@ -846,4 +846,210 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val none = new ai.datris.model.UnityCatalogSync()
         assert(!none.managedMode && !none.throughCatalog, s"no-arg: $none")
     }
+
+    // --- Field protection (story: field-protection-1-stage) ------------------
+    // Configs are parsed with Gson, which drops an unknown `protect` key today;
+    // `parsesProtect` proves the fixture carries the policy so the rule, not
+    // Gson ignoring the key, is what each case exercises. A postgres
+    // destination validates offline (no existing-pipeline lookup).
+
+    private def protectConfig(
+        sourceFields: String,
+        destFields: String = null,
+        fileAttributes: String = """"csvAttributes":{"header":true}""",
+        database: String = """"usePostgres":true""",
+        keyFields: String = null
+    ): PipelineConfig = {
+        val destSchema = if (destFields == null) "" else s""","schemaProperties":{"fields":$destFields}"""
+        val keys = if (keyFields == null) "" else s""","keyFields":$keyFields"""
+        parse(
+            s"""{"name":"fp",
+               |"source":{"fileAttributes":{$fileAttributes},"schemaProperties":{"fields":$sourceFields}},
+               |"destination":{"database":{"dbName":"datris","schema":"public","table":"fp",$database$keys}$destSchema}}""".stripMargin
+        )
+    }
+
+    private def parsesProtect(cfg: PipelineConfig): Unit =
+        assert(gson.toJson(cfg.source.schemaProperties).contains("\"protect\""), "fixture must parse SchemaField.protect")
+
+    test("unknown protect method is rejected") {
+        val cfg = protectConfig("""[{"name":"mrn","type":"string","protect":{"method":"scramble"}}]""")
+        parsesProtect(cfg)
+        val err = validationError(cfg)
+        assert(err.contains("Field 'mrn': unknown protect.method 'scramble' (hmac, mask, redact, drop, encrypt)"), s"got: $err")
+    }
+
+    // Story 5 (field-protection-5-encrypt-reveal): encrypt is accepted; fpe and tokenize stay reserved.
+    test("fpe and tokenize are still rejected as not yet supported") {
+        Seq("fpe", "tokenize").foreach { m =>
+            val cfg = protectConfig(s"""[{"name":"mrn","type":"string","protect":{"method":"$m"}}]""")
+            parsesProtect(cfg)
+            val err = validationError(cfg)
+            assert(err.exists(e => e.contains("'mrn'") && e.contains(s"'$m' is not yet supported")), s"$m: got $err")
+        }
+    }
+
+    test("preserve on hmac is rejected") {
+        val cfg = protectConfig("""[{"name":"mrn","type":"string","protect":{"method":"hmac","preserve":"last4"}}]""")
+        parsesProtect(cfg)
+        val err = validationError(cfg)
+        assert(err.exists(e => e.contains("mrn") && e.contains("preserve")), s"got: $err")
+        // preserve outside last4/domain/year is rejected on mask too.
+        val bad = protectConfig("""[{"name":"phone","type":"string","protect":{"method":"mask","preserve":"first3"}}]""")
+        val err2 = validationError(bad)
+        assert(err2.exists(e => e.contains("phone") && e.contains("preserve")), s"got: $err2")
+    }
+
+    test("hmac on an int source field is rejected") {
+        val cfg = protectConfig("""[{"name":"mrn","type":"int","protect":{"method":"hmac"}}]""")
+        parsesProtect(cfg)
+        val err = validationError(cfg)
+        assert(err.exists(e => e.contains("mrn") && e.contains("string")), s"got: $err")
+    }
+
+    test("hmac on a field whose destination type is int is rejected") {
+        val cfg = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"mrn","type":"string","protect":{"method":"hmac"}}]""",
+            destFields = """[{"name":"id","type":"string"},{"name":"MRN","type":"int"}]"""
+        )
+        parsesProtect(cfg)
+        val err = validationError(cfg)
+        assert(err.exists(e => e.toLowerCase.contains("mrn") && e.contains("string")), s"destination matched case-insensitively; got: $err")
+    }
+
+    test("drop of a keyFields column is rejected") {
+        val cfg = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"ssn","type":"string","protect":{"method":"drop"}}]""",
+            keyFields = """["ssn"]"""
+        )
+        parsesProtect(cfg)
+        val err = validationError(cfg)
+        assert(err.exists(e => e.contains("ssn") && e.toLowerCase.contains("drop") && !e.contains("Key field: ")), s"got: $err")
+    }
+
+    test("mask or redact on a keyFields column is rejected; hmac is accepted") {
+        Seq("""{"method":"mask","preserve":"last4"}""", """{"method":"redact"}""").foreach { policy =>
+            val cfg = protectConfig(
+                s"""[{"name":"id","type":"string"},{"name":"Account_No","type":"string","protect":$policy}]""",
+                keyFields = """["account_no"]"""
+            )
+            val err = validationError(cfg)
+            assert(err.exists(e => e.contains("Account_No") && e.contains("only hmac keeps rows distinct")), s"$policy got: $err")
+        }
+        val ok = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"account_no","type":"string","protect":{"method":"hmac"}}]""",
+            keyFields = """["account_no"]"""
+        )
+        assert(validationError(ok).isEmpty, s"got: ${validationError(ok)}")
+    }
+
+    test("protect on an XML source is rejected") {
+        val cfg = parse(
+            """{"name":"fp",
+              |"source":{"fileAttributes":{"xmlAttributes":{}},"schemaProperties":{"fields":[{"name":"_xml","type":"string","protect":{"method":"redact"}}]}},
+              |"destination":{"scratch":{}}}""".stripMargin
+        )
+        parsesProtect(cfg)
+        val err = validationError(cfg)
+        assert(err.exists(_.contains("Field protection needs a delimited or JSON source")), s"got: $err")
+    }
+
+    test("a valid hmac/mask/redact/drop set passes") {
+        val src =
+            """[{"name":"id","type":"string"},
+              |{"name":"mrn","type":"string","protect":{"method":"hmac"}},
+              |{"name":"email","type":"string","protect":{"method":"mask","preserve":"domain"}},
+              |{"name":"phone","type":"string","protect":{"method":"mask","preserve":"last4"}},
+              |{"name":"dob","type":"string","protect":{"method":"mask","preserve":"year"}},
+              |{"name":"code","type":"string","protect":{"method":"mask"}},
+              |{"name":"notes","type":"string","protect":{"method":"redact"}},
+              |{"name":"age","type":"int","protect":{"method":"drop"}}]""".stripMargin
+        val dst =
+            """[{"name":"id","type":"string"},{"name":"MRN","type":"string"},{"name":"email","type":"string"},
+              |{"name":"phone","type":"string"},{"name":"dob","type":"string"},{"name":"code","type":"string"},
+              |{"name":"notes","type":"string"}]""".stripMargin
+        val cfg = protectConfig(src, destFields = dst, keyFields = """["id"]""")
+        parsesProtect(cfg)
+        assert(validationError(cfg).isEmpty, s"got: ${validationError(cfg)}")
+        // A JSON source keeps its single `_json` field and names the protected
+        // top-level keys beside it (FieldProtection rewrites top-level keys only).
+        val json = protectConfig(
+            """[{"name":"_json","type":"string"},
+              |{"name":"mrn","type":"string","protect":{"method":"hmac"}},
+              |{"name":"ssn","type":"string","protect":{"method":"drop"}}]""".stripMargin,
+            fileAttributes = """"jsonAttributes":{}"""
+        )
+        assert(validationError(json).isEmpty, s"JSON source: ${validationError(json)}")
+    }
+
+    // --- Field protection 5: encrypt (plans/stories/field-protection-5-encrypt-reveal.md) ---
+    // Calls only PipelineValidatorUtil (through `validationError`); encrypt keeps
+    // story 1's string-in/string-out rule.
+
+    test("encrypt on a string field passes") {
+        val cfg = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"email","type":"string","protect":{"method":"encrypt"}}]""",
+            destFields = """[{"name":"id","type":"string"},{"name":"email","type":"string"}]""",
+            keyFields = """["id"]"""
+        )
+        parsesProtect(cfg)
+        assert(validationError(cfg).isEmpty, s"got: ${validationError(cfg)}")
+        val json = protectConfig(
+            """[{"name":"_json","type":"string"},{"name":"email","type":"string","protect":{"method":"encrypt"}}]""",
+            fileAttributes = """"jsonAttributes":{}"""
+        )
+        assert(validationError(json).isEmpty, s"JSON source: ${validationError(json)}")
+    }
+
+    test("encrypt on an int field is rejected") {
+        val src = protectConfig("""[{"name":"ssn","type":"int","protect":{"method":"encrypt"}}]""")
+        parsesProtect(src)
+        val err = validationError(src)
+        assert(err.exists(e => e.contains("'ssn'") && e.contains("'encrypt'") && e.contains("string") && !e.contains("not yet supported")), s"got: $err")
+        val dst = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"ssn","type":"string","protect":{"method":"encrypt"}}]""",
+            destFields = """[{"name":"id","type":"string"},{"name":"ssn","type":"int"}]"""
+        )
+        val err2 = validationError(dst)
+        assert(err2.exists(e => e.contains("ssn") && e.contains("destination field type must be 'string'")), s"got: $err2")
+    }
+
+    test("encrypt on a keyFields column is rejected (a fresh IV per value would split one key into many)") {
+        val cfg = protectConfig(
+            """[{"name":"id","type":"string"},{"name":"account_no","type":"string","protect":{"method":"encrypt"}}]""",
+            keyFields = """["account_no"]"""
+        )
+        val err = validationError(cfg)
+        assert(err.exists(e => e.contains("account_no") && e.contains("only hmac keeps rows distinct")), s"got: $err")
+    }
+
+    test("a pipeline credentialsSecret naming a server-managed secret is rejected") {
+        for (name <- Seq("field-protection", "Field-Protection", "api-keys", "api-key-metadata", "ui-api-key", "oss/field-protection")) {
+            val err = validationError(objectStoreConfig(s""""credentialsSecret":"$name""""))
+            assert(err.exists(_.contains("is a platform secret and cannot be used as a tap or pipeline secret")), s"[$name] -> $err")
+        }
+        // An ordinary secret name is unaffected by this rule (later checks may need a live environment).
+        val other = scala.util.Try(PipelineValidatorUtil.validate(objectStoreConfig(""""credentialsSecret":"my-s3""""))).failed.toOption
+        assert(other.forall(e => !String.valueOf(e.getMessage).contains("platform secret")), other.toString)
+    }
+
+    test("secretReferences finds unity catalog, destination and source secret names") {
+        val cfg = parse(
+            """{"name":"p","unityCatalog":{"credentialsSecret":"uc"},
+              |"source":{"databaseAttributes":{"postgresSecretsName":"src-pg"}},
+              |"destination":{"database":{"credentialsSecret":"db"},"qdrant":{"embeddingSecretName":"emb","qdrantSecretName":"q"}}}""".stripMargin
+        )
+        assert(PipelineValidatorUtil.secretReferences(cfg).map(_._2).toSet == Set("uc", "src-pg", "db", "emb", "q"))
+        val e = intercept[DatrisException](PipelineValidatorUtil.validate(parse(
+            """{"name":"p","source":{"databaseAttributes":{"mysqlSecretsName":"api-keys"}}}"""
+        )))
+        assert(e.getMessage.contains("'api-keys' is a platform secret"))
+    }
+
+    test("a pipeline secret reference that is not a safe secret path is rejected at save") {
+        for (name <- Seq("field-protection/.", "field-protection?x=1", "field-protection#a", "my secret")) {
+            val err = validationError(objectStoreConfig(s""""credentialsSecret":"$name""""))
+            assert(err.contains("Invalid secret name '" + name + "'"), s"[$name] -> $err")
+        }
+    }
 }

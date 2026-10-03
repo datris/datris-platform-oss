@@ -7,7 +7,14 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
 
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
+    // Every method checks the path with SecretNames.requireSafePath before
+    // touching Vault: the driver puts the path into a URI unencoded, so a `?`
+    // or `#` would address a different secret than the name says. The check
+    // runs outside the try blocks so it throws (or fails) rather than reading
+    // as "absent".
+
     override def getSecretMap(secretName: String): Option[java.util.Map[String, String]] = {
+        SecretNames.requireSafePath(secretName)
         try {
             val response = vault.logical().read(s"secret/$secretName")
             val data = response.getData
@@ -29,6 +36,7 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
       * HTTP status is inspected. So the decision is made on the status, not
       * on exceptions. */
     override def tryGetSecretMap(secretName: String): scala.util.Try[Option[java.util.Map[String, String]]] = {
+        if (!SecretNames.isSafePath(secretName)) return scala.util.Failure(new ai.datris.model.DatrisException(SecretNames.InvalidMessage))
         try {
             val response = vault.logical().read(s"secret/$secretName")
             // A missing RestResponse is unknown, not success: -1 fails closed.
@@ -44,10 +52,12 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
     }
 
     def getSecretField(secretName: String, field: String): Option[String] = {
+        SecretNames.requireSafePath(secretName)
         getSecretMap(secretName).flatMap(map => Option(map.get(field)))
     }
 
     override def listSecrets(path: String): List[String] = {
+        SecretNames.requireSafePath(path)
         try {
             val response = vault.logical().list(s"secret/$path")
             val keys = response.getListData
@@ -64,10 +74,12 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
     }
 
     override def writeSecret(secretName: String, data: java.util.Map[String, Object]): Unit = {
+        SecretNames.requireSafePath(secretName)
         vault.logical().write(s"secret/$secretName", data)
     }
 
     override def deleteSecret(secretName: String): Unit = {
+        SecretNames.requireSafePath(secretName)
         vault.logical().delete(s"secret/$secretName")
     }
 }

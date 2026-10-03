@@ -236,8 +236,21 @@
     <div class="results-header">
       <span class="results-count">{{ resultCount }} result{{ resultCount !== 1 ? 's' : '' }}</span>
       <span class="results-snapshot" *ngIf="snapshotId" [title]="snapshotTimestamp || ''">&middot; snapshot {{ snapshotId }}</span>
+      <span class="reveal-controls" *ngIf="showRevealButton() || showRevealPicker()">
+        <select class="form-input reveal-pipeline" *ngIf="showRevealPicker()" [value]="revealPick"
+                (change)="onRevealPick($any($event.target).value)" title="Pipeline that encrypted these values">
+          <option value="">Select pipeline to reveal...</option>
+          <option *ngFor="let p of revealCandidates" [value]="p" [selected]="p === revealPick">{{ p }}</option>
+        </select>
+        <button class="secondary-btn reveal-btn" *ngIf="showRevealButton()" (click)="revealAll()"
+                [disabled]="revealing || !revealPipeline || !encryptedColumns.length">
+          <span class="material-icons">lock_open</span>
+          {{ revealing ? 'Revealing...' : 'Reveal encrypted values' }}
+        </button>
+      </span>
     </div>
-    <div class="table-container" *ngIf="queryType !== 'mongodb'">
+    <div class="reveal-error" *ngIf="revealError">{{ revealError }}</div>
+    <div class="table-container" *ngIf="queryType !== 'mongodb' || mongoFlat">
       <table>
         <thead>
           <tr>
@@ -247,14 +260,22 @@
         <tbody>
           <tr *ngFor="let row of results">
             <td *ngFor="let col of columns">
-              <span class="cell-value" [class.score-cell]="col === '_score'">{{ isStructured(row[col]) ? (row[col] | json) : row[col] }}</span>
+              <ng-container *ngIf="isProtectedCell(col, row[col]); else plainCell">
+                <span class="cell-revealed" *ngIf="revealed.has(row[col]); else lockedCell" title="Revealed from ciphertext"><span class="material-icons">lock_open</span>{{ revealed.get(row[col]) }}</span>
+                <ng-template #lockedCell>
+                  <span class="cell-encrypted" [title]="revealErrors.get(row[col]) || 'Encrypted by field protection'"><span class="material-icons">lock</span>enc:v{{ ciphertextVersion(row[col]) }}</span>
+                </ng-template>
+              </ng-container>
+              <ng-template #plainCell>
+                <span class="cell-value" [class.score-cell]="col === '_score'">{{ isStructured(row[col]) ? (row[col] | json) : row[col] }}</span>
+              </ng-template>
             </td>
           </tr>
         </tbody>
       </table>
     </div>
-    <div class="json-container" *ngIf="queryType === 'mongodb'">
-      <pre class="json-results">{{ results | json }}</pre>
+    <div class="json-container" *ngIf="queryType === 'mongodb' && !mongoFlat">
+      <pre class="json-results">{{ revealedJson() }}</pre>
     </div>
   </div>
 

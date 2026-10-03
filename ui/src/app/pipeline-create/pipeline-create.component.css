@@ -241,11 +241,162 @@ option {
 }
 
 .field-name {
-  flex: 2;
+  flex: 1.8;
 }
 
 .field-type {
   flex: 1;
+}
+
+/* Field protection: the Protect cell holds the method select and, for mask,
+   the Keep select side by side, so the column stays aligned across rows. */
+.field-protect-cell {
+  flex: 2.2;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field-protect,
+.field-preserve {
+  flex: 1;
+  min-width: 0;
+}
+
+/* With mask chosen the cell holds two selects: keep the method select just
+   wide enough for its longest option so the Keep select has room for
+   "Keep email domain" without clipping. */
+.field-protect-cell:has(.field-preserve) .field-protect {
+  flex: 0 0 96px;
+}
+
+.field-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.field-header span {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.protect-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.protect-help-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+
+/* The header uppercases its text; the icon ligature must stay lowercase. */
+.protect-help-btn .material-icons {
+  font-size: 15px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.protect-help-btn:hover,
+.protect-help-btn.open {
+  color: var(--accent-cyan);
+}
+
+.protect-help {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 380px;
+  max-width: 80vw;
+  background: rgba(20, 26, 42, 0.98);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 110;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.protect-help-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.protect-help dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 10px;
+  row-gap: 6px;
+}
+
+.protect-help dt {
+  font-family: var(--font-mono, monospace);
+  color: var(--accent-cyan);
+}
+
+.protect-help dd {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.protect-help-link {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--accent-cyan);
+  font-size: 12px;
+}
+
+/* Keeps header columns aligned with rows whose remove button is hidden. */
+.remove-field-spacer {
+  width: 28px;
+  flex: none;
+}
+
+.field-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.field-suggestion .material-icons {
+  font-size: 14px;
+  color: var(--accent-cyan);
+}
+
+.field-error {
+  margin: -4px 0 8px;
+  font-size: 12px;
+  color: var(--accent-red);
+}
+
+.field-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .remove-field-btn {

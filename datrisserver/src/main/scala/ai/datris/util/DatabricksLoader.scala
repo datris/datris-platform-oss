@@ -136,20 +136,14 @@ class DatabricksLoader(jobContext: JobContext) {
             "COPY_OPTIONS ('mergeSchema' = 'false')"
 
         statusUtil.info("processing", "COPY command: " + copy)
-        val rs = statement.executeQuery(copy)
-        // COPY INTO returns a one-row result set; read the inserted-row count.
-        var loaded = 0L
-        try {
-            val meta = rs.getMetaData
-            val cols = (1 to meta.getColumnCount).map(i => meta.getColumnLabel(i).toLowerCase)
-            val idx = math.max(cols.indexOf("num_inserted_rows"), cols.indexOf("num_affected_rows"))
-            while (rs.next()) {
-                if (idx >= 0) loaded += rs.getLong(idx + 1)
-            }
-        } finally {
-            rs.close()
+        // execute(), not executeQuery(): the Databricks driver rejects a COPY
+        // INTO that produces no result set AFTER it has committed, which would
+        // turn a successful load into a failed run.
+        val hasResultSet = statement.execute(copy)
+        DatabricksLoader.loadedRowCount(statement, hasResultSet) match {
+            case Some(loaded) => statusUtil.info("processing", "Rows loaded into target: " + loaded)
+            case None => statusUtil.info("processing", "Rows loaded into target: unknown (no row count returned)")
         }
-        statusUtil.info("processing", "Rows loaded into target: " + loaded)
     }
 
     /** Upsert path: MERGE straight from the staged CSV (via read_files) — SQL
@@ -397,5 +391,37 @@ class DatabricksLoader(jobContext: JobContext) {
 
         NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, jsonNotification, attributes.asScala.toMap)
         statusUtil.info("processing", "notification sent: " + jsonNotification)
+    }
+}
+
+object DatabricksLoader {
+
+    /** Row count of a COPY INTO issued with `execute()`. With a result set,
+     *  sum `num_inserted_rows` (else `num_affected_rows`; 0 when neither column
+     *  is present) and always close it. Without one (or when the driver
+     *  reports one but hands back null), fall back to the update count; a negative
+     *  count means the driver reported none (None). */
+    private[util] def loadedRowCount(statement: Statement, hasResultSet: Boolean): Option[Long] = {
+        // JDBC allows a null result set only when there is none, but some
+        // Simba drivers return true from execute() and then null here; treat
+        // that as "no result set" rather than failing a committed load.
+        val rs = if (hasResultSet) statement.getResultSet else null
+        if (rs != null) {
+            var loaded = 0L
+            try {
+                val meta = rs.getMetaData
+                val cols = (1 to meta.getColumnCount).map(i => meta.getColumnLabel(i).toLowerCase)
+                val idx = math.max(cols.indexOf("num_inserted_rows"), cols.indexOf("num_affected_rows"))
+                while (rs.next()) {
+                    if (idx >= 0) loaded += rs.getLong(idx + 1)
+                }
+            } finally {
+                rs.close()
+            }
+            Some(loaded)
+        } else {
+            val count = statement.getUpdateCount
+            if (count >= 0) Some(count.toLong) else None
+        }
     }
 }

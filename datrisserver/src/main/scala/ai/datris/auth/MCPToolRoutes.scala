@@ -63,6 +63,7 @@ object MCPToolRoutes {
         "profile_data" -> Mapped("POST", "/api/v1/pipeline/profile"),
         "get_dest_types" -> Mapped("GET", "/api/v1/pipeline/dest-types"),
         "apply_dest_types" -> Mapped("POST", "/api/v1/pipeline/dest-types"),
+        "suggest_field_protection" -> Mapped("POST", "/api/v1/pipeline/protect/suggest"),
 
         // Infrastructure
         "get_version" -> Local,

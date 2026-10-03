@@ -52,13 +52,47 @@ object PipelineValidatorUtil {
         if (config.source.fileAttributes == null && config.source.databaseAttributes == null)
             throw new DatrisException("Either 'source.fileAttributes' or 'source.databaseAttributes must be defined")
 
+        validateSecretReferences(config)
         validateUnityCatalog(config)
+        validateFieldProtection(config)
 
         if (config.source.fileAttributes != null && config.source.fileAttributes.unstructuredAttributes != null)
             validateUnstructured(config)
         else
             validateStructuredAndSemiStructured(config)
     }
+
+    /** Every secret a pipeline names (destination/source credentials and
+      * connection secrets, vector store and embedding secrets, the Unity
+      * Catalog secret), labelled by its config path. */
+    private[util] def secretReferences(config: PipelineConfig): Seq[(String, String)] = {
+        val d = Option(config.destination)
+        val refs = Seq(
+            "unityCatalog.credentialsSecret" -> Option(config.unityCatalog).map(_.credentialsSecret),
+            "destination.objectStore.credentialsSecret" -> d.flatMap(x => Option(x.objectStore)).map(_.credentialsSecret),
+            "destination.database.credentialsSecret" -> d.flatMap(x => Option(x.database)).map(_.credentialsSecret),
+            "destination.qdrant.embeddingSecretName" -> d.flatMap(x => Option(x.qdrant)).map(_.embeddingSecretName),
+            "destination.qdrant.qdrantSecretName" -> d.flatMap(x => Option(x.qdrant)).map(_.qdrantSecretName),
+            "destination.weaviate.embeddingSecretName" -> d.flatMap(x => Option(x.weaviate)).map(_.embeddingSecretName),
+            "destination.weaviate.weaviateSecretName" -> d.flatMap(x => Option(x.weaviate)).map(_.weaviateSecretName),
+            "destination.pgvector.embeddingSecretName" -> d.flatMap(x => Option(x.pgvector)).map(_.embeddingSecretName),
+            "destination.pgvector.postgresSecretName" -> d.flatMap(x => Option(x.pgvector)).map(_.postgresSecretName),
+            "destination.milvus.embeddingSecretName" -> d.flatMap(x => Option(x.milvus)).map(_.embeddingSecretName),
+            "destination.milvus.milvusSecretName" -> d.flatMap(x => Option(x.milvus)).map(_.milvusSecretName),
+            "destination.chroma.embeddingSecretName" -> d.flatMap(x => Option(x.chroma)).map(_.embeddingSecretName),
+            "destination.chroma.chromaSecretName" -> d.flatMap(x => Option(x.chroma)).map(_.chromaSecretName),
+            "source.databaseAttributes.postgresSecretsName" -> Option(config.source).flatMap(s => Option(s.databaseAttributes)).map(_.postgresSecretsName),
+            "source.databaseAttributes.mssqlSecretsName" -> Option(config.source).flatMap(s => Option(s.databaseAttributes)).map(_.mssqlSecretsName),
+            "source.databaseAttributes.mysqlSecretsName" -> Option(config.source).flatMap(s => Option(s.databaseAttributes)).map(_.mysqlSecretsName)
+        )
+        refs.flatMap { case (label, v) => v.filter(_ != null).map(label -> _) }
+    }
+
+    /** No pipeline may reference a server-managed secret (SecretNames.ServerManaged). */
+    private def validateSecretReferences(config: PipelineConfig): Unit =
+        secretReferences(config).foreach { case (_, name) =>
+            SecretNames.referenceProblem(name).foreach(p => throw new DatrisException(p))
+        }
 
     /** `unityCatalog.enabled` is meaningful for a Databricks destination
       * (metadata push + lineage) and for an object-store Iceberg destination
@@ -106,6 +140,83 @@ object PipelineValidatorUtil {
         throw new DatrisException(
             "'unityCatalog.enabled' is only supported for a Databricks destination (destination.database.useDatabricks=true) or an object-store Iceberg destination"
         )
+    }
+
+    /** Source fields carrying `protect` (FieldProtection). Refused here, at
+      * save, so a pipeline can never silently store plaintext: unknown and
+      * reserved (not yet supported: fpe, tokenize) methods, `preserve` outside
+      * `mask` or outside last4/domain/year, a string-producing method (encrypt
+      * included) on a non-string source or destination field, any method but
+      * hmac on a key field (mask and redact would make rows share a key,
+      * encrypt's fresh IV per value would split one key into many, drop
+      * removes it), and any source that is not delimited or JSON. */
+    private def validateFieldProtection(config: PipelineConfig): Unit = {
+        val sp = config.source.schemaProperties
+        if (sp == null || sp.fields == null) return
+        val protectedFields = sp.fields.asScala.filter(f => f != null && f.protect != null).toList
+        if (protectedFields.isEmpty) return
+
+        val fa = config.source.fileAttributes
+        if (fa != null && (fa.xmlAttributes != null || fa.unstructuredAttributes != null))
+            throw new DatrisException("Field protection needs a delimited or JSON source")
+
+        val destFields: Map[String, SchemaField] =
+            if (config.destination != null && config.destination.schemaProperties != null && config.destination.schemaProperties.fields != null)
+                config.destination.schemaProperties.fields.asScala
+                    .filter(f => f != null && f.name != null)
+                    .map(f => f.name.trim.toLowerCase -> f)
+                    .toMap
+            else Map.empty
+
+        val keyFields: Set[String] = {
+            val db = if (config.destination != null && config.destination.database != null) config.destination.database.keyFields else null
+            val os = if (config.destination != null && config.destination.objectStore != null) config.destination.objectStore.keyFields else null
+            (Option(db).map(_.asScala.toList).getOrElse(Nil) ++ Option(os).map(_.asScala.toList).getOrElse(Nil))
+                .filter(_ != null)
+                .map(_.trim.toLowerCase)
+                .toSet
+        }
+
+        def isString(t: String): Boolean = t != null && t.trim.equalsIgnoreCase("string")
+
+        protectedFields.foreach { f =>
+            val p = f.protect
+            val method = if (p.method == null) "" else p.method.trim.toLowerCase
+            if (ProtectionPolicy.Reserved.contains(method))
+                throw new DatrisException("Field '" + f.name + "': protect.method '" + method + "' is not yet supported")
+            if (!ProtectionPolicy.Methods.contains(method))
+                throw new DatrisException(
+                    "Field '" + f.name + "': unknown protect.method '" + Option(p.method).getOrElse("") + "' (hmac, mask, redact, drop, encrypt)"
+                )
+            if (p.preserve != null) {
+                if (method != "mask")
+                    throw new DatrisException("Field '" + f.name + "': protect.preserve is only valid with method 'mask'")
+                if (!ProtectionPolicy.Preserves.contains(p.preserve.trim.toLowerCase))
+                    throw new DatrisException(
+                        "Field '" + f.name + "': unknown protect.preserve '" + p.preserve + "' (last4, domain, year)"
+                    )
+            }
+            if (f.name != null && keyFields.contains(f.name.trim.toLowerCase)) {
+                if (method == "drop")
+                    throw new DatrisException("Field '" + f.name + "': protect.method 'drop' cannot remove a keyFields column")
+                if (method != "hmac")
+                    throw new DatrisException(
+                        "Field '" + f.name + "': protect.method '" + method + "' on a keyFields column would make different rows share a key; only hmac keeps rows distinct"
+                    )
+            }
+            if (method != "drop") {
+                if (!isString(f.`type`))
+                    throw new DatrisException(
+                        "Field '" + f.name + "': protect.method '" + method + "' produces a string; the source field type must be 'string'"
+                    )
+                destFields.get(Option(f.name).map(_.trim.toLowerCase).getOrElse("")).foreach { d =>
+                    if (!isString(d.`type`))
+                        throw new DatrisException(
+                            "Field '" + d.name + "': protect.method '" + method + "' produces a string; the destination field type must be 'string'"
+                        )
+                }
+            }
+        }
     }
 
     private def validateUnstructured(config: PipelineConfig): Unit = {
@@ -550,16 +661,22 @@ object PipelineValidatorUtil {
     private def validateSemiStructured(config: PipelineConfig): Unit = {
         val message =
             "For JSON and XML pipelines, the source schema must have only one field named '_json' or '_xml' according to the source file type, with a field type of 'string'"
-        if (config.source.schemaProperties.fields.size != 1)
+        // A JSON source may also list fields that carry `protect`: they name
+        // the top-level keys FieldProtection rewrites (and strips from the
+        // in-memory schemas after the stage, so loaders still see only `_json`).
+        val isJson = config.source.fileAttributes != null && config.source.fileAttributes.jsonAttributes != null
+        val docFields = config.source.schemaProperties.fields.asScala.toList
+            .filterNot(f => isJson && f != null && f.protect != null)
+        if (docFields.size != 1)
             throw new DatrisException(message)
-        if (config.source.schemaProperties.fields.get(0).`type`.compareToIgnoreCase("string") != 0)
+        if (docFields.head.`type` == null || docFields.head.`type`.compareToIgnoreCase("string") != 0)
             throw new DatrisException(message)
-        if (config.source.fileAttributes != null && config.source.fileAttributes.jsonAttributes != null) {
-            if (config.source.schemaProperties.fields.get(0).name.compareToIgnoreCase("_json") != 0)
+        if (isJson) {
+            if (docFields.head.name.compareToIgnoreCase("_json") != 0)
                 throw new DatrisException(message)
         }
         if (config.source.fileAttributes != null && config.source.fileAttributes.xmlAttributes != null) {
-            if (config.source.schemaProperties.fields.get(0).name.compareToIgnoreCase("_xml") != 0)
+            if (docFields.head.name.compareToIgnoreCase("_xml") != 0)
                 throw new DatrisException(message)
         }
 
@@ -585,7 +702,8 @@ object PipelineValidatorUtil {
         val sourceSchemaProperties = {
             if (config.source.schemaProperties != null) {
                 val fields =
-                    config.source.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, field.`type`.toLowerCase)).toList.asJava
+                    config.source.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, field.`type`.toLowerCase, field.protect))
+                        .toList.asJava
                 SchemaProperties(config.source.schemaProperties.dbName, fields)
             } else
                 null
