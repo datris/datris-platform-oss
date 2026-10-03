@@ -455,7 +455,7 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(full.checks.map(_.id).contains("staging.orphans"), full.checks.map(_.id).toString)
         val quickIds = DoctorService.run("quick", Set.empty, Map.empty, p, slots, "1.28.2").checks.map(_.id)
         assert(quickIds.contains("staging.area") && quickIds.contains("staging.orphans"), "startup-safe: " + quickIds)
-        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans", "tap-secret-scope")) == Seq(
+        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans", "tap.secret_scope")) == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
             "jdbc.mssql_driver",
@@ -494,8 +494,8 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(!r.detail.contains("unset: TAP_"), "both were set: " + r.detail)
     }
 
-    // tap-secret-scope — plans/stories/field-protection-8-tap-secret-scope.md.
-    // Pinned: check id "tap-secret-scope", startupSafe = true, registered in
+    // tap.secret_scope — plans/stories/field-protection-8-tap-secret-scope.md.
+    // Pinned: check id "tap.secret_scope", startupSafe = true, registered in
     // DoctorService.checks (position not pinned; found by id so the class name
     // is free), reading Probes.tapSecretRefs(): List[(tap, secret, Option[_type])]
     // and SecretNames.tapScopeEnforced (system property `datris.tapSecretScope`,
@@ -517,7 +517,7 @@ class DoctorServiceSpec extends AnyFunSuite {
 
     private def tapScopeCheck(p: FakeProbes): Check = {
         val all = DoctorService.checks(p, slots, "1.28.2", Map.empty)
-        all.find(_.id == "tap-secret-scope").getOrElse(fail("no tap-secret-scope check in " + all.map(_.id)))
+        all.find(_.id == "tap.secret_scope").getOrElse(fail("no tap.secret_scope check in " + all.map(_.id)))
     }
 
     private val offendingRefs = List(
@@ -534,7 +534,7 @@ class DoctorServiceSpec extends AnyFunSuite {
             val onlyTap = new FakeProbes(tapRefs = List(("weather", "weather-api", Some("tap"))))
             assert(tapScopeCheck(onlyTap).run().status == "ok")
             val quickIds = DoctorService.run("quick", Set.empty, Map.empty, new FakeProbes(), slots, "1.28.2").checks.map(_.id)
-            assert(quickIds.contains("tap-secret-scope"), "startup-safe: " + quickIds)
+            assert(quickIds.contains("tap.secret_scope"), "startup-safe: " + quickIds)
         }
     }
 
