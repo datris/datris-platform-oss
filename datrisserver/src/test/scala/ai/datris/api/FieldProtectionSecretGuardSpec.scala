@@ -180,7 +180,7 @@ class FieldProtectionSecretGuardSpec extends AnyFunSuite {
     }
 
     test("decide: nothing changed is Allow(None) regardless of protect:admin") {
-        val masked = Map("key" -> Mask, "enc.v1" -> Mask, "enc.v2" -> "", "encCurrent" -> "2", "note" -> "x")
+        val masked = Map("key" -> Mask, "enc.v1" -> Mask, "enc.v2" -> "", "encCurrent" -> "2", "createdByKeyLabel" -> "ops")
         for (admin <- Seq(true, false)) {
             assert(decide(masked, admin) == FieldProtectionSecretGuard.Allow(None, Set.empty), admin.toString)
             assert(decide(stored, admin) == FieldProtectionSecretGuard.Allow(None, Set.empty), admin.toString)
@@ -252,5 +252,29 @@ class FieldProtectionSecretGuardSpec extends AnyFunSuite {
     test("deleteDecision refuses the field-protection secret only") {
         assert(FieldProtectionSecretGuard.deleteDecision("field-protection") == Some(Reject409(FieldProtectionSecretGuard.KeyChangeMessage)))
         assert(FieldProtectionSecretGuard.deleteDecision("ai-primary").isEmpty)
+    }
+
+    test("retiring every enc version or the highest version is Invalid400, even for an admin") {
+        val noneLeft = stored - "enc.v1" - "enc.v2" - "encCurrent"
+        val (_, d1) = FieldProtectionSecretGuard.evaluate(stored, noneLeft, holdsProtectAdmin = true)
+        assert(d1.isInstanceOf[Invalid400], d1.toString)
+        val highest = stored - "enc.v2" + ("encCurrent" -> "1")
+        val (_, d2) = FieldProtectionSecretGuard.evaluate(stored, highest, holdsProtectAdmin = true)
+        assert(d2.isInstanceOf[Invalid400], d2.toString)
+        // Retiring the highest while adding a higher one keeps numbers unique.
+        val (_, d3) = FieldProtectionSecretGuard.evaluate(stored, stored - "enc.v2" + ("enc.v3" -> v3, "encCurrent" -> "3"), holdsProtectAdmin = true)
+        assert(d3 == Allow(Some("rotate"), Set("enc.v2", "enc.v3", "encCurrent")), d3.toString)
+        // Retiring an older version is fine.
+        assert(FieldProtectionSecretGuard.evaluate(stored, stored - "enc.v1", holdsProtectAdmin = true)._2 == Allow(Some("retire"), Set("enc.v1")))
+    }
+
+    test("fields outside the allowlist are Invalid400 for everyone, including look-alike names") {
+        val masked = Map("key" -> Mask, "enc.v1" -> Mask, "enc.v2" -> Mask, "encCurrent" -> "2")
+        for (bad <- Seq("note", " key", "k\u0435y", "enc\u2024v1", "key\u00a0", "encCurrent\u200b"); admin <- Seq(true, false)) {
+            val (_, d) = FieldProtectionSecretGuard.evaluate(stored, masked + (bad -> "x"), admin)
+            assert(d.isInstanceOf[Invalid400], s"[$bad] $admin -> $d")
+        }
+        val ok = masked + ("_type" -> "platform", "createdByKeyLabel" -> "ops")
+        assert(FieldProtectionSecretGuard.evaluate(stored, ok, holdsProtectAdmin = false)._2 == Allow(None, Set.empty))
     }
 }

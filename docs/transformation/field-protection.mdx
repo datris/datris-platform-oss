@@ -144,7 +144,7 @@ curl -X POST http://localhost:8080/api/v1/protect/keys/rotate -H "x-api-key: <ad
 
 The response is `{"version": 2}`. Runs after this write `enc:v2:` values. The old versions stay in the secret, so rows already landed with `enc:v1:` still reveal; Datris does not re-encrypt landed rows. The rotation is recorded as a `key / rotate / field-protection` event. The `hmac` key is never rotated by this endpoint.
 
-To retire an old version, save the `field-protection` secret (Secrets tab or `PUT /api/v1/secrets/field-protection`) without its `enc.v<n>` field, using a key that has `protect:admin`. Never remove the current version's field: `encCurrent` must keep naming a stored version. After that, every value encrypted with that version can no longer be revealed; re-landing those rows from the original source is the only way back. The rotate endpoint never reuses a retired version number.
+To retire an old version, save the `field-protection` secret (Secrets tab or `PUT /api/v1/secrets/field-protection`) without its `enc.v<n>` field, using a key that has `protect:admin`. Never remove the current version's field: `encCurrent` must keep naming a stored version. The highest version number cannot be removed, and at least one version must remain. After that, every value encrypted with that version can no longer be revealed; re-landing those rows from the original source is the only way back. The rotate endpoint never reuses a retired version number.
 
 ### Editing the key secret through the API
 
@@ -153,10 +153,11 @@ The secrets API guards `<environment>/field-protection`:
 - **`key` (the hmac key)** cannot be changed or removed through the API by anyone. The request fails with `409` and nothing is written. Changing it changes every hmac pseudonym, so the only supported path is a deliberate edit of the secret in Vault.
 - **Adding, changing or removing an `enc.v<n>`, or changing `encCurrent`** needs `protect:admin`. A key with only `secret:write` gets `403` and a `security / denied` audit entry; nothing is written. Each `enc.v<n>` value must be 64 hex characters (a 32-byte AES-256 key) and `encCurrent` must name a stored version; otherwise the request fails with `400`. The next run after an accepted edit encrypts with the new current version; no restart is needed.
 - **Accepted edits are audited** with the changed field names only, never the values: `key / rotate / field-protection` when an `enc.v<n>` was added or changed, `key / retire / field-protection` when one was removed, and `key / set-current / field-protection` when only `encCurrent` moved.
-- **A save that leaves every key field as it is** (fields sent back masked or blank, or an edit of another field) works with plain `secret:write`, so the Secrets tab can round-trip the secret.
+- **A save that leaves every key field as it is** (fields sent back masked or blank) works with plain `secret:write`, so the Secrets tab can round-trip the secret.
 - **Deleting the secret** (`DELETE /api/v1/secrets/field-protection`) is refused with the same `409` for everyone: the next protected run would issue a new hmac key and every landed ciphertext would be orphaned.
 - **Creating the secret** through the API is refused with `409`: the server issues it on the first protected run.
-- **Field names** must be exactly `key`, `encCurrent`, or `enc.v<n>` with `n` from 1 to 1000000 and no sign or leading zero. Any other name that looks like one of these (for example `Key`, `enc.v05` or `enc.v+2`) fails with `400` for every caller. `encCurrent` follows the same number rule.
+- **Field names** are limited to `key`, `encCurrent`, `enc.v<n>` (with `n` from 1 to 1000000, no sign or leading zero), `_type` and `createdByKeyLabel`. Any other field, including look-alikes such as `Key` or `enc.v05`, fails with `400` for every caller. `encCurrent` follows the same number rule.
+- **Retiring** removes older versions only. Removing every `enc.v<n>`, or removing the highest version number, fails with `400`, so a version number is never reused.
 
 ## Source retention
 

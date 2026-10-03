@@ -25,10 +25,11 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * field counts as removed.
   *
   * The secret itself is server-issued (FieldProtectionKey): a PUT when it does
-  * not exist yet and any DELETE are refused with 409. A field name that looks
-  * like a key field but is not in canonical form (`key`, `encCurrent`,
-  * `enc.v<n>` with n in 1..MaxVersion and no sign or leading zero) is refused
-  * with 400 for everyone, before the capability check.
+  * not exist yet and any DELETE are refused with 409. A field name outside
+  * the allowlist (`key`, `encCurrent`, `enc.v<n>` with n in 1..MaxVersion and
+  * no sign or leading zero, `_type`, `createdByKeyLabel`) is refused with 400
+  * for everyone, before the capability check. Retiring every version or the
+  * highest version is refused with 400 (version numbers are never reused).
   *
   * [[evaluate]] covers the whole PUT decision from the raw stored secret and
   * the merged body; the controller only maps its result to a response.
@@ -77,17 +78,37 @@ object FieldProtectionSecretGuard {
     private def validVersion(n: String): Boolean =
         VersionNumber.pattern.matcher(n).matches() && n.length <= 7 && n.toInt <= MaxVersion
 
-    /** Looks like a governed field once trimmed and case-folded. */
-    private def looksGoverned(name: String): Boolean = {
-        val n = name.trim.toLowerCase(java.util.Locale.ROOT)
-        n == "key" || n == "enccurrent" || n.startsWith("enc.")
+    /** The only fields the field-protection secret may hold besides the
+      * canonical `enc.v<n>`: an allowlist, so look-alike names (` key`, a
+      * Cyrillic `kеy`, `enc․v1`) are never stored as inert extra fields. */
+    val AllowedPlainFields: Set[String] = Set(KeyField, EncCurrent, "_type", "createdByKeyLabel")
+
+    /** Some(reason) for the first incoming field name that is neither in
+      * [[AllowedPlainFields]] nor a canonical `enc.v<n>`. */
+    def disallowedField(incoming: Map[String, String]): Option[String] =
+        incoming.keys.toSeq.sorted.find(k => !AllowedPlainFields.contains(k) && !isEncField(k)).map { k =>
+            "Field '" + k + "' is not allowed in the field-protection secret; allowed fields are 'key', 'encCurrent', " +
+                "'enc.v<n>' with n from 1 to " + MaxVersion + ", '_type' and 'createdByKeyLabel'"
+        }
+
+    private def versionOf(field: String): Int = field match {
+        case EncField(n) => n.toInt
+        case _ => 0
     }
 
-    /** Some(reason) for the first incoming field name that looks like a key
-      * field but is not canonical (`enc.v+5`, `enc.v05`, `Key`, ` encCurrent`). */
-    def nonCanonical(incoming: Map[String, String]): Option[String] =
-        incoming.keys.toSeq.sorted.find(k => looksGoverned(k) && !isKeyField(k)).map { k =>
-            "Field '" + k + "' is not a valid field-protection field; use 'key', 'encCurrent' or 'enc.v<n>' with n from 1 to " + MaxVersion
+    /** Some(reason) when a retire would let a version number be reused: the
+      * edit must leave at least one `enc.v<n>` when any is removed, and the
+      * highest version number is never removed (retire older versions only). */
+    def retireProblem(diff: Diff, incoming: Map[String, String]): Option[String] =
+        if (diff.encRemoved.isEmpty) None
+        else {
+            val remaining = incoming.keys.filter(isEncField).map(versionOf)
+            val highestRemoved = diff.encRemoved.map(versionOf).max
+            if (remaining.isEmpty)
+                Some("Retiring every enc.v<n> is not allowed; retire older versions only so version numbers are never reused")
+            else if (highestRemoved > remaining.max)
+                Some("enc.v" + highestRemoved + " is the highest version and cannot be removed; retire older versions only so version numbers are never reused")
+            else None
         }
 
     /** True for the fields the guard governs: `key`, every `enc.v<n>`, `encCurrent`. */
@@ -144,13 +165,13 @@ object FieldProtectionSecretGuard {
 
     /** The branch logic putSecret applies to the `field-protection` secret. */
     def decide(diff: Diff, incoming: Map[String, String], holdsProtectAdmin: Boolean): Decision = {
-        val badName = nonCanonical(incoming)
+        val badName = disallowedField(incoming)
         if (badName.isDefined) Invalid400(badName.get)
         else if (diff.keyChanged || diff.keyRemoved) Reject409(KeyChangeMessage)
         else if (!diff.touchesKeyMaterial) Allow(None, Set.empty)
         else if (!holdsProtectAdmin) Deny403
         else
-            validate(incoming) match {
+            validate(incoming).orElse(retireProblem(diff, incoming)) match {
                 case Some(reason) => Invalid400(reason)
                 case None =>
                     val action =

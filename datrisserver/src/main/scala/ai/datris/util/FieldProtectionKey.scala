@@ -247,7 +247,7 @@ object FieldProtectionKey {
       * `encCurrent` and its `enc.v<n>` from the secret again. Called after an
       * admin edits the key material through the secrets API. The hmac cache
       * is kept: `key` cannot be changed through the API. */
-    private[datris] def invalidate(env: String): Unit = encCache.remove(env)
+    private[datris] def invalidate(env: String): Unit = this.synchronized { encCache.remove(env) }
 
     /** Test seam: forget cached keys (hmac and encryption). */
     private[datris] def clearCache(): Unit = {

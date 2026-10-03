@@ -11,7 +11,7 @@ import ai.datris.audit.AuditLog
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess}
 import ai.datris.config.RequiresRole
 import ai.datris.model.DatrisEnvironment
-import ai.datris.util.{APIKeyValidator, FieldProtectionKey, SecretsRetrieverUtil, SecretsUtil}
+import ai.datris.util.{APIKeyValidator, FieldProtectionKey, SecretNames, SecretsRetrieverUtil, SecretsUtil}
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -107,6 +107,8 @@ class SecretsAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
+            val unsafeName = SecretsAPIController.rejectUnsafeName(name)
+            if (unsafeName.isDefined) return unsafeName.get
             logger.info("API endpoint GET /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
 
@@ -158,6 +160,8 @@ class SecretsAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
+            val unsafeName = SecretsAPIController.rejectUnsafeName(name)
+            if (unsafeName.isDefined) return unsafeName.get
             logger.info("API endpoint PUT /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
             rejectIfTrialAiSecret(name).getOrElse {
@@ -332,6 +336,8 @@ class SecretsAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
+            val unsafeName = SecretsAPIController.rejectUnsafeName(name)
+            if (unsafeName.isDefined) return unsafeName.get
             logger.info("API endpoint DELETE /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
             rejectIfTrialAiSecret(name).getOrElse {
@@ -434,6 +440,16 @@ class SecretsAPIController {
 
 object SecretsAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
+
+    /** 400 for a secret name that could address a different Vault secret than
+      * it names (SecretNames.isSafe); checked before any secret store call. */
+    private[api] def rejectUnsafeName(name: String): Option[ResponseEntity[String]] =
+        if (SecretNames.isSafe(name)) None
+        else
+            Some(
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                    .body[String]("{\"error\": \"" + SecretNames.InvalidMessage + "\"}")
+            )
 
     private val MASK = "••••••••"
 
