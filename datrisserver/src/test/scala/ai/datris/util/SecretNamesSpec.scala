@@ -62,4 +62,13 @@ class SecretNamesSpec extends AnyFunSuite {
         intercept[DatrisException](util.deleteSecret(bad))
         verifyNoInteractions(vault)
     }
+
+    test("isServerManaged: the field-protection keys and the API-key stores, trimmed and case-insensitive") {
+        for (n <- Seq("field-protection", "FIELD-PROTECTION", " field-protection ", "oss/field-protection", "api-keys", "api-key-metadata", "ui-api-key"))
+            assert(SecretNames.isServerManaged(n), n)
+        for (n <- Seq(null, "", "ai-primary", "codegen", "embedding", "ai-keys", "field-protection-copy", "my-tap"))
+            assert(!SecretNames.isServerManaged(n), String.valueOf(n))
+        val e = intercept[DatrisException](SecretNames.requireNotServerManaged("field-protection"))
+        assert(e.getMessage == "'field-protection' is a platform secret and cannot be used as a tap or pipeline secret")
+    }
 }

@@ -63,7 +63,7 @@ class SecretsAPIController {
                 if ("platform".equals(secretType)) {
                     SecretsRetrieverUtil.platformSecrets().map(_._1)
                 } else {
-                    allSecrets.filter(name => {
+                    allSecrets.filter(name => SecretNames.isSafePath(env + "/" + name)).filter(name => {
                         val secretMap = SecretsUtil.getSecretMap(env + "/" + name)
                         secretMap.exists(m => secretType.equals(m.get("_type")))
                     })
@@ -77,7 +77,7 @@ class SecretsAPIController {
             // scope permits, rather than every secret name.
             val visible =
                 if (CapabilityCheck.grants(request, "secret", "read", Map.empty[String, String])) secrets
-                else secrets.filter { name =>
+                else secrets.filter(name => SecretNames.isSafePath(env + "/" + name)).filter { name =>
                     val t = SecretsUtil.getSecretMap(env + "/" + name).flatMap(m => Option(m.get("_type"))).getOrElse("")
                     val ctx = if (t.nonEmpty) Map("_type" -> t) else Map.empty[String, String]
                     CapabilityCheck.grants(request, "secret", "read", ctx)
@@ -135,7 +135,7 @@ class SecretsAPIController {
                     val gson = new Gson
                     new ResponseEntity[String](gson.toJson(result), HttpStatus.OK)
                 case None =>
-                    ResponseEntity.status(HttpStatus.NOT_FOUND).body[String]("{\"error\": \"Secret not found: " + name + "\"}")
+                    ResponseEntity.status(HttpStatus.NOT_FOUND).body[String]("{\"error\": " + new Gson().toJson("Secret not found: " + name) + "}")
             }
         } catch {
             case e: CapabilityDeniedException =>

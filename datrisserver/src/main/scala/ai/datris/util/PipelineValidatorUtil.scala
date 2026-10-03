@@ -52,6 +52,7 @@ object PipelineValidatorUtil {
         if (config.source.fileAttributes == null && config.source.databaseAttributes == null)
             throw new DatrisException("Either 'source.fileAttributes' or 'source.databaseAttributes must be defined")
 
+        validateSecretReferences(config)
         validateUnityCatalog(config)
         validateFieldProtection(config)
 
@@ -60,6 +61,36 @@ object PipelineValidatorUtil {
         else
             validateStructuredAndSemiStructured(config)
     }
+
+    /** Every secret a pipeline names (destination/source credentials and
+      * connection secrets, vector store and embedding secrets, the Unity
+      * Catalog secret), labelled by its config path. */
+    private[util] def secretReferences(config: PipelineConfig): Seq[(String, String)] = {
+        val d = Option(config.destination)
+        val refs = Seq(
+            "unityCatalog.credentialsSecret" -> Option(config.unityCatalog).map(_.credentialsSecret),
+            "destination.objectStore.credentialsSecret" -> d.flatMap(x => Option(x.objectStore)).map(_.credentialsSecret),
+            "destination.database.credentialsSecret" -> d.flatMap(x => Option(x.database)).map(_.credentialsSecret),
+            "destination.qdrant.embeddingSecretName" -> d.flatMap(x => Option(x.qdrant)).map(_.embeddingSecretName),
+            "destination.qdrant.qdrantSecretName" -> d.flatMap(x => Option(x.qdrant)).map(_.qdrantSecretName),
+            "destination.weaviate.embeddingSecretName" -> d.flatMap(x => Option(x.weaviate)).map(_.embeddingSecretName),
+            "destination.weaviate.weaviateSecretName" -> d.flatMap(x => Option(x.weaviate)).map(_.weaviateSecretName),
+            "destination.pgvector.embeddingSecretName" -> d.flatMap(x => Option(x.pgvector)).map(_.embeddingSecretName),
+            "destination.pgvector.postgresSecretName" -> d.flatMap(x => Option(x.pgvector)).map(_.postgresSecretName),
+            "destination.milvus.embeddingSecretName" -> d.flatMap(x => Option(x.milvus)).map(_.embeddingSecretName),
+            "destination.milvus.milvusSecretName" -> d.flatMap(x => Option(x.milvus)).map(_.milvusSecretName),
+            "destination.chroma.embeddingSecretName" -> d.flatMap(x => Option(x.chroma)).map(_.embeddingSecretName),
+            "destination.chroma.chromaSecretName" -> d.flatMap(x => Option(x.chroma)).map(_.chromaSecretName),
+            "source.databaseAttributes.postgresSecretsName" -> Option(config.source).flatMap(s => Option(s.databaseAttributes)).map(_.postgresSecretsName),
+            "source.databaseAttributes.mssqlSecretsName" -> Option(config.source).flatMap(s => Option(s.databaseAttributes)).map(_.mssqlSecretsName),
+            "source.databaseAttributes.mysqlSecretsName" -> Option(config.source).flatMap(s => Option(s.databaseAttributes)).map(_.mysqlSecretsName)
+        )
+        refs.flatMap { case (label, v) => v.filter(_ != null).map(label -> _) }
+    }
+
+    /** No pipeline may reference a server-managed secret (SecretNames.ServerManaged). */
+    private def validateSecretReferences(config: PipelineConfig): Unit =
+        secretReferences(config).foreach { case (_, name) => SecretNames.requireNotServerManaged(name) }
 
     /** `unityCatalog.enabled` is meaningful for a Databricks destination
       * (metadata push + lineage) and for an object-store Iceberg destination

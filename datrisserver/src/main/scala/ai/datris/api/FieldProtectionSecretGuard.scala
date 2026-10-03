@@ -27,9 +27,11 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * The secret itself is server-issued (FieldProtectionKey): a PUT when it does
   * not exist yet and any DELETE are refused with 409. A field name outside
   * the allowlist (`key`, `encCurrent`, `enc.v<n>` with n in 1..MaxVersion and
-  * no sign or leading zero, `_type`, `createdByKeyLabel`) is refused with 400
-  * for everyone, before the capability check. Retiring every version or the
-  * highest version is refused with 400 (version numbers are never reused).
+  * no sign or leading zero, `createdByKeyLabel`) is refused with 400 for
+  * everyone, before the capability check; so is any `_type` (the secret is a
+  * platform secret). Retiring every version or the highest version, or adding
+  * a version at or below the highest stored one, is refused with 400 (version
+  * numbers are never reused).
   *
   * [[evaluate]] covers the whole PUT decision from the raw stored secret and
   * the merged body; the controller only maps its result to a response.
@@ -58,7 +60,11 @@ object FieldProtectionSecretGuard {
         keyRemoved: Boolean,
         encChanged: Set[String],
         encRemoved: Set[String],
-        currentChanged: Boolean
+        currentChanged: Boolean,
+        // The enc.v<n> in encChanged that the stored secret did not hold, and
+        // the highest stored version number: a new version must be above it.
+        encAdded: Set[String] = Set.empty,
+        highestStored: Int = 0
     ) {
         def touchesKeyMaterial: Boolean = encChanged.nonEmpty || encRemoved.nonEmpty || currentChanged
     }
@@ -81,14 +87,17 @@ object FieldProtectionSecretGuard {
     /** The only fields the field-protection secret may hold besides the
       * canonical `enc.v<n>`: an allowlist, so look-alike names (` key`, a
       * Cyrillic `kеy`, `enc․v1`) are never stored as inert extra fields. */
-    val AllowedPlainFields: Set[String] = Set(KeyField, EncCurrent, "_type", "createdByKeyLabel")
+    val AllowedPlainFields: Set[String] = Set(KeyField, EncCurrent, "createdByKeyLabel")
+
+    val TypedMessage = "field-protection is a platform secret and cannot be typed"
 
     /** Some(reason) for the first incoming field name that is neither in
       * [[AllowedPlainFields]] nor a canonical `enc.v<n>`. */
     def disallowedField(incoming: Map[String, String]): Option[String] =
-        incoming.keys.toSeq.sorted.find(k => !AllowedPlainFields.contains(k) && !isEncField(k)).map { k =>
+        if (incoming.contains("_type")) Some(TypedMessage)
+        else incoming.keys.toSeq.sorted.find(k => !AllowedPlainFields.contains(k) && !isEncField(k)).map { k =>
             "Field '" + k + "' is not allowed in the field-protection secret; allowed fields are 'key', 'encCurrent', " +
-                "'enc.v<n>' with n from 1 to " + MaxVersion + ", '_type' and 'createdByKeyLabel'"
+                "'enc.v<n>' with n from 1 to " + MaxVersion + " and 'createdByKeyLabel'"
         }
 
     private def versionOf(field: String): Int = field match {
@@ -100,6 +109,15 @@ object FieldProtectionSecretGuard {
       * edit must leave at least one `enc.v<n>` when any is removed, and the
       * highest version number is never removed (retire older versions only). */
     def retireProblem(diff: Diff, incoming: Map[String, String]): Option[String] =
+        diff.encAdded.toSeq.sortBy(versionOf).find(f => versionOf(f) <= diff.highestStored) match {
+            case Some(f) =>
+                Some(
+                    f + " is at or below the highest stored version (enc.v" + diff.highestStored + "); a new version must use a higher number so version numbers are never reused"
+                )
+            case None => removalProblem(diff, incoming)
+        }
+
+    private def removalProblem(diff: Diff, incoming: Map[String, String]): Option[String] =
         if (diff.encRemoved.isEmpty) None
         else {
             val remaining = incoming.keys.filter(isEncField).map(versionOf)
@@ -133,7 +151,9 @@ object FieldProtectionSecretGuard {
             keyRemoved = removed(existing, incoming, KeyField),
             encChanged = encNames.filter(changed(existing, incoming, _)),
             encRemoved = encNames.filter(removed(existing, incoming, _)),
-            currentChanged = changed(existing, incoming, EncCurrent) || removed(existing, incoming, EncCurrent)
+            currentChanged = changed(existing, incoming, EncCurrent) || removed(existing, incoming, EncCurrent),
+            encAdded = encNames.filter(n => changed(existing, incoming, n) && !existing.get(n).exists(_.nonEmpty)),
+            highestStored = (existing.keys.filter(isEncField).map(versionOf) ++ Seq(0)).max
         )
     }
 

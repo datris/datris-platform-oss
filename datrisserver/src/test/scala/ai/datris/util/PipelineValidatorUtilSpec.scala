@@ -1022,4 +1022,27 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val err = validationError(cfg)
         assert(err.exists(e => e.contains("account_no") && e.contains("only hmac keeps rows distinct")), s"got: $err")
     }
+
+    test("a pipeline credentialsSecret naming a server-managed secret is rejected") {
+        for (name <- Seq("field-protection", " Field-Protection ", "api-keys", "api-key-metadata", "ui-api-key", "oss/field-protection")) {
+            val err = validationError(objectStoreConfig(s""""credentialsSecret":"$name""""))
+            assert(err.exists(_.contains("is a platform secret and cannot be used as a tap or pipeline secret")), s"[$name] -> $err")
+        }
+        // An ordinary secret name is unaffected by this rule (later checks may need a live environment).
+        val other = scala.util.Try(PipelineValidatorUtil.validate(objectStoreConfig(""""credentialsSecret":"my-s3""""))).failed.toOption
+        assert(other.forall(e => !String.valueOf(e.getMessage).contains("platform secret")), other.toString)
+    }
+
+    test("secretReferences finds unity catalog, destination and source secret names") {
+        val cfg = parse(
+            """{"name":"p","unityCatalog":{"credentialsSecret":"uc"},
+              |"source":{"databaseAttributes":{"postgresSecretsName":"src-pg"}},
+              |"destination":{"database":{"credentialsSecret":"db"},"qdrant":{"embeddingSecretName":"emb","qdrantSecretName":"q"}}}""".stripMargin
+        )
+        assert(PipelineValidatorUtil.secretReferences(cfg).map(_._2).toSet == Set("uc", "src-pg", "db", "emb", "q"))
+        val e = intercept[DatrisException](PipelineValidatorUtil.validate(parse(
+            """{"name":"p","source":{"databaseAttributes":{"mysqlSecretsName":"api-keys"}}}"""
+        )))
+        assert(e.getMessage.contains("'api-keys' is a platform secret"))
+    }
 }

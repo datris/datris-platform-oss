@@ -19,6 +19,13 @@ import java.time.Instant
 import scala.collection.JavaConverters._
 
 object TapAPIController {
+
+    /** Some(message) when the tap's secretName names a server-managed secret
+      * (SecretNames.ServerManaged); checked on save. TapScriptRunner refuses
+      * the same at run time for taps saved before this check. */
+    private[api] def serverManagedSecretProblem(tap: TapConfig): Option[String] =
+        Option(tap.secretName).filter(SecretNames.isServerManaged).map(SecretNames.serverManagedMessage)
+
     // mode=test response caps `records` to this many rows. The UI's preview already
     // slices to 20 (tap-run.component.ts), so this matches without losing display
     // fidelity, and prevents large taps from bloating agent context.
@@ -287,6 +294,15 @@ class TapAPIController {
 
             if (tapConfig.name == null || tapConfig.name.isEmpty)
                 throw new DatrisException("Tap name is required")
+
+            // A tap may never reference a server-managed secret (field-protection
+            // keys, API-key stores): its fields would be injected into the script.
+            TapAPIController.serverManagedSecretProblem(tapConfig) match {
+                case Some(msg) =>
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                        .body[String]("{\"error\": " + new Gson().toJson(msg) + "}")
+                case None =>
+            }
 
             // Tap-kind validation. null/"python" is the script lane; "http" is a
             // user-hosted endpoint speaking the tap HTTP contract. Anything else is

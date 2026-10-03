@@ -274,7 +274,27 @@ class FieldProtectionSecretGuardSpec extends AnyFunSuite {
             val (_, d) = FieldProtectionSecretGuard.evaluate(stored, masked + (bad -> "x"), admin)
             assert(d.isInstanceOf[Invalid400], s"[$bad] $admin -> $d")
         }
-        val ok = masked + ("_type" -> "platform", "createdByKeyLabel" -> "ops")
+        val ok = masked + ("createdByKeyLabel" -> "ops")
         assert(FieldProtectionSecretGuard.evaluate(stored, ok, holdsProtectAdmin = false)._2 == Allow(None, Set.empty))
+    }
+
+    test("re-adding a retired lower version is Invalid400") {
+        // v1 was retired earlier: stored holds v2 and v3 only.
+        val now = Map("key" -> hmac, "enc.v2" -> v2, "enc.v3" -> v3, "encCurrent" -> "3")
+        val (_, d) = FieldProtectionSecretGuard.evaluate(now, now + ("enc.v1" -> v1, "encCurrent" -> "1"), holdsProtectAdmin = true)
+        assert(d.isInstanceOf[Invalid400], d.toString)
+        // A gap below the highest is refused too; a number above it is fine.
+        val (_, d2) = FieldProtectionSecretGuard.evaluate(stored - "enc.v1", (stored - "enc.v1") + ("enc.v1" -> v3), holdsProtectAdmin = true)
+        assert(d2.isInstanceOf[Invalid400], d2.toString)
+        val (_, ok) = FieldProtectionSecretGuard.evaluate(now, now + ("enc.v4" -> v1, "encCurrent" -> "4"), holdsProtectAdmin = true)
+        assert(ok == Allow(Some("rotate"), Set("enc.v4", "encCurrent")), ok.toString)
+    }
+
+    test("_type on the field-protection secret is Invalid400 for everyone") {
+        val masked = Map("key" -> Mask, "enc.v1" -> Mask, "enc.v2" -> Mask, "encCurrent" -> "2")
+        for (t <- Seq("tap", "platform", ""); admin <- Seq(true, false)) {
+            val (_, d) = FieldProtectionSecretGuard.evaluate(stored, masked + ("_type" -> t), admin)
+            assert(d == Invalid400(FieldProtectionSecretGuard.TypedMessage), s"[$t] $admin -> $d")
+        }
     }
 }

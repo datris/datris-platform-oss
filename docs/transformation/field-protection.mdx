@@ -109,6 +109,8 @@ The key is read fail-closed: if Vault cannot be read, the run fails rather than 
 
 `encrypt` uses separate, versioned keys in the same secret: fields `enc.v1`, `enc.v2`, and so on, with `encCurrent` naming the version new values are encrypted with. The server issues `enc.v1` the first time an `encrypt` run needs it (audited as `key / issue / field-protection`). Keys never leave the server and no user ever holds one. See [Key rotation](#key-rotation).
 
+The `field-protection` secret cannot be referenced by a tap or a pipeline.
+
 ## Revealing a value
 
 `encrypt` is the one reversible method. To read an original value back, send the ciphertexts you read from the destination to the reveal endpoint:
@@ -156,8 +158,8 @@ The secrets API guards `<environment>/field-protection`:
 - **A save that leaves every key field as it is** (fields sent back masked or blank) works with plain `secret:write`, so the Secrets tab can round-trip the secret.
 - **Deleting the secret** (`DELETE /api/v1/secrets/field-protection`) is refused with the same `409` for everyone: the next protected run would issue a new hmac key and every landed ciphertext would be orphaned.
 - **Creating the secret** through the API is refused with `409`: the server issues it on the first protected run.
-- **Field names** are limited to `key`, `encCurrent`, `enc.v<n>` (with `n` from 1 to 1000000, no sign or leading zero), `_type` and `createdByKeyLabel`. Any other field, including look-alikes such as `Key` or `enc.v05`, fails with `400` for every caller. `encCurrent` follows the same number rule.
-- **Retiring** removes older versions only. Removing every `enc.v<n>`, or removing the highest version number, fails with `400`, so a version number is never reused.
+- **Field names** are limited to `key`, `encCurrent`, `enc.v<n>` (with `n` from 1 to 1000000, no sign or leading zero) and `createdByKeyLabel`. Any other field, including look-alikes such as `Key` or `enc.v05` and a `_type` tag, fails with `400` for every caller. `encCurrent` follows the same number rule.
+- **Version numbers are never reused.** Retiring removes older versions only: removing every `enc.v<n>`, or the highest version number, fails with `400`. A new `enc.v<n>` must be numbered above the highest stored version; re-adding a retired lower number fails with `400`.
 
 ## Source retention
 

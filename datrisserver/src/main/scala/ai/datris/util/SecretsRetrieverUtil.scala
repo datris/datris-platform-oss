@@ -54,7 +54,9 @@ object SecretsRetrieverUtil {
      *  external-SaaS credential scan on GET /destinations/available. */
     def platformSecrets(): List[(String, java.util.Map[String, String])] = {
         val env = DatrisEnvironment.current.environment
-        SecretsUtil.listSecrets(env).flatMap(name => {
+        // A name created directly in Vault that SecretNames refuses cannot be
+        // read through the secret store; skip it rather than fail the list.
+        SecretsUtil.listSecrets(env).filter(name => SecretNames.isSafePath(env + "/" + name)).flatMap(name => {
             SecretsUtil.getSecretMap(env + "/" + name)
                 .filter(m => {
                     val t = m.get("_type")
