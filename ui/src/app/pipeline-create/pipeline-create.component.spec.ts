@@ -541,9 +541,10 @@ describe('PipelineCreateComponent — field protection', () => {
       const sel = r.querySelector('select.field-protect');
       expect(sel).withContext('select.field-protect in every field row').not.toBeNull();
       const texts = offered(sel).map(t => t.toLowerCase());
-      expect(texts.length).withContext('None + four methods: ' + texts.join(',')).toBe(5);
+      expect(texts.length).withContext('None + five methods: ' + texts.join(',')).toBe(6);
       expect(texts[0]).toMatch(/^none/);
       expect(texts.some(t => /^hmac/.test(t))).withContext('hmac offered').toBeTrue();
+      expect(texts.some(t => /^encrypt/.test(t))).withContext('encrypt offered').toBeTrue();
       expect(texts.some(t => /^mask/.test(t))).withContext('mask offered').toBeTrue();
       expect(texts.some(t => /^redact/.test(t))).withContext('redact offered').toBeTrue();
       expect(texts.some(t => /^drop/.test(t))).withContext('drop offered').toBeTrue();
@@ -574,7 +575,7 @@ describe('PipelineCreateComponent — field protection', () => {
     expect(texts.some(t => /domain/.test(t))).toBeTrue();
     expect(texts.some(t => /year/.test(t))).toBeTrue();
     expect((c.preserveOptions || []).map((o: any) => o.value)).toEqual([null, 'last4', 'domain', 'year']);
-    expect(c.protectMethods).toEqual(['hmac', 'mask', 'redact', 'drop']);
+    expect(c.protectMethods).toEqual(['hmac', 'mask', 'redact', 'drop', 'encrypt']);
   });
 
   it('buildConfig emits protect only for fields with a method and omits preserve when null', () => {
@@ -673,7 +674,7 @@ describe('PipelineCreateComponent — field protection', () => {
     expect(keyTexts[0]).toMatch(/^none/);
     expect(keyTexts[1]).toMatch(/^hmac/);
     // A non-key column still offers everything.
-    expect(offered(rowFor('email').querySelector('select.field-protect')).length).toBe(5);
+    expect(offered(rowFor('email').querySelector('select.field-protect')).length).toBe(6);
   });
 
   it('a dropped field is absent from the Key Fields select', () => {

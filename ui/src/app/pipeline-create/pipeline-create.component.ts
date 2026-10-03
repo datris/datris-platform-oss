@@ -41,7 +41,7 @@ function wizardField(f: any): SchemaField {
 }
 
 /** Protect methods that only apply to string fields (drop works on any type). */
-const STRING_ONLY_METHODS = ['hmac', 'mask', 'redact'];
+const STRING_ONLY_METHODS = ['hmac', 'mask', 'redact', 'encrypt'];
 
 @Component({
     selector: 'app-pipeline-create',
@@ -98,7 +98,7 @@ export class PipelineCreateComponent implements OnInit {
   schemaFile: File | null = null;
 
   // Field protection (Source Schema step)
-  protectMethods = ['hmac', 'mask', 'redact', 'drop'];
+  protectMethods = ['hmac', 'mask', 'redact', 'drop', 'encrypt'];
   preserveOptions: Array<{ value: string | null; label: string }> = [
     { value: null, label: 'Mask all' },
     { value: 'last4', label: 'Keep last 4' },
