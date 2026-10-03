@@ -90,7 +90,9 @@ object PipelineValidatorUtil {
 
     /** No pipeline may reference a server-managed secret (SecretNames.ServerManaged). */
     private def validateSecretReferences(config: PipelineConfig): Unit =
-        secretReferences(config).foreach { case (_, name) => SecretNames.requireNotServerManaged(name) }
+        secretReferences(config).foreach { case (_, name) =>
+            SecretNames.referenceProblem(name).foreach(p => throw new DatrisException(p))
+        }
 
     /** `unityCatalog.enabled` is meaningful for a Databricks destination
       * (metadata push + lineage) and for an object-store Iceberg destination

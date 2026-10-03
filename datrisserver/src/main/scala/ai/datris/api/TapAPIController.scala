@@ -24,7 +24,7 @@ object TapAPIController {
       * (SecretNames.ServerManaged); checked on save. TapScriptRunner refuses
       * the same at run time for taps saved before this check. */
     private[api] def serverManagedSecretProblem(tap: TapConfig): Option[String] =
-        Option(tap.secretName).filter(SecretNames.isServerManaged).map(SecretNames.serverManagedMessage)
+        Option(tap.secretName).flatMap(SecretNames.referenceProblem)
 
     // mode=test response caps `records` to this many rows. The UI's preview already
     // slices to 20 (tap-run.component.ts), so this matches without losing display

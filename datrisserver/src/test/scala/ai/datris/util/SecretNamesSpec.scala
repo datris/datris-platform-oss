@@ -27,9 +27,24 @@ class SecretNamesSpec extends AnyFunSuite {
         "a\u0000b",
         "a\nb",
         "a\u007fb",
+        "my secret",
+        "field-protection ",
+        "a\u00a0b",
+        "a\u200bb",
+        "a\tb",
+        "a\"b",
+        "a<b",
+        "a>b",
+        "a|b",
+        "a^b",
+        "a`b",
+        "a{b",
+        "a}b",
+        "a[b",
+        "a]b",
         ""
     )
-    private val safe = Seq("field-protection", "ai-primary", "my secret", "tap.github_1")
+    private val safe = Seq("field-protection", "ai-primary", "my_secret", "tap.github_1", "team:prod")
 
     test("unsafe names are rejected") {
         unsafe.foreach(n => assert(!SecretNames.isSafe(n), "[" + n + "] must be unsafe"))
@@ -78,5 +93,16 @@ class SecretNamesSpec extends AnyFunSuite {
             val e = intercept[DatrisException](SecretsRetrieverUtil.userSecret(n))
             assert(e.getMessage.contains("is a platform secret and cannot be used as a tap or pipeline secret"), n)
         }
+    }
+
+    test("referenceProblem: unsafe paths and server-managed names, nothing else") {
+        assert(SecretNames.referenceProblem("field-protection/.").contains("Invalid secret name 'field-protection/.'"))
+        assert(SecretNames.referenceProblem("field-protection?x=1").contains("Invalid secret name 'field-protection?x=1'"))
+        assert(SecretNames.referenceProblem("field-protection#a").contains("Invalid secret name 'field-protection#a'"))
+        assert(SecretNames.referenceProblem("e2e fp7b").contains("Invalid secret name 'e2e fp7b'"))
+        assert(SecretNames.referenceProblem("field-protection").exists(_.contains("is a platform secret")))
+        assert(SecretNames.referenceProblem("github-token").isEmpty)
+        assert(SecretNames.referenceProblem("oss/embedding").isEmpty)
+        assert(SecretNames.referenceProblem(null).isEmpty)
     }
 }

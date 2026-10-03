@@ -28,4 +28,11 @@ class TapServerManagedSecretSpec extends AnyFunSuite {
         assert(TapAPIController.serverManagedSecretProblem(tap("github-token")).isEmpty)
         assert(TapAPIController.serverManagedSecretProblem(tap("ai-primary")).isEmpty)
     }
+
+    test("save refuses a tap secretName that is not a safe secret path") {
+        for (n <- Seq("field-protection/.", "field-protection?x=1", "field-protection#a", "my secret")) {
+            val p = TapAPIController.serverManagedSecretProblem(tap(n))
+            assert(p.contains("Invalid secret name '" + n + "'"), s"[$n] -> $p")
+        }
+    }
 }

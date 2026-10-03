@@ -16,7 +16,8 @@ import org.scalatest.funsuite.AnyFunSuite
   * secret store call, so the handlers can be driven directly. */
 class SecretsNameGuardSpec extends AnyFunSuite {
 
-    private val names = Seq("field-protection?x", "field-protection#x", "field-protection?", "a%3Fb", "..", "a/b", "a\u0001b")
+    private val names =
+        Seq("field-protection?x", "field-protection#x", "field-protection?", "a%3Fb", "..", "a/b", "a\u0001b", "field-protection ", "e2e fp7b", "a\"b", "a{b}")
 
     test("unsafe names are 400 on GET, PUT and DELETE") {
         val c = new SecretsAPIController
@@ -35,8 +36,17 @@ class SecretsNameGuardSpec extends AnyFunSuite {
     }
 
     test("rejectUnsafeName passes ordinary names") {
-        Seq("field-protection", "ai-primary", "my secret", "tap.github_1").foreach(n =>
+        Seq("field-protection", "ai-primary", "my_secret", "tap.github_1").foreach(n =>
             assert(SecretsAPIController.rejectUnsafeName(n).isEmpty, n)
         )
+    }
+
+    test("the catch-all never echoes the exception text (it can carry the secret store URL)") {
+        val e = new RuntimeException(
+            "io.github.jopenlibs.vault.rest.RestException: java.net.URISyntaxException: Illegal character in path at index 53: http://vault:8200/v1/secret/data/oss/x"
+        )
+        val r = SecretsAPIController.failed(e)
+        assert(r.getStatusCode.value == 500)
+        assert(r.getBody == "{\"error\":\"Secret operation failed\"}", r.getBody)
     }
 }

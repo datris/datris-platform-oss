@@ -1024,7 +1024,7 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
     }
 
     test("a pipeline credentialsSecret naming a server-managed secret is rejected") {
-        for (name <- Seq("field-protection", " Field-Protection ", "api-keys", "api-key-metadata", "ui-api-key", "oss/field-protection")) {
+        for (name <- Seq("field-protection", "Field-Protection", "api-keys", "api-key-metadata", "ui-api-key", "oss/field-protection")) {
             val err = validationError(objectStoreConfig(s""""credentialsSecret":"$name""""))
             assert(err.exists(_.contains("is a platform secret and cannot be used as a tap or pipeline secret")), s"[$name] -> $err")
         }
@@ -1044,5 +1044,12 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
             """{"name":"p","source":{"databaseAttributes":{"mysqlSecretsName":"api-keys"}}}"""
         )))
         assert(e.getMessage.contains("'api-keys' is a platform secret"))
+    }
+
+    test("a pipeline secret reference that is not a safe secret path is rejected at save") {
+        for (name <- Seq("field-protection/.", "field-protection?x=1", "field-protection#a", "my secret")) {
+            val err = validationError(objectStoreConfig(s""""credentialsSecret":"$name""""))
+            assert(err.contains("Invalid secret name '" + name + "'"), s"[$name] -> $err")
+        }
     }
 }

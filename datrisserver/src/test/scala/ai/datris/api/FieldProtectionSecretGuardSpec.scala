@@ -297,4 +297,17 @@ class FieldProtectionSecretGuardSpec extends AnyFunSuite {
             assert(d == Invalid400(FieldProtectionSecretGuard.TypedMessage), s"[$t] $admin -> $d")
         }
     }
+
+    test("an unknown or non-canonical field sent as the mask or blank is still Invalid400") {
+        val masked = Map("key" -> Mask, "enc.v1" -> Mask, "enc.v2" -> Mask, "encCurrent" -> "2")
+        for (bad <- Seq("Key", "note", "enc.v05"); v <- Seq(Mask, "", "  "); admin <- Seq(true, false)) {
+            // As the controller sees it: mergeIncoming already dropped the masked unknown field.
+            val merged = FieldProtectionSecretGuard.restoreUnchanged(stored, masked)
+            val (_, d) = FieldProtectionSecretGuard.evaluate(stored, merged, admin, rawFieldNames = masked.keySet + bad)
+            assert(d.isInstanceOf[Invalid400], s"[$bad=$v] $admin -> $d")
+            // And on the raw body directly.
+            val (_, d2) = FieldProtectionSecretGuard.evaluate(stored, masked + (bad -> v), admin)
+            assert(d2.isInstanceOf[Invalid400], s"raw [$bad=$v] $admin -> $d2")
+        }
+    }
 }

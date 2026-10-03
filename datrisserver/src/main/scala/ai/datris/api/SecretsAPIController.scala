@@ -96,7 +96,7 @@ class SecretsAPIController {
                         e.getMessage.replace("\"", "\\\"") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ApiErrors.internal(e)
+                SecretsAPIController.failed(e)
         }
     }
 
@@ -148,7 +148,7 @@ class SecretsAPIController {
                         e.getMessage.replace("\"", "\\\"") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ApiErrors.internal(e)
+                SecretsAPIController.failed(e)
         }
     }
 
@@ -207,7 +207,7 @@ class SecretsAPIController {
                 // protect:admin (403), must be well formed (400) and are audited.
                 // A round-trip of masks/blanks passes with plain secret:write.
                 val guard: Either[ResponseEntity[String], Option[(String, Set[String])]] =
-                    if (name == FieldProtectionSecret) fieldProtectionGuard(request, existing.toMap, incoming)
+                    if (name == FieldProtectionSecret) fieldProtectionGuard(request, existing.toMap, incoming, json.keySet.asScala.toSet)
                     else Right(None)
 
                 guard match {
@@ -325,7 +325,7 @@ class SecretsAPIController {
                         e.getMessage.replace("\"", "\\\"") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ApiErrors.internal(e)
+                SecretsAPIController.failed(e)
         }
     }
 
@@ -377,7 +377,7 @@ class SecretsAPIController {
                         e.getMessage.replace("\"", "\\\"") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ApiErrors.internal(e)
+                SecretsAPIController.failed(e)
         }
     }
 
@@ -390,11 +390,12 @@ class SecretsAPIController {
     private def fieldProtectionGuard(
         request: HttpServletRequest,
         existing: Map[String, String],
-        incoming: java.util.LinkedHashMap[String, Object]
+        incoming: java.util.LinkedHashMap[String, Object],
+        rawFieldNames: Set[String]
     ): Either[ResponseEntity[String], Option[(String, Set[String])]] = {
         import FieldProtectionSecretGuard._
         val raw = incoming.asScala.toMap.map { case (k, v) => k -> String.valueOf(v) }
-        val (restored, decision) = evaluate(existing, raw, FieldProtectionAPIController.holdsCapability(request, "admin"))
+        val (restored, decision) = evaluate(existing, raw, FieldProtectionAPIController.holdsCapability(request, "admin"), rawFieldNames)
         // Write exactly the restored map, in the request's field order.
         val order = incoming.keySet.asScala.toList
         incoming.clear()
@@ -440,6 +441,18 @@ class SecretsAPIController {
 
 object SecretsAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
+
+    val FailedBody = "{\"error\":\"Secret operation failed\"}"
+
+    /** Catch-all response: key rejections keep ApiErrors' 401/503 shape;
+      * anything else is a fixed message, never the exception text (a secret
+      * store error can carry the internal store URL). The caller has already
+      * logged the detail. */
+    private[api] def failed(e: Throwable): ResponseEntity[String] = {
+        val (status, body) = ApiErrors.classify(e)
+        val safeBody = if (status == HttpStatus.INTERNAL_SERVER_ERROR.value) FailedBody else body
+        ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).body[String](safeBody)
+    }
 
     /** 400 for a secret name that could address a different Vault secret than
       * it names (SecretNames.isSafe); checked before any secret store call. */

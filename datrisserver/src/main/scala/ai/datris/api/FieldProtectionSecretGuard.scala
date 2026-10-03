@@ -93,9 +93,12 @@ object FieldProtectionSecretGuard {
 
     /** Some(reason) for the first incoming field name that is neither in
       * [[AllowedPlainFields]] nor a canonical `enc.v<n>`. */
-    def disallowedField(incoming: Map[String, String]): Option[String] =
-        if (incoming.contains("_type")) Some(TypedMessage)
-        else incoming.keys.toSeq.sorted.find(k => !AllowedPlainFields.contains(k) && !isEncField(k)).map { k =>
+    def disallowedField(incoming: Map[String, String]): Option[String] = disallowedName(incoming.keys)
+
+    /** [[disallowedField]] over bare field names (the raw request body's). */
+    def disallowedName(names: Iterable[String]): Option[String] =
+        if (names.exists(_ == "_type")) Some(TypedMessage)
+        else names.toSeq.sorted.find(k => !AllowedPlainFields.contains(k) && !isEncField(k)).map { k =>
             "Field '" + k + "' is not allowed in the field-protection secret; allowed fields are 'key', 'encCurrent', " +
                 "'enc.v<n>' with n from 1 to " + MaxVersion + " and 'createdByKeyLabel'"
         }
@@ -215,10 +218,22 @@ object FieldProtectionSecretGuard {
 
     /** The whole PUT decision from the stored secret (empty when absent) and
       * the merged body: the map to write and the Decision. */
-    def evaluate(existing: Map[String, String], incoming: Map[String, String], holdsProtectAdmin: Boolean): (Map[String, String], Decision) = {
+    def evaluate(
+        existing: Map[String, String],
+        incoming: Map[String, String],
+        holdsProtectAdmin: Boolean,
+        rawFieldNames: Iterable[String] = Nil
+    ): (Map[String, String], Decision) = {
         val restored = restoreUnchanged(existing, incoming)
         if (existing.isEmpty) (restored, Reject409(NotIssuedMessage))
-        else (restored, decide(diff(existing, restored), restored, holdsProtectAdmin))
+        else
+            // The allowlist runs on the raw body's field names (and the merged
+            // map's), before any mask/blank restore or drop, so an unknown name
+            // is refused whatever its value.
+            disallowedName(rawFieldNames.toSet ++ incoming.keySet) match {
+                case Some(reason) => (restored, Invalid400(reason))
+                case None => (restored, decide(diff(existing, restored), restored, holdsProtectAdmin))
+            }
     }
 
     /** DELETE of the field-protection secret is refused for everyone: the
