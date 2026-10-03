@@ -143,6 +143,9 @@ object DoctorService {
 
         /** One-input embedding request → (status, bodySnippet). Throws on timeout/IO. */
         def probeEmbedding(provider: String, endpoint: String, model: String, apiKey: String, timeoutMs: Int): (Int, String)
+
+        /** (tap, secret, stored `_type`) for every saved tap whose secret exists. */
+        def tapSecretRefs(): List[(String, String, Option[String])]
     }
 
     private val Day = 86400L
@@ -426,6 +429,32 @@ object DoctorService {
         }
     }
 
+    /** Taps whose secret is not tagged `_type=tap`
+      * (plans/stories/field-protection-8-tap-secret-scope.md): error when the
+      * scope is enforced (they fail to run), warn under
+      * DATRIS_TAP_SECRET_SCOPE=any (they can read platform secrets). */
+    class TapSecretScopeCheck(probes: Probes) extends Check {
+        val id = "tap.secret_scope"
+        val startupSafe = true
+        def run(): CheckResult = {
+            val offenders = probes.tapSecretRefs().collect {
+                case (tap, secret, storedType) if !storedType.contains(SecretNames.TapScopeTap) => tap + "→" + secret
+            }
+            if (offenders.isEmpty) return ok("every tap with a secret uses a tap secret")
+            val list = offenders.mkString(", ")
+            val n = offenders.size + " tap(s) use a platform secret"
+            val fix = "Create a tap secret (Configuration → Secrets → Tap) with the fields each tap needs and select it, " +
+                "or add `_type: tap` to a hand-made tap secret."
+            if (SecretNames.tapScopeEnforced)
+                error(n + " and will fail to run: " + list, fix + " Or set " + SecretNames.TapScopeEnv + "=any to allow platform secrets.")
+            else
+                warn(
+                    n + ", allowed by " + SecretNames.TapScopeEnv + "=any; these taps can read platform secrets: " + list,
+                    fix + " Then remove " + SecretNames.TapScopeEnv + "=any."
+                )
+        }
+    }
+
     /** Compares the server's version with whatever versions the calling
       * clients report (`?cli=`, `?mcp=`, `?ui=`). Major.minor must match. */
     class VersionSkewCheck(serverVersion: String, clients: Map[String, String]) extends Check {
@@ -577,6 +606,7 @@ object DoctorService {
             new DiskUsageCheck(probes, Seq(System.getProperty("user.dir"), System.getProperty("java.io.tmpdir"))),
             new StagingAreaCheck(probes, StagingArea.payloadBudgetMB),
             new StagingOrphansCheck(probes),
+            new TapSecretScopeCheck(probes),
             new VersionSkewCheck(serverVersion, clients),
             new EnvSeenCheck(probes),
             new AiModelReachableCheck(probes, slots)
@@ -741,6 +771,14 @@ object DoctorService {
 
         def envSeen(names: Seq[String]): Map[String, Boolean] =
             names.map(n => n -> sys.env.get(n).exists(_.nonEmpty)).toMap
+
+        def tapSecretRefs(): List[(String, String, Option[String])] =
+            try TapSecretScopeScan.liveRefs()
+            catch {
+                case e: Exception =>
+                    logger.debug("tap secret scan for doctor failed: " + e.getMessage)
+                    Nil
+            }
 
         def stagingArea(): StagingAreaState = {
             val root = StagingArea.root

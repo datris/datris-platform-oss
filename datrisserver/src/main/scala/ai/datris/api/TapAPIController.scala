@@ -26,6 +26,24 @@ object TapAPIController {
     private[api] def serverManagedSecretProblem(tap: TapConfig): Option[String] =
         Option(tap.secretName).flatMap(SecretNames.referenceProblem)
 
+    /** Some(message) when the tap may not be saved with its secretName: a
+      * server-managed or unsafe name (always, whatever the scope), or — when
+      * `enforced` — a secret not tagged `_type=tap`. `typeOf(secretName)`:
+      * outer None = the secret does not exist (left to the run-time
+      * missing-secret error), inner Option = its stored `_type`. Applies to
+      * script and HTTP taps alike (endpoint_token lives in the same secret). */
+    def tapSecretSaveProblem(tap: TapConfig, typeOf: String => Option[Option[String]], enforced: Boolean): Option[String] =
+        serverManagedSecretProblem(tap).orElse {
+            val name = tap.secretName
+            if (name == null || name.trim.isEmpty) None
+            else typeOf(name).flatMap(storedType => SecretNames.tapSecretProblem(tap.name, name, storedType, enforced))
+        }
+
+    /** The stored `_type` of a secret in the current environment: None when
+      * it does not exist, Some(None) when it has no `_type`. */
+    private[datris] def liveSecretType(name: String): Option[Option[String]] =
+        SecretsUtil.getSecretMap(DatrisEnvironment.current.environment + "/" + name).map(m => Option(m.get("_type")))
+
     // mode=test response caps `records` to this many rows. The UI's preview already
     // slices to 20 (tap-run.component.ts), so this matches without losing display
     // fidelity, and prevents large taps from bloating agent context.
@@ -297,7 +315,9 @@ class TapAPIController {
 
             // A tap may never reference a server-managed secret (field-protection
             // keys, API-key stores): its fields would be injected into the script.
-            TapAPIController.serverManagedSecretProblem(tapConfig) match {
+            // Field protection 8: and only a tap-typed secret unless
+            // DATRIS_TAP_SECRET_SCOPE=any.
+            TapAPIController.tapSecretSaveProblem(tapConfig, TapAPIController.liveSecretType, SecretNames.tapScopeEnforced) match {
                 case Some(msg) =>
                     return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
                         .body[String]("{\"error\": " + new Gson().toJson(msg) + "}")
@@ -793,6 +813,19 @@ class TapAPIController {
 
             if (description == null || description.isEmpty)
                 throw new DatrisException("Description is required")
+
+            // Field protection 8: the generator lists the secret's field names
+            // in the prompt, so the same secret rule as the save path applies
+            // here — a platform secret's field names are not disclosed.
+            if (secretName != null && secretName.trim.nonEmpty) {
+                val probe = TapConfig(name = tapName, description = "", targetPipeline = "", secretName = secretName)
+                TapAPIController.tapSecretSaveProblem(probe, TapAPIController.liveSecretType, SecretNames.tapScopeEnforced) match {
+                    case Some(msg) =>
+                        return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                            .body[String]("{\"error\": " + new Gson().toJson(msg) + "}")
+                    case None =>
+                }
+            }
 
             val result = TapScriptGenerator.generate(description, tapName, oldScriptPath, secretName, tapType)
 

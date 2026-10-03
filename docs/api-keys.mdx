@@ -140,6 +140,8 @@ job:read
 
 Each capability is `resource:action[:scope]`. Scope segments restrict by container (catalog, database, collection), type, or ownership — never by leaf resource name, since agents pick those at runtime.
 
+Tap secrets (`_type=tap`) are the only secrets a tap can read: a tap that names a platform secret is refused on save and at run time, so a key holding `tap:create` and `tap:run` cannot use a tap to read a platform secret that its `secret:read:_type=tap` scope keeps it from reading directly (unless an operator sets `DATRIS_TAP_SECRET_SCOPE=any`; see [Taps](/taps#taps-can-only-use-tap-secrets)).
+
 `protect:reveal` (read back the original of an [`encrypt`-protected field](/transformation/field-protection#revealing-a-value)) and `protect:admin` (rotate its key, and edits to the field-protection secret) are never in a scoped template or in the editor and viewer role bundles: grant them explicitly to the key that needs them. Admins, the `full-access` template, and legacy unscoped keys hold them through `*:*`.
 
 When user-auth is on, logged-in browser sessions are first-class identities too: `session:admin`, `session:editor1`, etc. The capability bundle is derived from the user's role (admin → full access, editor → create/update/run, viewer → read-only). The API-Keys tab in Configuration shows scoped *keys*; per-role capabilities are managed via the **Users** tab.

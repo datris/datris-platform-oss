@@ -1304,6 +1304,8 @@ ids = json.loads(ids_json)
 | Date windows, page cursors, id lists, batch sizes | Things the user would refuse to paste into chat | Regions, bucket names, account IDs, project IDs, base URLs, table/schema names |
 | Anything the user might want to override on an ad-hoc run | Things you'd never want to change just to trigger a one-off | Things that don't change between runs and aren't sensitive |
 
+`secret_name` must be a tap secret (see `list_tap_secrets` / `create_tap_secret`); a platform secret is refused by the server.
+
 **The "is this a secret?" test:** would the user reasonably refuse to type this value into the chat? An access key, password, or signed token? Yes — that's a secret, ask via `request_tap_secret_from_user`. A region, container/bucket/database name, account/project/tenant ID, base URL, or endpoint URL? No — that's config, hardcode it in the script or pass as a `run_tap(params=...)` value.
 
 **Anti-pattern 1:** rewriting a secret on every run to smuggle per-call params through. This clobbers concurrent runs, pollutes audit history, and wastes Vault writes. Use `params` instead. If an existing script doesn't yet read a param, update it by calling `create_tap` again with the same name and a revised `script` — create_tap upserts by name and replaces the existing script.
@@ -2620,7 +2622,7 @@ def _base_tools():
                     },
                     "secret_name": {
                         "type": "string",
-                        "description": "Vault secret name containing API keys/credentials the script needs for the EXTERNAL source. Never for the platform's own databases — scripts reach platform data credential-free via the auto-injected DATRIS_PLATFORM_* env vars and the /api/v1/query/* callback."
+                        "description": "Vault secret name containing API keys/credentials the script needs for the EXTERNAL source. Never for the platform's own databases — scripts reach platform data credential-free via the auto-injected DATRIS_PLATFORM_* env vars and the /api/v1/query/* callback. Must be a tap secret (see list_tap_secrets / create_tap_secret); a platform secret is refused by the server."
                     },
                     "tap_type": {
                         "type": "string",

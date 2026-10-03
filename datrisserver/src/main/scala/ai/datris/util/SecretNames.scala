@@ -66,6 +66,50 @@ object SecretNames {
     def requireNotServerManaged(name: String): Unit =
         if (isServerManaged(name)) throw new DatrisException(serverManagedMessage(name))
 
+    // ---- Tap secret scope (plans/stories/field-protection-8-tap-secret-scope.md)
+
+    val TapScopeProperty = "datris.tapSecretScope"
+    val TapScopeEnv = "DATRIS_TAP_SECRET_SCOPE"
+    val TapScopeAny = "any"
+    val TapScopeTap = "tap"
+
+    private val warnedUnknownScope = new java.util.concurrent.ConcurrentHashMap[String, java.lang.Boolean]()
+
+    /** "any" or "tap": which secrets a tap may use. Read at call time from the
+      * `datris.tapSecretScope` system property, else DATRIS_TAP_SECRET_SCOPE;
+      * trimmed and lowercased. Unset means "tap"; any other value is treated
+      * as "tap" and logged once. */
+    def tapScope: String = {
+        val raw = sys.props.get(TapScopeProperty).orElse(sys.env.get(TapScopeEnv))
+        raw.map(_.trim.toLowerCase(java.util.Locale.ROOT)) match {
+            case Some(TapScopeAny) => TapScopeAny
+            case Some(v) if v.nonEmpty && v != TapScopeTap =>
+                if (warnedUnknownScope.putIfAbsent(v, java.lang.Boolean.TRUE) == null)
+                    org.slf4j.LoggerFactory.getLogger(getClass).warn(
+                        TapScopeEnv + "='" + v + "' is not 'tap' or 'any'; treating it as 'tap' (taps may only use tap secrets)"
+                    )
+                TapScopeTap
+            case _ => TapScopeTap
+        }
+    }
+
+    /** True unless DATRIS_TAP_SECRET_SCOPE=any. */
+    def tapScopeEnforced: Boolean = tapScope != TapScopeAny
+
+    def tapSecretMessage(tapName: String, secretName: String): String =
+        "Tap '" + tapName + "' uses secret '" + secretName + "', which is a platform secret. Taps may only use tap secrets " +
+            "(Configuration → Secrets → Tap). Create a tap secret with the fields this tap needs and select it, " +
+            "or set " + TapScopeEnv + "=any to allow platform secrets."
+
+    /** Some(message) when the scope is enforced and the secret's stored
+      * `_type` is not exactly "tap" (None = untyped, which counts as a
+      * platform secret). Whether the secret exists at all is the caller's
+      * decision: call this only for a secret that exists, so the existing
+      * "missing or empty" error still fires for one that does not. */
+    def tapSecretProblem(tapName: String, secretName: String, storedType: Option[String], enforced: Boolean): Option[String] =
+        if (enforced && !storedType.contains(TapScopeTap)) Some(tapSecretMessage(tapName, secretName))
+        else None
+
     /** Throws before any Vault call when the path is not safe. */
     def requireSafePath(path: String): Unit =
         if (!isSafePath(path)) throw new DatrisException(InvalidMessage)
