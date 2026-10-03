@@ -248,13 +248,40 @@ option {
   flex: 1;
 }
 
-/* Field protection */
-.field-protect {
-  flex: 1;
+/* Field protection: the Protect cell holds the method select and, for mask,
+   the Keep select side by side, so the column stays aligned across rows. */
+.field-protect-cell {
+  flex: 1.4;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
 }
 
+.field-protect,
 .field-preserve {
   flex: 1;
+  min-width: 0;
+}
+
+.field-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.field-header span {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+/* Keeps header columns aligned with rows whose remove button is hidden. */
+.remove-field-spacer {
+  width: 28px;
+  flex: none;
 }
 
 .field-suggestion {

@@ -236,22 +236,31 @@
 
       <div class="form-row" *ngIf="sourceType !== 'json' && sourceType !== 'xml'">
         <label class="form-label">Fields</label>
+        <div class="field-header">
+          <span class="field-name">Field name</span>
+          <span class="field-type">Type</span>
+          <span class="field-protect-cell">Protect</span>
+          <span class="remove-field-spacer"></span>
+        </div>
         <ng-container *ngFor="let field of schemaFields; let i = index">
           <div class="field-row">
             <input class="form-input field-name" [(ngModel)]="field.name" placeholder="field_name">
             <select class="form-input field-type" [(ngModel)]="field.type" (ngModelChange)="onFieldTypeChange(field)">
               <option *ngFor="let t of fieldTypes" [value]="t">{{ t }}</option>
             </select>
-            <select class="form-input field-protect" *ngIf="field.protect as p" [(ngModel)]="p.method" #protectModel="ngModel" (ngModelChange)="onProtectChange(field, protectModel)" title="Protect">
-              <option value="">None</option>
-              <option *ngFor="let m of protectMethods" [value]="m" [disabled]="m !== 'hmac' && isKeyField(field.name)">{{ m }}</option>
-            </select>
-            <select class="form-input field-preserve" *ngIf="field.protect?.method === 'mask' && field.protect as p" [(ngModel)]="p.preserve" title="Keep">
-              <option *ngFor="let o of preserveOptions" [ngValue]="o.value">{{ o.label }}</option>
-            </select>
+            <div class="field-protect-cell">
+              <select class="form-input field-protect" *ngIf="field.protect as p" [(ngModel)]="p.method" #protectModel="ngModel" (ngModelChange)="onProtectChange(field, protectModel)" title="Protect">
+                <option value="">None</option>
+                <option *ngFor="let m of protectMethods" [value]="m" [disabled]="m !== 'hmac' && isKeyField(field.name)">{{ m }}</option>
+              </select>
+              <select class="form-input field-preserve" *ngIf="field.protect?.method === 'mask' && field.protect as p" [(ngModel)]="p.preserve" title="Keep">
+                <option *ngFor="let o of preserveOptions" [ngValue]="o.value">{{ o.label }}</option>
+              </select>
+            </div>
             <button class="remove-field-btn" (click)="removeField(i)" *ngIf="schemaFields.length > 1">
               <span class="material-icons">close</span>
             </button>
+            <span class="remove-field-spacer" *ngIf="schemaFields.length <= 1"></span>
           </div>
           <div class="field-suggestion" *ngIf="field.suggested">
             <span class="material-icons">auto_awesome</span>
@@ -452,6 +461,11 @@
 
       <div class="form-row">
         <label class="form-label">Fields</label>
+        <div class="field-header">
+          <span class="field-name">Field name</span>
+          <span class="field-type">Type</span>
+          <span class="remove-field-spacer"></span>
+        </div>
         <div class="field-row" *ngFor="let field of destSchemaFields; let i = index">
           <input class="form-input field-name" [(ngModel)]="field.name" placeholder="field_name">
           <select class="form-input field-type" [(ngModel)]="field.type">
