@@ -11,6 +11,17 @@ export interface QueryResponse {
   snapshotTimestamp?: string | null;
 }
 
+/** Response of POST /api/v1/protect/reveal: one slot per input value, in order;
+ *  a slot is null when that value could not be revealed (see `errors`). */
+export interface RevealResponse {
+  pipeline?: string;
+  field?: string;
+  values: (string | null)[];
+  revealed: number;
+  failed: number;
+  errors: { index: number; message: string }[];
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -41,6 +52,12 @@ export class SearchService {
    *  An empty `sql` makes the server preview the pipeline's destination table. */
   querySnowflake(pipeline: string, sql: string, limit: number): Observable<QueryResponse> {
     return this.http.post<QueryResponse>('/api/v1/query/snowflake', { pipeline, sql, limit });
+  }
+
+  /** Field-protection reveal (at most 1000 values per call; the server audits
+   *  each call and enforces protect:reveal). */
+  reveal(pipeline: string, field: string, values: string[]): Observable<RevealResponse> {
+    return this.http.post<RevealResponse>('/api/v1/protect/reveal', { pipeline, field, values });
   }
 
   getPipelines(): Observable<any[]> {
