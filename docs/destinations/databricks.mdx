@@ -224,7 +224,7 @@ Specify one or more columns in `keyFields` to define the natural key. When set (
 
 Upsert semantics match the PostgreSQL and Snowflake destinations: on match, non-key columns are overwritten in full, including `NULL`s. If a single batch contains duplicate key values, Delta rejects the `MERGE` as non-deterministic — deduplicate upstream.
 
-When `keyFields` is empty, the loader uses a straight `COPY INTO` — the fastest path, for append-only ingestion.
+When `keyFields` is empty, the loader uses a straight `COPY INTO` — the fastest path, for append-only ingestion. The run status reports the inserted-row count when the warehouse returns one and otherwise shows it as unknown; the load itself is a single `COPY INTO` commit either way.
 
 ## Querying from Datris
 
