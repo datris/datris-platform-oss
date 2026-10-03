@@ -934,6 +934,30 @@ describe('PipelineCreateComponent — field protection', () => {
     expect(f[1].protect.method || null).toBeNull();
   });
 
+  it('the Protect header has an info button that opens a definition for every option', async () => {
+    await onSchemaStep([{ name: 'mrn', type: 'string' }, { name: 'visit_count', type: 'int' }]);
+    const c: any = component;
+    const header = fixture.nativeElement.querySelector('.field-header .protect-header') as HTMLElement;
+    expect(header).withContext('Protect header cell').not.toBeNull();
+    const btn = header.querySelector('button.protect-help-btn') as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('.protect-help')).toBeNull();
+    btn.click();
+    fixture.detectChanges();
+    const help = fixture.nativeElement.querySelector('.protect-help') as HTMLElement;
+    expect(help).withContext('popover opens').not.toBeNull();
+    const terms = Array.from(help.querySelectorAll('dt')).map(d => (d.textContent || '').trim().toLowerCase());
+    for (const m of ['none', ...(c as any).protectMethods as string[]]) {
+      expect(terms).withContext('definition for ' + m).toContain(m);
+    }
+    for (const dd of Array.from(help.querySelectorAll('dd'))) {
+      expect((dd.textContent || '').trim().length).toBeGreaterThan(20);
+    }
+    document.body.click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.protect-help')).withContext('closes on outside click').toBeNull();
+  });
+
   it('json source shows no Protect select', async () => {
     // Same wizard, CSV first: the Protect column and the Suggest button are there...
     await onSchemaStep([{ name: 'mrn', type: 'string' }]);

@@ -239,7 +239,22 @@
         <div class="field-header">
           <span class="field-name">Field name</span>
           <span class="field-type">Type</span>
-          <span class="field-protect-cell">Protect</span>
+          <span class="field-protect-cell protect-header">
+            Protect
+            <button type="button" class="protect-help-btn" (click)="toggleProtectHelp($event)" [class.open]="protectHelpOpen" aria-label="What each Protect option does" title="What each option does">
+              <span class="material-icons">info_outline</span>
+            </button>
+            <div class="protect-help" *ngIf="protectHelpOpen" (click)="$event.stopPropagation()">
+              <div class="protect-help-title">What each option does</div>
+              <dl>
+                <ng-container *ngFor="let h of protectHelp">
+                  <dt>{{ h.method }}</dt>
+                  <dd>{{ h.text }}</dd>
+                </ng-container>
+              </dl>
+              <a class="protect-help-link" href="https://docs.datris.ai/transformation/field-protection" target="_blank" rel="noopener">Field protection docs ↗</a>
+            </div>
+          </span>
           <span class="remove-field-spacer"></span>
         </div>
         <ng-container *ngFor="let field of schemaFields; let i = index">

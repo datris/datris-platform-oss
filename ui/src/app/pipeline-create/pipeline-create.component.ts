@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, HostListener } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { PipelineService } from '../pipeline.service';
@@ -99,6 +99,26 @@ export class PipelineCreateComponent implements OnInit {
 
   // Field protection (Source Schema step)
   protectMethods = ['hmac', 'mask', 'redact', 'drop', 'encrypt'];
+  /** One line per Protect option, shown from the info button on the column header. */
+  protectHelp: { method: string; text: string }[] = [
+    { method: 'None', text: 'The value is written unchanged.' },
+    { method: 'hmac', text: 'Replaced by a keyed one-way hash (64 hex chars). The same input always gives the same token, so joins, grouping and upserts still work. The original cannot be recovered. Use for identifiers; the only option for a key field.' },
+    { method: 'mask', text: 'Mostly replaced by asterisks; Keep picks what stays readable: nothing, the last 4 characters, an email domain, or a leading year. One-way, not stable for joins.' },
+    { method: 'redact', text: 'Replaced by the fixed text [REDACTED]. Nothing of the value survives.' },
+    { method: 'drop', text: 'The column is removed from the data and from the destination table.' },
+    { method: 'encrypt', text: 'Stored as AES-256-GCM ciphertext (enc:v1:…), longer than the input. The only reversible option: an operator with the protect:reveal capability can decrypt it through an audited endpoint. Never suggested automatically.' }
+  ];
+  protectHelpOpen = false;
+
+  toggleProtectHelp(event: MouseEvent): void {
+    event.stopPropagation();
+    this.protectHelpOpen = !this.protectHelpOpen;
+  }
+
+  @HostListener('document:click')
+  closeProtectHelp(): void {
+    this.protectHelpOpen = false;
+  }
   preserveOptions: Array<{ value: string | null; label: string }> = [
     { value: null, label: 'Mask all' },
     { value: 'last4', label: 'Keep last 4' },

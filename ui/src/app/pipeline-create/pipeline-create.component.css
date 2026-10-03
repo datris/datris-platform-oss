@@ -278,6 +278,84 @@ option {
   color: var(--text-muted);
 }
 
+.protect-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.protect-help-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+
+.protect-help-btn .material-icons {
+  font-size: 15px;
+}
+
+.protect-help-btn:hover,
+.protect-help-btn.open {
+  color: var(--accent-cyan);
+}
+
+.protect-help {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 380px;
+  max-width: 80vw;
+  background: rgba(20, 26, 42, 0.98);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 110;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.protect-help-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.protect-help dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 10px;
+  row-gap: 6px;
+}
+
+.protect-help dt {
+  font-family: var(--font-mono, monospace);
+  color: var(--accent-cyan);
+}
+
+.protect-help dd {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.protect-help-link {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--accent-cyan);
+  font-size: 12px;
+}
+
 /* Keeps header columns aligned with rows whose remove button is hidden. */
 .remove-field-spacer {
   width: 28px;
