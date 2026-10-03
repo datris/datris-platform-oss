@@ -7,6 +7,8 @@
 
 [datris.ai](https://datris.ai) · [Documentation](https://docs.datris.ai) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
 
+⭐ If Datris is useful to you, [star the repo](https://github.com/datris/datris-platform-oss) — it helps other people find it.
+
 Agents ask Datris for data. Datris finds it, acquires it, validates it, lands it in the stores you already run, and returns it with provenance — over MCP, without ever holding your keys. It sits beside your warehouse and lake; it doesn't replace them.
 
 ## Why Datris?
