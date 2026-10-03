@@ -3,6 +3,22 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.42.0" description="October 3, 2026">
+  **Field protection for PII and PHI, reveal for authorized users, and tighter rules for secrets.**
+
+  - **Protect sensitive columns before they land anywhere.** Mark a field and its original value never reaches a destination, a preview, or an AI step. Choose a stable one-way pseudonym, a mask that keeps the part you pick, a fixed redaction, dropping the column, or encryption. Protection runs on your server before data quality and transformation, and the raw copies Datris held for the run are removed afterwards. See [Field Protection](/transformation/field-protection).
+  - **Encrypt what an authorized person may need to see again.** Encrypted fields are stored as ciphertext. Someone with the reveal permission can get the original back; every reveal is audited and no user ever holds a key. The permission is in no built-in role or key template. Keys can be rotated without losing older rows.
+  - **Reveal from the Search tab.** Encrypted values show as a lock in results for Databricks, Snowflake, object store, PostgreSQL and MongoDB, and an admin can reveal the current result with one click. Nothing is kept afterwards. Assistants and agents cannot reveal.
+  - **Suggestions for what to protect.** Datris proposes a method per field from its name and type alone. No data is sent and nothing is applied until you accept it.
+  - **Protection in the wizard and for agents.** The schema step has a Protect column with an explanation of each option. Agents can set protection and ask for suggestions, and confirm the fields with you first. Lineage shows protected and dropped columns.
+  - **Security: stronger protection for stored secrets.** Taps can now only use tap secrets, the keys Datris manages for itself cannot be used by a tap or pipeline, and secret names are checked more strictly. We recommend upgrading.
+  - **Databricks loads are no longer reported as failed when they succeeded.**
+  - **MongoDB results read as a table in Search** when the documents are flat.
+  - **`datris doctor` checks tap secrets.**
+
+  **Upgrading:** `docker compose pull && docker compose up -d --force-recreate`. The server, UI and MCP server images changed. A tap whose secret is not a tap secret now fails its next run and cannot be saved; create a tap secret for it, or set `DATRIS_TAP_SECRET_SCOPE=any` to keep the previous behaviour. Secret names with spaces or URL-special characters are refused. Protected pipelines delete their source file after a run unless they opt out. See [Taps](/taps#taps-can-only-use-tap-secrets).
+</Update>
+
 <Update label="v1.41.1" description="October 2, 2026">
   **Security dependency updates and a skill that teaches your coding agents to use Datris.**
 
