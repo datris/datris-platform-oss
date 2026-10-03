@@ -55,4 +55,29 @@ class TapSecretScopeScanSpec extends AnyFunSuite {
         val taps = List(tap("ghost", "deleted-secret"), tap("a", "ai-primary"))
         assert(TapSecretScopeScan.offenders(taps, typeOf) == List(("a", "ai-primary")))
     }
+
+    // ---- review follow-ups: a failed read is not "absent"; one read per secret
+
+    test("a failed secret read is reported as unreadable, not skipped as absent") {
+        val lookup: String => scala.util.Try[Option[Option[String]]] = {
+            case "vault-down" => scala.util.Failure(new RuntimeException("503"))
+            case n => scala.util.Success(typeOf(n))
+        }
+        val taps = List(tap("x", "vault-down"), tap("a", "ai-primary"), tap("y", "vault-down"))
+        val r = TapSecretScopeScan.scan(taps, lookup)
+        assert(r.offenders == List(("a", "ai-primary")))
+        assert(r.unreadable == List("vault-down"))
+        // A lookup that throws is a failed read too.
+        val r2 = TapSecretScopeScan.scan(List(tap("z", "boom")), _ => throw new RuntimeException("boom"))
+        assert(r2.unreadable == List("boom") && r2.refs.isEmpty)
+    }
+
+    test("each distinct secret is read once per scan") {
+        val reads = scala.collection.mutable.ListBuffer[String]()
+        val lookup: String => scala.util.Try[Option[Option[String]]] = n => { reads += n; scala.util.Success(typeOf(n)) }
+        val taps = List(tap("a", "ai-primary"), tap("b", "ai-primary"), tap("w", "weather-api"), tap("c", "ai-primary"))
+        val r = TapSecretScopeScan.scan(taps, lookup)
+        assert(reads.toList == List("ai-primary", "weather-api"), reads.toString)
+        assert(r.offenders == List(("a", "ai-primary"), ("b", "ai-primary"), ("c", "ai-primary")))
+    }
 }

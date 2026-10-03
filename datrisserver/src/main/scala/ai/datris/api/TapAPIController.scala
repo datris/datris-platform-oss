@@ -40,9 +40,10 @@ object TapAPIController {
         }
 
     /** The stored `_type` of a secret in the current environment: None when
-      * it does not exist, Some(None) when it has no `_type`. */
+      * it does not exist, Some(None) when it has no `_type`. A failed read
+      * throws (the save fails closed) rather than passing as "absent". */
     private[datris] def liveSecretType(name: String): Option[Option[String]] =
-        SecretsUtil.getSecretMap(DatrisEnvironment.current.environment + "/" + name).map(m => Option(m.get("_type")))
+        SecretsUtil.tryGetSecretMap(DatrisEnvironment.current.environment + "/" + name).get.map(m => Option(m.get("_type")))
 
     // mode=test response caps `records` to this many rows. The UI's preview already
     // slices to 20 (tap-run.component.ts), so this matches without losing display

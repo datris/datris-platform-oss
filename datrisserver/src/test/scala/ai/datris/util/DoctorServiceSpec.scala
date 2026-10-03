@@ -559,4 +559,37 @@ class DoctorServiceSpec extends AnyFunSuite {
             assert(tapScopeCheck(new FakeProbes()).run().status == "ok", "no offenders with the opt-out is still ok")
         }
     }
+
+    // ---- review follow-ups: "could not check" is never reported as ok
+
+    private def withScan(refs: List[(String, String, Option[String])], unreadable: List[String]): FakeProbes =
+        new FakeProbes(tapRefs = refs) {
+            override def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.Result(refs, unreadable)
+        }
+
+    test("tap.secret_scope warns when secrets could not be read") {
+        withTapScope(Some("tap")) {
+            val r = tapScopeCheck(withScan(List(("weather", "weather-api", Some("tap"))), List("vault-down"))).run()
+            assert(r.status == "warn", r.detail)
+            assert(r.detail.contains("could not read 1 secret(s): vault-down"), r.detail)
+            assert(r.remediation.contains("Vault"), r.remediation)
+        }
+    }
+
+    test("tap.secret_scope: confirmed offenders stay an error when some reads also failed") {
+        withTapScope(Some("tap")) {
+            val r = tapScopeCheck(withScan(offendingRefs, List("vault-down"))).run()
+            assert(r.status == "error", r.detail)
+            assert(r.detail.contains("leaky") && r.detail.contains("vault-down"), r.detail)
+        }
+    }
+
+    test("tap.secret_scope is an error row when the taps cannot be listed") {
+        val p = new FakeProbes() {
+            override def tapSecretScan(): TapSecretScopeScan.Result = throw new RuntimeException("mongo down")
+        }
+        val r = DoctorService.runOne(tapScopeCheck(p))
+        assert(r.id == "tap.secret_scope" && r.status == "error", r.toString)
+        assert(r.detail.contains("mongo down"), r.detail)
+    }
 }

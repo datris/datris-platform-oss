@@ -255,7 +255,7 @@ Tap 'my-tap' uses secret 'ai-primary', which is a platform secret. Taps may only
 To fix an affected tap:
 
 - **Create a tap secret** under Configuration → Secrets → Tap with the fields the script reads, and select it on the tap.
-- **Tag a hand-made tap secret.** A secret you created for a tap outside the wizard, without `_type=tap`, counts as a platform secret. Add the field `_type` with the value `tap` to it in the Secrets tab.
+- **Tag a hand-made tap secret.** A secret you created for a tap outside the wizard, without `_type=tap`, counts as a platform secret. Add the field `_type` with the value `tap` to it in the Secrets tab. Tagging a secret as a tap secret makes its values readable by any tap, so only an admin should do it, and only for credentials a tap is meant to use.
 
 The server names every affected tap in one warning line at startup, and the `tap.secret_scope` [doctor](/doctor) check lists them.
 
