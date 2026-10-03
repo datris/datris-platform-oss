@@ -11,10 +11,15 @@ Agents ask Datris for data. Datris finds it, acquires it, validates it, lands it
 
 ## Why Datris?
 
+https://github.com/user-attachments/assets/4f8069ec-cdc0-4954-bb51-77d6a6de511f
+
+[Watch on YouTube](https://youtu.be/-XCLiLUAaus)
+
 Your agents already acquire, validate, and load data. Without a control plane, they do it badly. Datris puts that work behind one governed surface:
 
-- **One MCP door** — 73 capabilities behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 73 integrations
+- **One MCP door** — 78 tools behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 78 integrations
 - **Vault-brokered credentials** — the agent references a secret by name and never holds a key; agent-written code runs in an isolated container with no keys inside
+- **Scoped keys, approval gates, audit log** — each agent gets its own API key limited to the capabilities you grant; an [agent policy](https://docs.datris.ai/agent-policy) decides per action whether an agent runs it, waits for a person to approve, or is refused; an [audit log](https://docs.datris.ai/audit-log) records who did what
 - **Every run recorded** — job state, row counts, and provenance for every run; every generated script versioned in git
 - **Durable state** — pipelines and sync bookmarks live in the platform, not the chat, so regenerating a script never loses its place
 - **The operating loop** — Acquire (AI-generated taps) → Validate (plain-English rules) → Land (multi-destination pipelines) → Observe (provenance and job state) → Explain & Repair (AI error explanation), with the same audit trail every time
@@ -97,9 +102,11 @@ Add to your MCP client config (Claude Desktop, Claude Code, Cursor, etc.). With 
 }
 ```
 
-Paste-and-go for the default local setup — no API key required when `USE_API_KEYS=false` (the OSS default). If your instance enables auth (`USE_API_KEYS=true` or hosted/multi-tenant), append `"--header", "x-api-key:<your-key>"` to the `args` array. The Configuration → Connect Your Agent page generates the snippet for you and adds the header automatically when you paste your key.
+Paste-and-go for the default local setup — no API key required when `USE_API_KEYS=false` (the OSS default). If your instance enables auth (`USE_API_KEYS=true` or multi-tenant), append `"--header", "x-api-key:<your-key>"` to the `args` array. The Configuration → Connect Your Agent page generates the snippet for you and adds the header automatically when you paste your key.
 
 Requires Node.js on your `PATH` (`brew install node`). For a stdio alternative without Docker, or full Claude Desktop / Claude Code / Cursor walkthroughs, see [Configuring Claude](https://docs.datris.ai/configuring-claude).
+
+To teach the coding agents in your own projects (Claude Code, Codex, and similar) to use Datris for data work, install the `datris-platform` skill from [skills/](skills/) — see [Agent Skill](https://docs.datris.ai/agent-skill).
 
 ### CLI
 
@@ -112,17 +119,19 @@ datris query "SELECT * FROM sales"
 datris search "quarterly revenue" --store pgvector
 datris tap create "Fetch S&P 500 daily prices from yfinance" --pipeline stocks
 datris taps
+datris doctor               # operational self-check; prints the fix for every finding
 ```
 
 ## What It Does
 
 ```
-Source (File Upload / MinIO Event / Database Pull / Kafka)
+Source (Tap / File Upload / MinIO Event / Database Pull / Kafka)
   → Preprocessor (optional REST endpoint)
   → Data Quality (AI rules, header validation, schema validation)
   → Transformation (AI transformation, destination schema)
   → Destinations (in parallel):
-      PostgreSQL, MongoDB, MinIO (Parquet/ORC), Kafka, ActiveMQ,
+      PostgreSQL, MongoDB, Snowflake, Databricks,
+      MinIO / S3 (Parquet, ORC, Apache Iceberg), Kafka, ActiveMQ,
       REST Endpoint, Qdrant, Weaviate, Milvus, Chroma, pgvector
   → Notifications (ActiveMQ topic)
 ```
@@ -131,7 +140,9 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 
 | Feature | Description |
 |---------|-------------|
-| **MCP Server** | 75 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps |
+| **MCP Server** | 78 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps, catalogs, provenance |
+| **Taps** | Describe a source in plain English — AI generates a Python script that fetches it on demand or on a schedule, run in an isolated container |
+| **Assistant** | Conversational tap and pipeline creation, operations, and configuration in the UI |
 | **AI Data Quality** | Plain English validation rules — AI generates and runs a validation script |
 | **AI Transformation** | Plain English transformations — AI generates and runs a transformation script |
 | **AI Schema Generation** | Upload a file, get a complete pipeline config |
@@ -142,11 +153,11 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 
 ### Supported Formats
 
-CSV, JSON, XML, Excel, PDF, Word (DOCX), plain text
+CSV, JSON, XML, Excel, PDF, Word (DOCX), PowerPoint, HTML, email, EPUB, plain text
 
 ### AI Providers
 
-Anthropic Claude (Opus 4.8 default for chat and CodeGen) · OpenAI (GPT-5.5) · Azure OpenAI (bring your Azure resource; models by deployment name) · Amazon Bedrock (Claude through your AWS account — IAM auth, AWS billing, IAM-role support with zero stored keys) · Grok (xAI's models through their OpenAI-compatible API) · Ollama (local models, optional). Embeddings via OpenAI `text-embedding-3-small` (recommended when you have an OpenAI key), Azure OpenAI, the bundled TEI sidecar (BAAI/bge-m3 — fully local, no API key), or Ollama.
+Anthropic Claude (Fable 5.1 default for chat, Opus 5.5 for CodeGen) · OpenAI (GPT-5.6 Sol default for chat and CodeGen) · Azure OpenAI (bring your Azure resource; models by deployment name) · Amazon Bedrock (Claude through your AWS account — IAM auth, AWS billing, IAM-role support with zero stored keys) · Grok (xAI's models through their OpenAI-compatible API) · Ollama (local models, optional). Embeddings via OpenAI `text-embedding-3-small` (recommended when you have an OpenAI key), Azure OpenAI, the bundled TEI sidecar (BAAI/bge-m3 — fully local, no API key), or Ollama.
 
 ## Architecture
 
@@ -159,11 +170,13 @@ Anthropic Claude (Opus 4.8 default for chat and CodeGen) · OpenAI (GPT-5.5) · 
 | **HashiCorp Vault** | Secrets management (database credentials, API keys) |
 | **TEI** | Text Embeddings Inference sidecar (BAAI/bge-m3) — local vector embeddings when you're not using OpenAI embeddings |
 | **Apache Kafka** | Optional streaming source and destination |
-| **Apache Spark** | Local Spark for writing Parquet/ORC to MinIO |
+| **Apache Spark** | Local Spark for writing Parquet, ORC, and Iceberg tables to MinIO / S3 |
+| **Tap runner** | Isolated container that runs AI-generated tap scripts with no platform credentials and no route to internal services |
+| **MCP server** | Bundled MCP endpoint (SSE on port 3000) for AI agents |
 
 ## Documentation
 
-Full documentation at [docs.datris.ai](https://docs.datris.ai) or locally at `docs/`.
+Full documentation at [docs.datris.ai](https://docs.datris.ai) or locally at `docs/`. Going to production? Start with [Security Architecture](https://docs.datris.ai/production/security-architecture) and [SECURITY.md](SECURITY.md).
 
 ## License
 
