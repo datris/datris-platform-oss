@@ -22,7 +22,7 @@ import { FormsModule } from '@angular/forms';
 import { provideRouter } from '@angular/router';
 import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 
 import { SearchComponent } from './search.component';
 import { SearchService } from '../search.service';
@@ -501,6 +501,75 @@ describe('SearchComponent — field-protection reveal', () => {
       for (let i = 0; i < s.length; i++) stored.push(s.getItem(s.key(i)!) || '');
     }
     expect(stored.join('\n')).not.toContain('plain-1');
+  });
+
+  it('a reveal still in flight when the query is re-executed does not reveal the new result set', async () => {
+    const ctx = await setup();
+    const pending = new Subject<any>();
+    ctx.svc.reveal.and.returnValue(pending.asObservable());
+    const rows = [{ city: 'A', latitude: ct(1) }];
+    await runDatabricks(ctx, rows);
+    await clickReveal(ctx);
+
+    ctx.component.execute();
+    await settle(ctx.fixture);
+    // The stale response arrives after the re-run.
+    pending.next({ values: [plain(ct(1))], revealed: 1, failed: 0, errors: [] });
+    pending.complete();
+    await settle(ctx.fixture);
+
+    expect(((ctx.component as any).revealed as Map<string, string>).size).toBe(0);
+    expect(ctx.el.querySelectorAll('.cell-revealed').length).toBe(0);
+    expect(ctx.el.querySelectorAll('.cell-encrypted').length).toBe(1);
+    expect(ctx.el.querySelector('.reveal-btn')).not.toBeNull();
+  });
+
+  it('a pipeline picked for one postgres table is not carried over to a query on another table', async () => {
+    const ctx = await setup();
+    await runPostgres(ctx, 'SELECT * FROM public.fp_pg', [{ id: 1, email: ct(1) }]);
+    await pick(ctx, 'fp_pg_two');
+    expect((ctx.component as any).revealPipeline).toBe('fp_pg_two');
+
+    await runPostgres(ctx, 'SELECT * FROM archive_copy', [{ id: 1, email: ct(2) }]);
+
+    expect(ctx.el.querySelector('select.reveal-pipeline')).not.toBeNull();
+    expect((ctx.component as any).revealPipeline).toBe('');
+    expect((ctx.component as any).revealPick).toBe('');
+    const btn = ctx.el.querySelector('.reveal-btn') as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    expect(btn!.disabled).toBeTrue();
+  });
+
+  it('picking another pipeline after a reveal clears the revealed values and offers Reveal again', async () => {
+    const ctx = await setup();
+    await runPostgres(ctx, 'SELECT * FROM public.fp_pg', [{ id: 1, email: ct(1) }]);
+    await pick(ctx, 'fp_pg');
+    await clickReveal(ctx);
+    expect(ctx.el.querySelectorAll('.cell-revealed').length).toBe(1);
+    expect(ctx.el.querySelector('.reveal-btn')).toBeNull();
+
+    await pick(ctx, 'fp_pg_two');
+
+    expect(ctx.el.querySelectorAll('.cell-revealed').length).toBe(0);
+    expect(ctx.el.querySelectorAll('.cell-encrypted').length).toBe(1);
+    await clickReveal(ctx);
+    expect(ctx.svc.reveal).toHaveBeenCalledWith('fp_pg_two', 'email', [ct(1)]);
+  });
+
+  it('mongodb documents whose only objects are extended-JSON scalars render as a table', async () => {
+    const ctx = await setup();
+    await runMongo(ctx, 'fp_mongo', [
+      { _id: { $oid: '65f0c0ffee' }, email: ct(1), created: { $date: '2026-10-03T00:00:00Z' }, n: { $numberLong: '42' } }
+    ]);
+
+    expect(ctx.el.querySelector('pre.json-results')).toBeNull();
+    const table = ctx.el.querySelector('.table-container');
+    expect(table).not.toBeNull();
+    const text = (table && table.textContent) || '';
+    expect(text).toContain('65f0c0ffee');
+    expect(text).toContain('2026-10-03T00:00:00Z');
+    expect(text).toContain('42');
+    expect(ctx.el.querySelectorAll('.table-container .cell-encrypted').length).toBe(1);
   });
 });
 

@@ -86,6 +86,11 @@ export class SearchComponent implements OnInit, OnDestroy {
   revealPipeline = '';
   /** Postgres/MongoDB: the user's choice in the picker. */
   revealPick = '';
+  /** Table/collection key the pick was made for; a pick does not carry over to another target. */
+  private revealPickTarget = '';
+  /** Bumped on every reset so a reveal still in flight for an older result set is ignored. */
+  private revealGen = 0;
+  private revealSub: Subscription | null = null;
   /** Picker options when inference did not find exactly one pipeline. */
   revealCandidates: string[] = [];
   /** True when the picker is needed (postgres/mongodb, not exactly one match). */
@@ -562,6 +567,8 @@ export class SearchComponent implements OnInit, OnDestroy {
   }
 
   private resetReveal(): void {
+    this.revealGen++;
+    if (this.revealSub) { this.revealSub.unsubscribe(); this.revealSub = null; }
     this.revealed = new Map<string, string>();
     this.revealErrors = new Map<string, string>();
     this.revealError = '';
@@ -609,18 +616,23 @@ export class SearchComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Postgres/MongoDB: pipelines writing what was queried. */
-  private inferPipeline(): string[] {
+  /** Postgres/MongoDB: the destination key of what was queried ('' if none). */
+  private queriedTarget(): string {
     if (this.queryType === 'mongodb') {
-      return this.destIndex.get(('mongo:' + this.mongoDatabase + '.' + this.mongoCollection).toLowerCase()) || [];
+      return ('mongo:' + this.mongoDatabase + '.' + this.mongoCollection).toLowerCase();
     }
     if (this.queryType === 'postgres') {
       const m = /\bfrom\s+("?[\w]+"?\.)?"?([\w]+)"?/i.exec(this.pgSql || '');
-      if (!m) return [];
+      if (!m) return '';
       const schema = m[1] ? m[1].replace(/"/g, '').replace(/\.$/, '') : 'public';
-      return this.destIndex.get(('pg:' + this.pgDatabase + '.' + schema + '.' + m[2]).toLowerCase()) || [];
+      return ('pg:' + this.pgDatabase + '.' + schema + '.' + m[2]).toLowerCase();
     }
-    return [];
+    return '';
+  }
+
+  /** Postgres/MongoDB: pipelines writing what was queried. */
+  private inferPipeline(target: string = this.queriedTarget()): string[] {
+    return target ? (this.destIndex.get(target) || []) : [];
   }
 
   /** Decide which pipeline the result set binds to, then load its encrypt fields. */
@@ -639,7 +651,10 @@ export class SearchComponent implements OnInit, OnDestroy {
     } else if (this.isObjectStore()) {
       this.revealPipeline = this.osSelectedPipeline;
     } else if (this.queryType === 'postgres' || this.queryType === 'mongodb') {
-      const matches = this.inferPipeline();
+      const target = this.queriedTarget();
+      // A pick belongs to the table/collection it was made for.
+      if (target !== this.revealPickTarget) this.revealPick = '';
+      const matches = this.inferPipeline(target);
       if (matches.length === 1) {
         this.revealPipeline = matches[0];
       } else {
@@ -657,7 +672,13 @@ export class SearchComponent implements OnInit, OnDestroy {
 
   /** Picker change (postgres/mongodb). */
   onRevealPick(name: string): void {
+    // A new pick starts over: drop anything revealed or failed with the previous one.
+    this.revealGen++;
+    if (this.revealSub) { this.revealSub.unsubscribe(); this.revealSub = null; }
+    this.revealing = false;
     this.revealPick = name || '';
+    this.revealPickTarget = this.revealPick ? this.queriedTarget() : '';
+    this.revealed = new Map<string, string>();
     this.revealErrors = new Map<string, string>();
     this.revealError = '';
     this.revealPipeline = this.revealPick;
@@ -703,20 +724,23 @@ export class SearchComponent implements OnInit, OnDestroy {
     }
     if (calls.length === 0) return;
 
+    const gen = this.revealGen;
     this.revealing = true;
     this.revealError = '';
     const revealed = new Map<string, string>();
     const errors = new Map<string, string>();
     const publish = () => {
+      if (gen !== this.revealGen) return;
       this.revealed = new Map(revealed);
       this.revealErrors = new Map(errors);
     };
-    from(calls).pipe(
+    this.revealSub = from(calls).pipe(
       concatMap(c => this.searchService.reveal(pipeline, c.field, c.values).pipe(
         map((resp: RevealResponse) => ({ call: c, resp }))
       ))
     ).subscribe({
       next: ({ call, resp }) => {
+        if (gen !== this.revealGen) return;
         const out = (resp && resp.values) || [];
         call.values.forEach((v, i) => {
           const p = out[i];
@@ -728,6 +752,7 @@ export class SearchComponent implements OnInit, OnDestroy {
         }
       },
       error: (err: any) => {
+        if (gen !== this.revealGen) return;
         this.revealError = err && err.status === 403
           ? 'You do not have the protect:reveal capability'
           : this.errorMessage(err);
@@ -735,21 +760,44 @@ export class SearchComponent implements OnInit, OnDestroy {
         this.revealing = false;
       },
       complete: () => {
+        if (gen !== this.revealGen) return;
         publish();
         this.revealing = false;
       }
     });
   }
 
-  /** MongoDB: stringify `_id` object ids, take the union of top-level keys as
-   *  columns, and decide whether every document is flat (table) or not (JSON). */
+  /** Extended-JSON scalar wrappers ({"$date": ...}, {"$numberLong": ...}, ...) as a
+   *  display string; anything else unchanged. */
+  private static extendedJsonScalar(v: any): any {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
+    const keys = Object.keys(v);
+    if (keys.length !== 1) return v;
+    const k = keys[0];
+    if (!['$oid', '$date', '$numberLong', '$numberInt', '$numberDouble', '$numberDecimal'].includes(k)) return v;
+    let inner = v[k];
+    if (k === '$date' && inner && typeof inner === 'object' && typeof inner.$numberLong === 'string') {
+      const ms = Number(inner.$numberLong);
+      inner = isFinite(ms) ? new Date(ms).toISOString() : inner.$numberLong;
+    }
+    return (typeof inner === 'string' || typeof inner === 'number') ? String(inner) : v;
+  }
+
+  /** MongoDB: stringify `_id` and extended-JSON scalars ($date, $numberLong, ...),
+   *  take the union of top-level keys as columns, and decide whether every
+   *  document is flat (table) or not (JSON). */
   private prepareMongoResults(): void {
     const idString = (id: any): any => {
-      if (id === null || typeof id !== 'object') return id;
-      if (typeof id.$oid === 'string') return id.$oid;
-      return JSON.stringify(id);
+      const v = SearchComponent.extendedJsonScalar(id);
+      if (v === null || typeof v !== 'object') return v;
+      return JSON.stringify(v);
     };
-    const docs = this.results.map(d => (d && typeof d === 'object' && '_id' in d) ? { ...d, _id: idString(d._id) } : d);
+    const docs = this.results.map(d => {
+      if (!d || typeof d !== 'object' || Array.isArray(d)) return d;
+      const out: any = {};
+      for (const k of Object.keys(d)) out[k] = k === '_id' ? idString(d[k]) : SearchComponent.extendedJsonScalar(d[k]);
+      return out;
+    });
     const flat = docs.length > 0 && docs.every(d => d && typeof d === 'object' && !Array.isArray(d) &&
       Object.keys(d).every(k => d[k] === null || typeof d[k] !== 'object'));
     const cols: string[] = [];
