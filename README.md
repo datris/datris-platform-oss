@@ -11,7 +11,7 @@ Agents ask Datris for data. Datris finds it, acquires it, validates it, lands it
 
 ## Why Datris?
 
-https://github.com/user-attachments/assets/4f8069ec-cdc0-4954-bb51-77d6a6de511f
+https://github.com/user-attachments/assets/ba3de886-1413-4d92-92bb-99018cfaff38
 
 [Watch on YouTube](https://youtu.be/-XCLiLUAaus)
 
