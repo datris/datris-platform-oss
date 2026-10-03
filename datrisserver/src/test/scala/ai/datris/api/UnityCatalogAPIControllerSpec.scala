@@ -38,4 +38,11 @@ class UnityCatalogAPIControllerSpec extends AnyFunSuite {
         assert(msg.contains("'dbx-hidden'"))
         assert(!msg.toLowerCase.contains("denied") && !msg.toLowerCase.contains("capability"))
     }
+
+    test("a server-managed secret never resolves, even if it held Databricks-shaped fields") {
+        val withFp = secrets :+ ("field-protection" -> dbx) :+ ("api-keys" -> dbx)
+        assert(UnityCatalogAPIController.lookupSecret("field-protection", withFp, canRead) == Left("failure"))
+        assert(UnityCatalogAPIController.lookupSecret("api-keys", withFp, canRead) == Left("failure"))
+        assert(UnityCatalogAPIController.lookupSecret("dbx", withFp, canRead) == Right(dbx))
+    }
 }

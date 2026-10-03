@@ -47,6 +47,17 @@ object SecretsRetrieverUtil {
         )
     }
 
+    /** Read a secret whose name comes from user-authored configuration (a
+      * pipeline, a tap, a code-repo setting, a vector store or embedding
+      * reference). Refuses the server-managed secrets (SecretNames.ServerManaged)
+      * with a DatrisException before any read, so a saved config that names
+      * one fails closed instead of handing its values to a destination or a
+      * script. Server-internal reads of its own secrets use SecretsUtil. */
+    def userSecret(name: String): Option[java.util.Map[String, String]] = {
+        SecretNames.requireNotServerManaged(name)
+        SecretsUtil.getSecretMap(name)
+    }
+
     /** Name → fields for every Platform-tab secret in the current environment:
      *  all secrets NOT tagged _type=tap. Secrets without a _type predate the
      *  tag and count as platform. Single source of the filter behind the UI's

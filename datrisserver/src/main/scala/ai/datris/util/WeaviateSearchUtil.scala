@@ -46,7 +46,7 @@ object WeaviateSearchUtil extends VectorSearchUtility {
         val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
         // Get Weaviate connection details
-        val weaviateSecret = SecretsUtil.getSecretMap(weaviateSecretName)
+        val weaviateSecret = SecretsRetrieverUtil.userSecret(weaviateSecretName)
             .getOrElse(throw new DatrisException("Weaviate secret not found: " + weaviateSecretName))
         val host = weaviateSecret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Weaviate secret: " + weaviateSecretName)

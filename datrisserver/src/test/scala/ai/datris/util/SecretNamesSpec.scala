@@ -71,4 +71,12 @@ class SecretNamesSpec extends AnyFunSuite {
         val e = intercept[DatrisException](SecretNames.requireNotServerManaged("field-protection"))
         assert(e.getMessage == "'field-protection' is a platform secret and cannot be used as a tap or pipeline secret")
     }
+
+    test("SecretsRetrieverUtil.userSecret refuses a server-managed name before any secret store read") {
+        // Throws before SecretsUtil (a Vault-backed lazy val) is touched.
+        for (n <- Seq("oss/field-protection", "oss/api-keys", "oss/api-key-metadata", "oss/ui-api-key")) {
+            val e = intercept[DatrisException](SecretsRetrieverUtil.userSecret(n))
+            assert(e.getMessage.contains("is a platform secret and cannot be used as a tap or pipeline secret"), n)
+        }
+    }
 }

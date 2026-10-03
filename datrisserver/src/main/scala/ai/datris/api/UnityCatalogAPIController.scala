@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.audit.AuditLog
 import ai.datris.auth.CapabilityCheck
 import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineConfig}
-import ai.datris.util.{APIKeyValidator, CredentialResolver, DatabricksErrorText, PipelineConfigIO, SecretsRetrieverUtil, UnityCatalogDiscovery}
+import ai.datris.util.{APIKeyValidator, CredentialResolver, DatabricksErrorText, PipelineConfigIO, SecretNames, SecretsRetrieverUtil, UnityCatalogDiscovery}
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
@@ -129,7 +129,11 @@ object UnityCatalogAPIController {
         platformSecrets: List[(String, java.util.Map[String, String])],
         canRead: java.util.Map[String, String] => Boolean
     ): Either[String, java.util.Map[String, String]] =
-        platformSecrets.find(_._1 == secretName).map(_._2).filter(CredentialResolver.hasDatabricksCredentials) match {
+        platformSecrets
+            .find(_._1 == secretName)
+            .filter { case (name, _) => !SecretNames.isServerManaged(name) }
+            .map(_._2)
+            .filter(CredentialResolver.hasDatabricksCredentials) match {
             case None => Left("failure")
             case Some(f) if !canRead(f) => Left("denied")
             case Some(f) => Right(f)
@@ -146,5 +150,5 @@ object UnityCatalogAPIController {
       * could read — the set `find_data includeUnityCatalog` searches. */
     private[api] def visibleDatabricksSecrets(request: HttpServletRequest): List[(String, java.util.Map[String, String])] =
         SecretsRetrieverUtil.platformSecrets()
-            .filter { case (_, f) => CredentialResolver.hasDatabricksCredentials(f) && canRead(request, f) }
+            .filter { case (n, f) => !SecretNames.isServerManaged(n) && CredentialResolver.hasDatabricksCredentials(f) && canRead(request, f) }
 }

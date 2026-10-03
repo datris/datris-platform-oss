@@ -59,7 +59,7 @@ object EmbeddingUtil {
     case class EmbeddedChunk(text: String, embedding: Array[Float])
 
     def getConfig(secretName: String): EmbeddingConfig = {
-        val secret = SecretsUtil.getSecretMap(secretName)
+        val secret = SecretsRetrieverUtil.userSecret(secretName)
             .getOrElse(throw new DatrisException("Embedding secret not found: " + secretName))
         val endpoint = secret.get("endpoint")
         if (endpoint == null) throw new DatrisException("'endpoint' not found in embedding secret: " + secretName)

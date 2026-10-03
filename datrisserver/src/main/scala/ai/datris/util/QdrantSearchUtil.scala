@@ -45,7 +45,7 @@ object QdrantSearchUtil extends VectorSearchUtility {
         val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
         // Get Qdrant connection details
-        val qdrantSecret = SecretsUtil.getSecretMap(qdrantSecretName)
+        val qdrantSecret = SecretsRetrieverUtil.userSecret(qdrantSecretName)
             .getOrElse(throw new DatrisException("Qdrant secret not found: " + qdrantSecretName))
         val host = qdrantSecret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Qdrant secret: " + qdrantSecretName)

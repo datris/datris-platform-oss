@@ -168,19 +168,19 @@ class DataPuller {
             if (databaseAttributes.postgresSecretsName != null) {
                 Class.forName("org.postgresql.Driver")
 
-                val secrets = SecretsUtil.getSecretMap(databaseAttributes.postgresSecretsName)
+                val secrets = SecretsRetrieverUtil.userSecret(databaseAttributes.postgresSecretsName)
                     .getOrElse(throw new DatrisException("Secrets not found for secret name: " + databaseAttributes.postgresSecretsName))
                 (secrets, databaseAttributes.postgresSecretsName)
             } else if (databaseAttributes.mysqlSecretsName != null) {
                 Class.forName("com.mysql.cj.jdbc.Driver")
 
-                val secrets = SecretsUtil.getSecretMap(databaseAttributes.mysqlSecretsName)
+                val secrets = SecretsRetrieverUtil.userSecret(databaseAttributes.mysqlSecretsName)
                     .getOrElse(throw new DatrisException("Secrets not found for secret name: " + databaseAttributes.mysqlSecretsName))
                 (secrets, databaseAttributes.mysqlSecretsName)
             } else if (databaseAttributes.mssqlSecretsName != null) {
                 Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
 
-                val secrets = SecretsUtil.getSecretMap(databaseAttributes.mssqlSecretsName)
+                val secrets = SecretsRetrieverUtil.userSecret(databaseAttributes.mssqlSecretsName)
                     .getOrElse(throw new DatrisException("Secrets not found for secret name: " + databaseAttributes.mssqlSecretsName))
                 (secrets, databaseAttributes.mssqlSecretsName)
             } else {

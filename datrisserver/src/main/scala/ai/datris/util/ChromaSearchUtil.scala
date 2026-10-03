@@ -45,7 +45,7 @@ object ChromaSearchUtil extends VectorSearchUtility {
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
-        val chromaSecret = SecretsUtil.getSecretMap(chromaSecretName)
+        val chromaSecret = SecretsRetrieverUtil.userSecret(chromaSecretName)
             .getOrElse(throw new DatrisException("Chroma secret not found: " + chromaSecretName))
         val host = chromaSecret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Chroma secret: " + chromaSecretName)

@@ -49,7 +49,7 @@ class PGVectorLoader(jobContext: JobContext) {
         val pgvectorSecretName =
             if (DatrisEnvironment.current.pgvectorSecretName != null) DatrisEnvironment.current.pgvectorSecretName else pgvectorConfig.postgresSecretName
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
-        val pgSecret = SecretsUtil.getSecretMap(pgvectorSecretName)
+        val pgSecret = SecretsRetrieverUtil.userSecret(pgvectorSecretName)
             .getOrElse(throw new DatrisException("PostgreSQL secret not found: " + pgvectorSecretName))
         val rawJdbcUrl = pgSecret.get("jdbcUrl")
         if (rawJdbcUrl == null) throw new DatrisException("'jdbcUrl' not found in pgvector secret: " + pgvectorConfig.postgresSecretName)

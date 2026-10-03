@@ -277,7 +277,7 @@ object TapScriptGenerator {
         // Build user prompt with available secret keys if configured
         val secretKeysHint = if (secretName != null && secretName.nonEmpty) {
             val secretPath = DatrisEnvironment.current.environment + "/" + secretName
-            val keys = SecretsUtil.getSecretMap(secretPath).map(_.keySet().asScala.filterNot(_ == "_type").toList).getOrElse(List.empty)
+            val keys = SecretsRetrieverUtil.userSecret(secretPath).map(_.keySet().asScala.filterNot(_ == "_type").toList).getOrElse(List.empty)
             if (keys.nonEmpty)
                 "\n\nThe following environment variables are available for authentication: " +
                     keys.mkString(", ") + ". Access them with os.environ.get('KEY_NAME')."

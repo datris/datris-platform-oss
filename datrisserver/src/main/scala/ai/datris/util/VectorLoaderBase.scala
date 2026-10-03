@@ -82,7 +82,7 @@ abstract class VectorLoaderBase(jobContext: JobContext) {
     // ---- test seams: default to the production singletons ----
     protected def tenantEmbeddingSecretName: String = DatrisEnvironment.current.embeddingSecretName
     protected def resolveEmbeddingConfig(secretName: String): EmbeddingUtil.EmbeddingConfig = EmbeddingUtil.getConfig(secretName)
-    protected def fetchDestinationSecret(name: String): Option[java.util.Map[String, String]] = SecretsUtil.getSecretMap(name)
+    protected def fetchDestinationSecret(name: String): Option[java.util.Map[String, String]] = SecretsRetrieverUtil.userSecret(name)
     protected def embed(batch: List[String], embeddingConfig: EmbeddingUtil.EmbeddingConfig): List[EmbeddingUtil.EmbeddedChunk] =
         EmbeddingUtil.generateEmbeddings(batch, embeddingConfig)
     protected def embeddingDimension(embeddingConfig: EmbeddingUtil.EmbeddingConfig): Int =
