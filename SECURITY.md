@@ -111,6 +111,10 @@ a discussion; it's on the roadmap.
 ### Sensitive data sent to AI providers
 - Pipelines that use AI rules, AI transformations, or error explanation send
   samples of your data to the AI provider you configure.
+- **Field protection** (opt-in per field) pseudonymizes, masks, redacts,
+  encrypts, or drops sensitive columns as the first step after ingest, so the AI
+  provider and every destination see only the protected form. Columns you do
+  not protect are sent as they are.
 - Local models through Ollama and the bundled embedding server allow a
   deployment with no cloud AI provider.
 
