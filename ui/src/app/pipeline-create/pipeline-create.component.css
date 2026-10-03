@@ -241,7 +241,7 @@ option {
 }
 
 .field-name {
-  flex: 2;
+  flex: 1.8;
 }
 
 .field-type {
@@ -251,7 +251,7 @@ option {
 /* Field protection: the Protect cell holds the method select and, for mask,
    the Keep select side by side, so the column stays aligned across rows. */
 .field-protect-cell {
-  flex: 1.4;
+  flex: 2.2;
   display: flex;
   gap: 6px;
   min-width: 0;
@@ -261,6 +261,13 @@ option {
 .field-preserve {
   flex: 1;
   min-width: 0;
+}
+
+/* With mask chosen the cell holds two selects: keep the method select just
+   wide enough for its longest option so the Keep select has room for
+   "Keep email domain" without clipping. */
+.field-protect-cell:has(.field-preserve) .field-protect {
+  flex: 0 0 96px;
 }
 
 .field-header {
