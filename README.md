@@ -11,6 +11,13 @@
 
 Agents ask Datris for data. Datris finds it, acquires it, validates it, lands it in the stores you already run, and returns it with provenance — over MCP, without ever holding your keys. It sits beside your warehouse and lake; it doesn't replace them.
 
+**See it in 90 seconds** — describe the data you need, and the Assistant builds the tap, runs it, and lands the data:
+
+https://github.com/user-attachments/assets/4f03dc12-e9d7-4f93-8ba4-d712ab7d3733
+
+🔊 Sound is off by default — click the speaker icon in the player.
+
+
 ## Why Datris?
 
 https://github.com/user-attachments/assets/ba3de886-1413-4d92-92bb-99018cfaff38
