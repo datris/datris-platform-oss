@@ -13,7 +13,7 @@ Agents ask Datris for data. Datris finds it, acquires it, validates it, lands it
 
 https://github.com/user-attachments/assets/ba3de886-1413-4d92-92bb-99018cfaff38
 
-[Watch on YouTube](https://youtu.be/-XCLiLUAaus)
+🔊 Sound is off by default — click the speaker icon in the player, or [watch on YouTube](https://youtu.be/-XCLiLUAaus).
 
 Your agents already acquire, validate, and load data. Without a control plane, they do it badly. Datris puts that work behind one governed surface:
 
