@@ -79,6 +79,12 @@ class DatabricksLoaderCopyResultSpec extends AnyFunSuite {
         assert(DatabricksLoader.loadedRowCount(st, hasResultSet = false).isEmpty)
     }
 
+    test("execute true but null result set falls back to the update count") {
+        val st = statementWithUpdateCount(200)
+        assert(DatabricksLoader.loadedRowCount(st, hasResultSet = true) == Some(200L))
+        assert(DatabricksLoader.loadedRowCount(statementWithUpdateCount(-1), hasResultSet = true).isEmpty)
+    }
+
     test("the result set is closed in every case") {
         val withInserted = resultSet(Seq("num_inserted_rows"), Seq(Seq(10L)))
         DatabricksLoader.loadedRowCount(statementWith(withInserted), hasResultSet = true)

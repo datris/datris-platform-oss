@@ -398,11 +398,15 @@ object DatabricksLoader {
 
     /** Row count of a COPY INTO issued with `execute()`. With a result set,
      *  sum `num_inserted_rows` (else `num_affected_rows`; 0 when neither column
-     *  is present) and always close it. Without one, fall back to the update
-     *  count; a negative count means the driver reported none (None). */
+     *  is present) and always close it. Without one (or when the driver
+     *  reports one but hands back null), fall back to the update count; a negative
+     *  count means the driver reported none (None). */
     private[util] def loadedRowCount(statement: Statement, hasResultSet: Boolean): Option[Long] = {
-        if (hasResultSet) {
-            val rs = statement.getResultSet
+        // JDBC allows a null result set only when there is none, but some
+        // Simba drivers return true from execute() and then null here; treat
+        // that as "no result set" rather than failing a committed load.
+        val rs = if (hasResultSet) statement.getResultSet else null
+        if (rs != null) {
             var loaded = 0L
             try {
                 val meta = rs.getMetaData
