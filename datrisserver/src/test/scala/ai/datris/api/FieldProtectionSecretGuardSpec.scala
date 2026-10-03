@@ -29,11 +29,19 @@ import org.scalatest.funsuite.AnyFunSuite
   * not stored. `decide(diff, incoming, holdsProtectAdmin)` carries the branch
   * logic (Reject409 / Deny403 / Invalid400 / Allow(auditAction, fields)).
   *
-  * The controller's mapping of a Decision (409 / 403 + security/denied / 200 +
-  * key/rotate, key/retire, key/set-current; DELETE → 409) is not driven here: `putSecret` and `deleteSecret`
-  * read `ai.datris.util.SecretsUtil`, a package-level lazy val built straight
-  * from Vault, so they cannot be called with a stubbed store. The story's
-  * Manual block covers them.
+  * `evaluate(existing, incoming, holdsProtectAdmin)` covers the whole PUT
+  * decision from raw inputs: `restoreUnchanged` (masked/blank key fields take
+  * the stored value), the absent-secret 409 (the secret is server-issued), the
+  * non-canonical field-name 400, then `decide`. `deleteDecision(name)` carries
+  * the DELETE rule (409 for everyone).
+  *
+  * The controller is a thin mapping of a Decision to a response (409 / 403 +
+  * one security/denied entry / 400 / 200 + key/rotate, key/retire,
+  * key/set-current and a FieldProtectionKey cache invalidation). It is not
+  * driven here: `putSecret` and `deleteSecret` read `ai.datris.util.SecretsUtil`,
+  * a package-level lazy val built straight from Vault, so they cannot be
+  * called with a stubbed store. That mapping is covered by e2e (the story's
+  * Manual block).
   */
 class FieldProtectionSecretGuardSpec extends AnyFunSuite {
 
@@ -177,5 +185,72 @@ class FieldProtectionSecretGuardSpec extends AnyFunSuite {
             assert(decide(masked, admin) == FieldProtectionSecretGuard.Allow(None, Set.empty), admin.toString)
             assert(decide(stored, admin) == FieldProtectionSecretGuard.Allow(None, Set.empty), admin.toString)
         }
+    }
+
+    // evaluate / restoreUnchanged / deleteDecision / canonical names.
+
+    import FieldProtectionSecretGuard.{Allow, Deny403, Invalid400, Reject409}
+
+    test("restoreUnchanged puts stored values back for masked or blank key fields") {
+        val in = Map("key" -> Mask, "enc.v1" -> "", "enc.v2" -> Mask, "encCurrent" -> Mask, "note" -> "")
+        val r = FieldProtectionSecretGuard.restoreUnchanged(stored, in)
+        assert(r == stored + ("note" -> ""), r.toString)
+        // A masked key field with nothing stored is dropped, never written as the mask.
+        val r2 = FieldProtectionSecretGuard.restoreUnchanged(stored - "enc.v2", Map("enc.v2" -> Mask, "encCurrent" -> " "))
+        assert(r2 == Map("encCurrent" -> "2"), r2.toString)
+        // Real values pass through.
+        assert(FieldProtectionSecretGuard.restoreUnchanged(stored, stored + ("enc.v3" -> v3)) == stored + ("enc.v3" -> v3))
+    }
+
+    test("evaluate: an all-mask round-trip with a blank encCurrent is allowed and writes the stored secret") {
+        val (write, d) = FieldProtectionSecretGuard.evaluate(
+            stored,
+            Map("key" -> Mask, "enc.v1" -> Mask, "enc.v2" -> Mask, "encCurrent" -> ""),
+            holdsProtectAdmin = false
+        )
+        assert(d == Allow(None, Set.empty), d.toString)
+        assert(write == stored, write.toString)
+    }
+
+    test("evaluate: any PUT when the secret does not exist yet is Reject409") {
+        for (in <- Seq(Map.empty[String, String], Map("note" -> "x"), Map("_type" -> "tap"), stored); admin <- Seq(true, false)) {
+            val (_, d) = FieldProtectionSecretGuard.evaluate(Map.empty, in, admin)
+            assert(d == Reject409(FieldProtectionSecretGuard.NotIssuedMessage), s"$in $admin -> $d")
+        }
+    }
+
+    test("evaluate: the full PUT paths from raw inputs") {
+        def ev(in: Map[String, String], admin: Boolean) = FieldProtectionSecretGuard.evaluate(stored, in, admin)._2
+        val masked = Map("key" -> Mask, "enc.v1" -> Mask, "enc.v2" -> Mask, "encCurrent" -> "2")
+        assert(ev(masked + ("key" -> "0" * 64), admin = true).isInstanceOf[Reject409])
+        assert(ev(masked + ("enc.v3" -> v3, "encCurrent" -> "3"), admin = false) == Deny403)
+        assert(ev(masked + ("enc.v3" -> v3, "encCurrent" -> "3"), admin = true) == Allow(Some("rotate"), Set("enc.v3", "encCurrent")))
+        assert(ev(masked - "enc.v1", admin = true) == Allow(Some("retire"), Set("enc.v1")))
+    }
+
+    test("non-canonical key-like field names are Invalid400 for everyone, before the capability check") {
+        val masked = Map("key" -> Mask, "enc.v1" -> Mask, "enc.v2" -> Mask, "encCurrent" -> "2")
+        for (
+            bad <-
+                Seq("enc.v+2147483647", "enc.v05", "enc.v0", "enc.v-1", "enc.vx", "enc.v1000001", "enc.v99999999999", "Key", " key", "ENCCURRENT", "enc.other");
+            admin <- Seq(true, false)
+        ) {
+            val (_, d) = FieldProtectionSecretGuard.evaluate(stored, masked + (bad -> "x"), admin)
+            assert(d.isInstanceOf[Invalid400], s"$bad $admin -> $d")
+        }
+        // The highest allowed version is fine.
+        val top = "enc.v" + FieldProtectionSecretGuard.MaxVersion
+        val (_, ok) = FieldProtectionSecretGuard.evaluate(stored, masked + (top -> v3), holdsProtectAdmin = true)
+        assert(ok == Allow(Some("rotate"), Set(top)), ok.toString)
+    }
+
+    test("validate requires a canonical encCurrent") {
+        for (c <- Seq("03", "+2", "0", "-1", "\u0662", "1000001"))
+            assert(FieldProtectionSecretGuard.validate(stored + ("encCurrent" -> c)).isDefined, c)
+    }
+
+    test("deleteDecision refuses the field-protection secret only") {
+        assert(FieldProtectionSecretGuard.deleteDecision("field-protection") == Some(Reject409(FieldProtectionSecretGuard.KeyChangeMessage)))
+        assert(FieldProtectionSecretGuard.deleteDecision("ai-primary").isEmpty)
     }
 }

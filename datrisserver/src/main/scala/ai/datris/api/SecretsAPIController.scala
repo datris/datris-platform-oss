@@ -11,7 +11,7 @@ import ai.datris.audit.AuditLog
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess}
 import ai.datris.config.RequiresRole
 import ai.datris.model.DatrisEnvironment
-import ai.datris.util.{APIKeyValidator, SecretsRetrieverUtil, SecretsUtil}
+import ai.datris.util.{APIKeyValidator, FieldProtectionKey, SecretsRetrieverUtil, SecretsUtil}
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -271,7 +271,10 @@ class SecretsAPIController {
 
                         // Field protection 7: an admin edit of the key material is audited
                         // with the field names only, never the values.
+                        // The next run must read the new encCurrent / enc.v<n>, not the
+                        // encryption key FieldProtectionKey cached before this write.
                         keyAudit.foreach { case (action, fields) =>
+                            FieldProtectionKey.invalidate(env)
                             try AuditLog.record(request, "key", action, FieldProtectionSecret, fields.toSeq.sorted.mkString(","))
                             catch { case e: Exception => logger.warn("audit record failed: " + e.getMessage) }
                         }
@@ -347,13 +350,14 @@ class SecretsAPIController {
                 // Deleting the field-protection secret would mint a new hmac key
                 // on the next protected run and orphan every ciphertext: refused
                 // for everyone, the same 409 as a `key` change.
-                if (name == FieldProtectionSecret) {
-                    logger.warn("DELETE /secrets/" + name + " refused: the field-protection key secret cannot be deleted through the API")
-                    ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
-                        .body[String]("{\"error\": " + new Gson().toJson(FieldProtectionSecretGuard.KeyChangeMessage) + "}")
-                } else {
-                    SecretsUtil.deleteSecret(secretPath)
-                    new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
+                FieldProtectionSecretGuard.deleteDecision(name) match {
+                    case Some(FieldProtectionSecretGuard.Reject409(message)) =>
+                        logger.warn("DELETE /secrets/" + name + " refused: the field-protection key secret cannot be deleted through the API")
+                        ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
+                            .body[String]("{\"error\": " + new Gson().toJson(message) + "}")
+                    case _ =>
+                        SecretsUtil.deleteSecret(secretPath)
+                        new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
                 }
             }
         } catch {
@@ -374,29 +378,24 @@ class SecretsAPIController {
     /** Field protection 7 (plans/stories/field-protection-7-secret-write-guard.md):
       * map FieldProtectionSecretGuard's Decision for a PUT of the
       * field-protection secret to a refusal (Left) or to the key audit to
-      * record after the write (Right). `incoming` is the merged map; key
-      * fields still holding a mask or blank (encCurrent is not a sensitive
-      * field, so mergeIncoming writes it verbatim) are restored from the
-      * stored secret first, so "unchanged" really is unchanged on disk. */
+      * record after the write (Right). `incoming` is the merged map and is
+      * replaced in place by FieldProtectionSecretGuard.restoreUnchanged's
+      * result, so "unchanged" really is unchanged on disk. */
     private def fieldProtectionGuard(
         request: HttpServletRequest,
         existing: Map[String, String],
         incoming: java.util.LinkedHashMap[String, Object]
     ): Either[ResponseEntity[String], Option[(String, Set[String])]] = {
         import FieldProtectionSecretGuard._
-        incoming.asScala.toSeq.foreach { case (k, v) =>
-            if (isKeyField(k) && isUnchanged(String.valueOf(v))) {
-                existing.get(k).filter(_.nonEmpty) match {
-                    case Some(stored) => incoming.put(k, stored)
-                    case None => incoming.remove(k)
-                }
-            }
-        }
-        val merged = incoming.asScala.toMap.map { case (k, v) => k -> String.valueOf(v) }
-        val d = diff(existing, merged)
-        decide(d, merged, FieldProtectionAPIController.holdsCapability(request, "admin")) match {
+        val raw = incoming.asScala.toMap.map { case (k, v) => k -> String.valueOf(v) }
+        val (restored, decision) = evaluate(existing, raw, FieldProtectionAPIController.holdsCapability(request, "admin"))
+        // Write exactly the restored map, in the request's field order.
+        val order = incoming.keySet.asScala.toList
+        incoming.clear()
+        order.foreach(k => restored.get(k).foreach(v => incoming.put(k, v)))
+        decision match {
             case Reject409(message) =>
-                logger.warn("PUT /secrets/" + FieldProtectionSecret + " refused: hmac key change or removal")
+                logger.warn("PUT /secrets/" + FieldProtectionSecret + " refused: " + message)
                 Left(ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
                     .body[String]("{\"error\": " + new Gson().toJson(message) + "}"))
             case Deny403 =>
@@ -473,7 +472,7 @@ object SecretsAPIController {
       * could decrypt an `encrypt` column offline without `protect:reveal` and
       * without a reveal audit entry. Every field is masked except the
       * `encCurrent` version number. */
-    private[api] val FieldProtectionSecret = "field-protection"
+    private[api] val FieldProtectionSecret = FieldProtectionSecretGuard.SecretName
     private val FieldProtectionPlain = Set("encCurrent")
 
     /** `isSensitive(fieldName)` plus per-secret rules: every field of the

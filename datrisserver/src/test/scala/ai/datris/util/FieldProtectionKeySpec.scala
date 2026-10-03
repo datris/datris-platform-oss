@@ -188,4 +188,23 @@ class FieldProtectionKeySpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(hmacKey.length == 32, "ensure() still yields an hmac key after encrypt created the secret")
         assert(s.secret.get.contains("enc.v1") && s.secret.get.contains("encCurrent"), s"enc fields survive: ${s.secret}")
     }
+
+    test("invalidate drops the cached encryption key so an edited encCurrent takes effect") {
+        val v9 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        val s = new Store(Some(Map("key" -> Hex, "enc.v1" -> Hex, "encCurrent" -> "1")))
+        assert(current("e6", s)._1 == 1)
+        // An admin PUT through the secrets API (not FieldProtectionKey) moves to v9.
+        s.secret = Some(Map("key" -> Hex, "enc.v1" -> Hex, "enc.v9" -> v9, "encCurrent" -> "9"))
+        assert(current("e6", s)._1 == 1, "still cached before invalidate")
+        FieldProtectionKey.invalidate("e6")
+        val (v, k) = current("e6", s)
+        assert(v == 9 && (k sameElements FieldProtectionKey.decodeHex(v9)))
+        assert(s.writes == 0 && s.audits.isEmpty)
+    }
+
+    test("non-canonical enc field names never count as versions on rotate") {
+        val s = new Store(Some(Map("key" -> Hex, "enc.v1" -> Hex, "encCurrent" -> "1", "enc.v+2147483647" -> "x", "enc.v05" -> Hex)))
+        assert(rotate("e7", s) == 2)
+        assert(s.secret.get.get("encCurrent").contains("2"))
+    }
 }

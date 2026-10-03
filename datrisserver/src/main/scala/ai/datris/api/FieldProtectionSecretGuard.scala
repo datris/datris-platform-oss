@@ -23,18 +23,34 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * A mask or blank incoming value counts as unchanged whether or not
   * mergeIncoming already restored the stored value; an absent incoming key
   * field counts as removed.
+  *
+  * The secret itself is server-issued (FieldProtectionKey): a PUT when it does
+  * not exist yet and any DELETE are refused with 409. A field name that looks
+  * like a key field but is not in canonical form (`key`, `encCurrent`,
+  * `enc.v<n>` with n in 1..MaxVersion and no sign or leading zero) is refused
+  * with 400 for everyone, before the capability check.
+  *
+  * [[evaluate]] covers the whole PUT decision from the raw stored secret and
+  * the merged body; the controller only maps its result to a response.
   */
 object FieldProtectionSecretGuard {
 
     val Mask = "••••••••"
     val KeyField = "key"
     val EncCurrent = "encCurrent"
-    private val EncField = "^enc\\.v(\\d+)$".r
+    val SecretName = "field-protection"
+    private val EncField = ai.datris.util.FieldProtectionKey.EncFieldPattern
+    private val VersionNumber = "^[1-9][0-9]*$".r
+    val MaxVersion: Int = ai.datris.util.FieldProtectionKey.MaxVersion
     private val Hex64 = "^[0-9a-fA-F]{64}$".r
 
     val KeyChangeMessage: String =
         "The field-protection hmac key cannot be changed or removed through the API; " +
             "edit the secret in Vault deliberately, knowing every hmac pseudonym changes"
+
+    val NotIssuedMessage: String =
+        "The field-protection secret is issued by the server on the first protected run; " +
+            "it cannot be created through the API"
 
     case class Diff(
         keyChanged: Boolean,
@@ -52,7 +68,27 @@ object FieldProtectionSecretGuard {
     case class Invalid400(message: String) extends Decision
     case class Allow(auditAction: Option[String], fields: Set[String]) extends Decision
 
-    def isEncField(name: String): Boolean = EncField.pattern.matcher(name).matches()
+    /** A canonical `enc.v<n>` name with 1 <= n <= MaxVersion. */
+    def isEncField(name: String): Boolean = name match {
+        case EncField(n) => validVersion(n)
+        case _ => false
+    }
+
+    private def validVersion(n: String): Boolean =
+        VersionNumber.pattern.matcher(n).matches() && n.length <= 7 && n.toInt <= MaxVersion
+
+    /** Looks like a governed field once trimmed and case-folded. */
+    private def looksGoverned(name: String): Boolean = {
+        val n = name.trim.toLowerCase(java.util.Locale.ROOT)
+        n == "key" || n == "enccurrent" || n.startsWith("enc.")
+    }
+
+    /** Some(reason) for the first incoming field name that looks like a key
+      * field but is not canonical (`enc.v+5`, `enc.v05`, `Key`, ` encCurrent`). */
+    def nonCanonical(incoming: Map[String, String]): Option[String] =
+        incoming.keys.toSeq.sorted.find(k => looksGoverned(k) && !isKeyField(k)).map { k =>
+            "Field '" + k + "' is not a valid field-protection field; use 'key', 'encCurrent' or 'enc.v<n>' with n from 1 to " + MaxVersion
+        }
 
     /** True for the fields the guard governs: `key`, every `enc.v<n>`, `encCurrent`. */
     def isKeyField(name: String): Boolean = name == KeyField || name == EncCurrent || isEncField(name)
@@ -95,7 +131,7 @@ object FieldProtectionSecretGuard {
                 incoming.get(EncCurrent) match {
                     case Some(v) if !isUnchanged(v) =>
                         val n = v.trim
-                        if (!n.forall(_.isDigit)) Some(EncCurrent + " must be a version number")
+                        if (!validVersion(n)) Some(EncCurrent + " must be a version number from 1 to " + MaxVersion)
                         else if (!incoming.contains("enc.v" + n)) Some(EncCurrent + " names version " + n + " but enc.v" + n + " is not stored")
                         else None
                     case Some(_) => None
@@ -108,7 +144,9 @@ object FieldProtectionSecretGuard {
 
     /** The branch logic putSecret applies to the `field-protection` secret. */
     def decide(diff: Diff, incoming: Map[String, String], holdsProtectAdmin: Boolean): Decision = {
-        if (diff.keyChanged || diff.keyRemoved) Reject409(KeyChangeMessage)
+        val badName = nonCanonical(incoming)
+        if (badName.isDefined) Invalid400(badName.get)
+        else if (diff.keyChanged || diff.keyRemoved) Reject409(KeyChangeMessage)
         else if (!diff.touchesKeyMaterial) Allow(None, Set.empty)
         else if (!holdsProtectAdmin) Deny403
         else
@@ -123,4 +161,28 @@ object FieldProtectionSecretGuard {
                     Allow(Some(action), fields)
             }
     }
+
+    /** The map to write: every key field whose merged value is still a mask
+      * or blank takes the stored value, or is dropped when nothing is stored
+      * (encCurrent is not a sensitive field, so mergeIncoming writes a mask or
+      * blank there verbatim). Every other field passes through. */
+    def restoreUnchanged(existing: Map[String, String], incoming: Map[String, String]): Map[String, String] =
+        incoming.flatMap { case (k, v) =>
+            if (isKeyField(k) && isUnchanged(v)) existing.get(k).filter(_.nonEmpty).map(k -> _)
+            else Some(k -> v)
+        }
+
+    /** The whole PUT decision from the stored secret (empty when absent) and
+      * the merged body: the map to write and the Decision. */
+    def evaluate(existing: Map[String, String], incoming: Map[String, String], holdsProtectAdmin: Boolean): (Map[String, String], Decision) = {
+        val restored = restoreUnchanged(existing, incoming)
+        if (existing.isEmpty) (restored, Reject409(NotIssuedMessage))
+        else (restored, decide(diff(existing, restored), restored, holdsProtectAdmin))
+    }
+
+    /** DELETE of the field-protection secret is refused for everyone: the
+      * next protected run would issue a new hmac key and orphan every
+      * ciphertext. None for any other secret. */
+    def deleteDecision(name: String): Option[Decision] =
+        if (name == SecretName) Some(Reject409(KeyChangeMessage)) else None
 }

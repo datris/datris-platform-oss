@@ -39,6 +39,13 @@ object FieldProtectionKey {
     val EncCurrent = "encCurrent"
     val EncPrefix = "enc.v"
 
+    /** Highest encryption key version accepted anywhere (the secrets API guard
+      * rejects more), so `highest + 1` on rotate can never overflow. */
+    val MaxVersion: Int = 1000000
+
+    /** The only `enc.v<n>` field name form: no sign, no leading zero, ASCII digits. */
+    private[datris] val EncFieldPattern = "^enc\\.v([1-9][0-9]*)$".r
+
     private val cache = new ConcurrentHashMap[String, Array[Byte]]()
     private val encCache = new ConcurrentHashMap[String, (Int, Array[Byte])]()
     private val random = new SecureRandom()
@@ -113,8 +120,9 @@ object FieldProtectionKey {
     }
 
     private def encVersions(m: Map[String, String]): Seq[Int] =
-        m.keys.toSeq.flatMap { k =>
-            if (k.startsWith(EncPrefix)) Try(k.substring(EncPrefix.length).toInt).toOption.filter(_ > 0) else None
+        m.keys.toSeq.flatMap {
+            case EncFieldPattern(n) if n.length <= 7 => Some(n.toInt).filter(_ <= MaxVersion)
+            case _ => None
         }
 
     private def encKeyOf(m: Map[String, String], version: Int): Array[Byte] = {
@@ -234,6 +242,12 @@ object FieldProtectionKey {
             encCache.remove(env)
             version
         }
+
+    /** Forget the environment's cached encryption key, so the next run reads
+      * `encCurrent` and its `enc.v<n>` from the secret again. Called after an
+      * admin edits the key material through the secrets API. The hmac cache
+      * is kept: `key` cannot be changed through the API. */
+    private[datris] def invalidate(env: String): Unit = encCache.remove(env)
 
     /** Test seam: forget cached keys (hmac and encryption). */
     private[datris] def clearCache(): Unit = {
