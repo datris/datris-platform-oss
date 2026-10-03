@@ -296,8 +296,12 @@ option {
   line-height: 1;
 }
 
+/* The header uppercases its text; the icon ligature must stay lowercase. */
 .protect-help-btn .material-icons {
   font-size: 15px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
 }
 
 .protect-help-btn:hover,
