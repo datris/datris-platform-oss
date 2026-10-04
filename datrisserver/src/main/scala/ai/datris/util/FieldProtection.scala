@@ -24,7 +24,7 @@ import scala.collection.JavaConverters._
   *
   *  - `hmac`   lowercase hex HMAC-SHA256 under the per-environment key
   *             (FieldProtectionKey): equal inputs, equal tokens.
-  *  - `mask`   every char masked, or `preserve`: `last4` / `domain` / `year`.
+  *  - `mask`   every char masked, or `preserve`: `last4` / `domain` / `year` / `first3`.
   *  - `redact` the value becomes `[REDACTED]`.
   *  - `drop`   the column (delimited) or top-level key (JSON) is removed, and
   *             the field leaves the in-memory source and destination schemas.
@@ -130,6 +130,13 @@ object FieldProtection {
                     val cut = value.offsetByCodePoints(0, n - 4)
                     stars(n - 4) + value.substring(cut)
                 }
+            case "first3" =>
+                val n = len(value)
+                if (n <= 3) stars(n)
+                else {
+                    val cut = value.offsetByCodePoints(0, 3)
+                    value.substring(0, cut) + stars(n - 3)
+                }
             case "domain" =>
                 val at = value.lastIndexOf('@')
                 if (at < 0) stars(len(value)) else "***" + value.substring(at)
@@ -140,7 +147,7 @@ object FieldProtection {
                         year + rest.map(c => if (Character.isLetterOrDigit(c)) '*' else c)
                     case _ => stars(len(value))
                 }
-            case other => throw new DatrisException("Unknown field protection preserve '" + other + "' (last4, domain, year)")
+            case other => throw new DatrisException("Unknown field protection preserve '" + other + "' (last4, domain, year, first3)")
         }
     }
 

@@ -137,16 +137,40 @@ object FieldProtectionAdvisor {
                     case Some((method, preserve, reason)) =>
                         val policy = clamp(f.`type`, method, preserve)
                         if (policy == null) Suggested(f.name, f.`type`, f.protect, null, reason)
-                        else if (policy.method != "hmac" && keys.contains(key))
-                            Suggested(f.name, f.`type`, f.protect, null, KeyColumnReason)
-                        else if (policy.method != "drop" && dest.get(key).exists(t => !isString(t)))
-                            Suggested(f.name, f.`type`, f.protect, null, "destination type is " + dest(key).trim + "; " + policy.method + " produces a string")
-                        else Suggested(f.name, f.`type`, f.protect, policy, reason)
+                        else
+                            constrain(f.name, f.`type`, policy, keys, dest) match {
+                                case Left(why) => Suggested(f.name, f.`type`, f.protect, null, why)
+                                case Right(p) => Suggested(f.name, f.`type`, f.protect, p, reason)
+                            }
                     case None =>
                         Suggested(f.name, f.`type`, f.protect, null, null)
                 }
         }
         FieldProtectionSuggestion(result, model)
+    }
+
+    /** The validator's config-dependent rules as a clamp, shared by the
+      * suggestion endpoint and the Safe Harbor preset (ProtectionPreset):
+      * Right(policy) when `policy` can stand on this field, else Left(reason)
+      * meaning "no protection". A string-producing method needs a string
+      * source type; a key column (`keyFields`, lowercased) only takes hmac;
+      * a non-string destination column only takes drop. */
+    private[datris] def constrain(
+        fieldName: String,
+        fieldType: String,
+        policy: ProtectionPolicy,
+        keyFields: Set[String],
+        destTypes: Map[String, String]
+    ): Either[String, ProtectionPolicy] = {
+        val method = Option(policy).flatMap(p => Option(p.method)).map(_.trim.toLowerCase).getOrElse("")
+        val key = Option(fieldName).map(_.trim.toLowerCase).getOrElse("")
+        if (method.isEmpty) Left(null)
+        else if (method != "drop" && !isString(fieldType))
+            Left("source type is " + Option(fieldType).map(_.trim).getOrElse("unknown") + "; " + method + " produces a string")
+        else if (method != "hmac" && keyFields.contains(key)) Left(KeyColumnReason)
+        else if (method != "drop" && destTypes.get(key).exists(t => !isString(t)))
+            Left("destination type is " + destTypes(key).trim + "; " + method + " produces a string")
+        else Right(policy)
     }
 
     /** `name:type` lines only. */
@@ -162,6 +186,11 @@ object FieldProtectionAdvisor {
       * (field-protection-5), never a model's proposal. */
     private val Suggestable: Set[String] = ProtectionPolicy.Methods - "encrypt"
 
+    /** Preserve values the prompt offers. `first3` (field-protection-10) is a
+      * Safe Harbor preset value for ZIP codes and is not offered to the model,
+      * so an off-prompt `first3` answer drops the preserve like any unknown one. */
+    private val SuggestablePreserves: Set[String] = Set("last4", "domain", "year")
+
     /** Validator rules: known method; preserve only with mask and only from
       * the allowed set; string-producing methods only on string fields. */
     private def clamp(fieldType: String, method: String, preserve: String): ProtectionPolicy = {
@@ -169,7 +198,7 @@ object FieldProtectionAdvisor {
         if (!Suggestable.contains(m)) return null
         if (m != "drop" && !isString(fieldType)) return null
         val p =
-            if (m == "mask") Option(preserve).map(_.trim.toLowerCase).filter(ProtectionPolicy.Preserves.contains).orNull
+            if (m == "mask") Option(preserve).map(_.trim.toLowerCase).filter(SuggestablePreserves.contains).orNull
             else null
         ProtectionPolicy(m, p, null)
     }

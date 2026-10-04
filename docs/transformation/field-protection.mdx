@@ -20,6 +20,7 @@ Protection is local: no value leaves the Datris server to be protected, and no s
 | `mask` + `"preserve": "last4"` | Every character but the last four replaced with `*`. A value of four characters or fewer is masked entirely. | `123456789` | `*****6789` |
 | `mask` + `"preserve": "domain"` | `***` followed by `@` and the domain. A value without `@` is masked entirely. | `user@example.com` | `***@example.com` |
 | `mask` + `"preserve": "year"` | A leading 4-digit year is kept; every letter and digit after it is masked and separators stay. A value without a leading year is masked entirely. | `1987-06-05` | `1987-**-**` |
+| `mask` + `"preserve": "first3"` | The first three characters are kept and every other character is masked. A value of three characters or fewer is masked entirely. | `02139` | `021**` |
 | `redact` | The value becomes `[REDACTED]`. | `anything` | `[REDACTED]` |
 | `drop` | The column (or top-level JSON key) is removed and never reaches a later stage or destination. | | |
 | `encrypt` | AES-256-GCM ciphertext under the environment's current encryption key, with a fresh random IV per value and bound to the pipeline and field name. Equal inputs give different outputs. The only reversible method: an authorized caller can [reveal](#revealing-a-value) the original. | `jane@example.com` | `enc:v1:Qm9…x3A` |
@@ -80,6 +81,79 @@ Pass `{"pipeline": "<name>"}` to use a saved pipeline's source schema, or `{"fie
 Every suggestion follows the [type rules](#type-rules): a field that is not `string` is only ever suggested `drop` or nothing, and `preserve` only comes with `mask`. With `pipeline`, the saved destination is checked too: a `keyFields` column is only ever suggested `hmac` or nothing, and a field whose destination type is not `string` is only suggested `drop` or nothing. A JSON pipeline's `_json` field is not sent to the model; list its top-level keys in `fields` instead. One call takes at most 150 fields; for a wider table, pass subsets through `fields` (more returns HTTP 400 before the model is called). The call needs the same permission as reading a pipeline, is recorded as a `pipeline / protect-suggest` event in the [audit log](/audit-log) (field names only, failed model calls included), and returns HTTP 400 with `{"error": "..."}` when AI is not configured.
 
 Names can mislead, so treat the answer as a proposal. From an agent, the `suggest_field_protection` tool returns one line per field; the agent shows them to you and asks which to accept before passing any of them as `protect` to `create_pipeline`.
+
+## HIPAA Safe Harbor preset
+
+For health data, set `"protection": {"preset": "hipaa-safe-harbor"}` at the top level of the pipeline instead of classifying every column by hand. The preset recognises the 18 identifier classes of the HIPAA Safe Harbor method (45 CFR 164.514(b)(2)) from field **names**, using a fixed table built into the server. No model is called, so the same names always give the same answer.
+
+<Warning>
+The preset is an aid to applying Safe Harbor, not a certification of compliance. It protects the fields it recognises by name and tells you what it could not decide. Whether a data set is de-identified is still your determination. Expert Determination and business associate agreements are out of scope.
+</Warning>
+
+### Classes and default methods
+
+Before a name is looked up it is lowercased, split on separators and camelCase, and a leading word such as `patient`, `pt`, `member`, `subscriber` or `guarantor` is dropped, so `patient_email`, `memberEmail` and `email` are the same field. The rest of the name must match one of the table's names exactly, so `name_of_drug`, `zip_file`, `phone_model` and `date_format` are not classified. A trailing number is ignored (`phone2` is a phone).
+
+| Class | Safe Harbor identifier | Names recognised (examples) | Default method |
+|---|---|---|---|
+| `name` | Names | `name`, `first_name`, `last_name`, `full_name`, `middle_name`, `maiden_name`, `emergency_contact_name` | `redact` |
+| `geographic` | Geographic subdivisions smaller than a state | street address, address line, `city`, `county`, `precinct` | `redact` |
+| `geographic` | ZIP code | `zip`, `zip_code`, `postal_code` | `mask` keeping the first 3 (`first3`) |
+| `geographic` | Geocodes | `latitude`, `longitude`, `geolocation`, `coordinates` | `drop` |
+| `date` | All elements of dates (except year) directly related to an individual | `dob`, `date_of_birth`, `birth_date`, admission, discharge, death, service, visit and encounter dates | `mask` keeping the year |
+| `phone` | Telephone numbers | `phone`, `phone_number`, `telephone`, `mobile_phone`, `home_phone` | `redact` |
+| `fax` | Fax numbers | `fax`, `fax_number` | `redact` |
+| `email` | Email addresses | `email`, `email_address` | `redact` |
+| `ssn` | Social security numbers | `ssn`, `social_security_number` | `drop` |
+| `mrn` | Medical record numbers | `mrn`, `medical_record_number`, `chart_number` | `hmac` |
+| `health_plan` | Health plan beneficiary numbers | `health_plan_id`, `beneficiary_id`, `insurance_id`, `policy_number`, `medicare_id`, `medicaid_id` | `hmac` |
+| `account` | Account numbers | `account_number`, `account_no`, `account_id`, `bank_account` | `hmac` |
+| `license` | Certificate/license numbers | `license_number`, `licence_number`, `certificate_number`, `drivers_license` | `hmac` |
+| `vehicle` | Vehicle identifiers and serial numbers, including license plates | `vin`, `license_plate`, `vehicle_serial_number` | `hmac` |
+| `device` | Device identifiers and serial numbers | `device_id`, `device_serial_number`, `serial_number`, `udi`, `imei` | `hmac` |
+| `url` | Web URLs | `url`, `website`, `website_url`, `web_url` | `redact` |
+| `ip` | IP addresses | `ip`, `ip_address`, `ipv4`, `ipv6` | `redact` |
+| `biometric` | Biometric identifiers, including finger and voice prints | `fingerprint`, `biometric_data`, `voiceprint`, `retina_scan` | `drop` |
+| `photo` | Full-face photographs and comparable images | `photo`, `photograph`, `face_photo`, `headshot` | `drop` |
+| `other_id` | Any other unique identifying number, characteristic or code | `national_id`, `unique_identifier`, `passport_number`, `tax_id` | `hmac` |
+
+Stable identifiers use `hmac` so the column still joins. Phone and fax numbers are redacted rather than masked to the last four digits, because a partial number is not Safe Harbor. A bare `id` (including `patient_id` or `member_id` once the prefix is dropped) is **not** classified, so key columns are not swept up; `other_id` needs an explicit word such as `national_id` or `unique_identifier`. Ages are left unclassified, as are free-text columns.
+
+### Proposal endpoint
+
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline/protect/preset \
+  -H "x-api-key: <key>" -H "Content-Type: application/json" \
+  -d '{"preset": "hipaa-safe-harbor", "fields": [{"name": "patient_name", "type": "string"}, {"name": "dob", "type": "string"}, {"name": "zip", "type": "string"}, {"name": "visit_count", "type": "int"}]}'
+```
+
+Pass `{"preset", "pipeline": "<name>"}` to use a saved pipeline's source schema, or `{"preset", "fields": [...]}`. The response has `fields` (each recognised field with `name`, `class`, `method`, `preserve`, `reason`, and `current`, the field's existing `protect` or `null`), `unclassified` (the names the table did not recognise, for a person to look at), and `review` (notes for rules a method cannot express). Each proposed method follows the [type rules](#type-rules) the same way [suggestions](#suggestions) do: a `keyFields` column is only proposed `hmac` or nothing, and a field whose source or destination type is not `string` is only proposed `drop` or nothing; `method` is `"none"` in that case and `reason` says why. `_json` and `_xml` are skipped, and one call takes at most 150 fields. The call needs the same permission as reading a pipeline. It is stateless, saves nothing and is not recorded in the audit log, because it reads no data and sends nothing out. For fields the table does not recognise you can still ask the [suggestions](#suggestions) endpoint; the preset never calls it.
+
+### Review notes
+
+The proposal adds a note instead of pretending a method covers these rules:
+
+- **Ages over 89.** Safe Harbor requires ages over 89 (and the dates or years that reveal them) to be aggregated into a single category of 90 or older. The preset does not aggregate ages; the note appears when an age or date field is present.
+- **Small-population ZIP prefixes.** The first three ZIP digits must be replaced with `000` where the area they cover holds 20,000 people or fewer. `first3` keeps the first three digits and does not check population; the note appears when a ZIP field is present.
+- **Free text.** Columns such as `notes`, `comments` or `description` may contain identifiers inside their values. The preset classifies by name only; the note names those columns.
+
+### Enforcement
+
+When a pipeline sets the preset:
+
+- **At save**, a field the table recognises that has no `protect` is refused, for example `Preset 'hipaa-safe-harbor': field 'phone' looks like phone and has no protection. Add protect to it or list it under protection.presetExempt`. This applies even when no field has `protect` yet. An unknown preset name is refused too, and the preset needs a delimited or JSON source, like `protect`.
+- **For new columns**, a column added later by [schema evolution](/schemas#schema-evolution) that the table recognises is added with its default method (clamped by the type rules) and protected in that same run, before any later stage or destination sees it. The run status says, for example, `Preset hipaa-safe-harbor: new column 'patient_phone' protected as phone (redact)`, and the stored pipeline shows the new field's `protect`. A new column the table does not recognise is added unprotected, as on any pipeline, with a warning: `new column '<name>' is not recognised by the preset and is not protected`.
+
+To keep a recognised field in the clear on purpose, list it under `presetExempt`:
+
+```json
+"protection": {
+  "preset": "hipaa-safe-harbor",
+  "presetExempt": ["admission_date"]
+}
+```
+
+Without the preset, a column added by schema evolution to a protected pipeline lands unprotected; that is the main reason to set it.
 
 ## In the wizard
 

@@ -7,8 +7,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.AuditLog
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException}
-import ai.datris.model.{DatrisEnvironment, DatrisException, SchemaField}
-import ai.datris.util.{APIKeyValidator, CatalogOps, FieldCipher, FieldProtectionAdvisor, FieldProtectionKey, PipelineConfigIO}
+import ai.datris.model.{DatrisEnvironment, DatrisException, ProtectionPolicy, SchemaField}
+import ai.datris.util.{APIKeyValidator, CatalogOps, FieldCipher, FieldProtectionAdvisor, FieldProtectionKey, PipelineConfigIO, ProtectionPreset}
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonNull, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
@@ -58,20 +58,7 @@ class FieldProtectionAPIController {
             logger.info("API endpoint POST /pipeline/protect/suggest called" + Option(pipeline).map(" for pipeline: " + _).getOrElse(""))
             APIKeyValidator.validate(apiKey)
 
-            val (fields, keyFields, destTypes): (List[SchemaField], Set[String], Map[String, String]) =
-                if (pipeline != null) {
-                    val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
-                    if (config == null)
-                        throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
-                    val sp = if (config.source != null) config.source.schemaProperties else null
-                    if (sp == null || sp.fields == null || sp.fields.isEmpty)
-                        throw new DatrisException("Pipeline '" + pipeline + "' has no source schema fields")
-                    val (keys, dest) = FieldProtectionAdvisor.constraintsOf(config)
-                    (sp.fields.asScala.toList.filter(_ != null), keys, dest)
-                } else if (body != null && body.fields != null && !body.fields.isEmpty)
-                    (body.fields.asScala.toList.filter(_ != null), Set.empty[String], Map.empty[String, String])
-                else
-                    throw new DatrisException("Pass either 'pipeline' (a pipeline name) or 'fields' (an array of {name, type})")
+            val (fields, keyFields, destTypes) = FieldProtectionAPIController.resolveFields(pipeline, Option(body).map(_.fields).orNull)
 
             md = new JsonObject()
             val names = new JsonArray()
@@ -93,6 +80,54 @@ class FieldProtectionAPIController {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 audit("failure", 500, e.getMessage)
+                ApiErrors.internal(e)
+        }
+    }
+
+    /** Safe Harbor preset proposal (plans/stories/field-protection-10-safe-harbor-preset-server.md).
+      * Body: `{"preset": "hipaa-safe-harbor", "pipeline": "<name>"}` (stored
+      * source schema and its key/destination constraints) or
+      * `{"preset": ..., "fields": [{"name", "type", "protect"?}]}`. Stateless
+      * and deterministic: a fixed name table, no model call, nothing saved,
+      * nothing sent out, so no audit entry. */
+    @PostMapping(
+        path = Array("/pipeline/protect/preset"),
+        consumes = Array(MediaType.APPLICATION_JSON_VALUE),
+        produces = Array(MediaType.APPLICATION_JSON_VALUE)
+    )
+    def preset(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: PresetProtectionRequest,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        val pipeline = Option(body).flatMap(b => Option(b.pipeline)).map(_.trim).filter(_.nonEmpty).orNull
+        try {
+            logger.info("API endpoint POST /pipeline/protect/preset called" + Option(pipeline).map(" for pipeline: " + _).getOrElse(""))
+            APIKeyValidator.validate(apiKey)
+
+            val preset = Option(body).flatMap(b => Option(b.preset)).map(_.trim.toLowerCase).filter(_.nonEmpty).orNull
+            if (preset == null)
+                throw new DatrisException("Pass 'preset' (supported: " + ProtectionPreset.Presets.toList.sorted.mkString(", ") + ")")
+            if (!ProtectionPreset.Presets.contains(preset))
+                throw new DatrisException(
+                    "Unknown preset '" + body.preset.trim + "' (supported: " + ProtectionPreset.Presets.toList.sorted.mkString(", ") + ")"
+                )
+
+            val (fields, keyFields, destTypes) = FieldProtectionAPIController.resolveFields(pipeline, Option(body).map(_.fields).orNull)
+            val input = fields.filter(f => f.name != null && f.name.trim.nonEmpty)
+            if (input.isEmpty) throw new DatrisException("No fields to propose protection for")
+            if (input.size > FieldProtectionAdvisor.MaxFields)
+                throw new DatrisException("Too many fields for one preset call (" + input.size + "); pass a subset through 'fields'")
+
+            val proposal = ProtectionPreset.propose(input, keyFields, destTypes)
+            val current: Map[String, ProtectionPolicy] = input.map(f => f.name -> f.protect).toMap
+            new ResponseEntity[String](ProtectionPreset.toJson(proposal, current), HttpStatus.OK)
+        } catch {
+            case e: DatrisException =>
+                logger.warn("Field protection preset refused: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ApiErrors.internal(e)
         }
     }
@@ -239,6 +274,27 @@ class FieldProtectionAPIController {
 
 object FieldProtectionAPIController {
 
+    /** The field list a suggest or preset call works on, with the pipeline's
+      * constraints: the stored source schema when `pipeline` is named, else
+      * the caller's `fields` (no constraints). */
+    private[api] def resolveFields(
+        pipeline: String,
+        bodyFields: java.util.List[SchemaField]
+    ): (List[SchemaField], Set[String], Map[String, String]) =
+        if (pipeline != null) {
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
+            if (config == null)
+                throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
+            val sp = if (config.source != null) config.source.schemaProperties else null
+            if (sp == null || sp.fields == null || sp.fields.isEmpty)
+                throw new DatrisException("Pipeline '" + pipeline + "' has no source schema fields")
+            val (keys, dest) = FieldProtectionAdvisor.constraintsOf(config)
+            (sp.fields.asScala.toList.filter(_ != null), keys, dest)
+        } else if (bodyFields != null && !bodyFields.isEmpty)
+            (bodyFields.asScala.toList.filter(_ != null), Set.empty[String], Map.empty[String, String])
+        else
+            throw new DatrisException("Pass either 'pipeline' (a pipeline name) or 'fields' (an array of {name, type})")
+
     /** Values per reveal call. */
     val MaxRevealValues = 1000
 
@@ -313,6 +369,13 @@ case class RevealRequest(
 
 /** Request body — bound the same way ApplyDestTypesRequest is. */
 case class SuggestProtectionRequest(
+    pipeline: String = null,
+    fields: java.util.List[SchemaField] = null
+)
+
+/** Preset proposal body: `preset` plus `pipeline` or `fields`. */
+case class PresetProtectionRequest(
+    preset: String = null,
     pipeline: String = null,
     fields: java.util.List[SchemaField] = null
 )

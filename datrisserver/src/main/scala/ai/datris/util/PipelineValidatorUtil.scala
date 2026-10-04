@@ -145,16 +145,26 @@ object PipelineValidatorUtil {
     /** Source fields carrying `protect` (FieldProtection). Refused here, at
       * save, so a pipeline can never silently store plaintext: unknown and
       * reserved (not yet supported: fpe, tokenize) methods, `preserve` outside
-      * `mask` or outside last4/domain/year, a string-producing method (encrypt
+      * `mask` or outside last4/domain/year/first3, a string-producing method (encrypt
       * included) on a non-string source or destination field, any method but
       * hmac on a key field (mask and redact would make rows share a key,
       * encrypt's fresh IV per value would split one key into many, drop
       * removes it), and any source that is not delimited or JSON. */
     private def validateFieldProtection(config: PipelineConfig): Unit = {
+        // Preset rules run first: a preset applies even when no field has
+        // `protect` yet (that is exactly the case it refuses).
+        val preset = ProtectionPreset.presetOf(config)
+        preset.foreach { p =>
+            if (!ProtectionPreset.Presets.contains(p.toLowerCase))
+                throw new DatrisException(
+                    "Unknown protection.preset '" + p + "' (supported: " + ProtectionPreset.Presets.toList.sorted.mkString(", ") + ")"
+                )
+        }
+
         val sp = config.source.schemaProperties
         if (sp == null || sp.fields == null) return
         val protectedFields = sp.fields.asScala.filter(f => f != null && f.protect != null).toList
-        if (protectedFields.isEmpty) return
+        if (protectedFields.isEmpty && preset.isEmpty) return
 
         val fa = config.source.fileAttributes
         if (fa != null && (fa.xmlAttributes != null || fa.unstructuredAttributes != null))
@@ -193,7 +203,7 @@ object PipelineValidatorUtil {
                     throw new DatrisException("Field '" + f.name + "': protect.preserve is only valid with method 'mask'")
                 if (!ProtectionPolicy.Preserves.contains(p.preserve.trim.toLowerCase))
                     throw new DatrisException(
-                        "Field '" + f.name + "': unknown protect.preserve '" + p.preserve + "' (last4, domain, year)"
+                        "Field '" + f.name + "': unknown protect.preserve '" + p.preserve + "' (last4, domain, year, first3)"
                     )
             }
             if (f.name != null && keyFields.contains(f.name.trim.toLowerCase)) {
@@ -215,6 +225,20 @@ object PipelineValidatorUtil {
                             "Field '" + d.name + "': protect.method '" + method + "' produces a string; the destination field type must be 'string'"
                         )
                 }
+            }
+        }
+
+        preset.foreach { p =>
+            ProtectionPreset.missing(config) match {
+                case (field, klass) :: rest =>
+                    val more =
+                        if (rest.isEmpty) ""
+                        else " (" + rest.size + " more field" + (if (rest.size == 1) "" else "s") + " also need protection or an exemption)"
+                    throw new DatrisException(
+                        "Preset '" + p.toLowerCase + "': field '" + field + "' looks like " + klass + " and has no protection" + more +
+                            ". Add protect to it or list it under protection.presetExempt"
+                    )
+                case Nil => ()
             }
         }
     }

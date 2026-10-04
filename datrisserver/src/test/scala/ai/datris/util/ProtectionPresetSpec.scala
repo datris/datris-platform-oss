@@ -89,7 +89,14 @@ class ProtectionPresetSpec extends AnyFunSuite {
     )
 
     private val NearMisses = List(
-        "name_of_drug", "zip_file", "phone_model", "date_format", "email_template", "account_type", "ip_rating", "url_count"
+        "name_of_drug",
+        "zip_file",
+        "phone_model",
+        "date_format",
+        "email_template",
+        "account_type",
+        "ip_rating",
+        "url_count"
     )
 
     private def isNone(p: ProtectionPolicy): Boolean =

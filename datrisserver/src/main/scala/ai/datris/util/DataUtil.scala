@@ -26,7 +26,8 @@ object DataUtil {
     def evolveSchema(
         sourceColumns: List[String],
         config: PipelineConfig,
-        statusUtil: StatusUtil
+        statusUtil: StatusUtil,
+        persist: PipelineConfig => Unit = PipelineConfigIO.write
     ): (PipelineConfig, List[String], List[String], List[String]) = {
         var updatedConfig = config
         var schemaColumns = config.source.schemaProperties.fields.asScala.map(_.name).toList
@@ -41,8 +42,42 @@ object DataUtil {
             statusUtil.info("processing", "Schema evolution: new columns detected [" + newColumns.mkString(", ") + "], adding to pipeline schema")
 
             val newFields = newColumns.map(col => SchemaField(col, "string"))
+            // Field protection preset (field-protection-10): a new column the
+            // preset recognises joins the SOURCE schema with its (clamped)
+            // policy, so FieldProtection protects it in this same run (it reads
+            // the config returned here) and the persisted config carries it.
+            val newSourceFields = ProtectionPreset.supportedPresetOf(config) match {
+                case Some(preset) =>
+                    val (keys, destTypes) = FieldProtectionAdvisor.constraintsOf(config)
+                    newFields.map { f =>
+                        ProtectionPreset.classify(f.name) match {
+                            case Some((klass, policy)) =>
+                                FieldProtectionAdvisor.constrain(f.name, f.`type`, policy, keys, destTypes) match {
+                                    case Right(p) =>
+                                        statusUtil.info(
+                                            "processing",
+                                            "Preset " + preset + ": new column '" + f.name + "' protected as " + klass + " (" + p.label + ")"
+                                        )
+                                        f.copy(protect = p)
+                                    case Left(why) =>
+                                        statusUtil.warn(
+                                            "processing",
+                                            "Preset " + preset + ": new column '" + f.name + "' looks like " + klass + " but is not protected (" + why + ")"
+                                        )
+                                        f
+                                }
+                            case None =>
+                                statusUtil.warn(
+                                    "processing",
+                                    "Preset " + preset + ": new column '" + f.name + "' is not recognised by the preset and is not protected"
+                                )
+                                f
+                        }
+                    }
+                case None => newFields
+            }
             val updatedFields = new java.util.ArrayList[SchemaField](config.source.schemaProperties.fields)
-            newFields.foreach(f => updatedFields.add(f))
+            newSourceFields.foreach(f => updatedFields.add(f))
 
             val newVersion = config.source.schemaProperties.schemaVersion + 1
             val updatedSourceSchema = config.source.schemaProperties.copy(fields = updatedFields, schemaVersion = newVersion)
@@ -57,7 +92,8 @@ object DataUtil {
             } else config.destination
 
             updatedConfig = config.copy(source = updatedSource, destination = updatedDest)
-            PipelineConfigIO.write(updatedConfig)
+            // Gson write of the whole config: `protect` and `protection` survive.
+            persist(updatedConfig)
 
             schemaColumns = updatedSourceSchema.fields.asScala.map(_.name).toList
         }

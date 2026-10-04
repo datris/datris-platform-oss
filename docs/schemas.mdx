@@ -157,6 +157,10 @@ Each schema change increments a `schemaVersion` counter in the pipeline config, 
 
 - **New columns in the CSV header** that are not in the stored schema → automatically added as `string` type
 
+### New columns and field protection
+
+A new column is added without [field protection](/transformation/field-protection), even when other columns of the pipeline are protected. If the pipeline sets the [HIPAA Safe Harbor preset](/transformation/field-protection#hipaa-safe-harbor-preset) (`"protection": {"preset": "hipaa-safe-harbor"}`), a new column whose name the preset recognises (for example `patient_phone`) is added with the preset's method instead and protected in the same run, before any destination sees it; the run status names the column and the method, and the stored schema keeps its `protect`. A new column the preset does not recognise is added unprotected with a warning in the run status.
+
 ### What does NOT trigger evolution
 
 - **Missing columns** — if a CSV is missing a non-key column from the schema, the missing values are filled with empty strings (existing behavior). Key fields must always be present.

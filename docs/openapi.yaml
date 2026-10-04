@@ -54,11 +54,12 @@ components:
             with the `protect:reveal` capability.
         preserve:
           type: string
-          enum: [last4, domain, year]
+          enum: [last4, domain, year, first3]
           description: >-
             Only with `method: mask`. `last4` keeps the last four characters,
             `domain` keeps `@` and the part after it, `year` keeps a leading
-            4-digit year.
+            4-digit year, `first3` keeps the first three characters (a value
+            of three characters or fewer is masked entirely).
         params:
           type: object
           description: Reserved for method-specific options.
@@ -77,8 +78,8 @@ components:
     ProtectionConfig:
       type: object
       description: >-
-        Options for field protection; only read when a source field carries
-        `protect`.
+        Options for field protection. `purgeSource` is only read when a source
+        field carries `protect`; `preset` applies on its own.
       properties:
         purgeSource:
           type: boolean
@@ -89,6 +90,26 @@ components:
             default) the ingest object is deleted too, for bucket drops, Kafka
             temp objects and archive drops (the archive and its extracted
             files). Set to false to keep the ingest object.
+        preset:
+          type: string
+          nullable: true
+          enum: [hipaa-safe-harbor]
+          description: >-
+            Field protection preset. `hipaa-safe-harbor` recognises the 18
+            HIPAA Safe Harbor identifier classes from field names (a fixed
+            table, no model call). Saving is refused while a recognised source
+            field has no `protect` and is not listed in `presetExempt`, and a
+            recognised column added later by schema evolution is protected
+            with the preset's method in the same run. An aid to applying Safe
+            Harbor, not a certification.
+        presetExempt:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: >-
+            Field names the preset recognises that are kept unprotected on
+            purpose (case-insensitive). Only read when `preset` is set.
     UnityCatalogSync:
       type: object
       description: >-
@@ -1522,6 +1543,106 @@ paths:
                           nullable: true
         '400':
           description: Neither pipeline nor fields given, pipeline not found, AI not configured, or an unusable model answer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '500':
+          description: Error
+
+  /api/v1/pipeline/protect/preset:
+    post:
+      tags: [Pipelines]
+      summary: Propose field protection from a preset (HIPAA Safe Harbor)
+      description: >-
+        Classifies source fields against the preset's fixed name table (the
+        18 HIPAA Safe Harbor identifier classes) and proposes each recognised
+        field's default method, clamped by the same rules as
+        `/api/v1/pipeline/protect/suggest` (keyFields columns only hmac or
+        none; non-string source or destination types only drop or none).
+        Deterministic: no model call. Stateless: nothing is saved and nothing
+        is audited. Pass `preset` with either `pipeline` (its stored source
+        schema and constraints are used) or `fields`. At most 150 fields per
+        call; `_json` and `_xml` are skipped. Needs the same capability as
+        reading a pipeline. An aid to applying Safe Harbor, not a
+        certification.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [preset]
+              properties:
+                preset:
+                  type: string
+                  enum: [hipaa-safe-harbor]
+                pipeline:
+                  type: string
+                  description: Existing pipeline name (instead of fields)
+                fields:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, type]
+                    properties:
+                      name:
+                        type: string
+                      type:
+                        type: string
+                      protect:
+                        $ref: '#/components/schemas/FieldProtectionPolicy'
+      responses:
+        '200':
+          description: The proposal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preset:
+                    type: string
+                  fields:
+                    type: array
+                    description: One entry per recognised field, in input order
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        class:
+                          type: string
+                          enum: [name, geographic, date, phone, fax, email, ssn, mrn, health_plan, account, license, vehicle, device, url, ip, biometric, photo, other_id]
+                        method:
+                          type: string
+                          enum: [hmac, mask, redact, drop, none]
+                          description: "`none` when a clamp leaves no method that can stand; `reason` says why"
+                        preserve:
+                          type: string
+                          nullable: true
+                          enum: [last4, domain, year, first3, null]
+                        reason:
+                          type: string
+                        current:
+                          nullable: true
+                          description: The field's existing `protect`, or null
+                          allOf:
+                            - $ref: '#/components/schemas/FieldProtectionPolicy'
+                  unclassified:
+                    type: array
+                    description: Field names the table does not recognise, for a person to review
+                    items:
+                      type: string
+                  review:
+                    type: array
+                    description: Notes for rules a method cannot express (ages over 89, small-population ZIP prefixes, free text)
+                    items:
+                      type: string
+        '400':
+          description: Missing or unknown preset, neither pipeline nor fields given, pipeline not found, or more than 150 fields
           content:
             application/json:
               schema:

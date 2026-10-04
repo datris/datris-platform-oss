@@ -83,6 +83,8 @@ object CapabilityRoutes {
         Route("POST", "/api/v1/pipeline/dest-types", "pipeline", "update"),
         // Field protection suggestions: stateless, names and types only, saves nothing.
         Route("POST", "/api/v1/pipeline/protect/suggest", "pipeline", "read"),
+        // Safe Harbor preset proposal: stateless, deterministic name table, no model call.
+        Route("POST", "/api/v1/pipeline/protect/preset", "pipeline", "read"),
         // Field protection reveal (decrypts `encrypt` ciphertext) and key
         // rotation. REST only, no MCP tool; `protect:*` is in no template,
         // role bundle or agent key, so only admins, `*:*` keys and keys
