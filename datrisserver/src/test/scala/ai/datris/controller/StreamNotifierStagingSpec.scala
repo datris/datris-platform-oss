@@ -601,4 +601,110 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(!mapper.writeValueAsString(fa.csvAttributes).contains("effectiveDelimiter"))
         assert(!new com.google.gson.Gson().toJson(fa.csvAttributes).contains("effectiveDelimiter"))
     }
+
+    // ---- Field protection 10: schema evolution under the HIPAA Safe Harbor preset ----
+    //  (plans/stories/field-protection-10-safe-harbor-preset-server.md, Step 4)
+    //
+    //  Seam this spec pins: `evolveSchema` writes the evolved config through
+    //  `PipelineConfigIO.write`, which needs Mongo, so the write is injected
+    //  with the production default (existing callers compile unchanged):
+    //
+    //  {{{
+    //  def evolveSchema(sourceColumns: List[String], config: PipelineConfig, statusUtil: StatusUtil,
+    //                   persist: PipelineConfig => Unit = PipelineConfigIO.write)
+    //      : (PipelineConfig, List[String], List[String], List[String])
+    //  }}}
+    //
+    //  With `protection.preset` set, each new source column goes through
+    //  `ProtectionPreset.classify`; a classified one is added to the SOURCE
+    //  schema WITH its (clamped) policy and an info line
+    //  "Preset hipaa-safe-harbor: new column '<c>' protected as <class> (<method>)";
+    //  an unclassified one is added as today with a warn line
+    //  "new column '<c>' is not recognised by the preset and is not protected".
+    //  The persisted config is the returned one (protect survives the write).
+
+    private class LevelStatusUtil extends ai.datris.util.StatusUtil {
+        val events = scala.collection.mutable.ListBuffer[(String, String)]()
+        override def info(state: String, description: String): Unit = events += (("info", description))
+        override def warn(state: String, description: String): Unit = events += (("warn", description))
+        override def error(state: String, description: String): Unit = events += (("error", description))
+        def lines(level: String): List[String] = events.filter(_._1 == level).map(_._2).toList
+    }
+
+    private def evolveConfig(protection: ProtectionConfig): PipelineConfig =
+        PipelineConfig(
+            name = "patients",
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("mrn", "visit_count")),
+                fileAttributes = FileAttributes(csvAttributes = CsvAttributes())
+            ),
+            destination = Destination(schemaProperties = SchemaProperties("db", fields("mrn", "visit_count"))),
+            protection = protection
+        )
+
+    private def presetProtection: ProtectionConfig = ProtectionConfig(preset = "hipaa-safe-harbor")
+
+    private def sourceField(cfg: PipelineConfig, name: String): Option[SchemaField] =
+        cfg.source.schemaProperties.fields.asScala.find(_.name.equalsIgnoreCase(name))
+
+    test("a new identifier column on a preset pipeline is added with its policy and protected in the same run") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val (evolved, schemaColumns, present, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "patient_phone"), evolveConfig(presetProtection), su, c => persisted += c)
+
+        assert(schemaColumns.contains("patient_phone") && present.contains("patient_phone"))
+        val f = sourceField(evolved, "patient_phone")
+        assert(f.isDefined, s"new column added: ${evolved.source.schemaProperties.fields}")
+        assert(f.get.protect != null && f.get.protect.method == "redact", s"phone → redact under the preset, got ${f.get.protect}")
+
+        // Protected in this same run: the returned config is what FieldProtection reads.
+        assert(ai.datris.util.FieldProtection.protectedFields(evolved).exists(_.name == "patient_phone"))
+        assert(ai.datris.util.FieldProtection.protectValue(f.get.protect, "555-123-4567", "k".getBytes(StandardCharsets.UTF_8)) == "[REDACTED]")
+
+        // The stored config carries protect too.
+        assert(persisted.size == 1, s"one write, got ${persisted.size}")
+        assert(sourceField(persisted.head, "patient_phone").exists(p => p.protect != null && p.protect.method == "redact"))
+        assert(persisted.head.protection != null && persisted.head.protection.preset == "hipaa-safe-harbor", "the preset survives the write")
+
+        val infos = su.lines("info")
+        assert(
+            infos.exists(l => l.contains("new column 'patient_phone' protected as") && l.contains("redact")),
+            s"status lines: ${su.events}"
+        )
+        assert(su.lines("warn").isEmpty, s"no warning for a recognised column: ${su.events}")
+    }
+
+    test("a new unrecognised column is added unprotected with a warning") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val (evolved, _, _, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "favourite_colour"), evolveConfig(presetProtection), su, c => persisted += c)
+
+        val f = sourceField(evolved, "favourite_colour")
+        assert(f.isDefined && f.get.protect == null, s"added as is: $f")
+        assert(
+            su.lines("warn").exists(_.contains("new column 'favourite_colour' is not recognised by the preset")),
+            s"status lines: ${su.events}"
+        )
+        assert(persisted.size == 1)
+    }
+
+    test("pipelines without a preset evolve as before") {
+        Seq(null, ProtectionConfig(purgeSource = java.lang.Boolean.FALSE)).foreach { protection =>
+            val su = new LevelStatusUtil
+            val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+            val cfg = evolveConfig(protection)
+            val (evolved, schemaColumns, _, _) =
+                ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "patient_phone"), cfg, su, c => persisted += c)
+
+            assert(schemaColumns == List("mrn", "visit_count", "patient_phone"))
+            assert(sourceField(evolved, "patient_phone").exists(_.protect == null), s"no preset → unprotected ($protection)")
+            assert(evolved.destination.schemaProperties.fields.asScala.exists(_.name == "patient_phone"))
+            assert(evolved.source.schemaProperties.schemaVersion == cfg.source.schemaProperties.schemaVersion + 1)
+            assert(persisted.size == 1)
+            assert(!su.events.exists(_._2.toLowerCase.contains("preset")), s"no preset lines: ${su.events}")
+            assert(su.lines("warn").isEmpty, s"no warnings: ${su.events}")
+        }
+    }
 }

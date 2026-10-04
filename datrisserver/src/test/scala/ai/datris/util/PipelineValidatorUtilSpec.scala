@@ -894,8 +894,9 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         parsesProtect(cfg)
         val err = validationError(cfg)
         assert(err.exists(e => e.contains("mrn") && e.contains("preserve")), s"got: $err")
-        // preserve outside last4/domain/year is rejected on mask too.
-        val bad = protectConfig("""[{"name":"phone","type":"string","protect":{"method":"mask","preserve":"first3"}}]""")
+        // preserve outside last4/domain/year/first3 is rejected on mask too
+        // (story 10 made first3 valid, so the fixture uses an unknown value).
+        val bad = protectConfig("""[{"name":"phone","type":"string","protect":{"method":"mask","preserve":"first5"}}]""")
         val err2 = validationError(bad)
         assert(err2.exists(e => e.contains("phone") && e.contains("preserve")), s"got: $err2")
     }
@@ -1051,5 +1052,93 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
             val err = validationError(objectStoreConfig(s""""credentialsSecret":"$name""""))
             assert(err.contains("Invalid secret name '" + name + "'"), s"[$name] -> $err")
         }
+    }
+
+    // --- Field protection 10: HIPAA Safe Harbor preset
+    // (plans/stories/field-protection-10-safe-harbor-preset-server.md) ---
+    // `protection` gains `preset: String` and `presetExempt: java.util.List[String]`
+    // (null = unset). Fixtures parse with Gson; `cfg.protection.preset` is read
+    // back so the rule, not Gson dropping an unknown key, is what each case
+    // exercises. Class label for a phone column is "phone" (ProtectionPresetSpec).
+
+    private def presetConfig(sourceFields: String, protection: String, fileAttributes: String = """"csvAttributes":{"header":true}"""): PipelineConfig = {
+        val cfg = parse(
+            s"""{"name":"fp",
+               |"source":{"fileAttributes":{$fileAttributes},"schemaProperties":{"fields":$sourceFields}},
+               |"destination":{"database":{"dbName":"datris","schema":"public","table":"fp","usePostgres":true}},
+               |"protection":$protection}""".stripMargin
+        )
+        assert(cfg.protection != null && cfg.protection.preset != null, "fixture must parse protection.preset")
+        cfg
+    }
+
+    private val presetSource =
+        """[{"name":"mrn","type":"string","protect":{"method":"hmac"}},
+          |{"name":"phone","type":"string"},
+          |{"name":"visit_count","type":"int"}]""".stripMargin
+
+    test("an unknown preset is rejected") {
+        val cfg = presetConfig("""[{"name":"mrn","type":"string","protect":{"method":"hmac"}}]""", """{"preset":"gdpr-lite"}""")
+        val err = validationError(cfg)
+        assert(err.exists(e => e.contains("gdpr-lite") && e.contains("hipaa-safe-harbor")), s"must name the bad value and the supported presets; got: $err")
+        // Also with no protected field at all (validateFieldProtection must not return early).
+        val bare = presetConfig("""[{"name":"visit_count","type":"int"}]""", """{"preset":"gdpr-lite"}""")
+        assert(validationError(bare).exists(_.contains("hipaa-safe-harbor")), s"got: ${validationError(bare)}")
+    }
+
+    test("a preset pipeline with an unprotected identifier field is rejected naming the field and class") {
+        val cfg = presetConfig(presetSource, """{"preset":"hipaa-safe-harbor"}""")
+        val err = validationError(cfg)
+        assert(
+            err.exists(_.contains("Preset 'hipaa-safe-harbor': field 'phone' looks like phone and has no protection")),
+            s"got: $err"
+        )
+        assert(err.exists(_.contains("protection.presetExempt")), s"must say how to exempt it; got: $err")
+        // No protected field at all: still enforced.
+        val none = presetConfig("""[{"name":"ssn","type":"string"},{"name":"visit_count","type":"int"}]""", """{"preset":"hipaa-safe-harbor"}""")
+        assert(validationError(none).exists(_.contains("field 'ssn' looks like ssn")), s"got: ${validationError(none)}")
+        // A preset on an XML source is refused like protect is.
+        val xml = presetConfig("""[{"name":"_xml","type":"string"}]""", """{"preset":"hipaa-safe-harbor"}""", """"xmlAttributes":{}""")
+        assert(validationError(xml).exists(_.contains("Field protection needs a delimited or JSON source")), s"got: ${validationError(xml)}")
+    }
+
+    test("presetExempt lets it save") {
+        val cfg = presetConfig(presetSource, """{"preset":"hipaa-safe-harbor","presetExempt":["phone"]}""")
+        assert(cfg.protection.presetExempt != null && cfg.protection.presetExempt.asScala.toList == List("phone"))
+        assert(validationError(cfg).isEmpty, s"got: ${validationError(cfg)}")
+    }
+
+    test("a fully protected preset pipeline passes") {
+        val src =
+            """[{"name":"mrn","type":"string","protect":{"method":"hmac"}},
+              |{"name":"patient_name","type":"string","protect":{"method":"redact"}},
+              |{"name":"dob","type":"string","protect":{"method":"mask","preserve":"year"}},
+              |{"name":"zip","type":"string","protect":{"method":"mask","preserve":"first3"}},
+              |{"name":"ssn","type":"string","protect":{"method":"drop"}},
+              |{"name":"phone","type":"string","protect":{"method":"redact"}},
+              |{"name":"visit_count","type":"int"}]""".stripMargin
+        val cfg = presetConfig(src, """{"preset":"hipaa-safe-harbor"}""")
+        assert(validationError(cfg).isEmpty, s"got: ${validationError(cfg)}")
+        // Absent preset: an unprotected phone saves exactly as before.
+        val plain = parse(
+            """{"name":"fp",
+              |"source":{"fileAttributes":{"csvAttributes":{"header":true}},"schemaProperties":{"fields":[{"name":"phone","type":"string"}]}},
+              |"destination":{"database":{"dbName":"datris","schema":"public","table":"fp","usePostgres":true}}}""".stripMargin
+        )
+        assert(validationError(plain).isEmpty, s"no preset: ${validationError(plain)}")
+    }
+
+    test("first3 is accepted only with mask") {
+        val ok = protectConfig("""[{"name":"zip","type":"string","protect":{"method":"mask","preserve":"first3"}}]""")
+        parsesProtect(ok)
+        assert(validationError(ok).isEmpty, s"mask:first3 got: ${validationError(ok)}")
+        Seq("hmac", "redact").foreach { m =>
+            val bad = protectConfig(s"""[{"name":"zip","type":"string","protect":{"method":"$m","preserve":"first3"}}]""")
+            val err = validationError(bad)
+            assert(err.exists(e => e.contains("zip") && e.contains("only valid with method 'mask'")), s"$m:first3 got: $err")
+        }
+        // The unknown-preserve message lists first3 among the allowed values.
+        val unknown = protectConfig("""[{"name":"zip","type":"string","protect":{"method":"mask","preserve":"first5"}}]""")
+        assert(validationError(unknown).exists(_.contains("first3")), s"got: ${validationError(unknown)}")
     }
 }

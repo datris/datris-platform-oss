@@ -235,4 +235,13 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(!key("protect:reveal").matchesResourceAction("protect", "admin"))
         assert(!key("protect:admin").matchesResourceAction("protect", "reveal"))
     }
+
+    // Story: Field protection 10 (plans/stories/field-protection-10-safe-harbor-preset-server.md).
+    // Stateless proposal from field names; reads nothing sensitive. The MCP
+    // tool is story 11, so only the REST route is pinned here.
+    test("POST /api/v1/pipeline/protect/preset requires pipeline:read") {
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/pipeline/protect/preset") == RouteCheck.Require("pipeline", "read"))
+        assert(key("pipeline:read").matchesResourceAction("pipeline", "read"))
+        assert(!key("job:read").matchesResourceAction("pipeline", "read"))
+    }
 }
