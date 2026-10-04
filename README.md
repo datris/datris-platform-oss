@@ -43,6 +43,8 @@ You only need Docker. This pulls pre-built images and runtime files, seeds a
 curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
+Installing from a coding agent or a CI job with no terminal attached? See [Install for Agents](https://docs.datris.ai/install-for-agents).
+
 **Minimal install (laptop-friendly).** The default stack runs about ten
 containers and the bundled embedding server downloads a 2.2 GB model on first
 boot. None of that is required. Three settings in `.env` cut it to eight small
