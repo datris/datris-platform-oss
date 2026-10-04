@@ -56,7 +56,7 @@ object CodeGenTransformationEvaluator {
         val userPrompt =
             if (!AiSampleValues.enabled)
                 s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
-                   |Columns: $headerLine
+                   |Columns: ${CodeGenRuleEvaluator.withheldColumns(data, delimiter)}
                    |${CodeGenRuleEvaluator.withheldCsvLines(data)}
                    |
                    |Transformation: "$instruction"

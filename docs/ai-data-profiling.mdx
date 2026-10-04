@@ -120,7 +120,7 @@ The default sample of 200 rows is typically sufficient to detect patterns, types
 
 ## Values withheld
 
-When the server sets `DATRIS_AI_SAMPLE_VALUES=false`, no row value is sent to the model. For a CSV file the model gets per-column statistics computed over every row (inferred type, count, nulls, distinct count, minimum and maximum value length); for JSON and XML it gets a value-free skeleton of the document. `sampleValues` are empty for every column and the response carries a top-level `"valuesWithheld": true`. Quality issues and the suggested rule are then based on names, types and statistics only. See [Field Protection](/transformation/field-protection#what-still-sees-raw-data).
+When the server sets `DATRIS_AI_SAMPLE_VALUES=false`, no row value is sent to the model. For a CSV file the model gets per-column statistics computed over every row (inferred type, count, nulls, distinct count, minimum and maximum value length); for JSON, NDJSON and XML (by extension, or by content that starts with `{`, `[` or `<`) it gets a value-free skeleton of the document. A header cell that does not read as a column name is sent as `column_N`, and a first line that looks like data is counted as a row. `sampleValues` are empty for every column and the response carries a top-level `"valuesWithheld": true`. Quality issues and the suggested rule are then based on names, types and statistics only. See [Field Protection](/transformation/field-protection#what-still-sees-raw-data).
 
 ## Requirements
 

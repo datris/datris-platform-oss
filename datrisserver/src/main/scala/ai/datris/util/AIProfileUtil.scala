@@ -112,8 +112,10 @@ object AIProfileUtil {
       * in the prompt; `sampleValues` come back empty. */
     private def profileWithheld(fileContent: String, filename: String, delimiter: String, header: Boolean, ai: String => String): String = {
         val lower = filename.toLowerCase
-        val isJson = lower.endsWith(".json")
-        val isXml = lower.endsWith(".xml")
+        val head = AiSampleValues.firstNonBlank(fileContent)
+        // Extension or content: a JSON/NDJSON/XML file never takes the delimited path.
+        val isJson = lower.endsWith(".json") || lower.endsWith(".ndjson") || lower.endsWith(".jsonl") || head == '{' || head == '['
+        val isXml = !isJson && (lower.endsWith(".xml") || head == '<')
 
         val (formatDescription, evidence) =
             if (isJson || isXml) {
@@ -122,24 +124,26 @@ object AIProfileUtil {
                 val fitted = if (AIUtil.fitsInContext(skeleton)) skeleton else skeleton.substring(0, math.max(0, AIUtil.maxInputChars() - 2000))
                 val kind = if (isJson) "JSON" else "XML"
                 val legend =
-                    if (isJson) "every string is \"<string>\", every number 0, every boolean true; arrays keep one element per distinct shape"
-                    else "element and attribute names kept, text and attribute values removed; repeated elements are marked"
+                    if (isJson)
+                        "every string is \"<string>\", every number 0, every boolean true; arrays keep one element per distinct shape; maps keyed by data show \"<key>\""
+                    else "element and attribute names kept, text, attribute values and namespace URIs removed; repeated elements are marked"
                 (kind, "File size: " + fileContent.length + " chars\nValue-free " + kind + " skeleton (" + legend + "):\n" + fitted)
             } else {
                 val d = if (delimiter == null) "," else delimiter
+                val splitOn = if (d == "\\t") "\t" else d
                 val lines = fileContent.split("\n").iterator.map(_.stripSuffix("\r")).filter(_.nonEmpty).toList
-                val names =
-                    if (header && lines.nonEmpty) CodeGenTransformationEvaluator.splitLine(lines.head, if (d == "\\t") "\t" else d).map(_.trim)
-                    else {
-                        val width = lines.headOption.map(l => CodeGenTransformationEvaluator.splitLine(l, if (d == "\\t") "\t" else d).size).getOrElse(0)
-                        (1 to width).map("column_" + _).toList
-                    }
-                val dataLines = if (header && lines.nonEmpty) lines.tail else lines
+                val firstCells = lines.headOption.map(l => CodeGenTransformationEvaluator.splitLine(l, splitOn)).getOrElse(Nil)
+                // Line 1 is a header only when the caller says so and it reads as names;
+                // a name that is not an identifier is never sent (column_N instead).
+                val lineOneIsHeader = header && lines.nonEmpty && !AiSampleValues.headerLooksLikeData(firstCells)
+                val names = AiSampleValues.safeColumnNames(firstCells, lineOneIsHeader)
+                val dataLines = if (lineOneIsHeader) lines.tail else lines
                 val stats = AiSampleValues.columnStats(names, dataLines.iterator, d)
                 (
                     "CSV (delimiter: \"" + delimiter + "\")",
                     "Rows: " + dataLines.size + "\nColumns: " + names.size + "\nPer-column statistics computed by the server over every row " +
-                        "(nulls are empty values; lengths are of non-empty values):\n" + AiSampleValues.statsTable(stats)
+                        "(nulls are empty values; lengths are of non-empty values; column_N names a column whose header is withheld or absent):\n" +
+                        AiSampleValues.statsTable(stats)
                 )
             }
 

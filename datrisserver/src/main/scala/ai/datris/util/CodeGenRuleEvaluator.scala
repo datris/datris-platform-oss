@@ -52,7 +52,7 @@ object CodeGenRuleEvaluator {
         val userPrompt =
             if (!AiSampleValues.enabled)
                 s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
-                   |Columns: $headerLine
+                   |Columns: ${CodeGenRuleEvaluator.withheldColumns(data, delimiter)}
                    |${withheldCsvLines(data)}
                    |
                    |Rule: "$rule"
@@ -78,6 +78,21 @@ object CodeGenRuleEvaluator {
         val codegenCfg = DatrisEnvironment.aiConfigForCodegen
         val responseText = AIUtil.callAIWithSystem(system, user, codegenCfg)
         AIUtil.extractText(responseText, codegenCfg)
+    }
+
+    /** With DATRIS_AI_SAMPLE_VALUES=false: the header as the `Columns:` line.
+      * Kept verbatim when it is the pipeline's stored schema (operator-entered
+      * names); otherwise a cell that is not an identifier is sent as
+      * `column_N` (a headerless file's first row is never sent). */
+    private[util] def withheldColumns(data: Data, delimiter: String): String = {
+        val header = if (data.header == null) Nil else data.header
+        val schemaNames = if (data.headerWithSchema == null) Nil else data.headerWithSchema.filter(_ != null).map(f => String.valueOf(f.name))
+        val fromSchema = schemaNames.nonEmpty && schemaNames.map(_.trim.toLowerCase) == header.map(h => String.valueOf(h).trim.toLowerCase)
+        val names = if (fromSchema) header else AiSampleValues.safeColumnNames(header, header = true)
+        val note =
+            if (names == header) ""
+            else " (column_N: header withheld because it does not read as a column name; refer to that column by position)"
+        names.mkString(delimiter) + note
     }
 
     /** With DATRIS_AI_SAMPLE_VALUES=false: the schema types (when known) and

@@ -662,4 +662,19 @@ class DoctorServiceSpec extends AnyFunSuite {
             assert(sampleValuesCheck(new FakeProbes(protects = false)).run().status == "ok", "nothing protected: no warning")
         }
     }
+
+    test("ai.sample_values warns 'could not read pipeline configs' when the probe fails") {
+        val failing = new FakeProbes() {
+            override def anyPipelineProtects(): Boolean = throw new RuntimeException("mongo down")
+        }
+        withSampleValues(Some("true")) {
+            val r = sampleValuesCheck(failing).run()
+            assert(r.status == "warn", r.detail)
+            assert(r.detail.contains("could not read pipeline configs") && r.detail.contains("mongo down"), r.detail)
+        }
+        withSampleValues(Some("false")) {
+            val r = sampleValuesCheck(failing).run()
+            assert(r.status == "ok" && r.detail.contains("withheld"), "no read needed when values are withheld: " + r.detail)
+        }
+    }
 }

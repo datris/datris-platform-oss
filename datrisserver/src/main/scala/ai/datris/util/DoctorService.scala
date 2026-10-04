@@ -152,7 +152,8 @@ object DoctorService {
           * no failed reads; LiveProbes overrides it with one real scan. */
         def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.Result(tapSecretRefs(), Nil)
 
-        /** True when any source field in any pipeline carries `protect`. */
+        /** True when any source field in any pipeline carries `protect`.
+          * Throws when the pipeline configs cannot be read. */
         def anyPipelineProtects(): Boolean
     }
 
@@ -479,16 +480,28 @@ object DoctorService {
     class AiSampleValuesCheck(probes: Probes) extends Check {
         val id = "ai.sample_values"
         val startupSafe = true
+        private val sampled = "row values are sent to the model by schema, profile and CodeGen helpers (default)"
         def run(): CheckResult = {
             if (!AiSampleValues.enabled)
-                ok("row values are withheld from the model by schema, profile, attachment and CodeGen helpers (" + AiSampleValues.EnvVar + "=false)")
-            else if (probes.anyPipelineProtects())
-                warn(
-                    "this install protects fields but still samples values in helpers; set " + AiSampleValues.EnvVar + "=false",
-                    "Set " + AiSampleValues.EnvVar + "=false on the datris service and recreate it, so schema generation, profiling, " +
-                        "Assistant attachments and CodeGen rules and transformations work from structure only."
-                )
-            else ok("row values are sent to the model by schema, profile and CodeGen helpers (default)")
+                return ok("row values are withheld from the model by schema, profile, attachment and CodeGen helpers (" + AiSampleValues.EnvVar + "=false)")
+            val protects =
+                try Right(probes.anyPipelineProtects())
+                catch { case e: Exception => Left(e) }
+            protects match {
+                case Left(e) =>
+                    warn(
+                        sampled + "; could not read pipeline configs to check for protected fields: " + e.getMessage,
+                        "Check that the config database is reachable, then rerun doctor. If any pipeline protects fields, set " +
+                            AiSampleValues.EnvVar + "=false."
+                    )
+                case Right(true) =>
+                    warn(
+                        "this install protects fields but still samples values in helpers; set " + AiSampleValues.EnvVar + "=false",
+                        "Set " + AiSampleValues.EnvVar + "=false on the datris service and recreate it, so schema generation, profiling, " +
+                            "Assistant attachments, CodeGen rules and transformations, and pipeline fix suggestions work without row values."
+                    )
+                case Right(false) => ok(sampled)
+            }
         }
     }
 
@@ -814,13 +827,9 @@ object DoctorService {
 
         override def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.liveScan()
 
+        // A read failure propagates: the check reports "could not read pipeline configs".
         def anyPipelineProtects(): Boolean =
-            try PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName).exists(c => FieldProtection.protectedFields(c).nonEmpty)
-            catch {
-                case e: Exception =>
-                    logger.debug("field-protection scan for doctor failed: " + e.getMessage)
-                    false
-            }
+            PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName).exists(c => FieldProtection.protectedFields(c).nonEmpty)
 
         def stagingArea(): StagingAreaState = {
             val root = StagingArea.root

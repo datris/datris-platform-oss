@@ -89,7 +89,10 @@ object AiSampleValues {
         def keysOf(elements: Seq[JsonElement]): List[String] = {
             val keys = mutable.LinkedHashSet[String]()
             elements.foreach(e => if (e.isJsonObject) e.getAsJsonObject.keySet().asScala.foreach(keys += _))
-            keys.toList
+            // Keys that are data (emails, ids) are never listed.
+            if (keys.exists(k => !isIdentifier(k))) List(CollapsedKey)
+            else if (keys.size > MaxKeys) keys.take(MaxKeys).toList :+ ("… " + (keys.size - MaxKeys) + " more")
+            else keys.toList
         }
         try {
             val e = JsonParser.parseString(sample)
@@ -111,7 +114,7 @@ object AiSampleValues {
         else if (e.isJsonObject) {
             val out = new JsonObject()
             e.getAsJsonObject.entrySet().asScala.foreach(en => out.add(en.getKey, skeleton(en.getValue)))
-            out
+            collapseIfKeyedByData(out)
         } else if (e.isJsonArray) {
             val shapes = new ShapeSet
             e.getAsJsonArray.asScala.foreach(shapes.add)
@@ -125,6 +128,54 @@ object AiSampleValues {
             else new JsonPrimitive("<string>")
         }
     }
+
+    /** Placeholder for object keys that are data. */
+    val CollapsedKey = "<key>"
+
+    /** Objects with more keys than this are treated as maps keyed by data. */
+    private val MaxKeys = 50
+
+    private val IdentifierPattern = "^[A-Za-z_][A-Za-z0-9_ .\\-]{0,63}$".r
+
+    /** A name that reads as a column or key name, not a value: starts with a
+      * letter or underscore, at most 64 characters of letters, digits, `_`,
+      * space, `.` and `-`, and not all digits. */
+    def isIdentifier(name: String): Boolean =
+        name != null && IdentifierPattern.pattern.matcher(name).matches() && !name.forall(_.isDigit)
+
+    /** A skeleton object (values already skeletons) whose keys include any
+      * that is not an identifier, or that has more than [[MaxKeys]] keys, is a
+      * map keyed by data: it becomes `{"<key>": <merged value shape>}`. */
+    private def collapseIfKeyedByData(o: JsonObject): JsonObject = {
+        val keys = o.keySet().asScala
+        if (keys.size <= MaxKeys && keys.forall(isIdentifier)) return o
+        val merged = o.entrySet().asScala.map(_.getValue).foldLeft(null: JsonElement)((acc, v) => if (acc == null) v else merge(acc, v))
+        val out = new JsonObject()
+        out.add(CollapsedKey, if (merged == null) JsonNull.INSTANCE else merged)
+        out
+    }
+
+    /** Column names safe to send to a model. With `header == false` (or when
+      * more than half the cells are not identifiers, so the line is data) every
+      * name is `column_N`; otherwise each non-identifier cell becomes
+      * `column_N`. */
+    def safeColumnNames(cells: List[String], header: Boolean): List[String] = {
+        val trimmed = cells.map(c => if (c == null) "" else c.trim)
+        if (!header || headerLooksLikeData(trimmed)) trimmed.indices.map(i => "column_" + (i + 1)).toList
+        else trimmed.zipWithIndex.map { case (c, i) => if (isIdentifier(c)) c else "column_" + (i + 1) }
+    }
+
+    /** First non-whitespace character, or NUL. */
+    def firstNonBlank(s: String): Char = {
+        if (s == null) return '\u0000'
+        var i = 0
+        while (i < s.length && Character.isWhitespace(s.charAt(i))) i += 1
+        if (i < s.length) s.charAt(i) else '\u0000'
+    }
+
+    /** True when more than half the cells are not identifiers: the line is a data row. */
+    def headerLooksLikeData(cells: List[String]): Boolean =
+        cells.count(c => !isIdentifier(if (c == null) "" else c.trim)) * 2 > cells.size
 
     private def shapeKey(e: JsonElement): String =
         if (e == null || e.isJsonNull) "null"
@@ -146,7 +197,7 @@ object AiSampleValues {
             val bo = b.getAsJsonObject
             ao.entrySet().asScala.foreach(en => out.add(en.getKey, if (bo.has(en.getKey)) merge(en.getValue, bo.get(en.getKey)) else en.getValue))
             bo.entrySet().asScala.foreach(en => if (!ao.has(en.getKey)) out.add(en.getKey, en.getValue))
-            out
+            collapseIfKeyedByData(out)
         } else if (a.isJsonArray && b.isJsonArray) {
             val shapes = new ShapeSet
             a.getAsJsonArray.asScala.foreach(shapes.add)
@@ -187,7 +238,7 @@ object AiSampleValues {
 
     private final class XNode(val name: String) {
         val attrs = mutable.LinkedHashSet[String]()
-        val namespaces = mutable.LinkedHashMap[String, String]()
+        val namespaces = mutable.LinkedHashMap[String, String]() // prefix -> "" (URIs are never kept)
         val children = mutable.LinkedHashMap[String, XNode]()
         val repeated = mutable.Set[String]()
         var hasText = false
@@ -197,8 +248,8 @@ object AiSampleValues {
         if (prefix == null || prefix.isEmpty) local else prefix + ":" + local
 
     /** Element and attribute names kept (repeated siblings merged and marked),
-      * text, comments, CDATA and attribute values dropped. Namespace
-      * declarations are kept (they name the schema, not a row). Unparseable
+      * text, comments, CDATA, attribute values and namespace URIs dropped
+      * (namespace prefixes are kept). Unparseable
       * input yields [[structureUnavailable]], never the input. */
     def xmlSkeleton(sample: String): String =
         if (sample == null) structureUnavailable("XML", 0)
@@ -263,7 +314,7 @@ object AiSampleValues {
                                 }
                             (0 until r.getNamespaceCount).foreach { i =>
                                 val p = r.getNamespacePrefix(i)
-                                node.namespaces(if (p == null || p.isEmpty) "xmlns" else "xmlns:" + p) = Option(r.getNamespaceURI(i)).getOrElse("")
+                                node.namespaces(if (p == null || p.isEmpty) "xmlns" else "xmlns:" + p) = "" // prefixes kept, URIs blanked
                             }
                             (0 until r.getAttributeCount).foreach(i => node.attrs += qname(r.getAttributePrefix(i), r.getAttributeLocalName(i)))
                             stack.push((node, mutable.Map[String, Int]()))
@@ -288,7 +339,7 @@ object AiSampleValues {
     private def render(node: XNode, depth: Int, sb: StringBuilder): Unit = {
         val pad = "  " * depth
         sb.append(pad).append('<').append(node.name)
-        node.namespaces.foreach { case (k, v) => sb.append(' ').append(k).append("=\"").append(escapeAttr(v)).append('"') }
+        node.namespaces.keys.foreach(k => sb.append(' ').append(k).append("=\"\""))
         node.attrs.foreach(a => sb.append(' ').append(a).append("=\"\""))
         if (node.children.isEmpty) {
             if (node.hasText) sb.append("></").append(node.name).append(">\n")
@@ -302,9 +353,6 @@ object AiSampleValues {
             sb.append(pad).append("</").append(node.name).append(">\n")
         }
     }
-
-    private def escapeAttr(s: String): String =
-        s.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;")
 
     // ------------------------------------------------------------ delimited
 
@@ -360,4 +408,67 @@ object AiSampleValues {
     private[datris] def statsTable(stats: List[ColumnStat]): String =
         ("column | inferredType | count | nulls | distinct | minLength | maxLength" +:
             stats.map(s => List(s.name, s.inferredType, s.count, s.nulls, s.distinct, s.minLength, s.maxLength).mkString(" | "))).mkString("\n")
+
+    // ------------------------------------------------------------- errors
+
+    val DetailsWithheld = "<details withheld by configuration>"
+
+    /** The server's own fixed message prefixes whose text carries no row
+      * value. Anything after a prefix is scrubbed again (prefixes nest). */
+    private val KnownPrefixes: List[scala.util.matching.Regex] = List(
+        "^Aborting processing this pipeline, \\d+ error\\(s\\) were found while performing data quality rules:",
+        "^CodeGen (validation|transformation) script failed \\(exit code -?\\d+\\):",
+        "^CodeGen (data quality|transformation) script failed:",
+        "^CodeGen script output did not contain a JSON array\\.",
+        "^Pipeline error:",
+        "^Data quality CodeGen failure, row: \\d+, reason:",
+        "^File header validation failed for pipeline: [A-Za-z0-9_\\-]+\\.",
+        "^Header validation AI response did not contain JSON:"
+    ).map(_.r)
+
+    /** `[Caused by: ]pkg.Class(Exception|Error|Throwable)[: message]`. */
+    private val ExceptionLine =
+        "^((?:Caused by: )?)((?:[A-Za-z_$][\\w$]*\\.)+[A-Z][\\w$]*(?:Exception|Error|Throwable))(?::\\s?(.*))?$".r
+
+    /** A JVM stack frame: `at pkg.Class.method(File.scala:12)`. */
+    private val FramePattern =
+        "^at (?:[\\w.$-]+/)?(?:[\\w$<>]+\\.)+[\\w$<>]+\\((?:[\\w$.-]+\\.(?:scala|java|kt)(?::\\d+)?|Unknown Source|Native Method)\\)$".r
+
+    /** A run error made safe to send to a model with DATRIS_AI_SAMPLE_VALUES=false:
+      * exception class names, stack frames and the server's fixed message
+      * prefixes only. Data-quality reasons, script stderr/stdout excerpts and
+      * any other message text become [[DetailsWithheld]]. */
+    def scrubErrorForModel(text: String): String = {
+        if (text == null) return null
+        val out = mutable.ListBuffer[String]()
+        def withheldOnce(): Unit = if (out.isEmpty || out.last != DetailsWithheld) out += DetailsWithheld
+        text.split("\n").foreach { raw =>
+            val line = raw.stripSuffix("\r")
+            val t = line.trim
+            if (t.isEmpty) ()
+            else if (FramePattern.pattern.matcher(t).matches()) out += line
+            else if (t.matches("\\.\\.\\. \\d+ more")) out += line
+            else
+                ExceptionLine.findFirstMatchIn(t) match {
+                    case Some(m) =>
+                        val msg = Option(m.group(3)).map(_.trim).getOrElse("")
+                        out += m.group(1) + m.group(2) + (if (msg.isEmpty) "" else ": " + scrubMessage(msg, 0))
+                    case None =>
+                        val scrubbed = scrubMessage(t, 0)
+                        if (scrubbed == DetailsWithheld) withheldOnce() else out += scrubbed
+                }
+        }
+        out.mkString("\n")
+    }
+
+    private def scrubMessage(msg: String, depth: Int): String = {
+        if (msg.isEmpty) return ""
+        if (depth > 8) return DetailsWithheld
+        KnownPrefixes.iterator.flatMap(_.findPrefixMatchOf(msg)).toSeq.headOption match {
+            case Some(m) =>
+                val rest = msg.substring(m.end).trim
+                if (rest.isEmpty) m.matched else m.matched + " " + scrubMessage(rest, depth + 1)
+            case None => DetailsWithheld
+        }
+    }
 }

@@ -31,6 +31,31 @@ object AISchemaUtil {
         )
     }
 
+    /** DATRIS_AI_SAMPLE_VALUES=false: all-string fields, split exactly as
+      * [[buildCsvConfigAllStrings]] does, but named by
+      * [[AiSampleValues.safeColumnNames]] so a value never becomes a field
+      * name: `column_1..N` when `header` is false or line 1 reads as data,
+      * and `column_N` for any header cell that is not an identifier. */
+    private def buildCsvConfigWithheld(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
+        val myDelimiter = if (delimiter == null) "," else delimiter
+        val firstLine = fileContent.split("\n").head
+        val delimChar = if (myDelimiter == "\\t") "\t" else myDelimiter
+        val cells = firstLine.split(java.util.regex.Pattern.quote(delimChar), -1)
+            .map(_.trim.replaceAll("\"", "").replaceAll("'", "")).toList
+        val fields = AiSampleValues.safeColumnNames(cells, header)
+        val fieldsJson = fields.map(f => s"""{"name":"$f","type":"string"}""").mkString("[", ",", "]")
+
+        logger.info("Building all-string CSV config (values withheld) for pipeline: " + pipeline + ", fields: " + fields.length)
+
+        buildConfig(
+            pipeline = pipeline,
+            fieldsJson = fieldsJson,
+            sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": $header, "encoding": "UTF-8" }""",
+            usePostgres = true,
+            useMongoDB = false
+        )
+    }
+
     def buildCsvConfig(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String =
         buildCsvConfig(pipeline, fileContent, delimiter, header, prompt => callCodegen(prompt, "CSV schema generation, pipeline: " + pipeline))
 
@@ -40,9 +65,9 @@ object AISchemaUtil {
     private[datris] def buildCsvConfig(pipeline: String, fileContent: String, delimiter: String, header: Boolean, ai: String => String): String = {
         if (!AiSampleValues.enabled) {
             logger.info(
-                "CSV schema generation for pipeline " + pipeline + ": values withheld (" + AiSampleValues.EnvVar + "=false), all-string fields from the header"
+                "CSV schema generation for pipeline " + pipeline + ": values withheld (" + AiSampleValues.EnvVar + "=false), all-string fields, no model call"
             )
-            return buildCsvConfigAllStrings(pipeline, fileContent, delimiter, header)
+            return buildCsvConfigWithheld(pipeline, fileContent, delimiter, header)
         }
 
         val myDelimiter = if (delimiter == null) "," else delimiter
