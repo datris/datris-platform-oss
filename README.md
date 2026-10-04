@@ -36,14 +36,16 @@ Your agents already acquire, validate, and load data. Without a control plane, t
 
 ## Quick Start
 
-You only need Docker. This pulls pre-built images and runtime files, seeds a
-`.env`, and starts the stack into `./datris` — no git checkout required:
+You need Docker and one AI provider key (Anthropic, OpenAI, Grok, Azure OpenAI,
+or Amazon Bedrock). This pulls pre-built images and runtime files, seeds a
+`.env`, and starts the stack into `./datris` — no git checkout required. The
+installer asks for the key:
 
 ```bash
 curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
-Installing from a coding agent or a CI job with no terminal attached? See [Install for Agents](https://docs.datris.ai/install-for-agents).
+Installing from a coding agent or a CI job with no terminal attached? Export the key first (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or another provider's): the installer asks nothing and reads it from the environment. Then check `http://localhost:8080/api/v1/version` answers before going on. Full steps: [Install for Agents](https://docs.datris.ai/install-for-agents).
 
 **Minimal install (laptop-friendly).** The default stack runs about ten
 containers and the bundled embedding server downloads a 2.2 GB model on first

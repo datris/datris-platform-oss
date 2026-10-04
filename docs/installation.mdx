@@ -19,7 +19,8 @@ description: "How to install and set up the Datris Data Platform"
 
 ## Quick Start
 
-All you need is Docker — no git checkout, no build tools. The installer pulls
+All you need is Docker and one AI provider key (Anthropic, OpenAI, Grok,
+Azure OpenAI, or Amazon Bedrock) — no git checkout, no build tools. The installer pulls
 the pre-built images from Docker Hub, fetches the few runtime files Compose
 needs into a `./datris` directory, seeds a `.env`, and starts the full stack:
 
@@ -27,7 +28,7 @@ needs into a `./datris` directory, seeds a `.env`, and starts the full stack:
 curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
-Installing from a coding agent or a CI job with no terminal attached? See [Install for Agents](/install-for-agents).
+Installing from a coding agent or a CI job with no terminal attached? Export the key first (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or another provider's): the installer asks nothing and reads it from the environment. Full steps: [Install for Agents](/install-for-agents).
 
 ### Minimal install
 
