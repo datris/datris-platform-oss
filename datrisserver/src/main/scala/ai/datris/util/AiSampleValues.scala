@@ -89,8 +89,8 @@ object AiSampleValues {
         def keysOf(elements: Seq[JsonElement]): List[String] = {
             val keys = mutable.LinkedHashSet[String]()
             elements.foreach(e => if (e.isJsonObject) e.getAsJsonObject.keySet().asScala.foreach(keys += _))
-            // Keys that are data (emails, ids) are never listed.
-            if (keys.exists(k => !isIdentifier(k))) List(CollapsedKey)
+            // Keys that are data (emails, ids, names) are never listed.
+            if (keys.exists(k => !isIdentifier(k)) || elements.exists(e => e.isJsonObject && keyedByData(e.getAsJsonObject))) List(CollapsedKey)
             else if (keys.size > MaxKeys) keys.take(MaxKeys).toList :+ ("… " + (keys.size - MaxKeys) + " more")
             else keys.toList
         }
@@ -143,13 +143,22 @@ object AiSampleValues {
     def isIdentifier(name: String): Boolean =
         name != null && IdentifierPattern.pattern.matcher(name).matches() && !name.forall(_.isDigit)
 
-    /** A skeleton object (values already skeletons) whose keys include any
-      * that is not an identifier, or that has more than [[MaxKeys]] keys, is a
-      * map keyed by data: it becomes `{"<key>": <merged value shape>}`. */
-    private def collapseIfKeyedByData(o: JsonObject): JsonObject = {
+    /** An object is a map keyed by data when any key is not an identifier,
+      * when it has more than [[MaxKeys]] keys, or when it has two or more keys
+      * whose values are all objects of one shape (`{"Jane Doe": {...},
+      * "John Roe": {...}}`). */
+    private[datris] def keyedByData(o: JsonObject): Boolean = {
         val keys = o.keySet().asScala
-        if (keys.size <= MaxKeys && keys.forall(isIdentifier)) return o
-        val merged = o.entrySet().asScala.map(_.getValue).foldLeft(null: JsonElement)((acc, v) => if (acc == null) v else merge(acc, v))
+        if (keys.size > MaxKeys || keys.exists(k => !isIdentifier(k))) return true
+        val values = o.entrySet().asScala.toList.map(_.getValue)
+        values.size >= 2 && values.forall(v => v != null && v.isJsonObject) && values.map(shapeKey).distinct.size == 1
+    }
+
+    /** A skeleton object (values already skeletons) that is [[keyedByData]]
+      * becomes `{"<key>": <merged value shape>}`. */
+    private def collapseIfKeyedByData(o: JsonObject): JsonObject = {
+        if (!keyedByData(o)) return o
+        val merged = o.entrySet().asScala.toList.map(_.getValue).foldLeft(null: JsonElement)((acc, v) => if (acc == null) v else merge(acc, v))
         val out = new JsonObject()
         out.add(CollapsedKey, if (merged == null) JsonNull.INSTANCE else merged)
         out
@@ -173,9 +182,19 @@ object AiSampleValues {
         if (i < s.length) s.charAt(i) else '\u0000'
     }
 
-    /** True when more than half the cells are not identifiers: the line is a data row. */
-    def headerLooksLikeData(cells: List[String]): Boolean =
-        cells.count(c => !isIdentifier(if (c == null) "" else c.trim)) * 2 > cells.size
+    /** True when the line reads as a data row: more than half the cells are
+      * not identifiers, or any cell looks like a person-style name (two or
+      * more capitalised words) or a letters-dash-digits id. */
+    def headerLooksLikeData(cells: List[String]): Boolean = {
+        val trimmed = cells.map(c => if (c == null) "" else c.trim)
+        trimmed.count(c => !isIdentifier(c)) * 2 > trimmed.size || trimmed.exists(c => NameLike.findFirstIn(c).isDefined || IdLike.pattern.matcher(c).matches())
+    }
+
+    /** Two or more space-separated capitalised words ("Jane Doe"). */
+    private val NameLike = "(?:^|\\s)[A-Z][a-z]+(?:\\s+[A-Z][a-z]+)+(?=\\s|$)".r
+
+    /** Letters-dash-digits record ids ("MRN-12345"). */
+    private val IdLike = "^[A-Za-z]{1,6}-\\d+$".r
 
     private def shapeKey(e: JsonElement): String =
         if (e == null || e.isJsonNull) "null"
@@ -426,13 +445,14 @@ object AiSampleValues {
         "^Header validation AI response did not contain JSON:"
     ).map(_.r)
 
-    /** `[Caused by: ]pkg.Class(Exception|Error|Throwable)[: message]`. */
+    /** `[Caused by: ]pkg.Class(Exception|Error|Throwable)[: message]`, with the
+      * package under a known root (java, javax, scala, ai.datris, org, com, io). */
     private val ExceptionLine =
-        "^((?:Caused by: )?)((?:[A-Za-z_$][\\w$]*\\.)+[A-Z][\\w$]*(?:Exception|Error|Throwable))(?::\\s?(.*))?$".r
+        "^((?:Caused by: )?)((?:java|javax|scala|ai\\.datris|org|com|io)\\.(?:[A-Za-z_$][\\w$]*\\.)*[A-Z][\\w$]*(?:Exception|Error|Throwable))(?::\\s?(.*))?$".r
 
-    /** A JVM stack frame: `at pkg.Class.method(File.scala:12)`. */
+    /** A JVM stack frame under a known root: `at pkg.Class.method(File.scala:12)`. */
     private val FramePattern =
-        "^at (?:[\\w.$-]+/)?(?:[\\w$<>]+\\.)+[\\w$<>]+\\((?:[\\w$.-]+\\.(?:scala|java|kt)(?::\\d+)?|Unknown Source|Native Method)\\)$".r
+        "^at (?:[\\w.$-]+/)?(?:java|javax|scala|ai\\.datris|org|com|io)\\.(?:[\\w$<>]+\\.)+[\\w$<>]+\\((?:[\\w$.-]+\\.(?:scala|java|kt)(?::\\d+)?|Unknown Source|Native Method)\\)$".r
 
     /** A run error made safe to send to a model with DATRIS_AI_SAMPLE_VALUES=false:
       * exception class names, stack frames and the server's fixed message

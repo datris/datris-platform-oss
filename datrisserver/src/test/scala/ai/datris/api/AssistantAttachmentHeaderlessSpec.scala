@@ -35,4 +35,21 @@ class AssistantAttachmentHeaderlessSpec extends AnyFunSuite with AiSampleValuesM
             assert(sample.contains("<key>"), sample)
         }
     }
+
+    test("attachment off: a headerless CSV of identifier-shaped values (names, ids) is numbered, line 1 never sent") {
+        withheld {
+            val csv = "Jane Doe,F,Diabetes mellitus type 2,MRN-12345\nJohn Roe,M,Asthma,MRN-777"
+            val (_, sample) = new AssistantAttachmentController().extractSample("patients.csv", csv.getBytes(StandardCharsets.UTF_8))
+            Seq("Jane Doe", "Diabetes", "MRN-12345").foreach(v => assert(!sample.contains(v), v + " leaked: " + sample))
+            assert(sample.contains("column_1, column_2, column_3, column_4") && sample.contains("Rows: 2"), sample)
+        }
+    }
+
+    test("attachment off: JSON keyed by person names lists <key>") {
+        withheld {
+            val json = """{"Jane Doe": {"a": 1}, "John Roe": {"a": 2}}"""
+            val (_, sample) = new AssistantAttachmentController().extractSample("p.json", json.getBytes(StandardCharsets.UTF_8))
+            assert(!sample.contains("Jane Doe") && !sample.contains("John Roe") && sample.contains("<key>"), sample)
+        }
+    }
 }

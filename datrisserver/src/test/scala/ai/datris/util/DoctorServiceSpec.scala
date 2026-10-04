@@ -677,4 +677,21 @@ class DoctorServiceSpec extends AnyFunSuite {
             assert(r.status == "ok" && r.detail.contains("withheld"), "no read needed when values are withheld: " + r.detail)
         }
     }
+
+    test("ai.sample_values (off) warns naming up to five pipelines whose stored field names are not column names") {
+        val odd = new FakeProbes() {
+            override def pipelinesWithNonIdentifierFields(): List[String] = (1 to 7).map("p" + _).toList
+        }
+        withSampleValues(Some("false")) {
+            val r = sampleValuesCheck(odd).run()
+            assert(r.status == "warn", r.detail)
+            assert(r.detail.contains("withheld") && r.detail.contains("p1, p2, p3, p4, p5 and 2 more") && !r.detail.contains("p6"), r.detail)
+            val failing = new FakeProbes() { override def pipelinesWithNonIdentifierFields(): List[String] = throw new RuntimeException("mongo down") }
+            val f = sampleValuesCheck(failing).run()
+            assert(f.status == "warn" && f.detail.contains("could not read pipeline configs"), f.detail)
+        }
+        withSampleValues(Some("true")) {
+            assert(sampleValuesCheck(odd).run().status == "ok", "only checked when values are withheld")
+        }
+    }
 }

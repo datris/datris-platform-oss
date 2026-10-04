@@ -9,6 +9,7 @@ import ai.datris.model.{Data, PipelineConfig, SchemaField}
 import com.google.gson.{Gson, JsonParser}
 import org.scalatest.funsuite.AnyFunSuite
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 
 /** Field protection 9, security review follow-ups: names that are values
@@ -32,7 +33,7 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
 
     test("safeColumnNames: header=false numbers every column; non-identifiers become column_N; a data-looking line is all numbered") {
         assert(AiSampleValues.safeColumnNames(List("full_name", "ssn"), header = false) == List("column_1", "column_2"))
-        assert(AiSampleValues.safeColumnNames(List("full_name", "First Name", "e-mail"), header = true) == List("full_name", "First Name", "e-mail"))
+        assert(AiSampleValues.safeColumnNames(List("full_name", "first name", "e-mail"), header = true) == List("full_name", "first name", "e-mail"))
         assert(
             AiSampleValues.safeColumnNames(List("full_name", "ssn", "zqx@example.com", "123"), header = true) ==
                 List("full_name", "ssn", "column_3", "column_4")
@@ -79,7 +80,7 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
         inEnv {
             withheld {
                 val ndjson = """{"name":"ZQX-NAME-1","ssn":"ZQX-SSN-2"}""" + "\n" + """{"name":"ZQX-NAME-7","ssn":"ZQX-SSN-2"}"""
-                Seq("people.ndjson", "people.jsonl", "people.txt").foreach { fname =>
+                Seq("people.ndjson", "people.jsonl", "people.data", "people").foreach { fname =>
                     val (prompts, ai) = capturing(modelProfile)
                     val out = AIProfileUtil.profile(ndjson, fname, ",", true, 100, ai)
                     assertNoMarker(prompts.head)
@@ -118,7 +119,10 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
         assert(wideSk.keySet().size == 1 && wideSk.has("<key>"), wideSk.toString)
 
         assert(AiSampleValues.jsonTopLevel("""{"zqx-alice@example.com":1}""").map(_._2) == Some(List("<key>")))
-        val many = AiSampleValues.jsonTopLevel(wide).get._2
+        assert(AiSampleValues.jsonTopLevel(wide).map(_._2) == Some(List("<key>")), "one object with more than 50 keys is a map")
+        // records whose key union passes 50 are capped at 50 names
+        val recs = Seq((1 to 30).map(i => "\"a" + i + "\":" + i).mkString("{", ",", "}"), (1 to 30).map(i => "\"b" + i + "\":" + i).mkString("{", ",", "}"))
+        val many = AiSampleValues.jsonTopLevel(recs.mkString("[", ",", "]")).get._2
         assert(many.size == 51 && many.last.contains("10 more"), many.toString)
     }
 
@@ -208,5 +212,64 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
         val viaGson = new Gson().fromJson(generated, classOf[PipelineConfig])
         assert(!new Gson().toJson(viaGson).contains("valuesWithheld"))
         assert(!classOf[PipelineConfig].getDeclaredFields.exists(_.getName == "valuesWithheld"))
+    }
+
+    // ---- round 2
+
+    test("a line with person-style names or letters-dash-digits ids is data, even when every cell is identifier-shaped") {
+        assert(
+            AiSampleValues.safeColumnNames(List("John Smith", "Springfield", "IL", "ZQX-SSN-2", "123-45-6789"), header = true) ==
+                (1 to 5).map("column_" + _).toList
+        )
+        assert(AiSampleValues.headerLooksLikeData(List("Jane Doe", "F", "Diabetes mellitus type 2", "MRN-12345")))
+        assert(AiSampleValues.headerLooksLikeData(List("name", "mrn", "MRN-12345")), "an id-shaped cell marks the line as data")
+        assert(!AiSampleValues.headerLooksLikeData(List("full_name", "ssn", "age", "email", "zip-code")))
+    }
+
+    test("profile off: a .txt file is profiled as delimited (no sniffing) and still sends no value") {
+        inEnv {
+            withheld {
+                val ndjson = """{"name":"ZQX-NAME-1","ssn":"ZQX-SSN-2"}""" + "\n" + """{"name":"ZQX-NAME-7","ssn":"ZQX-SSN-2"}"""
+                val (prompts, ai) = capturing(modelProfile)
+                AIProfileUtil.profile(ndjson, "people.txt", ",", true, 100, ai)
+                assertNoMarker(prompts.head)
+                assert(prompts.head.contains("Per-column statistics"), prompts.head)
+            }
+        }
+    }
+
+    test("profile off: a .csv whose first cell starts with [ keeps the statistics path") {
+        inEnv {
+            withheld {
+                val (prompts, ai) = capturing(modelProfile)
+                AIProfileUtil.profile("[tag],code\n[ZQX-NAME-1],ZQX-ID-5", "people.csv", ",", true, 100, ai)
+                assertNoMarker(prompts.head)
+                assert(prompts.head.contains("Per-column statistics") && !prompts.head.contains("structure unavailable"), prompts.head)
+            }
+        }
+    }
+
+    test("a JSON map whose keys are names but whose values share one shape collapses to <key>") {
+        val keyed = """{"John Smith": {"dx": "ZQX-NOTE-6", "age": 41}, "ZQX-ID-5": {"dx": "ZQX-NOTE-6", "age": 7}}"""
+        val sk = AiSampleValues.jsonSkeleton(keyed)
+        assert(!sk.contains("John Smith"), sk)
+        assertNoMarker(sk)
+        assert(JsonParser.parseString(sk).getAsJsonObject.keySet().asScala.toSet == Set("<key>"), sk)
+
+        val byName = """{"Jane Doe": {"a": 1}, "John Roe": {"a": 2}}"""
+        assert(AiSampleValues.jsonSkeleton(byName) == """{"<key>":{"a":0}}""")
+        assert(AiSampleValues.jsonTopLevel(byName).map(_._2) == Some(List("<key>")))
+        // a record whose object fields differ in shape keeps its keys
+        val record = """{"address": {"city": "ZQX-CITY-4"}, "employer": {"name": "ZQX-NAME-1", "id": 1}}"""
+        val recSk = JsonParser.parseString(AiSampleValues.jsonSkeleton(record)).getAsJsonObject
+        assert(recSk.has("address") && recSk.has("employer"), recSk.toString)
+    }
+
+    test("scrubErrorForModel only trusts classes and frames under known package roots") {
+        val s = AiSampleValues.scrubErrorForModel(
+            "zqx.patients.JaneDoeException: x\nat zqx.patients.Mrn.lookup(Mrn.java:1)\nCaused by: java.io.IOException: ZQX-SSN-2\n\tat ai.datris.util.X.y(X.scala:3)"
+        )
+        assert(!s.toLowerCase.contains("zqx") && !s.contains("JaneDoe"), s)
+        assert(s.contains("Caused by: java.io.IOException: " + AiSampleValues.DetailsWithheld) && s.contains("at ai.datris.util.X.y(X.scala:3)"), s)
     }
 }

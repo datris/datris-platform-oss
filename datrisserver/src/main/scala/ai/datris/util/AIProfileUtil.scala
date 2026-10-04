@@ -112,10 +112,17 @@ object AIProfileUtil {
       * in the prompt; `sampleValues` come back empty. */
     private def profileWithheld(fileContent: String, filename: String, delimiter: String, header: Boolean, ai: String => String): String = {
         val lower = filename.toLowerCase
+        val ext = lower.lastIndexOf('.') match {
+            case -1 => ""
+            case i => lower.substring(i + 1)
+        }
         val head = AiSampleValues.firstNonBlank(fileContent)
-        // Extension or content: a JSON/NDJSON/XML file never takes the delimited path.
-        val isJson = lower.endsWith(".json") || lower.endsWith(".ndjson") || lower.endsWith(".jsonl") || head == '{' || head == '['
-        val isXml = !isJson && (lower.endsWith(".xml") || head == '<')
+        // Known extensions decide; content is sniffed only for unknown ones, so
+        // a JSON/NDJSON/XML file never takes the delimited path.
+        val delimitedExt = Set("csv", "tsv", "psv", "txt").contains(ext)
+        val knownExt = delimitedExt || Set("json", "ndjson", "jsonl", "xml").contains(ext)
+        val isJson = Set("json", "ndjson", "jsonl").contains(ext) || (!knownExt && (head == '{' || head == '['))
+        val isXml = !isJson && (ext == "xml" || (!knownExt && head == '<'))
 
         val (formatDescription, evidence) =
             if (isJson || isXml) {

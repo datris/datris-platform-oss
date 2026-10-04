@@ -110,8 +110,10 @@ class AssistantAttachmentController {
                 val rows = text.split("\n").iterator.map(_.stripSuffix("\r")).filter(_.trim.nonEmpty).toList
                 val delimiter = if (ext == "tsv") "\t" else ","
                 val cells = rows.headOption.map(h => CodeGenTransformationEvaluator.splitLine(h, delimiter)).getOrElse(Nil)
-                // Line 1 counts as a header only when it reads as names; a cell that is
-                // not an identifier is never sent (column_N instead).
+                // Line 1 counts as a header only when it reads as names (see
+                // AiSampleValues.headerLooksLikeData: person-style names and
+                // letters-dash-digits ids mark it as data); a cell that is not an
+                // identifier is never sent (column_N instead).
                 val hasHeader = rows.nonEmpty && !AiSampleValues.headerLooksLikeData(cells)
                 val columns = AiSampleValues.safeColumnNames(cells, hasHeader)
                 val t = "CSV (structured)"
