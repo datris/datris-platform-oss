@@ -372,7 +372,7 @@ OpenAI web search requires the **Responses API**. When the configured endpoint i
 ## Stronger Model for Code Generation
 
 <Tip>
-**Highly recommended: Anthropic with the latest coding model for CodeGen.** Tap script generation, AI data quality rules, AI transformations, and NL→SQL all depend heavily on the model's coding ability — Claude produces dramatically better results than smaller or cheaper models. The same recommendation appears in the Configuration UI's CodeGen section and in `.env.example`.
+**Highly recommended: a provider's strongest coding model for CodeGen.** Tap script generation, AI data quality rules, AI transformations, and NL→SQL all depend heavily on the model's coding ability — the top coding models from Anthropic and OpenAI produce dramatically better results than smaller or cheaper models. The same recommendation appears in `.env.example`.
 </Tip>
 
 CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot so they can run a different model than the general default. On a fresh install the slot seeds the strongest code-generation model — `gpt-5.6-sol` with OpenAI, `claude-opus-5-5` with Anthropic — so code generation is at full quality out of the box, while `aiPrimary` seeds the recommended chat model (`claude-fable-5-1` / `gpt-5.6-sol`). The separate slot is your cost-tuning lever: point `aiPrimary` at a cheaper model (e.g. `claude-sonnet-5`) for the chatty paths and keep the stronger model only on the calls that benefit from it.

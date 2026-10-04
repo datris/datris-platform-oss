@@ -38,8 +38,8 @@
       "identifier": "docker.io/datrisai/datris-mcp-server:1.42.0",
       "runtimeHint": "docker",
       "transport": {
-        "type": "streamable-http",
-        "url": "http://localhost:3000/mcp"
+        "type": "sse",
+        "url": "http://localhost:3000/sse"
       },
       "environmentVariables": [
         {

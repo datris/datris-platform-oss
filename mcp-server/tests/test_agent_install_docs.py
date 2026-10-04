@@ -116,7 +116,9 @@ INSTALLER_MESSAGES = (
     "DATRIS_POSTGRES=external requires POSTGRES_JDBC_URL",
     "Existing .env found — leaving it untouched (upgrade mode, no prompts).",
     "Azure OpenAI needs AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_MODEL too — skipping.",
-    "No AI key set. Datris will start, but AI features stay off",
+    "No AI provider key set, and Datris cannot start without one",
+    "Several AI providers configured",
+    "Install stopped before finishing — removed the partial",
 )
 
 
@@ -128,9 +130,32 @@ def test_quoted_installer_messages_match_install_sh():
         assert message in source, "install.sh no longer prints: %s" % message
 
 
-def test_quoted_vault_init_error_matches_vault_init_sh():
-    assert "ERROR: No AI provider configured" in _page()
+def test_installer_stops_instead_of_claiming_a_no_key_start():
+    # vault-init refuses to seed with no provider, so the installer must not
+    # say the stack will start without one.
     assert "ERROR: No AI provider configured" in _read(VAULT_INIT_SH)
+    assert "Datris will start, but AI features stay off" not in _read(INSTALL_SH)
+
+
+def test_installer_prompts_do_not_favour_a_chat_provider():
+    source = _read(INSTALL_SH)
+    for line in source.splitlines():
+        if "API key (sk-" in line:
+            assert "recommended" not in line.lower(), line
+    assert "opposite of the recommendation" not in source
+
+
+def test_installer_header_documents_ai_provider():
+    header = _read(INSTALL_SH).split("set -eu", 1)[0]
+    assert re.search(r"^#\s+AI_PROVIDER\s+anthropic\|openai\|azure\|grok\|bedrock", header, re.M)
+
+
+def test_server_json_docker_transport_matches_the_image():
+    server = json.loads(_read(os.path.join(REPO_ROOT, "server.json")))
+    oci = next(p for p in server["packages"] if p["registryType"] == "oci")
+    assert oci["transport"] == {"type": "sse", "url": "http://localhost:3000/sse"}
+    cmd = next(l for l in _read(MCP_DOCKERFILE).splitlines() if l.startswith("CMD"))
+    assert '"--sse"' in cmd and '"3000"' in cmd, cmd
 
 
 def test_mcp_image_serves_sse_on_port_3000():

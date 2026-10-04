@@ -50,7 +50,7 @@ To keep the installer's output for later, add `> install.log 2>&1` at the end of
 
 ### Environment variables
 
-The installer reads these on a fresh install. Values you pass are written to `<install dir>/.env`, which ends up with permissions `600` after a successful run.
+The installer reads these on a fresh install. Values you pass are written to `<install dir>/.env`, which is kept at permissions `600`.
 
 | Variable | What it does |
 |----------|--------------|
@@ -59,12 +59,13 @@ The installer reads these on a fresh install. Values you pass are written to `<i
 | `ANTHROPIC_API_KEY` | Anthropic key for chat and CodeGen. |
 | `OPENAI_API_KEY` | OpenAI key for chat and CodeGen; also enables OpenAI embeddings. |
 | `XAI_API_KEY` | Grok (xAI) key for chat and CodeGen. `GROK_MODEL` optionally overrides the model. |
-| `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_MODEL` | Azure OpenAI. All three are required together. When `AZURE_OPENAI_API_KEY` is set without the endpoint or model, the installer prints a warning and writes none of them; an endpoint or model without the key is ignored silently. The endpoint is the resource base URL, the model is the chat deployment name. |
-| `AI_PROVIDER=bedrock` | Use Claude through Amazon Bedrock. This is the only `AI_PROVIDER` value the installer reads. Optionally with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (leave both unset to use the host's IAM role or default credential chain), `AWS_REGION` and `BEDROCK_MODEL`. AWS keys alone never select Bedrock. |
+| `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_MODEL` | Azure OpenAI. All three are required together. When `AZURE_OPENAI_API_KEY` is set without the endpoint or model, the installer prints a warning and writes none of them; an endpoint or model without the key is ignored silently. The endpoint is the resource base URL, the model is the chat deployment name. For keyless Entra ID auth, set `AI_PROVIDER=azure` with the endpoint and model and no key, plus either all three of `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` or none of them to use the identity assigned to the Azure host. |
+| `AI_PROVIDER` | Which provider handles chat and CodeGen: `anthropic`, `openai`, `azure`, `grok` or `bedrock`. Always written to `.env`. Unset, the installer chooses as described in [Which chat provider the install uses](#which-chat-provider-the-install-uses). A value that names a provider with no key in the environment, or an unknown value, stops the install with an error. |
+| `AI_PROVIDER=bedrock` | Use Claude through Amazon Bedrock. Optionally with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (leave both unset to use the host's IAM role or default credential chain), `AWS_REGION` and `BEDROCK_MODEL`. AWS keys alone never select Bedrock. |
 | `DATRIS_POSTGRES` | `bundled` (default), `external` or `none`. `external` also reads `POSTGRES_JDBC_URL`, `POSTGRES_USER` and `POSTGRES_PASSWORD`, and stops with an error when `POSTGRES_JDBC_URL` is missing. |
 | `DATRIS_EMBEDDING` | `openai`, `tei` or `none`. Default `openai` when `OPENAI_API_KEY` is set, otherwise `tei`. `openai` without `OPENAI_API_KEY` stops with an error. |
-| `DATRIS_PROFILES` | Comma-separated opt-in services (`qdrant`, `weaviate`, `chroma`, `kafka`), written to `.env` as `COMPOSE_PROFILES`. |
-| `QDRANT_HOST`, `WEAVIATE_HOST`, `CHROMA_HOST`, `MILVUS_HOST` | External vector stores. A run without a terminal does not write these to `.env`; see [Adding vector stores](#adding-vector-stores). |
+| `DATRIS_PROFILES` | Comma-separated opt-in bundled services (`qdrant`, `weaviate`, `chroma`, `kafka`). Written to `.env` as `COMPOSE_PROFILES`, together with the in-network host and port each store needs (for example `QDRANT_HOST=qdrant`, `QDRANT_PORT=6334`; `KAFKA_BOOTSTRAP_SERVERS=kafka:9092` for `kafka`). |
+| `QDRANT_HOST`, `WEAVIATE_HOST`, `CHROMA_HOST`, `MILVUS_HOST` | External vector stores, each with an optional port and API key in the same pattern (`QDRANT_PORT`, `QDRANT_API_KEY`; Chroma takes no key). Written to `.env`. A host set here wins over the same store named in `DATRIS_PROFILES`, and no local container is started for it. |
 | `KAFKA_BOOTSTRAP_SERVERS` | An external Kafka broker list. Written to `.env`. |
 | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_PASSWORD` | Snowflake destination credentials, written to `.env` when `SNOWFLAKE_ACCOUNT` is set. |
 | `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`, `DATABRICKS_TOKEN` | Databricks destination credentials, written to `.env` when `DATABRICKS_HOST` is set. |
@@ -85,30 +86,35 @@ When a variable above is unset, the installer takes these defaults:
 
 It also generates a random `TAP_RUNNER_TOKEN` in `.env`.
 
-### Which chat provider the install pins
+### Which chat provider the install uses
 
-The installer writes keys, and sometimes an `AI_PROVIDER` line, to `.env`:
+One provider handles chat and CodeGen. The installer writes it to `.env` as `AI_PROVIDER`, next to the keys:
 
 | Keys in the environment | Written to `.env` |
 |-------------------------|-------------------|
 | Anthropic only | `ANTHROPIC_API_KEY`, `AI_PROVIDER=anthropic`, `EMBEDDING_PROVIDER=tei` |
-| OpenAI only | `OPENAI_API_KEY`, `EMBEDDING_PROVIDER=openai`, `TEI_ENABLED=0` |
-| Anthropic and OpenAI | `ANTHROPIC_API_KEY`, `AI_PROVIDER=anthropic`, `OPENAI_API_KEY`, `EMBEDDING_PROVIDER=openai`, `TEI_ENABLED=0` |
+| OpenAI only | `OPENAI_API_KEY`, `AI_PROVIDER=openai`, `EMBEDDING_PROVIDER=openai`, `TEI_ENABLED=0` |
 | Grok only | `XAI_API_KEY`, `AI_PROVIDER=grok`, `EMBEDDING_PROVIDER=tei` |
+| Anthropic and OpenAI, with `AI_PROVIDER=openai` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AI_PROVIDER=openai`, `EMBEDDING_PROVIDER=openai`, `TEI_ENABLED=0` |
+| Anthropic and OpenAI, with `AI_PROVIDER=anthropic` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AI_PROVIDER=anthropic`, `EMBEDDING_PROVIDER=openai`, `TEI_ENABLED=0` |
 
-So with both an Anthropic and an OpenAI key, chat and CodeGen use Anthropic and embeddings use OpenAI. To use OpenAI for chat and CodeGen instead, change the line to `AI_PROVIDER=openai` in `.env` **before the first start**: run the installer with `DATRIS_NO_START=1`, edit `.env`, then run `docker compose up -d` in the install directory. The AI settings are seeded into Vault on the first start only; after that, change the chat provider from the **Configuration** tab in the UI.
+When several provider keys are set, say which one handles chat and CodeGen with `AI_PROVIDER`. If you leave it unset, a run without a terminal takes the first configured provider in the order `anthropic`, `openai`, `azure`, `grok`, and prints `Several AI providers configured` with the provider it chose. That order is a tie-break kept so existing automated installs behave as before. A run in a terminal asks instead.
+
+The AI settings are seeded into Vault on the first start only; after that, change the chat provider from the **Configuration** tab in the UI.
 
 Anthropic does not offer an embeddings API, and neither does xAI. `DATRIS_EMBEDDING` accepts `openai`, `tei` (the bundled local server) and `none`.
 
 ### Without an AI key
 
-With no provider key and `DATRIS_NO_START=1`, the installer prints `No AI key set. Datris will start, but AI features stay off` and exits 0. A real start without a key was not run for this page. From the source, though, the first-boot seeding step (`vault-init`) exits with `ERROR: No AI provider configured` when no provider is set, and the server only starts once that step succeeds, so `docker compose up -d` is expected to fail and the installer to exit non-zero. Give the install at least one key.
+The stack cannot start without an AI provider, so a fresh install with none stops before it pulls anything, with `error: No AI provider key set, and Datris cannot start without one`. Set one of the provider variables above and run it again.
+
+With `DATRIS_NO_START=1` the installer still writes the files and exits 0, and warns that Datris will not start until a provider key is added to `.env`.
 
 ### Running it again
 
 If `<install dir>/.env` already exists, the installer runs in **upgrade mode**: no prompts, `.env` is left exactly as it is, and provider keys and the selection variables above are ignored. It refreshes the runtime files and, without `DATRIS_NO_START=1`, pulls the images and recreates the containers. When the `datris` CLI is installed it first runs `datris doctor --pre-upgrade` and stops on an error-level finding (`DATRIS_SKIP_DOCTOR=1` bypasses it). See [Upgrading](/production/upgrades).
 
-This also applies after a failed first run: a fresh run that stops with an error has already written a partial `.env`, possibly holding the provider key with wider permissions than `600`, and the next run treats it as an upgrade and ignores the corrected variables. Delete `<install dir>/.env` before running it again.
+A fresh run that stops with an error before it finishes writing `.env` removes that partial file and prints `Install stopped before finishing — removed the partial`, so the next run is a fresh install again and reads the corrected variables. A `.env` that existed before the run is never removed.
 
 ### A second install on the same Docker host
 
@@ -118,7 +124,7 @@ An agent must ask the user before removing an existing installation. Volume name
 
 ### Adding vector stores
 
-pgvector comes with the bundled Postgres and needs nothing else. A run without a terminal does not write `QDRANT_HOST`, `WEAVIATE_HOST`, `CHROMA_HOST` or `MILVUS_HOST` (or their ports) to `.env`. Add the host and port lines to `.env`, together with `COMPOSE_PROFILES` for a bundled store, as described in [Installation](/installation), then run `docker compose up -d`.
+pgvector comes with the bundled Postgres and needs nothing else. For a bundled Qdrant, Weaviate or Chroma, name it in `DATRIS_PROFILES`; for a store you already run, set its `_HOST` variable. Both are written to `.env` on a run without a terminal. Milvus is external only. To add a store after the install, see [Installation](/installation).
 
 ## Single-file Compose alternative
 
@@ -212,8 +218,10 @@ For other agents and locations, see [Agent Skill](/agent-skill).
 
 | Output | Cause and fix |
 |--------|---------------|
-| `error: DATRIS_EMBEDDING=openai requires OPENAI_API_KEY` | Set `OPENAI_API_KEY`, or use `DATRIS_EMBEDDING=tei` or `none`. Delete `<install dir>/.env` before running again. A failed fresh run can leave that `.env` holding the provider key with wider permissions than `600`, so delete it rather than keep it. |
-| `error: DATRIS_POSTGRES=external requires POSTGRES_JDBC_URL` | Set `POSTGRES_JDBC_URL` (base URL, no database, for example `jdbc:postgresql://host:5432`), `POSTGRES_USER` and `POSTGRES_PASSWORD`. Delete `<install dir>/.env` before running again. A failed fresh run can leave that `.env` holding the provider key with wider permissions than `600`, so delete it rather than keep it. |
-| `Existing .env found — leaving it untouched (upgrade mode, no prompts).` on what should be a fresh install | A `.env` from an earlier or failed run is in the install directory. Delete it, or choose a new `DATRIS_DIR`. A failed fresh run can leave a leftover `.env` holding the provider key with wider permissions than `600`, so delete it rather than keep it. |
+| `error: DATRIS_EMBEDDING=openai requires OPENAI_API_KEY` | Set `OPENAI_API_KEY`, or use `DATRIS_EMBEDDING=tei` or `none`. Then run it again; the failed run leaves no `.env` behind. |
+| `error: DATRIS_POSTGRES=external requires POSTGRES_JDBC_URL` | Set `POSTGRES_JDBC_URL` (base URL, no database, for example `jdbc:postgresql://host:5432`), `POSTGRES_USER` and `POSTGRES_PASSWORD`. Then run it again. |
+| `Existing .env found — leaving it untouched (upgrade mode, no prompts).` on what should be a fresh install | A `.env` from an earlier install is in the install directory. Delete it, or choose a new `DATRIS_DIR`. |
+| `error: No AI provider key set, and Datris cannot start without one` | Export a provider key, or set `AI_PROVIDER=bedrock`, and run it again. |
+| `error: AI_PROVIDER=openai needs OPENAI_API_KEY, which is not set` (or the same for another provider) | `AI_PROVIDER` names a provider that has no key in the environment. Set the key, or change or unset `AI_PROVIDER`. |
 | `Azure OpenAI needs AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_MODEL too — skipping.` | Set all three Azure variables together. |
 | The installer prints a key prompt and waits | The process still has a controlling terminal. Use the detached form from [Install without a terminal](#install-without-a-terminal); redirecting stdin does not help. |
