@@ -59,6 +59,10 @@ Add an `aiTransformation` block to the `transformation` section:
 
 AI transformations run after data quality checks and before data is written to destinations.
 
+## Values withheld
+
+When the server sets `DATRIS_AI_SAMPLE_VALUES=false`, the prompt carries the column names and schema types (or a value-free skeleton of a JSON or XML file) and the line "Sample rows withheld by configuration" instead of sample rows. The generated script still runs on the full data. If the transformation depends on what values look like, spell the format out in the instruction. See [Field Protection](/transformation/field-protection#what-still-sees-raw-data).
+
 ## Works with all file types
 
 - **CSV/delimited files** — The script reads and writes CSV with the appropriate delimiter.

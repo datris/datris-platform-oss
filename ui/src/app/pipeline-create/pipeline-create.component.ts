@@ -55,6 +55,9 @@ export class PipelineCreateComponent implements OnInit {
   error = '';
   creating = false;
   generatingSchema = false;
+  /** True when the last Generate Schema / sample analysis result says the
+   * server withheld row values from the model (DATRIS_AI_SAMPLE_VALUES=false). */
+  valuesWithheld = false;
   sampleFileDetected = false;
 
   // Step 1 — Basics + Source
@@ -997,6 +1000,7 @@ export class PipelineCreateComponent implements OnInit {
           if (response.source?.schemaProperties?.fields) {
             this.schemaFields = response.source.schemaProperties.fields.map((f: any) => wizardField(f));
           }
+          this.valuesWithheld = response?.valuesWithheld === true;
           this.generatingSchema = false;
         },
         error: (err: any) => {
@@ -1021,6 +1025,7 @@ export class PipelineCreateComponent implements OnInit {
         if (response.source?.schemaProperties?.fields) {
           this.schemaFields = response.source.schemaProperties.fields.map((f: any) => wizardField(f));
         }
+        this.valuesWithheld = response?.valuesWithheld === true;
         this.generatingSchema = false;
       },
       error: (err: any) => {
@@ -1248,6 +1253,7 @@ export class PipelineCreateComponent implements OnInit {
       this.sourceType === 'csv' ? this.csvHeader : undefined
     ).subscribe({
       next: (response: any) => {
+        this.valuesWithheld = response?.valuesWithheld === true;
         if (response.source?.schemaProperties?.fields) {
           const fields = response.source.schemaProperties.fields;
           this.dqProfileSummary = 'Detected ' + fields.length + ' fields: ' +

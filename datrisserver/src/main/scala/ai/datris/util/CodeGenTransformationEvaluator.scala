@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{Data, DatrisEnvironment, DatrisException, StagedFormat, StagedPayload}
+import ai.datris.model.{Data, DatrisException, StagedFormat, StagedPayload}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.file.{Files, Path}
@@ -39,13 +39,33 @@ object CodeGenTransformationEvaluator {
      * @param delimiter   CSV delimiter
      * @return Transformed header (when the script emitted one, else the input header) and the staged rows
      */
-    def transformCsv(instruction: String, data: Data, delimiter: String, pipelineName: String = null): CsvStagedResult = {
+    def transformCsv(instruction: String, data: Data, delimiter: String, pipelineName: String = null): CsvStagedResult =
+        transformCsv(instruction, data, delimiter, pipelineName, CodeGenRuleEvaluator.codegenAI)
+
+    /** Seam for specs: `ai(systemPrompt, userPrompt)` returns the script text. */
+    private[datris] def transformCsv(
+        instruction: String,
+        data: Data,
+        delimiter: String,
+        pipelineName: String,
+        ai: (String, String) => String
+    ): CsvStagedResult = {
         val header = data.header
-        val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
         val headerLine = header.mkString(delimiter)
 
         val userPrompt =
-            s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+            if (!AiSampleValues.enabled)
+                s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+                   |Columns: $headerLine
+                   |${CodeGenRuleEvaluator.withheldCsvLines(data)}
+                   |
+                   |Transformation: "$instruction"
+                   |
+                   |The input CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.
+                   |Write a header row FIRST (the output column names, in order), then the data rows. Use the same delimiter.""".stripMargin
+            else {
+                val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
+                s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
                |Columns: $headerLine
                |Sample rows:
                |${sampleRows.mkString("\n")}
@@ -54,8 +74,9 @@ object CodeGenTransformationEvaluator {
                |
                |The input CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.
                |Write a header row FIRST (the output column names, in order), then the data rows. Use the same delimiter.""".stripMargin
+            }
 
-        val output = transform(userPrompt, data, "csv", instruction, pipelineName)
+        val output = transform(userPrompt, data, "csv", instruction, pipelineName, ai)
         try stageCsvOutput(output, header, data.rowCount, delimiter)
         finally Files.deleteIfExists(output)
     }
@@ -166,9 +187,19 @@ object CodeGenTransformationEvaluator {
      * @param isJson      True for JSON, false for XML
      * @return The transformed payload, staged
      */
-    def transformRaw(instruction: String, data: Data, isJson: Boolean, pipelineName: String = null): StagedPayload = {
+    def transformRaw(instruction: String, data: Data, isJson: Boolean, pipelineName: String = null): StagedPayload =
+        transformRaw(instruction, data, isJson, pipelineName, CodeGenRuleEvaluator.codegenAI)
+
+    /** Seam for specs: `ai(systemPrompt, userPrompt)` returns the script text. */
+    private[datris] def transformRaw(
+        instruction: String,
+        data: Data,
+        isJson: Boolean,
+        pipelineName: String,
+        ai: (String, String) => String
+    ): StagedPayload = {
         val format = if (isJson) "JSON" else "XML"
-        val sample = CodeGenRuleEvaluator.sampleDocument(data, 2000)
+        val withheld = !AiSampleValues.enabled
 
         val parseInstruction = if (isJson) {
             "Parse the file as JSON using the json module. Write the transformed JSON to the output file."
@@ -177,15 +208,25 @@ object CodeGenTransformationEvaluator {
         }
 
         val userPrompt =
-            s"""Format: $format
-               |Sample data (first 2000 chars):
-               |$sample
-               |
-               |Transformation: "$instruction"
-               |
-               |$parseInstruction""".stripMargin
+            if (withheld)
+                s"""Format: $format
+                   |${CodeGenRuleEvaluator.withheldStructure(data, isJson)}
+                   |
+                   |Transformation: "$instruction"
+                   |
+                   |$parseInstruction""".stripMargin
+            else {
+                val sample = CodeGenRuleEvaluator.sampleDocument(data, 2000)
+                s"""Format: $format
+                   |Sample data (first 2000 chars):
+                   |$sample
+                   |
+                   |Transformation: "$instruction"
+                   |
+                   |$parseInstruction""".stripMargin
+            }
 
-        val output = transform(userPrompt, data, format.toLowerCase, instruction, pipelineName)
+        val output = transform(userPrompt, data, format.toLowerCase, instruction, pipelineName, ai)
         if (isJson) {
             // Same rule as Data.withRawData → stageRawString: JSON that parses is
             // staged as NDJSON, anything else is kept verbatim.
@@ -205,13 +246,18 @@ object CodeGenTransformationEvaluator {
     /** Generate the script, run it with the staged input as `sys.argv[1]` and a
       * fresh output file as `sys.argv[2]`, and return that output file's path.
       * The caller adopts (or stages from) the output and removes it. */
-    private def transform(userPrompt: String, data: Data, fileExtension: String, instruction: String = null, pipelineName: String = null): Path = {
+    private def transform(
+        userPrompt: String,
+        data: Data,
+        fileExtension: String,
+        instruction: String,
+        pipelineName: String,
+        ai: (String, String) => String
+    ): Path = {
         logger.info("CodeGen Transformation: generating Python transformation script")
 
         // Step 1: Generate the Python script via LLM (uses codegen config when set)
-        val codegenCfg = DatrisEnvironment.aiConfigForCodegen
-        val responseText = AIUtil.callAIWithSystem(SYSTEM_PROMPT, userPrompt, codegenCfg)
-        val scriptContent = AIUtil.extractText(responseText, codegenCfg)
+        val scriptContent = ai(SYSTEM_PROMPT, userPrompt)
         val cleanScript = cleanGeneratedScript(scriptContent)
 
         logger.info("CodeGen Transformation: generated script (" + cleanScript.length + " chars)")

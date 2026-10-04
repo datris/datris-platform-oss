@@ -93,6 +93,7 @@
           Detected source type: <strong>{{ sourceType === 'unstructured' ? 'Document' : sourceType.toUpperCase() }}</strong>
           <span *ngIf="schemaFields.length > 0 && sourceType !== 'unstructured'"> &mdash; {{ schemaFields.length }} fields detected</span>
         </div>
+        <p class="values-withheld" *ngIf="valuesWithheld">Row values were withheld from the AI by this server's configuration; fields are named from the header and typed as string. Adjust the types if needed.</p>
       </div>
 
       <!-- From Tap -->
@@ -230,6 +231,7 @@
               {{ generatingSchema ? 'Generating...' : 'Generate Schema' }}
             </button>
           </div>
+          <p class="values-withheld" *ngIf="valuesWithheld">Row values were withheld from the AI by this server's configuration; fields are named from the header and typed as string. Adjust the types if needed.</p>
         </div>
         <hr class="divider">
       </ng-container>
@@ -354,6 +356,7 @@
       <div class="info-box" *ngIf="sampleFileDetected && dqProfileSummary">
         <p><strong>AI Analysis of your sample file:</strong></p>
         <p>{{ dqProfileSummary }}</p>
+        <p class="values-withheld" *ngIf="valuesWithheld">Row values were withheld from the AI by this server's configuration; fields are named from the header and typed as string. Adjust the types if needed.</p>
       </div>
 
       <!-- Header/Schema Validation (JSON/XML only) -->

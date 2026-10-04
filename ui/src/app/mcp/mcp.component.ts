@@ -469,7 +469,7 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'profile_data',
-      description: 'Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules. Use the suggested aiRule when building a pipeline\'s dataQuality section.',
+      description: 'Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules. Use the suggested aiRule when building a pipeline\'s dataQuality section. The server may withhold row values from the model (DATRIS_AI_SAMPLE_VALUES=false): the profile is then built from column statistics or structure only, sampleValues are empty, and the result carries valuesWithheld: true.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'content', type: 'string', description: 'Base64-encoded file content', required: true, inputType: 'textarea' },

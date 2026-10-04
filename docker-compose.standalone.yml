@@ -362,6 +362,8 @@ services:
       DATRIS_ALLOW_PRIVATE_EGRESS: "${DATRIS_ALLOW_PRIVATE_EGRESS:-false}"
       # Taps may only use tap-typed secrets (_type=tap); "any" also allows platform secrets.
       DATRIS_TAP_SECRET_SCOPE: "${DATRIS_TAP_SECRET_SCOPE:-tap}"
+      # "false": schema, profile, Assistant-attachment and CodeGen helpers send no row value to a model.
+      DATRIS_AI_SAMPLE_VALUES: "${DATRIS_AI_SAMPLE_VALUES:-true}"
       # Unity Catalog metadata for Databricks pipelines: global off switch and opt-in default.
       DATRIS_UNITY_CATALOG_SYNC: "${DATRIS_UNITY_CATALOG_SYNC:-true}"
       DATRIS_UNITY_CATALOG_DEFAULT: "${DATRIS_UNITY_CATALOG_DEFAULT:-disabled}"

@@ -118,6 +118,10 @@ For CSV files larger than `sampleSize` rows, the profiling endpoint automaticall
 
 The default sample of 200 rows is typically sufficient to detect patterns, types, and quality issues. Increase `sampleSize` for more thorough profiling at the cost of slower response times.
 
+## Values withheld
+
+When the server sets `DATRIS_AI_SAMPLE_VALUES=false`, no row value is sent to the model. For a CSV file the model gets per-column statistics computed over every row (inferred type, count, nulls, distinct count, minimum and maximum value length); for JSON and XML it gets a value-free skeleton of the document. `sampleValues` are empty for every column and the response carries a top-level `"valuesWithheld": true`. Quality issues and the suggested rule are then based on names, types and statistics only. See [Field Protection](/transformation/field-protection#what-still-sees-raw-data).
+
 ## Requirements
 
 - `ai.enabled: true` must be set in `application.yaml`

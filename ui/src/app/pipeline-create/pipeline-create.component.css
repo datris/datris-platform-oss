@@ -665,3 +665,9 @@ option {
   font-size: 14px;
   margin-top: 16px;
 }
+
+.values-withheld {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+}

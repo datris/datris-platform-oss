@@ -42,12 +42,25 @@ object CodeGenRuleEvaluator {
      * @param delimiter CSV delimiter
      * @return List of (rowIndex, failureReason) tuples
      */
-    def evaluateCsv(rule: String, data: Data, delimiter: String): List[(Int, String)] = {
-        val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
+    def evaluateCsv(rule: String, data: Data, delimiter: String): List[(Int, String)] =
+        evaluateCsv(rule, data, delimiter, codegenAI)
+
+    /** Seam for specs: `ai(systemPrompt, userPrompt)` returns the script text. */
+    private[datris] def evaluateCsv(rule: String, data: Data, delimiter: String, ai: (String, String) => String): List[(Int, String)] = {
         val headerLine = data.header.mkString(delimiter)
 
         val userPrompt =
-            s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+            if (!AiSampleValues.enabled)
+                s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+                   |Columns: $headerLine
+                   |${withheldCsvLines(data)}
+                   |
+                   |Rule: "$rule"
+                   |
+                   |The CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.""".stripMargin
+            else {
+                val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
+                s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
                |Columns: $headerLine
                |Sample rows:
                |${sampleRows.mkString("\n")}
@@ -55,9 +68,54 @@ object CodeGenRuleEvaluator {
                |Rule: "$rule"
                |
                |The CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.""".stripMargin
+            }
 
-        evaluate(userPrompt, data, "csv")
+        evaluate(userPrompt, data, "csv", ai)
     }
+
+    /** The codegen-slot call both evaluators use outside specs. */
+    private[util] val codegenAI: (String, String) => String = (system, user) => {
+        val codegenCfg = DatrisEnvironment.aiConfigForCodegen
+        val responseText = AIUtil.callAIWithSystem(system, user, codegenCfg)
+        AIUtil.extractText(responseText, codegenCfg)
+    }
+
+    /** With DATRIS_AI_SAMPLE_VALUES=false: the schema types (when known) and
+      * the withheld line, in place of the sample rows. */
+    private[util] def withheldCsvLines(data: Data): String = {
+        val types =
+            if (data.headerWithSchema == null || data.headerWithSchema.isEmpty) None
+            else Some("Column types: " + data.headerWithSchema.filter(_ != null).map(f => f.name + ":" + Option(f.`type`).getOrElse("string")).mkString(", "))
+        (types.toList :+ ("Sample rows withheld by configuration (" + AiSampleValues.EnvVar + "=false); write the script from the column names" +
+            (if (types.isDefined) ", types" else "") + " and the instruction alone, without assuming what the values look like.")).mkString("\n")
+    }
+
+    /** With DATRIS_AI_SAMPLE_VALUES=false: the value-free skeleton of the
+      * whole staged payload (streamed), in place of the sample. A payload that
+      * cannot be parsed yields "structure unavailable", never its text. */
+    private[util] def withheldStructure(data: Data, isJson: Boolean): String = {
+        val kind = if (isJson) "JSON" else "XML"
+        val size = if (data.staged == null) 0L else data.staged.bytes
+        val skeleton =
+            try {
+                if (isJson && data.isNdJson) {
+                    val it = data.recordIterator()
+                    try AiSampleValues.jsonSkeletonOfRecords(it, data.staged.arraySource)
+                    finally it.close()
+                } else if (!isJson && data.staged != null && !data.staged.isEmpty) {
+                    val reader = new java.io.InputStreamReader(data.openStream(), StandardCharsets.UTF_8)
+                    try AiSampleValues.xmlSkeletonOf(reader, size)
+                    finally reader.close()
+                } else AiSampleValues.structureUnavailable(kind, size)
+            } catch { case _: Exception => AiSampleValues.structureUnavailable(kind, size) }
+        val capped = if (skeleton.length > MAX_SKELETON_CHARS) skeleton.substring(0, MAX_SKELETON_CHARS) + "\n…[skeleton truncated]" else skeleton
+        val legend =
+            if (isJson) "every string is \"<string>\", every number 0, every boolean true; arrays keep one element per distinct shape"
+            else "element and attribute names kept, text and attribute values removed; repeated elements are marked"
+        "Sample data withheld by configuration (" + AiSampleValues.EnvVar + "=false). Value-free structure of the whole file (" + legend + "):\n" + capped
+    }
+
+    private val MAX_SKELETON_CHARS = 4000
 
     /**
      * Evaluate a plain-English rule against raw JSON/XML data using CodeGen.
@@ -67,9 +125,13 @@ object CodeGenRuleEvaluator {
      * @param isJson True for JSON, false for XML
      * @return List of (recordIndex, failureReason) tuples
      */
-    def evaluateRaw(rule: String, data: Data, isJson: Boolean): List[(Int, String)] = {
+    def evaluateRaw(rule: String, data: Data, isJson: Boolean): List[(Int, String)] =
+        evaluateRaw(rule, data, isJson, codegenAI)
+
+    /** Seam for specs: `ai(systemPrompt, userPrompt)` returns the script text. */
+    private[datris] def evaluateRaw(rule: String, data: Data, isJson: Boolean, ai: (String, String) => String): List[(Int, String)] = {
         val format = if (isJson) "JSON" else "XML"
-        val sample = sampleDocument(data, 2000)
+        val withheld = !AiSampleValues.enabled
 
         val parseInstruction = if (isJson) {
             "Parse the file as a JSON array of objects using the json module."
@@ -78,15 +140,25 @@ object CodeGenRuleEvaluator {
         }
 
         val userPrompt =
-            s"""Format: $format
-               |Sample data (first 2000 chars):
-               |$sample
-               |
-               |Rule: "$rule"
-               |
-               |$parseInstruction""".stripMargin
+            if (withheld)
+                s"""Format: $format
+                   |${withheldStructure(data, isJson)}
+                   |
+                   |Rule: "$rule"
+                   |
+                   |$parseInstruction""".stripMargin
+            else {
+                val sample = sampleDocument(data, 2000)
+                s"""Format: $format
+                   |Sample data (first 2000 chars):
+                   |$sample
+                   |
+                   |Rule: "$rule"
+                   |
+                   |$parseInstruction""".stripMargin
+            }
 
-        evaluate(userPrompt, data, format.toLowerCase)
+        evaluate(userPrompt, data, format.toLowerCase, ai)
     }
 
     /** The first `chars` characters of the document exactly as the script will
@@ -186,13 +258,11 @@ object CodeGenRuleEvaluator {
         } finally reader.close()
     }
 
-    private def evaluate(userPrompt: String, data: Data, fileExtension: String): List[(Int, String)] = {
+    private def evaluate(userPrompt: String, data: Data, fileExtension: String, ai: (String, String) => String): List[(Int, String)] = {
         logger.info("CodeGen DQ: generating Python validation script")
 
         // Step 1: Generate the Python script via LLM (uses codegen config when set)
-        val codegenCfg = DatrisEnvironment.aiConfigForCodegen
-        val responseText = AIUtil.callAIWithSystem(SYSTEM_PROMPT, userPrompt, codegenCfg)
-        val scriptContent = AIUtil.extractText(responseText, codegenCfg)
+        val scriptContent = ai(SYSTEM_PROMPT, userPrompt)
         val cleanScript = cleanGeneratedScript(scriptContent)
 
         logger.info("CodeGen DQ: generated script (" + cleanScript.length + " chars)")

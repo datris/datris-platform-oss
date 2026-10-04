@@ -151,6 +151,9 @@ object DoctorService {
           * Throws when the taps themselves cannot be listed. The default has
           * no failed reads; LiveProbes overrides it with one real scan. */
         def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.Result(tapSecretRefs(), Nil)
+
+        /** True when any source field in any pipeline carries `protect`. */
+        def anyPipelineProtects(): Boolean
     }
 
     private val Day = 86400L
@@ -470,6 +473,25 @@ object DoctorService {
         }
     }
 
+    /** DATRIS_AI_SAMPLE_VALUES (plans/stories/field-protection-9-ai-values-switch.md):
+      * reports the effective value; warns when the install protects fields
+      * while the helpers still send row values to the model. */
+    class AiSampleValuesCheck(probes: Probes) extends Check {
+        val id = "ai.sample_values"
+        val startupSafe = true
+        def run(): CheckResult = {
+            if (!AiSampleValues.enabled)
+                ok("row values are withheld from the model by schema, profile, attachment and CodeGen helpers (" + AiSampleValues.EnvVar + "=false)")
+            else if (probes.anyPipelineProtects())
+                warn(
+                    "this install protects fields but still samples values in helpers; set " + AiSampleValues.EnvVar + "=false",
+                    "Set " + AiSampleValues.EnvVar + "=false on the datris service and recreate it, so schema generation, profiling, " +
+                        "Assistant attachments and CodeGen rules and transformations work from structure only."
+                )
+            else ok("row values are sent to the model by schema, profile and CodeGen helpers (default)")
+        }
+    }
+
     /** Compares the server's version with whatever versions the calling
       * clients report (`?cli=`, `?mcp=`, `?ui=`). Major.minor must match. */
     class VersionSkewCheck(serverVersion: String, clients: Map[String, String]) extends Check {
@@ -622,6 +644,7 @@ object DoctorService {
             new StagingAreaCheck(probes, StagingArea.payloadBudgetMB),
             new StagingOrphansCheck(probes),
             new TapSecretScopeCheck(probes),
+            new AiSampleValuesCheck(probes),
             new VersionSkewCheck(serverVersion, clients),
             new EnvSeenCheck(probes),
             new AiModelReachableCheck(probes, slots)
@@ -790,6 +813,14 @@ object DoctorService {
         def tapSecretRefs(): List[(String, String, Option[String])] = tapSecretScan().refs
 
         override def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.liveScan()
+
+        def anyPipelineProtects(): Boolean =
+            try PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName).exists(c => FieldProtection.protectedFields(c).nonEmpty)
+            catch {
+                case e: Exception =>
+                    logger.debug("field-protection scan for doctor failed: " + e.getMessage)
+                    false
+            }
 
         def stagingArea(): StagingAreaState = {
             val root = StagingArea.root

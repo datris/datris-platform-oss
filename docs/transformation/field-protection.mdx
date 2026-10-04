@@ -178,14 +178,33 @@ To keep the ingest object, set `"protection": {"purgeSource": false}` at the top
 
 ## What still sees raw data
 
-Some helpers read the file you upload before any pipeline (and so before any protection) exists:
+Field protection applies inside a pipeline run. A few helpers that write configuration or code read your data before protection applies, or read columns you have not protected:
 
-- schema generation (`POST /pipeline/generate`, used by the wizard and by `create_pipeline`);
-- data profiling (`POST /pipeline/profile`);
-- JSON and XSD schema generation;
-- files attached to an Assistant chat.
+- schema generation from an uploaded file (`POST /pipeline/generate`, the wizard's Generate Schema and sample-file analysis);
+- data profiling (`POST /pipeline/profile` and the `profile_data` MCP tool);
+- JSON Schema and XSD generation from a pasted sample (`POST /config/generate-schema`);
+- files attached to an Assistant chat;
+- the sample rows the CodeGen [data-quality rule](/data-quality/ai-rules) and [transformation](/transformation/ai-transformation) generators put in their prompt (protected columns are already protected there; the other columns are sent as they are).
 
-Run these on synthetic rows that have the same shape as your data, or use an AI provider you have an agreement with for that data.
+If you handle regulated data, set `DATRIS_AI_SAMPLE_VALUES=false` on the datris service and recreate it. With the switch off, none of these helpers sends a row value to a model. Each one works from structure only and says so in its response:
+
+| Helper | With `DATRIS_AI_SAMPLE_VALUES=false` |
+|--------|---------------------------------------|
+| Schema generation (CSV) | No model call. Every field is named from the header and typed `string`. The response carries `valuesWithheld: true` and the wizard shows a note |
+| Data profiling | The model gets per-column statistics (type, count, nulls, distinct count, value lengths) for CSV, or a value-free skeleton for JSON and XML. `sampleValues` are empty and the response carries `valuesWithheld: true` |
+| JSON Schema / XSD generation | The model gets a skeleton of the sample (keys or element and attribute names, value types, no values). The response carries `valuesWithheld: true`. Formats, enums and patterns that could only be read from values are not inferred |
+| Assistant attachments | The chat gets the filename, type, row count and column or top-level key names. The attached file itself is unchanged, so the Assistant can still upload it to a pipeline |
+| CodeGen rules and transformations | The prompt carries the column names and schema types (or a skeleton for JSON and XML) and states that sample rows were withheld. The generated script still runs on the full data. An instruction that depends on what values look like should spell the format out |
+
+A file that cannot be parsed is described only by its type and size, never by its content. The default is `true` (today's behaviour). Any value other than `false` counts as `true` and is logged once, so set `false` explicitly. The `ai.sample_values` [doctor](/doctor) check reports the effective value and warns when a pipeline protects fields while the switch is on.
+
+The switch does not cover features whose purpose is to answer questions over your data. They send that data to the model by design:
+
+- Search chat and the answer endpoint;
+- the Assistant reading query results or a Live Read preview;
+- tap script generation, review and diagnosis, which see a tap's captured output or the source's documentation rather than pipeline rows.
+
+For these, field protection is the control: protected columns are already ciphertext, tokens or masks by the time they are read. For anything else in those flows, use an AI provider you have an agreement with for that data.
 
 ## Not yet supported
 

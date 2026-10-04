@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException}
-import ai.datris.util.{AISchemaUtil, APIKeyValidator, ObjectStoreUtil}
+import ai.datris.util.{AISchemaUtil, APIKeyValidator, AiSampleValues, ObjectStoreUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -115,6 +115,8 @@ class ConfigAPIController {
             response.put("filename", filename)
             response.put("path", "s3://" + bucket + "/" + key)
             response.put("schema", schema)
+            // DATRIS_AI_SAMPLE_VALUES=false: generated from a value-free skeleton.
+            if (!AiSampleValues.enabled) response.put("valuesWithheld", true)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
