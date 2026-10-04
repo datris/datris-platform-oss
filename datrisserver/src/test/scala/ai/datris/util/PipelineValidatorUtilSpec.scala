@@ -1141,4 +1141,50 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val unknown = protectConfig("""[{"name":"zip","type":"string","protect":{"method":"mask","preserve":"first5"}}]""")
         assert(validationError(unknown).exists(_.contains("first3")), s"got: ${validationError(unknown)}")
     }
+
+    // --- Story 10 review round 1 (JSON, unstructured with no schema, non-string message) ---
+
+    test("a preset on a JSON pipeline is refused: its keys are not visible to the preset") {
+        val cfg = presetConfig(
+            """[{"name":"_json","type":"string"}]""",
+            """{"preset":"hipaa-safe-harbor"}""",
+            """"jsonAttributes":{"everyRowContainsObject":true}"""
+        )
+        assert(
+            validationError(cfg).exists(
+                _.contains("Preset 'hipaa-safe-harbor' needs a delimited source: a JSON pipeline's keys are not visible to the preset")
+            ),
+            s"got: ${validationError(cfg)}"
+        )
+        // protect on a JSON pipeline without a preset is still accepted.
+        val plain = protectConfig(
+            """[{"name":"_json","type":"string"},{"name":"email","type":"string","protect":{"method":"redact"}}]""",
+            fileAttributes = """"jsonAttributes":{"everyRowContainsObject":true}"""
+        )
+        assert(!validationError(plain).exists(_.contains("Preset")), s"got: ${validationError(plain)}")
+    }
+
+    test("a preset on an unstructured pipeline with no source schema is refused") {
+        val cfg = parse(
+            """{"name":"fp",
+              |"source":{"fileAttributes":{"unstructuredAttributes":{"fileExtension":"pdf"}}},
+              |"destination":{"objectStore":{"prefixKey":"fp"}},
+              |"protection":{"preset":"hipaa-safe-harbor"}}""".stripMargin
+        )
+        assert(cfg.source.schemaProperties == null && cfg.protection.preset != null)
+        assert(validationError(cfg).exists(_.contains("Field protection needs a delimited or JSON source")), s"got: ${validationError(cfg)}")
+    }
+
+    test("a recognised non-string field names drop and presetExempt as the ways to pass") {
+        val cfg =
+            presetConfig("""[{"name":"mrn","type":"string","protect":{"method":"hmac"}},{"name":"dob","type":"date"}]""", """{"preset":"hipaa-safe-harbor"}""")
+        val err = validationError(cfg)
+        assert(
+            err.exists(e => e.contains("field 'dob' looks like date and has no protection") && e.contains("'drop'") && e.contains("protection.presetExempt")),
+            s"got: $err"
+        )
+        assert(!err.exists(_.contains("Add protect to it")), s"got: $err")
+        val dropped = presetConfig("""[{"name":"dob","type":"date","protect":{"method":"drop"}}]""", """{"preset":"hipaa-safe-harbor"}""")
+        assert(validationError(dropped).isEmpty, s"got: ${validationError(dropped)}")
+    }
 }

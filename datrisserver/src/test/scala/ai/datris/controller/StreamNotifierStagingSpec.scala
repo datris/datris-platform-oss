@@ -707,4 +707,40 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
             assert(su.lines("warn").isEmpty, s"no warnings: ${su.events}")
         }
     }
+
+    // ---- Story 10 review round 1: presetExempt and the clamp branch on evolution ----
+
+    test("a new column listed under presetExempt is added unprotected with an info line") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val protection = ProtectionConfig(preset = "hipaa-safe-harbor", presetExempt = java.util.Arrays.asList("Admission_Date"))
+        val (evolved, _, _, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "admission_date"), evolveConfig(protection), su, c => persisted += c)
+        assert(sourceField(evolved, "admission_date").exists(_.protect == null), "exempt → not protected")
+        assert(su.lines("info").exists(l => l.contains("new column 'admission_date'") && l.contains("presetExempt")), s"lines: ${su.events}")
+        assert(su.lines("warn").isEmpty, s"no warning for an exempt column: ${su.events}")
+        assert(persisted.size == 1)
+    }
+
+    test("a recognised new column the clamps refuse lands as is with a warning naming the consequence") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val base = evolveConfig(presetProtection)
+        val cfg = base.copy(destination =
+            base.destination.copy(database = Database(dbName = "datris", schema = "public", table = "patients", keyFields = java.util.Arrays.asList("email")))
+        )
+        val (evolved, _, _, _) = ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "email"), cfg, su, c => persisted += c)
+        assert(sourceField(evolved, "email").exists(_.protect == null), "key column: redact is clamped away")
+        val warn = su.lines("warn")
+        assert(
+            warn.exists(l =>
+                l.contains("new column 'email' looks like email but is not protected") &&
+                    l.contains(ai.datris.util.FieldProtectionAdvisor.KeyColumnReason) &&
+                    l.contains(
+                        "it lands as is, and the next save of this pipeline will be refused until it is protected or listed under protection.presetExempt"
+                    )
+            ),
+            s"lines: ${su.events}"
+        )
+    }
 }

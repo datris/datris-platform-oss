@@ -49,8 +49,15 @@ object DataUtil {
             val newSourceFields = ProtectionPreset.supportedPresetOf(config) match {
                 case Some(preset) =>
                     val (keys, destTypes) = FieldProtectionAdvisor.constraintsOf(config)
+                    val exempt = ProtectionPreset.exemptOf(config)
                     newFields.map { f =>
-                        ProtectionPreset.classify(f.name) match {
+                        if (exempt.contains(f.name.trim.toLowerCase)) {
+                            statusUtil.info(
+                                "processing",
+                                "Preset " + preset + ": new column '" + f.name + "' is listed under protection.presetExempt and is not protected"
+                            )
+                            f
+                        } else ProtectionPreset.classify(f.name) match {
                             case Some((klass, policy)) =>
                                 FieldProtectionAdvisor.constrain(f.name, f.`type`, policy, keys, destTypes) match {
                                     case Right(p) =>
@@ -62,7 +69,8 @@ object DataUtil {
                                     case Left(why) =>
                                         statusUtil.warn(
                                             "processing",
-                                            "Preset " + preset + ": new column '" + f.name + "' looks like " + klass + " but is not protected (" + why + ")"
+                                            "Preset " + preset + ": new column '" + f.name + "' looks like " + klass + " but is not protected (" + why +
+                                                "); it lands as is, and the next save of this pipeline will be refused until it is protected or listed under protection.presetExempt"
                                         )
                                         f
                                 }

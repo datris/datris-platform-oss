@@ -100,8 +100,9 @@ components:
             table, no model call). Saving is refused while a recognised source
             field has no `protect` and is not listed in `presetExempt`, and a
             recognised column added later by schema evolution is protected
-            with the preset's method in the same run. An aid to applying Safe
-            Harbor, not a certification.
+            with the preset's method in the same run. Delimited sources only:
+            refused on JSON, XML and unstructured pipelines. An aid to applying
+            Safe Harbor, not a certification.
         presetExempt:
           type: array
           nullable: true

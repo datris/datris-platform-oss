@@ -161,13 +161,27 @@ object PipelineValidatorUtil {
                 )
         }
 
+        val fa = config.source.fileAttributes
+        def notDelimitedOrJson: Boolean = fa != null && (fa.xmlAttributes != null || fa.unstructuredAttributes != null)
+        // With a preset the source checks come before the schema: a preset on
+        // a pipeline with no source schema is still refused on XML/unstructured.
+        preset.foreach { p =>
+            if (notDelimitedOrJson) throw new DatrisException("Field protection needs a delimited or JSON source")
+            // JSON keys are not schema fields, so the preset could neither
+            // enforce nor evolve them: refused rather than silently inert.
+            if (fa != null && fa.jsonAttributes != null)
+                throw new DatrisException(
+                    "Preset '" + p.toLowerCase + "' needs a delimited source: a JSON pipeline's keys are not visible to the preset. " +
+                        "List the keys to protect explicitly, or use the proposal endpoint with a field list"
+                )
+        }
+
         val sp = config.source.schemaProperties
         if (sp == null || sp.fields == null) return
         val protectedFields = sp.fields.asScala.filter(f => f != null && f.protect != null).toList
         if (protectedFields.isEmpty && preset.isEmpty) return
 
-        val fa = config.source.fileAttributes
-        if (fa != null && (fa.xmlAttributes != null || fa.unstructuredAttributes != null))
+        if (notDelimitedOrJson)
             throw new DatrisException("Field protection needs a delimited or JSON source")
 
         val destFields: Map[String, SchemaField] =
@@ -234,9 +248,19 @@ object PipelineValidatorUtil {
                     val more =
                         if (rest.isEmpty) ""
                         else " (" + rest.size + " more field" + (if (rest.size == 1) "" else "s") + " also need protection or an exemption)"
+                    // A non-string source or destination type only takes drop.
+                    val srcType = sp.fields.asScala.find(f => f != null && f.name == field).map(_.`type`).orNull
+                    val destType = destFields.get(field.trim.toLowerCase).map(_.`type`).orNull
+                    val how =
+                        if (!isString(srcType))
+                            ". Its source type is " + String.valueOf(srcType) +
+                                ", so only protect method 'drop' applies: drop it or list it under protection.presetExempt"
+                        else if (destType != null && !isString(destType))
+                            ". Its destination type is " + destType +
+                                ", so only protect method 'drop' applies: drop it or list it under protection.presetExempt"
+                        else ". Add protect to it or list it under protection.presetExempt"
                     throw new DatrisException(
-                        "Preset '" + p.toLowerCase + "': field '" + field + "' looks like " + klass + " and has no protection" + more +
-                            ". Add protect to it or list it under protection.presetExempt"
+                        "Preset '" + p.toLowerCase + "': field '" + field + "' looks like " + klass + " and has no protection" + more + how
                     )
                 case Nil => ()
             }

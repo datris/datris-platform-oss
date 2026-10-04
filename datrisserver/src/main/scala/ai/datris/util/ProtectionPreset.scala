@@ -52,7 +52,7 @@ object ProtectionPreset {
     private val MaskFirst3 = p("mask", "first3")
 
     /** Normalised ZIP names: the only geographic entry kept partly (first three digits). */
-    private val ZipNames: Set[String] = Set("zip", "zipcode", "zipplus4", "postalcode", "postcode")
+    private val ZipNames: Set[String] = Set("zip", "zipcode", "postalcode", "postcode")
 
     private val Table: List[Entry] = List(
         Entry(
@@ -76,6 +76,9 @@ object ProtectionPreset {
                 "spousename",
                 "guardianname",
                 "emergencycontactname",
+                "contactname",
+                "emergencycontact",
+                "middleinitial",
                 "nextofkin"
             ),
             Redact
@@ -88,6 +91,10 @@ object ProtectionPreset {
                 "streetaddress",
                 "street",
                 "addressline",
+                "addr",
+                "apt",
+                "billingaddress",
+                "shippingaddress",
                 "homeaddress",
                 "mailingaddress",
                 "residentialaddress",
@@ -99,10 +106,18 @@ object ProtectionPreset {
             Redact
         ),
         Entry("geographic", "geographic subdivisions smaller than a state (ZIP code)", ZipNames, MaskFirst3),
+        // The +4 extension alone: first3 would leave three of its four digits in
+        // the clear, so it is redacted. Looked up before the trailing-digit strip.
+        Entry(
+            "geographic",
+            "geographic subdivisions smaller than a state (ZIP+4 extension)",
+            Set("zip4", "zipplus4", "plus4", "zipext", "zipextension"),
+            Redact
+        ),
         Entry(
             "geographic",
             "geographic subdivisions smaller than a state (geocodes)",
-            Set("latitude", "longitude", "latlong", "latlng", "geocode", "geolocation", "coordinates"),
+            Set("latitude", "longitude", "lat", "lng", "lon", "latlong", "latlng", "geocode", "geolocation", "coordinates"),
             Drop
         ),
         Entry(
@@ -131,6 +146,11 @@ object ProtectionPreset {
                 "visitdate",
                 "encounterdate",
                 "appointmentdate",
+                "apptdate",
+                "visitdt",
+                "dos",
+                "labdate",
+                "collectiondate",
                 "proceduredate"
             ),
             MaskYear
@@ -147,6 +167,10 @@ object ProtectionPreset {
                 "telephonenumber",
                 "tel",
                 "telno",
+                "cell",
+                "mobile",
+                "mobileno",
+                "guardianphone",
                 "mobilenumber",
                 "mobilephone",
                 "cellphone",
@@ -172,7 +196,7 @@ object ProtectionPreset {
         Entry(
             "ssn",
             "social security numbers",
-            Set("ssn", "socialsecuritynumber", "socialsecurityno", "socialsecuritynum", "socialsecurity", "socsecnum"),
+            Set("ssn", "social", "socialsecuritynumber", "socialsecurityno", "socialsecuritynum", "socialsecurity", "socsecnum"),
             Drop
         ),
         Entry(
@@ -203,6 +227,13 @@ object ProtectionPreset {
                 "insuranceid",
                 "insurancenumber",
                 "policynumber",
+                "policyno",
+                "groupnumber",
+                "memberid",
+                "mbrid",
+                "membernumber",
+                "subscriberid",
+                "subscribernumber",
                 "medicaidid",
                 "medicaidnumber",
                 "medicareid",
@@ -217,6 +248,12 @@ object ProtectionPreset {
             "account numbers",
             Set(
                 "accountnumber",
+                "account",
+                "acct",
+                "creditcardnumber",
+                "cardnumber",
+                "claimnumber",
+                "prescriptionnumber",
                 "accountno",
                 "accountnum",
                 "accountid",
@@ -236,6 +273,7 @@ object ProtectionPreset {
             "certificate/license numbers",
             Set(
                 "licensenumber",
+                "license",
                 "licencenumber",
                 "licenseno",
                 "licenceno",
@@ -264,6 +302,7 @@ object ProtectionPreset {
                 "licenseplate",
                 "licenceplate",
                 "licenseplatenumber",
+                "plate",
                 "platenumber"
             ),
             Hmac
@@ -271,7 +310,7 @@ object ProtectionPreset {
         Entry(
             "device",
             "device identifiers and serial numbers",
-            Set("deviceid", "deviceidentifier", "deviceserialnumber", "deviceserial", "serialnumber", "udi", "imei", "macaddress"),
+            Set("deviceid", "deviceidentifier", "deviceserialnumber", "deviceserial", "serialnumber", "serialno", "udi", "imei", "macaddress"),
             Hmac
         ),
         Entry(
@@ -297,6 +336,7 @@ object ProtectionPreset {
                 "biometricdata",
                 "biometricid",
                 "retinascan",
+                "retina",
                 "irisscan",
                 "voiceprint",
                 "faceprint",
@@ -319,6 +359,10 @@ object ProtectionPreset {
                 "profilephoto",
                 "profilepicture",
                 "profileimage",
+                "picture",
+                "image",
+                "imageurl",
+                "photourl",
                 "selfie"
             ),
             Drop
@@ -335,6 +379,8 @@ object ProtectionPreset {
                 "passportnumber",
                 "passportno",
                 "taxid",
+                "ein",
+                "tin",
                 "taxidnumber",
                 "taxpayerid",
                 "governmentid",
@@ -382,10 +428,19 @@ object ProtectionPreset {
         ws
     }
 
+    /** Lookup order: the whole name (so `member_id` and `subscriber_number`
+      * match before their prefix is dropped), the name without its leading
+      * prefix, then that name without trailing digits (`phone2`). Exact
+      * entries such as `zip4` win over the digit strip. */
     private def entryOf(fieldName: String): Option[Entry] = {
+        val whole = words(fieldName).mkString
         val joined = stripped(fieldName).mkString
         if (joined.isEmpty) None
-        else ByName.get(joined).orElse(Option(joined.replaceAll("[0-9]+$", "")).filter(_.nonEmpty).flatMap(ByName.get))
+        else
+            ByName
+                .get(whole)
+                .orElse(ByName.get(joined))
+                .orElse(Option(joined.replaceAll("[0-9]+$", "")).filter(_.nonEmpty).flatMap(ByName.get))
     }
 
     /** (class label, default policy) for a field name, unclamped; None when the table does not recognise it. */
@@ -451,12 +506,22 @@ object ProtectionPreset {
     /** (field name, class label) for every source field the preset recognises
       * that has no `protect` and is not listed in `protection.presetExempt`
       * (case-insensitive). Empty when the pipeline sets no supported preset. */
+    /** `protection.presetExempt`, trimmed and lowercased. */
+    def exemptOf(config: PipelineConfig): Set[String] =
+        Option(config)
+            .flatMap(c => Option(c.protection))
+            .flatMap(p => Option(p.presetExempt))
+            .map(_.asScala.toList)
+            .getOrElse(Nil)
+            .filter(_ != null)
+            .map(_.trim.toLowerCase)
+            .toSet
+
     def missing(config: PipelineConfig): List[(String, String)] = {
         if (supportedPresetOf(config).isEmpty) return Nil
         val sp = if (config.source != null) config.source.schemaProperties else null
         if (sp == null || sp.fields == null) return Nil
-        val exempt: Set[String] =
-            Option(config.protection.presetExempt).map(_.asScala.toList).getOrElse(Nil).filter(_ != null).map(_.trim.toLowerCase).toSet
+        val exempt = exemptOf(config)
         sp.fields.asScala.toList
             .filter(f => f != null && f.name != null && f.name.trim.nonEmpty && f.protect == null && !isDocument(f.name))
             .filterNot(f => exempt.contains(f.name.trim.toLowerCase))
