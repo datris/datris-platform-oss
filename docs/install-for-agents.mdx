@@ -1,0 +1,227 @@
+---
+title: "Install Datris from an agent or CI job (no terminal)"
+sidebarTitle: "Install for Agents"
+description: "Install the self-hosted Datris stack with nobody at a keyboard, check that it is up, connect the MCP server and add the datris-platform skill. Written for coding agents and CI jobs."
+---
+
+This page takes an agent, or a CI job, from an empty machine to a connected MCP client without anyone answering a prompt. It covers the installer's behaviour when no terminal is attached, the single-file Compose alternative, how to tell the stack is up, how to connect the MCP server, and how to add the `datris-platform` skill. For the interactive install a person runs, see [Installation](/installation).
+
+## Prerequisites
+
+- **Docker** with the **Compose v2** plugin (`docker compose version` answers), and a **running daemon** (`docker info` succeeds). The installer stops with an error if any of these is missing.
+- **curl**, plus **openssl** (or `/dev/urandom` and `xxd`). The installer uses them to fetch files and to generate the tap runner token.
+- **A POSIX shell on macOS or Linux.** The installer is a `sh` script. On Windows, use the [single-file Compose](#single-file-compose-alternative) path instead.
+- **Memory:** 4 GB available to Docker for a minimal install, about 8 GB for the full stack with the bundled embedding server. See [Installation → Minimal install](/installation#minimal-install).
+- **At least one AI provider key** in the environment: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, the Azure OpenAI trio, or `AI_PROVIDER=bedrock`. See [Without an AI key](#without-an-ai-key) for why.
+- **Free host ports.** The stack publishes 8080 (API), 4200 (UI), 3000 (MCP server), 61616 and 8161 (ActiveMQ), 9000 and 9001 (MinIO), 27017 (MongoDB) and 8200 (Vault); also 5432 (Postgres) unless `DATRIS_POSTGRES` is `external` or `none`, and 11434 (bundled embedding server) unless `DATRIS_EMBEDDING` is `openai` or `none`. Opt-in profiles publish more. See [Installation → Services](/installation#services).
+
+## Install without a terminal
+
+The installer reads its prompts only from the controlling terminal (`/dev/tty`), never from stdin. When it cannot open a terminal it skips every prompt, prints `Non-interactive — using the detected key(s).` when it finds a key, and takes its answers from environment variables. Redirecting stdin is not enough: a process that still has a controlling terminal is prompted, and waits.
+
+If your agent's shell tool already runs without a controlling terminal, the plain piped command is prompt-free. To make sure, start the shell in a new session, which detaches it from any terminal.
+
+<CodeGroup>
+
+```bash macOS
+# At least one provider key (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...) must already be exported; this stops early if none is.
+[ -n "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}${XAI_API_KEY:-}${AZURE_OPENAI_API_KEY:-}${AI_PROVIDER:-}" ] \
+  || { echo "export a provider key first, such as ANTHROPIC_API_KEY or OPENAI_API_KEY" >&2; exit 1; }
+curl -fsSL https://get.datris.ai/install.sh \
+  | DATRIS_DIR="$PWD/datris" python3 -c 'import os,sys
+pid = os.fork()
+if pid == 0:
+    os.setsid(); os.execvp("sh", ["sh"])
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))'
+```
+
+```bash Linux (not tested)
+# At least one provider key (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...) must already be exported; this stops early if none is.
+[ -n "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}${XAI_API_KEY:-}${AZURE_OPENAI_API_KEY:-}${AI_PROVIDER:-}" ] \
+  || { echo "export a provider key first, such as ANTHROPIC_API_KEY or OPENAI_API_KEY" >&2; exit 1; }
+curl -fsSL https://get.datris.ai/install.sh | DATRIS_DIR="$PWD/datris" setsid -w sh
+```
+
+</CodeGroup>
+
+macOS does not ship `setsid`, so the macOS form uses a short Python wrapper that makes the same system call, waits for the installer and returns its exit code. That form was run, launched from inside a terminal, and asked nothing. The Linux form uses `setsid` from util-linux (`-w` waits for the installer and returns its exit code); it was not run for this page.
+
+To keep the installer's output for later, add `> install.log 2>&1` at the end of either command.
+
+### Environment variables
+
+The installer reads these on a fresh install. Values you pass are written to `<install dir>/.env`, which is kept at permissions `600`.
+
+| Variable | What it does |
+|----------|--------------|
+| `DATRIS_DIR` | Install directory. Default `./datris` under the current directory. Its `.env` holds the provider key, so run the installer from a directory outside your project or set `DATRIS_DIR`, and never commit that `.env`. |
+| `DATRIS_REF` | Git ref of the repository to fetch the runtime files from. Default `main`. |
+| `ANTHROPIC_API_KEY` | Anthropic key for chat and CodeGen. |
+| `OPENAI_API_KEY` | OpenAI key for chat and CodeGen; also enables OpenAI embeddings. |
+| `XAI_API_KEY` | Grok (xAI) key for chat and CodeGen. `GROK_MODEL` optionally overrides the model. |
+| `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_MODEL` | Azure OpenAI. All three are required together. When `AZURE_OPENAI_API_KEY` is set without the endpoint or model, the installer prints a warning and writes none of them; an endpoint or model without the key is ignored silently. The endpoint is the resource base URL, the model is the chat deployment name. For keyless Entra ID auth, set `AI_PROVIDER=azure` with the endpoint and model and no key, plus either all three of `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` or none of them to use the identity assigned to the Azure host. |
+| `AI_PROVIDER` | Which provider handles chat and CodeGen: `anthropic`, `openai`, `azure`, `grok` or `bedrock`. Always written to `.env`. Unset, the installer chooses as described in [Which chat provider the install uses](#which-chat-provider-the-install-uses). A value that names a provider with no key in the environment, or an unknown value, stops the install with an error. |
+| `AI_PROVIDER=bedrock` | Use Claude through Amazon Bedrock. Optionally with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (leave both unset to use the host's IAM role or default credential chain), `AWS_REGION` and `BEDROCK_MODEL`. AWS keys alone never select Bedrock. |
+| `DATRIS_POSTGRES` | `bundled` (default), `external` or `none`. `external` also reads `POSTGRES_JDBC_URL`, `POSTGRES_USER` and `POSTGRES_PASSWORD`, and stops with an error when `POSTGRES_JDBC_URL` is missing. |
+| `DATRIS_EMBEDDING` | `openai`, `tei` or `none`. Default `openai` when `OPENAI_API_KEY` is set, otherwise `tei`. `openai` without `OPENAI_API_KEY` stops with an error. |
+| `DATRIS_PROFILES` | Comma-separated opt-in bundled services (`qdrant`, `weaviate`, `chroma`, `kafka`). Written to `.env` as `COMPOSE_PROFILES`, together with the in-network host and port each store needs (for example `QDRANT_HOST=qdrant`, `QDRANT_PORT=6334`; `KAFKA_BOOTSTRAP_SERVERS=kafka:9092` for `kafka`). |
+| `QDRANT_HOST`, `WEAVIATE_HOST`, `CHROMA_HOST`, `MILVUS_HOST` | External vector stores, each with an optional port and API key in the same pattern (`QDRANT_PORT`, `QDRANT_API_KEY`; Chroma takes no key). Written to `.env`. A host set here wins over the same store named in `DATRIS_PROFILES`, and no local container is started for it. |
+| `KAFKA_BOOTSTRAP_SERVERS` | An external Kafka broker list. Written to `.env`. |
+| `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_PASSWORD` | Snowflake destination credentials, written to `.env` when `SNOWFLAKE_ACCOUNT` is set. |
+| `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`, `DATABRICKS_TOKEN` | Databricks destination credentials, written to `.env` when `DATABRICKS_HOST` is set. |
+| `DATRIS_NO_START=1` | Write the files and `.env`, then stop before pulling images or starting anything. Useful to inspect what an install would do. |
+| `DATRIS_SKIP_DOCTOR=1` | On an upgrade, skip the pre-upgrade `datris doctor` check. |
+
+### What a run without a terminal chooses
+
+When a variable above is unset, the installer takes these defaults:
+
+| Setting | Default |
+|---------|---------|
+| Postgres | Bundled container (also provides pgvector) |
+| Embeddings | OpenAI `text-embedding-3-small` when `OPENAI_API_KEY` is set (no local embedding container). Otherwise the bundled TEI server, which downloads a 2.2 GB model on first boot. |
+| Extra vector stores | None (pgvector inside Postgres only) |
+| Kafka | None |
+| Snowflake, Databricks | Not configured |
+
+It also generates a random `TAP_RUNNER_TOKEN` in `.env`.
+
+### Which chat provider the install uses
+
+One provider handles chat and CodeGen. The installer writes it to `.env` as `AI_PROVIDER`, next to the keys:
+
+| Keys in the environment | Written to `.env` |
+|-------------------------|-------------------|
+| Anthropic only | `ANTHROPIC_API_KEY`, `AI_PROVIDER=anthropic`, `EMBEDDING_PROVIDER=tei` |
+| OpenAI only | `OPENAI_API_KEY`, `AI_PROVIDER=openai`, `EMBEDDING_PROVIDER=openai`, `TEI_ENABLED=0` |
+| Grok only | `XAI_API_KEY`, `AI_PROVIDER=grok`, `EMBEDDING_PROVIDER=tei` |
+| Anthropic and OpenAI, with `AI_PROVIDER=openai` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AI_PROVIDER=openai`, `EMBEDDING_PROVIDER=openai`, `TEI_ENABLED=0` |
+| Anthropic and OpenAI, with `AI_PROVIDER=anthropic` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AI_PROVIDER=anthropic`, `EMBEDDING_PROVIDER=openai`, `TEI_ENABLED=0` |
+
+When several provider keys are set, say which one handles chat and CodeGen with `AI_PROVIDER`. If you leave it unset, a run without a terminal takes the first configured provider in the order `anthropic`, `openai`, `azure`, `grok`, and prints `Several AI providers configured` with the provider it chose. That order is a tie-break kept so existing automated installs behave as before. A run in a terminal asks instead.
+
+The AI settings are seeded into Vault on the first start only; after that, change the chat provider from the **Configuration** tab in the UI.
+
+Anthropic does not offer an embeddings API, and neither does xAI. `DATRIS_EMBEDDING` accepts `openai`, `tei` (the bundled local server) and `none`.
+
+### Without an AI key
+
+The stack cannot start without an AI provider, so a fresh install with none stops before it pulls anything, with `error: No AI provider key set, and Datris cannot start without one`. Set one of the provider variables above and run it again.
+
+With `DATRIS_NO_START=1` the installer still writes the files and exits 0, and warns that Datris will not start until a provider key is added to `.env`.
+
+### Running it again
+
+If `<install dir>/.env` already exists, the installer runs in **upgrade mode**: no prompts, `.env` is left exactly as it is, and provider keys and the selection variables above are ignored. It refreshes the runtime files and, without `DATRIS_NO_START=1`, pulls the images and recreates the containers. When the `datris` CLI is installed it first runs `datris doctor --pre-upgrade` and stops on an error-level finding (`DATRIS_SKIP_DOCTOR=1` bypasses it). See [Upgrading](/production/upgrades).
+
+A fresh run that stops with an error before it finishes writing `.env` removes that partial file and prints `Install stopped before finishing — removed the partial`, so the next run is a fresh install again and reads the corrected variables. A `.env` that existed before the run is never removed.
+
+### A second install on the same Docker host
+
+Every Datris container has a fixed name (`datris`, `mcp-server`, `vault`, `postgres` and so on). Before it pulls anything, the installer checks for containers with those names that belong to a different Compose project, including stopped ones. If it finds any, it lists them and stops with `container name conflict — resolve the above and re-run`. Either install into the existing directory (an upgrade), or remove the old installation first with `docker compose --profile "*" down` in its directory. Plain `down` keeps named data volumes; `down -v` deletes them. This check is skipped under `DATRIS_NO_START=1`.
+
+An agent must ask the user before removing an existing installation. Volume names come from the install directory's name, so reinstalling into a directory with the same name (after a plain `down`) reuses the earlier Vault volume: the earlier AI settings are kept and newly exported provider keys are not seeded. Change them from the **Configuration** tab in the UI.
+
+### Adding vector stores
+
+pgvector comes with the bundled Postgres and needs nothing else. For a bundled Qdrant, Weaviate or Chroma, name it in `DATRIS_PROFILES`; for a store you already run, set its `_HOST` variable. Both are written to `.env` on a run without a terminal. Milvus is external only. To add a store after the install, see [Installation](/installation).
+
+## Single-file Compose alternative
+
+A single self-contained Compose file with the init scripts and config inlined. It needs Docker Compose 2.23 or later and has no prompts at all, so it needs no detaching:
+
+```bash
+mkdir datris && cd datris
+curl -fsSLO https://get.datris.ai/docker-compose.standalone.yml
+# At least one provider key (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...) must already be exported, or be in .env.
+docker compose -f docker-compose.standalone.yml up -d
+```
+
+You can put the variables in a `.env` next to the file instead; Compose reads it automatically. This path does not write an `AI_PROVIDER` pin. When several provider keys are present and `AI_PROVIDER` is unset, first-boot seeding picks OpenAI, so set `AI_PROVIDER=anthropic` or `AI_PROVIDER=openai` to choose. With `OPENAI_API_KEY` set, the file uses OpenAI embeddings; add `TEI_ENABLED=0` to skip the bundled embedding server and its model download. See [Installation](/installation) for the full description.
+
+## Check that it is up
+
+The installer's exit code does not prove the stack is up. After starting the containers it polls for up to five minutes, prints a warning if the server has not answered, and exits 0 either way. Poll the two public endpoints yourself. Neither needs an API key.
+
+```bash
+# Wait up to 10 minutes for the API server
+i=0
+until curl -fsS --max-time 5 http://localhost:8080/api/v1/version >/dev/null; do
+  i=$((i+1)); [ "$i" -ge 120 ] && { echo "server did not come up" >&2; exit 1; }
+  sleep 5
+done
+
+# Server version, and which features are on
+curl -fsS http://localhost:8080/api/v1/version
+
+# Per-store status: "up", "down" or "not_configured"
+curl -fsS http://localhost:8080/api/v1/health/services
+```
+
+- [`GET /api/v1/version`](/api-reference/version-api) returns the server version and settings such as `useApiKeys`.
+- [`GET /api/v1/health/services`](/api-reference/health-api) returns a `status` for each store. A store you chose not to install reports `not_configured`; one that is configured but unreachable reports `down` with a message.
+- `docker compose ps` in the install directory (add `-f docker-compose.standalone.yml` for the single file) shows each container's state and health.
+
+For a deeper check, install the `datris` CLI (`pip install datris-mcp-server` or `brew install datris/tap/datris`) and run [`datris doctor`](/doctor) from the install directory. It checks Vault, the AI slots, disk, data volumes, the `.env` and whether the MCP server answers. Exit codes: `0` ok, `1` warnings, `2` errors, `3` server unreachable. When API keys are on, set `DATRIS_API_KEY` first.
+
+## Connect the MCP server
+
+The stack runs the MCP server in the `mcp-server` container, serving SSE at `http://localhost:3000/sse`. Most MCP clients connect through the `mcp-remote` bridge (needs Node.js):
+
+```json
+{
+  "mcpServers": {
+    "datris": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:3000/sse", "--transport", "sse-only"]
+    }
+  }
+}
+```
+
+API keys are off by default (`USE_API_KEYS=false`), so no key is needed. When they are on, append `"--header", "x-api-key:<your-key>"` to `args`. Issue keys from **Configuration → API-Keys** in the UI.
+
+To run the server over stdio instead, use the PyPI package `datris-mcp-server` (needs `uv`):
+
+```json
+{
+  "mcpServers": {
+    "datris": {
+      "command": "uvx",
+      "args": ["datris-mcp-server"],
+      "env": {
+        "DATRIS_API_URL": "http://localhost:8080"
+      }
+    }
+  }
+}
+```
+
+Stdio has no request headers, so when API keys are on, add `"DATRIS_API_KEY": "<your-key>"` to `env`.
+
+The `mcp-server` container runs the Docker image `datrisai/datris-mcp-server`. To run that image on its own against a Datris server, set `DATRIS_API_URL`; the image starts the SSE transport on port 3000.
+
+Client-specific steps are in [Configuring Claude](/configuring-claude) and [Configuring OpenClaw](/configuring-openclaw). Transports, environment variables and authentication are in [MCP Server](/mcp-server).
+
+## Install the skill
+
+The `datris-platform` skill tells a coding agent when and how to use Datris during project work. Copy it into the project's skills folder:
+
+```bash
+git clone --depth 1 https://github.com/datris/datris-platform-oss.git /tmp/datris-oss
+mkdir -p .claude/skills && cp -r /tmp/datris-oss/skills/datris-platform .claude/skills/
+```
+
+For other agents and locations, see [Agent Skill](/agent-skill).
+
+## Troubleshooting
+
+| Output | Cause and fix |
+|--------|---------------|
+| `error: DATRIS_EMBEDDING=openai requires OPENAI_API_KEY` | Set `OPENAI_API_KEY`, or use `DATRIS_EMBEDDING=tei` or `none`. Then run it again; the failed run leaves no `.env` behind. |
+| `error: DATRIS_POSTGRES=external requires POSTGRES_JDBC_URL` | Set `POSTGRES_JDBC_URL` (base URL, no database, for example `jdbc:postgresql://host:5432`), `POSTGRES_USER` and `POSTGRES_PASSWORD`. Then run it again. |
+| `Existing .env found — leaving it untouched (upgrade mode, no prompts).` on what should be a fresh install | A `.env` from an earlier install is in the install directory. Delete it, or choose a new `DATRIS_DIR`. |
+| `error: No AI provider key set, and Datris cannot start without one` | Export a provider key, or set `AI_PROVIDER=bedrock`, and run it again. |
+| `error: AI_PROVIDER=openai needs OPENAI_API_KEY, which is not set` (or the same for another provider) | `AI_PROVIDER` names a provider that has no key in the environment. Set the key, or change or unset `AI_PROVIDER`. |
+| `Azure OpenAI needs AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_MODEL too — skipping.` | Set all three Azure variables together. |
+| The installer prints a key prompt and waits | The process still has a controlling terminal. Use the detached form from [Install without a terminal](#install-without-a-terminal); redirecting stdin does not help. |

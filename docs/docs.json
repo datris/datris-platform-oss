@@ -31,6 +31,7 @@
           {
             "group": "Connect your agent",
             "pages": [
+              "install-for-agents",
               "mcp-server",
               "configuring-claude",
               "configuring-openclaw",
@@ -177,6 +178,7 @@
           {
             "group": "Connect your agent",
             "pages": [
+              "install-for-agents",
               "mcp-server",
               "configuring-claude",
               "configuring-openclaw",

@@ -22,19 +22,36 @@
 #                       pre-set Azure OpenAI trio (all three required together;
 #                       endpoint is the resource base URL, model the chat
 #                       deployment name)
-#   AI_PROVIDER=bedrock pre-select Amazon Bedrock (Claude through your AWS
-#                       account; explicit-only — AWS keys alone never imply it).
+#   XAI_API_KEY         pre-set Grok (xAI) key       (skips the prompt;
+#                       optionally with GROK_MODEL, default grok-4.7)
+#   AI_PROVIDER         anthropic|openai|azure|grok|bedrock — which provider
+#                       handles chat and CodeGen. Always written to .env. When
+#                       unset and several keys are configured, an interactive
+#                       run asks; a non-interactive run picks the first of
+#                       anthropic, openai, azure, grok and says so. A preset
+#                       naming a provider with no key/config stops the install.
+#                       azure with no AZURE_OPENAI_API_KEY means keyless Entra
+#                       ID auth (endpoint + model still required; optionally
+#                       AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET).
+#   AI_PROVIDER=bedrock Amazon Bedrock (Claude through your AWS account;
+#                       explicit-only — AWS keys alone never imply it).
 #                       Optionally with AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
 #                       AWS_REGION (leave the keys unset to use the host's IAM
 #                       role / default credential chain) and BEDROCK_MODEL
-#                       (default: anthropic.claude-sonnet-5)
-#   XAI_API_KEY         pre-set Grok (xAI) key       (skips the prompt;
-#                       optionally with GROK_MODEL, default grok-4.7)
+#                       (default: anthropic.claude-fable-5-1)
+#   A fresh install with no AI provider stops before pulling anything (the
+#   stack cannot start without one), except under DATRIS_NO_START=1.
 #   DATRIS_POSTGRES     bundled|external|none        (default: bundled)
 #                       external also reads POSTGRES_JDBC_URL/POSTGRES_USER/POSTGRES_PASSWORD
 #   DATRIS_EMBEDDING    openai|tei|none              (default: openai if OpenAI key present, else tei)
 #   DATRIS_PROFILES     comma-separated opt-in services: qdrant,weaviate,chroma,kafka
-#                       external vector stores: set QDRANT_HOST etc. instead of the profile
+#                       (bundled; written to .env as COMPOSE_PROFILES plus the
+#                       same in-network host/port an interactive run writes)
+#   QDRANT_HOST, WEAVIATE_HOST, CHROMA_HOST, MILVUS_HOST — external vector
+#                       stores, each with an optional port and API key in the
+#                       same pattern (QDRANT_PORT, QDRANT_API_KEY; chroma takes
+#                       no key); written to .env. A preset host wins over the
+#                       same store named in DATRIS_PROFILES.
 #   KAFKA_BOOTSTRAP_SERVERS, SNOWFLAKE_ACCOUNT/USER/PRIVATE_KEY/PASSWORD,
 #   DATABRICKS_HOST/CLIENT_ID/CLIENT_SECRET/TOKEN — external store credentials
 #   DATRIS_NO_START=1   write files but don't run compose
@@ -154,42 +171,81 @@ ask_hidden() { # ask_hidden "prompt" -> $ANS, input not echoed
 
 # Append or replace KEY=VALUE in the .env being seeded. Values are escaped
 # for the sed replacement so secrets containing & | \ can't corrupt the file.
+#
+# The .env holds provider keys, so it stays mode 600 at every step: the
+# rewrite goes through a temp file created under umask 077, and the mode is
+# re-applied after the mv (which carries the temp file's mode) and after an
+# append.
 set_env() {
   _key="$1"; _val="$2"
   if grep -q "^${_key}=" "$ENV_FILE" 2>/dev/null; then
     _esc=$(printf '%s' "$_val" | sed 's/[&|\\]/\\&/g')
-    sed "s|^${_key}=.*|${_key}=${_esc}|" "$ENV_FILE" > "$ENV_FILE.tmp" && mv "$ENV_FILE.tmp" "$ENV_FILE"
+    if ! (umask 077 && sed "s|^${_key}=.*|${_key}=${_esc}|" "$ENV_FILE" > "$ENV_FILE.tmp"); then
+      rm -f "$ENV_FILE.tmp"
+      return 1
+    fi
+    mv -f "$ENV_FILE.tmp" "$ENV_FILE"
   else
     printf '%s=%s\n' "$_key" "$_val" >> "$ENV_FILE"
   fi
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
 }
 
 # --- seed .env ------------------------------------------------------------
 ENV_FILE="$DIR/.env"
 FRESH_ENV=0
+SEED_DONE=0
 SUMMARY=""
 add_summary() { SUMMARY="${SUMMARY}$(printf '  %-11s %-10s %s' "$1" "$2" "$3")\n"; }
+
+# A fresh run that stops before seeding finishes (die, an error under set -e,
+# Ctrl-C) must not leave a partial .env behind: it may already hold a provider
+# key, and the next run would treat it as an upgrade and ignore corrected
+# variables. Only a .env this run created is removed (FRESH_ENV=1), and the
+# trap is disarmed once seeding is complete, so a later `compose up` failure
+# keeps the finished .env. set_env's temp file is always cleaned up.
+cleanup_partial_env() {
+  rm -f "$ENV_FILE.tmp" 2>/dev/null || true
+  if [ "$FRESH_ENV" = "1" ] && [ "$SEED_DONE" != "1" ]; then
+    rm -f "$ENV_FILE" 2>/dev/null || true
+    printf '\033[33m%s\033[0m\n' "Install stopped before finishing — removed the partial $ENV_FILE." >&2
+  fi
+}
+trap cleanup_partial_env EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ -f "$ENV_FILE" ]; then
   warn "Existing .env found — leaving it untouched (upgrade mode, no prompts)."
   warn "To change installed databases/stores, edit $ENV_FILE (see comments) and re-run '$COMPOSE up -d'."
 else
   FRESH_ENV=1
-  curl -fsSL "$REPO_RAW/$REF/.env.example" -o "$ENV_FILE" || die "could not download .env.example"
+  (umask 077 && curl -fsSL "$REPO_RAW/$REF/.env.example" -o "$ENV_FILE") || die "could not download .env.example"
   chmod 600 "$ENV_FILE" 2>/dev/null || true
 
-  # ---- AI keys (both providers, each best at a different job) ----
+  # ---- AI keys ----
+  # Chat and CodeGen can run on Anthropic, OpenAI, Azure OpenAI, Grok (xAI)
+  # or Amazon Bedrock; exactly one handles them, recorded as AI_PROVIDER.
+  # Embeddings are separate (below): Anthropic and xAI have no embeddings API,
+  # so semantic search uses OpenAI or the bundled local server.
   AKEY="${ANTHROPIC_API_KEY:-}"
   OKEY="${OPENAI_API_KEY:-}"
   ZKEY="${AZURE_OPENAI_API_KEY:-}"
   ZEP="${AZURE_OPENAI_ENDPOINT:-}"
   ZMODEL="${AZURE_OPENAI_MODEL:-}"
   GKEY="${XAI_API_KEY:-}"
+  # AI_PROVIDER preset: any value vault-init accepts. Checked against the
+  # configured keys once they are collected (below).
+  PRESET="${AI_PROVIDER:-}"
+  case "$PRESET" in
+    ""|anthropic|openai|azure|grok|bedrock) ;;
+    *) die "AI_PROVIDER='$PRESET' is not a provider Datris knows — use anthropic, openai, azure, grok or bedrock, or leave it unset." ;;
+  esac
   # Bedrock is opt-in ONLY via AI_PROVIDER=bedrock (env preset or the prompt
   # below) — a stray AWS_ACCESS_KEY_ID must never flip the AI provider, since
   # AWS credentials are routinely present for S3 destinations.
   BEDROCK_SELECTED=0
-  [ "${AI_PROVIDER:-}" = "bedrock" ] && BEDROCK_SELECTED=1
+  [ "$PRESET" = "bedrock" ] && BEDROCK_SELECTED=1
   BAK="${AWS_ACCESS_KEY_ID:-}"
   BSK="${AWS_SECRET_ACCESS_KEY:-}"
   BREGION="${AWS_REGION:-}"
@@ -222,12 +278,12 @@ else
     # Keys are read with echo OFF (like passwords) so they never land in the
     # terminal scrollback; a masked confirmation is printed instead.
     if [ -z "$AKEY" ]; then
-      ask_hidden "  Anthropic API key (sk-ant-...) — powers chat, CodeGen, AI data quality, NL→SQL (recommended), or Enter to skip (input hidden): "
+      ask_hidden "  Anthropic API key (sk-ant-...) — powers chat, CodeGen, AI data quality and NL→SQL, or Enter to skip (input hidden): "
       AKEY="$ANS"
       [ -n "$AKEY" ] && say "  Anthropic key received ($(mask "$AKEY"))."
     fi
     if [ -z "$OKEY" ]; then
-      ask_hidden "  OpenAI API key (sk-...) — powers semantic-search embeddings (recommended; Anthropic doesn't offer embeddings), or Enter to skip (input hidden): "
+      ask_hidden "  OpenAI API key (sk-...) — powers chat, CodeGen, AI data quality and NL→SQL, plus semantic-search embeddings, or Enter to skip (input hidden): "
       OKEY="$ANS"
       [ -n "$OKEY" ] && say "  OpenAI key received ($(mask "$OKEY"))."
     fi
@@ -273,18 +329,21 @@ else
     fi
   fi
 
+  # Write the keys and collect the configured chat providers in tie-break
+  # order (anthropic, openai, azure, grok). This order is what the installer
+  # plus vault-init have always produced for automated installs, so keeping
+  # it means an existing CI install resolves to the same provider as before.
   WROTE_KEYS=""
+  CHAT_OK=""
   if [ -n "$AKEY" ]; then
     set_env ANTHROPIC_API_KEY "$AKEY"
-    # Pin the chat/CodeGen provider: with both keys present, vault-init's
-    # tie-break would otherwise pick OpenAI for ai-primary — the opposite of
-    # the recommendation.
-    set_env AI_PROVIDER anthropic
-    WROTE_KEYS="ANTHROPIC_API_KEY, AI_PROVIDER=anthropic"
+    WROTE_KEYS="ANTHROPIC_API_KEY"
+    CHAT_OK="anthropic"
   fi
   if [ -n "$OKEY" ]; then
     set_env OPENAI_API_KEY "$OKEY"
     WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }OPENAI_API_KEY"
+    CHAT_OK="${CHAT_OK:+$CHAT_OK }openai"
   fi
   if [ -n "$ZKEY" ]; then
     # Azure needs all three values or vault-init fails the first boot — write
@@ -294,25 +353,38 @@ else
       set_env AZURE_OPENAI_ENDPOINT "$ZEP"
       set_env AZURE_OPENAI_MODEL "$ZMODEL"
       WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }AZURE_OPENAI_API_KEY"
-      # Pin only when Azure is the sole chat provider (anthropic pin above wins).
-      if [ -z "$AKEY" ] && [ -z "$OKEY" ]; then
-        set_env AI_PROVIDER azure
-        WROTE_KEYS="$WROTE_KEYS, AI_PROVIDER=azure"
-      fi
+      CHAT_OK="${CHAT_OK:+$CHAT_OK }azure"
     else
       warn "Azure OpenAI needs AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_MODEL too — skipping."
       warn "Add all three in $ENV_FILE (or the Configuration tab) later."
       ZKEY=""
     fi
+  elif [ "$PRESET" = "azure" ] && [ -n "$ZEP" ] && [ -n "$ZMODEL" ]; then
+    # Keyless Azure (Entra ID), which vault-init accepts only with an explicit
+    # AI_PROVIDER=azure: the service-principal trio, or none of it for a
+    # managed identity on Azure compute. Mirror vault-init's all-or-none rule.
+    _sp=0
+    [ -n "${AZURE_TENANT_ID:-}" ] && _sp=$((_sp + 1))
+    [ -n "${AZURE_CLIENT_ID:-}" ] && _sp=$((_sp + 1))
+    [ -n "${AZURE_CLIENT_SECRET:-}" ] && _sp=$((_sp + 1))
+    if [ "$_sp" -gt 0 ] && [ "$_sp" -lt 3 ]; then
+      die "AI_PROVIDER=azure without AZURE_OPENAI_API_KEY needs all three of AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET (or none, for a managed identity on Azure compute)."
+    fi
+    set_env AZURE_OPENAI_ENDPOINT "$ZEP"
+    set_env AZURE_OPENAI_MODEL "$ZMODEL"
+    WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }AZURE_OPENAI_ENDPOINT (keyless)"
+    if [ "$_sp" -eq 3 ]; then
+      set_env AZURE_TENANT_ID "${AZURE_TENANT_ID}"
+      set_env AZURE_CLIENT_ID "${AZURE_CLIENT_ID}"
+      set_env AZURE_CLIENT_SECRET "${AZURE_CLIENT_SECRET}"
+      WROTE_KEYS="$WROTE_KEYS, AZURE_CLIENT_ID"
+    fi
+    CHAT_OK="${CHAT_OK:+$CHAT_OK }azure"
   fi
   if [ -n "$GKEY" ]; then
     set_env XAI_API_KEY "$GKEY"
     WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }XAI_API_KEY"
-    # Pin only when Grok is the sole chat provider (any pin above wins).
-    if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -z "$ZKEY" ]; then
-      set_env AI_PROVIDER grok
-      WROTE_KEYS="$WROTE_KEYS, AI_PROVIDER=grok"
-    fi
+    CHAT_OK="${CHAT_OK:+$CHAT_OK }grok"
   fi
   if [ "$BEDROCK_SELECTED" = "1" ]; then
     if [ -n "$BAK" ] && [ -z "$BSK" ]; then
@@ -322,21 +394,66 @@ else
       warn "The server will use its IAM role / default chain; or add both keys in the Configuration tab."
       BAK=""; BSK=""
     fi
-    # Pin only when Bedrock is the sole chat provider (a direct Anthropic key
-    # keeps its pin from above).
-    if [ -z "$AKEY" ]; then
-      set_env AI_PROVIDER bedrock
-      WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }AI_PROVIDER=bedrock"
-    fi
-    [ -n "$BAK" ] && { set_env AWS_ACCESS_KEY_ID "$BAK"; set_env AWS_SECRET_ACCESS_KEY "$BSK"; WROTE_KEYS="$WROTE_KEYS, AWS_ACCESS_KEY_ID"; }
+    [ -n "$BAK" ] && { set_env AWS_ACCESS_KEY_ID "$BAK"; set_env AWS_SECRET_ACCESS_KEY "$BSK"; WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }AWS_ACCESS_KEY_ID"; }
     [ -n "$BREGION" ] && set_env AWS_REGION "$BREGION"
     [ -n "${BEDROCK_MODEL:-}" ] && set_env BEDROCK_MODEL "${BEDROCK_MODEL}"
   fi
-  if [ -n "$WROTE_KEYS" ]; then
+
+  # Resolve the one provider for chat and CodeGen.
+  CHAT=""
+  CHAT_N=0
+  for _p in $CHAT_OK; do
+    CHAT_N=$((CHAT_N + 1))
+    if [ -z "$CHAT" ]; then CHAT="$_p"; fi
+  done
+  if [ -n "$PRESET" ]; then
+    if [ "$PRESET" = "bedrock" ]; then
+      CHAT="bedrock"
+    else
+      case " $CHAT_OK " in
+        *" $PRESET "*) CHAT="$PRESET" ;;
+        *)
+          case "$PRESET" in
+            anthropic) _need="ANTHROPIC_API_KEY" ;;
+            openai)    _need="OPENAI_API_KEY" ;;
+            grok)      _need="XAI_API_KEY" ;;
+            azure)     _need="AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_MODEL (with AZURE_OPENAI_API_KEY, or Entra ID credentials for keyless auth)" ;;
+          esac
+          die "AI_PROVIDER=$PRESET needs $_need, which is not set. Set it, or choose a provider you have a key for${CHAT_OK:+ (configured: $CHAT_OK)}, and re-run."
+          ;;
+      esac
+    fi
+  elif [ "$BEDROCK_SELECTED" = "1" ]; then
+    CHAT="bedrock"
+  elif [ "$CHAT_N" -gt 1 ]; then
+    if [ -n "$TTY" ]; then
+      say ""
+      say "More than one AI provider is configured. One handles chat and CodeGen;"
+      say "you can change it later in the Configuration tab."
+      ask "  Provider for chat and CodeGen — $(printf '%s' "$CHAT_OK" | sed 's/ /, /g') [$CHAT]: "
+      _pick=$(printf '%s' "$ANS" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+      if [ -n "$_pick" ]; then
+        case " $CHAT_OK " in
+          *" $_pick "*) CHAT="$_pick" ;;
+          *) warn "  '$ANS' is not one of the configured providers — using $CHAT." ;;
+        esac
+      fi
+    else
+      say "Several AI providers configured ($(printf '%s' "$CHAT_OK" | sed 's/ /, /g')) — chat and CodeGen will use $CHAT. Set AI_PROVIDER to choose another."
+    fi
+  fi
+
+  if [ -n "$CHAT" ]; then
+    set_env AI_PROVIDER "$CHAT"
+    WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }AI_PROVIDER=$CHAT"
     ok "Wrote $WROTE_KEYS to .env"
+  elif [ "${DATRIS_NO_START:-}" = "1" ]; then
+    warn "No AI provider key set. Datris will not start until you add one AI provider key to"
+    warn "  $(cd "$DIR" && pwd)/.env"
+    warn "  (ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY, the AZURE_OPENAI_API_KEY/ENDPOINT/MODEL"
+    warn "  trio, or AI_PROVIDER=bedrock), then run '$COMPOSE up -d' in $DIR."
   else
-    warn "No AI key set. Datris will start, but AI features stay off until you add a"
-    warn "key in $ENV_FILE (or the Configuration tab in the UI) and re-run 'up -d'."
+    die "No AI provider key set, and Datris cannot start without one. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY, the Azure OpenAI trio (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_MODEL), or AI_PROVIDER=bedrock, then re-run. Nothing was pulled or started."
   fi
 
   # ---- store selection -----------------------------------------------------
@@ -446,6 +563,37 @@ else
       add_summary pgvector bundled "via Postgres (no extra container)"
     fi
   fi
+  # The two ways to add a vector store, shared by the interactive prompts and
+  # the non-interactive DATRIS_PROFILES / <STORE>_HOST path so both write the
+  # same .env lines.
+  vec_bundled() { # vec_bundled store
+    add_profile "$1"
+    # In-network coordinates: compose service name + container port
+    # (weaviate's container port is 8080; 8079 is only the host mapping).
+    case "$1" in
+      qdrant)   set_env QDRANT_HOST qdrant;     set_env QDRANT_PORT 6334 ;;
+      weaviate) set_env WEAVIATE_HOST weaviate; set_env WEAVIATE_PORT 8080 ;;
+      chroma)   set_env CHROMA_HOST chroma;     set_env CHROMA_PORT 8000 ;;
+    esac
+    add_summary "$1" bundled "local container"
+  }
+  vec_default_port() { # vec_default_port store -> external default port
+    case "$1" in
+      qdrant)   printf '6334' ;;
+      weaviate) printf '8079' ;;
+      chroma)   printf '8000' ;;
+      milvus)   printf '19530' ;;
+    esac
+  }
+  vec_external() { # vec_external store host port apikey
+    _su=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+    set_env "${_su}_HOST" "$2"
+    set_env "${_su}_PORT" "$3"
+    if [ "$1" != "chroma" ]; then set_env "${_su}_API_KEY" "$4"; fi
+    say "    Will use external $1 — no local container."
+    add_summary "$1" external "$2"
+  }
+
   VEC_CHOICE=""
   if [ -n "$TTY" ] && [ -z "${DATRIS_PROFILES:-}${QDRANT_HOST:-}${WEAVIATE_HOST:-}${CHROMA_HOST:-}${MILVUS_HOST:-}" ]; then
     say ""
@@ -479,42 +627,53 @@ else
       case "$ANS" in e*|E*) MODE="external" ;; esac
     fi
     if [ "$MODE" = "bundled" ]; then
-      add_profile "$store"
-      # In-network coordinates: compose service name + container port
-      # (weaviate's container port is 8080; 8079 is only the host mapping).
-      case "$store" in
-        qdrant)   set_env QDRANT_HOST qdrant;     set_env QDRANT_PORT 6334 ;;
-        weaviate) set_env WEAVIATE_HOST weaviate; set_env WEAVIATE_PORT 8080 ;;
-        chroma)   set_env CHROMA_HOST chroma;     set_env CHROMA_PORT 8000 ;;
-      esac
-      add_summary "$store" bundled "local container"
+      vec_bundled "$store"
     else
       ask "    Host: "; V_HOST="$ANS"
       [ -z "$V_HOST" ] && { warn "    No host given — skipping $store."; continue; }
-      case "$store" in
-        qdrant)   DEF_PORT=6334 ;;
-        weaviate) DEF_PORT=8079 ;;
-        chroma)   DEF_PORT=8000 ;;
-        milvus)   DEF_PORT=19530 ;;
-      esac
+      DEF_PORT=$(vec_default_port "$store")
       ask "    Port [$DEF_PORT]: "; V_PORT="${ANS:-$DEF_PORT}"
       V_KEY=""
       if [ "$store" != "chroma" ]; then
         ask_hidden "    API key (input hidden, Enter for none): "; V_KEY="$ANS"
       fi
-      STORE_UPPER=$(printf '%s' "$store" | tr '[:lower:]' '[:upper:]')
-      set_env "${STORE_UPPER}_HOST" "$V_HOST"
-      set_env "${STORE_UPPER}_PORT" "$V_PORT"
-      [ "$store" != "chroma" ] && set_env "${STORE_UPPER}_API_KEY" "$V_KEY"
-      say "    Will use external $store — no local container."
-      add_summary "$store" external "$V_HOST"
+      vec_external "$store" "$V_HOST" "$V_PORT" "$V_KEY"
     fi
   done
+
+  # Non-interactive selection (and interactive runs that skipped the prompt
+  # above because one of these was preset): a preset <STORE>_HOST is an
+  # external store and wins; otherwise a store named in DATRIS_PROFILES is
+  # bundled. The prompt above only runs when all of these are empty, so the
+  # two paths never both write a store. Names DATRIS_PROFILES carries that are
+  # not a store here (kafka, anything unknown) pass through to
+  # COMPOSE_PROFILES unchanged, as before.
+  if [ -z "$VEC_CHOICE" ]; then
+    for store in qdrant weaviate chroma milvus; do
+      _su=$(printf '%s' "$store" | tr '[:lower:]' '[:upper:]')
+      eval "_vh=\${${_su}_HOST:-}"
+      if [ -n "$_vh" ]; then
+        eval "_vp=\${${_su}_PORT:-}"
+        eval "_vk=\${${_su}_API_KEY:-}"
+        vec_external "$store" "$_vh" "${_vp:-$(vec_default_port "$store")}" "$_vk"
+        # External wins: drop the same store from the profiles so no unused
+        # local container is started next to it.
+        PROFILES=$(printf '%s' ",$PROFILES," | sed "s/,$store,/,/g; s/^,//; s/,\$//")
+      elif [ "$store" != "milvus" ]; then
+        case ",${DATRIS_PROFILES:-}," in
+          *",$store,"*) vec_bundled "$store" ;;
+        esac
+      fi
+    done
+  fi
 
   # Kafka — bundled test broker / external / none (default none).
   KAFKA_MODE=""
   if [ -n "${KAFKA_BOOTSTRAP_SERVERS:-}" ]; then
     KAFKA_MODE="external"
+  elif case ",${DATRIS_PROFILES:-}," in *",kafka,"*) true ;; *) false ;; esac; then
+    # kafka in DATRIS_PROFILES = the bundled test broker, same as answering b.
+    KAFKA_MODE="bundled"
   elif [ -n "$TTY" ]; then
     say ""
     ask "  Kafka (streaming source/destination) — [b]undled test broker / [e]xternal / [N]one: "
@@ -627,8 +786,8 @@ else
 
   [ -n "$PROFILES" ] && set_env COMPOSE_PROFILES "$PROFILES"
 
-  # set_env rewrites via mv, which resets permissions — re-tighten as the
-  # final step now that the file may hold DB passwords.
+  # set_env keeps the file at 600 on every write; re-apply once more as the
+  # final step anyway, since the file now holds keys and DB passwords.
   chmod 600 "$ENV_FILE" 2>/dev/null || true
 
   say ""
@@ -653,6 +812,11 @@ if [ -f "$ENV_FILE" ]; then
       ;;
   esac
 fi
+
+# Seeding is complete: from here on the .env is kept whatever happens (a
+# failed pull or `compose up` must not delete a finished configuration).
+SEED_DONE=1
+trap - EXIT INT TERM
 
 # --- launch ---------------------------------------------------------------
 if [ "${DATRIS_NO_START:-}" = "1" ]; then

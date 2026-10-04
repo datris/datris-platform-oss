@@ -27,6 +27,8 @@ needs into a `./datris` directory, seeds a `.env`, and starts the full stack:
 curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
+Installing from a coding agent or a CI job with no terminal attached? See [Install for Agents](/install-for-agents).
+
 ### Minimal install
 
 Trying Datris on a laptop? The default stack runs about ten containers and
@@ -59,6 +61,10 @@ for a standard install:
    the installer offers those routes next — Azure asks for your key,
    resource endpoint, and chat deployment name; Bedrock asks for AWS
    credentials (or Enter to use the host's IAM role) and a region.
+   When you enter more than one key, the installer asks which provider
+   handles chat and CodeGen; you can change it later in the Configuration tab.
+   The stack needs one AI provider to start, so the installer stops if none
+   is given.
 2. **Databases and stores.** Pick what to run — each can be **bundled** (a
    local container), **external** (point at a service you already have), or
    **skipped**:
