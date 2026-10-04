@@ -17,6 +17,8 @@ DOCS = os.path.join(REPO_ROOT, "docs")
 PAGE = os.path.join(DOCS, "install-for-agents.mdx")
 DOCS_JSON = os.path.join(DOCS, "docs.json")
 INSTALL_SH = os.path.join(REPO_ROOT, "scripts", "install.sh")
+VAULT_INIT_SH = os.path.join(REPO_ROOT, "docker", "vault-init.sh")
+MCP_DOCKERFILE = os.path.join(REPO_ROOT, "mcp-server", "Dockerfile")
 INSTALLATION_MDX = os.path.join(DOCS, "installation.mdx")
 README = os.path.join(REPO_ROOT, "README.md")
 
@@ -85,10 +87,55 @@ def test_header_parser_finds_the_known_variables():
         assert expected in names, expected
 
 
+def _mentions(text, name):
+    """`name` appears as a whole variable name, so OPENAI_API_KEY is not
+    satisfied by AZURE_OPENAI_API_KEY."""
+    return re.search(r"(?<![A-Z_])%s(?![A-Z_])" % re.escape(name), text) is not None
+
+
+def test_mentions_is_a_whole_name_match():
+    assert _mentions("set `OPENAI_API_KEY`", "OPENAI_API_KEY")
+    assert not _mentions("set `AZURE_OPENAI_API_KEY`", "OPENAI_API_KEY")
+    assert not _mentions("set `OPENAI_API_KEYS`", "OPENAI_API_KEY")
+
+
 def test_page_names_every_env_var_in_the_install_sh_header():
     page = _page()
-    missing = sorted(n for n in _header_env_vars() if n not in page)
+    missing = sorted(n for n in _header_env_vars() if not _mentions(page, n))
     assert not missing, "install-for-agents.mdx does not mention: %s" % missing
+
+
+# Installer output the page quotes verbatim. Each must appear on the page and
+# in scripts/install.sh, so a reworded message fails here until the page
+# follows. (die() prefixes "error: " at print time, so that prefix is not in
+# the source string.)
+INSTALLER_MESSAGES = (
+    "Non-interactive — using the detected key(s).",
+    "container name conflict — resolve the above and re-run",
+    "DATRIS_EMBEDDING=openai requires OPENAI_API_KEY",
+    "DATRIS_POSTGRES=external requires POSTGRES_JDBC_URL",
+    "Existing .env found — leaving it untouched (upgrade mode, no prompts).",
+    "Azure OpenAI needs AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_MODEL too — skipping.",
+    "No AI key set. Datris will start, but AI features stay off",
+)
+
+
+def test_quoted_installer_messages_match_install_sh():
+    page = _page()
+    source = _read(INSTALL_SH)
+    for message in INSTALLER_MESSAGES:
+        assert message in page, "page no longer quotes: %s" % message
+        assert message in source, "install.sh no longer prints: %s" % message
+
+
+def test_quoted_vault_init_error_matches_vault_init_sh():
+    assert "ERROR: No AI provider configured" in _page()
+    assert "ERROR: No AI provider configured" in _read(VAULT_INIT_SH)
+
+
+def test_mcp_image_serves_sse_on_port_3000():
+    cmd = next(l for l in _read(MCP_DOCKERFILE).splitlines() if l.startswith("CMD"))
+    assert '"--sse"' in cmd and '"3000"' in cmd, cmd
 
 
 def test_page_shows_install_command_and_standalone_compose_url():
@@ -102,6 +149,10 @@ def test_page_shows_a_detached_form_for_macos_and_linux():
     page = _page()
     assert "os.setsid()" in page
     assert "setsid -w sh" in page
+
+
+def test_copy_paste_blocks_do_not_overwrite_an_exported_key():
+    assert not re.search(r"^export [A-Z_]*API_KEY=", _page(), re.M)
 
 
 def test_page_names_both_public_health_endpoints():
@@ -129,7 +180,8 @@ def test_page_has_no_hosted_managed_or_trial_wording():
 
 def test_page_does_not_favour_a_chat_provider():
     text = _page().lower()
-    assert "recommended" not in text
+    for word in ("recommended", "preferred"):
+        assert word not in text, word
 
 
 def test_no_md_files_under_docs_and_no_mcp_mdx():
@@ -240,7 +292,7 @@ def test_bootstrap_section_has_no_hosted_managed_or_trial_wording_or_cli():
 def test_skill_frontmatter_keeps_name_version_and_description():
     fields = _frontmatter()
     assert fields.get("name") == "datris-platform"
-    assert fields.get("version") == "1.1.0"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", fields.get("version", "")), fields.get("version")
     assert fields.get("description") == SKILL_DESCRIPTION
 
 

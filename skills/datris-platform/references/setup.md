@@ -2,7 +2,7 @@
 
 ## Install the platform
 
-Docker is the only prerequisite.
+The prerequisites are Docker and one AI provider key.
 
 ```bash
 curl -fsSL https://get.datris.ai/install.sh | sh
