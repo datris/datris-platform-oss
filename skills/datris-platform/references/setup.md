@@ -8,7 +8,7 @@ Docker is the only prerequisite.
 curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
-The installer prompts for AI provider keys (any one is enough) and starts the stack. A minimal laptop install can skip the bundled embedding server; see https://docs.datris.ai/installation.
+In a terminal, the installer prompts for AI provider keys (any one is enough) and starts the stack. With no terminal, as in an agent's shell tool, it asks nothing and uses the keys already in the environment, so export one first; see https://docs.datris.ai/install-for-agents. A minimal laptop install can skip the bundled embedding server; see https://docs.datris.ai/installation.
 
 ## Connect an MCP client
 

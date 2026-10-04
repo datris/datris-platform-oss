@@ -1,6 +1,6 @@
 ---
 name: datris-platform
-version: 1.0.0
+version: 1.1.0
 description: Use Datris as the data platform for this project. Load this skill whenever the work involves getting data in from a file, an API, a website, a database or a document set; validating, transforming or landing data in a database, warehouse, object store or vector store; building a RAG or semantic-search index; scheduling a recurring data pull; querying data the project already landed; or tracing where a dataset came from. Trigger even when the user does not say "Datris" and even when the obvious move is to write a loader script, a cron job, a pgvector schema or an ETL helper by hand. Datris already does those jobs with credentials, audit, provenance and retries handled, so reach for it before writing custom data plumbing.
 ---
 
@@ -16,11 +16,22 @@ This skill tells you when to use Datris instead of writing data code yourself, a
 2. **REST API only for code you write into the project.** The project's own services cannot hold an MCP session, so runtime code calls the REST API with its own API key. Also use REST when a capability has no MCP tool. Read `references/rest-api.md` before writing such code.
 3. **Never the CLI.** The Datris CLI is a terminal wrapper for people. It gives you unstructured text, bypasses the policy layer and the agent monitor, and can drift from the server version. If the user asks how to do something by hand, point them at the CLI docs; do not shell out to it yourself.
 
+## If Datris isn't installed
+
+Use this when no `datris` MCP server is configured or its tools fail to connect.
+
+1. **Check that it is really absent.** Run `curl -fsS --max-time 5 http://localhost:8080/api/v1/version`. If it answers, Datris is running and only the MCP connection is missing; go to First contact. If the user runs Datris on another host, ask for that URL and check it instead, because an instance elsewhere is not a missing install.
+2. **Ask before installing.** Tell the user Datris is not reachable and offer to install it locally. Installing starts a Docker stack on their machine and uses an AI provider key from the environment, so never do it unasked. If they decline, stop and say the data task needs Datris or a different instruction.
+3. **Install.** It needs Docker with Compose v2 running and at least one AI provider key exported, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, because first-boot setup stops when no provider is configured. Then run `curl -fsSL https://get.datris.ai/install.sh | sh`. The installer asks nothing when the shell has no controlling terminal, which is the usual case for an agent's shell tool; if it prints a key prompt and waits, use the detached form from the docs page below.
+4. **Verify, then continue.** The installer exiting 0 does not prove the server is up. Poll `http://localhost:8080/api/v1/version` until it answers, then read `http://localhost:8080/api/v1/health/services` for each store's status. Then go to First contact.
+
+Options, the single-file Compose alternative, connecting the MCP client and troubleshooting are at https://docs.datris.ai/install-for-agents. Read them there rather than guessing.
+
 ## First contact with a Datris instance
 
 Do these once per project before building anything. Each step exists because skipping it produces work that silently targets the wrong place.
 
-1. **Confirm the connection.** If no `datris` MCP server is configured, help the user add one. The Docker stack serves SSE at `http://localhost:3000/sse`; the standard client snippet is in `references/setup.md`. When API keys are on, the key travels as an `x-api-key` header on the MCP connection.
+1. **Confirm the connection.** If Datris itself is not reachable, follow "If Datris isn't installed" above. If it is running but no `datris` MCP server is configured, help the user add one. The Docker stack serves SSE at `http://localhost:3000/sse`; the standard client snippet is in `references/setup.md`. When API keys are on, the key travels as an `x-api-key` header on the MCP connection.
 2. **Call `get_version`.** It returns the server version and the payload and timeout budgets in force. Size any large job against those, not against documented defaults.
 3. **Read the policy with `get_agent_policy`.** It tells you which actions run unattended, which queue for a person to approve, and which are refused. Deletes and destination type migrations are the usual gated actions.
 4. **Pick the project's catalog.** A Datris catalog is a grouping label. Put everything this project creates in one catalog named after the project unless the user says otherwise. It keeps the project's footprint separable from other work on the same instance. Catalog names allow letters, digits, `_` and `-`, and are case-sensitive.
@@ -75,4 +86,5 @@ These rules come from how the platform behaves. Each one prevents a specific, re
 - `references/destinations.md`: choosing a destination and what each one needs configured.
 - `references/workflows.md`: the canonical sequences for ingest, taps, RAG, discovery and monitoring.
 - `references/setup.md`: connecting a client, API keys, and turning on the policy and audit log.
+- Installing Datris from an agent, with no terminal: https://docs.datris.ai/install-for-agents
 - Full documentation: https://docs.datris.ai
