@@ -1639,7 +1639,7 @@ paths:
                       type: string
                   review:
                     type: array
-                    description: Notes for rules a method cannot express (ages over 89, small-population ZIP prefixes, free text)
+                    description: Notes for rules a method cannot express (ages over 89, small-population ZIP prefixes, free text, unclassified date-like fields)
                     items:
                       type: string
         '400':

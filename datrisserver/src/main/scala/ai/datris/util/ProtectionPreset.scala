@@ -101,7 +101,9 @@ object ProtectionPreset {
                 "city",
                 "town",
                 "county",
-                "precinct"
+                "precinct",
+                "placeofbirth",
+                "birthplace"
             ),
             Redact
         ),
@@ -111,7 +113,7 @@ object ProtectionPreset {
         Entry(
             "geographic",
             "geographic subdivisions smaller than a state (ZIP+4 extension)",
-            Set("zip4", "zipplus4", "plus4", "zipext", "zipextension"),
+            Set("zip4", "zipplus4", "plus4", "zipext", "zipextension", "zipcode4", "postalcode4", "zipcodeext", "zipcodeextension", "zipsuffix", "zipplusfour"),
             Redact
         ),
         Entry(
@@ -139,6 +141,9 @@ object ProtectionPreset {
                 "dateofdischarge",
                 "deathdate",
                 "dateofdeath",
+                "admittedat",
+                "dischargedat",
+                "diedon",
                 "dod",
                 "deceaseddate",
                 "servicedate",
@@ -196,7 +201,18 @@ object ProtectionPreset {
         Entry(
             "ssn",
             "social security numbers",
-            Set("ssn", "social", "socialsecuritynumber", "socialsecurityno", "socialsecuritynum", "socialsecurity", "socsecnum"),
+            Set(
+                "ssn",
+                "ssnlast4",
+                "last4ssn",
+                "ssn4",
+                "social",
+                "socialsecuritynumber",
+                "socialsecurityno",
+                "socialsecuritynum",
+                "socialsecurity",
+                "socsecnum"
+            ),
             Drop
         ),
         Entry(
@@ -248,6 +264,8 @@ object ProtectionPreset {
             "account numbers",
             Set(
                 "accountnumber",
+                "accountnumberlast4",
+                "routingnumber",
                 "account",
                 "acct",
                 "creditcardnumber",
@@ -339,6 +357,9 @@ object ProtectionPreset {
                 "retina",
                 "irisscan",
                 "voiceprint",
+                "faceid",
+                "iris",
+                "signature",
                 "faceprint",
                 "palmprint"
             ),
@@ -428,19 +449,24 @@ object ProtectionPreset {
         ws
     }
 
-    /** Lookup order: the whole name (so `member_id` and `subscriber_number`
-      * match before their prefix is dropped), the name without its leading
-      * prefix, then that name without trailing digits (`phone2`). Exact
-      * entries such as `zip4` win over the digit strip. */
+    /** Lookup order: the name with 0, 1, ... leading prefixes dropped
+      * (longest first, so `member_id` and `patient_member_id` match before
+      * `member` is dropped), each exactly; then the same candidates without
+      * trailing digits (`phone2`, `member_id_2`). Exact entries such as
+      * `zip4` win over the digit strip. */
     private def entryOf(fieldName: String): Option[Entry] = {
-        val whole = words(fieldName).mkString
-        val joined = stripped(fieldName).mkString
-        if (joined.isEmpty) None
-        else
-            ByName
-                .get(whole)
-                .orElse(ByName.get(joined))
-                .orElse(Option(joined.replaceAll("[0-9]+$", "")).filter(_.nonEmpty).flatMap(ByName.get))
+        val ws = words(fieldName)
+        if (ws.isEmpty) return None
+        val candidates = scala.collection.mutable.ListBuffer[String](ws.mkString)
+        var rest = ws
+        while (rest.size > 1 && Prefixes.contains(rest.head)) {
+            rest = rest.tail
+            candidates += rest.mkString
+        }
+        val exact = candidates.iterator.flatMap(c => ByName.get(c)).toStream.headOption
+        exact.orElse(
+            candidates.iterator.map(_.replaceAll("[0-9]+$", "")).filter(_.nonEmpty).flatMap(c => ByName.get(c)).toStream.headOption
+        )
     }
 
     /** (class label, default policy) for a field name, unclamped; None when the table does not recognise it. */
@@ -452,6 +478,16 @@ object ProtectionPreset {
     private def isAge(fieldName: String): Boolean = stripped(fieldName).exists(w => w == "age" || w == "ages")
 
     private def isFreeText(fieldName: String): Boolean = stripped(fieldName).lastOption.exists(FreeTextWords.contains)
+
+    /** Last words that mark a date or timestamp column the table leaves alone (`created_at`, `start_date`). */
+    private val DateWords: Set[String] = Set("date", "dt", "at", "time", "timestamp")
+
+    private def looksLikeDate(fieldName: String): Boolean =
+        stripped(fieldName).reverse.dropWhile(_.forall(_.isDigit)).headOption.exists(DateWords.contains)
+
+    def dateLikeNote(names: List[String]): String =
+        "Fields (" + names.mkString(", ") +
+            ") may be dates related to an individual; the preset did not mask them. Generic and event dates are left alone on purpose, so review them and protect any that belong to a patient."
 
     private def isDocument(name: String): Boolean = FieldProtectionAdvisor.DocumentFields.contains(name.trim.toLowerCase)
 
@@ -492,6 +528,8 @@ object ProtectionPreset {
         if (input.exists(f => isZip(f.name))) review += ZipNote
         val free = input.filter(f => isFreeText(f.name) && classify(f.name).isEmpty).map(_.name)
         if (free.nonEmpty) review += freeTextNote(free)
+        val dates = input.filter(f => looksLikeDate(f.name) && classify(f.name).isEmpty).map(_.name)
+        if (dates.nonEmpty) review += dateLikeNote(dates)
 
         Proposal(HipaaSafeHarbor, classified.toList, unclassified.toList, review.toList)
     }

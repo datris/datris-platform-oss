@@ -253,7 +253,7 @@ object PipelineValidatorUtil {
                     val destType = destFields.get(field.trim.toLowerCase).map(_.`type`).orNull
                     val how =
                         if (!isString(srcType))
-                            ". Its source type is " + String.valueOf(srcType) +
+                            (if (srcType == null) ". It has no type" else ". Its source type is " + srcType) +
                                 ", so only protect method 'drop' applies: drop it or list it under protection.presetExempt"
                         else if (destType != null && !isString(destType))
                             ". Its destination type is " + destType +

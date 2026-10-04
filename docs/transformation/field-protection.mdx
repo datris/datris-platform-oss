@@ -97,28 +97,39 @@ Before a name is looked up it is lowercased, split on separators and camelCase, 
 | Class | Safe Harbor identifier | Names recognised (examples) | Default method |
 |---|---|---|---|
 | `name` | Names | `name`, `first_name`, `last_name`, `full_name`, `middle_name`, `middle_initial`, `maiden_name`, `contact_name`, `emergency_contact` | `redact` |
-| `geographic` | Geographic subdivisions smaller than a state | street, billing and shipping address, `addr`, address line, `apt`, `city`, `county`, `precinct` | `redact` |
+| `geographic` | Geographic subdivisions smaller than a state | street, billing and shipping address, `addr`, address line, `apt`, `city`, `county`, `precinct`, `place_of_birth`, `birthplace` | `redact` |
 | `geographic` | ZIP code | `zip`, `zip_code`, `postal_code` | `mask` keeping the first 3 (`first3`) |
-| `geographic` | ZIP+4 extension | `zip4`, `zip_plus_4`, `plus4`, `zip_ext` | `redact` (the extension alone would keep three of its four digits under `first3`) |
+| `geographic` | ZIP+4 extension | `zip4`, `zip_plus_4`, `zip_plus_four`, `plus4`, `zip_ext`, `zip_code_4`, `postal_code_4`, `zip_code_ext`, `zip_suffix` | `redact` (the extension alone would keep three of its four digits under `first3`) |
 | `geographic` | Geocodes | `latitude`, `longitude`, `lat`, `lng`, `lon`, `geolocation`, `coordinates` | `drop` |
-| `date` | All elements of dates (except year) directly related to an individual | `dob`, `date_of_birth`, `birth_date`, `dos`, admission, discharge, death, service, visit (`visit_dt`), appointment (`appt_date`), lab and collection dates | `mask` keeping the year |
+| `date` | All elements of dates (except year) directly related to an individual | `dob`, `date_of_birth`, `birth_date`, `dos`, admission, discharge, death (`admitted_at`, `discharged_at`, `died_on`), service, visit (`visit_dt`), appointment (`appt_date`), lab and collection dates | `mask` keeping the year |
 | `phone` | Telephone numbers | `phone`, `phone_number`, `telephone`, `cell`, `mobile`, `mobile_no`, `home_phone`, `guardian_phone` | `redact` |
 | `fax` | Fax numbers | `fax`, `fax_number` | `redact` |
 | `email` | Email addresses | `email`, `email_address` | `redact` |
-| `ssn` | Social security numbers | `ssn`, `social`, `social_security_number` | `drop` |
+| `ssn` | Social security numbers | `ssn`, `social`, `social_security_number`, `ssn_last4`, `last4_ssn`, `ssn4` | `drop` |
 | `mrn` | Medical record numbers | `mrn`, `medical_record_number`, `chart_number` | `hmac` |
 | `health_plan` | Health plan beneficiary numbers | `health_plan_id`, `beneficiary_id`, `member_id`, `member_number`, `subscriber_id`, `subscriber_number`, `insurance_id`, `policy_number`, `group_number`, `medicare_id`, `medicaid_id` | `hmac` |
-| `account` | Account numbers | `account`, `acct`, `account_number`, `account_id`, `bank_account`, `card_number`, `credit_card_number`, `claim_number`, `prescription_number` | `hmac` |
+| `account` | Account numbers | `account`, `acct`, `account_number`, `account_id`, `bank_account`, `card_number`, `credit_card_number`, `claim_number`, `prescription_number`, `routing_number`, `account_number_last4` | `hmac` |
 | `license` | Certificate/license numbers | `license`, `license_number`, `licence_number`, `certificate_number`, `drivers_license` | `hmac` |
 | `vehicle` | Vehicle identifiers and serial numbers, including license plates | `vin`, `license_plate`, `plate`, `vehicle_serial_number` | `hmac` |
 | `device` | Device identifiers and serial numbers | `device_id`, `device_serial_number`, `serial_number`, `serial_no`, `udi`, `imei` | `hmac` |
 | `url` | Web URLs | `url`, `website`, `website_url`, `web_url` | `redact` |
 | `ip` | IP addresses | `ip`, `ip_address`, `ipv4`, `ipv6` | `redact` |
-| `biometric` | Biometric identifiers, including finger and voice prints | `fingerprint`, `biometric_data`, `voiceprint`, `retina`, `retina_scan` | `drop` |
+| `biometric` | Biometric identifiers, including finger and voice prints | `fingerprint`, `biometric_data`, `voiceprint`, `retina`, `retina_scan`, `iris`, `face_id`, `signature` | `drop` |
 | `photo` | Full-face photographs and comparable images | `photo`, `photograph`, `face_photo`, `headshot`, `picture`, `image`, `image_url`, `photo_url` | `drop` |
 | `other_id` | Any other unique identifying number, characteristic or code | `national_id`, `unique_identifier`, `passport_number`, `tax_id`, `tin`, `ein` | `hmac` |
 
-Stable identifiers use `hmac` so the column still joins. Phone and fax numbers are redacted rather than masked to the last four digits, because a partial number is not Safe Harbor. The whole name is looked up before the prefix is dropped, so `member_id` and `subscriber_number` are health plan numbers. A bare `id` (including `patient_id` once the prefix is dropped) is **not** classified, so key columns are not swept up; `other_id` needs an explicit word such as `national_id` or `unique_identifier`. Ages are left unclassified, as are free-text columns.
+Stable identifiers use `hmac` so the column still joins. Phone and fax numbers are redacted rather than masked to the last four digits, because a partial number is not Safe Harbor. The name is looked up with its leading prefixes dropped one at a time, longest first, so `member_id`, `patient_member_id` and `subscriber_number_2` are health plan numbers. A bare `id` (including `patient_id` once the prefix is dropped) is **not** classified, so key columns are not swept up; `other_id` needs an explicit word such as `national_id` or `unique_identifier`. Ages are left unclassified, as are free-text columns. Person-name variants such as `username`, `display_name`, `doctor_name`, `provider_name`, `first` and `last` are not classified either; protect them yourself if they name a patient or a relative. Generic and event dates (`date`, `created_at`, `updated_at`, `timestamp`, `start_date`, `order_date`, `due_date`) are deliberately left unclassified so the preset does not destroy operational timestamps; the proposal lists them in a review note.
+
+### What the preset does to common column names
+
+The defaults are chosen for health data. If you opt in on another kind of data set, expect these effects on ordinary-looking columns:
+
+- **Dropped** (the column is removed): `image`, `picture`, `image_url`, `photo`, `photo_url`, `profile_image`, `lat`, `lng`, `lon`, `latitude`, `longitude`, `signature`, `ssn` and its variants.
+- **Redacted** (`[REDACTED]`): a bare `name`, `city`, `address`, `cell`, `mobile`, `phone`, `email`, `url`, `website`, `ip`.
+- **Pseudonymised** (`hmac`, still joins): `account`, `acct`, `license`, `plate`, `serial_number`, `member_id`, `mrn`, `card_number`.
+- **Year only**: `dob`, `dos`, admission, discharge, visit and appointment dates.
+
+At save these show up as refusals you can answer with `protect` or `presetExempt`. Schema evolution is different: a **new** column in one of these classes is protected, or removed for a drop class, in the same run, and the run's status line is the only trace. Exempt such a name in advance if you need it in the clear.
 
 ### Proposal endpoint
 
@@ -137,6 +148,7 @@ The proposal adds a note instead of pretending a method covers these rules:
 - **Ages over 89.** Safe Harbor requires ages over 89 (and the dates or years that reveal them) to be aggregated into a single category of 90 or older. The preset does not aggregate ages; the note appears when an age or date field is present.
 - **Small-population ZIP prefixes.** The first three ZIP digits must be replaced with `000` where the area they cover holds 20,000 people or fewer. `first3` keeps the first three digits and does not check population; the note appears when a ZIP field is present.
 - **Free text.** Columns such as `notes`, `comments` or `description` may contain identifiers inside their values. The preset classifies by name only; the note names those columns.
+- **Other dates.** Unclassified columns whose name ends in `date`, `dt`, `at`, `time` or `timestamp` (`created_at`, `start_date`, `event_time`) may be dates related to an individual. The preset did not mask them; the note names them so you can protect the ones that belong to a patient.
 
 ### Enforcement
 

@@ -69,4 +69,64 @@ class ProtectionPresetReviewSpec extends AnyFunSuite {
             "npi"
         ).foreach(n => assert(classify(n).isEmpty, s"$n → ${classify(n)}"))
     }
+
+    // ---- review round 2 ----
+
+    test("stacked prefixes and trailing digits do not un-classify a health plan number") {
+        Seq(
+            "patient_member_id",
+            "insured_member_id",
+            "patient_subscriber_id",
+            "patient_mbr_id",
+            "subscriber_member_number",
+            "member_id2",
+            "member_id_2",
+            "member_number2",
+            "mbr_id2",
+            "subscriber_id_1",
+            "subscriber_number_2",
+            "patient_member_id_2"
+        ).foreach(n => assert(klass(n) == Some("health_plan"), s"$n → ${classify(n)}"))
+        assert(classify("patient_id").isEmpty && classify("patient_id_2").isEmpty, "a bare id stays unclassified")
+        assert(klass("patient_email2") == Some("email"))
+    }
+
+    test("every ZIP+4 extension spelling is redacted") {
+        Seq("zip_code_4", "zipcode4", "postal_code_4", "zip_code_ext", "zip_code_extension", "zip_suffix", "zip_plus_four").foreach { n =>
+            assert(klass(n) == Some("geographic") && method(n) == Some("redact"), s"$n → ${classify(n)}")
+        }
+        Seq("zip5", "zip9").foreach(n => assert(classify(n).map(_._2.preserve) == Some("first3"), n))
+    }
+
+    test("clinical event dates are masked; generic dates stay unclassified with a review note") {
+        Seq("admitted_at", "discharged_at", "died_on").foreach { n =>
+            assert(klass(n) == Some("date") && classify(n).get._2.preserve == "year", s"$n → ${classify(n)}")
+        }
+        val generic = Seq("date", "created_at", "updated_at", "timestamp", "start_date", "end_date", "order_date", "ship_date", "due_date", "event_time")
+        generic.foreach(n => assert(classify(n).isEmpty, s"$n → ${classify(n)}"))
+        val p = propose(generic.map(n => SchemaField(n, "string")).toList, Set.empty, Map.empty)
+        val note = p.review.find(_.contains("may be dates related to an individual"))
+        assert(note.isDefined, s"review: ${p.review}")
+        generic.foreach(n => assert(note.get.contains(n), s"$n named in: ${note.get}"))
+        assert(note.get.contains("did not mask"))
+        val none =
+            propose(List(SchemaField("mrn", "string"), SchemaField("visit_count", "int"), SchemaField("lab_date_format", "string")), Set.empty, Map.empty)
+        assert(!none.review.exists(_.contains("may be dates")), s"review: ${none.review}")
+    }
+
+    test("the agreed extra identifier names are recognised; person-name variants are not") {
+        val expected = Map(
+            "ssn" -> Seq("ssn_last4", "last4_ssn", "ssn4"),
+            "account" -> Seq("routing_number", "account_number_last4"),
+            "geographic" -> Seq("place_of_birth", "birthplace"),
+            "biometric" -> Seq("face_id", "iris", "signature", "voiceprint")
+        )
+        expected.foreach { case (k, names) => names.foreach(n => assert(klass(n) == Some(k), s"$n → ${classify(n)}, expected $k")) }
+        Seq("ssn_last4", "last4_ssn", "ssn4", "face_id", "iris", "signature").foreach(n => assert(method(n) == Some("drop"), n))
+        Seq("routing_number", "account_number_last4").foreach(n => assert(method(n) == Some("hmac"), n))
+        Seq("place_of_birth", "birthplace").foreach(n => assert(method(n) == Some("redact"), n))
+        Seq("username", "user_name", "display_name", "doctor_name", "provider_name", "first", "last").foreach(n =>
+            assert(classify(n).isEmpty, s"$n → ${classify(n)}")
+        )
+    }
 }
