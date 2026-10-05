@@ -34,6 +34,7 @@ The server-side report is also available at `GET /api/v1/doctor` for scripts. It
 | `staging.orphans` | Run directories older than 24 h are still under the staging area — left by a process that died mid-run (warn; error when they hold ≥ 1 GB) | Restart datris (the boot sweep reclaims them) or remove the directories by hand |
 | `tap.secret_scope` | A saved tap uses a secret not tagged `_type=tap`: error when taps are limited to tap secrets (the default; the tap fails to run), warn under `DATRIS_TAP_SECRET_SCOPE=any` (the tap can read a platform secret) | Create a tap secret with the fields the tap needs and select it, or add `_type: tap` to a hand-made tap secret. See [Taps](/taps#taps-can-only-use-tap-secrets) |
 | `ai.sample_values` | Never errors. Reports whether schema, profile, attachment and CodeGen helpers send row values to the model (`DATRIS_AI_SAMPLE_VALUES`, default `true`) or withhold them. Warns when a pipeline protects fields while values are still sampled; with values withheld, warns when a stored source field name does not read as a column name (stored names are always sent), naming up to five pipelines; warns when the pipeline configs cannot be read | Set `DATRIS_AI_SAMPLE_VALUES=false` on the datris service and recreate it. See [Field Protection](/transformation/field-protection#what-still-sees-raw-data) |
+| `governance.controls` | Never errors; not part of the boot lines. Warns when any of user login (`USE_USER_AUTH`), API keys (`USE_API_KEYS`), the audit log (`USE_AUDIT_LOG`) or the agent policy (`USE_AGENT_POLICY`) is off, naming the ones that are off and the ones that are on. They ship off and are switched on for production, so a default install shows this warning | Add the missing lines (for example `USE_API_KEYS=true`) to `.env`, then `docker compose up -d --force-recreate datris mcp-server`. See [Quick Start](/quick-start#2-switch-on-the-governance-controls) |
 | `version.skew` | Server, UI, MCP server and CLI differ in major.minor, or the UI image carries no version stamp | Pull all images; upgrade the CLI |
 | `env.seen` | Never — reports which hardening variables reached the server | — |
 | `volumes.anonymous` | A stateful service (postgres, mongodb, minio, vault, tei, kafka) stores data on an anonymous volume that `docker compose down` will orphan | Add a named volume and copy the data across |
@@ -67,7 +68,7 @@ Exit codes make it scriptable:
 | 2 | At least one error |
 | 3 | Server unreachable — host checks ran, server checks skipped |
 
-Skipped checks (Docker not on this machine, a service not running) never affect the exit code.
+Skipped checks (Docker not on this machine, a service not running) never affect the exit code. A default install, with the governance controls still off, exits `1` because of the `governance.controls` warning; switch the controls on (or treat `1` as passing) if a script gates on exit `0`.
 
 ## Before an upgrade
 

@@ -32,7 +32,7 @@ docker compose up -d datris
 Do **not** use `docker compose restart` to apply an `.env` change. `restart` reuses the existing container with its **old** environment, so your edit is silently ignored. Always use `up -d` (which recreates the container) or a `down` / `up`.
 </Warning>
 
-**Enabling `USE_USER_AUTH` is a clean toggle.** A default `admin` user is pre-seeded on every startup, so after you recreate the container your first login (username `admin`, blank password) simply prompts you to set a password — there's no separate provisioning step and no lockout risk. See [User Authentication](/user-auth) for the full walkthrough.
+**Enabling `USE_USER_AUTH` is a clean toggle.** When the user table is empty the server seeds an `admin` user with a random bootstrap password and prints it once to its log (`docker compose logs datris | grep "Bootstrap login"`), so after you recreate the container your first login is `admin` with that password — there's no separate provisioning step and no lockout risk. Change it after you log in. See [User Authentication](/user-auth) for the full walkthrough.
 
 ## Full Reference
 
@@ -85,6 +85,8 @@ Do **not** use `docker compose restart` to apply an `.env` change. `restart` reu
 | `scratchRetentionHours` | `24` | How long a Live Read result object is kept before the hourly sweep deletes it; reads after expiry return 410 and the caller runs the pipeline again. A Live Read result holds whatever the source returned, so retention is the mitigation — keep it short. `0` expires results immediately. Override per deployment with the `SCRATCH_RETENTION_HOURS` env var. |
 
 ### Authentication
+
+All four governance controls (`USE_USER_AUTH`, `USE_API_KEYS`, `USE_AUDIT_LOG`, `USE_AGENT_POLICY`) default to `false` and are switched on for production together — see [Switch on the governance controls](/quick-start#2-switch-on-the-governance-controls) for the installer option and the `.env` block; the `governance.controls` [doctor](/doctor) check reports any that is off.
 
 Two independent flags control access. Set them together — see [the supported matrix](/api-keys#supported-configurations) — and use [User Authentication](/user-auth) and [API Keys](/api-keys) for the full setup walkthroughs.
 
@@ -394,7 +396,7 @@ The following buckets are created automatically by the `minio-init` container:
 
 ## Container Environment Variables
 
-These environment variables are read by `docker-compose.yml` and passed into the `datris` container. They tune deployment-level concerns rather than business logic. Override in your `.env` file.
+These environment variables are read by `docker-compose.yml` and passed into the `datris` container. They tune deployment-level concerns rather than business logic. Override in your `.env` file. The four governance controls below (`USE_USER_AUTH`, `USE_API_KEYS`, `USE_AUDIT_LOG`, `USE_AGENT_POLICY`) stay `false` by default; for production switch them on together as described in [Switch on the governance controls](/quick-start#2-switch-on-the-governance-controls).
 
 | Variable | Default | Description |
 |----------|---------|-------------|

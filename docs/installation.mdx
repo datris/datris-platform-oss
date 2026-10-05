@@ -30,6 +30,8 @@ curl -fsSL https://get.datris.ai/install.sh | sh
 
 Installing from a coding agent or a CI job with no terminal attached? Export the key first (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or another provider's): the installer asks nothing and reads it from the environment. Full steps: [Install for Agents](/install-for-agents).
 
+Installing for production? Add `DATRIS_GOVERNED=1` (`curl -fsSL https://get.datris.ai/install.sh | DATRIS_GOVERNED=1 sh`) to switch on user login, API keys, the audit log and the agent policy in the new `.env`; for an existing install see [Switch on the governance controls](/quick-start#2-switch-on-the-governance-controls).
+
 ### Minimal install
 
 Trying Datris on a laptop? The default stack runs about ten containers and

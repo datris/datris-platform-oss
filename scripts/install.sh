@@ -54,6 +54,12 @@
 #                       same store named in DATRIS_PROFILES.
 #   KAFKA_BOOTSTRAP_SERVERS, SNOWFLAKE_ACCOUNT/USER/PRIVATE_KEY/PASSWORD,
 #   DATABRICKS_HOST/CLIENT_ID/CLIENT_SECRET/TOKEN — external store credentials
+#   DATRIS_GOVERNED=1   switch on the governance controls for production on a
+#                       fresh install: writes USE_USER_AUTH, USE_API_KEYS,
+#                       USE_AUDIT_LOG and USE_AGENT_POLICY as true. Unset, an
+#                       interactive run asks (default No); a non-interactive
+#                       run leaves them off. Ignored on an upgrade (the .env is
+#                       never edited; the lines to add are printed instead).
 #   DATRIS_NO_START=1   write files but don't run compose
 #   DATRIS_SKIP_DOCTOR=1  skip the pre-upgrade `datris doctor` check on an upgrade
 set -eu
@@ -215,9 +221,20 @@ trap cleanup_partial_env EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+GOVERNED_ON=0
 if [ -f "$ENV_FILE" ]; then
   warn "Existing .env found — leaving it untouched (upgrade mode, no prompts)."
   warn "To change installed databases/stores, edit $ENV_FILE (see comments) and re-run '$COMPOSE up -d'."
+  if [ -n "${DATRIS_GOVERNED:-}" ] && [ "${DATRIS_GOVERNED}" != "0" ]; then
+    warn ""
+    warn "DATRIS_GOVERNED is ignored on upgrade — the existing .env is not edited."
+    warn "To switch on the governance controls, add these lines to $ENV_FILE:"
+    warn "  USE_USER_AUTH=true"
+    warn "  USE_API_KEYS=true"
+    warn "  USE_AUDIT_LOG=true"
+    warn "  USE_AGENT_POLICY=true"
+    warn "then run: cd $DIR && $COMPOSE up -d --force-recreate datris mcp-server"
+  fi
 else
   FRESH_ENV=1
   (umask 077 && curl -fsSL "$REPO_RAW/$REF/.env.example" -o "$ENV_FILE") || die "could not download .env.example"
@@ -786,6 +803,26 @@ else
 
   [ -n "$PROFILES" ] && set_env COMPOSE_PROFILES "$PROFILES"
 
+  # ---- governance controls ----
+  # User login, API keys, the audit log and the agent policy ship off; they
+  # are switched on for production here (DATRIS_GOVERNED=1 or the prompt,
+  # default No) and only on a fresh install. An existing .env is never edited.
+  GOVERNED="${DATRIS_GOVERNED:-}"
+  if [ -z "$GOVERNED" ] && [ -n "$TTY" ]; then
+    ask "  Switch on the governance controls for production (user login, API keys, audit log, agent policy)? [y/N]: "
+    case "$ANS" in y*|Y*) GOVERNED=1 ;; esac
+  fi
+  case "$GOVERNED" in 1|true|TRUE|yes|YES|y|Y) GOVERNED_ON=1 ;; esac
+  if [ "$GOVERNED_ON" = "1" ]; then
+    set_env USE_USER_AUTH true
+    set_env USE_API_KEYS true
+    set_env USE_AUDIT_LOG true
+    set_env USE_AGENT_POLICY true
+    add_summary governance on "user login, API keys, audit log, agent policy"
+  else
+    add_summary governance off "switch on for production: https://docs.datris.ai/quick-start"
+  fi
+
   # set_env keeps the file at 600 on every write; re-apply once more as the
   # final step anyway, since the file now holds keys and DB passwords.
   chmod 600 "$ENV_FILE" 2>/dev/null || true
@@ -905,8 +942,16 @@ say "  MCP:  http://localhost:3000"
 say ""
 say "First boot may pull an embedding model (~2.2 GB) if you chose the bundled"
 say "embedding server — give it a couple minutes."
+if [ "$GOVERNED_ON" = "1" ]; then
+  say ""
+  say "Governance controls are on (user login, API keys, audit log, agent policy)."
+  say "  First login: user admin, with the bootstrap password the server prints once to its log:"
+  say "    cd $DIR && $COMPOSE logs datris | grep \"Bootstrap login\""
+  say "  Change it after you log in. CLI, MCP and API clients need a key from"
+  say "  Configuration -> API Keys (pass it as x-api-key / DATRIS_API_KEY)."
+fi
 say "Logs:   cd $DIR && $COMPOSE logs -f datris"
-say "Stop:   cd $DIR && $COMPOSE down          (full teardown incl. opt-in services:"
+say "Stop:  cd $DIR && $COMPOSE down          (full teardown incl. opt-in services:"
 say "        cd $DIR && $COMPOSE --profile \"*\" down)"
 say ""
 say "If Datris is useful to you, a GitHub star helps other people find it:"

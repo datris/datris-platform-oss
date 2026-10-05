@@ -150,13 +150,16 @@ A safe self-hosted Datris deployment requires the operator to:
 1. Run Vault in non-dev mode with sealed root tokens.
 2. Place a TLS-terminating reverse proxy (nginx, Caddy, Traefik) in front of the
    server. **Do not** expose port 8080 directly.
-3. Set `USE_USER_AUTH=true` and `USE_API_KEYS=true`. Set a password on the
-   default `admin` account immediately, and assign the least-privileged role
+3. Set `USE_USER_AUTH=true` and `USE_API_KEYS=true` (a new install can switch
+   on all four governance controls at once with the installer option
+   `DATRIS_GOVERNED=1`). Change the bootstrap password of the default `admin`
+   account (printed once to the server log) immediately, and assign the least-privileged role
    (viewer/editor) appropriate to each user.
 4. Issue one scoped API key per agent or client, with only the capabilities it
    needs, and rotate keys periodically.
 5. Turn on `USE_AGENT_POLICY=true` and `USE_AUDIT_LOG=true`, and ship the audit
-   log line to your log aggregator.
+   log line to your log aggregator. `datris doctor` reports any of the four
+   governance controls that is still off (`governance.controls`).
 6. Keep the isolated tap runner on (the Compose default).
 7. Set `cors.allowedOrigins` to your real frontend origin(s).
 8. Set `DATRIS_ENV=production` and enable `sslmode=require` (or stricter) on

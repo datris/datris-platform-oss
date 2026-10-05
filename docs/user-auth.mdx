@@ -32,17 +32,20 @@ When the flag is off, the toggle has zero effect on data — pipelines, taps, se
 
 3. Open the UI. You'll see the login screen.
 
-4. Log in as the seed account:
+4. Read the seed account's bootstrap password from the server log. The server generates it at random and prints it once, when it seeds `admin`:
 
-   ```
-   Username:  admin
-   Password:  (leave blank)
+   ```bash
+   docker compose logs datris | grep "Bootstrap login"
    ```
 
-   On first login Datris prompts you to set a password (minimum 5 characters). After that, `admin` is your administrator account.
+5. Log in as `admin` with that password, then change it right away (your username in the top-right → **Change password**, minimum 5 characters). After that, `admin` is your administrator account.
+
+<Tip>
+A new install can switch on login, API keys, the audit log and the agent policy in one step: run the installer with `DATRIS_GOVERNED=1`. See [Switch on the governance controls](/quick-start#2-switch-on-the-governance-controls).
+</Tip>
 
 <Note>
-The default `admin` row is seeded on **every startup** (idempotent — only when the user table is empty), regardless of whether `USE_USER_AUTH` is on. That means flipping the flag on later "just works" — there's no separate provisioning step.
+The default `admin` row is seeded on **every startup** (idempotent — only when the user table is empty), regardless of whether `USE_USER_AUTH` is on, with a fresh bootstrap password printed once to the log. If the stack has been running a while, the line may be far back in the log; `docker compose logs datris | grep "Bootstrap login"` finds it. That means flipping the flag on later "just works" — there's no separate provisioning step.
 </Note>
 
 ## Roles
@@ -57,7 +60,7 @@ All roles see the **Configuration** tab in the top nav, but the sub-tabs differ:
 
 ## Adding users
 
-As an admin: **Configuration → Users → Add user**. Fill in username + role; the new user has no password until they log in for the first time. Send them their username and tell them to leave the password field blank on first login — they'll be prompted to set one.
+As an admin: **Configuration → Users → Add user**. Fill in username + role and an initial password (type one, or click the generate button for a strong random one). Send the user their username and password out-of-band, and ask them to change it after their first login. Through the API, a `POST /api/v1/auth/users` body that omits `password` generates a random temporary password and returns it once as `temporaryPassword`.
 
 You can change a user's role or delete them from the same screen. Datris won't let you remove the **last admin** — there's an `adminCount` guard on delete and role-change.
 
@@ -65,9 +68,9 @@ You can change a user's role or delete them from the same screen. Datris won't l
 
 Click your username in the top-right → **Change password**. Enter your current password and the new one (min 5 chars).
 
-If you've forgotten your password and there's another admin: have them delete and re-add your user; the new row will prompt you for a fresh password on next login.
+If you've forgotten your password and there's another admin: have them delete and re-add your user with a new initial password and send it to you; log in with it and change it.
 
-If you're the **only** admin and you've lost the password, you'll need to clear your user row directly in MongoDB (the user table lives in the platform's internal database, default `oss`). After deletion, restart Datris — the seed will recreate `admin` with a null password and you can set a new one through the UI.
+If you're the **only** admin and you've lost the password, you'll need to clear your user row directly in MongoDB (the user table lives in the platform's internal database, default `oss`). After deletion, restart Datris — the seed runs only when the user table is empty, so remove any other user rows too. With no users left, the seed recreates `admin` with a new bootstrap password printed once to the log (`docker compose logs datris | grep "Bootstrap login"`). Log in with it and change it through the UI.
 
 ## Reverting
 

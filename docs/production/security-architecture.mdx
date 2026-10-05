@@ -30,11 +30,11 @@ Every request follows the same path: the key identifies the caller, the capabili
 
 ## Identity and authorization
 
-- **Humans** log in to the UI with a username and password (BCrypt, cost 12). The first boot creates an `admin` account with no password and forces a set-password flow before it can do anything. Sessions are opaque random tokens in an `HttpOnly`, `SameSite=Strict` cookie with an 8-hour TTL. Three roles — admin, editor, viewer. See [User Authentication](/user-auth).
+- **Humans** log in to the UI with a username and password (BCrypt, cost 12). The first boot creates an `admin` account with a random bootstrap password, printed once to the server log (`docker compose logs datris | grep "Bootstrap login"`); change it at first login. Sessions are opaque random tokens in an `HttpOnly`, `SameSite=Strict` cookie with an 8-hour TTL. Three roles — admin, editor, viewer. See [User Authentication](/user-auth).
 - **Programmatic clients** — the CLI, MCP agents, scripts — each hold their own labeled API key, sent as `x-api-key` and validated against Vault. Every key carries an explicit list of capabilities (`resource:action[:scope]`); a call outside that list returns 403, and the MCP tool catalog an agent sees is filtered to match. Templates (`read-only`, `rag-builder`, `reporting`, `ops`) cover the common shapes. Keys are stored hashed, shown once, and revocable individually. See [API Keys](/api-keys).
 - **Tap scripts** never receive a platform key. Each run gets a short-lived, read-only token for the platform API that the tap wrapper attaches automatically.
 
-Both flags are off in a fresh OSS install so that existing deployments are unchanged; the recommended production setting is `USE_USER_AUTH=true` with `USE_API_KEYS=true`.
+User login, API keys, the audit log and the agent policy ship in the open-source build and are off in the shipped defaults so that existing deployments are unchanged; they are switched on for production. A new install does it in one step with the installer option `DATRIS_GOVERNED=1`; an existing install adds `USE_USER_AUTH=true`, `USE_API_KEYS=true`, `USE_AUDIT_LOG=true` and `USE_AGENT_POLICY=true` to `.env` (see [Switch on the governance controls](/quick-start#2-switch-on-the-governance-controls)). The `governance.controls` [doctor](/doctor) check names any of the four that is off.
 
 ## Credentials
 
@@ -97,8 +97,8 @@ Stated so you can plan around it rather than discover it:
 
 1. Run Vault in non-dev mode with sealed root tokens.
 2. Put a TLS-terminating reverse proxy in front of the server; do not expose 8080.
-3. Set `USE_USER_AUTH=true` and `USE_API_KEYS=true`; set the admin password immediately; issue one scoped key per agent.
-4. Turn on `USE_AGENT_POLICY=true` and start from **Use recommended**; turn on `USE_AUDIT_LOG=true` and ship the log line to your aggregator.
+3. Switch on the governance controls: `DATRIS_GOVERNED=1` on a new install, or `USE_USER_AUTH=true` and `USE_API_KEYS=true` (with the two below) in `.env`; change the admin bootstrap password immediately; issue one scoped key per agent.
+4. Turn on `USE_AGENT_POLICY=true` and start from **Use recommended**; turn on `USE_AUDIT_LOG=true` and ship the log line to your aggregator. `datris doctor` shows `governance.controls` as ok once all four are on.
 5. Keep the isolated tap runner on (the Compose default).
 6. Set `DATRIS_ENV=production`, `sslmode=require` on external Postgres, and `cors.allowedOrigins`.
 7. Enable encryption at rest on the stores; rotate API keys periodically.

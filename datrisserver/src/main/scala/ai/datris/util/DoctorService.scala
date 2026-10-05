@@ -160,6 +160,11 @@ object DoctorService {
           * an identifier ([[AiSampleValues.isIdentifier]]). Stored names are
           * always sent to the model. Throws when the configs cannot be read. */
         def pipelinesWithNonIdentifierFields(): List[String] = Nil
+
+        /** The four governance controls, keyed by their `.env` variable
+          * ([[GovernanceControlsCheck.Vars]]) -> on/off. The default reports
+          * the shipped state (all off); LiveProbes reads DatrisEnvironment. */
+        def governanceControls(): Map[String, Boolean] = GovernanceControlsCheck.Vars.map(_ -> false).toMap
     }
 
     private val Day = 86400L
@@ -530,6 +535,34 @@ object DoctorService {
         }
     }
 
+    object GovernanceControlsCheck {
+        val Vars: Seq[String] = Seq("USE_USER_AUTH", "USE_API_KEYS", "USE_AUDIT_LOG", "USE_AGENT_POLICY")
+        val DocsLink = "https://docs.datris.ai/quick-start#2-switch-on-the-governance-controls"
+    }
+
+    /** User login, API keys, the audit log and the agent policy
+      * (plans/stories/governance-controls-production-preset.md): ok when all
+      * four are on, warn naming each that is off. Never errors, and not
+      * startup-safe, so a default install logs nothing at boot. */
+    class GovernanceControlsCheck(probes: Probes) extends Check {
+        import GovernanceControlsCheck._
+        val id = "governance.controls"
+        val startupSafe = false
+        def run(): CheckResult = {
+            val state = probes.governanceControls()
+            val on = Vars.filter(v => state.getOrElse(v, false))
+            val off = Vars.filterNot(on.contains)
+            if (off.isEmpty) ok("on: " + on.mkString(", "))
+            else
+                warn(
+                    "off: " + off.mkString(", ") + (if (on.nonEmpty) "; on: " + on.mkString(", ") else "") +
+                        " — user login, API keys, the audit log and the agent policy are off until switched on for production",
+                    "Add " + off.map(_ + "=true").mkString(", ") + " to .env, then run " +
+                        "`docker compose up -d --force-recreate datris mcp-server`. See " + DocsLink + "."
+                )
+        }
+    }
+
     /** Compares the server's version with whatever versions the calling
       * clients report (`?cli=`, `?mcp=`, `?ui=`). Major.minor must match. */
     class VersionSkewCheck(serverVersion: String, clients: Map[String, String]) extends Check {
@@ -683,6 +716,7 @@ object DoctorService {
             new StagingOrphansCheck(probes),
             new TapSecretScopeCheck(probes),
             new AiSampleValuesCheck(probes),
+            new GovernanceControlsCheck(probes),
             new VersionSkewCheck(serverVersion, clients),
             new EnvSeenCheck(probes),
             new AiModelReachableCheck(probes, slots)
@@ -855,6 +889,16 @@ object DoctorService {
         // A read failure propagates: the check reports "could not read pipeline configs".
         def anyPipelineProtects(): Boolean =
             PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName).exists(c => FieldProtection.protectedFields(c).nonEmpty)
+
+        override def governanceControls(): Map[String, Boolean] = {
+            val env = DatrisEnvironment.values
+            Map(
+                "USE_USER_AUTH" -> env.useUserAuth,
+                "USE_API_KEYS" -> env.useApiKeys,
+                "USE_AUDIT_LOG" -> env.useAuditLog,
+                "USE_AGENT_POLICY" -> env.useAgentPolicy
+            )
+        }
 
         override def pipelinesWithNonIdentifierFields(): List[String] =
             PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName)

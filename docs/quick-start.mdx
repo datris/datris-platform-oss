@@ -23,9 +23,17 @@ curl http://localhost:8080/api/v1/version
 
 Other install paths (Windows, single-file Compose, git clone) are on [Installation](/installation).
 
-## 2. Turn on the governed defaults
+## 2. Switch on the governance controls
 
-These are off in a fresh install so that existing deployments are unchanged. Add them to `./datris/.env`:
+User login, API keys, the audit log and the agent policy ship in the open-source build and are switched on for production. They are off in the shipped defaults so that an upgrade with an existing `.env` behaves exactly as before.
+
+**New install:** use this in place of the step 1 command, or answer yes when the installer asks:
+
+```bash
+curl -fsSL https://get.datris.ai/install.sh | DATRIS_GOVERNED=1 sh
+```
+
+**Existing install:** add these four lines to `./datris/.env`:
 
 ```bash
 USE_USER_AUTH=true
@@ -34,13 +42,21 @@ USE_AGENT_POLICY=true
 USE_AUDIT_LOG=true
 ```
 
-Recreate the server so it picks them up (the MCP server reads the same flag and starts requiring a key automatically):
+Recreate the server and the MCP server so they pick them up (the MCP server reads `USE_API_KEYS` and starts requiring a key):
 
 ```bash
-cd datris && docker compose up -d --force-recreate datris
+cd datris && docker compose up -d --force-recreate datris mcp-server
 ```
 
-Open [http://localhost:4200](http://localhost:4200). The first login is `admin` with no password; you are asked to set one before anything else works.
+`datris doctor` reports any of the four that is still off as a `governance.controls` warning.
+
+Open [http://localhost:4200](http://localhost:4200). The first login is `admin` with the bootstrap password the server prints once to its log:
+
+```bash
+cd datris && docker compose logs datris | grep "Bootstrap login"
+```
+
+Change it after you log in (your username in the top-right → **Change password**).
 
 ## 3. Set one policy rule
 
