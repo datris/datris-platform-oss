@@ -65,6 +65,9 @@ export class PipelineCreateComponent implements OnInit {
   /** True when the last Generate Schema / sample analysis result says the
    * server withheld row values from the model (DATRIS_AI_SAMPLE_VALUES=false). */
   valuesWithheld = false;
+  /** True when a generate-schema result turned Header off because the
+   * server found that line 1 is data (columns numbered). */
+  headerAdjusted = false;
   sampleFileDetected = false;
 
   // Step 1 — Basics + Source
@@ -1337,6 +1340,7 @@ export class PipelineCreateComponent implements OnInit {
             this.resetPresetForNewSchema();
           }
           this.valuesWithheld = response?.valuesWithheld === true;
+        this.applyGeneratedHeader(response);
           this.generatingSchema = false;
         },
         error: (err: any) => {
@@ -1363,6 +1367,7 @@ export class PipelineCreateComponent implements OnInit {
           this.resetPresetForNewSchema();
         }
         this.valuesWithheld = response?.valuesWithheld === true;
+        this.applyGeneratedHeader(response);
         this.generatingSchema = false;
       },
       error: (err: any) => {
@@ -1582,6 +1587,18 @@ export class PipelineCreateComponent implements OnInit {
     }
   }
 
+  /** Adopt `csvAttributes.header: false` from a /pipeline/generate result
+   * (line 1 is data, columns numbered) so the saved pipeline does not skip
+   * its first data row. Never turns Header on; an absent flag changes nothing. */
+  applyGeneratedHeader(response: any): void {
+    if (response?.source?.fileAttributes?.csvAttributes?.header === false) {
+      this.headerAdjusted = this.csvHeader;
+      this.csvHeader = false;
+    } else {
+      this.headerAdjusted = false;
+    }
+  }
+
   autoProfileSampleFile(): void {
     if (!this.sampleFile || !this.pipelineName || this.sourceType === 'unstructured') return;
     this.pipelineService.generateSchema(
@@ -1591,6 +1608,7 @@ export class PipelineCreateComponent implements OnInit {
     ).subscribe({
       next: (response: any) => {
         this.valuesWithheld = response?.valuesWithheld === true;
+        this.applyGeneratedHeader(response);
         if (response.source?.schemaProperties?.fields) {
           const fields = response.source.schemaProperties.fields;
           this.dqProfileSummary = 'Detected ' + fields.length + ' fields: ' +

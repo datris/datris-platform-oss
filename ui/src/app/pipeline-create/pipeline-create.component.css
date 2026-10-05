@@ -666,7 +666,8 @@ option {
   margin-top: 16px;
 }
 
-.values-withheld {
+.values-withheld,
+.header-adjusted {
   margin: 8px 0 0;
   font-size: 12px;
   color: var(--text-secondary, #8b949e);
