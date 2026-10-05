@@ -174,6 +174,63 @@ class JobRunnerFailureSpec extends AnyFunSuite {
         assert(Files.isDirectory(otherDir), "a different run's staged payload is left alone")
     }
 
+    // plans/stories/run-status-message-not-stacktrace.md, Acceptance bullet 2.
+    // The terminal status carries the message chain (ErrorText.messageChain:
+    // message, then "\ncaused by: <message>" per distinct cause), never a stack
+    // trace; reportFailure returns that same chain. The full trace goes to the
+    // server log and to FixSuggestionUtil (not observable through a seam here).
+    private def assertNoFrames(text: String): Unit = {
+        assert(!text.contains("\tat "), s"stack frame in: $text")
+        assert(!text.linesIterator.exists(_.trim.startsWith("at ai.datris")), s"stack frame in: $text")
+        assert(!text.linesIterator.exists(_.trim.startsWith("at java.")), s"stack frame in: $text")
+    }
+
+    test("the terminal status of a failed run contains the message and no stack frames") {
+        val su = new CapturingStatusUtil
+        val e = new IllegalStateException("schema mismatch", new RuntimeException("column amount missing"))
+
+        val message = JobRunner.reportFailure(su, None, e)
+
+        assert(su.events.size == 1)
+        val (_, state, code, description) = su.events.head
+        assert(state == "end" && code == "error")
+        assert(description.startsWith("Process completed, error: "))
+        assert(description.contains("schema mismatch"))
+        assertNoFrames(description)
+        assert(description == "Process completed, error: schema mismatch\ncaused by: column amount missing")
+        assert(message == "schema mismatch\ncaused by: column amount missing", "returned value is the message chain, not a trace")
+        assertNoFrames(message)
+    }
+
+    test("a loader failure reads '<Loader> failed: <message>' with no stack frames") {
+        val su = new CapturingStatusUtil
+        val cause = new RuntimeException("relation \"orders\" does not exist")
+        val wrapped = new RuntimeException("PostgresLoader failed: java.lang.RuntimeException: " + cause.getMessage, cause)
+
+        val message = JobRunner.reportFailure(su, Some(("PostgresLoader", cause)), wrapped)
+
+        assert(message == "PostgresLoader failed: relation \"orders\" does not exist")
+        assert(su.events.size == 1)
+        val (process, state, code, description) = su.events.head
+        assert(process == "JobRunner" && state == "end" && code == "info")
+        assert(description == "Process completed, error: PostgresLoader failed: relation \"orders\" does not exist")
+        assertNoFrames(description)
+    }
+
+    test("the exception thrown out of a failed run carries the message, not a stack trace") {
+        val su = new CapturingStatusUtil
+        su.failOnBegin = true
+        val (ctx, _) = stagedJob("run-msg-" + System.nanoTime(), su)
+
+        val e = intercept[DatrisException](new JobRunner(ctx).run())
+
+        assert(e.getMessage == "Pipeline error: begin boom")
+        assertNoFrames(e.getMessage)
+        val ends = su.events.filter { case (_, state, code, _) => state == "end" && code == "error" }
+        assert(ends.size == 1)
+        assert(ends.head._4 == "Process completed, error: begin boom")
+    }
+
     test("deriveCountAndType keeps (0, \"record\") for an empty JSON array, as when rawData held \"[]\"") {
         TenantContext.set(testEnv)
         try {

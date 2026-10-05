@@ -86,4 +86,32 @@ class FileNotifierErrorSpec extends AnyFunSuite {
         assert(e eq boom, s"expected the original archive exception, got: $e")
         assert(!su.events.exists(_._2 == "error"), s"no error event may be written before metadata is archived, got ${su.events}")
     }
+
+    // plans/stories/run-status-message-not-stacktrace.md, Acceptance bullet 2
+    // (notifier): a failure before the job starts writes the message chain to
+    // the status, never Throwables.getStackTraceAsString(e). The original
+    // exception is still rethrown unchanged.
+    test("a failure before the job starts (notifier) contains the message and no stack frames") {
+        val su = new CapturingStatusUtil
+        val root = new IllegalStateException("column order differs from the existing table")
+        val boom = new RuntimeException("Object store write refused", root)
+        val notifier = new FileNotifier(su, (_: String, _: PipelineMetadata) => (), (_: String) => throw boom)
+
+        val e = intercept[Exception](notifier.process("oss-raw", "orders.tok.x.pipeline.csv"))
+        assert(e eq boom)
+
+        val errors = su.events.filter { case (_, code, _) => code == "error" }
+        assert(errors.size == 1, s"events: ${su.events}")
+        val (state, _, description) = errors.head
+        assert(state == "end")
+        assert(description.startsWith("Process completed, error: "))
+        assert(description.contains("Object store write refused"))
+        assert(description.contains("column order differs from the existing table"))
+        assert(!description.contains("\tat "), s"stack frame in: $description")
+        assert(!description.linesIterator.exists(_.trim.startsWith("at ai.datris")), s"stack frame in: $description")
+        assert(!description.contains("java.lang.RuntimeException"), s"exception class from the trace header in: $description")
+        assert(
+            description == "Process completed, error: Object store write refused\ncaused by: column order differs from the existing table"
+        )
+    }
 }
