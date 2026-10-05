@@ -36,20 +36,24 @@ object DataUtil {
     }
 
     /** The destination schema with duplicate names removed (first entry
-      * wins), and whether anything was removed. A status line names the
-      * removed columns. */
-    private def repairDestDuplicates(config: PipelineConfig, statusUtil: StatusUtil): (PipelineConfig, Boolean) = {
+      * wins), and the names of the removed columns (empty when none). The
+      * caller reports the repair once it is persisted. */
+    private def repairDestDuplicates(config: PipelineConfig): (PipelineConfig, List[String]) = {
         if (config.destination == null || config.destination.schemaProperties == null || config.destination.schemaProperties.fields == null)
-            return (config, false)
+            return (config, Nil)
         val existing = config.destination.schemaProperties.fields.asScala.toList
         val deduped = mergeDestFields(existing, Nil)
-        if (deduped.size == existing.size) return (config, false)
+        if (deduped.size == existing.size) return (config, Nil)
         val removed = existing.diff(deduped).map(_.name).distinct
-        logger.info("Schema evolution: removed duplicate destination column(s) [" + removed.mkString(", ") + "] from pipeline " + config.name)
-        statusUtil.info("processing", "Schema evolution: removed duplicate destination column(s) [" + removed.mkString(", ") + "]; the first entry is kept")
         val schema = config.destination.schemaProperties.copy(fields = new java.util.ArrayList[SchemaField](deduped.asJava))
-        (config.copy(destination = config.destination.copy(schemaProperties = schema)), true)
+        (config.copy(destination = config.destination.copy(schemaProperties = schema)), removed)
     }
+
+    private def reportRepair(config: PipelineConfig, removed: List[String], statusUtil: StatusUtil): Unit =
+        if (removed.nonEmpty) {
+            logger.info("Schema evolution: removed duplicate destination column(s) [" + removed.mkString(", ") + "] from pipeline " + config.name)
+            statusUtil.info("processing", "Schema evolution: removed duplicate destination column(s) [" + removed.mkString(", ") + "]; the first entry is kept")
+        }
 
     /** Columns present in both lists (trimmed, case-insensitive), each in its
       * own list's order; Some((source, destination)) when the relative orders
@@ -75,7 +79,7 @@ object DataUtil {
     ): (PipelineConfig, List[String], List[String], List[String]) = {
         // Repair a destination schema that already lists a column twice (written
         // by an earlier run before the duplicate check existed): first entry wins.
-        val (config, repaired) = repairDestDuplicates(storedConfig, statusUtil)
+        val (config, removedDuplicates) = repairDestDuplicates(storedConfig)
         var updatedConfig = config
         var schemaColumns = config.source.schemaProperties.fields.asScala.map(_.name).toList
 
@@ -153,17 +157,25 @@ object DataUtil {
                 // destination schema, so a declared column joining the source in a
                 // different relative order would land in the wrong column.
                 val declaredNew = newFields.filter(f => existingDest.exists(d => d.name != null && d.name.trim.equalsIgnoreCase(f.name.trim)))
+                val mergedDest = mergeDestFields(existingDest, newFields)
                 if (declaredNew.nonEmpty && config.destination.objectStore != null) {
                     val sourceOrder = updatedSourceSchema.fields.asScala.map(_.name).toList
                     objectStoreOrderMismatch(sourceOrder, existingDest.map(_.name)).foreach {
                         case (src, dest) =>
                             throw new DatrisException(
-                                "Object store pipelines map columns by position: the file's column order (" + src.mkString(", ") +
-                                    ") differs from the destination schema (" + dest.mkString(", ") + "). Reorder the destination schema or the file"
+                                "Object store pipelines map columns by position: the source schema's column order (" + src.mkString(", ") +
+                                    ") differs from the destination schema (" + dest.mkString(", ") + "). Reorder the source or destination schema"
                             )
                     }
+                    val destOrder = mergedDest.map(_.name)
+                    def keys(ns: List[String]): List[String] = ns.map(n => Option(n).map(_.trim.toLowerCase).getOrElse(""))
+                    if (keys(sourceOrder) != keys(destOrder))
+                        throw new DatrisException(
+                            "Object store pipelines map columns by position: the source schema (" + sourceOrder.mkString(", ") +
+                                ") and the destination schema (" + destOrder.mkString(", ") + ") must list the same columns in the same order"
+                        )
                 }
-                val destFields = new java.util.ArrayList[SchemaField](mergeDestFields(existingDest, newFields).asJava)
+                val destFields = new java.util.ArrayList[SchemaField](mergedDest.asJava)
                 val updatedDestSchema = config.destination.schemaProperties.copy(fields = destFields, schemaVersion = newVersion)
                 config.destination.copy(schemaProperties = updatedDestSchema)
             } else config.destination
@@ -171,10 +183,12 @@ object DataUtil {
             updatedConfig = config.copy(source = updatedSource, destination = updatedDest)
             // Gson write of the whole config: `protect` and `protection` survive.
             persist(updatedConfig)
+            reportRepair(config, removedDuplicates, statusUtil)
 
             schemaColumns = updatedSourceSchema.fields.asScala.map(_.name).toList
-        } else if (repaired) {
+        } else if (removedDuplicates.nonEmpty) {
             persist(config)
+            reportRepair(config, removedDuplicates, statusUtil)
         }
 
         // Detect missing schema columns in the CSV header

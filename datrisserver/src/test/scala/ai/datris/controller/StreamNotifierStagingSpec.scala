@@ -924,4 +924,55 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
             ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date", "admit_date"), cfg, new LevelStatusUtil, _ => ())
         assert(evolved.destination.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name", "admit_date", "discharge_date"))
     }
+
+    // ---- Review round 2: message names the source schema; column-set check; repair line only when persisted ----
+
+    test("object store: the order message names the source schema order and says to reorder a schema") {
+        val cfg = objectStoreConfig.copy(source =
+            objectStoreConfig.source.copy(schemaProperties = SchemaProperties("db", fields("name", "id")))
+        )
+        val e = intercept[DatrisException](
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date", "discharge_date"), cfg, new LevelStatusUtil, _ => ())
+        )
+        assert(e.getMessage.contains("the source schema's column order (name, id, admit_date, discharge_date)"), e.getMessage)
+        assert(e.getMessage.contains("differs from the destination schema (id, name, admit_date, discharge_date)"), e.getMessage)
+        assert(e.getMessage.contains("Reorder the source or destination schema"), e.getMessage)
+        assert(!e.getMessage.contains("file's column order"), e.getMessage)
+    }
+
+    test("object store: a declared column arriving without the columns before it fails, naming both lists") {
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val e = intercept[DatrisException](
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date"), objectStoreConfig, new LevelStatusUtil, c => persisted += c)
+        )
+        assert(
+            e.getMessage.contains(
+                "the source schema (id, name, discharge_date) and the destination schema (id, name, admit_date, discharge_date) must list the same columns in the same order"
+            ),
+            e.getMessage
+        )
+        assert(persisted.isEmpty)
+    }
+
+    test("the repair status line is emitted only when the repair is persisted") {
+        val dupOs = objectStoreConfig.copy(destination =
+            objectStoreConfig.destination.copy(schemaProperties =
+                SchemaProperties(
+                    "db",
+                    destOf("id" -> "string", "name" -> "string", "admit_date" -> "date", "discharge_date" -> "date", "admit_date" -> "string")
+                )
+            )
+        )
+        val su = new LevelStatusUtil
+        intercept[DatrisException](
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date", "admit_date"), dupOs, su, _ => ())
+        )
+        assert(!su.events.exists(_._2.contains("removed duplicate destination column")), s"lines: ${su.events}")
+
+        val su2 = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date", "discharge_date"), dupOs, su2, c => persisted += c)
+        assert(persisted.size == 1)
+        assert(su2.events.count(_._2.contains("removed duplicate destination column(s) [admit_date]")) == 1, s"lines: ${su2.events}")
+    }
 }
