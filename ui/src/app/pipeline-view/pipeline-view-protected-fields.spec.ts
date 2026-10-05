@@ -60,6 +60,14 @@ describe('PipelineViewComponent — Protected fields row', () => {
     return (el.textContent || '').replace(/\s+/g, ' ');
   }
 
+  /** Page text without the raw config JSON dump (pre.config-json), so the
+   *  preset assertions read what the row shows, not the stored JSON. */
+  function shown(el: HTMLElement): string {
+    const clone = el.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('pre.config-json').forEach(p => p.remove());
+    return text(clone);
+  }
+
   it('lists protected fields and their methods', () => {
     const el = render(cfg([
       { name: 'mrn', type: 'string', protect: { method: 'hmac' } },
@@ -82,6 +90,45 @@ describe('PipelineViewComponent — Protected fields row', () => {
     const t = text(el);
     expect(t).toContain('card → mask');
     expect(t).not.toContain('card → mask (');
+  });
+
+  // Field protection 11 (plans/stories/field-protection-11-safe-harbor-preset-surfaces.md),
+  // Acceptance "Pipeline page spec": the Protected fields row reads
+  // "Preset: HIPAA Safe Harbor (enforced)" and names the exempt fields when
+  // config.protection.preset is set; nothing about a preset otherwise.
+  it('a preset pipeline shows the preset and its exempt fields', () => {
+    const config = cfg([
+      { name: 'mrn', type: 'string', protect: { method: 'hmac' } },
+      { name: 'ssn', type: 'string', protect: { method: 'drop' } },
+      { name: 'phone', type: 'string' },
+      { name: 'fax', type: 'string' }
+    ]);
+    config.protection = { preset: 'hipaa-safe-harbor', presetExempt: ['phone', 'fax'] };
+    const el = render(config);
+    const t = shown(el);
+    expect(t).toContain('Protected fields');
+    expect(t).toContain('Preset: HIPAA Safe Harbor (enforced)');
+    expect(t).toMatch(/exempt:?\s*phone,?\s*fax/i);
+    expect(t).toContain('mrn → hmac');
+    // The raw preset id is not what the user reads.
+    expect(t).not.toContain('hipaa-safe-harbor');
+  });
+
+  it('a preset pipeline with no exemptions shows the preset and no exempt list', () => {
+    const config = cfg([{ name: 'mrn', type: 'string', protect: { method: 'hmac' } }]);
+    config.protection = { preset: 'hipaa-safe-harbor' };
+    const t = shown(render(config));
+    expect(t).toContain('Preset: HIPAA Safe Harbor (enforced)');
+    expect(t).not.toMatch(/exempt/i);
+  });
+
+  it('a pipeline without a preset shows no preset line', () => {
+    const config = cfg([{ name: 'mrn', type: 'string', protect: { method: 'hmac' } }]);
+    config.protection = { purgeSource: false };
+    const t = shown(render(config));
+    expect(t).toContain('mrn → hmac');
+    expect(t).not.toContain('Preset:');
+    expect(t).not.toMatch(/exempt/i);
   });
 
   it('no row for a pipeline without protect', () => {

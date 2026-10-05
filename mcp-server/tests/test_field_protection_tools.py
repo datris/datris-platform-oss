@@ -7,6 +7,7 @@ schema field (case-insensitive name match), posts no `protect` key when the
 arg is absent, and returns an error naming any field that is not in the
 schema without posting anything."""
 import json
+import re
 import os
 import sys
 
@@ -327,3 +328,203 @@ def test_list_tools_has_no_reveal_tool(monkeypatch):
         props = (t.inputSchema or {}).get("properties", {})
         assert "/api/v1/protect/reveal" not in (t.description or ""), t.name
         assert "reveal" not in {k.lower() for k in props}, t.name
+
+
+# ============================================ story 11: Safe Harbor preset ---
+# plans/stories/field-protection-11-safe-harbor-preset-surfaces.md, the four
+# "MCP pytest" Acceptance bullets. Server contract (story 10 as built):
+# POST /api/v1/pipeline/protect/preset with {"preset", "fields"} or
+# {"preset", "pipeline"} answers {"preset", "fields": [{"name", "class",
+# "method", "preserve", "reason", "current"}], "unclassified": [names],
+# "review": [notes]}; `method` is "none" when a clamp leaves nothing.
+# suggest_field_protection gains `preset` (enum hipaa-safe-harbor);
+# create_pipeline gains `protect_preset` (enum) and `protect_exempt` (array of
+# field names) -> config["protection"] = {"preset", "presetExempt"}.
+
+PRESET = "hipaa-safe-harbor"
+PRESET_PATH = "/api/v1/pipeline/protect/preset"
+
+AGE_NOTE = "Ages over 89 must be aggregated into a single 90 or older category."
+ZIP_NOTE = "ZIP prefixes covering 20,000 people or fewer must be 000."
+FREE_NOTE = "Free-text fields may hold identifiers: notes."
+
+PRESET_RESPONSE = {
+    "preset": PRESET,
+    "fields": [
+        {"name": "patient_name", "class": "name", "method": "redact", "preserve": None,
+         "reason": "person name", "current": None},
+        {"name": "mrn", "class": "mrn", "method": "hmac", "preserve": None,
+         "reason": "medical record number", "current": None},
+        {"name": "zip", "class": "geographic", "method": "mask", "preserve": "first3",
+         "reason": "ZIP code", "current": None},
+        {"name": "fax_no", "class": "fax", "method": "none", "preserve": None,
+         "reason": "key field: only hmac allowed", "current": None},
+    ],
+    "unclassified": ["visit_count", "notes"],
+    "review": [AGE_NOTE, ZIP_NOTE, FREE_NOTE],
+}
+
+PRESET_FIELDS = [
+    {"name": "patient_name", "type": "string"},
+    {"name": "mrn", "type": "string"},
+    {"name": "zip", "type": "string"},
+    {"name": "fax_no", "type": "string"},
+    {"name": "visit_count", "type": "int"},
+    {"name": "notes", "type": "string"},
+]
+
+
+class _PresetCaptured:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, method, path, timeout=300, **kwargs):
+        self.calls.append((method, path, kwargs))
+        if method == "post" and path == PRESET_PATH:
+            return json.dumps(PRESET_RESPONSE)
+        if method == "post" and path == SUGGEST_PATH:
+            return json.dumps(SUGGEST_RESPONSE)
+        raise AssertionError(f"unexpected call {method} {path}")
+
+
+@pytest.fixture
+def preset_captured(monkeypatch):
+    c = _PresetCaptured()
+    monkeypatch.setattr(server, "_call", c.call)
+    return c
+
+
+def test_suggest_tool_has_optional_preset_enum():
+    tool = _tool("suggest_field_protection")
+    props = tool.inputSchema["properties"]
+    assert "preset" in props, sorted(props)
+    assert props["preset"].get("enum") == [PRESET], props["preset"]
+    assert "preset" not in tool.inputSchema.get("required", [])
+
+
+def test_suggest_with_preset_posts_to_the_preset_endpoint_and_renders_classes_unclassified_and_review(preset_captured):
+    text = server._dispatch("suggest_field_protection", {"fields": PRESET_FIELDS, "preset": PRESET})
+    posts = [(p, kw) for (m, p, kw) in preset_captured.calls if m == "post"]
+    assert [p for p, _ in posts] == [PRESET_PATH], preset_captured.calls
+    assert posts[0][1].get("json") == {"preset": PRESET, "fields": PRESET_FIELDS}, posts[0][1]
+
+    assert not server._is_error_payload(text), text
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    def line_for(name):
+        hits = [ln for ln in lines if re.match(r"^[-*\s]*`?" + re.escape(name) + r"\b", ln)]
+        assert len(hits) == 1, f"expected one line for {name}, got {hits}\n{text}"
+        return hits[0]
+
+    # Class, method and reason per field.
+    pn = line_for("patient_name")
+    assert "name" in pn.replace("patient_name", "", 1) and "redact" in pn and "person name" in pn, pn
+    mrn = line_for("mrn")
+    assert "hmac" in mrn and "medical record number" in mrn, mrn
+    assert mrn.count("mrn") >= 2, f"class 'mrn' not shown beside the field: {mrn}"
+    z = line_for("zip")
+    assert "geographic" in z and "mask" in z and "first3" in z and "ZIP code" in z, z
+    fx = line_for("fax_no")
+    assert "fax" in fx.replace("fax_no", "", 1) and "none" in fx, fx
+
+    # Unclassified names and every review note are listed.
+    assert re.search(r"unclassified", text, re.IGNORECASE), text
+    after_un = text[re.search(r"unclassified", text, re.IGNORECASE).start():]
+    assert "visit_count" in after_un and "notes" in after_un, text
+    assert re.search(r"review", text, re.IGNORECASE), text
+    for note in (AGE_NOTE, ZIP_NOTE, FREE_NOTE):
+        assert note in text, f"review note missing: {note}\n{text}"
+
+    # Confirm-with-the-user footer last, telling the agent to show the review notes.
+    footer = lines[-1]
+    assert "user" in footer.lower(), footer
+    assert text.rfind(FREE_NOTE) < text.rfind(footer), "footer must come after the review notes"
+    assert re.search(r"review notes?", footer, re.IGNORECASE), f"footer must tell the agent to show the review notes: {footer}"
+
+
+def test_suggest_with_preset_and_pipeline_posts_the_pipeline_name(preset_captured):
+    server._dispatch("suggest_field_protection", {"pipeline": "fp_demo", "preset": PRESET})
+    posts = [(p, kw) for (m, p, kw) in preset_captured.calls if m == "post"]
+    assert [p for p, _ in posts] == [PRESET_PATH], preset_captured.calls
+    assert posts[0][1].get("json") == {"preset": PRESET, "pipeline": "fp_demo"}, posts[0][1]
+
+
+def test_suggest_without_preset_still_posts_to_suggest(preset_captured):
+    server._dispatch("suggest_field_protection", {"fields": PRESET_FIELDS})
+    paths = [p for (m, p, kw) in preset_captured.calls if m == "post"]
+    assert paths == [SUGGEST_PATH], preset_captured.calls
+
+
+def test_create_pipeline_schema_has_optional_protect_preset_and_exempt():
+    tool = _tool("create_pipeline")
+    props = tool.inputSchema["properties"]
+    assert "protect_preset" in props, sorted(props)
+    assert props["protect_preset"].get("enum") == [PRESET], props["protect_preset"]
+    assert "protect_exempt" in props, sorted(props)
+    ex = props["protect_exempt"]
+    assert ex["type"] == "array", ex
+    assert ex["items"]["type"] == "string", ex
+    required = tool.inputSchema.get("required", [])
+    assert "protect_preset" not in required and "protect_exempt" not in required, required
+
+
+def test_create_pipeline_with_protect_preset_posts_protection_preset_and_exempt(captured):
+    posted = _create(captured,
+                     protect={"mrn": {"method": "hmac"}, "email": {"method": "redact"}},
+                     protect_preset=PRESET, protect_exempt=["ssn"])
+    assert posted.get("protection") == {"preset": PRESET, "presetExempt": ["ssn"]}, posted.get("protection")
+    fields = _fields(posted)
+    assert fields["mrn"].get("protect") == {"method": "hmac"}
+    assert "protect" not in fields["ssn"], fields["ssn"]
+
+
+def test_create_pipeline_with_protect_preset_only_posts_the_preset(captured):
+    posted = _create(captured, protect={"mrn": {"method": "hmac"}}, protect_preset=PRESET)
+    protection = posted.get("protection")
+    assert isinstance(protection, dict), posted
+    assert protection.get("preset") == PRESET, protection
+    assert protection.get("presetExempt", []) == [], protection
+    assert set(protection) <= {"preset", "presetExempt"}, protection
+
+
+def test_absent_preset_arguments_post_no_protection_block(captured):
+    # The arguments exist on the tool but are optional ...
+    props = _tool("create_pipeline").inputSchema["properties"]
+    assert "protect_preset" in props and "protect_exempt" in props, sorted(props)
+    # ... and leaving them out posts no protection block, with or without protect.
+    posted = _create(captured)
+    assert "protection" not in posted, posted
+    captured.posted = None
+    posted = _create(captured, protect={"mrn": {"method": "hmac"}})
+    assert "protection" not in posted, posted
+    assert "preset" not in json.dumps(posted), posted
+
+
+class _RefusingSave(_Captured):
+    REFUSAL = ("Preset hipaa-safe-harbor: field 'ssn' is classified as ssn and has no protect. "
+               "Add protect to it or list it under protection.presetExempt")
+
+    def call(self, method, path, timeout=300, **kwargs):
+        if method == "post" and path == "/api/v1/pipeline":
+            self.post_count += 1
+            self.posted = kwargs.get("json")
+            return json.dumps({"error": self.REFUSAL})
+        return super().call(method, path, timeout=timeout, **kwargs)
+
+
+def test_server_refusal_for_an_unprotected_identifier_passes_through(monkeypatch):
+    c = _RefusingSave()
+    monkeypatch.setattr(server, "_upload_content", c.upload_content)
+    monkeypatch.setattr(server, "_call", c.call)
+    raw = server._dispatch("create_pipeline", _args(protect={"mrn": {"method": "hmac"}}, protect_preset=PRESET))
+    assert c.posted is not None and c.posted.get("protection", {}).get("preset") == PRESET, c.posted
+    assert server._is_error_payload(raw), raw
+    assert "'ssn'" in raw and "presetExempt" in raw, raw
+
+
+def test_protect_preserve_enum_includes_first3():
+    policy = _tool("create_pipeline").inputSchema["properties"]["protect"]["additionalProperties"]
+    enum = policy["properties"]["preserve"]["enum"]
+    assert "first3" in enum, enum
+    for p in ("last4", "domain", "year"):
+        assert p in enum, enum

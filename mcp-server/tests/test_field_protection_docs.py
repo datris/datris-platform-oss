@@ -127,3 +127,63 @@ def test_no_md_files_under_docs():
         dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", "config")]
         md += [os.path.relpath(os.path.join(root, f), REPO_ROOT) for f in files if f.lower().endswith(".md")]
     assert md == [], md
+
+
+# ============================================ story 11: Safe Harbor preset ---
+# plans/stories/field-protection-11-safe-harbor-preset-surfaces.md: Acceptance
+# "the reference text mentions the preset and tells the agent to show the
+# review notes", plus the Files section's docs/skill paragraphs.
+
+SKILL_MD = os.path.join(REPO_ROOT, "skills", "datris-platform", "SKILL.md")
+MCP_TOOLS_MD = os.path.join(REPO_ROOT, "skills", "datris-platform", "references", "mcp-tools.md")
+
+
+def _field_protection_paragraph():
+    ref = server.PIPELINE_CONFIG_REFERENCE
+    body = _section(ref, r"^Field protection")
+    assert body is not None, "PIPELINE_CONFIG_REFERENCE has no Field protection section"
+    return body
+
+
+def test_reference_text_mentions_the_preset_and_tells_the_agent_to_show_the_review_notes():
+    body = _field_protection_paragraph()
+    assert "hipaa-safe-harbor" in body, "Field protection section must name the preset id"
+    assert "protect_preset" in body or '"preset"' in body or "`preset`" in body, body
+    assert "presetExempt" in body or "protect_exempt" in body, "exemptions not mentioned"
+    # Enforced at save and for new columns.
+    assert re.search(r"\bsave", body, re.IGNORECASE) and re.search(r"new column", body, re.IGNORECASE), \
+        "must say the preset is enforced at save and for new columns"
+    # An aid; the review notes must be shown to the user.
+    assert re.search(r"\baid\b", body, re.IGNORECASE), "must say the preset is an aid"
+    assert re.search(r"review notes?", body, re.IGNORECASE), "must name the review notes"
+    sentence = [s for s in re.split(r"(?<=[.!?])\s+", body) if re.search(r"review notes?", s, re.IGNORECASE)]
+    assert any(re.search(r"\bshow", s, re.IGNORECASE) and re.search(r"\buser\b", s, re.IGNORECASE) for s in sentence), \
+        f"a sentence must tell the agent to show the review notes to the user: {sentence}"
+    # Delimited sources only.
+    assert re.search(r"delimited|csv", body, re.IGNORECASE), "must say the preset is for delimited sources"
+
+
+def test_reference_text_lists_first3_preserve():
+    body = _field_protection_paragraph()
+    assert "first3" in body, "the mask preserve list must include first3"
+
+
+def test_wizard_docs_describe_the_preset():
+    text = _read(FIELD_PROTECTION_MDX)
+    body = _section(text, r"^In the wizard$")
+    assert body is not None, _headings(text)
+    assert "HIPAA Safe Harbor" in body and re.search(r"\bPreset\b", body), body
+    assert re.search(r"review notes?", body, re.IGNORECASE), "wizard paragraph must mention the review notes"
+    assert re.search(r"exempt", body, re.IGNORECASE), "wizard paragraph must mention the Exempt toggle"
+    preset = _section(text, r"^HIPAA Safe Harbor preset$")
+    assert preset is not None and "#in-the-wizard" in preset, "the preset section must link to In the wizard"
+
+
+def test_skill_mentions_the_preset_in_the_protect_bullet_and_tool_rows():
+    skill = _read(SKILL_MD)
+    bullet = [l for l in skill.splitlines() if "suggest_field_protection" in l and "protect" in l]
+    assert bullet and any("hipaa-safe-harbor" in l or "Safe Harbor" in l for l in bullet), bullet
+    tools = _read(MCP_TOOLS_MD)
+    rows = {r.split("|")[1].strip(): r for r in tools.splitlines() if r.startswith("| `")}
+    assert "protect_preset" in rows.get("`create_pipeline`", ""), rows.get("`create_pipeline`")
+    assert "preset" in rows.get("`suggest_field_protection`", ""), rows.get("`suggest_field_protection`")

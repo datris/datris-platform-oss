@@ -569,12 +569,14 @@ describe('PipelineCreateComponent — field protection', () => {
     const keep = rowFor('email').querySelector('select.field-preserve');
     expect(keep).withContext('masked row shows select.field-preserve').not.toBeNull();
     const texts = offered(keep).map(t => t.toLowerCase());
-    expect(texts.length).toBe(4);
+    // Field protection 11 adds "Keep first 3" (preserve first3) for the preset's ZIP rule.
+    expect(texts.length).toBe(5);
     expect(texts[0]).toMatch(/mask(ed)? all|all masked/);
     expect(texts.some(t => /last\s*4/.test(t))).toBeTrue();
     expect(texts.some(t => /domain/.test(t))).toBeTrue();
     expect(texts.some(t => /year/.test(t))).toBeTrue();
-    expect((c.preserveOptions || []).map((o: any) => o.value)).toEqual([null, 'last4', 'domain', 'year']);
+    expect(texts.some(t => /first\s*3/.test(t))).toBeTrue();
+    expect((c.preserveOptions || []).map((o: any) => o.value)).toEqual([null, 'last4', 'domain', 'year', 'first3']);
     expect(c.protectMethods).toEqual(['hmac', 'mask', 'redact', 'drop', 'encrypt']);
   });
 
@@ -995,6 +997,542 @@ describe('PipelineService.suggestFieldProtection', () => {
     expect(req.request.body).toEqual({ fields });
     req.flush({ model: 'm', fields: [] });
     expect(got).toEqual({ model: 'm', fields: [] });
+    http.verify();
+  });
+});
+
+/**
+ * Story: Field protection 11 — HIPAA Safe Harbor preset in the wizard, the
+ * pipeline page and for agents
+ * (plans/stories/field-protection-11-safe-harbor-preset-surfaces.md), the
+ * eleven "Wizard spec" Acceptance bullets.
+ *
+ * Server contract (story 10 as built): POST /api/v1/pipeline/protect/preset
+ * with {preset, fields: [{name, type}]} answers {preset, fields: [{name,
+ * class, method, preserve, reason, current}], unclassified: [names], review:
+ * [notes]}; `method` is "none" when a clamp leaves nothing. The preset is
+ * delimited-only (the server refuses it on JSON, XML and unstructured).
+ *
+ * DOM contract pinned here (Source Schema step, CSV only):
+ *   - `select.preset-select` offering an option whose text is "HIPAA Safe Harbor"
+ *   - a `button` whose text is "Apply" that runs the preset
+ *   - `.preset-summary` block holding `.preset-unclassified` (names) and
+ *     `.preset-review` (the notes) and the enforce checkbox `input.preset-enforce`
+ *     (checked by default)
+ *   - per field row: a `.field-class` chip with the class label when the
+ *     preset classified it, and a `.preset-exempt` toggle (an input checkbox, a
+ *     button, or a label wrapping either) when the preset is enforced and a
+ *     classified field is set to None
+ *   - a field the user had already set keeps its value and gets a
+ *     `.field-suggestion` line reading "preset proposes <method>" with Keep and
+ *     Dismiss buttons; a proposal the guard refuses reads "not applied" with
+ *     the guard's reason and offers no Keep
+ *
+ * New members (presetFieldProtection, selectedPreset, enforcePreset,
+ * presetResult, applyPreset, toggleExempt, presetClass) are reached through
+ * `any` so this file compiles before they exist and fails on behaviour.
+ */
+describe('PipelineCreateComponent — field protection preset', () => {
+  let fixture: ComponentFixture<PipelineCreateComponent>;
+  let component: PipelineCreateComponent;
+  let el: HTMLElement;
+  let presetSpy: jasmine.Spy;
+
+  const PRESET = 'hipaa-safe-harbor';
+  const AGE_NOTE = 'Ages over 89 must be aggregated into a single 90 or older category.';
+  const ZIP_NOTE = 'ZIP prefixes covering 20,000 people or fewer must be 000.';
+  const FREE_NOTE = 'Free-text fields may hold identifiers: notes.';
+
+  const FIELDS = [
+    { name: 'patient_name', type: 'string' },
+    { name: 'mrn', type: 'string' },
+    { name: 'dob', type: 'string' },
+    { name: 'zip', type: 'string' },
+    { name: 'ssn', type: 'string' },
+    { name: 'phone', type: 'string' },
+    { name: 'visit_count', type: 'int' },
+    { name: 'notes', type: 'string' }
+  ];
+
+  function presetResponse(overrides: any = {}): any {
+    return {
+      preset: PRESET,
+      fields: [
+        { name: 'patient_name', class: 'name', method: 'redact', preserve: null, reason: 'person name', current: null },
+        { name: 'mrn', class: 'mrn', method: 'hmac', preserve: null, reason: 'medical record number', current: null },
+        { name: 'dob', class: 'date', method: 'mask', preserve: 'year', reason: 'date of birth', current: null },
+        { name: 'zip', class: 'geographic', method: 'mask', preserve: 'first3', reason: 'ZIP code', current: null },
+        { name: 'ssn', class: 'ssn', method: 'drop', preserve: null, reason: 'social security number', current: null },
+        { name: 'phone', class: 'phone', method: 'redact', preserve: null, reason: 'telephone number', current: null }
+      ],
+      unclassified: ['visit_count', 'notes'],
+      review: [AGE_NOTE, ZIP_NOTE, FREE_NOTE],
+      ...overrides
+    };
+  }
+
+  beforeEach(async () => {
+    presetSpy = jasmine.createSpy('presetFieldProtection').and.callFake(() => of(presetResponse()));
+    await TestBed.configureTestingModule({
+      declarations: [PipelineCreateComponent],
+      imports: [FormsModule],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: PipelineService, useValue: {
+            getAvailableDestinations: () => of(['postgres', 'mongodb', 'objectstore', 'snowflake', 'databricks']),
+            getPipelines: () => of([]),
+            getPipeline: () => of({}),
+            suggestFieldProtection: jasmine.createSpy('suggestFieldProtection').and.returnValue(of({ model: 'm', fields: [] })),
+            presetFieldProtection: presetSpy
+        } },
+        { provide: SearchService, useValue: { getPipelines: () => of([]) } },
+        { provide: HealthService, useValue: { isAvailable: () => true, refresh: () => Promise.resolve() } },
+        { provide: TapService, useValue: { getTaps: () => of([]) } },
+        { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap({}), paramMap: convertToParamMap({}) } } }
+      ]
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(PipelineCreateComponent);
+    component = fixture.componentInstance;
+    el = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+  });
+
+  // ---- helpers (same shape as the field-protection describe above) --------
+
+  function csvConfig(fields: any[], destination: any = {}, extra: any = {}): any {
+    return {
+      name: 'patients',
+      source: { fileAttributes: { csvAttributes: { delimiter: ',' } }, schemaProperties: { dbName: 'datris', fields } },
+      destination,
+      ...extra
+    };
+  }
+
+  async function settle(): Promise<void> {
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  async function onSchemaStep(fields: any[], destination: any = {}, extra: any = {}): Promise<void> {
+    component.loadFromConfig(csvConfig(fields, destination, extra));
+    component.step = 3;
+    await settle();
+  }
+
+  function fieldRows(): HTMLElement[] {
+    return Array.from(el.querySelectorAll('.field-row')) as HTMLElement[];
+  }
+
+  function rowFor(name: string): HTMLElement {
+    const row = fieldRows().find(r => (r.querySelector('input.field-name') as HTMLInputElement | null)?.value === name);
+    expect(row).withContext('field row for ' + name).toBeDefined();
+    return row!;
+  }
+
+  /** The row plus the marker lines rendered after it, up to the next field row. */
+  function rowBlock(name: string): HTMLElement[] {
+    const row = rowFor(name);
+    const out: HTMLElement[] = [row];
+    let n = row?.nextElementSibling as HTMLElement | null;
+    while (n && !n.classList.contains('field-row') && !n.classList.contains('field-actions')) {
+      out.push(n);
+      n = n.nextElementSibling as HTMLElement | null;
+    }
+    return out;
+  }
+
+  function blockQuery(name: string, sel: string): HTMLElement | null {
+    for (const e of rowBlock(name)) {
+      if (e.matches(sel)) return e;
+      const hit = e.querySelector(sel) as HTMLElement | null;
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function offered(select: Element | null): string[] {
+    return Array.from(select?.querySelectorAll('option') || [])
+      .filter(o => !(o as HTMLOptionElement).disabled)
+      .map(o => (o.textContent || '').trim());
+  }
+
+  function selectedText(select: Element | null): string {
+    const opt = Array.from(select?.querySelectorAll('option') || []).find(o => (o as HTMLOptionElement).selected);
+    return (opt?.textContent || '').trim();
+  }
+
+  function wire(v: any): any {
+    return JSON.parse(JSON.stringify(v));
+  }
+
+  async function pick(select: HTMLSelectElement, value: string): Promise<void> {
+    select.value = value;
+    select.dispatchEvent(new Event('change'));
+    await settle();
+  }
+
+  function presetSelect(): HTMLSelectElement {
+    const sel = el.querySelector('select.preset-select') as HTMLSelectElement | null;
+    expect(sel).withContext('select.preset-select on the Source Schema step').not.toBeNull();
+    return sel!;
+  }
+
+  function applyButton(): HTMLButtonElement | undefined {
+    return (Array.from(el.querySelectorAll('button')) as HTMLButtonElement[])
+      .find(b => /^apply$/i.test((b.textContent || '').trim()));
+  }
+
+  /** Choose "HIPAA Safe Harbor" in the preset select and click Apply. */
+  async function applyPreset(): Promise<void> {
+    const sel = presetSelect();
+    const opts = Array.from(sel?.querySelectorAll('option') || []) as HTMLOptionElement[];
+    const idx = opts.findIndex(o => /^HIPAA Safe Harbor$/.test((o.textContent || '').trim()));
+    expect(idx).withContext('"HIPAA Safe Harbor" option; offered: ' + offered(sel).join(',')).toBeGreaterThanOrEqual(0);
+    if (sel && idx >= 0) {
+      sel.selectedIndex = idx;
+      sel.dispatchEvent(new Event('change'));
+      await settle();
+    }
+    const btn = applyButton();
+    expect(btn).withContext('"Apply" button beside the preset select').toBeDefined();
+    if (btn) {
+      expect(btn.disabled).withContext('Apply enabled once a preset is chosen').toBeFalse();
+      btn.click();
+    }
+    await settle();
+  }
+
+  function f(name: string): any {
+    return ((component as any).schemaFields as any[]).find(x => x.name === name);
+  }
+
+  function enforceBox(): HTMLInputElement | null {
+    return el.querySelector('input.preset-enforce') as HTMLInputElement | null;
+  }
+
+  async function clickExempt(name: string): Promise<void> {
+    const ex = rowFor(name)?.querySelector('.preset-exempt') as HTMLElement | null;
+    expect(ex).withContext('.preset-exempt toggle in the ' + name + ' row').not.toBeNull();
+    if (!ex) return;
+    const target = (ex.matches('input, button') ? ex : (ex.querySelector('input, button') || ex)) as HTMLElement;
+    target.click();
+    await settle();
+  }
+
+  // ---- bullets --------------------------------------------------------------
+
+  it('choosing the preset and Apply posts names and types only to the preset endpoint', async () => {
+    await onSchemaStep(FIELDS.map((x, i) => i === 4 ? { ...x, protect: { method: 'redact' } } : x));
+    const texts = offered(presetSelect());
+    expect(texts).toContain('HIPAA Safe Harbor');
+    await applyPreset();
+
+    expect(presetSpy).toHaveBeenCalledTimes(1);
+    const [preset, sent] = presetSpy.calls.mostRecent()?.args || [];
+    expect(preset).toBe(PRESET);
+    // Names and types only: no protect, no wizard state, no data.
+    expect(sent).toEqual(FIELDS);
+    expect((component as any).presetResult?.fields?.length).toBe(6);
+  });
+
+  it('recognised fields get their method and a class chip', async () => {
+    presetSpy.and.callFake(() => of(presetResponse({
+      fields: [
+        ...presetResponse().fields,
+        { name: 'fax_no', class: 'fax', method: 'none', preserve: null, reason: 'clamped: key field', current: null }
+      ]
+    })));
+    await onSchemaStep([...FIELDS, { name: 'fax_no', type: 'string' }]);
+    await applyPreset();
+
+    expect(f('patient_name').protect?.method).toBe('redact');
+    expect(f('mrn').protect?.method).toBe('hmac');
+    expect(f('dob').protect).toEqual(jasmine.objectContaining({ method: 'mask', preserve: 'year' }));
+    expect(f('zip').protect).toEqual(jasmine.objectContaining({ method: 'mask', preserve: 'first3' }));
+    expect(f('ssn').protect?.method).toBe('drop');
+    expect(f('phone').protect?.method).toBe('redact');
+    expect(f('visit_count').protect?.method || null).toBeNull();
+    expect(f('notes').protect?.method || null).toBeNull();
+    // method "none" (a clamp) sets nothing.
+    expect(f('fax_no').protect?.method || null).toBeNull();
+
+    expect(f('mrn').presetClass).toBe('mrn');
+    expect(f('zip').presetClass).toBe('geographic');
+    expect(selectedText(rowFor('zip').querySelector('select.field-protect')).toLowerCase()).toMatch(/^mask/);
+    expect(selectedText(rowFor('zip').querySelector('select.field-preserve'))).toMatch(/first 3/i);
+
+    const chip = (name: string) => (rowFor(name)?.querySelector('.field-class')?.textContent || '').trim();
+    expect(chip('patient_name')).toContain('name');
+    expect(chip('mrn')).toContain('mrn');
+    expect(chip('dob')).toContain('date');
+    expect(chip('zip')).toContain('geographic');
+    expect(chip('ssn')).toContain('ssn');
+    expect(chip('phone')).toContain('phone');
+    expect(chip('fax_no')).toContain('fax');
+    expect(rowFor('visit_count')?.querySelector('.field-class')).withContext('unclassified field has no chip').toBeNull();
+    expect(rowFor('notes')?.querySelector('.field-class')).toBeNull();
+  });
+
+  it('a field the user had already set keeps its value and shows the preset\'s proposal with Keep and Dismiss', async () => {
+    await onSchemaStep(FIELDS.map(x =>
+      x.name === 'ssn' ? { ...x, protect: { method: 'redact' } }
+      : x.name === 'phone' ? { ...x, protect: { method: 'mask', preserve: 'last4' } }
+      : x));
+    await applyPreset();
+
+    expect(f('ssn').protect?.method).withContext('user value kept').toBe('redact');
+    expect(f('phone').protect?.method).toBe('mask');
+    expect(f('phone').protect?.preserve).toBe('last4');
+    // Empty fields were still filled.
+    expect(f('mrn').protect?.method).toBe('hmac');
+
+    for (const [name, method] of [['ssn', 'drop'], ['phone', 'redact']]) {
+      const line = blockQuery(name, '.field-suggestion');
+      expect(line).withContext('.field-suggestion for ' + name).not.toBeNull();
+      expect((line?.textContent || '').replace(/\s+/g, ' ')).toMatch(new RegExp('preset proposes ' + method, 'i'));
+      const buttons = Array.from(line?.querySelectorAll('button') || []).map(b => (b.textContent || '').trim());
+      expect(buttons).withContext(name + ' marker buttons').toContain('Keep');
+      expect(buttons).withContext(name + ' marker buttons').toContain('Dismiss');
+    }
+    // A field the preset filled carries no "preset proposes" marker.
+    expect((blockQuery('mrn', '.field-suggestion')?.textContent || '')).not.toMatch(/preset proposes/i);
+
+    // Keep adopts the proposal; Dismiss leaves the user's value.
+    const btn = (name: string, text: string) => Array.from(blockQuery(name, '.field-suggestion')?.querySelectorAll('button') || [])
+      .find(b => (b.textContent || '').trim() === text) as HTMLButtonElement | undefined;
+    btn('ssn', 'Keep')?.click();
+    btn('phone', 'Dismiss')?.click();
+    await settle();
+    expect(f('ssn').protect?.method).toBe('drop');
+    expect(f('phone').protect?.method).toBe('mask');
+    expect(f('phone').protect?.preserve).toBe('last4');
+    expect(blockQuery('ssn', '.field-suggestion')).toBeNull();
+    expect(blockQuery('phone', '.field-suggestion')).toBeNull();
+  });
+
+  it('a proposal the type or key-column guard refuses is shown as not applied with the reason', async () => {
+    await onSchemaStep(
+      FIELDS.map(x => x.name === 'dob' ? { ...x, type: 'date' } : x),
+      {
+        schemaProperties: { fields: FIELDS.map(x => ({ name: x.name, type: x.name === 'dob' ? 'date' : x.type })) },
+        database: { dbName: 'datris', schema: 'public', table: 'patients', usePostgres: true, keyFields: ['patient_name'] }
+      }
+    );
+    expect(component.destType).toBe('postgres');
+    await applyPreset();
+
+    expect(f('dob').protect?.method || null).withContext('mask refused on a date field').toBeNull();
+    expect(f('patient_name').protect?.method || null).withContext('redact refused on a key column').toBeNull();
+    expect(f('mrn').protect?.method).toBe('hmac');
+
+    const dob = blockQuery('dob', '.field-suggestion');
+    const pn = blockQuery('patient_name', '.field-suggestion');
+    expect(dob).withContext('marker for refused dob proposal').not.toBeNull();
+    expect(pn).withContext('marker for refused patient_name proposal').not.toBeNull();
+    expect(dob?.textContent || '').toContain('not applied');
+    expect(dob?.textContent || '').toContain('mask applies only to string fields; dob is date.');
+    expect(pn?.textContent || '').toContain('not applied');
+    expect(pn?.textContent || '').toContain('patient_name is a key field');
+    for (const line of [dob, pn]) {
+      const buttons = Array.from(line?.querySelectorAll('button') || []).map(b => (b.textContent || '').trim());
+      expect(buttons).not.toContain('Keep');
+    }
+  });
+
+  it('unclassified fields and review notes are listed', async () => {
+    await onSchemaStep(FIELDS);
+    expect(el.querySelector('.preset-summary')).withContext('no summary before Apply').toBeNull();
+    await applyPreset();
+
+    const summary = el.querySelector('.preset-summary') as HTMLElement | null;
+    expect(summary).withContext('.preset-summary after Apply').not.toBeNull();
+    const un = (summary?.querySelector('.preset-unclassified')?.textContent || '').replace(/\s+/g, ' ');
+    expect(un).toContain('visit_count');
+    expect(un).toContain('notes');
+    expect(un).not.toContain('mrn');
+    const review = (summary?.querySelector('.preset-review')?.textContent || '').replace(/\s+/g, ' ');
+    for (const note of [AGE_NOTE, ZIP_NOTE, FREE_NOTE]) {
+      expect(review).toContain(note);
+    }
+    expect((component as any).presetResult?.unclassified).toEqual(['visit_count', 'notes']);
+    expect((component as any).presetResult?.review?.length).toBe(3);
+  });
+
+  it('buildConfig emits protection.preset and presetExempt only when a preset is enforced', async () => {
+    await onSchemaStep(FIELDS);
+    // No preset chosen yet: no protection block.
+    expect(wire(component.buildConfig()).protection).toBeUndefined();
+
+    await applyPreset();
+    const c: any = component;
+    expect(c.selectedPreset).toBe(PRESET);
+    expect(c.enforcePreset).withContext('enforce on by default').toBeTrue();
+    expect(enforceBox()).withContext('input.preset-enforce').not.toBeNull();
+    expect(enforceBox()?.checked).toBeTrue();
+
+    let protection = wire(component.buildConfig()).protection;
+    expect(protection?.preset).toBe(PRESET);
+    expect(protection?.presetExempt ?? []).toEqual([]);
+
+    // Exempt toggle appears only once a classified field is set to None.
+    expect(rowFor('phone')?.querySelector('.preset-exempt')).withContext('no Exempt while phone is protected').toBeNull();
+    expect(rowFor('visit_count')?.querySelector('.preset-exempt')).withContext('no Exempt on an unclassified field').toBeNull();
+    await pick(rowFor('phone').querySelector('select.field-protect') as HTMLSelectElement, '');
+    expect(f('phone').protect?.method || null).toBeNull();
+    await clickExempt('phone');
+
+    const cfg = wire(component.buildConfig());
+    expect(cfg.protection).toEqual({ preset: PRESET, presetExempt: ['phone'] });
+    const phone = cfg.source.schemaProperties.fields.find((x: any) => x.name === 'phone');
+    expect(phone).toEqual({ name: 'phone', type: 'string' });
+    // Wizard-only state never reaches the config.
+    expect(JSON.stringify(cfg)).not.toContain('presetClass');
+    expect(JSON.stringify(cfg.source)).not.toContain('geographic');
+  });
+
+  it('unticking enforce applies the methods but emits no preset', async () => {
+    await onSchemaStep(FIELDS);
+    await applyPreset();
+    const box = enforceBox();
+    expect(box).withContext('input.preset-enforce').not.toBeNull();
+    box?.click();
+    await settle();
+    expect((component as any).enforcePreset).toBeFalse();
+
+    const cfg = wire(component.buildConfig());
+    const byName: any = {};
+    for (const x of cfg.source.schemaProperties.fields) byName[x.name] = x;
+    expect(byName.mrn.protect).toEqual({ method: 'hmac' });
+    expect(byName.zip.protect).toEqual({ method: 'mask', preserve: 'first3' });
+    expect(byName.ssn.protect).toEqual({ method: 'drop' });
+    expect(cfg.protection?.preset).toBeUndefined();
+    expect(cfg.protection?.presetExempt).toBeUndefined();
+    expect(JSON.stringify(cfg)).not.toContain('preset');
+  });
+
+  it('a saved preset pipeline reopens with the preset, the exemptions and the chips', async () => {
+    const saved = [
+      { name: 'patient_name', type: 'string', protect: { method: 'redact' } },
+      { name: 'mrn', type: 'string', protect: { method: 'hmac' } },
+      { name: 'dob', type: 'string', protect: { method: 'mask', preserve: 'year' } },
+      { name: 'zip', type: 'string', protect: { method: 'mask', preserve: 'first3' } },
+      { name: 'ssn', type: 'string', protect: { method: 'drop' } },
+      { name: 'phone', type: 'string' },
+      { name: 'visit_count', type: 'int' },
+      { name: 'notes', type: 'string' }
+    ];
+    await onSchemaStep(saved, {}, { protection: { purgeSource: false, preset: PRESET, presetExempt: ['phone'] } });
+    const c: any = component;
+    expect(c.selectedPreset).toBe(PRESET);
+    expect(c.enforcePreset).toBeTrue();
+    expect(selectedText(presetSelect())).toBe('HIPAA Safe Harbor');
+    expect(enforceBox()?.checked).toBeTrue();
+
+    // Saved values are not overwritten by the reopened preset.
+    expect(f('phone').protect?.method || null).toBeNull();
+    expect(f('zip').protect).toEqual(jasmine.objectContaining({ method: 'mask', preserve: 'first3' }));
+    expect(selectedText(rowFor('zip').querySelector('select.field-preserve'))).toMatch(/first 3/i);
+
+    // Chips come back for the classified fields.
+    expect((rowFor('mrn')?.querySelector('.field-class')?.textContent || '')).toContain('mrn');
+    expect((rowFor('phone')?.querySelector('.field-class')?.textContent || '')).toContain('phone');
+    expect(rowFor('visit_count')?.querySelector('.field-class')).toBeNull();
+
+    // The exemption is shown on phone.
+    const ex = rowFor('phone')?.querySelector('.preset-exempt') as HTMLElement | null;
+    expect(ex).withContext('.preset-exempt on the exempted phone row').not.toBeNull();
+    const box = (ex?.matches('input') ? ex : ex?.querySelector('input[type=checkbox]')) as HTMLInputElement | null;
+    if (box) expect(box.checked).withContext('exempt checkbox ticked').toBeTrue();
+
+    // Saving untouched round-trips the fields and the protection block (purgeSource kept).
+    const cfg = wire(component.buildConfig());
+    expect(cfg.source.schemaProperties.fields).toEqual(saved);
+    expect(cfg.protection).toEqual({ purgeSource: false, preset: PRESET, presetExempt: ['phone'] });
+  });
+
+  it('Keep first 3 is offered for mask', async () => {
+    await onSchemaStep([{ name: 'zip', type: 'string', protect: { method: 'mask' } }]);
+    const c: any = component;
+    expect((c.preserveOptions || []).find((o: any) => o.value === 'first3')?.label).toBe('Keep first 3');
+    const keep = rowFor('zip').querySelector('select.field-preserve');
+    expect(offered(keep)).toContain('Keep first 3');
+    const opt = (Array.from(keep?.querySelectorAll('option') || []) as HTMLOptionElement[])
+      .find(o => (o.textContent || '').trim() === 'Keep first 3');
+    if (opt && keep) {
+      (keep as HTMLSelectElement).selectedIndex = Array.from(keep.querySelectorAll('option')).indexOf(opt);
+      keep.dispatchEvent(new Event('change'));
+      await settle();
+    }
+    expect(wire(component.buildConfig()).source.schemaProperties.fields[0])
+      .toEqual({ name: 'zip', type: 'string', protect: { method: 'mask', preserve: 'first3' } });
+  });
+
+  it('a pipeline without a preset saves the same config as today', async () => {
+    const original = [
+      { name: 'mrn', type: 'string', protect: { method: 'hmac' } },
+      { name: 'email', type: 'string', protect: { method: 'mask', preserve: 'domain' } },
+      { name: 'amount', type: 'double' }
+    ];
+    await onSchemaStep(original);
+    // The preset control is there, with nothing chosen.
+    const sel = presetSelect();
+    expect(offered(sel)).toContain('HIPAA Safe Harbor');
+    expect(selectedText(sel)).not.toBe('HIPAA Safe Harbor');
+    expect((component as any).selectedPreset || null).toBeNull();
+    expect(presetSpy).not.toHaveBeenCalled();
+    expect(el.querySelector('.preset-summary')).toBeNull();
+    expect(el.querySelector('.field-class')).toBeNull();
+
+    const cfg = wire(component.buildConfig());
+    expect(cfg.source.schemaProperties.fields).toEqual(original);
+    expect('protection' in cfg).toBeFalse();
+    const s = JSON.stringify(cfg);
+    expect(s).not.toContain('preset');
+    expect(s).not.toContain('Exempt');
+  });
+
+  it('json source shows no preset select', async () => {
+    await onSchemaStep([{ name: 'mrn', type: 'string' }]);
+    expect(el.querySelector('select.preset-select')).withContext('csv shows the preset select').not.toBeNull();
+
+    for (const fa of [{ jsonAttributes: { everyRowContainsObject: true } }, { xmlAttributes: { everyRowContainsObject: true } }]) {
+      const docField = fa.hasOwnProperty('jsonAttributes') ? '_json' : '_xml';
+      component.loadFromConfig({
+        name: 'events',
+        source: { fileAttributes: fa, schemaProperties: { fields: [{ name: docField, type: 'string' }] } },
+        destination: {}
+      });
+      component.step = 3;
+      await settle();
+      expect(el.querySelector('select.preset-select')).withContext(docField + ' source: no preset select').toBeNull();
+      expect(applyButton()).withContext(docField + ' source: no Apply button').toBeUndefined();
+      expect(el.querySelector('.preset-summary')).toBeNull();
+      expect(JSON.stringify(wire(component.buildConfig()))).not.toContain('preset');
+    }
+  });
+});
+
+describe('PipelineService.presetFieldProtection', () => {
+  it('posts {preset, fields} to /api/v1/pipeline/protect/preset', () => {
+    TestBed.configureTestingModule({ providers: [PipelineService, provideHttpClient(), provideHttpClientTesting()] });
+    const svc: any = TestBed.inject(PipelineService);
+    const http = TestBed.inject(HttpTestingController);
+    expect(typeof svc.presetFieldProtection).withContext('PipelineService.presetFieldProtection').toBe('function');
+    if (typeof svc.presetFieldProtection !== 'function') return;
+    let got: any = null;
+    const fields = [{ name: 'mrn', type: 'string' }];
+    svc.presetFieldProtection('hipaa-safe-harbor', fields).subscribe((r: any) => got = r);
+    const req = http.expectOne('/api/v1/pipeline/protect/preset');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ preset: 'hipaa-safe-harbor', fields });
+    const resp = { preset: 'hipaa-safe-harbor', fields: [], unclassified: [], review: [] };
+    req.flush(resp);
+    expect(got).toEqual(resp);
     http.verify();
   });
 });
