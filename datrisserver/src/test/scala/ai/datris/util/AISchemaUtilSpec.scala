@@ -361,4 +361,50 @@ class AISchemaUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
             }
         }
     }
+
+    // ---- E2E finding (2026-10-05): a declined result never has a blank or duplicate field name ----
+
+    private def assertNamesUsable(names: List[String], config: String): Unit = {
+        assert(names.forall(_.trim.nonEmpty), "blank field name: " + config)
+        assert(names.map(_.toLowerCase).distinct.size == names.size, "duplicate field name: " + config)
+    }
+
+    test("on-mode decline on a 0-byte file gives column_1, as the off-mode result does, never a blank name") {
+        val off = inEnv(withheld(parsed(AISchemaUtil.buildCsvConfig("empty", "", ",", true, declined))))
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("empty", "", ",", true, declined)
+                assert(obj(config).get("aiDeclined").getAsBoolean, config)
+                val (names, header) = parsed(config)
+                assert(names == List("column_1"), config)
+                assert((names, header) == off, "same names and header flag as off-mode: " + off + " vs " + config)
+                assertNamesUsable(names, config)
+            }
+        }
+    }
+
+    test("on-mode decline: blank header cells take column_N for their position; real names are kept as written") {
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("t", "First Name,,amount,\nZQX-NAME-1,x,918273645,y", ",", true, declined)
+                val (names, header) = parsed(config)
+                assert(names == List("First Name", "column_2", "amount", "column_4"), config)
+                assert(header, "line 1 is still the header: " + config)
+                assertNamesUsable(names, config)
+            }
+        }
+    }
+
+    test("on-mode decline: a repeated header name (any case) takes column_N; a numbered name never collides") {
+        inEnv {
+            sampled {
+                val (names, _) = parsed(AISchemaUtil.buildCsvConfig("t", "id,ID,name\n1,2,x", ",", true, declined))
+                assert(names == List("id", "column_2", "name"))
+                val c2 = AISchemaUtil.buildCsvConfig("t", "a,,column_2\n1,2,3", ",", true, declined)
+                val (names2, _) = parsed(c2)
+                assert(names2 == List("a", "column_2_2", "column_2"), c2)
+                assertNamesUsable(names2, c2)
+            }
+        }
+    }
 }

@@ -67,20 +67,66 @@ object AISchemaUtil {
     }
 
     /** On-mode fallback when the model declines: the header was already sent
-      * to the model, so a real header keeps its names exactly as
-      * [[buildCsvConfigAllStrings]] writes them. When `header` is false or
-      * line 1 reads as data, the columns are numbered and
+      * to the model, so a real header keeps its names exactly as written (as
+      * [[buildCsvConfigAllStrings]] writes them), except that a blank cell, or
+      * a name already used (case-insensitively), takes `column_N` for its
+      * position, so the result never has a blank or duplicate field name (an
+      * empty file gives `column_1`, as the values-withheld result does). When
+      * `header` is false or line 1 reads as data, the columns are numbered and
       * `csvAttributes.header` is false, as in the values-withheld result.
       * Top-level `"aiDeclined": true`; never `valuesWithheld`. */
     private def buildCsvConfigDeclined(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
         val myDelimiter = if (delimiter == null) "," else delimiter
-        val lineOneIsHeader = header && !AiSampleValues.headerLooksLikeData(firstLineCells(fileContent, myDelimiter))
+        val cells = firstLineCells(fileContent, myDelimiter)
+        val lineOneIsHeader = header && !AiSampleValues.headerLooksLikeData(cells)
         val base =
-            if (lineOneIsHeader) buildCsvConfigAllStrings(pipeline, fileContent, delimiter, header)
-            else buildCsvConfigWithheld(pipeline, fileContent, delimiter, header)
+            if (lineOneIsHeader) {
+                logger.info("Building all-string CSV config (model declined) for pipeline: " + pipeline + ", fields: " + cells.size)
+                buildConfig(
+                    pipeline = pipeline,
+                    fieldsJson = stringFieldsJson(declinedHeaderNames(cells)),
+                    sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": true, "encoding": "UTF-8" }""",
+                    usePostgres = true,
+                    useMongoDB = false
+                )
+            } else buildCsvConfigWithheld(pipeline, fileContent, delimiter, header)
         val config = JsonParser.parseString(base).getAsJsonObject
         config.addProperty("aiDeclined", true)
         new GsonBuilder().setPrettyPrinting().create().toJson(config)
+    }
+
+    /** Header names for the decline fallback: each non-blank cell as written,
+      * first occurrence wins; a blank or repeated cell becomes `column_N` (N =
+      * its position), suffixed `_2`, `_3`, … only if that name is also taken. */
+    private[util] def declinedHeaderNames(cells: List[String]): List[String] = {
+        val kept = scala.collection.mutable.Set.empty[String]
+        val firstUse = cells.zipWithIndex.map {
+            case (c, _) if c.isEmpty => false
+            case (c, _) => kept.add(c.toLowerCase)
+        }
+        val used = scala.collection.mutable.Set.empty[String] ++ kept
+        cells.zip(firstUse).zipWithIndex.map {
+            case ((c, true), _) => c
+            case ((_, false), i) =>
+                val baseName = "column_" + (i + 1)
+                var name = baseName
+                var k = 2
+                while (used.contains(name.toLowerCase)) { name = baseName + "_" + k; k += 1 }
+                used += name.toLowerCase
+                name
+        }
+    }
+
+    /** `[{"name":…,"type":"string"},…]` with each name JSON-escaped. */
+    private def stringFieldsJson(names: List[String]): String = {
+        val arr = new com.google.gson.JsonArray()
+        names.foreach { n =>
+            val f = new com.google.gson.JsonObject()
+            f.addProperty("name", n)
+            f.addProperty("type", "string")
+            arr.add(f)
+        }
+        arr.toString
     }
 
     def buildCsvConfig(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String =
