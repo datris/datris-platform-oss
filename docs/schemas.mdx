@@ -157,7 +157,7 @@ Each schema change increments a `schemaVersion` counter in the pipeline config, 
 
 - **New columns in the CSV header** that are not in the stored schema → automatically added as `string` type
 
-If the destination schema already declares the new column (for example `admit_date` as `date`), the column joins the source schema only; the destination keeps its single declared entry and type, and the run status notes that it was kept as declared.
+If the destination schema already declares the new column (for example `admit_date` as `date`), the column joins the source schema only; the destination keeps its single declared entry and type, and the run status notes that it was kept as declared. A destination schema that already lists a column twice is repaired on the next run (the first entry and its type are kept). Object store destinations read files by column position, so when such a declared column arrives, the file's column order must match the destination schema's order; otherwise the run fails before writing and names both orders, and you reorder the destination schema or the file.
 
 ### New columns and field protection
 

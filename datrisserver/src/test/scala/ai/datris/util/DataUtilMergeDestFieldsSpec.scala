@@ -56,4 +56,12 @@ class DataUtilMergeDestFieldsSpec extends AnyFunSuite {
         assert(names(withNew) == List("id", "admit_date", "name", "extra"), withNew)
         assert(withNew.find(_.name == "admit_date").get.`type` == "date", withNew)
     }
+
+    test("objectStoreOrderMismatch: matching relative order is None, a swap names both orders") {
+        assert(DataUtil.objectStoreOrderMismatch(List("id", "name", "admit_date"), List("ID", "admit_date", "extra")) == None)
+        assert(
+            DataUtil.objectStoreOrderMismatch(List("id", "discharge_date", "admit_date"), List("id", "admit_date", "discharge_date")) ==
+                Some((List("id", "discharge_date", "admit_date"), List("id", "admit_date", "discharge_date")))
+        )
+    }
 }

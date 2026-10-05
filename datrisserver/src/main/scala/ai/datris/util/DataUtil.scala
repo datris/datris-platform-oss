@@ -35,16 +35,47 @@ object DataUtil {
         out.toList
     }
 
+    /** The destination schema with duplicate names removed (first entry
+      * wins), and whether anything was removed. A status line names the
+      * removed columns. */
+    private def repairDestDuplicates(config: PipelineConfig, statusUtil: StatusUtil): (PipelineConfig, Boolean) = {
+        if (config.destination == null || config.destination.schemaProperties == null || config.destination.schemaProperties.fields == null)
+            return (config, false)
+        val existing = config.destination.schemaProperties.fields.asScala.toList
+        val deduped = mergeDestFields(existing, Nil)
+        if (deduped.size == existing.size) return (config, false)
+        val removed = existing.diff(deduped).map(_.name).distinct
+        logger.info("Schema evolution: removed duplicate destination column(s) [" + removed.mkString(", ") + "] from pipeline " + config.name)
+        statusUtil.info("processing", "Schema evolution: removed duplicate destination column(s) [" + removed.mkString(", ") + "]; the first entry is kept")
+        val schema = config.destination.schemaProperties.copy(fields = new java.util.ArrayList[SchemaField](deduped.asJava))
+        (config.copy(destination = config.destination.copy(schemaProperties = schema)), true)
+    }
+
+    /** Columns present in both lists (trimmed, case-insensitive), each in its
+      * own list's order; Some((source, destination)) when the relative orders
+      * differ, None when they match. */
+    private[datris] def objectStoreOrderMismatch(sourceOrder: List[String], destOrder: List[String]): Option[(List[String], List[String])] = {
+        def key(n: String): String = Option(n).map(_.trim.toLowerCase).getOrElse("")
+        val destKeys = destOrder.map(key).toSet
+        val srcKeys = sourceOrder.map(key).toSet
+        val src = sourceOrder.filter(n => destKeys.contains(key(n)))
+        val dest = destOrder.filter(n => srcKeys.contains(key(n)))
+        if (src.map(key) == dest.map(key)) None else Some((src, dest))
+    }
+
     /**
      * Schema evolution: detect new/missing columns and update config.
      * Returns (updatedConfig, updatedSchemaColumns, presentColumns, missingColumns).
      */
     def evolveSchema(
         sourceColumns: List[String],
-        config: PipelineConfig,
+        storedConfig: PipelineConfig,
         statusUtil: StatusUtil,
         persist: PipelineConfig => Unit = PipelineConfigIO.write
     ): (PipelineConfig, List[String], List[String], List[String]) = {
+        // Repair a destination schema that already lists a column twice (written
+        // by an earlier run before the duplicate check existed): first entry wins.
+        val (config, repaired) = repairDestDuplicates(storedConfig, statusUtil)
         var updatedConfig = config
         var schemaColumns = config.source.schemaProperties.fields.asScala.map(_.name).toList
 
@@ -118,6 +149,20 @@ object DataUtil {
                         )
                     }
                 }
+                // Object store loads read the staged file by position against the
+                // destination schema, so a declared column joining the source in a
+                // different relative order would land in the wrong column.
+                val declaredNew = newFields.filter(f => existingDest.exists(d => d.name != null && d.name.trim.equalsIgnoreCase(f.name.trim)))
+                if (declaredNew.nonEmpty && config.destination.objectStore != null) {
+                    val sourceOrder = updatedSourceSchema.fields.asScala.map(_.name).toList
+                    objectStoreOrderMismatch(sourceOrder, existingDest.map(_.name)).foreach {
+                        case (src, dest) =>
+                            throw new DatrisException(
+                                "Object store pipelines map columns by position: the file's column order (" + src.mkString(", ") +
+                                    ") differs from the destination schema (" + dest.mkString(", ") + "). Reorder the destination schema or the file"
+                            )
+                    }
+                }
                 val destFields = new java.util.ArrayList[SchemaField](mergeDestFields(existingDest, newFields).asJava)
                 val updatedDestSchema = config.destination.schemaProperties.copy(fields = destFields, schemaVersion = newVersion)
                 config.destination.copy(schemaProperties = updatedDestSchema)
@@ -128,6 +173,8 @@ object DataUtil {
             persist(updatedConfig)
 
             schemaColumns = updatedSourceSchema.fields.asScala.map(_.name).toList
+        } else if (repaired) {
+            persist(config)
         }
 
         // Detect missing schema columns in the CSV header

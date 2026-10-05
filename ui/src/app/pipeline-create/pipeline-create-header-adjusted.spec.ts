@@ -130,4 +130,27 @@ describe('PipelineCreateComponent — header adopted from generated config', () 
     expect(component.csvHeader).toBeFalse();
     expect(el.querySelector('.header-adjusted')).toBeNull();
   });
+
+  it('a re-ticked Header survives entering step 5 (the DQ auto-profile does not adopt the flag)', () => {
+    component.csvHeader = true;
+    analyzeSampleOnFirstStep();
+    expect(component.csvHeader).toBeFalse();
+    component.csvHeader = true;           // user re-ticks Header
+    component.headerAdjusted = false;     // ngModelChange clears the note
+    component.autoProfileSampleFile();    // what entering step 5 fires
+    fixture.detectChanges();
+    expect(component.csvHeader).withContext('user choice kept').toBeTrue();
+    expect(component.buildConfig().source.fileAttributes.csvAttributes.header).toBeTrue();
+  });
+
+  it('the note is cleared when the source type changes and is shown only for CSV', () => {
+    component.csvHeader = true;
+    generateOnSchemaStep();
+    expect(el.querySelector('.header-adjusted')).not.toBeNull();
+    component.sourceType = 'json';
+    component.onSourceTypeChange();
+    fixture.detectChanges();
+    expect(component.headerAdjusted).toBeFalse();
+    expect(el.querySelector('.header-adjusted')).toBeNull();
+  });
 });

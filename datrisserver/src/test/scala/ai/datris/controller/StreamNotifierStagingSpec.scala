@@ -821,4 +821,107 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         val (evolved, _, _, _) = ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date"), base, su, _ => ())
         assert(evolved.destination.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name", "admit_date", "discharge_date"))
     }
+
+    // ---- Review round 1: repair a stored duplicate; object-store column order ----
+
+    private def destOf(names: (String, String)*): java.util.List[SchemaField] =
+        new java.util.ArrayList[SchemaField](names.map { case (n, t) => SchemaField(n, t) }.asJava)
+
+    test("a stored destination that already lists a column twice is repaired with no new columns, one write") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val cfg = PipelineConfig(
+            name = "e2e_dup",
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("id", "name", "admit_date")),
+                fileAttributes = FileAttributes(csvAttributes = CsvAttributes())
+            ),
+            destination = Destination(schemaProperties =
+                SchemaProperties("db", destOf("id" -> "string", "name" -> "string", "admit_date" -> "date", "admit_date" -> "string"))
+            )
+        )
+        val (evolved, schemaColumns, _, _) = ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date"), cfg, su, c => persisted += c)
+        assert(schemaColumns == List("id", "name", "admit_date"))
+        Seq(evolved, persisted.head).foreach { c =>
+            val dest = c.destination.schemaProperties.fields.asScala.toList
+            assert(dest == List(SchemaField("id", "string"), SchemaField("name", "string"), SchemaField("admit_date", "date")), dest)
+        }
+        assert(persisted.size == 1, s"one write, got ${persisted.size}")
+        assert(
+            su.events.exists(_._2.contains("removed duplicate destination column(s) [admit_date]; the first entry is kept")),
+            s"lines: ${su.events}"
+        )
+    }
+
+    test("a repair and a new column in the same run persist once") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val cfg = PipelineConfig(
+            name = "e2e_dup",
+            source =
+                Source(schemaProperties = SchemaProperties("db", fields("id", "admit_date")), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+            destination = Destination(schemaProperties = SchemaProperties("db", destOf("id" -> "string", "admit_date" -> "date", "admit_date" -> "string")))
+        )
+        val (evolved, _, _, _) = ai.datris.util.DataUtil.evolveSchema(List("id", "admit_date", "extra"), cfg, su, c => persisted += c)
+        assert(persisted.size == 1)
+        assert(evolved.destination.schemaProperties.fields.asScala.map(f => f.name -> f.`type`).toList == List(
+            "id" -> "string",
+            "admit_date" -> "date",
+            "extra" -> "string"
+        ))
+    }
+
+    test("a pipeline with no duplicate and no new columns is not written") {
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val cfg = declaredDestConfig
+        ai.datris.util.DataUtil.evolveSchema(List("id", "name"), cfg, new LevelStatusUtil, c => persisted += c)
+        assert(persisted.isEmpty)
+    }
+
+    private def objectStoreConfig: PipelineConfig =
+        PipelineConfig(
+            name = "e2e_os",
+            source = Source(schemaProperties = SchemaProperties("db", fields("id", "name")), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+            destination = Destination(
+                schemaProperties = SchemaProperties("db", destOf("id" -> "string", "name" -> "string", "admit_date" -> "date", "discharge_date" -> "date")),
+                objectStore = ObjectStore(prefixKey = "e2e")
+            )
+        )
+
+    test("object store: declared columns arriving in the destination's order evolve as usual") {
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val (evolved, schemaColumns, _, _) =
+            ai.datris.util.DataUtil.evolveSchema(
+                List("id", "name", "admit_date", "discharge_date"),
+                objectStoreConfig,
+                new LevelStatusUtil,
+                c => persisted += c
+            )
+        assert(schemaColumns == List("id", "name", "admit_date", "discharge_date"))
+        assert(evolved.destination.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name", "admit_date", "discharge_date"))
+        assert(persisted.size == 1)
+    }
+
+    test("object store: declared columns arriving in a different order fail before any write") {
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val e = intercept[DatrisException](
+            ai.datris.util.DataUtil.evolveSchema(
+                List("id", "name", "discharge_date", "admit_date"),
+                objectStoreConfig,
+                new LevelStatusUtil,
+                c => persisted += c
+            )
+        )
+        assert(e.getMessage.contains("Object store pipelines map columns by position"), e.getMessage)
+        assert(e.getMessage.contains("(id, name, discharge_date, admit_date)"), e.getMessage)
+        assert(e.getMessage.contains("(id, name, admit_date, discharge_date)"), e.getMessage)
+        assert(persisted.isEmpty)
+    }
+
+    test("a non-object-store destination accepts the same reordered file (loaders map by name)") {
+        val cfg = objectStoreConfig.copy(destination = objectStoreConfig.destination.copy(objectStore = null))
+        val (evolved, _, _, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date", "admit_date"), cfg, new LevelStatusUtil, _ => ())
+        assert(evolved.destination.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name", "admit_date", "discharge_date"))
+    }
 }

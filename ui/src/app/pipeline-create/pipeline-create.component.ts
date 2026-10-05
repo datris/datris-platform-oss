@@ -669,6 +669,7 @@ export class PipelineCreateComponent implements OnInit {
   }
 
   onSourceTypeChange(): void {
+    this.headerAdjusted = false;
     if (this.sourceType === 'json') {
       this.schemaFields = [wizardField({ name: '_json' })];
       // JSON can't go to PostgreSQL, Snowflake, Databricks, or Object Store
@@ -1340,7 +1341,7 @@ export class PipelineCreateComponent implements OnInit {
             this.resetPresetForNewSchema();
           }
           this.valuesWithheld = response?.valuesWithheld === true;
-        this.applyGeneratedHeader(response);
+          this.applyGeneratedHeader(response);
           this.generatingSchema = false;
         },
         error: (err: any) => {
@@ -1589,7 +1590,9 @@ export class PipelineCreateComponent implements OnInit {
 
   /** Adopt `csvAttributes.header: false` from a /pipeline/generate result
    * (line 1 is data, columns numbered) so the saved pipeline does not skip
-   * its first data row. Never turns Header on; an absent flag changes nothing. */
+   * its first data row. Never turns Header on; an absent flag changes nothing.
+   * Called only by the handlers that replace the schema (step 1 sample
+   * analysis, step 3 Generate Schema). */
   applyGeneratedHeader(response: any): void {
     if (response?.source?.fileAttributes?.csvAttributes?.header === false) {
       this.headerAdjusted = this.csvHeader;
@@ -1608,7 +1611,8 @@ export class PipelineCreateComponent implements OnInit {
     ).subscribe({
       next: (response: any) => {
         this.valuesWithheld = response?.valuesWithheld === true;
-        this.applyGeneratedHeader(response);
+        // Header is not adopted here: this call only summarises the sample and
+        // must not override a Header choice the user made after step 1.
         if (response.source?.schemaProperties?.fields) {
           const fields = response.source.schemaProperties.fields;
           this.dqProfileSummary = 'Detected ' + fields.length + ' fields: ' +
