@@ -45,9 +45,18 @@ class DoctorServiceSpec extends AnyFunSuite {
         // Field protection 8: (tap, secret, stored _type) for taps with a secret.
         var tapRefs: List[(String, String, Option[String])] = Nil,
         // Field protection 9: any source field in any pipeline carries `protect`.
-        var protects: Boolean = false
+        var protects: Boolean = false,
+        // Governance controls (plans/stories/governance-controls-production-preset.md):
+        // the four flags keyed by their .env variable names.
+        var governance: Map[String, Boolean] = Map(
+            "USE_USER_AUTH" -> true,
+            "USE_API_KEYS" -> true,
+            "USE_AUDIT_LOG" -> true,
+            "USE_AGENT_POLICY" -> true
+        )
     ) extends Probes {
         override def anyPipelineProtects(): Boolean = protects
+        override def governanceControls(): Map[String, Boolean] = governance
         def tapSecretRefs(): List[(String, String, Option[String])] = tapRefs
         def stagingArea(): StagingAreaState = staging
         def stagingOrphans(): (List[String], Long) = orphans
@@ -465,6 +474,7 @@ class DoctorServiceSpec extends AnyFunSuite {
             "objectstore.bucket_overrides",
             "ai.embedding_model",
             "disk.usage",
+            "governance.controls",
             "version.skew",
             "env.seen"
         ))
@@ -693,5 +703,75 @@ class DoctorServiceSpec extends AnyFunSuite {
         withSampleValues(Some("true")) {
             assert(sampleValuesCheck(odd).run().status == "ok", "only checked when values are withheld")
         }
+    }
+
+    // governance.controls — plans/stories/governance-controls-production-preset.md.
+    // Pinned: check id "governance.controls", startupSafe = false, registered in
+    // DoctorService.checks after ai.sample_values (found by id here), reading
+    // Probes.governanceControls(): Map[String, Boolean] keyed by the .env
+    // variable names USE_USER_AUTH, USE_API_KEYS, USE_AUDIT_LOG, USE_AGENT_POLICY
+    // (LiveProbes fills it from DatrisEnvironment.values). Never errors.
+
+    private val governanceVars = Seq("USE_USER_AUTH", "USE_API_KEYS", "USE_AUDIT_LOG", "USE_AGENT_POLICY")
+
+    private def governanceState(off: Set[String]): Map[String, Boolean] = governanceVars.map(v => v -> !off.contains(v)).toMap
+
+    private def governanceCheck(p: FakeProbes): Check = {
+        val all = DoctorService.checks(p, slots, "1.28.2", Map.empty)
+        all.find(_.id == "governance.controls").getOrElse(fail("no governance.controls check in " + all.map(_.id)))
+    }
+
+    test("governance.controls is ok when user auth, API keys, audit log and agent policy are all on") {
+        val r = governanceCheck(new FakeProbes(governance = governanceState(Set.empty))).run()
+        assert(r.id == "governance.controls")
+        assert(r.status == "ok", r.detail)
+        governanceVars.foreach(v => assert(r.detail.contains(v), "ok lists every control that is on (" + v + "): " + r.detail))
+        assert(r.remediation.isEmpty, r.remediation)
+    }
+
+    test("governance.controls warns and names each control that is off") {
+        governanceVars.foreach { off =>
+            val r = governanceCheck(new FakeProbes(governance = governanceState(Set(off)))).run()
+            assert(r.status == "warn", off + " off: " + r.detail)
+            assert(r.detail.contains(off), "detail names the control that is off (" + off + "): " + r.detail)
+            governanceVars.filterNot(_ == off).foreach(on => assert(r.detail.contains(on), "detail also names those that are on (" + on + "): " + r.detail))
+        }
+        val allOff = governanceCheck(new FakeProbes(governance = governanceState(governanceVars.toSet))).run()
+        assert(allOff.status == "warn", allOff.detail)
+        governanceVars.foreach(v => assert(allOff.detail.contains(v), "default install names all four (" + v + "): " + allOff.detail))
+    }
+
+    test("governance.controls remediation lists only the variables that are off") {
+        val off = Set("USE_API_KEYS", "USE_AGENT_POLICY")
+        val r = governanceCheck(new FakeProbes(governance = governanceState(off))).run()
+        assert(r.status == "warn", r.detail)
+        off.foreach(v => assert(r.remediation.contains(v + "=true"), "the exact .env line for " + v + ": " + r.remediation))
+        governanceVars.filterNot(off.contains).foreach(on =>
+            assert(!r.remediation.contains(on), on + " is already on and must not be in the fix: " + r.remediation)
+        )
+        assert(r.remediation.contains("docker compose up -d --force-recreate datris mcp-server"), r.remediation)
+        val all = governanceCheck(new FakeProbes(governance = governanceState(governanceVars.toSet))).run()
+        governanceVars.foreach(v => assert(all.remediation.contains(v + "=true"), v + ": " + all.remediation))
+    }
+
+    test("governance.controls never errors and is not in the startup subset") {
+        val combos = governanceVars.toSet.subsets().toList
+        assert(combos.size == 16)
+        combos.foreach { off =>
+            val r = governanceCheck(new FakeProbes(governance = governanceState(off))).run()
+            assert(r.status == "ok" || r.status == "warn", "off=" + off + " gave " + r.status + ": " + r.detail)
+            assert(r.status != "error")
+        }
+        val c = governanceCheck(new FakeProbes())
+        assert(!c.startupSafe, "governance.controls must not run at boot")
+        assert(c.optInGroup.isEmpty, "it runs in every full report, not behind ?probes=")
+        val offProbes = new FakeProbes(governance = governanceState(governanceVars.toSet))
+        val quickIds = DoctorService.run("quick", Set.empty, Map.empty, offProbes, slots, "1.28.2").checks.map(_.id)
+        assert(!quickIds.contains("governance.controls"), "not startup-safe: " + quickIds)
+        val fullIds = DoctorService.run("full", Set.empty, Map.empty, offProbes, slots, "1.28.2").checks.map(_.id)
+        assert(fullIds.contains("governance.controls"), fullIds.toString)
+        assert(fullIds.indexOf("governance.controls") == fullIds.indexOf("ai.sample_values") + 1, "registered after ai.sample_values: " + fullIds)
+        val startupIds = DoctorService.runStartup(offProbes, slots, "1.28.2").map(_.id)
+        assert(!startupIds.contains("governance.controls"), "boot log has no DOCTOR governance.controls line: " + startupIds)
     }
 }
