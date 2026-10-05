@@ -67,7 +67,11 @@ class FileNotifier private[controller] (
                 // whatever DataUtil.read staged before the failure.
                 StagingArea.delete(pipelineToken)
                 if (metadataArchived) {
-                    try statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
+                    // Plain words on the status; the full trace in the event's
+                    // detail and in the log under the run token (the queue
+                    // dispatcher logs bucket/key only, the Kafka path nothing).
+                    logger.error(pipelineToken + ": ingest failed before the job started", e)
+                    try statusUtil.error("end", "Process completed, error: " + ErrorText.messageChain(e), Throwables.getStackTraceAsString(e))
                     catch {
                         case inner: Exception =>
                             logger.warn("FileNotifier: could not write status event: " + inner.getMessage)

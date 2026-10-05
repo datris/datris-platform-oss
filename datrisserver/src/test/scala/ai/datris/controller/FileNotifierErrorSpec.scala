@@ -23,7 +23,13 @@ class FileNotifierErrorSpec extends AnyFunSuite {
         val events = ListBuffer[(String, String, String)]()
         override def info(state: String, description: String): Unit = events += ((state, "info", description))
         override def warn(state: String, description: String): Unit = events += ((state, "warning", description))
-        override def error(state: String, description: String): Unit = events += ((state, "error", description))
+        override def error(state: String, description: String): Unit = {
+            events += ((state, "error", description))
+            errorDetails += currentDetail
+        }
+
+        /** `detail` of each error event, in order (null when none). */
+        val errorDetails = ListBuffer[String]()
         override def errorAs(processName: String, state: String, description: String): Unit =
             events += ((state, "error", description))
     }
@@ -113,5 +119,7 @@ class FileNotifierErrorSpec extends AnyFunSuite {
         assert(
             description == "Process completed, error: Object store write refused\ncaused by: column order differs from the existing table"
         )
+        val detail = su.errorDetails.head
+        assert(detail != null && detail.contains("java.lang.RuntimeException: Object store write refused") && detail.contains("\tat "), "full trace in detail")
     }
 }

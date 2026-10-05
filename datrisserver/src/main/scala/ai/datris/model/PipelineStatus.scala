@@ -25,7 +25,12 @@ case class PipelineStatus(
     aiSuggestion: String = null,
     // Scratch-destination result pointer, set only on the event ScratchLoader
     // writes after landing the object (StatusUtil.scratchResult).
-    scratchResult: ScratchResult = null
+    scratchResult: ScratchResult = null,
+    // Optional long-form text for the detail view: on a failed run's terminal
+    // event, the full stack trace (description carries the message chain).
+    // Omitted from the stored JSON when null; rollups and summaries read
+    // description only.
+    detail: String = null
 )
 
 case class PipelineStatusTable(

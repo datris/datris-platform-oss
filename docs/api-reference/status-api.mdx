@@ -285,7 +285,8 @@ Each status entry (`PipelineStatus`) contains:
 | `filename` | Source filename |
 | `state` | Stage state: `begin`, `processing`, `end`, or `error` |
 | `code` | Same as `state` |
-| `description` | Detail message |
+| `description` | Detail message. On a failed job's final entry: `Process completed, error: ` followed by the error and its causes |
+| `detail` | Optional. On a failed job's final entry, the full stack trace; absent otherwise and on entries written by earlier versions |
 | `epoch` | Unix epoch milliseconds |
 
 ## State Values

@@ -578,6 +578,28 @@ def _call(method, path, timeout=300, **kwargs):
         return json.dumps({"error": str(e)})
 
 
+
+def _strip_event_detail(text):
+    """Drop the optional `detail` field (a failed run's full stack trace) from
+    the status events in a /pipeline/status response before it reaches the
+    model. `description` already carries the error in plain words; the trace
+    stays in the server log and the Ops activity view. Non-JSON or detail-free
+    responses are returned unchanged, byte for byte."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    events = data.get("events") if isinstance(data, dict) else data if isinstance(data, list) else None
+    if not isinstance(events, list):
+        return text
+    stripped = False
+    for ev in events:
+        if isinstance(ev, dict) and "detail" in ev:
+            del ev["detail"]
+            stripped = True
+    return json.dumps(data) if stripped else text
+
+
 def _upload(path, file_path, data=None):
     """Upload a file via multipart POST to the pipeline API (local file path)."""
     with open(file_path, "rb") as f:
@@ -1951,6 +1973,7 @@ def _base_tools():
                 "poll every few seconds until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`) for the outcome. "
                 "Per-job detail is in `rollup.jobs[]` with `pipelineToken`, `pipeline`, `filename`, `status`, `startedAt`, `lastEventAt`, `elapsed`, and `lastError` (populated on failure with `processName` and `description`). "
                 "`events[]` is the raw begin/info/end audit trail; the rollup is the source of truth for completion. "
+                "A failed run's `description` gives the error and its causes in plain words; the full stack trace is not included here (it is in the server log under the run's token and in the Ops activity view). "
                 "When queried by `pipeline_name`, the response is a paginated array of summary rows; the most recent job is index 0 and its `status` field is `success` | `processing` | `error`. "
                 "Do NOT proceed to query/search until the job is in a terminal state."
             ),
@@ -2736,7 +2759,8 @@ def _base_tools():
                 "Response shape: `{rollup: {allDone, status, jobs: [...]}, events: [...]}`. "
                 "Poll every few seconds until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`) for the outcome. "
                 "Per-job detail is in `rollup.jobs[]` — each entry has `pipelineToken`, `pipeline`, `filename`, `status`, `startedAt`, `lastEventAt`, `elapsed`, and `lastError` (populated on failure with `processName` and `description`). "
-                "`events[]` is the raw begin/info/end audit trail if you need it; the rollup is the source of truth for completion."
+                "`events[]` is the raw begin/info/end audit trail if you need it; the rollup is the source of truth for completion. "
+                "A failed run's `description` gives the error and its causes in plain words; the full stack trace is not included here (it is in the server log under the run's token and in the Ops activity view)."
             ),
             inputSchema={
                 "type": "object",
@@ -3904,7 +3928,7 @@ def _dispatch(name: str, args: dict) -> str:
             params["pipelinename"] = args["pipeline_name"]
         if args.get("page"):
             params["page"] = args["page"]
-        return _call("get", "/api/v1/pipeline/status", params=params)
+        return _strip_event_detail(_call("get", "/api/v1/pipeline/status", params=params))
 
     elif name == "kill_job":
         payload = {"pipelineToken": args["pipeline_token"]}
@@ -4439,7 +4463,7 @@ def _dispatch(name: str, args: dict) -> str:
             params["publishertoken"] = publisher
         elif pipeline:
             params["pipelinetoken"] = pipeline
-        return _call("get", "/api/v1/pipeline/status", params=params)
+        return _strip_event_detail(_call("get", "/api/v1/pipeline/status", params=params))
 
     elif name == "get_pipeline_result":
         publisher = args.get("publisher_token")

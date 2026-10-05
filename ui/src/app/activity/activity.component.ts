@@ -1414,6 +1414,21 @@ export class ActivityComponent implements OnInit, OnDestroy {
     }
   }
 
+  // Per-event open state of the collapsed "Stack trace" toggle shown when an
+  // event carries `detail`. Keyed by the event object (cached in detailsCache),
+  // so each event opens independently and a closed row keeps its state.
+  private openEventDetails = new WeakSet<PipelineStatusDetail>();
+
+  isEventDetailOpen(e: PipelineStatusDetail): boolean {
+    return this.openEventDetails.has(e);
+  }
+
+  toggleEventDetail(e: PipelineStatusDetail, ev?: Event): void {
+    ev?.stopPropagation();
+    if (this.openEventDetails.has(e)) this.openEventDetails.delete(e);
+    else this.openEventDetails.add(e);
+  }
+
   successJobEvents(s: SuccessfulItem): PipelineStatusDetail[] {
     const all = this.detailsCache.get(this.successRowKey(s)) || [];
     return all.slice().sort((a, b) => (Date.parse(a.dateTime) || 0) - (Date.parse(b.dateTime) || 0));

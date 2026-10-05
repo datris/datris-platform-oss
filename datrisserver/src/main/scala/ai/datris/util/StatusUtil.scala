@@ -26,6 +26,10 @@ class StatusUtil {
     private var hadError: Boolean = false
     private var recordCountValue: Int = 0
     private var dataType: Option[String] = None
+    // Detail for the event being written by the current 3-argument info/error
+    // call. Threaded through the overridable 2-argument methods so subclasses
+    // (test doubles) that override only those still see every event.
+    private val pendingDetail = new ThreadLocal[String]
 
     def init(tableName: String, processName: String): StatusUtil = {
         this.tableName = tableName
@@ -70,6 +74,11 @@ class StatusUtil {
         send(state, "info", description)
     }
 
+    /** An info event with long-form `detail` (e.g. a stack trace) for the
+      * detail view. `description` stays the readable text. */
+    def info(state: String, description: String, detail: String): Unit =
+        withDetail(detail)(info(state, description))
+
     def warn(state: String, description: String): Unit = {
         hadWarning = true
         send(state, "warning", description)
@@ -85,6 +94,22 @@ class StatusUtil {
         hadError = true
         send(state, "error", description)
     }
+
+    /** An error event with long-form `detail` (e.g. a stack trace) for the
+      * detail view. `description` stays the readable text. */
+    def error(state: String, description: String, detail: String): Unit =
+        withDetail(detail)(error(state, description))
+
+    private def withDetail(detail: String)(write: => Unit): Unit = {
+        val prior = pendingDetail.get
+        pendingDetail.set(detail)
+        try write
+        finally pendingDetail.set(prior)
+    }
+
+    /** Detail of the event currently being written through a 3-argument
+      * info/error call, or null. */
+    protected def currentDetail: String = pendingDetail.get
 
     /** Write an error event attributed to an explicit process name instead of
       * the shared `processName` field. Destination loaders run in parallel on a
@@ -146,7 +171,8 @@ class StatusUtil {
                 filename.getOrElse(""),
                 state,
                 code,
-                description
+                description,
+                pendingDetail.get
             )
 
         writeToNoSQLDb(status, fix, scratchResult)
@@ -298,7 +324,8 @@ class StatusUtil {
             aiSummary = if (fix != null) fix.summary else null,
             aiDiagnosis = if (fix != null) fix.diagnosis else null,
             aiSuggestion = if (fix != null) fix.suggestion else null,
-            scratchResult = scratchResult
+            scratchResult = scratchResult,
+            detail = status.detail
         )
 
         // Top-level `publisher_token` is the indexed read path used by
@@ -373,5 +400,14 @@ object StatusUtil {
     def error(state: String, description: String): Unit = {
         if (_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")
         _statusUtil.send(state, "error", description)
+    }
+    def info(state: String, description: String, detail: String): Unit = {
+        if (_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")
+        _statusUtil.withDetail(detail)(_statusUtil.send(state, "info", description))
+    }
+
+    def error(state: String, description: String, detail: String): Unit = {
+        if (_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")
+        _statusUtil.withDetail(detail)(_statusUtil.send(state, "error", description))
     }
 }

@@ -12,5 +12,8 @@ case class Status(
     filename: String,
     state: String,
     code: String,
-    description: String
+    description: String,
+    // Optional long-form text for the detail view (e.g. the full stack trace
+    // of a failed run). Null when absent; summaries never read it.
+    detail: String = null
 )

@@ -34,7 +34,10 @@ object ApiErrors {
     }
 
     /** The message with any embedded stack trace cut off: first line only,
-      * or the exception class name when there is no message. */
+      * or the exception class name when there is no message. Run status
+      * events no longer embed traces (ErrorText.messageChain; the trace is in
+      * the event's `detail`), but the exceptions StreamNotifier rethrows to
+      * the upload API still do, as may older or third-party messages. */
     def firstLine(e: Throwable): String = {
         val m = Option(e.getMessage).map(_.trim).filter(_.nonEmpty).getOrElse(e.getClass.getSimpleName)
         m.split("\\r?\\n", 2)(0).trim

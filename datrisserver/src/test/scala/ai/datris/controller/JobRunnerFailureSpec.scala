@@ -14,13 +14,16 @@ import scala.collection.mutable.ListBuffer
 
 /** JobRunner's terminal status events on failure. A loader failure must
   * surface under the loader's name with a destination-facing message; the
-  * JobRunner-level event then carries the stack trace at info level so the
-  * rollup does not see a second, misleading error event. */
+  * JobRunner-level event is then info level so the rollup does not see a
+  * second, misleading error event. Every terminal failure event carries the
+  * message chain in `description` and the full stack trace in `detail`. */
 class JobRunnerFailureSpec extends AnyFunSuite {
 
-    /** Captures events instead of writing to Mongo. (processName, state, code, description) */
+    /** Captures events instead of writing to Mongo. (processName, state, code, description);
+      * `details(i)` is the `detail` of `events(i)` (null when none). */
     private class CapturingStatusUtil extends StatusUtil {
         val events = ListBuffer[(String, String, String, String)]()
+        val details = ListBuffer[String]()
         // Mirrors the real StatusUtil: a shared, last-writer-wins process name.
         var current = "SomeLoader"
         // When set, the first "begin" event throws — a failure raised on the job thread itself.
@@ -29,10 +32,16 @@ class JobRunnerFailureSpec extends AnyFunSuite {
         override def info(state: String, description: String): Unit = {
             if (failOnBegin && state == "begin") throw new IllegalStateException("begin boom")
             events += ((current, state, "info", description))
+            details += currentDetail
         }
-        override def error(state: String, description: String): Unit = events += ((current, state, "error", description))
-        override def errorAs(processName: String, state: String, description: String): Unit =
+        override def error(state: String, description: String): Unit = {
+            events += ((current, state, "error", description))
+            details += currentDetail
+        }
+        override def errorAs(processName: String, state: String, description: String): Unit = {
             events += ((processName, state, "error", description))
+            details += currentDetail
+        }
     }
 
     test("loaderErrorMessage is the exception message, never the class name when a message exists") {
@@ -45,7 +54,7 @@ class JobRunnerFailureSpec extends AnyFunSuite {
         assert(JobRunner.loaderErrorMessage(new IllegalStateException("   ")) == "java.lang.IllegalStateException")
     }
 
-    test("loader failure: JobRunner writes an info end event with the stack, not a second error event") {
+    test("loader failure: JobRunner writes an info end event with the stack in detail, not a second error event") {
         val su = new CapturingStatusUtil
         val cause = new RuntimeException("relation \"orders\" does not exist")
         val wrapped = new RuntimeException("PostgresLoader failed: java.lang.RuntimeException: " + cause.getMessage, cause)
@@ -59,10 +68,15 @@ class JobRunnerFailureSpec extends AnyFunSuite {
         assert(state == "end")
         assert(code == "info", "a JobRunner error event would shadow the loader's own error in the rollup")
         assert(description.startsWith("Process completed, error: PostgresLoader failed: relation \"orders\" does not exist"))
-        assert(description.contains("java.lang.RuntimeException"), "stack trace stays on the event stream for the detail view")
+        assert(!description.contains("java.lang.RuntimeException"), "the stack trace is not in the description")
+        val detail = su.details.head
+        assert(
+            detail != null && detail.contains("java.lang.RuntimeException") && detail.contains("\tat "),
+            "stack trace stays on the event, in detail, for the detail view"
+        )
     }
 
-    test("job-thread failure (no loader): today's JobRunner error event with the stack is preserved") {
+    test("job-thread failure (no loader): the error event is preserved, its stack moved to detail") {
         val su = new CapturingStatusUtil
         val e = new IllegalStateException("schema mismatch")
 
@@ -73,8 +87,11 @@ class JobRunnerFailureSpec extends AnyFunSuite {
         // Job-thread failures keep the pre-existing attribution (the stage that
         // last set the process name, e.g. DataQuality) — unchanged behaviour.
         assert(process == "SomeLoader" && state == "end" && code == "error")
-        assert(description.contains("IllegalStateException: schema mismatch"))
-        assert(message.contains("IllegalStateException: schema mismatch"))
+        assert(description == "Process completed, error: schema mismatch")
+        assert(!description.contains("IllegalStateException"), "the exception class from the trace header is not in the description")
+        assert(message == "schema mismatch")
+        val detail = su.details.head
+        assert(detail != null && detail.contains("IllegalStateException: schema mismatch") && detail.contains("\tat "), "full trace in detail")
     }
 
     // plans/stories/streaming-pipeline.md, Phase 1, Acceptance 8: the run's

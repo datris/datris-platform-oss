@@ -101,4 +101,14 @@ class ErrorTextSpec extends AnyFunSuite {
         assert(out == "first line")
         noFrames(out)
     }
+
+    test("a wrapper whose message is the JDK's cause.toString contributes nothing") {
+        val root = new IllegalStateException("column order differs")
+        val wrapper = new RuntimeException(root) // message == "java.lang.IllegalStateException: column order differs"
+        assert(wrapper.getMessage == root.toString)
+        assert(ErrorText.messageChain(wrapper) == "column order differs")
+
+        val top = new RuntimeException("load failed", new RuntimeException(new java.io.IOException("disk full")))
+        assert(ErrorText.messageChain(top) == "load failed\ncaused by: disk full")
+    }
 }
