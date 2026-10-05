@@ -201,7 +201,14 @@ object AIProfileUtil {
                |
                |$evidence""".stripMargin
 
-        val answer = ai(prompt)
+        val answer =
+            try ai(prompt)
+            catch {
+                case e: Exception =>
+                    // Class only: a provider message can quote the prompt or values.
+                    logger.warn("AI profile call failed (" + e.getClass.getSimpleName + ") with values withheld; returning statistics only")
+                    return statisticsOnly(localStats, "the model declined or the call failed; statistics only")
+            }
         val parsed =
             try Some(JsonParser.parseString(extractObject(answer)).getAsJsonObject)
             catch {
@@ -209,7 +216,7 @@ object AIProfileUtil {
                     logger.warn("AI profile reply could not be parsed (" + e.getClass.getSimpleName + "); returning statistics only")
                     None
             }
-        if (parsed.isEmpty) return statisticsOnly(localStats)
+        if (parsed.isEmpty) return statisticsOnly(localStats, "the model's reply could not be parsed; statistics only")
         val obj = parsed.get
         // The model saw no values; make sure none is reported as one.
         Option(obj.get("summary")).filter(_.isJsonObject).map(_.getAsJsonObject.get("columns")).filter(c => c != null && c.isJsonArray).foreach { cols =>
@@ -222,9 +229,10 @@ object AIProfileUtil {
     }
 
     /** Off-mode answer when the model's reply is not JSON (e.g. cut off on a
-      * wide file): the locally computed statistics, empty qualityIssues and
+      * wide file) or the model call throws (refusal, provider error, timeout):
+      * the locally computed statistics, empty qualityIssues and
       * recommendations, and a note. */
-    private def statisticsOnly(localStats: Option[(Int, List[ColumnStat])]): String = {
+    private def statisticsOnly(localStats: Option[(Int, List[ColumnStat])], note: String): String = {
         val out = new JsonObject()
         val summary = new JsonObject()
         val columns = new JsonArray()
@@ -249,7 +257,7 @@ object AIProfileUtil {
         out.add("qualityIssues", new JsonArray())
         out.add("recommendations", new JsonArray())
         out.addProperty("valuesWithheld", true)
-        out.addProperty("note", "the model's reply could not be parsed; statistics only")
+        out.addProperty("note", note)
         out.toString
     }
 }

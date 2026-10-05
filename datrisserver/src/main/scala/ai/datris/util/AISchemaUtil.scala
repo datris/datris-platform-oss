@@ -35,7 +35,9 @@ object AISchemaUtil {
       * [[buildCsvConfigAllStrings]] does, but named by
       * [[AiSampleValues.safeColumnNames]] so a value never becomes a field
       * name: `column_1..N` when `header` is false or line 1 reads as data,
-      * and `column_N` for any header cell that is not an identifier. */
+      * and `column_N` for any header cell that is not an identifier. When the
+      * columns are numbered because line 1 is data, `csvAttributes.header` is
+      * written as false. */
     private def buildCsvConfigWithheld(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
         val myDelimiter = if (delimiter == null) "," else delimiter
         val firstLine = fileContent.stripPrefix("\uFEFF").split("\n").head
@@ -43,6 +45,9 @@ object AISchemaUtil {
         val cells = firstLine.split(java.util.regex.Pattern.quote(delimChar), -1)
             .map(_.trim.replaceAll("\"", "").replaceAll("'", "")).toList
         val fields = AiSampleValues.safeColumnNames(cells, header)
+        // Columns numbered because line 1 is data: the saved pipeline must not
+        // skip that line as a header.
+        val lineOneIsHeader = header && !AiSampleValues.headerLooksLikeData(cells)
         val fieldsJson = fields.map(f => s"""{"name":"$f","type":"string"}""").mkString("[", ",", "]")
 
         logger.info("Building all-string CSV config (values withheld) for pipeline: " + pipeline + ", fields: " + fields.length)
@@ -50,7 +55,7 @@ object AISchemaUtil {
         buildConfig(
             pipeline = pipeline,
             fieldsJson = fieldsJson,
-            sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": $header, "encoding": "UTF-8" }""",
+            sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": $lineOneIsHeader, "encoding": "UTF-8" }""",
             usePostgres = true,
             useMongoDB = false
         )

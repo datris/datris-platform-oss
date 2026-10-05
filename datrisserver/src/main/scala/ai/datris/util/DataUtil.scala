@@ -20,6 +20,22 @@ object DataUtil {
     private val logger: Logger = LoggerFactory.getLogger(DataUtil.getClass)
 
     /**
+     * Merge newly detected columns into a destination field list. Names match
+     * case-insensitively after trimming; an existing entry (and its declared
+     * type) is kept untouched; new names are appended in order; a duplicate
+     * already inside `existing` is dropped (first occurrence wins).
+     */
+    private[datris] def mergeDestFields(existing: List[SchemaField], added: List[SchemaField]): List[SchemaField] = {
+        def key(f: SchemaField): String = Option(f.name).map(_.trim.toLowerCase).getOrElse("")
+        val seen = scala.collection.mutable.LinkedHashSet[String]()
+        val out = scala.collection.mutable.ListBuffer[SchemaField]()
+        (existing ++ added).foreach { f =>
+            if (seen.add(key(f))) out += f
+        }
+        out.toList
+    }
+
+    /**
      * Schema evolution: detect new/missing columns and update config.
      * Returns (updatedConfig, updatedSchemaColumns, presentColumns, missingColumns).
      */
@@ -93,8 +109,16 @@ object DataUtil {
 
             // Update destination schema if it exists
             val updatedDest = if (config.destination != null && config.destination.schemaProperties != null) {
-                val destFields = new java.util.ArrayList[SchemaField](config.destination.schemaProperties.fields)
-                newFields.foreach(f => destFields.add(f))
+                val existingDest = Option(config.destination.schemaProperties.fields).map(_.asScala.toList).getOrElse(Nil)
+                newFields.foreach { f =>
+                    existingDest.find(d => d.name != null && d.name.trim.equalsIgnoreCase(f.name.trim)).foreach { d =>
+                        statusUtil.info(
+                            "processing",
+                            "Schema evolution: column '" + f.name + "' is already in the destination schema (" + d.`type` + "); kept as declared"
+                        )
+                    }
+                }
+                val destFields = new java.util.ArrayList[SchemaField](mergeDestFields(existingDest, newFields).asJava)
                 val updatedDestSchema = config.destination.schemaProperties.copy(fields = destFields, schemaVersion = newVersion)
                 config.destination.copy(schemaProperties = updatedDestSchema)
             } else config.destination

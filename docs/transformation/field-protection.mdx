@@ -283,8 +283,8 @@ If you handle regulated data, set `DATRIS_AI_SAMPLE_VALUES=false` on the datris 
 
 | Helper | With `DATRIS_AI_SAMPLE_VALUES=false` |
 |--------|---------------------------------------|
-| Schema generation (CSV) | No model call. Every field is typed `string` and named from the header, or `column_1`, `column_2`, … when `header` is false. The response carries `valuesWithheld: true` and the wizard shows a note |
-| Data profiling | The model gets per-column statistics (type, count, nulls, distinct count, value lengths) for CSV, or a value-free skeleton for JSON and XML. `sampleValues` are empty and the response carries `valuesWithheld: true` |
+| Schema generation (CSV) | No model call. Every field is typed `string` and named from the header, or `column_1`, `column_2`, … when `header` is false or line 1 looks like data; the generated config then sets `csvAttributes.header` to `false` so a pipeline saved from it does not skip its first data row. The response carries `valuesWithheld: true` and the wizard shows a note |
+| Data profiling | The model gets per-column statistics (type, count, nulls, distinct count, value lengths) for CSV, or a value-free skeleton for JSON and XML. `sampleValues` are empty and the response carries `valuesWithheld: true`. If the model declines, errors or times out, the response holds the server's statistics only, with a `note` |
 | JSON Schema / XSD generation | The model gets a skeleton of the sample (keys or element and attribute names, value types, no values). The response carries `valuesWithheld: true`. Formats, enums and patterns that could only be read from values are not inferred |
 | Assistant attachments | The chat gets the filename, type, row count, numbered CSV columns (line 1 is never sent) and JSON top-level key names. The attached file itself is unchanged, so the Assistant can still upload it to a pipeline |
 | CodeGen rules and transformations | The prompt carries the column names and schema types (or a skeleton for JSON and XML) and states that sample rows were withheld. The generated script still runs on the full data. An instruction that depends on what values look like should spell the format out |

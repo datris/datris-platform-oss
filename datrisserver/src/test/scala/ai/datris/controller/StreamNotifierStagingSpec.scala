@@ -793,7 +793,11 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         ai.datris.util.DataUtil.evolveSchema(List("id", "name", "Admit_Date"), declaredDestConfig, su, _ => ())
         val all = su.events.map(_._2)
         assert(
-            all.exists(l => l.toLowerCase.contains("'admit_date'") && l.contains("is already in the destination schema") && l.contains("(date)") && l.contains("kept as declared")),
+            all.exists(l =>
+                l.toLowerCase.contains("'admit_date'") && l.contains("is already in the destination schema") && l.contains("(date)") && l.contains(
+                    "kept as declared"
+                )
+            ),
             s"status lines: ${su.events}"
         )
     }

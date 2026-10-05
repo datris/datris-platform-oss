@@ -159,8 +159,10 @@ class AIProfileUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
         assert(obj.getAsJsonArray("recommendations").size() == 0, out)
         assert(obj.has("note") && obj.get("note").isJsonPrimitive && obj.get("note").getAsString.nonEmpty, "note string: " + out)
         val note = obj.get("note").getAsString
-        assert(!note.contains("ZQX-PROVIDER-SECRET") && !note.contains("declined this request") && !note.contains("stop_reason"),
-            "note must not echo provider text: " + note)
+        assert(
+            !note.contains("ZQX-PROVIDER-SECRET") && !note.contains("declined this request") && !note.contains("stop_reason"),
+            "note must not echo provider text: " + note
+        )
         assert(!out.contains("ZQX-PROVIDER-SECRET"), out)
         assertNoMarker(out)
     }
