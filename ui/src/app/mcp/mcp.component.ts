@@ -453,7 +453,8 @@ export class McpComponent implements OnInit {
       category: 'Pipeline Management',
       parameters: [
         { name: 'pipeline', type: 'string', description: 'Existing pipeline name (use this OR fields)', required: false, inputType: 'text' },
-        { name: 'fields', type: 'array', description: 'Fields as [{"name": ..., "type": ...}] (use this OR pipeline)', required: false, inputType: 'textarea' }
+        { name: 'fields', type: 'array', description: 'Fields as [{"name": ..., "type": ...}] (use this OR pipeline)', required: false, inputType: 'textarea' },
+        { name: 'preset', type: 'string', description: 'Optional preset to classify against instead of the model: hipaa-safe-harbor (delimited sources only). Returns class, method and reason per field, unclassified names and review notes.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

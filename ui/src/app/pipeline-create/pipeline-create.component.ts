@@ -23,11 +23,15 @@ interface SchemaField {
   // true when the suggestion filled an empty protect (Clear then wipes it).
   // `refused` is set when the guard would refuse the suggested method for this
   // field (method is then '' and there is nothing to Keep).
+  // `preset` marks a proposal from a preset (rendered "preset proposes …").
   suggested?: {
     method: string; preserve?: string | null; reason: string; applied?: boolean;
     refused?: { method: string; problem: string };
+    preset?: boolean;
   } | null;
   protectError?: string;
+  // Wizard-only: identifier class the preset gave this field (shown as a chip).
+  presetClass?: string | null;
 }
 
 /** Normalise a source field for the wizard: name, type and a protect object. */
@@ -126,9 +130,27 @@ export class PipelineCreateComponent implements OnInit {
     { value: null, label: 'Mask all' },
     { value: 'last4', label: 'Keep last 4' },
     { value: 'domain', label: 'Keep email domain' },
-    { value: 'year', label: 'Keep year' }
+    { value: 'year', label: 'Keep year' },
+    { value: 'first3', label: 'Keep first 3' }
   ];
   suggestingProtection = false;
+
+  // Field protection preset (delimited sources only; the server refuses it on
+  // JSON, XML and unstructured). Enforced presets are saved as
+  // protection.preset / protection.presetExempt.
+  presets: Array<{ value: string; label: string }> = [
+    { value: 'hipaa-safe-harbor', label: 'HIPAA Safe Harbor' }
+  ];
+  selectedPreset: string | null = null;
+  enforcePreset = true;
+  /** Last preset response: {fields, unclassified, review}; null before Apply. */
+  presetResult: { fields: any[]; unclassified: string[]; review: string[] } | null = null;
+  /** Field names exempted from the enforced preset (protection.presetExempt). */
+  presetExemptNames: string[] = [];
+  applyingPreset = false;
+  /** The protection block as loaded, re-emitted unchanged when untouched
+   *  (keeps purgeSource and any key this wizard does not edit). */
+  private loadedProtection: any = null;
 
   // Step 7 — Destination Schema (CSV only)
   destSchemaFields: SchemaField[] = [];
@@ -355,6 +377,17 @@ export class PipelineCreateComponent implements OnInit {
       }
     }
 
+    // Field protection block (purgeSource, preset, presetExempt): kept as loaded
+    // so an untouched save re-emits it unchanged.
+    this.loadedProtection = config.protection && typeof config.protection === 'object'
+      ? JSON.parse(JSON.stringify(config.protection)) : null;
+    this.presetResult = null;
+    const savedPreset = this.loadedProtection?.preset;
+    this.selectedPreset = savedPreset && this.presets.some(p => p.value === savedPreset) ? savedPreset : null;
+    this.enforcePreset = true;
+    this.presetExemptNames = Array.isArray(this.loadedProtection?.presetExempt)
+      ? [...this.loadedProtection.presetExempt] : [];
+
     // Data Quality
     if (config.dataQuality) {
       const dq = config.dataQuality;
@@ -486,6 +519,12 @@ export class PipelineCreateComponent implements OnInit {
       this.embeddingSecret = dest.pgvector.embeddingSecretName || 'oss/embedding';
       this.vectorSecret = dest.pgvector.postgresSecretName || 'oss/pgvector';
       this.loadChunking(dest.pgvector.chunking);
+    }
+
+    // A saved preset pipeline: ask the preset endpoint once (read-only) to
+    // restore the class chips, review notes and unclassified names.
+    if (this.selectedPreset && this.sourceType === 'csv') {
+      this.restorePresetClasses();
     }
   }
 
@@ -767,6 +806,10 @@ export class PipelineCreateComponent implements OnInit {
       return;
     }
     if (method !== 'mask') field.protect.preserve = null;
+    if (method && this.isExempt(field)) {
+      const n = (field.name || '').trim().toLowerCase();
+      this.presetExemptNames = this.presetExemptNames.filter(x => (x || '').toLowerCase() !== n);
+    }
   }
 
   /** Why a protect method is refused for a field ('' when it is allowed):
@@ -834,6 +877,130 @@ export class PipelineCreateComponent implements OnInit {
         this.suggestingProtection = false;
       }
     });
+  }
+
+  /** True when the preset select is offered: delimited (CSV) sources only. */
+  presetAvailable(): boolean {
+    return this.sourceType === 'csv';
+  }
+
+  /** Names and types of the named schema fields (never data or wizard state). */
+  private presetRequestFields(): Array<{ name: string; type: string }> {
+    return this.schemaFields
+      .filter(f => f.name && f.name.trim())
+      .map(({ name, type }) => ({ name, type }));
+  }
+
+  private presetEntriesByName(resp: any): Map<string, any> {
+    const byName = new Map<string, any>();
+    for (const e of (resp?.fields || [])) {
+      if (e?.name) byName.set(String(e.name).toLowerCase(), e);
+    }
+    return byName;
+  }
+
+  private setPresetResult(resp: any): void {
+    this.presetResult = {
+      fields: Array.isArray(resp?.fields) ? resp.fields : [],
+      unclassified: Array.isArray(resp?.unclassified) ? resp.unclassified : [],
+      review: Array.isArray(resp?.review) ? resp.review : []
+    };
+  }
+
+  /** Run the chosen preset: every recognised field the user has not set gets
+   *  the preset's method through the same guard as suggestions; a field the
+   *  user already set keeps its value and gets a "preset proposes" marker; a
+   *  proposal the guard refuses is shown as not applied with the reason. */
+  applyPreset(): void {
+    const preset = this.selectedPreset;
+    const fields = this.presetRequestFields();
+    if (!preset || fields.length === 0 || !this.presetAvailable()) return;
+    this.applyingPreset = true;
+    this.error = '';
+    this.pipelineService.presetFieldProtection(preset, fields).subscribe({
+      next: (resp: any) => {
+        this.setPresetResult(resp);
+        const byName = this.presetEntriesByName(resp);
+        for (const f of this.schemaFields) {
+          const e = byName.get((f.name || '').trim().toLowerCase());
+          f.presetClass = e?.class || null;
+          if (!e) continue;
+          const method = e.method && e.method !== 'none' ? String(e.method) : '';
+          if (!method) continue;
+          if (!f.protect) f.protect = { method: '', preserve: null };
+          const preserve = method === 'mask' ? (e.preserve ?? null) : null;
+          const problem = this.protectProblem(f, method);
+          if (problem) {
+            f.suggested = {
+              method: '', preserve: null, reason: e.reason || '', applied: false,
+              refused: { method, problem }, preset: true
+            };
+            continue;
+          }
+          if (f.protect.method) {
+            const same = f.protect.method === method && (f.protect.preserve ?? null) === preserve;
+            f.suggested = same ? null : { method, preserve, reason: e.reason || '', applied: false, preset: true };
+            continue;
+          }
+          f.protect = { method, preserve };
+          f.protectError = '';
+          f.suggested = null;
+          this.presetExemptNames = this.presetExemptNames.filter(n => n.toLowerCase() !== (f.name || '').trim().toLowerCase());
+        }
+        this.applyingPreset = false;
+      },
+      error: (err: any) => {
+        this.error = 'Preset failed: ' + httpErrorText(err);
+        this.applyingPreset = false;
+      }
+    });
+  }
+
+  /** Reopening a saved preset pipeline: restore chips, review notes and
+   *  unclassified names. Saved methods and exemptions are never changed. */
+  private restorePresetClasses(): void {
+    const preset = this.selectedPreset;
+    const fields = this.presetRequestFields();
+    if (!preset || fields.length === 0) return;
+    this.pipelineService.presetFieldProtection(preset, fields).subscribe({
+      next: (resp: any) => {
+        this.setPresetResult(resp);
+        const byName = this.presetEntriesByName(resp);
+        for (const f of this.schemaFields) {
+          f.presetClass = byName.get((f.name || '').trim().toLowerCase())?.class || null;
+        }
+      },
+      error: (err: any) => {
+        this.setPresetResult(null);
+        this.error = 'Could not load the preset classes: ' + httpErrorText(err);
+      }
+    });
+  }
+
+  isExempt(field: SchemaField): boolean {
+    const n = (field.name || '').trim().toLowerCase();
+    return !!n && this.presetExemptNames.some(x => (x || '').toLowerCase() === n);
+  }
+
+  /** The Exempt toggle shows when the preset is enforced and a classified
+   *  field is set to None. */
+  showExempt(field: SchemaField): boolean {
+    return !!this.selectedPreset && this.enforcePreset && this.presetAvailable()
+      && !!field.presetClass && !field.protect?.method;
+  }
+
+  toggleExempt(field: SchemaField): void {
+    const n = (field.name || '').trim();
+    if (!n) return;
+    if (this.isExempt(field)) {
+      this.presetExemptNames = this.presetExemptNames.filter(x => (x || '').toLowerCase() !== n.toLowerCase());
+    } else {
+      this.presetExemptNames = [...this.presetExemptNames, n];
+    }
+  }
+
+  presetLabel(value: string | null): string {
+    return this.presets.find(p => p.value === value)?.label || value || '';
   }
 
   /** Keep a suggestion. When Suggest already filled protect, only the marker
@@ -1337,6 +1504,23 @@ export class PipelineCreateComponent implements OnInit {
     }
     if (hasDq) {
       config.dataQuality = dq;
+    }
+
+    // Field protection block: the loaded block is re-emitted unchanged (e.g.
+    // purgeSource), with preset / presetExempt only when a preset is enforced
+    // on a delimited source. No block at all when there is nothing to say.
+    const protection: any = this.loadedProtection ? JSON.parse(JSON.stringify(this.loadedProtection)) : {};
+    const hadExemptKey = 'presetExempt' in protection;
+    delete protection.preset;
+    delete protection.presetExempt;
+    if (this.selectedPreset && this.enforcePreset && this.presetAvailable()) {
+      protection.preset = this.selectedPreset;
+      if (this.presetExemptNames.length > 0 || hadExemptKey) {
+        protection.presetExempt = [...this.presetExemptNames];
+      }
+    }
+    if (Object.keys(protection).length > 0) {
+      config.protection = protection;
     }
 
     // Transformation

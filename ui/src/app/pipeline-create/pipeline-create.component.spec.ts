@@ -1496,6 +1496,24 @@ describe('PipelineCreateComponent — field protection preset', () => {
     expect(s).not.toContain('Exempt');
   });
 
+  // Resolved detail (b): the wizard used to drop the protection block on edit,
+  // so a pipeline saved with purgeSource: false went back to purging.
+  it('a purgeSource-only pipeline round-trips its protection block untouched', async () => {
+    const fields = [{ name: 'mrn', type: 'string', protect: { method: 'hmac' } }, { name: 'amount', type: 'double' }];
+    await onSchemaStep(fields, {}, { protection: { purgeSource: false } });
+    expect((component as any).selectedPreset || null).toBeNull();
+    expect(presetSpy).not.toHaveBeenCalled();
+    const cfg = wire(component.buildConfig());
+    expect(cfg.protection).toEqual({ purgeSource: false });
+    expect(cfg.source.schemaProperties.fields).toEqual(fields);
+
+    // Applying the preset and unticking enforce keeps purgeSource and adds no preset.
+    await applyPreset();
+    enforceBox()?.click();
+    await settle();
+    expect(wire(component.buildConfig()).protection).toEqual({ purgeSource: false });
+  });
+
   it('json source shows no preset select', async () => {
     await onSchemaStep([{ name: 'mrn', type: 'string' }]);
     expect(el.querySelector('select.preset-select')).withContext('csv shows the preset select').not.toBeNull();

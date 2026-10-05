@@ -671,3 +671,49 @@ option {
   font-size: 12px;
   color: var(--text-secondary, #8b949e);
 }
+
+/* Field protection preset */
+.preset-select {
+  width: auto;
+  min-width: 180px;
+}
+
+.preset-summary {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.preset-summary ul {
+  margin: 4px 0 8px 18px;
+  padding: 0;
+}
+
+.preset-summary-label {
+  font-weight: 600;
+}
+
+.preset-unclassified,
+.preset-counts {
+  margin-bottom: 6px;
+}
+
+.field-class {
+  align-self: center;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+  background: var(--bg-secondary, #eef);
+  color: var(--accent-cyan);
+}
+
+.preset-exempt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
