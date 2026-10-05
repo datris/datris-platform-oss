@@ -68,6 +68,10 @@ export class PipelineCreateComponent implements OnInit {
   /** True when the last Generate Schema / sample analysis result says the
    * model declined the request, so fields are all-string from the header. */
   aiDeclined = false;
+  /** Step 5's own decline flag: set only by the step-5 sample summary
+   * (autoProfileSampleFile), an independent model call, so it never changes
+   * what steps 1 and 3 say about the schema fields. */
+  profileAiDeclined = false;
   /** True when a generate-schema result turned Header off because the
    * server found that line 1 is data (columns numbered). */
   headerAdjusted = false;
@@ -1616,7 +1620,7 @@ export class PipelineCreateComponent implements OnInit {
     ).subscribe({
       next: (response: any) => {
         this.valuesWithheld = response?.valuesWithheld === true;
-        this.aiDeclined = response?.aiDeclined === true;
+        this.profileAiDeclined = response?.aiDeclined === true;
         // Header is not adopted here: this call only summarises the sample and
         // must not override a Header choice the user made after step 1.
         if (response.source?.schemaProperties?.fields) {

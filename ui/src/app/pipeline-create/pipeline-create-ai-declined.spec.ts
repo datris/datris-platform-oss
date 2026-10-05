@@ -136,4 +136,44 @@ describe('PipelineCreateComponent — ai declined note', () => {
     expect(el.querySelector('.ai-declined')).toBeNull();
     expect(el.querySelector('.header-adjusted')).toBeNull();
   });
+
+  // Review finding 2: the step-5 sample summary is an independent model call
+  // with its own flag; it never changes the schema-step note, and vice versa.
+  function profileOnDataQualityStep(): void {
+    component.pipelineName = 'people';
+    component.sourceType = 'csv';
+    component.sampleFile = new File(['full_name,ssn\n'], 'people.csv', { type: 'text/csv' });
+    component.sampleFileDetected = true;
+    component.step = 5;
+    component.autoProfileSampleFile();
+    fixture.detectChanges();
+  }
+
+  it('the step-5 sample summary has its own ai-declined note and never touches the schema-step flag', () => {
+    // Step 1 declined, step 5 succeeds: the schema-step note stays.
+    generateResponse = { ...generateResponse, aiDeclined: true };
+    analyzeSampleOnFirstStep();
+    expect(component.aiDeclined).toBeTrue();
+    generateResponse = { name: 'people', source: { schemaProperties: { fields } } };
+    profileOnDataQualityStep();
+    expect(component.aiDeclined).withContext('step 5 success must not clear the schema-step flag').toBeTrue();
+    expect(component.profileAiDeclined).toBeFalse();
+    expect(el.querySelector('.ai-declined')).withContext('no step-5 note after a normal summary').toBeNull();
+
+    // Step 1 succeeds, step 5 declined: only the step-5 note.
+    analyzeSampleOnFirstStep();
+    expect(component.aiDeclined).toBeFalse();
+    generateResponse = { ...generateResponse, aiDeclined: true };
+    profileOnDataQualityStep();
+    expect(component.aiDeclined).withContext('step 5 decline must not set the schema-step flag').toBeFalse();
+    expect(component.profileAiDeclined).toBeTrue();
+    const note = el.querySelector('.ai-declined') as HTMLElement | null;
+    expect(note).withContext('.ai-declined note on the Data Quality step').not.toBeNull();
+    expect((note?.textContent || '').toLowerCase()).toContain('declined');
+
+    // The next normal summary clears it.
+    generateResponse = { name: 'people', source: { schemaProperties: { fields } } };
+    profileOnDataQualityStep();
+    expect(el.querySelector('.ai-declined')).toBeNull();
+  });
 });

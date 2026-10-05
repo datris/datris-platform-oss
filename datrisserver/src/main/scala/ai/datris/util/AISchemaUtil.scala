@@ -38,21 +38,17 @@ object AISchemaUtil {
       * name: `column_1..N` when `header` is false or line 1 reads as data,
       * and `column_N` for any header cell that is not an identifier. When the
       * columns are numbered because line 1 is data, `csvAttributes.header` is
-      * written as false. Also the on-mode fallback when the model declines
-      * (`reason` names which, for the log). */
-    private def buildCsvConfigSafeNames(pipeline: String, fileContent: String, delimiter: String, header: Boolean, reason: String): String = {
+      * written as false. */
+    private def buildCsvConfigWithheld(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
         val myDelimiter = if (delimiter == null) "," else delimiter
-        val firstLine = fileContent.stripPrefix("\uFEFF").split("\n").head
-        val delimChar = if (myDelimiter == "\\t") "\t" else myDelimiter
-        val cells = firstLine.split(java.util.regex.Pattern.quote(delimChar), -1)
-            .map(_.trim.replaceAll("\"", "").replaceAll("'", "")).toList
+        val cells = firstLineCells(fileContent, myDelimiter)
         val fields = AiSampleValues.safeColumnNames(cells, header)
         // Columns numbered because line 1 is data: the saved pipeline must not
         // skip that line as a header.
         val lineOneIsHeader = header && !AiSampleValues.headerLooksLikeData(cells)
         val fieldsJson = fields.map(f => s"""{"name":"$f","type":"string"}""").mkString("[", ",", "]")
 
-        logger.info("Building all-string CSV config (" + reason + ") for pipeline: " + pipeline + ", fields: " + fields.length)
+        logger.info("Building all-string CSV config (values withheld) for pipeline: " + pipeline + ", fields: " + fields.length)
 
         buildConfig(
             pipeline = pipeline,
@@ -63,20 +59,44 @@ object AISchemaUtil {
         )
     }
 
+    /** Line 1 split exactly as [[buildCsvConfigAllStrings]] does (BOM removed). */
+    private def firstLineCells(fileContent: String, delimiter: String): List[String] = {
+        val firstLine = fileContent.stripPrefix("\uFEFF").split("\n").head
+        val delimChar = if (delimiter == "\\t") "\t" else delimiter
+        firstLine.split(java.util.regex.Pattern.quote(delimChar), -1).map(_.trim.replaceAll("\"", "").replaceAll("'", "")).toList
+    }
+
+    /** On-mode fallback when the model declines: the header was already sent
+      * to the model, so a real header keeps its names exactly as
+      * [[buildCsvConfigAllStrings]] writes them. When `header` is false or
+      * line 1 reads as data, the columns are numbered and
+      * `csvAttributes.header` is false, as in the values-withheld result.
+      * Top-level `"aiDeclined": true`; never `valuesWithheld`. */
+    private def buildCsvConfigDeclined(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
+        val myDelimiter = if (delimiter == null) "," else delimiter
+        val lineOneIsHeader = header && !AiSampleValues.headerLooksLikeData(firstLineCells(fileContent, myDelimiter))
+        val base =
+            if (lineOneIsHeader) buildCsvConfigAllStrings(pipeline, fileContent, delimiter, header)
+            else buildCsvConfigWithheld(pipeline, fileContent, delimiter, header)
+        val config = JsonParser.parseString(base).getAsJsonObject
+        config.addProperty("aiDeclined", true)
+        new GsonBuilder().setPrettyPrinting().create().toJson(config)
+    }
+
     def buildCsvConfig(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String =
         buildCsvConfig(pipeline, fileContent, delimiter, header, prompt => callCodegen(prompt, "CSV schema generation, pipeline: " + pipeline))
 
     /** Seam for specs: `ai(prompt)` returns the model's extracted text. With
       * DATRIS_AI_SAMPLE_VALUES=false no model is called and every field is a
       * string named from the header ([[buildCsvConfigAllStrings]]). With the
-      * switch on, a model decline ([[AIRefusalException]]) returns the same
-      * all-string config plus top-level `"aiDeclined": true`. */
+      * switch on, a model decline ([[AIRefusalException]]) returns
+      * [[buildCsvConfigDeclined]]. */
     private[datris] def buildCsvConfig(pipeline: String, fileContent: String, delimiter: String, header: Boolean, ai: String => String): String = {
         if (!AiSampleValues.enabled) {
             logger.info(
                 "CSV schema generation for pipeline " + pipeline + ": values withheld (" + AiSampleValues.EnvVar + "=false), all-string fields, no model call"
             )
-            return buildCsvConfigSafeNames(pipeline, fileContent, delimiter, header, "values withheld")
+            return buildCsvConfigWithheld(pipeline, fileContent, delimiter, header)
         }
 
         val myDelimiter = if (delimiter == null) "," else delimiter
@@ -90,9 +110,7 @@ object AISchemaUtil {
                     // A safety decline only; every other failure propagates. The
                     // provider's message is not logged or returned.
                     logger.warn("CSV schema generation for pipeline " + pipeline + ": the model declined; returning all-string fields named from the header")
-                    val config = JsonParser.parseString(buildCsvConfigSafeNames(pipeline, fileContent, delimiter, header, "model declined")).getAsJsonObject
-                    config.addProperty("aiDeclined", true)
-                    return new GsonBuilder().setPrettyPrinting().create().toJson(config)
+                    return buildCsvConfigDeclined(pipeline, fileContent, delimiter, header)
             }
         val fieldsJson = extractJsonArray(text)
 

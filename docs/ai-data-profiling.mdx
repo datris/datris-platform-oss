@@ -125,10 +125,12 @@ An AI provider's safety classifier can decline to look at a file, most often one
 | Provider family | Recognised as a decline |
 |-----------------|-------------------------|
 | Anthropic (direct or AWS Bedrock) | `stop_reason: "refusal"` |
-| OpenAI, Azure OpenAI and Grok (chat completions) | `finish_reason: "content_filter"`, or a non-empty `message.refusal` |
+| OpenAI, Azure OpenAI, Grok and Ollama (chat completions, streamed or not) | `finish_reason: "content_filter"`, or a non-empty `message.refusal` (`delta.refusal` when streamed) |
 | OpenAI Responses API models | an output item or message content part of type `refusal`, or `incomplete_details.reason: "content_filter"` |
 
-Nothing else counts as a decline: a missing or wrong provider key, a timeout, a rate limit or any other provider error is still returned as an error, so a misconfiguration is not hidden.
+Only response-side declines are recognised. Azure OpenAI's prompt-side content filter answers with HTTP 400 (`code: content_filter`) and is still returned as an error. Nothing else counts as a decline: a missing or wrong provider key, a timeout, a rate limit or any other provider error is still returned as an error, so a misconfiguration is not hidden.
+
+Other AI features (search answers, CodeGen, tap generation, fix suggestions and the rest) have no local fallback: a decline there, including a `content_filter` finish that used to return the cut-off text, is reported as an error.
 
 ## Values withheld
 

@@ -1816,18 +1816,26 @@ paths:
                   description: CSV delimiter (default comma)
                 header:
                   type: boolean
-                  description: Whether CSV has a header row (default true)
+                  default: false
+                  description: Whether CSV has a header row (default false; pass true for a file with a header row)
                 allStrings:
                   type: string
                   default: "false"
                   description: If "true", generate every CSV field as a string instead of inferring types
       responses:
         '200':
-          description: AI-generated pipeline configuration
+          description: >-
+            AI-generated pipeline configuration. When the AI model declines a CSV file
+            (a provider safety decline), the response is the all-string fallback
+            configuration with top-level `aiDeclined: true`; it is never saved with a pipeline.
           content:
             application/json:
               schema:
                 type: object
+                properties:
+                  aiDeclined:
+                    type: boolean
+                    description: Present and true only when the model declined; fields are all-string, named from the header (numbered, with header false, when line 1 looks like data or header is false)
         '500':
           description: Error
 
@@ -1859,11 +1867,18 @@ paths:
                   description: Number of rows to sample (default 200)
       responses:
         '200':
-          description: AI-generated data profile
+          description: >-
+            AI-generated data profile. When the AI model declines (a provider safety
+            decline), the response holds the server's column statistics only, empty
+            qualityIssues and recommendations, a fixed note and `aiDeclined: true`.
           content:
             application/json:
               schema:
                 type: object
+                properties:
+                  aiDeclined:
+                    type: boolean
+                    description: Present and true only when the model declined; the profile is statistics only
         '500':
           description: Error
 

@@ -334,4 +334,31 @@ class AISchemaUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
             }
         }
     }
+
+    test("on-mode decline keeps a mixed real header exactly as buildCsvConfigAllStrings names it, header true") {
+        inEnv {
+            sampled {
+                val mixed = "First Name,order-date,amount\nZQX-NAME-1,ZQX-DATE-9,918273645"
+                val config = AISchemaUtil.buildCsvConfig("orders", mixed, ",", true, declined)
+                val got = obj(config)
+                assert(got.get("aiDeclined").getAsBoolean, config)
+                val (names, header) = parsed(config)
+                assert(names == List("First Name", "order-date", "amount"), config)
+                assert(header, config)
+                got.remove("aiDeclined")
+                assert(got == obj(AISchemaUtil.buildCsvConfigAllStrings("orders", mixed, ",", true)), config)
+                assert(!config.contains("valuesWithheld"), config)
+            }
+        }
+    }
+
+    test("off-mode still numbers non-identifier header cells (strict safe naming unchanged)") {
+        inEnv {
+            withheld {
+                val mixed = "First Name,order-date,amount\nZQX-NAME-1,ZQX-DATE-9,918273645"
+                val (names, _) = parsed(AISchemaUtil.buildCsvConfig("orders", mixed, ",", true, declined))
+                assert(names.last == "amount" && names.take(2).forall(_.startsWith("column_")), names.toString)
+            }
+        }
+    }
 }

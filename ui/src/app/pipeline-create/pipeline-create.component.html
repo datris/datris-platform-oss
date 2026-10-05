@@ -94,7 +94,7 @@
           <span *ngIf="schemaFields.length > 0 && sourceType !== 'unstructured'"> &mdash; {{ schemaFields.length }} fields detected</span>
         </div>
         <p class="values-withheld" *ngIf="valuesWithheld">Row values were withheld from the AI by this server's configuration: field names come from the header, or are numbered when there is none, and every field is typed as string. Adjust names and types if needed.</p>
-        <p class="ai-declined" *ngIf="aiDeclined">The AI model declined to analyse this file, so fields were named from the header (numbered when there is none) as text. You can set types by hand.</p>
+        <p class="ai-declined" *ngIf="aiDeclined">The AI model declined to analyse this file, so every field is typed as string, named from the header, or numbered (with Header turned off) when line 1 looks like data or there is no header. You can set types by hand.</p>
         <p class="header-adjusted" *ngIf="headerAdjusted && sourceType === 'csv'">The first line looks like data, so Header was turned off and the columns are numbered.</p>
       </div>
 
@@ -235,7 +235,7 @@
             </button>
           </div>
           <p class="values-withheld" *ngIf="valuesWithheld">Row values were withheld from the AI by this server's configuration: field names come from the header, or are numbered when there is none, and every field is typed as string. Adjust names and types if needed.</p>
-          <p class="ai-declined" *ngIf="aiDeclined">The AI model declined to analyse this file, so fields were named from the header (numbered when there is none) as text. You can set types by hand.</p>
+          <p class="ai-declined" *ngIf="aiDeclined">The AI model declined to analyse this file, so every field is typed as string, named from the header, or numbered (with Header turned off) when line 1 looks like data or there is no header. You can set types by hand.</p>
           <p class="header-adjusted" *ngIf="headerAdjusted && sourceType === 'csv'">The first line looks like data, so Header was turned off and the columns are numbered.</p>
         </div>
         <hr class="divider">
@@ -403,7 +403,7 @@
         <p><strong>AI Analysis of your sample file:</strong></p>
         <p>{{ dqProfileSummary }}</p>
         <p class="values-withheld" *ngIf="valuesWithheld">Row values were withheld from the AI by this server's configuration: field names come from the header, or are numbered when there is none, and every field is typed as string. Adjust names and types if needed.</p>
-        <p class="ai-declined" *ngIf="aiDeclined">The AI model declined to analyse this file, so fields were named from the header (numbered when there is none) as text. You can set types by hand.</p>
+        <p class="ai-declined" *ngIf="profileAiDeclined">The AI model declined to analyse the sample file, so the detected fields are typed as string, named from the header, or numbered when line 1 looks like data or there is no header.</p>
         <p class="header-adjusted" *ngIf="headerAdjusted && sourceType === 'csv'">The first line looks like data, so Header was turned off and the columns are numbered.</p>
       </div>
 

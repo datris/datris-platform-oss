@@ -83,4 +83,36 @@ class AIResponseParserOpenAIRefusalSpec extends AnyFunSuite {
             AIResponseParser.extractText("""{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}""", responses) == "ok"
         )
     }
+
+    // Review finding 1: Azure and Grok calls are streamed (stream: true) and
+    // folded back by AIHttp.assembleChatCompletionsStream; a streamed refusal
+    // must survive the fold so the parser can see it.
+    private def sse(chunks: String*): java.io.InputStream =
+        new java.io.ByteArrayInputStream(
+            (chunks.map(c => "data: " + c + "\n\n").mkString + "data: [DONE]\n\n").getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        )
+
+    test("streamed delta.refusal is kept by the assembler and raises AIRefusalException on Azure and Grok") {
+        val assembled = AIHttp.assembleChatCompletionsStream(
+            sse(
+                """{"choices":[{"delta":{"role":"assistant","content":null,"refusal":""}}]}""",
+                """{"choices":[{"delta":{"refusal":"I can't help "}}]}""",
+                """{"choices":[{"delta":{"refusal":"with ZQX-REFUSAL-TEXT"}}]}""",
+                """{"choices":[{"delta":{},"finish_reason":"stop"}]}"""
+            )
+        )
+        Seq(azure, grok).foreach(cfg => assert(!declines(assembled, cfg).getMessage.contains("ZQX-REFUSAL-TEXT")))
+    }
+
+    test("streamed content_filter finish is a decline; a normal stream carries no refusal field") {
+        val filtered = AIHttp.assembleChatCompletionsStream(
+            sse("""{"choices":[{"delta":{"role":"assistant","content":"part"}}]}""", """{"choices":[{"delta":{},"finish_reason":"content_filter"}]}""")
+        )
+        declines(filtered, azure)
+        val normal = AIHttp.assembleChatCompletionsStream(
+            sse("""{"choices":[{"delta":{"role":"assistant","content":"ok","refusal":null}}]}""", """{"choices":[{"delta":{},"finish_reason":"stop"}]}""")
+        )
+        assert(!normal.contains("refusal"), normal)
+        assert(AIResponseParser.extractText(normal, grok) == "ok")
+    }
 }
