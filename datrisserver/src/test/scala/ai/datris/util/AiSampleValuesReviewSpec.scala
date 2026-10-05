@@ -210,6 +210,21 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
         assert(!classOf[PipelineConfig].getDeclaredFields.exists(_.getName == "valuesWithheld"))
     }
 
+    test("ai-refusal-fallback: a generate response posted back as a pipeline config drops aiDeclined, never persisted") {
+        val generated =
+            """{"aiDeclined": true, "name": "people", "source": {"schemaProperties": {"fields": [{"name":"ssn","type":"string"}]},
+              | "fileAttributes": {"csvAttributes": {"delimiter": ",", "header": true, "encoding": "UTF-8"}}},
+              | "destination": {"database": {"dbName": "d", "schema": "s", "table": "t", "usePostgres": true}}}""".stripMargin
+        val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+            .registerModule(new com.fasterxml.jackson.module.paramnames.ParameterNamesModule())
+            .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        val viaJackson = mapper.readValue(generated, classOf[PipelineConfig])
+        assert(viaJackson.name == "people")
+        assert(!new Gson().toJson(viaJackson).contains("aiDeclined"))
+        assert(!new Gson().toJson(new Gson().fromJson(generated, classOf[PipelineConfig])).contains("aiDeclined"))
+        assert(!classOf[PipelineConfig].getDeclaredFields.exists(_.getName == "aiDeclined"))
+    }
+
     // ---- round 2
 
     test("a line with person-style names or letters-dash-digits ids is data, even when every cell is identifier-shaped") {

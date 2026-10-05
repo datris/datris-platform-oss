@@ -5,6 +5,8 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.model.{AIRefusalException, DatrisException}
+import com.google.gson.{JsonObject, JsonParser}
 import org.scalatest.funsuite.AnyFunSuite
 
 import scala.collection.mutable.ListBuffer
@@ -29,7 +31,16 @@ import scala.collection.mutable.ListBuffer
   *
   * Off: CSV makes no model call and returns `buildCsvConfigAllStrings(...)`;
   * JSON Schema / XSD get the skeleton plus "values withheld; infer from
-  * structure only". On: the prompt is byte-for-byte today's. */
+  * structure only". On: the prompt is byte-for-byte today's.
+  *
+  * Story ai-refusal-fallback (plans/stories/ai-refusal-fallback.md), same seam.
+  * Pinned type: `ai.datris.model.AIRefusalException(message: String) extends
+  * DatrisException`. On-mode (switch at its default): an `ai` that throws
+  * `AIRefusalException` yields exactly the fields/config of
+  * `buildCsvConfigAllStrings(pipeline, fileContent, delimiter, header)` plus a
+  * top-level `"aiDeclined": true`; an `ai` that throws a plain
+  * `DatrisException` or `RuntimeException` still propagates. Off-mode is
+  * unchanged and never carries `aiDeclined`. */
 class AISchemaUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
 
     private val csv =
@@ -235,6 +246,74 @@ class AISchemaUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
                 val (names, header) = parsed(AISchemaUtil.buildCsvConfig("people", realHeader, ",", true, ai))
                 assert(names == List("full_name", "ssn", "email", "age"))
                 assert(header, "real header names kept → header stays true")
+            }
+        }
+    }
+
+    // ---- Story ai-refusal-fallback (2026-10-05): on-mode, the model declines → all-string fallback ----
+
+    private val declined: String => String =
+        _ => throw new AIRefusalException("The model declined this request (stop_reason: refusal). ZQX-PROVIDER-SECRET")
+
+    private def obj(config: String): JsonObject = JsonParser.parseString(config).getAsJsonObject
+
+    test("on-mode CSV generation falls back to all-string fields with aiDeclined when the model declines") {
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("people", csv, ",", true, declined)
+                val got = obj(config)
+                assert(got.has("aiDeclined") && got.get("aiDeclined").getAsBoolean, "aiDeclined: true in " + config)
+                got.remove("aiDeclined")
+                val expected = obj(AISchemaUtil.buildCsvConfigAllStrings("people", csv, ",", true))
+                assert(got == expected, "same config as buildCsvConfigAllStrings apart from aiDeclined: " + config)
+                assert(!config.contains("ZQX-PROVIDER-SECRET"), config)
+                assert(!config.contains("valuesWithheld"), config)
+            }
+        }
+    }
+
+    test("on-mode CSV generation still propagates other failures") {
+        inEnv {
+            sampled {
+                val badKey: String => String = _ => throw new DatrisException("AI API returned 401: invalid x-api-key")
+                val e = intercept[DatrisException](AISchemaUtil.buildCsvConfig("people", csv, ",", true, badKey))
+                assert(!e.isInstanceOf[AIRefusalException])
+                assert(e.getMessage.contains("401"), e.getMessage)
+                val timeout: String => String = _ => throw new RuntimeException("java.net.SocketTimeoutException: Read timed out")
+                val t = intercept[RuntimeException](AISchemaUtil.buildCsvConfig("people", csv, ",", true, timeout))
+                assert(t.getMessage.contains("Read timed out"), t.getMessage)
+            }
+        }
+    }
+
+    test("on-mode CSV generation without a decline carries no aiDeclined") {
+        inEnv {
+            sampled {
+                val (_, ai) = capturing(typedFields)
+                val config = AISchemaUtil.buildCsvConfig("people", csv, ",", true, ai)
+                assert(!obj(config).has("aiDeclined"), config)
+            }
+        }
+    }
+
+    test("off-mode is unchanged: no model call, all-string config, no aiDeclined") {
+        inEnv {
+            withheld {
+                val calls = ListBuffer[String]()
+                val ai: String => String = p => { calls += p; throw new AIRefusalException("declined") }
+                val config = AISchemaUtil.buildCsvConfig("people", csv, ",", true, ai)
+                assert(calls.isEmpty, "no model call with the switch off")
+                assert(config == AISchemaUtil.buildCsvConfigAllStrings("people", csv, ",", true), config)
+                assert(!obj(config).has("aiDeclined"), config)
+            }
+        }
+    }
+
+    test("JSON Schema and XSD generation keep propagating a decline (no local fallback)") {
+        inEnv {
+            sampled {
+                intercept[AIRefusalException](AISchemaUtil.generateJsonSchema(jsonSample, declined))
+                intercept[AIRefusalException](AISchemaUtil.generateXsdSchema(xmlSample, declined))
             }
         }
     }
