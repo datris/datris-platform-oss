@@ -24,7 +24,7 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 
 import { PipelineCreateComponent } from './pipeline-create.component';
 import { PipelineService } from '../pipeline.service';
@@ -1512,6 +1512,129 @@ describe('PipelineCreateComponent — field protection preset', () => {
     enforceBox()?.click();
     await settle();
     expect(wire(component.buildConfig()).protection).toEqual({ purgeSource: false });
+  });
+
+  it('a second Apply keeps an exempted field at None and exempt', async () => {
+    await onSchemaStep(FIELDS);
+    await applyPreset();
+    await pick(rowFor('phone').querySelector('select.field-protect') as HTMLSelectElement, '');
+    await clickExempt('phone');
+    component.addField();
+    await settle();
+    await applyPreset();
+    expect(f('phone').protect?.method || null).withContext('deliberate None survives a second Apply').toBeNull();
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET, presetExempt: ['phone'] });
+    // The proposal is still offered with Keep.
+    const line = blockQuery('phone', '.field-suggestion');
+    expect((line?.textContent || '')).toMatch(/preset proposes redact/i);
+  });
+
+  it('a second Apply on a reopened pipeline keeps its saved exemption', async () => {
+    const saved = FIELDS.map(x => x.name === 'phone' || x.name === 'visit_count' || x.name === 'notes' ? x
+      : { ...x, protect: { method: 'drop' } });
+    await onSchemaStep(saved, {}, { protection: { preset: PRESET, presetExempt: ['phone'] } });
+    await applyPreset();
+    expect(f('phone').protect?.method || null).toBeNull();
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET, presetExempt: ['phone'] });
+  });
+
+  it('selecting without Apply emits no preset', async () => {
+    await onSchemaStep(FIELDS);
+    const sel = presetSelect();
+    const idx = (Array.from(sel.querySelectorAll('option')) as HTMLOptionElement[])
+      .findIndex(o => (o.textContent || '').trim() === 'HIPAA Safe Harbor');
+    sel.selectedIndex = idx;
+    sel.dispatchEvent(new Event('change'));
+    await settle();
+    expect((component as any).selectedPreset).toBe(PRESET);
+    expect(presetSpy).not.toHaveBeenCalled();
+    expect(el.querySelector('.preset-summary')).toBeNull();
+    expect('protection' in wire(component.buildConfig())).toBeFalse();
+  });
+
+  it('replacing the schema after Apply drops the preset in create mode', async () => {
+    await onSchemaStep(FIELDS);
+    await applyPreset();
+    component.sourceType = 'csv';
+    component.onSourceTypeChange();
+    await settle();
+    expect((component as any).selectedPreset || null).toBeNull();
+    expect((component as any).presetResult).toBeNull();
+    expect('protection' in wire(component.buildConfig())).toBeFalse();
+  });
+
+  it('a mixed-case saved preset is recognised and kept on save', async () => {
+    await onSchemaStep([{ name: 'mrn', type: 'string', protect: { method: 'hmac' } }], {},
+      { protection: { preset: 'HIPAA-Safe-Harbor' } });
+    expect((component as any).selectedPreset).toBe(PRESET);
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET });
+  });
+
+  it('a preset id this build does not list is re-emitted unchanged', async () => {
+    presetSpy.calls.reset();
+    await onSchemaStep([{ name: 'mrn', type: 'string' }], {},
+      { protection: { purgeSource: false, preset: 'future-preset', presetExempt: ['mrn'] } });
+    expect(presetSpy).not.toHaveBeenCalled();
+    expect(wire(component.buildConfig()).protection)
+      .toEqual({ purgeSource: false, preset: 'future-preset', presetExempt: ['mrn'] });
+  });
+
+  it('exemptions for removed or protected fields are not saved; stale ones are reported', async () => {
+    await onSchemaStep(FIELDS, {}, { protection: { preset: PRESET, presetExempt: ['phone', 'fax'] } });
+    expect((el.querySelector('.preset-stale')?.textContent || '')).toContain('fax');
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET, presetExempt: ['phone'] });
+    // Removing the exempt field drops its exemption from the save.
+    component.removeField(FIELDS.findIndex(x => x.name === 'phone'));
+    await settle();
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET, presetExempt: [] });
+  });
+
+  it('enforced recognised fields at None and not exempt are listed as a hint', async () => {
+    await onSchemaStep(FIELDS);
+    await applyPreset();
+    expect(el.querySelector('.preset-uncovered')).toBeNull();
+    await pick(rowFor('phone').querySelector('select.field-protect') as HTMLSelectElement, '');
+    expect((el.querySelector('.preset-uncovered')?.textContent || '')).toContain('phone');
+    await clickExempt('phone');
+    expect(el.querySelector('.preset-uncovered')).toBeNull();
+  });
+
+  it('adding a field or committing a name refreshes the classes without changing methods', async () => {
+    await onSchemaStep(FIELDS);
+    await applyPreset();
+    await pick(rowFor('phone').querySelector('select.field-protect') as HTMLSelectElement, '');
+    presetSpy.calls.reset();
+    component.addField();
+    await settle();
+    expect(presetSpy).toHaveBeenCalledTimes(1);
+    expect(f('phone').protect?.method || null).toBeNull();
+    const input = rowFor('notes').querySelector('input.field-name') as HTMLInputElement;
+    input.dispatchEvent(new Event('blur'));
+    await settle();
+    expect(presetSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed reopen call shows classes unavailable with Retry, not zero counts', async () => {
+    presetSpy.and.returnValue(throwError(() => ({ status: 503, error: { error: 'down' } })));
+    await onSchemaStep(FIELDS, {}, { protection: { preset: PRESET } });
+    const summary = el.querySelector('.preset-summary') as HTMLElement | null;
+    expect(summary).not.toBeNull();
+    expect(summary?.textContent || '').toContain('classes unavailable');
+    expect(summary?.textContent || '').not.toContain('0 fields classified');
+    expect(enforceBox()).not.toBeNull();
+    presetSpy.and.callFake(() => of(presetResponse()));
+    const retry = (Array.from(summary?.querySelectorAll('button') || []) as HTMLButtonElement[])
+      .find(b => (b.textContent || '').trim() === 'Retry');
+    expect(retry).toBeDefined();
+    retry?.click();
+    await settle();
+    expect((rowFor('mrn')?.querySelector('.field-class')?.textContent || '')).toContain('mrn');
+  });
+
+  it('field names are trimmed before they are sent', async () => {
+    await onSchemaStep([{ name: ' ssn ', type: 'string' }]);
+    await applyPreset();
+    expect(presetSpy.calls.mostRecent()?.args[1]).toEqual([{ name: 'ssn', type: 'string' }]);
   });
 
   it('json source shows no preset select', async () => {

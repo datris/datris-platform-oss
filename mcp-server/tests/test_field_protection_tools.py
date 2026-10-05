@@ -528,3 +528,26 @@ def test_protect_preserve_enum_includes_first3():
     assert "first3" in enum, enum
     for p in ("last4", "domain", "year"):
         assert p in enum, enum
+
+
+# ---- review round: protect_exempt validation --------------------------------
+
+def test_protect_exempt_naming_an_unknown_field_is_an_error_and_nothing_is_posted(captured):
+    raw = server._dispatch("create_pipeline", _args(protect={"mrn": {"method": "hmac"}},
+                                                    protect_preset=PRESET, protect_exempt=["phone"]))
+    assert server._is_error_payload(raw), raw
+    assert "phone" in raw and "protect_exempt" in raw, raw
+    assert captured.post_count == 0
+
+
+def test_protect_exempt_without_protect_preset_is_an_error(captured):
+    raw = server._dispatch("create_pipeline", _args(protect_exempt=["ssn"]))
+    assert server._is_error_payload(raw), raw
+    assert "protect_preset" in raw, raw
+    assert captured.post_count == 0
+
+
+@pytest.mark.parametrize("text", ['["ssn", "email"]', "ssn, email"])
+def test_protect_exempt_string_form_is_parsed(captured, text):
+    posted = _create(captured, protect={"mrn": {"method": "hmac"}}, protect_preset=PRESET, protect_exempt=text)
+    assert posted.get("protection") == {"preset": PRESET, "presetExempt": ["ssn", "email"]}, posted.get("protection")

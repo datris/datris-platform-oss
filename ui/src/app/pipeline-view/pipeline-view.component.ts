@@ -81,7 +81,7 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
   get presetLabel(): string | null {
     const id = this.config?.protection?.preset;
     if (!id) return null;
-    return PipelineViewComponent.PRESET_LABELS[id] || id;
+    return PipelineViewComponent.PRESET_LABELS[String(id).trim().toLowerCase()] || String(id);
   }
 
   /** Fields exempted from the preset (`protection.presetExempt`). */

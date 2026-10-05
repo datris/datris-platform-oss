@@ -131,6 +131,13 @@ describe('PipelineViewComponent — Protected fields row', () => {
     expect(t).not.toMatch(/exempt/i);
   });
 
+  it('a preset saved in a different case still reads as its display name', () => {
+    const config = cfg([{ name: 'mrn', type: 'string', protect: { method: 'hmac' } }]);
+    config.protection = { preset: 'HIPAA-Safe-Harbor' };
+    const t = shown(render(config));
+    expect(t).toContain('Preset: HIPAA Safe Harbor (enforced)');
+  });
+
   it('no row for a pipeline without protect', () => {
     const el = render(cfg([{ name: 'id', type: 'string' }, { name: 'amount', type: 'double' }]));
     expect(text(el)).not.toContain('Protected fields');

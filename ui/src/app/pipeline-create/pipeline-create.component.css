@@ -695,7 +695,14 @@ option {
   font-weight: 600;
 }
 
+.preset-uncovered,
+.preset-stale {
+  margin-bottom: 6px;
+  color: var(--accent-red);
+}
+
 .preset-unclassified,
+.preset-unavailable,
 .preset-counts {
   margin-bottom: 6px;
 }

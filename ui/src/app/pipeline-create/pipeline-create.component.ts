@@ -148,6 +148,15 @@ export class PipelineCreateComponent implements OnInit {
   /** Field names exempted from the enforced preset (protection.presetExempt). */
   presetExemptNames: string[] = [];
   applyingPreset = false;
+  /** Set when the read-only preset call failed: the summary shows "classes
+   *  unavailable" with a Retry link instead of zero counts. */
+  presetUnavailable: string | null = null;
+  /** Preset id as loaded and recognised by this build (normalised); a saved
+   *  preset stays enforced on save without Apply. */
+  private loadedPresetId: string | null = null;
+  /** True when the loaded protection.preset is not one this build lists: it
+   *  and presetExempt are re-emitted unchanged. */
+  private foreignPreset = false;
   /** The protection block as loaded, re-emitted unchanged when untouched
    *  (keeps purgeSource and any key this wizard does not edit). */
   private loadedProtection: any = null;
@@ -382,8 +391,13 @@ export class PipelineCreateComponent implements OnInit {
     this.loadedProtection = config.protection && typeof config.protection === 'object'
       ? JSON.parse(JSON.stringify(config.protection)) : null;
     this.presetResult = null;
+    this.presetUnavailable = null;
     const savedPreset = this.loadedProtection?.preset;
-    this.selectedPreset = savedPreset && this.presets.some(p => p.value === savedPreset) ? savedPreset : null;
+    const savedId = savedPreset ? String(savedPreset).trim().toLowerCase() : '';
+    const known = this.presets.find(p => p.value === savedId);
+    this.selectedPreset = known ? known.value : null;
+    this.loadedPresetId = this.selectedPreset;
+    this.foreignPreset = !!savedPreset && !known;
     this.enforcePreset = true;
     this.presetExemptNames = Array.isArray(this.loadedProtection?.presetExempt)
       ? [...this.loadedProtection.presetExempt] : [];
@@ -524,7 +538,7 @@ export class PipelineCreateComponent implements OnInit {
     // A saved preset pipeline: ask the preset endpoint once (read-only) to
     // restore the class chips, review notes and unclassified names.
     if (this.selectedPreset && this.sourceType === 'csv') {
-      this.restorePresetClasses();
+      this.refreshPresetClasses();
     }
   }
 
@@ -648,6 +662,7 @@ export class PipelineCreateComponent implements OnInit {
     } else if (this.sourceType === 'csv') {
       this.schemaFields = [wizardField({})];
     }
+    this.resetPresetForNewSchema();
     // For unstructured, destination must be a vector DB
     if (this.sourceType === 'unstructured') {
       if (!this.isVectorDest()) {
@@ -688,6 +703,7 @@ export class PipelineCreateComponent implements OnInit {
     // Restore columns after onSourceTypeChange resets them for csv
     if (dataType === 'csv' && columns.length > 0) {
       this.schemaFields = columns.map((name: string) => wizardField({ name }));
+      this.resetPresetForNewSchema();
     }
   }
 
@@ -736,16 +752,19 @@ export class PipelineCreateComponent implements OnInit {
       this.sampleFileDetected = false;
       this.sourceType = 'csv';
       this.schemaFields = [wizardField({})];
+      this.resetPresetForNewSchema();
     } else if (this.pipelineSource === 'manual') {
       this.selectedTapName = '';
       this.sampleFileDetected = true; // skip file upload requirement, user defines everything by hand
       this.sourceType = 'csv';
       this.schemaFields = [wizardField({})];
+      this.resetPresetForNewSchema();
     }
   }
 
   addField(): void {
     this.schemaFields.push(wizardField({}));
+    this.onPresetFieldsChanged();
   }
 
   // --- Field protection -------------------------------------------------------
@@ -888,7 +907,7 @@ export class PipelineCreateComponent implements OnInit {
   private presetRequestFields(): Array<{ name: string; type: string }> {
     return this.schemaFields
       .filter(f => f.name && f.name.trim())
-      .map(({ name, type }) => ({ name, type }));
+      .map(({ name, type }) => ({ name: name.trim(), type }));
   }
 
   private presetEntriesByName(resp: any): Map<string, any> {
@@ -942,11 +961,16 @@ export class PipelineCreateComponent implements OnInit {
             f.suggested = same ? null : { method, preserve, reason: e.reason || '', applied: false, preset: true };
             continue;
           }
+          if (this.isExempt(f)) {
+            // A deliberate None: stays None and exempt; Keep still adopts the proposal.
+            f.suggested = { method, preserve, reason: e.reason || '', applied: false, preset: true };
+            continue;
+          }
           f.protect = { method, preserve };
           f.protectError = '';
           f.suggested = null;
-          this.presetExemptNames = this.presetExemptNames.filter(n => n.toLowerCase() !== (f.name || '').trim().toLowerCase());
         }
+        this.presetUnavailable = null;
         this.applyingPreset = false;
       },
       error: (err: any) => {
@@ -956,25 +980,82 @@ export class PipelineCreateComponent implements OnInit {
     });
   }
 
-  /** Reopening a saved preset pipeline: restore chips, review notes and
-   *  unclassified names. Saved methods and exemptions are never changed. */
-  private restorePresetClasses(): void {
+  /** Read-only preset call: restore chips, review notes and unclassified
+   *  names (on reopen, field add, field-name commit, or Retry). Saved methods
+   *  and exemptions are never changed. */
+  refreshPresetClasses(): void {
     const preset = this.selectedPreset;
     const fields = this.presetRequestFields();
-    if (!preset || fields.length === 0) return;
+    if (!preset || fields.length === 0 || !this.presetAvailable()) return;
     this.pipelineService.presetFieldProtection(preset, fields).subscribe({
       next: (resp: any) => {
         this.setPresetResult(resp);
+        this.presetUnavailable = null;
         const byName = this.presetEntriesByName(resp);
         for (const f of this.schemaFields) {
           f.presetClass = byName.get((f.name || '').trim().toLowerCase())?.class || null;
         }
       },
       error: (err: any) => {
-        this.setPresetResult(null);
-        this.error = 'Could not load the preset classes: ' + httpErrorText(err);
+        this.presetResult = null;
+        this.presetUnavailable = httpErrorText(err);
       }
     });
+  }
+
+  /** The preset is in play: applied in this session, or loaded from the saved
+   *  pipeline. Choosing it in the select alone does not enforce it. */
+  presetActive(): boolean {
+    return !!this.selectedPreset && this.presetAvailable()
+      && (!!this.presetResult || (this.selectedPreset === this.loadedPresetId));
+  }
+
+  /** A field was added or its name committed: refresh the class chips while a
+   *  preset is in play. */
+  onPresetFieldsChanged(): void {
+    if (this.presetActive()) this.refreshPresetClasses();
+  }
+
+  /** The schema was replaced (source type, sample file, tap, regenerate):
+   *  the last preset result no longer describes it. In create mode the preset
+   *  choice goes too; in edit mode a saved preset stays and is re-read. */
+  private resetPresetForNewSchema(): void {
+    this.presetResult = null;
+    this.presetUnavailable = null;
+    for (const f of this.schemaFields) f.presetClass = null;
+    if (!this.isEditMode) {
+      this.selectedPreset = null;
+      return;
+    }
+    if (this.presetActive()) this.refreshPresetClasses();
+  }
+
+  private namedField(name: string): SchemaField | undefined {
+    const n = (name || '').trim().toLowerCase();
+    return n ? this.schemaFields.find(f => (f.name || '').trim().toLowerCase() === n) : undefined;
+  }
+
+  /** Exempt names that still mean something: a current named field with no
+   *  method. Only these are saved. */
+  get effectiveExemptNames(): string[] {
+    return this.presetExemptNames.filter(x => {
+      const f = this.namedField(x);
+      return !!f && !f.protect?.method;
+    });
+  }
+
+  /** Exemptions naming a field no longer in the schema; dropped on save. */
+  get staleExemptNames(): string[] {
+    return this.presetExemptNames.filter(x => !this.namedField(x));
+  }
+
+  /** Recognised fields set to None and not exempt: the server refuses the
+   *  save while the preset is enforced, so they are listed as a hint. */
+  get uncoveredPresetFields(): string[] {
+    if (!this.presetActive() || !this.enforcePreset) return [];
+    return this.schemaFields
+      .filter(f => f.name && f.name.trim() && f.presetClass && !f.protect?.method && !this.isExempt(f))
+      .map(f => f.name.trim());
   }
 
   isExempt(field: SchemaField): boolean {
@@ -985,7 +1066,7 @@ export class PipelineCreateComponent implements OnInit {
   /** The Exempt toggle shows when the preset is enforced and a classified
    *  field is set to None. */
   showExempt(field: SchemaField): boolean {
-    return !!this.selectedPreset && this.enforcePreset && this.presetAvailable()
+    return this.presetActive() && this.enforcePreset
       && !!field.presetClass && !field.protect?.method;
   }
 
@@ -1166,6 +1247,7 @@ export class PipelineCreateComponent implements OnInit {
         next: (response: any) => {
           if (response.source?.schemaProperties?.fields) {
             this.schemaFields = response.source.schemaProperties.fields.map((f: any) => wizardField(f));
+            this.resetPresetForNewSchema();
           }
           this.valuesWithheld = response?.valuesWithheld === true;
           this.generatingSchema = false;
@@ -1191,6 +1273,7 @@ export class PipelineCreateComponent implements OnInit {
       next: (response: any) => {
         if (response.source?.schemaProperties?.fields) {
           this.schemaFields = response.source.schemaProperties.fields.map((f: any) => wizardField(f));
+          this.resetPresetForNewSchema();
         }
         this.valuesWithheld = response?.valuesWithheld === true;
         this.generatingSchema = false;
@@ -1513,10 +1596,15 @@ export class PipelineCreateComponent implements OnInit {
     const hadExemptKey = 'presetExempt' in protection;
     delete protection.preset;
     delete protection.presetExempt;
-    if (this.selectedPreset && this.enforcePreset && this.presetAvailable()) {
+    if (this.foreignPreset && !this.selectedPreset) {
+      // A preset id this build does not list: keep it exactly as saved.
+      protection.preset = this.loadedProtection.preset;
+      if (hadExemptKey) protection.presetExempt = this.loadedProtection.presetExempt;
+    } else if (this.presetActive() && this.enforcePreset) {
       protection.preset = this.selectedPreset;
-      if (this.presetExemptNames.length > 0 || hadExemptKey) {
-        protection.presetExempt = [...this.presetExemptNames];
+      const exempt = this.effectiveExemptNames;
+      if (exempt.length > 0 || hadExemptKey) {
+        protection.presetExempt = exempt;
       }
     }
     if (Object.keys(protection).length > 0) {
