@@ -407,4 +407,65 @@ class AISchemaUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
             }
         }
     }
+
+    // ---- Review round 3: whitespace/invisible cells, newline-only files, escaping ----
+
+    test("on-mode decline: a whitespace-only cell is blank and takes column_N") {
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("t", "name,\" \",amount\nx,y,z", ",", true, declined)
+                val (names, header) = parsed(config)
+                assert(names == List("name", "column_2", "amount"), config)
+                assert(header, config)
+                assertNamesUsable(names, config)
+            }
+        }
+    }
+
+    test("on-mode decline: a name that differs only by padding is a duplicate") {
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("t", "id,\" id\",name\nx,y,z", ",", true, declined)
+                val (names, _) = parsed(config)
+                assert(names == List("id", "column_2", "name"), config)
+                assertNamesUsable(names.map(_.trim), config)
+            }
+        }
+    }
+
+    test("on-mode decline: a cell holding only a byte-order mark is blank") {
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("t", "name,\uFEFF,amount\nx,y,z", ",", true, declined)
+                val (names, _) = parsed(config)
+                assert(names == List("name", "column_2", "amount"), config)
+                assert(!config.contains("\uFEFF"), config)
+            }
+        }
+    }
+
+    test("on-mode decline on a newline-only file gives column_1 (no 500), as off-mode does") {
+        Seq("\n", "\n\n", "\r\n").foreach { content =>
+            val off = inEnv(withheld(parsed(AISchemaUtil.buildCsvConfig("empty", content, ",", true, declined))))
+            assert(off._1 == List("column_1"), "off-mode on " + content.map(_.toInt))
+            inEnv {
+                sampled {
+                    val config = AISchemaUtil.buildCsvConfig("empty", content, ",", true, declined)
+                    assert(obj(config).get("aiDeclined").getAsBoolean, config)
+                    assert(parsed(config) == off, config)
+                }
+            }
+        }
+    }
+
+    test("on-mode decline: header names are JSON-escaped and come back exactly as the raw cells") {
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("t", "na\\me,d\te\nx,y", ",", true, declined)
+                val (names, header) = parsed(config)
+                assert(names == List("na\\me", "d\te"), config)
+                assert(header, config)
+            }
+        }
+    }
 }

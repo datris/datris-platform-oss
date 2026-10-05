@@ -61,15 +61,17 @@ object AISchemaUtil {
 
     /** Line 1 split exactly as [[buildCsvConfigAllStrings]] does (BOM removed). */
     private def firstLineCells(fileContent: String, delimiter: String): List[String] = {
-        val firstLine = fileContent.stripPrefix("\uFEFF").split("\n").head
+        // limit -1: a newline-only file still has a (blank) first line.
+        val firstLine = fileContent.stripPrefix("\uFEFF").split("\n", -1).head
         val delimChar = if (delimiter == "\\t") "\t" else delimiter
         firstLine.split(java.util.regex.Pattern.quote(delimChar), -1).map(_.trim.replaceAll("\"", "").replaceAll("'", "")).toList
     }
 
     /** On-mode fallback when the model declines: the header was already sent
       * to the model, so a real header keeps its names exactly as written (as
-      * [[buildCsvConfigAllStrings]] writes them), except that a blank cell, or
-      * a name already used (case-insensitively), takes `column_N` for its
+      * [[buildCsvConfigAllStrings]] writes them), except that a blank cell
+      * (empty, whitespace or invisible characters only), or a name already
+      * used (ignoring case and padding), takes `column_N` for its
       * position, so the result never has a blank or duplicate field name (an
       * empty file gives `column_1`, as the values-withheld result does). When
       * `header` is false or line 1 reads as data, the columns are numbered and
@@ -100,9 +102,9 @@ object AISchemaUtil {
       * its position), suffixed `_2`, `_3`, … only if that name is also taken. */
     private[util] def declinedHeaderNames(cells: List[String]): List[String] = {
         val kept = scala.collection.mutable.Set.empty[String]
-        val firstUse = cells.zipWithIndex.map {
-            case (c, _) if c.isEmpty => false
-            case (c, _) => kept.add(c.toLowerCase)
+        val firstUse = cells.map { c =>
+            val key = nameKey(c)
+            key.nonEmpty && kept.add(key)
         }
         val used = scala.collection.mutable.Set.empty[String] ++ kept
         cells.zip(firstUse).zipWithIndex.map {
@@ -111,11 +113,17 @@ object AISchemaUtil {
                 val baseName = "column_" + (i + 1)
                 var name = baseName
                 var k = 2
-                while (used.contains(name.toLowerCase)) { name = baseName + "_" + k; k += 1 }
-                used += name.toLowerCase
+                while (used.contains(nameKey(name))) { name = baseName + "_" + k; k += 1 }
+                used += nameKey(name)
                 name
         }
     }
+
+    /** What a header cell names, for blank and duplicate checks: invisible
+      * characters (byte-order mark, zero-width space/joiners, word joiner)
+      * removed, Unicode whitespace stripped from both ends, lower-cased. */
+    private def nameKey(c: String): String =
+        c.replaceAll("[\\uFEFF\\u200B-\\u200D\\u2060]", "").strip().toLowerCase(java.util.Locale.ROOT)
 
     /** `[{"name":…,"type":"string"},…]` with each name JSON-escaped. */
     private def stringFieldsJson(names: List[String]): String = {
