@@ -137,11 +137,34 @@ object AiSampleValues {
 
     private val IdentifierPattern = "^[A-Za-z_][A-Za-z0-9_ .\\-]{0,63}$".r
 
-    /** A name that reads as a column or key name, not a value: starts with a
-      * letter or underscore, at most 64 characters of letters, digits, `_`,
-      * space, `.` and `-`, and not all digits. */
+    /** Header cells: letters, digits, underscore and space only. */
+    private val HeaderCellPattern = "^[A-Za-z_][A-Za-z0-9_ ]{0,63}$".r
+
+    /** A dash next to a digit, an `@`, or more than four digits in a row: a
+      * cell like this is a value (ids, dates, emails, numbers), never a name. */
+    private val DataLike = "(?:\\d-|-\\d|@|\\d{5,})".r
+
+    /** Two or more space-separated capitalised words ("Jane Doe"). */
+    private val NameLike = "(?:^|\\s)[A-Z][a-z]+(?:\\s+[A-Z][a-z]+)+(?=\\s|$)".r
+
+    private def digitCount(s: String): Int = s.count(_.isDigit)
+
+    /** A name that reads as a key or stored field name, not a value: starts
+      * with a letter or underscore; at most 64 letters, digits, `_`, space,
+      * `.` and `-`; not all digits; no dash next to a digit, no `@`, no run
+      * of more than four digits; at most two digits; and not two or more
+      * capitalised words. Used for JSON keys and stored schema field names. */
     def isIdentifier(name: String): Boolean =
-        name != null && IdentifierPattern.pattern.matcher(name).matches() && !name.forall(_.isDigit)
+        name != null && IdentifierPattern.pattern.matcher(name).matches() && !name.forall(_.isDigit) &&
+            DataLike.findFirstIn(name).isEmpty && digitCount(name) <= 2 && NameLike.findFirstIn(name).isEmpty
+
+    /** A header cell that may be sent as a column name: letters, digits,
+      * underscore and space only (no dash, dot or other punctuation), starts
+      * with a letter or underscore, at most 64 characters and two digits, not
+      * all digits, and not two or more capitalised words. */
+    def isHeaderCell(cell: String): Boolean =
+        cell != null && HeaderCellPattern.pattern.matcher(cell).matches() && !cell.forall(_.isDigit) &&
+            digitCount(cell) <= 2 && NameLike.findFirstIn(cell).isEmpty
 
     /** An object is a map keyed by data when any key is not an identifier,
       * when it has more than [[MaxKeys]] keys, or when it has two or more keys
@@ -164,14 +187,14 @@ object AiSampleValues {
         out
     }
 
-    /** Column names safe to send to a model. With `header == false` (or when
-      * more than half the cells are not identifiers, so the line is data) every
-      * name is `column_N`; otherwise each non-identifier cell becomes
+    /** Column names safe to send to a model. With `header == false`, or when
+      * the line reads as data ([[headerLooksLikeData]]), every name is
+      * `column_N`; otherwise each cell that is not [[isHeaderCell]] becomes
       * `column_N`. */
     def safeColumnNames(cells: List[String], header: Boolean): List[String] = {
         val trimmed = cells.map(c => if (c == null) "" else c.trim)
         if (!header || headerLooksLikeData(trimmed)) trimmed.indices.map(i => "column_" + (i + 1)).toList
-        else trimmed.zipWithIndex.map { case (c, i) => if (isIdentifier(c)) c else "column_" + (i + 1) }
+        else trimmed.zipWithIndex.map { case (c, i) => if (isHeaderCell(c)) c else "column_" + (i + 1) }
     }
 
     /** First non-whitespace character, or NUL. */
@@ -182,19 +205,10 @@ object AiSampleValues {
         if (i < s.length) s.charAt(i) else '\u0000'
     }
 
-    /** True when the line reads as a data row: more than half the cells are
-      * not identifiers, or any cell looks like a person-style name (two or
-      * more capitalised words) or a letters-dash-digits id. */
-    def headerLooksLikeData(cells: List[String]): Boolean = {
-        val trimmed = cells.map(c => if (c == null) "" else c.trim)
-        trimmed.count(c => !isIdentifier(c)) * 2 > trimmed.size || trimmed.exists(c => NameLike.findFirstIn(c).isDefined || IdLike.pattern.matcher(c).matches())
-    }
-
-    /** Two or more space-separated capitalised words ("Jane Doe"). */
-    private val NameLike = "(?:^|\\s)[A-Z][a-z]+(?:\\s+[A-Z][a-z]+)+(?=\\s|$)".r
-
-    /** Letters-dash-digits record ids ("MRN-12345"). */
-    private val IdLike = "^[A-Za-z]{1,6}-\\d+$".r
+    /** True when the line reads as a data row: ANY cell has a dash next to a
+      * digit, an `@`, or more than four digits in a row. */
+    def headerLooksLikeData(cells: List[String]): Boolean =
+        cells.exists(c => c != null && DataLike.findFirstIn(c.trim).isDefined)
 
     private def shapeKey(e: JsonElement): String =
         if (e == null || e.isJsonNull) "null"

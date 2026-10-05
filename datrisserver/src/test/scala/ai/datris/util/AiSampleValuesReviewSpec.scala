@@ -33,16 +33,12 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
 
     test("safeColumnNames: header=false numbers every column; non-identifiers become column_N; a data-looking line is all numbered") {
         assert(AiSampleValues.safeColumnNames(List("full_name", "ssn"), header = false) == List("column_1", "column_2"))
-        assert(AiSampleValues.safeColumnNames(List("full_name", "first name", "e-mail"), header = true) == List("full_name", "first name", "e-mail"))
+        assert(AiSampleValues.safeColumnNames(List("full_name", "first name", "e-mail"), header = true) == List("full_name", "first name", "column_3"))
         assert(
-            AiSampleValues.safeColumnNames(List("full_name", "ssn", "zqx@example.com", "123"), header = true) ==
-                List("full_name", "ssn", "column_3", "column_4")
+            AiSampleValues.safeColumnNames(List("full_name", "ssn", "zqx@example.com", "x"), header = true) == (1 to 4).map("column_" + _).toList,
+            "an @ anywhere makes the whole line data"
         )
-        assert(
-            AiSampleValues.safeColumnNames(List("ZQX-NAME-1", "ZQX-SSN-2", "918273645"), header = true) ==
-                List("ZQX-NAME-1", "ZQX-SSN-2", "column_3"),
-            "identifier-shaped cells pass the pattern by design; only the majority rule treats a line as data"
-        )
+        assert(AiSampleValues.safeColumnNames(List("ZQX-NAME-1", "ZQX-SSN-2", "918273645"), header = true) == (1 to 3).map("column_" + _).toList)
         assert(AiSampleValues.safeColumnNames(List("a@b.c", "918273645", "x"), header = true) == List("column_1", "column_2", "column_3"))
     }
 
@@ -271,5 +267,71 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
         )
         assert(!s.toLowerCase.contains("zqx") && !s.contains("JaneDoe"), s)
         assert(s.contains("Caused by: java.io.IOException: " + AiSampleValues.DetailsWithheld) && s.contains("at ai.datris.util.X.y(X.scala:3)"), s)
+    }
+
+    // ---- round 3 (live e2e)
+
+    test("strict header test: the e2e first row and value-shaped cells make the line data; plain names stay") {
+        val e2e = List("ZQX-NAME-1", "ZQX-SSN-2", "zqx-mail-3@example.com", "918273645")
+        assert(AiSampleValues.headerLooksLikeData(e2e))
+        assert(AiSampleValues.safeColumnNames(e2e, header = true) == (1 to 4).map("column_" + _).toList)
+        Seq("MRN-12345", "2024-01-05", "A1-B2-C3").foreach { v =>
+            assert(AiSampleValues.headerLooksLikeData(List("name", v)), v)
+            assert(AiSampleValues.safeColumnNames(List("name", v), header = true) == List("column_1", "column_2"), v)
+        }
+        val plain = List("full_name", "ssn", "email", "age", "first name", "addr1", "phone2", "zip_code")
+        assert(!AiSampleValues.headerLooksLikeData(plain))
+        assert(AiSampleValues.safeColumnNames(plain, header = true) == plain)
+        assert(AiSampleValues.safeColumnNames(List("id", "account123", "First Name", "e.mail"), header = true) == List(
+            "id",
+            "column_2",
+            "column_3",
+            "column_4"
+        ))
+    }
+
+    test("CSV schema generation off with header=true on the e2e first row: numbered fields") {
+        inEnv {
+            withheld {
+                val (prompts, ai) = capturing("[]")
+                val csv = "ZQX-NAME-1,ZQX-SSN-2,zqx-mail-3@example.com,918273645\nZQX-NAME-7,ZQX-SSN-2,zqx-mail-3@example.com,41"
+                val config = AISchemaUtil.buildCsvConfig("rows", csv, ",", true, ai)
+                assert(prompts.isEmpty)
+                assertNoMarker(config)
+                assert(!config.toLowerCase.contains("zqx"), config)
+                assert((1 to 4).forall(i => config.contains("\"column_" + i + "\"")), config)
+            }
+        }
+    }
+
+    test("JSON keys with a dash next to a digit or an @ collapse to <key>") {
+        val sk = AiSampleValues.jsonSkeleton("""{"ZQX-ID-5": 1, "name": "ZQX-NAME-1"}""")
+        assert(!sk.contains("ZQX") && sk.contains("<key>"), sk)
+        val kept = AiSampleValues.jsonSkeleton("""{"zip-code": "x", "content.type": "y"}""")
+        assert(kept.contains("zip-code") && kept.contains("content.type"), "dash/dot without a digit stays a key: " + kept)
+    }
+
+    test("profile off: a model reply that is not JSON returns the local statistics, not an error") {
+        inEnv {
+            withheld {
+                val csv = "full_name,ssn,age\nZQX-NAME-1,ZQX-SSN-2,41\nZQX-NAME-7,,7"
+                val truncated = """{"summary":{"rowCount":2,"columnCount":3,"columns":[{"name":"full_name","inferredType":"string","nul"""
+                val (_, ai) = capturing(truncated)
+                val out = AIProfileUtil.profile(csv, "people.csv", ",", true, 100, ai)
+                assertNoMarker(out)
+                val obj = JsonParser.parseString(out).getAsJsonObject
+                assert(obj.get("valuesWithheld").getAsBoolean)
+                assert(obj.get("analysis").isJsonNull, out)
+                assert(obj.get("note").getAsString == "the model's reply could not be parsed; statistics only")
+                val cols = obj.getAsJsonObject("summary").getAsJsonArray("columns")
+                assert(cols.size == 3 && cols.get(0).getAsJsonObject.get("name").getAsString == "full_name", out)
+                assert(cols.get(1).getAsJsonObject.get("nullCount").getAsInt == 1, out)
+                assert(obj.getAsJsonObject("summary").get("rowCount").getAsInt == 2, out)
+
+                val (_, noJson) = capturing("I could not do that")
+                val out2 = JsonParser.parseString(AIProfileUtil.profile(csv, "people.csv", ",", true, 100, noJson)).getAsJsonObject
+                assert(out2.get("valuesWithheld").getAsBoolean && out2.has("note"))
+            }
+        }
     }
 }

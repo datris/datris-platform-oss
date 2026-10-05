@@ -98,7 +98,8 @@ class AssistantAttachmentController {
     }
 
     /** DATRIS_AI_SAMPLE_VALUES=false: the filename, detected type, record
-      * count and column / top-level key names, never a value. The stored
+      * count, numbered CSV columns (line 1 is never printed) and top-level
+      * JSON key names, never a value. The stored
       * bytes are unchanged, so tools can still upload the file. */
     private def withheldSample(filename: String, ext: String, bytes: Array[Byte]): (String, String) = {
         val note = "Values withheld by configuration (" + AiSampleValues.EnvVar + "=false); the file is attached and can still be uploaded to a pipeline."
@@ -109,17 +110,12 @@ class AssistantAttachmentController {
             case "csv" | "tsv" =>
                 val rows = text.split("\n").iterator.map(_.stripSuffix("\r")).filter(_.trim.nonEmpty).toList
                 val delimiter = if (ext == "tsv") "\t" else ","
-                val cells = rows.headOption.map(h => CodeGenTransformationEvaluator.splitLine(h, delimiter)).getOrElse(Nil)
-                // Line 1 counts as a header only when it reads as names (see
-                // AiSampleValues.headerLooksLikeData: person-style names and
-                // letters-dash-digits ids mark it as data); a cell that is not an
-                // identifier is never sent (column_N instead).
-                val hasHeader = rows.nonEmpty && !AiSampleValues.headerLooksLikeData(cells)
-                val columns = AiSampleValues.safeColumnNames(cells, hasHeader)
+                // An attachment has no header option, so line 1 is never printed:
+                // columns are numbered and every line counts as a row.
+                val width = rows.headOption.map(h => CodeGenTransformationEvaluator.splitLine(h, delimiter).size).getOrElse(0)
+                val columns = (1 to width).map("column_" + _)
                 val t = "CSV (structured)"
-                val rowLine =
-                    if (hasHeader) "Rows: " + (rows.size - 1) + " (excluding the header)"
-                    else "Rows: " + rows.size + " (no header row detected; columns are numbered)"
+                val rowLine = "Rows: " + rows.size + " (every line counted; column names withheld)"
                 (t, lines("Type: " + t, rowLine, "Columns: " + columns.mkString(", ")))
             case "json" | "ndjson" =>
                 val t = "JSON (structured)"

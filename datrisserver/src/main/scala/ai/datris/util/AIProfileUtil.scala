@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
-import com.google.gson.{JsonArray, JsonParser}
+import com.google.gson.{GsonBuilder, JsonArray, JsonNull, JsonObject, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.util.Random
@@ -124,6 +124,10 @@ object AIProfileUtil {
         val isJson = Set("json", "ndjson", "jsonl").contains(ext) || (!knownExt && (head == '{' || head == '['))
         val isXml = !isJson && (ext == "xml" || (!knownExt && head == '<'))
 
+        // Local statistics (CSV only): (row count, per-column stats), for the
+        // statistics-only answer when the model's reply cannot be parsed.
+        var localStats: Option[(Int, List[ColumnStat])] = None
+
         val (formatDescription, evidence) =
             if (isJson || isXml) {
                 // Built from the full input; the skeleton is truncated, never the input.
@@ -146,6 +150,7 @@ object AIProfileUtil {
                 val names = AiSampleValues.safeColumnNames(firstCells, lineOneIsHeader)
                 val dataLines = if (lineOneIsHeader) lines.tail else lines
                 val stats = AiSampleValues.columnStats(names, dataLines.iterator, d)
+                localStats = Some((dataLines.size, stats))
                 (
                     "CSV (delimiter: \"" + delimiter + "\")",
                     "Rows: " + dataLines.size + "\nColumns: " + names.size + "\nPer-column statistics computed by the server over every row " +
@@ -196,7 +201,16 @@ object AIProfileUtil {
                |
                |$evidence""".stripMargin
 
-        val obj = JsonParser.parseString(extractObject(ai(prompt))).getAsJsonObject
+        val answer = ai(prompt)
+        val parsed =
+            try Some(JsonParser.parseString(extractObject(answer)).getAsJsonObject)
+            catch {
+                case e: Exception =>
+                    logger.warn("AI profile reply could not be parsed (" + e.getClass.getSimpleName + "); returning statistics only")
+                    None
+            }
+        if (parsed.isEmpty) return statisticsOnly(localStats)
+        val obj = parsed.get
         // The model saw no values; make sure none is reported as one.
         Option(obj.get("summary")).filter(_.isJsonObject).map(_.getAsJsonObject.get("columns")).filter(c => c != null && c.isJsonArray).foreach { cols =>
             cols.getAsJsonArray.forEach(c =>
@@ -205,5 +219,35 @@ object AIProfileUtil {
         }
         obj.addProperty("valuesWithheld", true)
         obj.toString
+    }
+
+    /** Off-mode answer when the model's reply is not JSON (e.g. cut off on a
+      * wide file): the locally computed statistics, no analysis. */
+    private def statisticsOnly(localStats: Option[(Int, List[ColumnStat])]): String = {
+        val out = new JsonObject()
+        val summary = new JsonObject()
+        val columns = new JsonArray()
+        localStats.foreach {
+            case (rows, stats) =>
+                summary.addProperty("rowCount", rows)
+                summary.addProperty("columnCount", stats.size)
+                stats.foreach { st =>
+                    val c = new JsonObject()
+                    c.addProperty("name", st.name)
+                    c.addProperty("inferredType", st.inferredType)
+                    c.addProperty("nullCount", st.nulls)
+                    c.addProperty("uniqueCount", st.distinct)
+                    c.addProperty("minLength", st.minLength)
+                    c.addProperty("maxLength", st.maxLength)
+                    c.add("sampleValues", new JsonArray())
+                    columns.add(c)
+                }
+        }
+        summary.add("columns", columns)
+        out.add("summary", summary)
+        out.add("analysis", JsonNull.INSTANCE)
+        out.addProperty("valuesWithheld", true)
+        out.addProperty("note", "the model's reply could not be parsed; statistics only")
+        new GsonBuilder().serializeNulls().create().toJson(out)
     }
 }
