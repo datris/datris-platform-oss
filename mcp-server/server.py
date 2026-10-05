@@ -3806,15 +3806,17 @@ def _dispatch(name: str, args: dict) -> str:
             if protect_exempt is not None and (not isinstance(protect_exempt, list)
                                                or not all(isinstance(n, str) for n in protect_exempt)):
                 return json.dumps({"error": "protect_exempt must be an array of field names"})
+            # Strip once, then validate and store the same names.
+            protect_exempt = [n.strip() for n in (protect_exempt or []) if n.strip()]
             if protect_exempt:
                 schema_fields = ((config.get("source") or {}).get("schemaProperties") or {}).get("fields") or []
                 known_names = [f.get("name") for f in schema_fields if isinstance(f, dict) and isinstance(f.get("name"), str)]
                 lower = {n.lower() for n in known_names}
-                unknown_ex = [n for n in protect_exempt if n.strip().lower() not in lower]
+                unknown_ex = [n for n in protect_exempt if n.lower() not in lower]
                 if unknown_ex:
                     return json.dumps({"error": "protect_exempt names field(s) not in the detected schema: "
                                        + ", ".join(unknown_ex) + ". Schema fields: " + ", ".join(known_names)})
-            config["protection"] = {"preset": protect_preset, "presetExempt": list(protect_exempt or [])}
+            config["protection"] = {"preset": protect_preset, "presetExempt": protect_exempt}
 
         # Step 2b: Add optional CodeGen data quality rule
         if args.get("codegen_rule"):

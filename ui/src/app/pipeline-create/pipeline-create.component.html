@@ -301,7 +301,7 @@
           <button class="secondary-btn add-field-btn" (click)="addField()">+ Add Field</button>
           <button class="secondary-btn" (click)="suggestProtection()" [disabled]="suggestingProtection || !schemaFields[0]?.name">{{ suggestingProtection ? 'Suggesting...' : 'Suggest protection' }}</button>
           <ng-container *ngIf="presetAvailable()">
-            <select class="form-input preset-select" [(ngModel)]="selectedPreset" title="Preset">
+            <select class="form-input preset-select" [(ngModel)]="selectedPreset" (ngModelChange)="onPresetSelectChange()" title="Preset">
               <option [ngValue]="null">Preset…</option>
               <option *ngFor="let p of presets" [ngValue]="p.value">{{ p.label }}</option>
             </select>
@@ -309,8 +309,8 @@
           </ng-container>
         </div>
         <p class="form-hint">Sends field names and types only, never data.</p>
-        <div class="preset-summary" *ngIf="presetActive() && (presetResult || presetUnavailable)">
-          <ng-container *ngIf="presetResult; else presetClassesUnavailable">
+        <div class="preset-summary" *ngIf="presetActive()">
+          <ng-container *ngIf="presetResult">
             <div class="preset-counts">{{ presetLabel(selectedPreset) || 'Preset' }}: {{ presetResult.fields.length }} field{{ presetResult.fields.length === 1 ? '' : 's' }} classified, {{ presetResult.unclassified.length }} not recognised.</div>
             <div class="preset-unclassified" *ngIf="presetResult.unclassified.length > 0">
               <span class="preset-summary-label">Not recognised:</span> {{ presetResult.unclassified.join(', ') }}
@@ -322,14 +322,13 @@
               </ul>
             </div>
           </ng-container>
-          <ng-template #presetClassesUnavailable>
-            <div class="preset-unavailable">{{ presetLabel(selectedPreset) || 'Preset' }}: classes unavailable ({{ presetUnavailable }}). <button type="button" class="link-btn" (click)="refreshPresetClasses()">Retry</button></div>
-          </ng-template>
+          <div class="preset-unavailable" *ngIf="presetUnavailable">{{ presetLabel(selectedPreset) || 'Preset' }}: classes unavailable ({{ presetUnavailable }}). <button type="button" class="link-btn" (click)="refreshPresetClasses(true)">Retry</button></div>
+          <div class="preset-counts" *ngIf="!presetResult && !presetUnavailable">{{ presetLabel(selectedPreset) || 'Preset' }}: no fields classified yet. Name the fields to see their classes.</div>
           <div class="preset-uncovered" *ngIf="uncoveredPresetFields.length > 0">
             Enforced: {{ uncoveredPresetFields.length }} recognised field{{ uncoveredPresetFields.length === 1 ? ' has' : 's have' }} no protection and {{ uncoveredPresetFields.length === 1 ? 'is' : 'are' }} not exempt: {{ uncoveredPresetFields.join(', ') }}. Saving will be refused until each is protected or exempt.
           </div>
           <div class="preset-stale" *ngIf="staleExemptNames.length > 0">
-            Dropped stale exemption{{ staleExemptNames.length === 1 ? '' : 's' }}: {{ staleExemptNames.join(', ') }} (no such field).
+            Saved exemption{{ staleExemptNames.length === 1 ? '' : 's' }} for a field not in the schema, dropped on save: {{ staleExemptNames.join(', ') }}.
           </div>
           <label class="checkbox-label">
             <input type="checkbox" class="preset-enforce" [(ngModel)]="enforcePreset"> Keep the preset enforced on this pipeline (later saves and new columns stay covered)

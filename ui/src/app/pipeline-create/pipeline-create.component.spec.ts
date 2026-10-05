@@ -24,7 +24,7 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { of, throwError } from 'rxjs';
+import { of, throwError, Subject } from 'rxjs';
 
 import { PipelineCreateComponent } from './pipeline-create.component';
 import { PipelineService } from '../pipeline.service';
@@ -1599,19 +1599,165 @@ describe('PipelineCreateComponent — field protection preset', () => {
     expect(el.querySelector('.preset-uncovered')).toBeNull();
   });
 
-  it('adding a field or committing a name refreshes the classes without changing methods', async () => {
+  it('a committed name change refreshes the classes; an unchanged blur or an empty new row does not', async () => {
     await onSchemaStep(FIELDS);
     await applyPreset();
     await pick(rowFor('phone').querySelector('select.field-protect') as HTMLSelectElement, '');
     presetSpy.calls.reset();
     component.addField();
     await settle();
-    expect(presetSpy).toHaveBeenCalledTimes(1);
-    expect(f('phone').protect?.method || null).toBeNull();
+    expect(presetSpy).withContext('an empty new row changes nothing that is sent').not.toHaveBeenCalled();
     const input = rowFor('notes').querySelector('input.field-name') as HTMLInputElement;
     input.dispatchEvent(new Event('blur'));
     await settle();
+    expect(presetSpy).withContext('blur with the name unchanged').not.toHaveBeenCalled();
+    input.value = 'fax';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur'));
+    await settle();
+    expect(presetSpy).toHaveBeenCalledTimes(1);
+    expect(f('phone').protect?.method || null).withContext('a refresh never changes methods').toBeNull();
+    // Blurring again with nothing changed sends nothing.
+    input.dispatchEvent(new Event('blur'));
+    await settle();
+    expect(presetSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed refresh after Apply keeps the preset enforced, the chips, the exemptions and shows Retry', async () => {
+    await onSchemaStep(FIELDS);
+    await applyPreset();
+    await pick(rowFor('phone').querySelector('select.field-protect') as HTMLSelectElement, '');
+    await clickExempt('phone');
+    presetSpy.and.returnValue(throwError(() => ({ status: 503, error: { error: 'down' } })));
+    const input = rowFor('notes').querySelector('input.field-name') as HTMLInputElement;
+    input.value = 'notes2';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur'));
+    await settle();
     expect(presetSpy).toHaveBeenCalledTimes(2);
+    const summary = el.querySelector('.preset-summary') as HTMLElement | null;
+    expect(summary).withContext('summary stays after a failed refresh').not.toBeNull();
+    expect(summary?.textContent || '').toContain('classes unavailable');
+    expect(summary?.querySelector('.preset-review')).withContext('last result kept').not.toBeNull();
+    expect(Array.from(summary?.querySelectorAll('button') || []).some(b => (b.textContent || '').trim() === 'Retry')).toBeTrue();
+    expect(enforceBox()?.checked).toBeTrue();
+    expect((rowFor('mrn')?.querySelector('.field-class')?.textContent || '')).toContain('mrn');
+    expect(rowFor('phone')?.querySelector('.preset-exempt')).not.toBeNull();
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET, presetExempt: ['phone'] });
+  });
+
+  it('a stale response is dropped: an older refresh landing last does not overwrite a newer one', async () => {
+    await onSchemaStep(FIELDS);
+    await applyPreset();
+    const first = new Subject<any>();
+    const second = new Subject<any>();
+    presetSpy.and.returnValues(first, second);
+    const input = rowFor('notes').querySelector('input.field-name') as HTMLInputElement;
+    input.value = 'memo';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur'));
+    input.value = 'memo2';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur'));
+    second.next(presetResponse({ unclassified: ['visit_count', 'memo2'] }));
+    first.next(presetResponse({ unclassified: ['visit_count', 'memo'] }));
+    await settle();
+    expect((component as any).presetResult.unclassified).toEqual(['visit_count', 'memo2']);
+  });
+
+  it('a response in flight when the schema is replaced is dropped', async () => {
+    await onSchemaStep(FIELDS);
+    const pending = new Subject<any>();
+    presetSpy.and.returnValue(pending);
+    await applyPreset();
+    component.sourceType = 'csv';
+    component.onSourceTypeChange();
+    pending.next(presetResponse());
+    await settle();
+    expect((component as any).presetResult).toBeNull();
+    expect(component.schemaFields.every((x: any) => !x.presetClass && !x.protect?.method)).toBeTrue();
+  });
+
+  it('edit mode: regenerating the schema keeps a saved preset enforced, re-reads the classes and lists uncovered fields', async () => {
+    (component as any).isEditMode = true;
+    await onSchemaStep([{ name: 'mrn', type: 'string', protect: { method: 'hmac' } }], {}, { protection: { preset: PRESET } });
+    const svc: any = (component as any).pipelineService;
+    svc.generateSchema = () => of({ source: { schemaProperties: { fields: FIELDS } } });
+    (component as any).schemaFile = new File(['x'], 'patients.csv');
+    component.pipelineName = 'patients';
+    presetSpy.calls.reset();
+    component.generateSchema();
+    await settle();
+    expect(presetSpy).toHaveBeenCalledTimes(1);
+    expect(presetSpy.calls.mostRecent()?.args[1]).toEqual(FIELDS);
+    expect((rowFor('ssn')?.querySelector('.field-class')?.textContent || '')).toContain('ssn');
+    const hint = (el.querySelector('.preset-uncovered')?.textContent || '').replace(/\s+/g, ' ');
+    for (const n of ['patient_name', 'mrn', 'dob', 'zip', 'ssn', 'phone']) expect(hint).toContain(n);
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET });
+  });
+
+  it('edit mode: regenerating the schema keeps saved exemptions on fields that still exist', async () => {
+    (component as any).isEditMode = true;
+    await onSchemaStep(FIELDS, {}, { protection: { preset: PRESET, presetExempt: ['phone', 'ssn'] } });
+    const svc: any = (component as any).pipelineService;
+    svc.generateSchema = () => of({ source: { schemaProperties: { fields: FIELDS.filter(x => x.name !== 'ssn') } } });
+    (component as any).schemaFile = new File(['x'], 'patients.csv');
+    component.pipelineName = 'patients';
+    component.generateSchema();
+    await settle();
+    expect(f('phone').presetExempt).toBeTrue();
+    expect((el.querySelector('.preset-stale')?.textContent || '')).toContain('ssn');
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET, presetExempt: ['phone'] });
+  });
+
+  it('edit mode: a schema with no named fields still shows the summary and the enforce checkbox', async () => {
+    (component as any).isEditMode = true;
+    await onSchemaStep(FIELDS, {}, { protection: { preset: PRESET } });
+    component.sourceType = 'json';
+    component.onSourceTypeChange();
+    component.sourceType = 'csv';
+    component.onSourceTypeChange();
+    await settle();
+    expect(el.querySelector('.preset-summary')).not.toBeNull();
+    expect((el.querySelector('.preset-summary')?.textContent || '')).toContain('no fields classified yet');
+    expect(enforceBox()).not.toBeNull();
+    expect(wire(component.buildConfig()).protection?.preset).toBe(PRESET);
+  });
+
+  it('a foreign preset is kept when a listed preset is only selected, not applied', async () => {
+    await onSchemaStep([{ name: 'mrn', type: 'string' }], {},
+      { protection: { preset: 'future-preset', presetExempt: ['mrn'] } });
+    const sel = presetSelect();
+    sel.selectedIndex = (Array.from(sel.querySelectorAll('option')) as HTMLOptionElement[])
+      .findIndex(o => (o.textContent || '').trim() === 'HIPAA Safe Harbor');
+    sel.dispatchEvent(new Event('change'));
+    await settle();
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: 'future-preset', presetExempt: ['mrn'] });
+  });
+
+  it('renaming an exempt field carries its exemption; the stale line is only for saved names', async () => {
+    await onSchemaStep(FIELDS);
+    await applyPreset();
+    await pick(rowFor('phone').querySelector('select.field-protect') as HTMLSelectElement, '');
+    await clickExempt('phone');
+    const input = rowFor('phone').querySelector('input.field-name') as HTMLInputElement;
+    input.value = 'phone_number';
+    input.dispatchEvent(new Event('input'));
+    await settle();
+    expect(el.querySelector('.preset-stale')).withContext('no stale line while renaming').toBeNull();
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET, presetExempt: ['phone_number'] });
+  });
+
+  it('removing a field prunes it from the last preset result', async () => {
+    await onSchemaStep(FIELDS);
+    await applyPreset();
+    presetSpy.calls.reset();
+    component.removeField(FIELDS.findIndex(x => x.name === 'visit_count'));
+    component.removeField(component.schemaFields.findIndex((x: any) => x.name === 'mrn'));
+    await settle();
+    expect(presetSpy).not.toHaveBeenCalled();
+    expect((component as any).presetResult.unclassified).toEqual(['notes']);
+    expect((component as any).presetResult.fields.map((x: any) => x.name)).not.toContain('mrn');
   });
 
   it('a failed reopen call shows classes unavailable with Retry, not zero counts', async () => {

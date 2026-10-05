@@ -551,3 +551,9 @@ def test_protect_exempt_without_protect_preset_is_an_error(captured):
 def test_protect_exempt_string_form_is_parsed(captured, text):
     posted = _create(captured, protect={"mrn": {"method": "hmac"}}, protect_preset=PRESET, protect_exempt=text)
     assert posted.get("protection") == {"preset": PRESET, "presetExempt": ["ssn", "email"]}, posted.get("protection")
+
+
+def test_protect_exempt_names_are_stripped_before_validation_and_storage(captured):
+    posted = _create(captured, protect={"mrn": {"method": "hmac"}}, protect_preset=PRESET,
+                     protect_exempt=[" ssn ", "email"])
+    assert posted.get("protection") == {"preset": PRESET, "presetExempt": ["ssn", "email"]}, posted.get("protection")
