@@ -65,7 +65,7 @@ Returns an array of status entries for the job, one per processing stage:
 ]
 ```
 
-When a job fails, its final entry's `description` reads `Process completed, error: ` followed by the error and its causes, one per line; the full stack trace is in that entry's optional `detail` field (shown under **Stack trace** in the Ops activity view, and omitted by the MCP status tools) and in the server log under the job's pipeline token.
+When a job fails, its `Process completed, error:` entry's `description` gives the error and its causes, one per line, after that prefix; the full stack trace is in that entry's optional `detail` field (shown under **Stack trace** in the Ops activity view, and omitted by the MCP status tools) and in the server log under the job's pipeline token.
 
 ### Query by Publisher Token
 

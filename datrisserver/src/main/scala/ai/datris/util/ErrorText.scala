@@ -18,7 +18,7 @@ object ErrorText {
       * JDK's auto-generated `cause.toString` contributes nothing; cycles end.
       * Each message is reduced to its first line unless it comes from a
       * DatrisException (whose multi-line messages, e.g. the data-quality
-      * failure list, are kept). The total is capped at `maxChars`, ending "…". */
+      * failure list, are kept, minus any embedded stack-frame lines). The total is capped at `maxChars`, ending "…". */
     def messageChain(e: Throwable, maxChars: Int = 2000): String = {
         if (e == null) return ""
         val seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[Throwable, java.lang.Boolean]())
@@ -41,9 +41,40 @@ object ErrorText {
         val m = Option(t.getMessage).map(_.trim).filter(_.nonEmpty)
         m match {
             case None => Option(t.getClass.getSimpleName).filter(_.nonEmpty).getOrElse(t.getClass.getName)
-            case Some(msg) if t.isInstanceOf[DatrisException] => msg
+            case Some(msg) if t.isInstanceOf[DatrisException] =>
+                // Keep the multi-line message, but never an embedded trace.
+                val kept = msg.split("\\r?\\n").filterNot(l => TraceLine.pattern.matcher(l).matches()).mkString("\n").trim
+                if (kept.nonEmpty) kept else Option(t.getClass.getSimpleName).filter(_.nonEmpty).getOrElse(t.getClass.getName)
             case Some(msg) => msg.split("\\r?\\n", 2)(0).trim
         }
+    }
+
+    /** A stack-frame line ("\tat pkg.Class.method(") or a "... N more" line. */
+    private val TraceLine = "^\\s*(?:at [\\w.$/<>-]+\\(.*|\\.\\.\\. \\d+ more)$".r
+
+    /** Package roots whose class names are shown fully qualified; the same
+      * roots AiSampleValues.scrubErrorForModel lets through. */
+    private val KnownRoots = List("java.", "javax.", "scala.", "ai.datris.", "org.", "com.", "io.")
+
+    /** The exception classes along the cause chain, outermost first, joined by
+      * " <- " (e.g. "java.lang.IllegalStateException <- java.io.IOException").
+      * Class names only, never message text: safe for a model even when
+      * message text must be withheld. Classes outside the known package roots
+      * are shown by simple name. Cycles end; capped at `maxChars`. */
+    def classChain(e: Throwable, maxChars: Int = 500): String = {
+        if (e == null) return ""
+        val seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[Throwable, java.lang.Boolean]())
+        val names = scala.collection.mutable.ListBuffer[String]()
+        var current = e
+        while (current != null && seen.add(current)) {
+            val fqn = current.getClass.getName
+            names += (
+                if (KnownRoots.exists(fqn.startsWith)) fqn
+                else Option(current.getClass.getSimpleName).filter(_.nonEmpty).getOrElse("Throwable")
+            )
+            current = current.getCause
+        }
+        cap(names.mkString(" <- "), maxChars)
     }
 
     private def cap(s: String, maxChars: Int): String =

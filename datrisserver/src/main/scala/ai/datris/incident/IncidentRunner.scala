@@ -782,7 +782,10 @@ object IncidentRunner {
 
         /** With DATRIS_AI_SAMPLE_VALUES=false a pipeline incident's error text
           * is scrubbed before the model sees it (it can quote row values). The
-          * stored incident keeps the full text for people. */
+          * stored incident keeps the full text for people. `errorClass` (the
+          * exception class chain, class names only) goes through unscrubbed so
+          * the model still knows what kind of failure it is; a value that is
+          * not a plain class chain is dropped. */
         private[incident] def triggerForModel(incident: Incident): JsonObject = {
             val t = incident.trigger
             if (t == null || incident.resourceType != "pipeline" || ai.datris.util.AiSampleValues.enabled || !t.has("error")) t
@@ -790,9 +793,14 @@ object IncidentRunner {
                 val copy = t.deepCopy()
                 val e = copy.get("error")
                 if (e != null && e.isJsonPrimitive) copy.addProperty("error", ai.datris.util.AiSampleValues.scrubErrorForModel(e.getAsString))
+                val c = copy.get("errorClass")
+                if (c != null && !(c.isJsonPrimitive && ClassChainPattern.pattern.matcher(c.getAsString).matches())) copy.remove("errorClass")
                 copy
             }
         }
+
+        /** "pkg.Class <- pkg.Cause <- ...": Java identifiers and dots only. */
+        private val ClassChainPattern = "^[A-Za-z_$][\\w$.]*(?: <- [A-Za-z_$][\\w$.]*)*$".r
 
         private def buildDiagnosisMessage(incident: Incident): String = {
             val sb = new StringBuilder

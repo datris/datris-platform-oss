@@ -27,8 +27,16 @@ class StatusUtil {
     private var recordCountValue: Int = 0
     private var dataType: Option[String] = None
     // Detail for the event being written by the current 3-argument info/error
-    // call. Threaded through the overridable 2-argument methods so subclasses
-    // (test doubles) that override only those still see every event.
+    // call. Why not a plain `detail` parameter on `send`: the 2-argument
+    // info/error are the overridable primitives that ~15 test doubles override
+    // to capture events. If the 3-argument form called `send` directly, those
+    // doubles would silently miss every terminal failure event; if it called
+    // the 2-argument form with the detail as a parameter, there is no
+    // parameter to carry it. So the 3-argument form stores the detail here,
+    // calls the 2-argument form (reaching any override), and `send` picks it
+    // up. A ThreadLocal, not a field, because parallel destination loaders
+    // share one StatusUtil; the call is synchronous on the caller's thread and
+    // the value is restored in a finally, so it cannot leak onto another event.
     private val pendingDetail = new ThreadLocal[String]
 
     def init(tableName: String, processName: String): StatusUtil = {
@@ -175,7 +183,7 @@ class StatusUtil {
                 pendingDetail.get
             )
 
-        writeToNoSQLDb(status, fix, scratchResult)
+        write(status, fix, scratchResult)
 
         // Write to the logger
         val message = pipelineToken.getOrElse("") + ": " + description
@@ -191,6 +199,11 @@ class StatusUtil {
                     logger.error(message)
         }
     }
+
+    /** Persist one built status event. The seam specs override to see exactly
+      * what `send` would store (including `detail`) without a NoSQL table. */
+    protected def write(status: Status, fix: FixSuggestion, scratchResult: ScratchResult): Unit =
+        writeToNoSQLDb(status, fix, scratchResult)
 
     private def writeToNoSQLDb(status: Status, fix: FixSuggestion = null, scratchResult: ScratchResult = null): Unit = {
         val gson = new Gson
@@ -309,24 +322,7 @@ class StatusUtil {
         }
 
         // Save the pipeline status record
-        val pipelineStatus = PipelineStatus(
-            0,
-            utcFormatter.format(nowTimestamp),
-            pipelineName,
-            status.processName,
-            status.publisherToken,
-            status.pipelineToken,
-            status.filename,
-            status.state,
-            status.code,
-            status.description,
-            nowInMillis,
-            aiSummary = if (fix != null) fix.summary else null,
-            aiDiagnosis = if (fix != null) fix.diagnosis else null,
-            aiSuggestion = if (fix != null) fix.suggestion else null,
-            scratchResult = scratchResult,
-            detail = status.detail
-        )
+        val pipelineStatus = StatusUtil.record(status, pipelineName, utcFormatter.format(nowTimestamp), nowInMillis, fix, scratchResult)
 
         // Top-level `publisher_token` is the indexed read path used by
         // PipelineStatusUtil.getPipelineStatusByPublisher. The same value also lives
@@ -362,6 +358,36 @@ class StatusUtil {
 }
 
 object StatusUtil {
+
+    /** The stored event for a built `Status`: pure, so specs can pin that every
+      * field (notably the optional `detail`) reaches the persisted record. */
+    private[util] def record(
+        status: Status,
+        pipelineName: String,
+        dateTime: String,
+        epoch: Long,
+        fix: FixSuggestion,
+        scratchResult: ScratchResult
+    ): PipelineStatus =
+        PipelineStatus(
+            0,
+            dateTime,
+            pipelineName,
+            status.processName,
+            status.publisherToken,
+            status.pipelineToken,
+            status.filename,
+            status.state,
+            status.code,
+            status.description,
+            epoch,
+            aiSummary = if (fix != null) fix.summary else null,
+            aiDiagnosis = if (fix != null) fix.diagnosis else null,
+            aiSuggestion = if (fix != null) fix.suggestion else null,
+            scratchResult = scratchResult,
+            detail = status.detail
+        )
+
     private var _statusUtil: StatusUtil = _
     def init(tableName: String, processName: String): Unit =
         _statusUtil = new StatusUtil().init(tableName, processName)

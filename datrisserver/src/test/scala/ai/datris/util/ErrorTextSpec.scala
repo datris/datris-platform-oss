@@ -111,4 +111,32 @@ class ErrorTextSpec extends AnyFunSuite {
         val top = new RuntimeException("load failed", new RuntimeException(new java.io.IOException("disk full")))
         assert(ErrorText.messageChain(top) == "load failed\ncaused by: disk full")
     }
+
+    test("a DatrisException that embeds a stack trace keeps its message lines but no frames") {
+        val msg = "Pipeline error: java.lang.IllegalStateException: schema mismatch\n\tat ai.datris.util.DataUtil$.evolveSchema(DataUtil.scala:175)\n" +
+            "\tat java.base/java.lang.Thread.run(Thread.java:840)\n\t... 12 more\nrow 2: id is missing"
+        val out = ErrorText.messageChain(new DatrisException(msg))
+        assert(out == "Pipeline error: java.lang.IllegalStateException: schema mismatch\nrow 2: id is missing")
+        noFrames(out)
+        assert(!out.contains("more"))
+        assert(ErrorText.messageChain(new DatrisException("\tat ai.datris.X.y(X.scala:1)")) == "DatrisException")
+    }
+
+    test("classChain lists the exception classes along the cause chain, class names only") {
+        val e = new IllegalStateException("schema mismatch", new RuntimeException("column amount missing"))
+        assert(ErrorText.classChain(e) == "java.lang.IllegalStateException <- java.lang.RuntimeException")
+        assert(ErrorText.classChain(new ai.datris.model.DatrisException("secret value 123-45-6789")) == "ai.datris.model.DatrisException")
+        assert(!ErrorText.classChain(e).contains("schema mismatch"))
+    }
+
+    test("classChain names a class outside the known package roots by its simple name, and ends on a cycle") {
+        val outside = new errortextfixture.CustomFailure("boom")
+        assert(ErrorText.classChain(outside) == "CustomFailure")
+        val a = new RuntimeException("a")
+        val b = new IllegalStateException("b")
+        a.initCause(b)
+        b.initCause(a)
+        assert(ErrorText.classChain(a) == "java.lang.RuntimeException <- java.lang.IllegalStateException")
+        assert(ErrorText.classChain(null) == "")
+    }
 }

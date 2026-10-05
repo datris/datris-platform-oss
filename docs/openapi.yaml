@@ -1952,8 +1952,8 @@ paths:
             object (`{rollup, events}` for token queries with withrollup=true,
             or the paginated summary shape for pipelinename queries) otherwise.
             A status entry may carry an optional `detail` string: on a failed
-            run's terminal entry, `description` reads "Process completed, error: "
-            followed by the error and its causes, and `detail` holds the full
+            run's "Process completed, error:" entry, `description` gives that
+            prefix followed by the error and its causes, and `detail` holds the full
             stack trace. `detail` is absent on other entries and on entries
             written by earlier versions; the rollup never includes it.
           content:

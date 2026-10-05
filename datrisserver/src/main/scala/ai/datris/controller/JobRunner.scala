@@ -312,6 +312,9 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     val trigger = new com.google.gson.JsonObject()
                     trigger.addProperty("pipelineToken", jobContext.pipelineToken)
                     trigger.addProperty("error", errorMessage.take(500))
+                    // Class names only: what the recovery model still sees
+                    // when DATRIS_AI_SAMPLE_VALUES=false withholds the text.
+                    trigger.addProperty("errorClass", ErrorText.classChain(e))
                     if (fix != null) trigger.addProperty("aiSummary", fix.summary)
                     ai.datris.incident.IncidentRunner.open(ai.datris.incident.Incident.KindPipelineFailure, "pipeline", jobContext.config.name, trigger)
                 } catch {
