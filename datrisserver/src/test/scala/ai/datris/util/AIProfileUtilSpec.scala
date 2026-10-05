@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.model.DatrisException
 import com.google.gson.JsonParser
 import org.scalatest.funsuite.AnyFunSuite
 
@@ -133,6 +134,77 @@ class AIProfileUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
                 val (jsonPrompts, jsonAi) = capturing()
                 AIProfileUtil.profile(json, "people.json", ",", true, 100, jsonAi)
                 assert(jsonPrompts.head == todaysPrompt("JSON", json))
+            }
+        }
+    }
+
+    // ---- Follow-up 1 (2026-10-05): switch off, the model call throws → statistics-only fallback ----
+    //  Same shape as the unparseable-reply fallback: local `summary.columns`,
+    //  empty `qualityIssues` / `recommendations`, `valuesWithheld: true`, and a
+    //  `note` naming the cause without echoing the provider's text. On-mode
+    //  still propagates the failure.
+
+    private val providerText = "The model declined this request (stop_reason: refusal) ZQX-PROVIDER-SECRET"
+
+    private def assertStatisticsOnly(out: String, expectColumns: Seq[String]): Unit = {
+        val obj = JsonParser.parseString(out).getAsJsonObject
+        assert(obj.has("valuesWithheld") && obj.get("valuesWithheld").getAsBoolean, out)
+        val cols = obj.getAsJsonObject("summary").getAsJsonArray("columns")
+        val names = (0 until cols.size()).map(i => cols.get(i).getAsJsonObject.get("name").getAsString)
+        assert(names == expectColumns, "local statistics columns: " + out)
+        (0 until cols.size()).foreach(i =>
+            assert(cols.get(i).getAsJsonObject.getAsJsonArray("sampleValues").size() == 0, out)
+        )
+        assert(obj.getAsJsonArray("qualityIssues").size() == 0, out)
+        assert(obj.getAsJsonArray("recommendations").size() == 0, out)
+        assert(obj.has("note") && obj.get("note").isJsonPrimitive && obj.get("note").getAsString.nonEmpty, "note string: " + out)
+        val note = obj.get("note").getAsString
+        assert(!note.contains("ZQX-PROVIDER-SECRET") && !note.contains("declined this request") && !note.contains("stop_reason"),
+            "note must not echo provider text: " + note)
+        assert(!out.contains("ZQX-PROVIDER-SECRET"), out)
+        assertNoMarker(out)
+    }
+
+    test("profile (CSV, switch off): a model refusal falls back to local statistics without throwing") {
+        inEnv {
+            withheld {
+                val ai: String => String = _ => throw new DatrisException(providerText)
+                val out = AIProfileUtil.profile(csv, "people.csv", ",", true, 100, ai)
+                assertStatisticsOnly(out, Seq("full_name", "ssn", "age", "email"))
+                val summary = JsonParser.parseString(out).getAsJsonObject.getAsJsonObject("summary")
+                assert(summary.get("rowCount").getAsInt == 3, out)
+            }
+        }
+    }
+
+    test("profile (CSV, switch off): a provider timeout falls back to local statistics without throwing") {
+        inEnv {
+            withheld {
+                val ai: String => String = _ => throw new RuntimeException("java.net.SocketTimeoutException: Read timed out ZQX-PROVIDER-SECRET")
+                val out = AIProfileUtil.profile(csv, "people.csv", ",", true, 100, ai)
+                assertStatisticsOnly(out, Seq("full_name", "ssn", "age", "email"))
+            }
+        }
+    }
+
+    test("profile (JSON, switch off): a throwing model call still returns the fallback (no local column stats)") {
+        inEnv {
+            withheld {
+                val ai: String => String = _ => throw new DatrisException(providerText)
+                val out = AIProfileUtil.profile(json, "people.json", ",", true, 100, ai)
+                assertStatisticsOnly(out, Seq.empty)
+            }
+        }
+    }
+
+    test("profile (switch on): a throwing model call still propagates (unchanged)") {
+        inEnv {
+            sampled {
+                val ai: String => String = _ => throw new DatrisException(providerText)
+                val e = intercept[DatrisException](AIProfileUtil.profile(csv, "people.csv", ",", true, 100, ai))
+                assert(e.getMessage.contains("declined this request"), e.getMessage)
+                val timeout: String => String = _ => throw new RuntimeException("Read timed out")
+                intercept[RuntimeException](AIProfileUtil.profile(csv, "people.csv", ",", true, 100, timeout))
             }
         }
     }

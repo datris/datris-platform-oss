@@ -175,4 +175,67 @@ class AISchemaUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
             }
         }
     }
+
+    // ---- Follow-up 2 (2026-10-05): switch off, numbered columns → csvAttributes.header false ----
+    //  When CSV schema generation numbers the columns because line 1 is data
+    //  (header=false, or header=true but line 1 reads as data), the generated
+    //  config's `source.fileAttributes.csvAttributes.header` is false so a
+    //  pipeline saved from it does not skip its first data row. Real header
+    //  names kept → header stays true.
+
+    private val headerless =
+        """ZQX-NAME-1,ZQX-SSN-2,zqx-mail-3@example.com,918273645
+          |ZQX-NAME-7,ZQX-SSN-2,zqx-mail-8@example.com,41""".stripMargin
+
+    private val realHeader =
+        """full_name,ssn,email,age
+          |ZQX-NAME-1,ZQX-SSN-2,zqx-mail-3@example.com,918273645""".stripMargin
+
+    private def parsed(config: String): (List[String], Boolean) = {
+        val root = com.google.gson.JsonParser.parseString(config).getAsJsonObject
+        val src = root.getAsJsonObject("source")
+        val fs = src.getAsJsonObject("schemaProperties").getAsJsonArray("fields")
+        val names = (0 until fs.size()).map(i => fs.get(i).getAsJsonObject.get("name").getAsString).toList
+        val header = src.getAsJsonObject("fileAttributes").getAsJsonObject("csvAttributes").get("header").getAsBoolean
+        (names, header)
+    }
+
+    private val numbered = List("column_1", "column_2", "column_3", "column_4")
+
+    test("CSV schema generation (switch off): header=true on a headerless file numbers the columns and sets header false") {
+        inEnv {
+            withheld {
+                val (prompts, ai) = capturing(typedFields)
+                val config = AISchemaUtil.buildCsvConfig("people", headerless, ",", true, ai)
+                assert(prompts.isEmpty)
+                val (names, header) = parsed(config)
+                assert(names == numbered, config)
+                assert(!header, "csvAttributes.header must be false when line 1 is data: " + config)
+                assertNoMarker(config)
+                assert(!config.contains("zqx-mail"), config)
+            }
+        }
+    }
+
+    test("CSV schema generation (switch off): header=false numbers the columns and keeps header false") {
+        inEnv {
+            withheld {
+                val (_, ai) = capturing(typedFields)
+                val (names, header) = parsed(AISchemaUtil.buildCsvConfig("people", headerless, ",", false, ai))
+                assert(names == numbered)
+                assert(!header)
+            }
+        }
+    }
+
+    test("CSV schema generation (switch off): a real header keeps its names and header true") {
+        inEnv {
+            withheld {
+                val (_, ai) = capturing(typedFields)
+                val (names, header) = parsed(AISchemaUtil.buildCsvConfig("people", realHeader, ",", true, ai))
+                assert(names == List("full_name", "ssn", "email", "age"))
+                assert(header, "real header names kept → header stays true")
+            }
+        }
+    }
 }

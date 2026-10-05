@@ -743,4 +743,78 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
             s"lines: ${su.events}"
         )
     }
+
+    // ---- Schema evolution: a new source column the destination already declares ----
+    //  (plans/stories/schema-evolution-dest-duplicate.md)
+    //
+    //  The column joins the SOURCE schema as usual; the destination keeps its
+    //  single declared entry (type untouched) and the run logs
+    //  "Schema evolution: column '<c>' is already in the destination schema (<type>); kept as declared".
+
+    private def declaredDestConfig: PipelineConfig =
+        PipelineConfig(
+            name = "e2e_dup",
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("id", "name")),
+                fileAttributes = FileAttributes(csvAttributes = CsvAttributes())
+            ),
+            destination = Destination(schemaProperties =
+                SchemaProperties(
+                    "db",
+                    new java.util.ArrayList[SchemaField](
+                        java.util.Arrays.asList(SchemaField("id", "string"), SchemaField("name", "string"), SchemaField("admit_date", "date"))
+                    )
+                )
+            )
+        )
+
+    test("a new source column already declared in the destination joins the source schema only") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val cfg = declaredDestConfig
+        val (evolved, schemaColumns, present, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date"), cfg, su, c => persisted += c)
+
+        assert(schemaColumns == List("id", "name", "admit_date"), schemaColumns)
+        assert(present.contains("admit_date"))
+        assert(sourceField(evolved, "admit_date").isDefined, s"source gains admit_date: ${evolved.source.schemaProperties.fields}")
+
+        Seq(evolved, persisted.head).foreach { c =>
+            val dest = c.destination.schemaProperties.fields.asScala.toList
+            assert(dest.count(_.name.equalsIgnoreCase("admit_date")) == 1, s"destination lists admit_date once: $dest")
+            assert(dest.find(_.name.equalsIgnoreCase("admit_date")).get.`type` == "date", s"declared type kept: $dest")
+            assert(dest.map(_.name) == List("id", "name", "admit_date"), s"destination unchanged in order: $dest")
+        }
+        assert(persisted.size == 1, s"one write, got ${persisted.size}")
+    }
+
+    test("the status line says the destination entry was kept") {
+        val su = new LevelStatusUtil
+        ai.datris.util.DataUtil.evolveSchema(List("id", "name", "Admit_Date"), declaredDestConfig, su, _ => ())
+        val all = su.events.map(_._2)
+        assert(
+            all.exists(l => l.toLowerCase.contains("'admit_date'") && l.contains("is already in the destination schema") && l.contains("(date)") && l.contains("kept as declared")),
+            s"status lines: ${su.events}"
+        )
+    }
+
+    test("a pipeline without a destination schema evolves as before") {
+        val base = declaredDestConfig
+        Seq(base.copy(destination = Destination()), base.copy(destination = null)).foreach { cfg =>
+            val su = new LevelStatusUtil
+            val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+            val (evolved, schemaColumns, _, _) =
+                ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date"), cfg, su, c => persisted += c)
+            assert(schemaColumns == List("id", "name", "admit_date"))
+            assert(sourceField(evolved, "admit_date").exists(_.`type` == "string"))
+            assert(evolved.source.schemaProperties.schemaVersion == cfg.source.schemaProperties.schemaVersion + 1)
+            assert(evolved.destination == cfg.destination, "destination untouched")
+            assert(persisted.size == 1)
+            assert(!su.events.exists(_._2.contains("already in the destination schema")), s"lines: ${su.events}")
+        }
+        // A destination column not yet declared is still appended, as before.
+        val su = new LevelStatusUtil
+        val (evolved, _, _, _) = ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date"), base, su, _ => ())
+        assert(evolved.destination.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name", "admit_date", "discharge_date"))
+    }
 }
