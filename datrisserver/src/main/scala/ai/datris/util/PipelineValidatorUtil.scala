@@ -44,11 +44,20 @@ object PipelineValidatorUtil {
       * [[ValidationException]] (still a [[DatrisException]]) carrying the
       * validator's message unchanged, so controllers can answer 400 for a
       * config the caller must fix and keep 500 for real server failures. */
-    def validate(config: PipelineConfig): Unit =
-        try validateConfig(config)
+    def validate(config: PipelineConfig): Unit = asValidation(validateConfig(config))
+
+    /** Runs `body`, turning a [[DatrisException]] it raises into a
+      * [[ValidationException]] with the same message and stack. Anything else
+      * (a config-store or secret-store failure surfacing as a plain runtime
+      * exception) passes through untouched, so it stays a 500. */
+    private[util] def asValidation[T](body: => T): T =
+        try body
         catch {
             case v: ValidationException => throw v
-            case d: DatrisException => throw new ValidationException(d.getMessage)
+            case d: DatrisException =>
+                val v = new ValidationException(d.getMessage)
+                v.setStackTrace(d.getStackTrace)
+                throw v
         }
 
     private def validateConfig(config: PipelineConfig): Unit = {

@@ -1892,21 +1892,9 @@ export class PipelineCreateComponent implements OnInit {
         // The server answers a refused save (400; 500 on older servers) with
         // {"error": "<message>"}. Show the message text, not the raw JSON.
         let detail: string;
-        let body: any = err.error;
-        if (typeof body === 'string' && body.trim()) {
-          try {
-            const parsed = JSON.parse(body);
-            if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) body = parsed;
-          } catch {
-            // not JSON: shown as is below
-          }
-        }
-        if (typeof body === 'string' && body.trim()) {
-          detail = body;
-        } else if (typeof body?.error === 'string' && body.error.trim()) {
-          detail = body.error;
-        } else if (err.error?.message) {
-          detail = err.error.message;
+        const bodyText = httpErrorText({ error: err?.error });
+        if (bodyText) {
+          detail = bodyText;
         } else if (err.status) {
           detail = 'HTTP ' + err.status + ': ' + (err.statusText || 'Unknown error');
           if (err.error) detail += ' — ' + JSON.stringify(err.error);
