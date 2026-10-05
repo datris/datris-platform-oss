@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.Gson
-import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException}
+import ai.datris.model.{AIConfig, AIRefusalException, DatrisEnvironment, DatrisException}
 import ai.datris.util.aiutil.AIProviders.usesResponsesApi
 
 import org.slf4j.{Logger, LoggerFactory}
@@ -94,7 +94,14 @@ object AIResponseParser {
                     val choices = responseMap.get("choices").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
                     if (choices == null || choices.isEmpty)
                         throw new DatrisException("OpenAI/Ollama response contained no choices")
-                    val message = choices.get(0).get("message").asInstanceOf[java.util.Map[String, Any]]
+                    val choice = choices.get(0)
+                    val message = choice.get("message").asInstanceOf[java.util.Map[String, Any]]
+                    // Chat-completions decline shapes (OpenAI, Azure OpenAI, Grok):
+                    // finish_reason "content_filter" or a non-empty message.refusal.
+                    if (Option(choice.get("finish_reason")).map(_.toString).contains("content_filter"))
+                        throw refusal("finish_reason: content_filter")
+                    if (message != null && Option(message.get("refusal")).map(_.toString).exists(_.trim.nonEmpty))
+                        throw refusal("refusal")
                     if (message == null)
                         throw new DatrisException("OpenAI/Ollama response choice had no message")
                     message.get("content").asInstanceOf[String]
@@ -104,11 +111,7 @@ object AIResponseParser {
                     // "refusal" and empty/partial content — surface that legibly
                     // instead of the generic "no content" error.
                     val stopReason = Option(responseMap.get("stop_reason")).map(_.toString).getOrElse("")
-                    if (stopReason == "refusal")
-                        throw new DatrisException(
-                            "The model declined this request (stop_reason: refusal). This can be a safety-classifier " +
-                                "false positive — rephrase the request or switch the slot to a different model."
-                        )
+                    if (stopReason == "refusal") throw refusal("stop_reason: refusal")
                     val contentList = responseMap.get("content").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
                     if (contentList == null || contentList.isEmpty)
                         throw new DatrisException("Anthropic response contained no content")
@@ -132,10 +135,36 @@ object AIResponseParser {
         text.trim
     }
 
+    /** A safety decline: the provider answered (HTTP 200) but declined. The
+      * message names the provider's signal and nothing the provider wrote. */
+    private def refusal(signal: String): AIRefusalException =
+        new AIRefusalException(
+            "The model declined this request (" + signal + "). This can be a safety-classifier " +
+                "false positive — rephrase the request or switch the slot to a different model."
+        )
+
+    private def typeOf(item: java.util.Map[String, Any]): String =
+        Option(item.get("type")).map(_.toString).getOrElse("")
+
     // Responses API shape: { output: [ { type: "message", content: [ { type: "output_text", text: "..." } ] }, ... ] }.
     // Reasoning models may also include "reasoning" items in output — we want the first message's first output_text.
     private def extractResponsesApiText(responseMap: java.util.Map[String, Any]): String = {
+        // Responses decline shapes: incomplete_details.reason "content_filter",
+        // or a `refusal` item (top-level output item or a message content part).
+        val incomplete = responseMap.get("incomplete_details") match {
+            case m: java.util.Map[_, _] => Option(m.get("reason")).map(_.toString).getOrElse("")
+            case _ => ""
+        }
+        if (incomplete == "content_filter") throw refusal("incomplete_details.reason: content_filter")
         val output = responseMap.get("output").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+        if (output != null) output.asScala.foreach { item =>
+            if (typeOf(item) == "refusal") throw refusal("refusal")
+            val parts = item.get("content") match {
+                case l: java.util.List[_] => l.asScala.collect { case m: java.util.Map[_, _] => m.asInstanceOf[java.util.Map[String, Any]] }
+                case _ => Nil
+            }
+            if (typeOf(item) == "message" && parts.exists(p => typeOf(p) == "refusal")) throw refusal("refusal")
+        }
         if (output == null || output.isEmpty)
             throw new DatrisException("OpenAI Responses API response contained no output")
         val message = output.asScala.find { item =>

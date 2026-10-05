@@ -65,6 +65,9 @@ export class PipelineCreateComponent implements OnInit {
   /** True when the last Generate Schema / sample analysis result says the
    * server withheld row values from the model (DATRIS_AI_SAMPLE_VALUES=false). */
   valuesWithheld = false;
+  /** True when the last Generate Schema / sample analysis result says the
+   * model declined the request, so fields are all-string from the header. */
+  aiDeclined = false;
   /** True when a generate-schema result turned Header off because the
    * server found that line 1 is data (columns numbered). */
   headerAdjusted = false;
@@ -1341,6 +1344,7 @@ export class PipelineCreateComponent implements OnInit {
             this.resetPresetForNewSchema();
           }
           this.valuesWithheld = response?.valuesWithheld === true;
+          this.aiDeclined = response?.aiDeclined === true;
           this.applyGeneratedHeader(response);
           this.generatingSchema = false;
         },
@@ -1368,6 +1372,7 @@ export class PipelineCreateComponent implements OnInit {
           this.resetPresetForNewSchema();
         }
         this.valuesWithheld = response?.valuesWithheld === true;
+        this.aiDeclined = response?.aiDeclined === true;
         this.applyGeneratedHeader(response);
         this.generatingSchema = false;
       },
@@ -1611,6 +1616,7 @@ export class PipelineCreateComponent implements OnInit {
     ).subscribe({
       next: (response: any) => {
         this.valuesWithheld = response?.valuesWithheld === true;
+        this.aiDeclined = response?.aiDeclined === true;
         // Header is not adopted here: this call only summarises the sample and
         // must not override a Header choice the user made after step 1.
         if (response.source?.schemaProperties?.fields) {

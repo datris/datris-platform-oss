@@ -317,4 +317,21 @@ class AISchemaUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
             }
         }
     }
+
+    test("on-mode decline on a headerless file: numbered columns and header false, as off-mode, no valuesWithheld") {
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("people", headerless, ",", true, declined)
+                assert(obj(config).get("aiDeclined").getAsBoolean, config)
+                val (names, header) = parsed(config)
+                assert(names == numbered, config)
+                assert(!header, "csvAttributes.header must be false when line 1 is data: " + config)
+                assert(!config.contains("valuesWithheld"), config)
+                assertNoMarker(config)
+                assert(!config.contains("zqx-mail"), config)
+                val (names2, header2) = parsed(AISchemaUtil.buildCsvConfig("people", headerless, ",", false, declined))
+                assert(names2 == numbered && !header2)
+            }
+        }
+    }
 }

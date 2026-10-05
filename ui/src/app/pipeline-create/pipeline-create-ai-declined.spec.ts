@@ -114,4 +114,26 @@ describe('PipelineCreateComponent — ai declined note', () => {
     generateOnSchemaStep();
     expect(el.querySelector('.ai-declined')).withContext('flag false').toBeNull();
   });
+
+  // Implementer addition: a declined fallback on a headerless file comes back
+  // with csvAttributes.header false; the wizard adopts it and shows both notes.
+  it('a declined fallback that turns Header off shows the header-adjusted note too, and both clear on a normal result', () => {
+    component.csvHeader = true;
+    generateResponse = {
+      name: 'people', aiDeclined: true,
+      source: {
+        schemaProperties: { fields: [{ name: 'column_1', type: 'string' }, { name: 'column_2', type: 'string' }] },
+        fileAttributes: { csvAttributes: { delimiter: ',', header: false, encoding: 'UTF-8' } }
+      }
+    };
+    generateOnSchemaStep();
+    expect(component.csvHeader).toBeFalse();
+    expect(el.querySelector('.ai-declined')).not.toBeNull();
+    expect(el.querySelector('.header-adjusted')).withContext('header-adjusted note with a declined fallback').not.toBeNull();
+
+    generateResponse = { name: 'people', source: { schemaProperties: { fields } } };
+    generateOnSchemaStep();
+    expect(el.querySelector('.ai-declined')).toBeNull();
+    expect(el.querySelector('.header-adjusted')).toBeNull();
+  });
 });

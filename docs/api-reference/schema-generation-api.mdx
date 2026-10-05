@@ -66,6 +66,20 @@ JSON and XML files use a fixed schema because the pipeline stores them as raw do
 
 **Valid AI-inferred types:** `boolean`, `int`, `bigint`, `float`, `double`, `string`, `date`, `timestamp`
 
+### When the model declines
+
+An AI provider's safety classifier can decline to look at a file, most often one that looks like personal data. For a CSV or other delimited file the endpoint then still returns `200`: every field typed `string` and named from the header (as with `allStrings=true`), or `column_1`, `column_2`, … when `header` is false or line 1 looks like data (the config then sets `csvAttributes.header` to `false`). The response carries a top-level `"aiDeclined": true`, and the pipeline wizard shows a one-line note; set the types by hand. `aiDeclined` is a response-only flag: it is never saved with a pipeline. The provider's own text is not included.
+
+| Provider family | Recognised as a decline |
+|-----------------|-------------------------|
+| Anthropic (direct or AWS Bedrock) | `stop_reason: "refusal"` |
+| OpenAI, Azure OpenAI and Grok (chat completions) | `finish_reason: "content_filter"`, or a non-empty `message.refusal` |
+| OpenAI Responses API models | an output item or message content part of type `refusal`, or `incomplete_details.reason: "content_filter"` |
+
+Nothing else counts as a decline: a missing or wrong provider key, a timeout, a rate limit or any other provider error is still returned as an error, so a misconfiguration is not hidden.
+
+JSON Schema and XSD generation (`POST /api/v1/config/generate-schema`) have no local fallback: a decline there is still returned as an error, with the message "The model declined this request (…)".
+
 ---
 
 ## Example: CSV File
