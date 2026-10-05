@@ -1724,6 +1724,70 @@ describe('PipelineCreateComponent — field protection preset', () => {
     expect(wire(component.buildConfig()).protection?.preset).toBe(PRESET);
   });
 
+  async function deselectPreset(): Promise<void> {
+    const sel = presetSelect();
+    sel.selectedIndex = (Array.from(sel.querySelectorAll('option')) as HTMLOptionElement[])
+      .findIndex(o => (o.textContent || '').trim() !== 'HIPAA Safe Harbor');
+    sel.dispatchEvent(new Event('change'));
+    await settle();
+  }
+
+  it('edit mode: a deselected saved preset stays deselected after schema regeneration', async () => {
+    (component as any).isEditMode = true;
+    await onSchemaStep(FIELDS, {}, { protection: { purgeSource: false, preset: PRESET } });
+    await deselectPreset();
+    expect((component as any).selectedPreset || null).toBeNull();
+    const svc: any = (component as any).pipelineService;
+    svc.generateSchema = () => of({ source: { schemaProperties: { fields: FIELDS } } });
+    (component as any).schemaFile = new File(['x'], 'patients.csv');
+    component.pipelineName = 'patients';
+    component.generateSchema();
+    await settle();
+    expect((component as any).selectedPreset || null).toBeNull();
+    expect(wire(component.buildConfig()).protection).toEqual({ purgeSource: false });
+  });
+
+  it('deselecting a saved preset shows that saving will remove it', async () => {
+    await onSchemaStep(FIELDS, {}, { protection: { preset: PRESET } });
+    expect(el.querySelector('.preset-removal-notice')).toBeNull();
+    await deselectPreset();
+    const notice = el.querySelector('.preset-removal-notice');
+    expect(notice).not.toBeNull();
+    expect((notice?.textContent || '').trim()).toBe('Saving will remove the HIPAA Safe Harbor preset from this pipeline.');
+    expect(el.querySelector('.preset-summary')).toBeNull();
+  });
+
+  it('an exempt field the preset does not recognise is listed in the summary', async () => {
+    await onSchemaStep(FIELDS, {}, { protection: { preset: PRESET, presetExempt: ['visit_count'] } });
+    const line = el.querySelector('.preset-exempt-unclassified');
+    expect(line).not.toBeNull();
+    expect(line?.textContent || '').toContain('Exempt but not recognised by the preset: visit_count');
+    expect(wire(component.buildConfig()).protection).toEqual({ preset: PRESET, presetExempt: ['visit_count'] });
+  });
+
+  it('a rename committed while Apply is in flight is re-read once the Apply lands', async () => {
+    await onSchemaStep(FIELDS);
+    const pending = new Subject<any>();
+    presetSpy.and.returnValue(pending);
+    await applyPreset();
+    const input = rowFor('notes').querySelector('input.field-name') as HTMLInputElement;
+    input.value = 'fax';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur'));
+    await settle();
+    expect(presetSpy).toHaveBeenCalledTimes(1);
+    presetSpy.and.callFake(() => of(presetResponse({
+      fields: [...presetResponse().fields, { name: 'fax', class: 'fax', method: 'redact', preserve: null, reason: 'fax number', current: null }],
+      unclassified: ['visit_count']
+    })));
+    pending.next(presetResponse());
+    await settle();
+    expect(presetSpy).toHaveBeenCalledTimes(2);
+    expect(presetSpy.calls.mostRecent()?.args[1].map((x: any) => x.name)).toContain('fax');
+    expect((rowFor('fax')?.querySelector('.field-class')?.textContent || '')).toContain('fax');
+    expect(f('fax').protect?.method || null).withContext('a refresh never sets methods').toBeNull();
+  });
+
   it('a foreign preset is kept when a listed preset is only selected, not applied', async () => {
     await onSchemaStep([{ name: 'mrn', type: 'string' }], {},
       { protection: { preset: 'future-preset', presetExempt: ['mrn'] } });

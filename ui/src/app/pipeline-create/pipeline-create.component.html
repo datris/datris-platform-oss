@@ -309,6 +309,7 @@
           </ng-container>
         </div>
         <p class="form-hint">Sends field names and types only, never data.</p>
+        <p class="preset-removal-notice" *ngIf="presetRemovalNotice()">Saving will remove the {{ presetLabel(loadedPresetId) }} preset from this pipeline.</p>
         <div class="preset-summary" *ngIf="presetActive()">
           <ng-container *ngIf="presetResult">
             <div class="preset-counts">{{ presetLabel(selectedPreset) || 'Preset' }}: {{ presetResult.fields.length }} field{{ presetResult.fields.length === 1 ? '' : 's' }} classified, {{ presetResult.unclassified.length }} not recognised.</div>
@@ -326,6 +327,9 @@
           <div class="preset-counts" *ngIf="!presetResult && !presetUnavailable">{{ presetLabel(selectedPreset) || 'Preset' }}: no fields classified yet. Name the fields to see their classes.</div>
           <div class="preset-uncovered" *ngIf="uncoveredPresetFields.length > 0">
             Enforced: {{ uncoveredPresetFields.length }} recognised field{{ uncoveredPresetFields.length === 1 ? ' has' : 's have' }} no protection and {{ uncoveredPresetFields.length === 1 ? 'is' : 'are' }} not exempt: {{ uncoveredPresetFields.join(', ') }}. Saving will be refused until each is protected or exempt.
+          </div>
+          <div class="preset-exempt-unclassified" *ngIf="exemptUnclassifiedNames.length > 0">
+            Exempt but not recognised by the preset: {{ exemptUnclassifiedNames.join(', ') }}.
           </div>
           <div class="preset-stale" *ngIf="staleExemptNames.length > 0">
             Saved exemption{{ staleExemptNames.length === 1 ? '' : 's' }} for a field not in the schema, dropped on save: {{ staleExemptNames.join(', ') }}.

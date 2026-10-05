@@ -167,7 +167,7 @@ export class PipelineCreateComponent implements OnInit {
   private lastPresetSignature: string | null = null;
   /** Preset id as loaded and recognised by this build (normalised); a saved
    *  preset stays enforced on save without Apply. */
-  private loadedPresetId: string | null = null;
+  loadedPresetId: string | null = null;
   /** True when the loaded protection.preset is not one this build lists: it
    *  and presetExempt are re-emitted unchanged. */
   private foreignPreset = false;
@@ -408,6 +408,7 @@ export class PipelineCreateComponent implements OnInit {
     this.presetUnavailable = null;
     this.presetApplied = false;
     this.presetSeq++;
+    this.applyingPreset = false;
     this.lastPresetSignature = null;
     const savedPreset = this.loadedProtection?.preset;
     const savedId = savedPreset ? String(savedPreset).trim().toLowerCase() : '';
@@ -993,6 +994,8 @@ export class PipelineCreateComponent implements OnInit {
           f.protectError = '';
           f.suggested = null;
         }
+        // A name or type changed while Apply was in flight: re-read the classes.
+        if (this.presetSignature(preset, this.presetRequestFields()) !== signature) this.refreshPresetClasses();
       },
       error: (err: any) => {
         if (seq !== this.presetSeq) return;
@@ -1076,9 +1079,10 @@ export class PipelineCreateComponent implements OnInit {
   private resetPresetForNewSchema(): void {
     this.presetApplied = false;
     this.clearPresetResult();
-    if (!this.isEditMode || this.selectedPreset !== this.loadedPresetId) {
-      this.selectedPreset = this.isEditMode ? this.loadedPresetId : null;
-    }
+    // A deselected preset stays deselected; an in-session choice in edit mode
+    // goes back to the saved one.
+    if (!this.isEditMode) this.selectedPreset = null;
+    else if (this.selectedPreset && this.selectedPreset !== this.loadedPresetId) this.selectedPreset = this.loadedPresetId;
     // The new field objects carry no exemption: in edit mode the saved
     // exemptions are matched by name again, and the rest reported as stale.
     this.staleExemptNames = [];
@@ -1114,6 +1118,20 @@ export class PipelineCreateComponent implements OnInit {
       .map((f, i) => ({ f, i, li: loadedIdx(f) }))
       .sort((a, b) => (a.li < 0 ? 1e6 + a.i : a.li) - (b.li < 0 ? 1e6 + b.i : b.li))
       .map(({ f, li }) => li >= 0 ? this.loadedExemptNames[li] : f.name.trim());
+  }
+
+  /** Exempt fields the preset does not recognise (no class): saved under
+   *  presetExempt but without a visible Exempt toggle, so listed. */
+  get exemptUnclassifiedNames(): string[] {
+    if (!this.presetActive()) return [];
+    return this.schemaFields
+      .filter(f => f.presetExempt && f.name && f.name.trim() && !f.protect?.method && !f.presetClass)
+      .map(f => f.name.trim());
+  }
+
+  /** Edit mode: the saved preset is no longer active, so saving removes it. */
+  presetRemovalNotice(): boolean {
+    return !!this.loadedPresetId && !this.presetActive() && this.presetAvailable();
   }
 
   /** Recognised fields set to None and not exempt: the server refuses the

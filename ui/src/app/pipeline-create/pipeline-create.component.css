@@ -696,12 +696,14 @@ option {
 }
 
 .preset-uncovered,
-.preset-stale {
+.preset-stale,
+.preset-removal-notice {
   margin-bottom: 6px;
   color: var(--accent-red);
 }
 
 .preset-unclassified,
+.preset-exempt-unclassified,
 .preset-unavailable,
 .preset-counts {
   margin-bottom: 6px;
