@@ -282,12 +282,8 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
         val plain = List("full_name", "ssn", "email", "age", "first name", "addr1", "phone2", "zip_code")
         assert(!AiSampleValues.headerLooksLikeData(plain))
         assert(AiSampleValues.safeColumnNames(plain, header = true) == plain)
-        assert(AiSampleValues.safeColumnNames(List("id", "account123", "First Name", "e.mail"), header = true) == List(
-            "id",
-            "column_2",
-            "column_3",
-            "column_4"
-        ))
+        assert(AiSampleValues.safeColumnNames(List("id", "account", "First Name", "e.mail"), header = true) == List("id", "account", "column_3", "column_4"))
+        assert(AiSampleValues.safeColumnNames(List("id", "account123"), header = true) == List("column_1", "column_2"), "more than two digits: data")
     }
 
     test("CSV schema generation off with header=true on the e2e first row: numbered fields") {
@@ -321,7 +317,8 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
                 assertNoMarker(out)
                 val obj = JsonParser.parseString(out).getAsJsonObject
                 assert(obj.get("valuesWithheld").getAsBoolean)
-                assert(obj.get("analysis").isJsonNull, out)
+                assert(!obj.has("analysis"), out)
+                assert(obj.getAsJsonArray("qualityIssues").size == 0 && obj.getAsJsonArray("recommendations").size == 0, out)
                 assert(obj.get("note").getAsString == "the model's reply could not be parsed; statistics only")
                 val cols = obj.getAsJsonObject("summary").getAsJsonArray("columns")
                 assert(cols.size == 3 && cols.get(0).getAsJsonObject.get("name").getAsString == "full_name", out)
@@ -333,5 +330,59 @@ class AiSampleValuesReviewSpec extends AnyFunSuite with AiSampleValuesMarkers {
                 assert(out2.get("valuesWithheld").getAsBoolean && out2.has("note"))
             }
         }
+    }
+
+    // ---- round 4
+
+    test("a first row with a numeric cell is data: Jane,Doe,F,42 and friends are numbered") {
+        Seq(
+            List("Jane", "Doe", "F", "42"),
+            List("Jane", "Doe", "1984"),
+            List("Jane", "Doe", "555 1234"),
+            List("Smith", "4111"),
+            List("jane", "doe", "acct123")
+        ).foreach { row =>
+            assert(AiSampleValues.headerLooksLikeData(row), row.toString)
+            assert(AiSampleValues.safeColumnNames(row, header = true) == row.indices.map(i => "column_" + (i + 1)).toList, row.toString)
+        }
+        assert(!AiSampleValues.headerLooksLikeData(List("name", "", "addr1", "phone2")), "an empty cell or up to two digits is still a header")
+    }
+
+    test("profile off, header=true: headerless Jane,Doe,F,42 sends no first-row value") {
+        inEnv {
+            withheld {
+                val (prompts, ai) = capturing(modelProfile)
+                AIProfileUtil.profile("Jane,Doe,F,42\nJohn,Roe,M,7", "people.csv", ",", true, 100, ai)
+                Seq("Jane", "Doe").foreach(v => assert(!prompts.head.contains(v), v + " leaked: " + prompts.head))
+                assert(prompts.head.contains("Rows: 2") && prompts.head.contains("column_4"), prompts.head)
+            }
+        }
+    }
+
+    test("a UTF-8 BOM does not cost the first header cell its name") {
+        assert(AiSampleValues.safeColumnNames(List("\uFEFFfull_name", "ssn"), header = true) == List("full_name", "ssn"))
+        inEnv {
+            withheld {
+                val (_, ai) = capturing("[]")
+                val config = AISchemaUtil.buildCsvConfig("people", "\uFEFFfull_name,ssn\nZQX-NAME-1,ZQX-SSN-2", ",", true, ai)
+                assert(config.contains("\"full_name\"") && !config.contains("\uFEFF"), config)
+                val (prompts, pai) = capturing(modelProfile)
+                AIProfileUtil.profile("\uFEFFfull_name,ssn\nZQX-NAME-1,ZQX-SSN-2", "people.csv", ",", true, 100, pai)
+                assert(prompts.head.contains("full_name |") && !prompts.head.contains("column_1"), prompts.head)
+            }
+        }
+    }
+
+    test("a nested map of same-shaped arrays collapses; a root record of same-typed scalars and a nested record object do not") {
+        val nested = AiSampleValues.jsonSkeleton("""{"patients": {"smith": [1], "jones": [2]}}""")
+        assert(!nested.contains("smith") && !nested.contains("jones"), nested)
+        assert(JsonParser.parseString(nested).getAsJsonObject.getAsJsonObject("patients").has("<key>"), nested)
+
+        val root = AiSampleValues.jsonSkeleton("""{"first": "a", "last": "b", "city": "c"}""")
+        Seq("first", "last", "city").foreach(k => assert(root.contains("\"" + k + "\""), root))
+        val rootArrays = AiSampleValues.jsonSkeleton("""{"tags": ["a"], "ids": [1]}""")
+        assert(rootArrays.contains("\"tags\"") && rootArrays.contains("\"ids\""), "root arrays are a record: " + rootArrays)
+        val address = AiSampleValues.jsonSkeleton("""{"address": {"city": "ZQX-CITY-4", "zip": "ZQX-ID-5"}}""")
+        assert(address.contains("\"city\"") && address.contains("\"zip\""), address)
     }
 }

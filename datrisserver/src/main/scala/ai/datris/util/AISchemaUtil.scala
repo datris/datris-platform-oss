@@ -38,7 +38,7 @@ object AISchemaUtil {
       * and `column_N` for any header cell that is not an identifier. */
     private def buildCsvConfigWithheld(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
         val myDelimiter = if (delimiter == null) "," else delimiter
-        val firstLine = fileContent.split("\n").head
+        val firstLine = fileContent.stripPrefix("\uFEFF").split("\n").head
         val delimChar = if (myDelimiter == "\\t") "\t" else myDelimiter
         val cells = firstLine.split(java.util.regex.Pattern.quote(delimChar), -1)
             .map(_.trim.replaceAll("\"", "").replaceAll("'", "")).toList

@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
-import com.google.gson.{GsonBuilder, JsonArray, JsonNull, JsonObject, JsonParser}
+import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.util.Random
@@ -142,7 +142,7 @@ object AIProfileUtil {
             } else {
                 val d = if (delimiter == null) "," else delimiter
                 val splitOn = if (d == "\\t") "\t" else d
-                val lines = fileContent.split("\n").iterator.map(_.stripSuffix("\r")).filter(_.nonEmpty).toList
+                val lines = fileContent.stripPrefix("\uFEFF").split("\n").iterator.map(_.stripSuffix("\r")).filter(_.nonEmpty).toList
                 val firstCells = lines.headOption.map(l => CodeGenTransformationEvaluator.splitLine(l, splitOn)).getOrElse(Nil)
                 // Line 1 is a header only when the caller says so and it reads as names;
                 // a name that is not an identifier is never sent (column_N instead).
@@ -222,7 +222,8 @@ object AIProfileUtil {
     }
 
     /** Off-mode answer when the model's reply is not JSON (e.g. cut off on a
-      * wide file): the locally computed statistics, no analysis. */
+      * wide file): the locally computed statistics, empty qualityIssues and
+      * recommendations, and a note. */
     private def statisticsOnly(localStats: Option[(Int, List[ColumnStat])]): String = {
         val out = new JsonObject()
         val summary = new JsonObject()
@@ -245,9 +246,10 @@ object AIProfileUtil {
         }
         summary.add("columns", columns)
         out.add("summary", summary)
-        out.add("analysis", JsonNull.INSTANCE)
+        out.add("qualityIssues", new JsonArray())
+        out.add("recommendations", new JsonArray())
         out.addProperty("valuesWithheld", true)
         out.addProperty("note", "the model's reply could not be parsed; statistics only")
-        new GsonBuilder().serializeNulls().create().toJson(out)
+        out.toString
     }
 }

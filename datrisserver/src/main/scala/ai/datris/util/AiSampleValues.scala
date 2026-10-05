@@ -109,12 +109,17 @@ object AiSampleValues {
         }
     }
 
-    private def skeleton(e: JsonElement): JsonElement = {
+    private def skeleton(e: JsonElement): JsonElement = skeleton(e, underKey = false)
+
+    /** `underKey`: `e` is the value of an object key (not the document root,
+      * not an array element), where a keyed map of same-shaped values is
+      * collapsed ([[keyedByData]]). */
+    private def skeleton(e: JsonElement, underKey: Boolean): JsonElement = {
         if (e == null || e.isJsonNull) JsonNull.INSTANCE
         else if (e.isJsonObject) {
             val out = new JsonObject()
-            e.getAsJsonObject.entrySet().asScala.foreach(en => out.add(en.getKey, skeleton(en.getValue)))
-            collapseIfKeyedByData(out)
+            e.getAsJsonObject.entrySet().asScala.foreach(en => out.add(en.getKey, skeleton(en.getValue, underKey = true)))
+            collapseIfKeyedByData(out, underKey)
         } else if (e.isJsonArray) {
             val shapes = new ShapeSet
             e.getAsJsonArray.asScala.foreach(shapes.add)
@@ -170,17 +175,22 @@ object AiSampleValues {
       * when it has more than [[MaxKeys]] keys, or when it has two or more keys
       * whose values are all objects of one shape (`{"Jane Doe": {...},
       * "John Roe": {...}}`). */
-    private[datris] def keyedByData(o: JsonObject): Boolean = {
+    private[datris] def keyedByData(o: JsonObject, underKey: Boolean = false): Boolean = {
         val keys = o.keySet().asScala
         if (keys.size > MaxKeys || keys.exists(k => !isIdentifier(k))) return true
         val values = o.entrySet().asScala.toList.map(_.getValue)
-        values.size >= 2 && values.forall(v => v != null && v.isJsonObject) && values.map(shapeKey).distinct.size == 1
+        if (values.size < 2 || values.map(shapeKey).distinct.size != 1) return false
+        // Objects of one shape: a map at any level. Arrays (one per key): a map
+        // when nested under a key (`{"patients": {"smith": [..], "jones": [..]}}`).
+        // Same-typed scalars are not collapsed: a record's nested object
+        // (`"address": {"city": .., "zip": ..}`) has exactly that shape.
+        values.forall(v => v != null && v.isJsonObject) || (underKey && values.forall(v => v != null && v.isJsonArray))
     }
 
     /** A skeleton object (values already skeletons) that is [[keyedByData]]
       * becomes `{"<key>": <merged value shape>}`. */
-    private def collapseIfKeyedByData(o: JsonObject): JsonObject = {
-        if (!keyedByData(o)) return o
+    private def collapseIfKeyedByData(o: JsonObject, underKey: Boolean = false): JsonObject = {
+        if (!keyedByData(o, underKey)) return o
         val merged = o.entrySet().asScala.toList.map(_.getValue).foldLeft(null: JsonElement)((acc, v) => if (acc == null) v else merge(acc, v))
         val out = new JsonObject()
         out.add(CollapsedKey, if (merged == null) JsonNull.INSTANCE else merged)
@@ -192,10 +202,13 @@ object AiSampleValues {
       * `column_N`; otherwise each cell that is not [[isHeaderCell]] becomes
       * `column_N`. */
     def safeColumnNames(cells: List[String], header: Boolean): List[String] = {
-        val trimmed = cells.map(c => if (c == null) "" else c.trim)
+        val trimmed = cells.map(cleanCell)
         if (!header || headerLooksLikeData(trimmed)) trimmed.indices.map(i => "column_" + (i + 1)).toList
         else trimmed.zipWithIndex.map { case (c, i) => if (isHeaderCell(c)) c else "column_" + (i + 1) }
     }
+
+    /** Trimmed, with a leading UTF-8 byte-order mark removed. */
+    private def cleanCell(c: String): String = if (c == null) "" else c.stripPrefix("\uFEFF").trim
 
     /** First non-whitespace character, or NUL. */
     def firstNonBlank(s: String): Char = {
@@ -206,9 +219,12 @@ object AiSampleValues {
     }
 
     /** True when the line reads as a data row: ANY cell has a dash next to a
-      * digit, an `@`, or more than four digits in a row. */
+      * digit, an `@`, or more than four digits in a row; or is non-empty with
+      * no letter (`42`, `555 1234`); or has more than two digits. */
     def headerLooksLikeData(cells: List[String]): Boolean =
-        cells.exists(c => c != null && DataLike.findFirstIn(c.trim).isDefined)
+        cells.map(cleanCell).exists { c =>
+            DataLike.findFirstIn(c).isDefined || (c.nonEmpty && !c.exists(_.isLetter)) || digitCount(c) > 2
+        }
 
     private def shapeKey(e: JsonElement): String =
         if (e == null || e.isJsonNull) "null"
