@@ -113,7 +113,11 @@ class FieldProtectionAPIController {
                     "Unknown preset '" + body.preset.trim + "' (supported: " + ProtectionPreset.Presets.toList.sorted.mkString(", ") + ")"
                 )
 
-            val (fields, keyFields, destTypes) = FieldProtectionAPIController.resolveFields(pipeline, Option(body).map(_.fields).orNull)
+            val (fields, keyFields, destTypes) = FieldProtectionAPIController.resolveFields(
+                pipeline,
+                Option(body).map(_.fields).orNull,
+                config => ProtectionPreset.proposalRefusal(preset, config).foreach(m => throw new DatrisException(m))
+            )
             val input = fields.filter(f => f.name != null && f.name.trim.nonEmpty)
             if (input.isEmpty) throw new DatrisException("No fields to propose protection for")
             if (input.size > FieldProtectionAdvisor.MaxFields)
@@ -276,15 +280,18 @@ object FieldProtectionAPIController {
 
     /** The field list a suggest or preset call works on, with the pipeline's
       * constraints: the stored source schema when `pipeline` is named, else
-      * the caller's `fields` (no constraints). */
+      * the caller's `fields` (no constraints). `checkStored` may refuse the
+      * stored config before its schema is read. */
     private[api] def resolveFields(
         pipeline: String,
-        bodyFields: java.util.List[SchemaField]
+        bodyFields: java.util.List[SchemaField],
+        checkStored: ai.datris.model.PipelineConfig => Unit = _ => ()
     ): (List[SchemaField], Set[String], Map[String, String]) =
         if (pipeline != null) {
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
+            checkStored(config)
             val sp = if (config.source != null) config.source.schemaProperties else null
             if (sp == null || sp.fields == null || sp.fields.isEmpty)
                 throw new DatrisException("Pipeline '" + pipeline + "' has no source schema fields")

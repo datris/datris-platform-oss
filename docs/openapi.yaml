@@ -1567,7 +1567,8 @@ paths:
         Deterministic: no model call. Stateless: nothing is saved and nothing
         is audited. Pass `preset` with either `pipeline` (its stored source
         schema and constraints are used) or `fields`. At most 150 fields per
-        call; `_json` and `_xml` are skipped. Needs the same capability as
+        call; `_json` and `_xml` are skipped. A stored JSON, XML or
+        unstructured pipeline is refused with 400. Needs the same capability as
         reading a pipeline. An aid to applying Safe Harbor, not a
         certification.
       requestBody:
@@ -1643,7 +1644,11 @@ paths:
                     items:
                       type: string
         '400':
-          description: Missing or unknown preset, neither pipeline nor fields given, pipeline not found, or more than 150 fields
+          description: >-
+            Missing or unknown preset, neither pipeline nor fields given, pipeline
+            not found, more than 150 fields, or `pipeline` names a JSON, XML or
+            unstructured pipeline (the preset needs a delimited source; pass the
+            keys to check as `fields` instead)
           content:
             application/json:
               schema:

@@ -169,7 +169,7 @@ object PipelineValidatorUtil {
             if (notDelimitedOrJson) throw new DatrisException("Field protection needs a delimited or JSON source")
             // JSON keys are not schema fields, so the preset could neither
             // enforce nor evolve them: refused rather than silently inert.
-            if (fa != null && fa.jsonAttributes != null)
+            if (ProtectionPreset.nonDelimitedKind(config).contains("json"))
                 throw new DatrisException(
                     "Preset '" + p.toLowerCase + "' needs a delimited source: a JSON pipeline's keys are not visible to the preset. " +
                         "List the keys to protect explicitly, or use the proposal endpoint with a field list"

@@ -129,4 +129,29 @@ class ProtectionPresetReviewSpec extends AnyFunSuite {
             assert(classify(n).isEmpty, s"$n → ${classify(n)}")
         )
     }
+
+    // ---- e2e: proposal for a stored non-delimited pipeline ----
+
+    private def stored(fileAttributes: String): PipelineConfig =
+        new com.google.gson.Gson().fromJson(
+            s"""{"name":"pp","source":{"fileAttributes":{$fileAttributes},"schemaProperties":{"fields":[{"name":"_json","type":"string"}]}}}""",
+            classOf[PipelineConfig]
+        )
+
+    test("a proposal for a stored JSON, XML or unstructured pipeline is refused; delimited and field lists pass") {
+        val json = proposalRefusal(HipaaSafeHarbor, stored(""""jsonAttributes":{"everyRowContainsObject":true}"""))
+        assert(
+            json == Some(
+                "Preset 'hipaa-safe-harbor' needs a delimited source: a JSON pipeline's keys are not visible to the preset. Pass the keys to check as a field list instead"
+            ),
+            s"got $json"
+        )
+        Seq(""""xmlAttributes":{}""", """"unstructuredAttributes":{"fileExtension":"pdf"}""").foreach { fa =>
+            val r = proposalRefusal(HipaaSafeHarbor, stored(fa))
+            assert(r.exists(m => m.contains("needs a delimited source: this pipeline has no named fields") && m.contains("field list")), s"$fa: $r")
+        }
+        assert(proposalRefusal(HipaaSafeHarbor, stored(""""csvAttributes":{"header":true}""")).isEmpty, "delimited passes")
+        assert(proposalRefusal(HipaaSafeHarbor, null).isEmpty, "a fields body (no stored config) passes")
+        assert(nonDelimitedKind(stored(""""csvAttributes":{"header":true}""")).isEmpty)
+    }
 }

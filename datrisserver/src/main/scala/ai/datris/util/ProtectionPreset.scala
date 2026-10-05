@@ -534,6 +534,30 @@ object ProtectionPreset {
         Proposal(HipaaSafeHarbor, classified.toList, unclassified.toList, review.toList)
     }
 
+    /** `json`, `xml` or `unstructured` for a source the preset cannot read
+      * named fields from; None for a delimited (or database) source. The one
+      * test behind the validator's preset refusal and the proposal endpoint's. */
+    def nonDelimitedKind(config: PipelineConfig): Option[String] = {
+        val fa = Option(config).flatMap(c => Option(c.source)).flatMap(s => Option(s.fileAttributes)).orNull
+        if (fa == null) None
+        else if (fa.jsonAttributes != null) Some("json")
+        else if (fa.xmlAttributes != null) Some("xml")
+        else if (fa.unstructuredAttributes != null) Some("unstructured")
+        else None
+    }
+
+    /** Why a proposal for the stored pipeline `config` is refused, or None.
+      * `config` is null when the caller passed a field list, which is always
+      * accepted. An empty proposal for a JSON pipeline would read as "no
+      * identifiers", so it is an error instead. */
+    def proposalRefusal(preset: String, config: PipelineConfig): Option[String] =
+        nonDelimitedKind(config).map { kind =>
+            val why =
+                if (kind == "json") "a JSON pipeline's keys are not visible to the preset"
+                else "this pipeline has no named fields"
+            "Preset '" + preset + "' needs a delimited source: " + why + ". Pass the keys to check as a field list instead"
+        }
+
     /** The pipeline's preset, trimmed; None when unset or blank (the value is not checked here). */
     def presetOf(config: PipelineConfig): Option[String] =
         Option(config).flatMap(c => Option(c.protection)).flatMap(p => Option(p.preset)).map(_.trim).filter(_.nonEmpty)
