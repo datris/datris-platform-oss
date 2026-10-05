@@ -40,15 +40,19 @@ object JobRunner {
         Option(t.getMessage).map(_.trim).filter(_.nonEmpty).getOrElse(t.getClass.getName)
 
     /** Terminal status events for a failed job. Returns the short, destination-
-      * facing message the incident trigger should carry.
+      * facing message the incident trigger and the thrown exception carry.
+      *
+      * The event's `description` is "Process completed, error: " + plain words
+      * (the message chain from `ErrorText.messageChain`, never a stack trace);
+      * the full stack trace goes in the event's `detail` for the detail view.
       *
       * When a loader already recorded its own error event (`loaderFailure`),
       * JobRunner must NOT write a second one: the rollup classifier takes the
-      * first error event it finds, and a "JobRunner failed with <stack>" event
-      * would hide which destination died. JobRunner instead closes the stream
-      * with an info-level end event carrying the full stack trace for the detail
-      * view. Failures raised on the job thread itself (validator, preprocessor,
-      * DQ, transformation) keep today's JobRunner error event. */
+      * first error event it finds, and a "JobRunner failed" error event would
+      * hide which destination died. JobRunner instead closes the stream with an
+      * info-level end event reading "<Loader> failed: <message>". Failures
+      * raised on the job thread itself (validator, preprocessor, DQ,
+      * transformation) keep today's error event. */
     private[controller] def reportFailure(
         statusUtil: StatusUtil,
         loaderFailure: Option[(String, Throwable)],
@@ -61,11 +65,12 @@ object JobRunner {
                 // The shared processName still names whichever loader last
                 // overrode it; the terminal event is JobRunner's, so say so.
                 statusUtil.overrideProcessName("JobRunner")
-                statusUtil.info("end", "Process completed, error: " + message + "\n" + stack)
+                statusUtil.info("end", "Process completed, error: " + message, stack)
                 message
             case None =>
-                statusUtil.error("end", "Process completed, error: " + stack)
-                stack
+                val message = ErrorText.messageChain(e)
+                statusUtil.error("end", "Process completed, error: " + message, stack)
+                message
         }
     }
 
@@ -278,11 +283,14 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             // VirtualMachineError (OOM, StackOverflow) gets logged + reported here
             // but the JVM may still be unhealthy — that's a separate concern.
             case e: Throwable =>
-                // Full stack for the AI fix suggestion; the short destination-
-                // facing message (when a loader failed) for the incident trigger
-                // and the thrown exception, so every downstream reader starts
+                // Full stack for the AI fix suggestion; the message chain (or
+                // the destination-facing message when a loader failed) for the
+                // incident trigger and the thrown exception, so every downstream reader starts
                 // from the same identity the rollup shows.
                 val stackTrace = Throwables.getStackTraceAsString(e)
+                // The status carries the message chain; the full trace is
+                // logged here once, under the run token.
+                logger.error(jobContext.pipelineToken + ": pipeline failed", e)
                 val errorMessage = JobRunner.reportFailure(statusUtil, Option(loaderFailure.get), e)
                 recordRunLineage(
                     startedAtMs,
@@ -304,6 +312,9 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     val trigger = new com.google.gson.JsonObject()
                     trigger.addProperty("pipelineToken", jobContext.pipelineToken)
                     trigger.addProperty("error", errorMessage.take(500))
+                    // Class names only: what the recovery model still sees
+                    // when DATRIS_AI_SAMPLE_VALUES=false withholds the text.
+                    trigger.addProperty("errorClass", ErrorText.classChain(e))
                     if (fix != null) trigger.addProperty("aiSummary", fix.summary)
                     ai.datris.incident.IncidentRunner.open(ai.datris.incident.Incident.KindPipelineFailure, "pipeline", jobContext.config.name, trigger)
                 } catch {

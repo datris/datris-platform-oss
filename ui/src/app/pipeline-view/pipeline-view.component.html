@@ -47,9 +47,10 @@
   </div>
 
   <!-- Field protection: source fields hashed, masked, redacted or dropped at ingest. -->
-  <div class="protected-fields-row" *ngIf="protectedFields.length > 0">
+  <div class="protected-fields-row" *ngIf="protectedFields.length > 0 || presetLabel">
     <span class="lineage-label">Protected fields</span>
     <span class="protected-fields-list"><ng-container *ngFor="let p of protectedFields; let last = last">{{ p.name }} → {{ p.label }}<ng-container *ngIf="!last"> · </ng-container></ng-container></span>
+    <span class="protected-fields-preset" *ngIf="presetLabel">Preset: {{ presetLabel }} (enforced)<ng-container *ngIf="presetExempt.length > 0"> · exempt: {{ presetExempt.join(', ') }}</ng-container></span>
   </div>
 
   <!-- Lineage & freshness (v1.26): config-derived neighborhood + last landing. -->

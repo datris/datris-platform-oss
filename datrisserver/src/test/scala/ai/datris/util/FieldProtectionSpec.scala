@@ -238,6 +238,19 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(FieldProtection.protectValue(policy("mask", "year"), "87-06-05", Key) == "********", "two-digit year is not a leading 4-digit year")
     }
 
+    // Story 10 (plans/stories/field-protection-10-safe-harbor-preset-server.md):
+    // `preserve: "first3"` keeps the first three characters (code points) and
+    // masks every other one; three or fewer characters are all masked.
+    test("mask first3 keeps the first three characters and masks short values entirely") {
+        assert(FieldProtection.protectValue(policy("mask", "first3"), "02139", Key) == "021**")
+        assert(FieldProtection.protectValue(policy("mask", "first3"), "02139-4307", Key) == "021*******")
+        assert(FieldProtection.protectValue(policy("mask", "first3"), "1234", Key) == "123*")
+        assert(FieldProtection.protectValue(policy("mask", "first3"), "123", Key) == "***", "three characters → all masked")
+        assert(FieldProtection.protectValue(policy("mask", "first3"), "12", Key) == "**")
+        assert(FieldProtection.protectValue(policy("mask", "FIRST3"), "02139", Key) == "021**", "preserve is case-insensitive like the others")
+        assert(FieldProtection.protectValue(policy("mask", "first3"), "", Key) == "")
+    }
+
     test("redact replaces the value with [REDACTED]") {
         assert(FieldProtection.protectValue(policy("redact"), "free text about a patient", Key) == "[REDACTED]")
         assert(FieldProtection.protectValue(policy("redact"), "x", Key) == "[REDACTED]")
@@ -259,7 +272,8 @@ class FieldProtectionSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
         assert(ProtectionPolicy.Reserved == Set("fpe", "tokenize"))
         assert(ProtectionPolicy.Methods == Set("hmac", "mask", "redact", "drop", "encrypt"))
-        assert(ProtectionPolicy.Preserves == Set("last4", "domain", "year"))
+        // Story 10 (field-protection-10-safe-harbor-preset-server): first3 joins the preserve set.
+        assert(ProtectionPolicy.Preserves == Set("last4", "domain", "year", "first3"))
     }
 
     // ==========================================================================

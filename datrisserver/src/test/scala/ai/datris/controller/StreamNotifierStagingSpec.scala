@@ -601,4 +601,378 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(!mapper.writeValueAsString(fa.csvAttributes).contains("effectiveDelimiter"))
         assert(!new com.google.gson.Gson().toJson(fa.csvAttributes).contains("effectiveDelimiter"))
     }
+
+    // ---- Field protection 10: schema evolution under the HIPAA Safe Harbor preset ----
+    //  (plans/stories/field-protection-10-safe-harbor-preset-server.md, Step 4)
+    //
+    //  Seam this spec pins: `evolveSchema` writes the evolved config through
+    //  `PipelineConfigIO.write`, which needs Mongo, so the write is injected
+    //  with the production default (existing callers compile unchanged):
+    //
+    //  {{{
+    //  def evolveSchema(sourceColumns: List[String], config: PipelineConfig, statusUtil: StatusUtil,
+    //                   persist: PipelineConfig => Unit = PipelineConfigIO.write)
+    //      : (PipelineConfig, List[String], List[String], List[String])
+    //  }}}
+    //
+    //  With `protection.preset` set, each new source column goes through
+    //  `ProtectionPreset.classify`; a classified one is added to the SOURCE
+    //  schema WITH its (clamped) policy and an info line
+    //  "Preset hipaa-safe-harbor: new column '<c>' protected as <class> (<method>)";
+    //  an unclassified one is added as today with a warn line
+    //  "new column '<c>' is not recognised by the preset and is not protected".
+    //  The persisted config is the returned one (protect survives the write).
+
+    private class LevelStatusUtil extends ai.datris.util.StatusUtil {
+        val events = scala.collection.mutable.ListBuffer[(String, String)]()
+        override def info(state: String, description: String): Unit = events += (("info", description))
+        override def warn(state: String, description: String): Unit = events += (("warn", description))
+        override def error(state: String, description: String): Unit = events += (("error", description))
+        def lines(level: String): List[String] = events.filter(_._1 == level).map(_._2).toList
+    }
+
+    private def evolveConfig(protection: ProtectionConfig): PipelineConfig =
+        PipelineConfig(
+            name = "patients",
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("mrn", "visit_count")),
+                fileAttributes = FileAttributes(csvAttributes = CsvAttributes())
+            ),
+            destination = Destination(schemaProperties = SchemaProperties("db", fields("mrn", "visit_count"))),
+            protection = protection
+        )
+
+    private def presetProtection: ProtectionConfig = ProtectionConfig(preset = "hipaa-safe-harbor")
+
+    private def sourceField(cfg: PipelineConfig, name: String): Option[SchemaField] =
+        cfg.source.schemaProperties.fields.asScala.find(_.name.equalsIgnoreCase(name))
+
+    test("a new identifier column on a preset pipeline is added with its policy and protected in the same run") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val (evolved, schemaColumns, present, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "patient_phone"), evolveConfig(presetProtection), su, c => persisted += c)
+
+        assert(schemaColumns.contains("patient_phone") && present.contains("patient_phone"))
+        val f = sourceField(evolved, "patient_phone")
+        assert(f.isDefined, s"new column added: ${evolved.source.schemaProperties.fields}")
+        assert(f.get.protect != null && f.get.protect.method == "redact", s"phone → redact under the preset, got ${f.get.protect}")
+
+        // Protected in this same run: the returned config is what FieldProtection reads.
+        assert(ai.datris.util.FieldProtection.protectedFields(evolved).exists(_.name == "patient_phone"))
+        assert(ai.datris.util.FieldProtection.protectValue(f.get.protect, "555-123-4567", "k".getBytes(StandardCharsets.UTF_8)) == "[REDACTED]")
+
+        // The stored config carries protect too.
+        assert(persisted.size == 1, s"one write, got ${persisted.size}")
+        assert(sourceField(persisted.head, "patient_phone").exists(p => p.protect != null && p.protect.method == "redact"))
+        assert(persisted.head.protection != null && persisted.head.protection.preset == "hipaa-safe-harbor", "the preset survives the write")
+
+        val infos = su.lines("info")
+        assert(
+            infos.exists(l => l.contains("new column 'patient_phone' protected as") && l.contains("redact")),
+            s"status lines: ${su.events}"
+        )
+        assert(su.lines("warn").isEmpty, s"no warning for a recognised column: ${su.events}")
+    }
+
+    test("a new unrecognised column is added unprotected with a warning") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val (evolved, _, _, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "favourite_colour"), evolveConfig(presetProtection), su, c => persisted += c)
+
+        val f = sourceField(evolved, "favourite_colour")
+        assert(f.isDefined && f.get.protect == null, s"added as is: $f")
+        assert(
+            su.lines("warn").exists(_.contains("new column 'favourite_colour' is not recognised by the preset")),
+            s"status lines: ${su.events}"
+        )
+        assert(persisted.size == 1)
+    }
+
+    test("pipelines without a preset evolve as before") {
+        Seq(null, ProtectionConfig(purgeSource = java.lang.Boolean.FALSE)).foreach { protection =>
+            val su = new LevelStatusUtil
+            val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+            val cfg = evolveConfig(protection)
+            val (evolved, schemaColumns, _, _) =
+                ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "patient_phone"), cfg, su, c => persisted += c)
+
+            assert(schemaColumns == List("mrn", "visit_count", "patient_phone"))
+            assert(sourceField(evolved, "patient_phone").exists(_.protect == null), s"no preset → unprotected ($protection)")
+            assert(evolved.destination.schemaProperties.fields.asScala.exists(_.name == "patient_phone"))
+            assert(evolved.source.schemaProperties.schemaVersion == cfg.source.schemaProperties.schemaVersion + 1)
+            assert(persisted.size == 1)
+            assert(!su.events.exists(_._2.toLowerCase.contains("preset")), s"no preset lines: ${su.events}")
+            assert(su.lines("warn").isEmpty, s"no warnings: ${su.events}")
+        }
+    }
+
+    // ---- Story 10 review round 1: presetExempt and the clamp branch on evolution ----
+
+    test("a new column listed under presetExempt is added unprotected with an info line") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val protection = ProtectionConfig(preset = "hipaa-safe-harbor", presetExempt = java.util.Arrays.asList("Admission_Date"))
+        val (evolved, _, _, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "admission_date"), evolveConfig(protection), su, c => persisted += c)
+        assert(sourceField(evolved, "admission_date").exists(_.protect == null), "exempt → not protected")
+        assert(su.lines("info").exists(l => l.contains("new column 'admission_date'") && l.contains("presetExempt")), s"lines: ${su.events}")
+        assert(su.lines("warn").isEmpty, s"no warning for an exempt column: ${su.events}")
+        assert(persisted.size == 1)
+    }
+
+    test("a recognised new column the clamps refuse lands as is with a warning naming the consequence") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val base = evolveConfig(presetProtection)
+        val cfg = base.copy(destination =
+            base.destination.copy(database = Database(dbName = "datris", schema = "public", table = "patients", keyFields = java.util.Arrays.asList("email")))
+        )
+        val (evolved, _, _, _) = ai.datris.util.DataUtil.evolveSchema(List("mrn", "visit_count", "email"), cfg, su, c => persisted += c)
+        assert(sourceField(evolved, "email").exists(_.protect == null), "key column: redact is clamped away")
+        val warn = su.lines("warn")
+        assert(
+            warn.exists(l =>
+                l.contains("new column 'email' looks like email but is not protected") &&
+                    l.contains(ai.datris.util.FieldProtectionAdvisor.KeyColumnReason) &&
+                    l.contains(
+                        "it lands as is, and the next save of this pipeline will be refused until it is protected or listed under protection.presetExempt"
+                    )
+            ),
+            s"lines: ${su.events}"
+        )
+    }
+
+    // ---- Schema evolution: a new source column the destination already declares ----
+    //  (plans/stories/schema-evolution-dest-duplicate.md)
+    //
+    //  The column joins the SOURCE schema as usual; the destination keeps its
+    //  single declared entry (type untouched) and the run logs
+    //  "Schema evolution: column '<c>' is already in the destination schema (<type>); kept as declared".
+
+    private def declaredDestConfig: PipelineConfig =
+        PipelineConfig(
+            name = "e2e_dup",
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("id", "name")),
+                fileAttributes = FileAttributes(csvAttributes = CsvAttributes())
+            ),
+            destination = Destination(schemaProperties =
+                SchemaProperties(
+                    "db",
+                    new java.util.ArrayList[SchemaField](
+                        java.util.Arrays.asList(SchemaField("id", "string"), SchemaField("name", "string"), SchemaField("admit_date", "date"))
+                    )
+                )
+            )
+        )
+
+    test("a new source column already declared in the destination joins the source schema only") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val cfg = declaredDestConfig
+        val (evolved, schemaColumns, present, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date"), cfg, su, c => persisted += c)
+
+        assert(schemaColumns == List("id", "name", "admit_date"), schemaColumns)
+        assert(present.contains("admit_date"))
+        assert(sourceField(evolved, "admit_date").isDefined, s"source gains admit_date: ${evolved.source.schemaProperties.fields}")
+
+        Seq(evolved, persisted.head).foreach { c =>
+            val dest = c.destination.schemaProperties.fields.asScala.toList
+            assert(dest.count(_.name.equalsIgnoreCase("admit_date")) == 1, s"destination lists admit_date once: $dest")
+            assert(dest.find(_.name.equalsIgnoreCase("admit_date")).get.`type` == "date", s"declared type kept: $dest")
+            assert(dest.map(_.name) == List("id", "name", "admit_date"), s"destination unchanged in order: $dest")
+        }
+        assert(persisted.size == 1, s"one write, got ${persisted.size}")
+    }
+
+    test("the status line says the destination entry was kept") {
+        val su = new LevelStatusUtil
+        ai.datris.util.DataUtil.evolveSchema(List("id", "name", "Admit_Date"), declaredDestConfig, su, _ => ())
+        val all = su.events.map(_._2)
+        assert(
+            all.exists(l =>
+                l.toLowerCase.contains("'admit_date'") && l.contains("is already in the destination schema") && l.contains("(date)") && l.contains(
+                    "kept as declared"
+                )
+            ),
+            s"status lines: ${su.events}"
+        )
+    }
+
+    test("a pipeline without a destination schema evolves as before") {
+        val base = declaredDestConfig
+        Seq(base.copy(destination = Destination()), base.copy(destination = null)).foreach { cfg =>
+            val su = new LevelStatusUtil
+            val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+            val (evolved, schemaColumns, _, _) =
+                ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date"), cfg, su, c => persisted += c)
+            assert(schemaColumns == List("id", "name", "admit_date"))
+            assert(sourceField(evolved, "admit_date").exists(_.`type` == "string"))
+            assert(evolved.source.schemaProperties.schemaVersion == cfg.source.schemaProperties.schemaVersion + 1)
+            assert(evolved.destination == cfg.destination, "destination untouched")
+            assert(persisted.size == 1)
+            assert(!su.events.exists(_._2.contains("already in the destination schema")), s"lines: ${su.events}")
+        }
+        // A destination column not yet declared is still appended, as before.
+        val su = new LevelStatusUtil
+        val (evolved, _, _, _) = ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date"), base, su, _ => ())
+        assert(evolved.destination.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name", "admit_date", "discharge_date"))
+    }
+
+    // ---- Review round 1: repair a stored duplicate; object-store column order ----
+
+    private def destOf(names: (String, String)*): java.util.List[SchemaField] =
+        new java.util.ArrayList[SchemaField](names.map { case (n, t) => SchemaField(n, t) }.asJava)
+
+    test("a stored destination that already lists a column twice is repaired with no new columns, one write") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val cfg = PipelineConfig(
+            name = "e2e_dup",
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("id", "name", "admit_date")),
+                fileAttributes = FileAttributes(csvAttributes = CsvAttributes())
+            ),
+            destination = Destination(schemaProperties =
+                SchemaProperties("db", destOf("id" -> "string", "name" -> "string", "admit_date" -> "date", "admit_date" -> "string"))
+            )
+        )
+        val (evolved, schemaColumns, _, _) = ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date"), cfg, su, c => persisted += c)
+        assert(schemaColumns == List("id", "name", "admit_date"))
+        Seq(evolved, persisted.head).foreach { c =>
+            val dest = c.destination.schemaProperties.fields.asScala.toList
+            assert(dest == List(SchemaField("id", "string"), SchemaField("name", "string"), SchemaField("admit_date", "date")), dest)
+        }
+        assert(persisted.size == 1, s"one write, got ${persisted.size}")
+        assert(
+            su.events.exists(_._2.contains("removed duplicate destination column(s) [admit_date]; the first entry is kept")),
+            s"lines: ${su.events}"
+        )
+    }
+
+    test("a repair and a new column in the same run persist once") {
+        val su = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val cfg = PipelineConfig(
+            name = "e2e_dup",
+            source =
+                Source(schemaProperties = SchemaProperties("db", fields("id", "admit_date")), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+            destination = Destination(schemaProperties = SchemaProperties("db", destOf("id" -> "string", "admit_date" -> "date", "admit_date" -> "string")))
+        )
+        val (evolved, _, _, _) = ai.datris.util.DataUtil.evolveSchema(List("id", "admit_date", "extra"), cfg, su, c => persisted += c)
+        assert(persisted.size == 1)
+        assert(evolved.destination.schemaProperties.fields.asScala.map(f => f.name -> f.`type`).toList == List(
+            "id" -> "string",
+            "admit_date" -> "date",
+            "extra" -> "string"
+        ))
+    }
+
+    test("a pipeline with no duplicate and no new columns is not written") {
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val cfg = declaredDestConfig
+        ai.datris.util.DataUtil.evolveSchema(List("id", "name"), cfg, new LevelStatusUtil, c => persisted += c)
+        assert(persisted.isEmpty)
+    }
+
+    private def objectStoreConfig: PipelineConfig =
+        PipelineConfig(
+            name = "e2e_os",
+            source = Source(schemaProperties = SchemaProperties("db", fields("id", "name")), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+            destination = Destination(
+                schemaProperties = SchemaProperties("db", destOf("id" -> "string", "name" -> "string", "admit_date" -> "date", "discharge_date" -> "date")),
+                objectStore = ObjectStore(prefixKey = "e2e")
+            )
+        )
+
+    test("object store: declared columns arriving in the destination's order evolve as usual") {
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val (evolved, schemaColumns, _, _) =
+            ai.datris.util.DataUtil.evolveSchema(
+                List("id", "name", "admit_date", "discharge_date"),
+                objectStoreConfig,
+                new LevelStatusUtil,
+                c => persisted += c
+            )
+        assert(schemaColumns == List("id", "name", "admit_date", "discharge_date"))
+        assert(evolved.destination.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name", "admit_date", "discharge_date"))
+        assert(persisted.size == 1)
+    }
+
+    test("object store: declared columns arriving in a different order fail before any write") {
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val e = intercept[DatrisException](
+            ai.datris.util.DataUtil.evolveSchema(
+                List("id", "name", "discharge_date", "admit_date"),
+                objectStoreConfig,
+                new LevelStatusUtil,
+                c => persisted += c
+            )
+        )
+        assert(e.getMessage.contains("Object store pipelines map columns by position"), e.getMessage)
+        assert(e.getMessage.contains("(id, name, discharge_date, admit_date)"), e.getMessage)
+        assert(e.getMessage.contains("(id, name, admit_date, discharge_date)"), e.getMessage)
+        assert(persisted.isEmpty)
+    }
+
+    test("a non-object-store destination accepts the same reordered file (loaders map by name)") {
+        val cfg = objectStoreConfig.copy(destination = objectStoreConfig.destination.copy(objectStore = null))
+        val (evolved, _, _, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date", "admit_date"), cfg, new LevelStatusUtil, _ => ())
+        assert(evolved.destination.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name", "admit_date", "discharge_date"))
+    }
+
+    // ---- Review round 2: message names the source schema; column-set check; repair line only when persisted ----
+
+    test("object store: the order message names the source schema order and says to reorder a schema") {
+        val cfg = objectStoreConfig.copy(source =
+            objectStoreConfig.source.copy(schemaProperties = SchemaProperties("db", fields("name", "id")))
+        )
+        val e = intercept[DatrisException](
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date", "discharge_date"), cfg, new LevelStatusUtil, _ => ())
+        )
+        assert(e.getMessage.contains("the source schema's column order (name, id, admit_date, discharge_date)"), e.getMessage)
+        assert(e.getMessage.contains("differs from the destination schema (id, name, admit_date, discharge_date)"), e.getMessage)
+        assert(e.getMessage.contains("Reorder the source or destination schema"), e.getMessage)
+        assert(!e.getMessage.contains("file's column order"), e.getMessage)
+    }
+
+    test("object store: a declared column arriving without the columns before it fails, naming both lists") {
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        val e = intercept[DatrisException](
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date"), objectStoreConfig, new LevelStatusUtil, c => persisted += c)
+        )
+        assert(
+            e.getMessage.contains(
+                "the source schema (id, name, discharge_date) and the destination schema (id, name, admit_date, discharge_date) must list the same columns in the same order"
+            ),
+            e.getMessage
+        )
+        assert(persisted.isEmpty)
+    }
+
+    test("the repair status line is emitted only when the repair is persisted") {
+        val dupOs = objectStoreConfig.copy(destination =
+            objectStoreConfig.destination.copy(schemaProperties =
+                SchemaProperties(
+                    "db",
+                    destOf("id" -> "string", "name" -> "string", "admit_date" -> "date", "discharge_date" -> "date", "admit_date" -> "string")
+                )
+            )
+        )
+        val su = new LevelStatusUtil
+        intercept[DatrisException](
+            ai.datris.util.DataUtil.evolveSchema(List("id", "name", "discharge_date", "admit_date"), dupOs, su, _ => ())
+        )
+        assert(!su.events.exists(_._2.contains("removed duplicate destination column")), s"lines: ${su.events}")
+
+        val su2 = new LevelStatusUtil
+        val persisted = scala.collection.mutable.ListBuffer[PipelineConfig]()
+        ai.datris.util.DataUtil.evolveSchema(List("id", "name", "admit_date", "discharge_date"), dupOs, su2, c => persisted += c)
+        assert(persisted.size == 1)
+        assert(su2.events.count(_._2.contains("removed duplicate destination column(s) [admit_date]")) == 1, s"lines: ${su2.events}")
+    }
 }

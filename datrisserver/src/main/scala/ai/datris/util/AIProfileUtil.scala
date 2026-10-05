@@ -5,7 +5,8 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException}
+import ai.datris.model.{AIRefusalException, DatrisEnvironment, DatrisException}
+import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.util.Random
@@ -13,9 +14,20 @@ import scala.util.Random
 object AIProfileUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
-    def profile(fileContent: String, filename: String, delimiter: String, header: Boolean, sampleSize: Int): String = {
+    def profile(fileContent: String, filename: String, delimiter: String, header: Boolean, sampleSize: Int): String =
+        profile(fileContent, filename, delimiter, header, sampleSize, prompt => AIUtil.extractText(AIUtil.callAI(prompt)))
+
+    /** Seam for specs: `ai(prompt)` returns the model's extracted text. With
+      * DATRIS_AI_SAMPLE_VALUES=false the model gets column statistics (CSV) or
+      * a value-free skeleton (JSON/XML) instead of rows, and the result gains
+      * top-level `"valuesWithheld": true`. With the switch on, a model decline
+      * ([[AIRefusalException]]) returns the locally computed statistics with
+      * `"aiDeclined": true`; any other failure propagates. */
+    private[datris] def profile(fileContent: String, filename: String, delimiter: String, header: Boolean, sampleSize: Int, ai: String => String): String = {
         if (!DatrisEnvironment.current.aiEnabled)
             throw new DatrisException("AI profiling requires ai.enabled: true in application.yaml")
+
+        if (!AiSampleValues.enabled) return profileWithheld(fileContent, filename, delimiter, header, ai)
 
         val isJson = filename.toLowerCase.endsWith(".json")
         val isXml = filename.toLowerCase.endsWith(".xml")
@@ -82,8 +94,56 @@ object AIProfileUtil {
                |
                |$content""".stripMargin
 
-        val responseText = AIUtil.callAI(prompt)
-        val text = AIUtil.extractText(responseText).trim
+        val answer =
+            try ai(prompt)
+            catch {
+                case _: AIRefusalException =>
+                    // A safety decline only; the provider's message is not logged or returned.
+                    logger.warn("AI profile of " + filename + ": the model declined; returning statistics only")
+                    val (json, xml) = detectFormat(fileContent, filename)
+                    val stats = if (json || xml) None else Some(csvStatistics(fileContent, delimiter, header).stats)
+                    return statisticsOnly(stats, DeclinedNote, valuesWithheld = false, aiDeclined = true)
+            }
+        extractObject(answer)
+    }
+
+    /** Fixed note on the on-mode decline fallback; never echoes provider text. */
+    private[datris] val DeclinedNote = "the model declined this request; statistics only"
+
+    /** (isJson, isXml): known extensions decide; content is sniffed only for
+      * unknown ones, so a JSON/NDJSON/XML file never takes the delimited path. */
+    private def detectFormat(fileContent: String, filename: String): (Boolean, Boolean) = {
+        val lower = filename.toLowerCase
+        val ext = lower.lastIndexOf('.') match {
+            case -1 => ""
+            case i => lower.substring(i + 1)
+        }
+        val head = AiSampleValues.firstNonBlank(fileContent)
+        val delimitedExt = Set("csv", "tsv", "psv", "txt").contains(ext)
+        val knownExt = delimitedExt || Set("json", "ndjson", "jsonl", "xml").contains(ext)
+        val isJson = Set("json", "ndjson", "jsonl").contains(ext) || (!knownExt && (head == '{' || head == '['))
+        val isXml = !isJson && (ext == "xml" || (!knownExt && head == '<'))
+        (isJson, isXml)
+    }
+
+    private case class CsvStatistics(names: List[String], stats: (Int, List[ColumnStat]))
+
+    /** Per-column statistics over every row. Line 1 is a header only when the
+      * caller says so and it reads as names; a name that is not an identifier
+      * becomes column_N. */
+    private def csvStatistics(fileContent: String, delimiter: String, header: Boolean): CsvStatistics = {
+        val d = if (delimiter == null) "," else delimiter
+        val splitOn = if (d == "\\t") "\t" else d
+        val lines = fileContent.stripPrefix("\uFEFF").split("\n").iterator.map(_.stripSuffix("\r")).filter(_.nonEmpty).toList
+        val firstCells = lines.headOption.map(l => CodeGenTransformationEvaluator.splitLine(l, splitOn)).getOrElse(Nil)
+        val lineOneIsHeader = header && lines.nonEmpty && !AiSampleValues.headerLooksLikeData(firstCells)
+        val names = AiSampleValues.safeColumnNames(firstCells, lineOneIsHeader)
+        val dataLines = if (lineOneIsHeader) lines.tail else lines
+        CsvStatistics(names, (dataLines.size, AiSampleValues.columnStats(names, dataLines.iterator, d)))
+    }
+
+    private def extractObject(answer: String): String = {
+        val text = answer.trim
 
         // Extract JSON object from response
         val start = text.indexOf('{')
@@ -92,5 +152,143 @@ object AIProfileUtil {
             throw new DatrisException("AI profiling response did not contain a JSON object. Response: " + text)
 
         text.substring(start, end + 1)
+    }
+
+    /** Profile from structure only: per-column statistics over every row
+      * (CSV) or the skeleton of the whole document (JSON/XML). No row value is
+      * in the prompt; `sampleValues` come back empty. */
+    private def profileWithheld(fileContent: String, filename: String, delimiter: String, header: Boolean, ai: String => String): String = {
+        val (isJson, isXml) = detectFormat(fileContent, filename)
+
+        // Local statistics (CSV only): (row count, per-column stats), for the
+        // statistics-only answer when the model's reply cannot be parsed.
+        var localStats: Option[(Int, List[ColumnStat])] = None
+
+        val (formatDescription, evidence) =
+            if (isJson || isXml) {
+                // Built from the full input; the skeleton is truncated, never the input.
+                val skeleton = if (isJson) AiSampleValues.jsonSkeleton(fileContent) else AiSampleValues.xmlSkeleton(fileContent)
+                val fitted = if (AIUtil.fitsInContext(skeleton)) skeleton else skeleton.substring(0, math.max(0, AIUtil.maxInputChars() - 2000))
+                val kind = if (isJson) "JSON" else "XML"
+                val legend =
+                    if (isJson)
+                        "every string is \"<string>\", every number 0, every boolean true; arrays keep one element per distinct shape; maps keyed by data show \"<key>\""
+                    else "element and attribute names kept, text, attribute values and namespace URIs removed; repeated elements are marked"
+                (kind, "File size: " + fileContent.length + " chars\nValue-free " + kind + " skeleton (" + legend + "):\n" + fitted)
+            } else {
+                // A name that is not an identifier is never sent (column_N instead).
+                val CsvStatistics(names, (rows, stats)) = csvStatistics(fileContent, delimiter, header)
+                localStats = Some((rows, stats))
+                (
+                    "CSV (delimiter: \"" + delimiter + "\")",
+                    "Rows: " + rows + "\nColumns: " + names.size + "\nPer-column statistics computed by the server over every row " +
+                        "(nulls are empty values; lengths are of non-empty values; column_N names a column whose header is withheld or absent):\n" +
+                        AiSampleValues.statsTable(stats)
+                )
+            }
+
+        logger.info("Profiling file: " + filename + " with values withheld (" + AiSampleValues.EnvVar + "=false)")
+
+        val prompt =
+            s"""You are a data profiling expert. Profile the following $formatDescription file. Values withheld; infer from structure only.
+               |The server's configuration withholds the file's values, so you are given its structure and statistics instead of its rows.
+               |
+               |Return ONLY a JSON object with no explanation, no markdown, and no code fences. Use this structure:
+               |{
+               |  "summary": {
+               |    "rowCount": <number of data rows>,
+               |    "columnCount": <number of columns>,
+               |    "columns": [
+               |      {
+               |        "name": "<column name>",
+               |        "inferredType": "<string|integer|float|boolean|date|timestamp>",
+               |        "nullCount": <number of null/empty values>,
+               |        "uniqueCount": <approximate unique values>,
+               |        "sampleValues": []
+               |      }
+               |    ]
+               |  },
+               |  "qualityIssues": [
+               |    "<description of each issue the statistics show, e.g. missing values, inconsistent lengths>"
+               |  ],
+               |  "recommendations": [
+               |    "<suggested validation rules or transformations>"
+               |  ],
+               |  "suggestedDataQuality": {
+               |    "aiRule": {
+               |      "instruction": "<a single natural language instruction combining the validation checks the column names, types and statistics support>",
+               |      "onFailureIsError": false
+               |    }
+               |  }
+               |}
+               |
+               |Rules:
+               |- sampleValues MUST be an empty array for every column: no values were provided.
+               |- Use the statistics for rowCount, nullCount and uniqueCount when they are given.
+               |- If no validation rule is appropriate, omit the aiRule field.
+               |
+               |$evidence""".stripMargin
+
+        val answer =
+            try ai(prompt)
+            catch {
+                case e: Exception =>
+                    // Class only: a provider message can quote the prompt or values.
+                    logger.warn("AI profile call failed (" + e.getClass.getSimpleName + ") with values withheld; returning statistics only")
+                    return statisticsOnly(localStats, "the model declined or the call failed; statistics only", valuesWithheld = true, aiDeclined = false)
+            }
+        val parsed =
+            try Some(JsonParser.parseString(extractObject(answer)).getAsJsonObject)
+            catch {
+                case e: Exception =>
+                    logger.warn("AI profile reply could not be parsed (" + e.getClass.getSimpleName + "); returning statistics only")
+                    None
+            }
+        if (parsed.isEmpty)
+            return statisticsOnly(localStats, "the model's reply could not be parsed; statistics only", valuesWithheld = true, aiDeclined = false)
+        val obj = parsed.get
+        // The model saw no values; make sure none is reported as one.
+        Option(obj.get("summary")).filter(_.isJsonObject).map(_.getAsJsonObject.get("columns")).filter(c => c != null && c.isJsonArray).foreach { cols =>
+            cols.getAsJsonArray.forEach(c =>
+                if (c.isJsonObject && c.getAsJsonObject.has("sampleValues")) c.getAsJsonObject.add("sampleValues", new JsonArray())
+            )
+        }
+        obj.addProperty("valuesWithheld", true)
+        obj.toString
+    }
+
+    /** Statistics-only answer: the locally computed statistics, empty
+      * qualityIssues and recommendations, and a note. Off-mode
+      * (`valuesWithheld`) when the model's reply is not JSON (e.g. cut off on a
+      * wide file) or the model call throws (refusal, provider error, timeout);
+      * on-mode (`aiDeclined`) when the model declines. */
+    private def statisticsOnly(localStats: Option[(Int, List[ColumnStat])], note: String, valuesWithheld: Boolean, aiDeclined: Boolean): String = {
+        val out = new JsonObject()
+        val summary = new JsonObject()
+        val columns = new JsonArray()
+        localStats.foreach {
+            case (rows, stats) =>
+                summary.addProperty("rowCount", rows)
+                summary.addProperty("columnCount", stats.size)
+                stats.foreach { st =>
+                    val c = new JsonObject()
+                    c.addProperty("name", st.name)
+                    c.addProperty("inferredType", st.inferredType)
+                    c.addProperty("nullCount", st.nulls)
+                    c.addProperty("uniqueCount", st.distinct)
+                    c.addProperty("minLength", st.minLength)
+                    c.addProperty("maxLength", st.maxLength)
+                    c.add("sampleValues", new JsonArray())
+                    columns.add(c)
+                }
+        }
+        summary.add("columns", columns)
+        out.add("summary", summary)
+        out.add("qualityIssues", new JsonArray())
+        out.add("recommendations", new JsonArray())
+        if (valuesWithheld) out.addProperty("valuesWithheld", true)
+        if (aiDeclined) out.addProperty("aiDeclined", true)
+        out.addProperty("note", note)
+        out.toString
     }
 }

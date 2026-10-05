@@ -292,6 +292,8 @@ object AIHttp {
 
     private[aiutil] def assembleChatCompletionsStream(payloads: List[String]): String = {
         val content = new StringBuilder
+        // A model refusal streams as delta.refusal; kept so the parser can see the decline.
+        val refusal = new StringBuilder
         // insertion-ordered: index -> (id, name, arguments)
         val toolCalls = scala.collection.mutable.LinkedHashMap.empty[Int, (String, String, StringBuilder)]
         var finishReason: String = null
@@ -309,6 +311,8 @@ object AIHttp {
                         role = delta.get("role").getAsString
                     if (delta.has("content") && !delta.get("content").isJsonNull)
                         content.append(delta.get("content").getAsString)
+                    if (delta.has("refusal") && !delta.get("refusal").isJsonNull)
+                        refusal.append(delta.get("refusal").getAsString)
                     if (delta.has("tool_calls") && delta.get("tool_calls").isJsonArray) {
                         val arr = delta.getAsJsonArray("tool_calls")
                         var i = 0
@@ -334,6 +338,7 @@ object AIHttp {
         val message = new JsonObject()
         message.addProperty("role", role)
         message.addProperty("content", content.toString)
+        if (refusal.toString.trim.nonEmpty) message.addProperty("refusal", refusal.toString)
         if (toolCalls.nonEmpty) {
             val arr = new JsonArray()
             toolCalls.values.foreach { case (id, name, args) =>

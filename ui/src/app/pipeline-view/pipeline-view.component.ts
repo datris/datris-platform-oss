@@ -75,6 +75,25 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
       });
   }
 
+  /** Display name of the field-protection preset enforced on this pipeline
+   *  (`protection.preset`), or null when none is set. Shown whenever the preset
+   *  is set, even if every classified field is exempt. */
+  get presetLabel(): string | null {
+    const id = this.config?.protection?.preset;
+    if (!id) return null;
+    return PipelineViewComponent.PRESET_LABELS[String(id).trim().toLowerCase()] || String(id);
+  }
+
+  /** Fields exempted from the preset (`protection.presetExempt`). */
+  get presetExempt(): string[] {
+    const ex = this.config?.protection?.presetExempt;
+    return Array.isArray(ex) ? ex : [];
+  }
+
+  private static readonly PRESET_LABELS: Record<string, string> = {
+    'hipaa-safe-harbor': 'HIPAA Safe Harbor'
+  };
+
   upstreamNodes(): any[] {
     return (this.lineage?.upstream || []).filter(n => n.type === 'tap' || n.type === 'source');
   }

@@ -330,3 +330,7 @@
   font-family: var(--font-mono, monospace);
   font-size: 13px;
 }
+.protected-fields-preset {
+  font-size: 13px;
+  color: var(--text-secondary, #666);
+}

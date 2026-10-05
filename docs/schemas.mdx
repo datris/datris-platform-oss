@@ -109,10 +109,11 @@ If you have a representative CSV file, the pipeline can infer a schema automatic
 ```bash
 curl -X POST "http://localhost:8080/api/v1/pipeline/generate" \
   -F "file=@sample.csv" \
-  -F "pipeline=my_pipeline"
+  -F "pipeline=my_pipeline" \
+  -F "header=true"
 ```
 
-The AI analyzes the file content (up to 100 lines for CSV, or 10,000 characters for JSON/XML) and returns a complete pipeline configuration with inferred field names and data types. You can edit the output before saving it to a pipeline configuration.
+The AI analyzes the file content (up to 100 lines for CSV, or 10,000 characters for JSON/XML) and returns a complete pipeline configuration with inferred field names and data types. You can edit the output before saving it to a pipeline configuration. If the AI model declines to analyse a CSV file, the response still lists every field, typed `string`, and carries `"aiDeclined": true`: with `header=true` the fields keep the header's names, and when `header` is false (the default) or line 1 looks like data they are numbered `column_1`, `column_2`, …; see [When the model declines](/api-reference/schema-generation-api#when-the-model-declines).
 
 In the UI, this happens automatically in Step 1 of the pipeline creation wizard when you upload a sample file (analysis starts as soon as the file is selected).
 
@@ -156,6 +157,12 @@ Each schema change increments a `schemaVersion` counter in the pipeline config, 
 ### What triggers evolution
 
 - **New columns in the CSV header** that are not in the stored schema → automatically added as `string` type
+
+If the destination schema already declares the new column (for example `admit_date` as `date`), the column joins the source schema only; the destination keeps its single declared entry and type, and the run status notes that it was kept as declared. A destination schema that already lists a column twice is repaired on the next run (the first entry and its type are kept). Object store destinations read files by column position, so when such a declared column arrives, the source schema and the destination schema must list the same columns in the same order; otherwise the run fails before writing and names both lists, and you reorder the source or destination schema.
+
+### New columns and field protection
+
+A new column is added without [field protection](/transformation/field-protection), even when other columns of the pipeline are protected. If the pipeline sets the [HIPAA Safe Harbor preset](/transformation/field-protection#hipaa-safe-harbor-preset) (`"protection": {"preset": "hipaa-safe-harbor"}`), a new column whose name the preset recognises (for example `patient_phone`) is added with the preset's method instead and protected in the same run, before any destination sees it; the run status names the column and the method, and the stored schema keeps its `protect`. A new column the preset does not recognise is added unprotected with a warning in the run status. The preset applies to delimited (CSV) pipelines only; it is refused on JSON pipelines, whose keys do not evolve this way.
 
 ### What does NOT trigger evolution
 

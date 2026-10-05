@@ -780,12 +780,34 @@ object IncidentRunner {
             }
         }
 
+        /** With DATRIS_AI_SAMPLE_VALUES=false a pipeline incident's error text
+          * is scrubbed before the model sees it (it can quote row values). The
+          * stored incident keeps the full text for people. `errorClass` (the
+          * exception class chain, class names only) goes through unscrubbed so
+          * the model still knows what kind of failure it is; a value that is
+          * not a plain class chain is dropped. */
+        private[incident] def triggerForModel(incident: Incident): JsonObject = {
+            val t = incident.trigger
+            if (t == null || incident.resourceType != "pipeline" || ai.datris.util.AiSampleValues.enabled || !t.has("error")) t
+            else {
+                val copy = t.deepCopy()
+                val e = copy.get("error")
+                if (e != null && e.isJsonPrimitive) copy.addProperty("error", ai.datris.util.AiSampleValues.scrubErrorForModel(e.getAsString))
+                val c = copy.get("errorClass")
+                if (c != null && !(c.isJsonPrimitive && ClassChainPattern.pattern.matcher(c.getAsString).matches())) copy.remove("errorClass")
+                copy
+            }
+        }
+
+        /** "pkg.Class <- pkg.Cause <- ...": Java identifiers and dots only. */
+        private val ClassChainPattern = "^[A-Za-z_$][\\w$.]*(?: <- [A-Za-z_$][\\w$.]*)*$".r
+
         private def buildDiagnosisMessage(incident: Incident): String = {
             val sb = new StringBuilder
             sb.append("(Automated incident — you are running headless as the platform's recovery agent; no operator is watching this conversation.)\n\n")
             sb.append("Incident ").append(incident.id).append(": ").append(incident.kind)
                 .append(" on ").append(incident.resourceType).append(" `").append(incident.resourceName).append("`.\n")
-            sb.append("Trigger: ").append(incident.trigger.toString.take(2000)).append("\n\n")
+            sb.append("Trigger: ").append(triggerForModel(incident).toString.take(2000)).append("\n\n")
             sb.append("Diagnose this incident using the read-only tools available, then END your reply with ONLY a JSON object (no prose after it):\n")
             sb.append(
                 """{"classification":"transient|structural-script|structural-schema|needs-human","summary":"<one line>","needsHuman":<bool>,"actions":[{"tool":"run_tap|test_tap|update_tap","args":{...},"purpose":"<one line>"}],"learnNote":"<optional source quirk worth remembering>"}"""

@@ -151,6 +151,15 @@ object DoctorService {
           * Throws when the taps themselves cannot be listed. The default has
           * no failed reads; LiveProbes overrides it with one real scan. */
         def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.Result(tapSecretRefs(), Nil)
+
+        /** True when any source field in any pipeline carries `protect`.
+          * Throws when the pipeline configs cannot be read. */
+        def anyPipelineProtects(): Boolean
+
+        /** Pipelines (names only) with a stored source field name that is not
+          * an identifier ([[AiSampleValues.isIdentifier]]). Stored names are
+          * always sent to the model. Throws when the configs cannot be read. */
+        def pipelinesWithNonIdentifierFields(): List[String] = Nil
     }
 
     private val Day = 86400L
@@ -470,6 +479,57 @@ object DoctorService {
         }
     }
 
+    /** DATRIS_AI_SAMPLE_VALUES (plans/stories/field-protection-9-ai-values-switch.md):
+      * reports the effective value; warns when the install protects fields
+      * while the helpers still send row values to the model. */
+    class AiSampleValuesCheck(probes: Probes) extends Check {
+        val id = "ai.sample_values"
+        val startupSafe = true
+        private val sampled = "row values are sent to the model by schema, profile and CodeGen helpers (default)"
+        def run(): CheckResult = {
+            if (!AiSampleValues.enabled) {
+                val withheld = "row values are withheld from the model by schema, profile, attachment and CodeGen helpers (" + AiSampleValues.EnvVar + "=false)"
+                val odd =
+                    try Right(probes.pipelinesWithNonIdentifierFields())
+                    catch { case e: Exception => Left(e) }
+                return odd match {
+                    case Right(Nil) => ok(withheld)
+                    case Right(names) =>
+                        val shown = names.take(5).mkString(", ") + (if (names.size > 5) " and " + (names.size - 5) + " more" else "")
+                        warn(
+                            withheld + "; stored schema field names are always sent, and " + names.size +
+                                " pipeline(s) have field names that do not read as column names: " + shown,
+                            "Rename those source fields to plain column names (letters, digits, _ . - and spaces), " +
+                                "so no value-like name reaches the model."
+                        )
+                    case Left(e) =>
+                        warn(
+                            withheld + "; could not read pipeline configs to check stored field names: " + e.getMessage,
+                            "Check that the config database is reachable, then rerun doctor."
+                        )
+                }
+            }
+            val protects =
+                try Right(probes.anyPipelineProtects())
+                catch { case e: Exception => Left(e) }
+            protects match {
+                case Left(e) =>
+                    warn(
+                        sampled + "; could not read pipeline configs to check for protected fields: " + e.getMessage,
+                        "Check that the config database is reachable, then rerun doctor. If any pipeline protects fields, set " +
+                            AiSampleValues.EnvVar + "=false."
+                    )
+                case Right(true) =>
+                    warn(
+                        "this install protects fields but still samples values in helpers; set " + AiSampleValues.EnvVar + "=false",
+                        "Set " + AiSampleValues.EnvVar + "=false on the datris service and recreate it, so schema generation, profiling, " +
+                            "Assistant attachments, CodeGen rules and transformations, and pipeline fix suggestions work without row values."
+                    )
+                case Right(false) => ok(sampled)
+            }
+        }
+    }
+
     /** Compares the server's version with whatever versions the calling
       * clients report (`?cli=`, `?mcp=`, `?ui=`). Major.minor must match. */
     class VersionSkewCheck(serverVersion: String, clients: Map[String, String]) extends Check {
@@ -622,6 +682,7 @@ object DoctorService {
             new StagingAreaCheck(probes, StagingArea.payloadBudgetMB),
             new StagingOrphansCheck(probes),
             new TapSecretScopeCheck(probes),
+            new AiSampleValuesCheck(probes),
             new VersionSkewCheck(serverVersion, clients),
             new EnvSeenCheck(probes),
             new AiModelReachableCheck(probes, slots)
@@ -790,6 +851,18 @@ object DoctorService {
         def tapSecretRefs(): List[(String, String, Option[String])] = tapSecretScan().refs
 
         override def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.liveScan()
+
+        // A read failure propagates: the check reports "could not read pipeline configs".
+        def anyPipelineProtects(): Boolean =
+            PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName).exists(c => FieldProtection.protectedFields(c).nonEmpty)
+
+        override def pipelinesWithNonIdentifierFields(): List[String] =
+            PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName)
+                .filter { c =>
+                    c.source != null && c.source.schemaProperties != null && c.source.schemaProperties.fields != null &&
+                    c.source.schemaProperties.fields.asScala.exists(f => f != null && f.name != null && !AiSampleValues.isIdentifier(f.name))
+                }
+                .map(_.name)
 
         def stagingArea(): StagingAreaState = {
             val root = StagingArea.root

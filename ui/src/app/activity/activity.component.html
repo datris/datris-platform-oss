@@ -363,7 +363,12 @@
                         [class.exp-code-error]="e.code === 'error'"
                         [class.exp-code-warn]="e.code === 'warning'"
                         [class.exp-code-info]="e.code === 'info'">{{ e.code }}</td>
-                    <td class="exp-desc">{{ e.description }}</td>
+                    <td class="exp-desc">{{ e.description }}<ng-container *ngIf="e.detail">
+                      <button type="button" class="exp-detail-toggle"
+                              [class.exp-detail-toggle-open]="isEventDetailOpen(e)"
+                              (click)="toggleEventDetail(e, $event)">Stack trace</button>
+                      <pre class="exp-detail" *ngIf="isEventDetailOpen(e)">{{ e.detail }}</pre>
+                    </ng-container></td>
                   </tr>
                 </tbody>
               </table>
@@ -435,7 +440,12 @@
                       [class.exp-code-error]="e.code === 'error'"
                       [class.exp-code-warn]="e.code === 'warning'"
                       [class.exp-code-info]="e.code === 'info'">{{ e.code }}</td>
-                  <td class="exp-desc">{{ e.description }}</td>
+                  <td class="exp-desc">{{ e.description }}<ng-container *ngIf="e.detail">
+                    <button type="button" class="exp-detail-toggle"
+                            [class.exp-detail-toggle-open]="isEventDetailOpen(e)"
+                            (click)="toggleEventDetail(e, $event)">Stack trace</button>
+                    <pre class="exp-detail" *ngIf="isEventDetailOpen(e)">{{ e.detail }}</pre>
+                  </ng-container></td>
                 </tr>
               </tbody>
             </table>

@@ -90,6 +90,8 @@ You don't need to write JSON by hand — once you have the Datris Data Platform 
 | `provenance` | object | No | `{ "stamp": true }` appends `_datris_*` provenance fields to every row this pipeline lands. Off by default. See [Provenance, Lineage & Discovery](/provenance). |
 | `authoritative` | boolean | No | Source of authority. Unset or `true`: this pipeline's dataset may be the system of record (a single destination is, by default). `false`: everything it lands is a derived copy — a rollup, a replica, an index built from another dataset. See [Provenance, Lineage & Discovery](/provenance#source-of-authority). |
 | `protection.purgeSource` | boolean | No | Only read when a source field carries `protect`. Default `true`: once the protected copy exists, the ingest object (bucket drop, Kafka temp object, or archive drop) is deleted along with the raw staged file. `false` keeps the ingest object. See [Field Protection](/transformation/field-protection#source-retention). |
+| `protection.preset` | string | No | `hipaa-safe-harbor` recognises HIPAA Safe Harbor identifiers from field names: saving is refused while a recognised field has no `protect` (unless exempted), and a recognised column added later by schema evolution is protected in the same run. Delimited (CSV) pipelines only; refused on JSON, XML and unstructured sources. An aid, not a certification. See [HIPAA Safe Harbor preset](/transformation/field-protection#hipaa-safe-harbor-preset). |
+| `protection.presetExempt` | array | No | Field names the preset recognises that you keep unprotected on purpose (case-insensitive). Only read when `protection.preset` is set. |
 | `destination.authoritative` | string | No | For pipelines with several destinations only: which destination kind (`postgres`, `mongodb`, `snowflake`, …) is the golden copy. Without it, all of them show as *undeclared* in lineage until you decide. |
 
 ### Source
@@ -107,7 +109,7 @@ You don't need to write JSON by hand — once you have the Datris Data Platform 
 |-------|------|-------------|
 | `dbName` | string | Database name associated with this schema (used by some destinations) |
 | `fields` | array | List of `{"name": "...", "type": "..."}` objects |
-| `fields[].protect` | object | Optional. `{"method": "hmac" \| "mask" \| "redact" \| "drop"}`; with `mask`, optional `"preserve": "last4" \| "domain" \| "year"`. Applied before data quality, transformation, and every destination. See [Field Protection](/transformation/field-protection). |
+| `fields[].protect` | object | Optional. `{"method": "hmac" \| "mask" \| "redact" \| "drop"}`; with `mask`, optional `"preserve": "last4" \| "domain" \| "year" \| "first3"`. Applied before data quality, transformation, and every destination. See [Field Protection](/transformation/field-protection). |
 | `schemaVersion` | int | Schema version (default `1`) |
 
 Supported types: `boolean`, `int`, `tinyint`, `smallint`, `bigint`, `float`, `double`, `decimal(p,s)`, `string`, `varchar(n)`, `char(n)`, `date`, `timestamp`

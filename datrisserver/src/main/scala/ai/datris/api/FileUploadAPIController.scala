@@ -7,7 +7,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, JobContext}
-import ai.datris.util.{AIProfileUtil, AISchemaUtil, PipelineConfigIO, StagingArea, StatusUtil}
+import ai.datris.util.{AIProfileUtil, AISchemaUtil, AiSampleValues, PipelineConfigIO, StagingArea, StatusUtil}
+import com.google.gson.{GsonBuilder, JsonParser}
 import ai.datris.controller.StreamNotifier
 import ai.datris.util.APIKeyValidator
 import org.slf4j.{Logger, LoggerFactory}
@@ -132,7 +133,12 @@ class FileUploadAPIController {
                     val fileContent = new String(multipartFile.getBytes, "UTF-8")
                     if (allStrings.equalsIgnoreCase("true"))
                         AISchemaUtil.buildCsvConfigAllStrings(pipelineName, fileContent, delimiter, header)
-                    else
+                    else if (!AiSampleValues.enabled) {
+                        // DATRIS_AI_SAMPLE_VALUES=false: all-string fields, no model call; say so.
+                        val config = JsonParser.parseString(AISchemaUtil.buildCsvConfig(pipelineName, fileContent, delimiter, header)).getAsJsonObject
+                        config.addProperty("valuesWithheld", true)
+                        new GsonBuilder().setPrettyPrinting().create().toJson(config)
+                    } else
                         AISchemaUtil.buildCsvConfig(pipelineName, fileContent, delimiter, header)
                 }
             }

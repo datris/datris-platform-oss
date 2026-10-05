@@ -97,7 +97,8 @@ class StreamNotifier {
                 // No JobContext exists yet, so no JobRunner finally will reclaim
                 // whatever stageData wrote before failing.
                 StagingArea.delete(pipelineToken)
-                statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
+                logger.error(pipelineToken + ": stream ingest failed before the job started", e)
+                statusUtil.error("end", "Process completed, error: " + ErrorText.messageChain(e), Throwables.getStackTraceAsString(e))
                 throw new DatrisException("StreamNotifier error: " + Throwables.getStackTraceAsString(e))
         }
     }
@@ -251,7 +252,8 @@ class StreamNotifier {
         } catch {
             case e: Exception =>
                 StagingArea.delete(pipelineToken)
-                statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
+                logger.error(pipelineToken + ": stream ingest failed before the job started", e)
+                statusUtil.error("end", "Process completed, error: " + ErrorText.messageChain(e), Throwables.getStackTraceAsString(e))
                 throw new DatrisException("FileNotifier error: " + Throwables.getStackTraceAsString(e))
         }
     }

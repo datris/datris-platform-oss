@@ -97,6 +97,13 @@ export class PipelineService {
     return this.http.post<any>('/api/v1/pipeline/protect/suggest', { fields });
   }
 
+  // Preset proposal (names and types only, never data). Response: {preset,
+  // fields: [{name, class, method, preserve, reason, current}], unclassified:
+  // [names], review: [notes]}; `method` is "none" when a clamp leaves nothing.
+  presetFieldProtection(preset: string, fields: Array<{name: string, type: string}>): Observable<any> {
+    return this.http.post<any>('/api/v1/pipeline/protect/preset', { preset, fields });
+  }
+
   // --- Definition version history -------------------------------------------
   getPipelineVersions(name: string): Observable<any[]> {
     return this.http.get<any[]>('/api/v1/pipeline/versions?name=' + encodeURIComponent(name));

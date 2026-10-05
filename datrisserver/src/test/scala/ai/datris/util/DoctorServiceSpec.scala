@@ -43,8 +43,11 @@ class DoctorServiceSpec extends AnyFunSuite {
         var staging: StagingAreaState = StagingAreaState("/tmp/datris-staging", exists = true, writable = true, usableBytes = 10L * GB),
         var orphans: (List[String], Long) = (Nil, 0L),
         // Field protection 8: (tap, secret, stored _type) for taps with a secret.
-        var tapRefs: List[(String, String, Option[String])] = Nil
+        var tapRefs: List[(String, String, Option[String])] = Nil,
+        // Field protection 9: any source field in any pipeline carries `protect`.
+        var protects: Boolean = false
     ) extends Probes {
+        override def anyPipelineProtects(): Boolean = protects
         def tapSecretRefs(): List[(String, String, Option[String])] = tapRefs
         def stagingArea(): StagingAreaState = staging
         def stagingOrphans(): (List[String], Long) = orphans
@@ -455,7 +458,7 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(full.checks.map(_.id).contains("staging.orphans"), full.checks.map(_.id).toString)
         val quickIds = DoctorService.run("quick", Set.empty, Map.empty, p, slots, "1.28.2").checks.map(_.id)
         assert(quickIds.contains("staging.area") && quickIds.contains("staging.orphans"), "startup-safe: " + quickIds)
-        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans", "tap.secret_scope")) == Seq(
+        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans", "tap.secret_scope", "ai.sample_values")) == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
             "jdbc.mssql_driver",
@@ -591,5 +594,104 @@ class DoctorServiceSpec extends AnyFunSuite {
         val r = DoctorService.runOne(tapScopeCheck(p))
         assert(r.id == "tap.secret_scope" && r.status == "error", r.toString)
         assert(r.detail.contains("mongo down"), r.detail)
+    }
+
+    // ai.sample_values — plans/stories/field-protection-9-ai-values-switch.md.
+    // Pinned: check id "ai.sample_values", startupSafe = true, registered in
+    // DoctorService.checks (position not pinned; found by id), reading
+    // AiSampleValues.enabled (system property `datris.aiSampleValues`, set and
+    // restored here) and Probes.anyPipelineProtects(): Boolean.
+
+    private def withSampleValues[A](value: Option[String])(body: => A): A = {
+        val key = "datris.aiSampleValues"
+        val previous = sys.props.get(key)
+        value match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    private def sampleValuesCheck(p: FakeProbes): Check = {
+        val all = DoctorService.checks(p, slots, "1.28.2", Map.empty)
+        all.find(_.id == "ai.sample_values").getOrElse(fail("no ai.sample_values check in " + all.map(_.id)))
+    }
+
+    test("ai.sample_values reports the effective value") {
+        withSampleValues(Some("true")) {
+            val c = sampleValuesCheck(new FakeProbes())
+            assert(c.startupSafe)
+            val on = c.run()
+            assert(on.status == "ok", on.detail)
+            assert(on.detail.contains("sent to the model") && on.detail.contains("(default)"), on.detail)
+            val quickIds = DoctorService.run("quick", Set.empty, Map.empty, new FakeProbes(), slots, "1.28.2").checks.map(_.id)
+            assert(quickIds.contains("ai.sample_values"), "startup-safe: " + quickIds)
+        }
+        withSampleValues(Some("maybe")) {
+            val r = sampleValuesCheck(new FakeProbes()).run()
+            assert(r.status == "ok" && r.detail.contains("(default)"), "an unknown value is on: " + r.detail)
+        }
+        withSampleValues(Some("false")) {
+            val off = sampleValuesCheck(new FakeProbes()).run()
+            assert(off.status == "ok", off.detail)
+            assert(off.detail.contains("withheld"), off.detail)
+            assert(!off.detail.contains("(default)"), off.detail)
+        }
+        if (sys.env.get("DATRIS_AI_SAMPLE_VALUES").isEmpty) withSampleValues(None) {
+            val r = sampleValuesCheck(new FakeProbes()).run()
+            assert(r.status == "ok" && r.detail.contains("(default)"), "unset is the default: " + r.detail)
+        }
+    }
+
+    test("warns when fields are protected and values are still sampled") {
+        withSampleValues(Some("true")) {
+            val r = sampleValuesCheck(new FakeProbes(protects = true)).run()
+            assert(r.status == "warn", r.detail)
+            assert(r.detail.contains("protects fields"), r.detail)
+            assert((r.detail + " " + r.remediation).contains("DATRIS_AI_SAMPLE_VALUES=false"), r.detail + " | " + r.remediation)
+        }
+        withSampleValues(Some("false")) {
+            val r = sampleValuesCheck(new FakeProbes(protects = true)).run()
+            assert(r.status == "ok" && r.detail.contains("withheld"), "protected and withheld is fine: " + r.detail)
+        }
+        withSampleValues(Some("true")) {
+            assert(sampleValuesCheck(new FakeProbes(protects = false)).run().status == "ok", "nothing protected: no warning")
+        }
+    }
+
+    test("ai.sample_values warns 'could not read pipeline configs' when the probe fails") {
+        val failing = new FakeProbes() {
+            override def anyPipelineProtects(): Boolean = throw new RuntimeException("mongo down")
+        }
+        withSampleValues(Some("true")) {
+            val r = sampleValuesCheck(failing).run()
+            assert(r.status == "warn", r.detail)
+            assert(r.detail.contains("could not read pipeline configs") && r.detail.contains("mongo down"), r.detail)
+        }
+        withSampleValues(Some("false")) {
+            val r = sampleValuesCheck(failing).run()
+            assert(r.status == "ok" && r.detail.contains("withheld"), "no read needed when values are withheld: " + r.detail)
+        }
+    }
+
+    test("ai.sample_values (off) warns naming up to five pipelines whose stored field names are not column names") {
+        val odd = new FakeProbes() {
+            override def pipelinesWithNonIdentifierFields(): List[String] = (1 to 7).map("p" + _).toList
+        }
+        withSampleValues(Some("false")) {
+            val r = sampleValuesCheck(odd).run()
+            assert(r.status == "warn", r.detail)
+            assert(r.detail.contains("withheld") && r.detail.contains("p1, p2, p3, p4, p5 and 2 more") && !r.detail.contains("p6"), r.detail)
+            val failing = new FakeProbes() { override def pipelinesWithNonIdentifierFields(): List[String] = throw new RuntimeException("mongo down") }
+            val f = sampleValuesCheck(failing).run()
+            assert(f.status == "warn" && f.detail.contains("could not read pipeline configs"), f.detail)
+        }
+        withSampleValues(Some("true")) {
+            assert(sampleValuesCheck(odd).run().status == "ok", "only checked when values are withheld")
+        }
     }
 }

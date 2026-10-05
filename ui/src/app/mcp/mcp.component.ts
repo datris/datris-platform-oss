@@ -453,7 +453,8 @@ export class McpComponent implements OnInit {
       category: 'Pipeline Management',
       parameters: [
         { name: 'pipeline', type: 'string', description: 'Existing pipeline name (use this OR fields)', required: false, inputType: 'text' },
-        { name: 'fields', type: 'array', description: 'Fields as [{"name": ..., "type": ...}] (use this OR pipeline)', required: false, inputType: 'textarea' }
+        { name: 'fields', type: 'array', description: 'Fields as [{"name": ..., "type": ...}] (use this OR pipeline)', required: false, inputType: 'textarea' },
+        { name: 'preset', type: 'string', description: 'Optional preset to classify against instead of the model: hipaa-safe-harbor (delimited sources only). Returns class, method and reason per field, unclassified names and review notes.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -469,7 +470,7 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'profile_data',
-      description: 'Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules. Use the suggested aiRule when building a pipeline\'s dataQuality section.',
+      description: 'Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules. Use the suggested aiRule when building a pipeline\'s dataQuality section. The server may withhold row values from the model (DATRIS_AI_SAMPLE_VALUES=false): the profile is then built from column statistics or structure only, sampleValues are empty, and the result carries valuesWithheld: true. If the AI model declines the request (a provider safety decline), the result carries aiDeclined: true and holds the server\'s column statistics only, with empty qualityIssues and recommendations: read that as no AI review, not as a clean file.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'content', type: 'string', description: 'Base64-encoded file content', required: true, inputType: 'textarea' },

@@ -52,6 +52,10 @@ For all formats, the instruction is the same plain-English description. The LLM 
 
 ---
 
+## Values withheld
+
+When the server sets `DATRIS_AI_SAMPLE_VALUES=false`, the prompt carries the column names and schema types (or a value-free skeleton of a JSON or XML file) and the line "Sample rows withheld by configuration" instead of sample rows. The generated script still runs on the full data. Because the model cannot see what the values look like, state any format the rule depends on in the instruction (for example "dates are YYYY-MM-DD"). See [Field Protection](/transformation/field-protection#what-still-sees-raw-data).
+
 ## Behavior
 
 - The AI rule generates the Python script once per rule evaluation

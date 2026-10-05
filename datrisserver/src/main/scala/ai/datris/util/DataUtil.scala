@@ -20,14 +20,66 @@ object DataUtil {
     private val logger: Logger = LoggerFactory.getLogger(DataUtil.getClass)
 
     /**
+     * Merge newly detected columns into a destination field list. Names match
+     * case-insensitively after trimming; an existing entry (and its declared
+     * type) is kept untouched; new names are appended in order; a duplicate
+     * already inside `existing` is dropped (first occurrence wins).
+     */
+    private[datris] def mergeDestFields(existing: List[SchemaField], added: List[SchemaField]): List[SchemaField] = {
+        def key(f: SchemaField): String = Option(f.name).map(_.trim.toLowerCase).getOrElse("")
+        val seen = scala.collection.mutable.LinkedHashSet[String]()
+        val out = scala.collection.mutable.ListBuffer[SchemaField]()
+        (existing ++ added).foreach { f =>
+            if (seen.add(key(f))) out += f
+        }
+        out.toList
+    }
+
+    /** The destination schema with duplicate names removed (first entry
+      * wins), and the names of the removed columns (empty when none). The
+      * caller reports the repair once it is persisted. */
+    private def repairDestDuplicates(config: PipelineConfig): (PipelineConfig, List[String]) = {
+        if (config.destination == null || config.destination.schemaProperties == null || config.destination.schemaProperties.fields == null)
+            return (config, Nil)
+        val existing = config.destination.schemaProperties.fields.asScala.toList
+        val deduped = mergeDestFields(existing, Nil)
+        if (deduped.size == existing.size) return (config, Nil)
+        val removed = existing.diff(deduped).map(_.name).distinct
+        val schema = config.destination.schemaProperties.copy(fields = new java.util.ArrayList[SchemaField](deduped.asJava))
+        (config.copy(destination = config.destination.copy(schemaProperties = schema)), removed)
+    }
+
+    private def reportRepair(config: PipelineConfig, removed: List[String], statusUtil: StatusUtil): Unit =
+        if (removed.nonEmpty) {
+            logger.info("Schema evolution: removed duplicate destination column(s) [" + removed.mkString(", ") + "] from pipeline " + config.name)
+            statusUtil.info("processing", "Schema evolution: removed duplicate destination column(s) [" + removed.mkString(", ") + "]; the first entry is kept")
+        }
+
+    /** Columns present in both lists (trimmed, case-insensitive), each in its
+      * own list's order; Some((source, destination)) when the relative orders
+      * differ, None when they match. */
+    private[datris] def objectStoreOrderMismatch(sourceOrder: List[String], destOrder: List[String]): Option[(List[String], List[String])] = {
+        def key(n: String): String = Option(n).map(_.trim.toLowerCase).getOrElse("")
+        val destKeys = destOrder.map(key).toSet
+        val srcKeys = sourceOrder.map(key).toSet
+        val src = sourceOrder.filter(n => destKeys.contains(key(n)))
+        val dest = destOrder.filter(n => srcKeys.contains(key(n)))
+        if (src.map(key) == dest.map(key)) None else Some((src, dest))
+    }
+
+    /**
      * Schema evolution: detect new/missing columns and update config.
      * Returns (updatedConfig, updatedSchemaColumns, presentColumns, missingColumns).
      */
     def evolveSchema(
         sourceColumns: List[String],
-        config: PipelineConfig,
-        statusUtil: StatusUtil
+        storedConfig: PipelineConfig,
+        statusUtil: StatusUtil,
+        persist: PipelineConfig => Unit = PipelineConfigIO.write
     ): (PipelineConfig, List[String], List[String], List[String]) = {
+        // Repair a destination schema that already lists a column twice (written
+        // by an earlier run before the duplicate check existed): first entry wins.
+        val (config, removedDuplicates) = repairDestDuplicates(storedConfig)
         var updatedConfig = config
         var schemaColumns = config.source.schemaProperties.fields.asScala.map(_.name).toList
 
@@ -41,8 +93,50 @@ object DataUtil {
             statusUtil.info("processing", "Schema evolution: new columns detected [" + newColumns.mkString(", ") + "], adding to pipeline schema")
 
             val newFields = newColumns.map(col => SchemaField(col, "string"))
+            // Field protection preset (field-protection-10): a new column the
+            // preset recognises joins the SOURCE schema with its (clamped)
+            // policy, so FieldProtection protects it in this same run (it reads
+            // the config returned here) and the persisted config carries it.
+            val newSourceFields = ProtectionPreset.supportedPresetOf(config) match {
+                case Some(preset) =>
+                    val (keys, destTypes) = FieldProtectionAdvisor.constraintsOf(config)
+                    val exempt = ProtectionPreset.exemptOf(config)
+                    newFields.map { f =>
+                        if (exempt.contains(f.name.trim.toLowerCase)) {
+                            statusUtil.info(
+                                "processing",
+                                "Preset " + preset + ": new column '" + f.name + "' is listed under protection.presetExempt and is not protected"
+                            )
+                            f
+                        } else ProtectionPreset.classify(f.name) match {
+                            case Some((klass, policy)) =>
+                                FieldProtectionAdvisor.constrain(f.name, f.`type`, policy, keys, destTypes) match {
+                                    case Right(p) =>
+                                        statusUtil.info(
+                                            "processing",
+                                            "Preset " + preset + ": new column '" + f.name + "' protected as " + klass + " (" + p.label + ")"
+                                        )
+                                        f.copy(protect = p)
+                                    case Left(why) =>
+                                        statusUtil.warn(
+                                            "processing",
+                                            "Preset " + preset + ": new column '" + f.name + "' looks like " + klass + " but is not protected (" + why +
+                                                "); it lands as is, and the next save of this pipeline will be refused until it is protected or listed under protection.presetExempt"
+                                        )
+                                        f
+                                }
+                            case None =>
+                                statusUtil.warn(
+                                    "processing",
+                                    "Preset " + preset + ": new column '" + f.name + "' is not recognised by the preset and is not protected"
+                                )
+                                f
+                        }
+                    }
+                case None => newFields
+            }
             val updatedFields = new java.util.ArrayList[SchemaField](config.source.schemaProperties.fields)
-            newFields.foreach(f => updatedFields.add(f))
+            newSourceFields.foreach(f => updatedFields.add(f))
 
             val newVersion = config.source.schemaProperties.schemaVersion + 1
             val updatedSourceSchema = config.source.schemaProperties.copy(fields = updatedFields, schemaVersion = newVersion)
@@ -50,16 +144,51 @@ object DataUtil {
 
             // Update destination schema if it exists
             val updatedDest = if (config.destination != null && config.destination.schemaProperties != null) {
-                val destFields = new java.util.ArrayList[SchemaField](config.destination.schemaProperties.fields)
-                newFields.foreach(f => destFields.add(f))
+                val existingDest = Option(config.destination.schemaProperties.fields).map(_.asScala.toList).getOrElse(Nil)
+                newFields.foreach { f =>
+                    existingDest.find(d => d.name != null && d.name.trim.equalsIgnoreCase(f.name.trim)).foreach { d =>
+                        statusUtil.info(
+                            "processing",
+                            "Schema evolution: column '" + f.name + "' is already in the destination schema (" + d.`type` + "); kept as declared"
+                        )
+                    }
+                }
+                // Object store loads read the staged file by position against the
+                // destination schema, so a declared column joining the source in a
+                // different relative order would land in the wrong column.
+                val declaredNew = newFields.filter(f => existingDest.exists(d => d.name != null && d.name.trim.equalsIgnoreCase(f.name.trim)))
+                val mergedDest = mergeDestFields(existingDest, newFields)
+                if (declaredNew.nonEmpty && config.destination.objectStore != null) {
+                    val sourceOrder = updatedSourceSchema.fields.asScala.map(_.name).toList
+                    objectStoreOrderMismatch(sourceOrder, existingDest.map(_.name)).foreach {
+                        case (src, dest) =>
+                            throw new DatrisException(
+                                "Object store pipelines map columns by position: the source schema's column order (" + src.mkString(", ") +
+                                    ") differs from the destination schema (" + dest.mkString(", ") + "). Reorder the source or destination schema"
+                            )
+                    }
+                    val destOrder = mergedDest.map(_.name)
+                    def keys(ns: List[String]): List[String] = ns.map(n => Option(n).map(_.trim.toLowerCase).getOrElse(""))
+                    if (keys(sourceOrder) != keys(destOrder))
+                        throw new DatrisException(
+                            "Object store pipelines map columns by position: the source schema (" + sourceOrder.mkString(", ") +
+                                ") and the destination schema (" + destOrder.mkString(", ") + ") must list the same columns in the same order"
+                        )
+                }
+                val destFields = new java.util.ArrayList[SchemaField](mergedDest.asJava)
                 val updatedDestSchema = config.destination.schemaProperties.copy(fields = destFields, schemaVersion = newVersion)
                 config.destination.copy(schemaProperties = updatedDestSchema)
             } else config.destination
 
             updatedConfig = config.copy(source = updatedSource, destination = updatedDest)
-            PipelineConfigIO.write(updatedConfig)
+            // Gson write of the whole config: `protect` and `protection` survive.
+            persist(updatedConfig)
+            reportRepair(config, removedDuplicates, statusUtil)
 
             schemaColumns = updatedSourceSchema.fields.asScala.map(_.name).toList
+        } else if (removedDuplicates.nonEmpty) {
+            persist(config)
+            reportRepair(config, removedDuplicates, statusUtil)
         }
 
         // Detect missing schema columns in the CSV header

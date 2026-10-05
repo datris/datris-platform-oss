@@ -578,6 +578,28 @@ def _call(method, path, timeout=300, **kwargs):
         return json.dumps({"error": str(e)})
 
 
+
+def _strip_event_detail(text):
+    """Drop the optional `detail` field (a failed run's full stack trace) from
+    the status events in a /pipeline/status response before it reaches the
+    model. `description` already carries the error in plain words; the trace
+    stays in the server log and the Ops activity view. Non-JSON or detail-free
+    responses are returned unchanged, byte for byte."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    events = data.get("events") if isinstance(data, dict) else data if isinstance(data, list) else None
+    if not isinstance(events, list):
+        return text
+    stripped = False
+    for ev in events:
+        if isinstance(ev, dict) and "detail" in ev:
+            del ev["detail"]
+            stripped = True
+    return json.dumps(data) if stripped else text
+
+
 def _upload(path, file_path, data=None):
     """Upload a file via multipart POST to the pipeline API (local file path)."""
     with open(file_path, "rb") as f:
@@ -746,12 +768,14 @@ A source field may carry `protect` to pseudonymize, mask, redact, encrypt, or dr
 ```
 
 - `hmac`: deterministic keyed pseudonym (equal inputs give equal outputs, so joins still work).
-- `mask`: every character becomes `*`; with `"preserve": "last4"`, `"domain"`, or `"year"` that part is kept.
+- `mask`: every character becomes `*`; with `"preserve": "last4"`, `"domain"`, `"year"`, or `"first3"` that part is kept.
 - `redact`: the value becomes a fixed marker.
 - `drop`: the column (or top-level JSON key) is removed.
 - `encrypt`: AES-256-GCM ciphertext (`enc:v1:...`), longer than the input; reversible on the Datris server only, by an operator holding the `protect:reveal` capability, never by an agent.
 
 Rules: `hmac`, `mask`, `redact`, and `encrypt` need a `string` field (source and destination). `drop` takes any type. A keyFields column may only use `hmac` (mask/redact would merge rows on upsert; encrypt gives every value a fresh ciphertext; drop removes the key). `encrypt` stores AES-256-GCM ciphertext (`enc:v1:...`); it is reversible on the Datris server only, by an operator holding the `protect:reveal` capability, never by an agent. Reserved methods (`fpe`, `tokenize`) are rejected as not yet supported. Delimited and JSON sources only (JSON: top-level keys). For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Once the protected copy exists the raw ingest object is deleted, unless the pipeline sets `"protection": {"purgeSource": false}`. On `create_pipeline`, pass the `protect` map (field name → policy) instead of editing the schema. To get a starting point, call `suggest_field_protection` (pipeline name or fields): it asks the CodeGen model from field names and types only, saves nothing, and its suggestions must be shown to the user and confirmed before any of them is passed as `protect`.
+
+Preset: `suggest_field_protection` with `preset: "hipaa-safe-harbor"` classifies each field by name and type against the HIPAA Safe Harbor identifier list (delimited/CSV sources only) and returns a class, method and reason per field, the fields it did not recognise, and review notes, saving nothing. Passing `protect_preset: "hipaa-safe-harbor"` to `create_pipeline` (saved as `"protection": {"preset": ..., "presetExempt": [...]}`) keeps the preset enforced: every save and every new column the preset classifies must carry `protect` or be listed in `protect_exempt` (`presetExempt`), or the server refuses it with the field named. The preset is an aid, not a compliance determination: show the user the proposal, the unrecognised fields and the review notes, and confirm with them before passing any of it to `create_pipeline`.
 
 Only protect when the user asks. Confirm with the user exactly which fields to protect and with which method; never decide from column names on your own (a `suggest_field_protection` result is a proposal for the user to accept or reject, not a decision).
 
@@ -1759,11 +1783,21 @@ def _base_tools():
                             "type": "object",
                             "properties": {
                                 "method": {"type": "string", "enum": ["hmac", "mask", "redact", "drop", "encrypt"]},
-                                "preserve": {"type": "string", "enum": ["last4", "domain", "year"]}
+                                "preserve": {"type": "string", "enum": ["last4", "domain", "year", "first3"]}
                             },
                             "required": ["method"]
                         },
-                        "description": "OMIT BY DEFAULT. Field name → protection policy, e.g. {\"account_id\": {\"method\": \"hmac\"}, \"contact_email\": {\"method\": \"mask\", \"preserve\": \"domain\"}}. Each policy is set as `protect` on the matching schema field (case-insensitive name match); a name not in the detected schema is an error and nothing is saved. For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Protected fields are rewritten before data quality, transformation, and every destination, so no AI stage sees their raw values. hmac = deterministic pseudonym, mask = asterisks (preserve last4/domain/year keeps that part), redact = fixed marker, drop = remove the column, encrypt = ciphertext reversible on the Datris server only, by an operator holding the protect:reveal capability, never by an agent. hmac/mask/redact/encrypt need string fields; a keyFields column may only use hmac. The raw ingest object is deleted once the protected copy exists. Only set this when the user asked to protect fields, and confirm with them which fields and methods — never decide from column names yourself. suggest_field_protection can propose policies; pass only the ones the user accepted."
+                        "description": "OMIT BY DEFAULT. Field name → protection policy, e.g. {\"account_id\": {\"method\": \"hmac\"}, \"contact_email\": {\"method\": \"mask\", \"preserve\": \"domain\"}}. Each policy is set as `protect` on the matching schema field (case-insensitive name match); a name not in the detected schema is an error and nothing is saved. For a JSON source (schema is the single `_json` field) each name is a top-level key and is added beside `_json`. Protected fields are rewritten before data quality, transformation, and every destination, so no AI stage sees their raw values. hmac = deterministic pseudonym, mask = asterisks (preserve last4/domain/year/first3 keeps that part), redact = fixed marker, drop = remove the column, encrypt = ciphertext reversible on the Datris server only, by an operator holding the protect:reveal capability, never by an agent. hmac/mask/redact/encrypt need string fields; a keyFields column may only use hmac. The raw ingest object is deleted once the protected copy exists. Only set this when the user asked to protect fields, and confirm with them which fields and methods — never decide from column names yourself. suggest_field_protection can propose policies; pass only the ones the user accepted."
+                    },
+                    "protect_preset": {
+                        "type": "string",
+                        "enum": ["hipaa-safe-harbor"],
+                        "description": "OMIT BY DEFAULT. Keep a field-protection preset enforced on this pipeline (saved as protection.preset; delimited/CSV sources only). Every field the preset classifies, now and in later saves or new columns, must carry `protect` or be listed in protect_exempt, otherwise the server refuses the save naming the field. Pass the protect map the user confirmed from suggest_field_protection with the same preset. Only set this when the user asked for the preset."
+                    },
+                    "protect_exempt": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "OMIT BY DEFAULT. Field names the user chose to leave unprotected under protect_preset (saved as protection.presetExempt). Only with protect_preset, and only names the user confirmed."
                     },
                     "codegen_transform": {
                         "type": "string",
@@ -1939,6 +1973,7 @@ def _base_tools():
                 "poll every few seconds until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`) for the outcome. "
                 "Per-job detail is in `rollup.jobs[]` with `pipelineToken`, `pipeline`, `filename`, `status`, `startedAt`, `lastEventAt`, `elapsed`, and `lastError` (populated on failure with `processName` and `description`). "
                 "`events[]` is the raw begin/info/end audit trail; the rollup is the source of truth for completion. "
+                "A failed run's `description` gives the error and its causes in plain words; the full stack trace is not included here (it is in the server log under the run's token and in the Ops activity view). "
                 "When queried by `pipeline_name`, the response is a paginated array of summary rows; the most recent job is index 0 and its `status` field is `success` | `processing` | `error`. "
                 "Do NOT proceed to query/search until the job is in a terminal state."
             ),
@@ -1976,7 +2011,7 @@ def _base_tools():
         ),
         Tool(
             name="profile_data",
-            description="Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules. Use the suggested aiRule when building a pipeline's dataQuality section.",
+            description="Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules. Use the suggested aiRule when building a pipeline's dataQuality section. The server may withhold row values from the model (DATRIS_AI_SAMPLE_VALUES=false): the profile is then built from column statistics or structure only, sampleValues are empty, and the result carries valuesWithheld: true. If the AI model declines the request (a provider safety decline), the result carries aiDeclined: true and holds the server's column statistics only, with empty qualityIssues and recommendations: read that as no AI review, not as a clean file.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -2020,10 +2055,15 @@ def _base_tools():
         ),
         Tool(
             name="suggest_field_protection",
-            description="Suggest per-field protection (hmac, mask with an optional preserve, redact, drop, or none, each with a one-line reason) for a pipeline's source fields, computed by the configured CodeGen model from field NAMES and TYPES ONLY: no row value is sent to the model. Stateless: nothing is saved or changed. Pass `pipeline` (an existing pipeline name; its stored source schema is used) or `fields` (an array of {name, type}, e.g. the schema you are about to create). A field that already carries `protect` shows it as `current` next to the suggestion. Show the suggestions to the user and ask which to accept before passing any of them as the `protect` map to `create_pipeline`; never apply them on your own.",
+            description="Suggest per-field protection (hmac, mask with an optional preserve, redact, drop, or none, each with a one-line reason) for a pipeline's source fields, computed by the configured CodeGen model from field NAMES and TYPES ONLY: no row value is sent to the model. Stateless: nothing is saved or changed. Pass `pipeline` (an existing pipeline name; its stored source schema is used) or `fields` (an array of {name, type}, e.g. the schema you are about to create). A field that already carries `protect` shows it as `current` next to the suggestion. Show the suggestions to the user and ask which to accept before passing any of them as the `protect` map to `create_pipeline`; never apply them on your own. With `preset` (delimited sources only) the server's rule-based preset classifier is used instead of the model: each field gets an identifier class, a method and a reason, and the result lists the fields it did not recognise and review notes; show all of it, including the review notes, to the user.",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "preset": {
+                        "type": "string",
+                        "enum": ["hipaa-safe-harbor"],
+                        "description": "Optional preset to classify against instead of the model (delimited/CSV sources only). The result can be enforced on create_pipeline with protect_preset."
+                    },
                     "pipeline": {
                         "type": "string",
                         "description": "Existing pipeline name (use this OR fields)"
@@ -2719,7 +2759,8 @@ def _base_tools():
                 "Response shape: `{rollup: {allDone, status, jobs: [...]}, events: [...]}`. "
                 "Poll every few seconds until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`) for the outcome. "
                 "Per-job detail is in `rollup.jobs[]` — each entry has `pipelineToken`, `pipeline`, `filename`, `status`, `startedAt`, `lastEventAt`, `elapsed`, and `lastError` (populated on failure with `processName` and `description`). "
-                "`events[]` is the raw begin/info/end audit trail if you need it; the rollup is the source of truth for completion."
+                "`events[]` is the raw begin/info/end audit trail if you need it; the rollup is the source of truth for completion. "
+                "A failed run's `description` gives the error and its causes in plain words; the full stack trace is not included here (it is in the server log under the run's token and in the Ops activity view)."
             ),
             inputSchema={
                 "type": "object",
@@ -3364,6 +3405,44 @@ def _render_protect_suggestions(raw):
     return "\n".join([header + ":"] + lines + ["", footer])
 
 
+def _render_protect_preset(raw):
+    """Preset proposal: one line per classified field
+    (`zip: geographic -> mask (first3) — reason`), then the unclassified
+    names, the review notes, and the confirm-with-the-user footer last.
+    Errors and anything unparseable pass through unchanged."""
+    if _is_error_payload(raw):
+        return raw
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(data, dict) or not isinstance(data.get("fields"), list):
+        return raw
+    preset = data.get("preset") or "preset"
+    lines = [f"Preset {preset} proposal (names and types only, nothing saved):"]
+    for f in data["fields"]:
+        if not isinstance(f, dict):
+            continue
+        method = f.get("method") or "none"
+        label = f"{method} ({f['preserve']})" if method == "mask" and f.get("preserve") else method
+        line = f"- {f.get('name')}: {f.get('class') or 'unknown'} → {label}"
+        if f.get("reason"):
+            line += f" — {f['reason']}"
+        if isinstance(f.get("current"), dict) and f["current"].get("method"):
+            line += f" [current: {_protect_label(f['current'])}]"
+        lines.append(line)
+    unclassified = [str(n) for n in (data.get("unclassified") or [])]
+    lines += ["", "Unclassified (not recognised by the preset; ask the user): " + (", ".join(unclassified) if unclassified else "none")]
+    review = [str(n) for n in (data.get("review") or [])]
+    if review:
+        lines += ["", "Review notes:"] + [f"- {n}" for n in review]
+    lines += ["", ("The preset is an aid, not a compliance determination: show the user every proposal above, "
+                   "the unclassified fields and the review notes, and pass only what they confirm as the `protect` "
+                   "map to create_pipeline (protect_preset keeps the preset enforced; protect_exempt lists fields "
+                   "they chose to leave unprotected).")]
+    return "\n".join(lines)
+
+
 def _is_error_payload(text):
     """True when a tool result is a REST error body rather than data.
 
@@ -3734,6 +3813,35 @@ def _dispatch(name: str, args: dict) -> str:
                     by_name[n.lower()] = f
                 f["protect"] = policy
 
+        # Step 2a': Optional enforced preset. protect_exempt only with a preset;
+        # the server checks coverage and refuses a save naming the field.
+        protect_preset = args.get("protect_preset")
+        protect_exempt = args.get("protect_exempt")
+        if isinstance(protect_exempt, str):
+            # The MCP tab's playground sends array params as text.
+            text = protect_exempt.strip()
+            try:
+                protect_exempt = json.loads(text) if text.startswith("[") else [n.strip() for n in text.split(",") if n.strip()]
+            except ValueError:
+                return json.dumps({"error": "protect_exempt must be an array of field names"})
+        if protect_exempt and not protect_preset:
+            return json.dumps({"error": "protect_exempt needs protect_preset"})
+        if protect_preset:
+            if protect_exempt is not None and (not isinstance(protect_exempt, list)
+                                               or not all(isinstance(n, str) for n in protect_exempt)):
+                return json.dumps({"error": "protect_exempt must be an array of field names"})
+            # Strip once, then validate and store the same names.
+            protect_exempt = [n.strip() for n in (protect_exempt or []) if n.strip()]
+            if protect_exempt:
+                schema_fields = ((config.get("source") or {}).get("schemaProperties") or {}).get("fields") or []
+                known_names = [f.get("name") for f in schema_fields if isinstance(f, dict) and isinstance(f.get("name"), str)]
+                lower = {n.lower() for n in known_names}
+                unknown_ex = [n for n in protect_exempt if n.lower() not in lower]
+                if unknown_ex:
+                    return json.dumps({"error": "protect_exempt names field(s) not in the detected schema: "
+                                       + ", ".join(unknown_ex) + ". Schema fields: " + ", ".join(known_names)})
+            config["protection"] = {"preset": protect_preset, "presetExempt": protect_exempt}
+
         # Step 2b: Add optional CodeGen data quality rule
         if args.get("codegen_rule"):
             config["dataQuality"] = {"aiRule": {"instruction": args["codegen_rule"], "onFailureIsError": True}}
@@ -3820,7 +3928,7 @@ def _dispatch(name: str, args: dict) -> str:
             params["pipelinename"] = args["pipeline_name"]
         if args.get("page"):
             params["page"] = args["page"]
-        return _call("get", "/api/v1/pipeline/status", params=params)
+        return _strip_event_detail(_call("get", "/api/v1/pipeline/status", params=params))
 
     elif name == "kill_job":
         payload = {"pipelineToken": args["pipeline_token"]}
@@ -3854,6 +3962,10 @@ def _dispatch(name: str, args: dict) -> str:
             body = {"fields": fields}
         else:
             return json.dumps({"error": "suggest_field_protection needs either 'pipeline' (a pipeline name) or 'fields' (an array of {name, type})"})
+        preset = args.get("preset")
+        if isinstance(preset, str) and preset.strip():
+            raw = _call("post", "/api/v1/pipeline/protect/preset", json={"preset": preset.strip(), **body})
+            return _render_protect_preset(raw)
         raw = _call("post", "/api/v1/pipeline/protect/suggest", json=body)
         return _render_protect_suggestions(raw)
 
@@ -4351,7 +4463,7 @@ def _dispatch(name: str, args: dict) -> str:
             params["publishertoken"] = publisher
         elif pipeline:
             params["pipelinetoken"] = pipeline
-        return _call("get", "/api/v1/pipeline/status", params=params)
+        return _strip_event_detail(_call("get", "/api/v1/pipeline/status", params=params))
 
     elif name == "get_pipeline_result":
         publisher = args.get("publisher_token")

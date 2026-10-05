@@ -18,7 +18,7 @@ case class SchemaField(
     protect: ProtectionPolicy = null
 )
 
-/** `{"method": "hmac" | "mask" | "redact" | "drop", "preserve": "last4" | "domain" | "year", "params": {...}}`.
+/** `{"method": "hmac" | "mask" | "redact" | "drop", "preserve": "last4" | "domain" | "year" | "first3", "params": {...}}`.
   *
   * Same Jackson/Gson rule as `UnityCatalogSync` (PipelineConfig.scala):
   * Spring's `@RequestBody` Jackson mapper does not apply Scala default
@@ -40,7 +40,7 @@ case class ProtectionPolicy @JsonCreator() (
 object ProtectionPolicy {
     val Methods: Set[String] = Set("hmac", "mask", "redact", "drop", "encrypt")
     val Reserved: Set[String] = Set("fpe", "tokenize")
-    val Preserves: Set[String] = Set("last4", "domain", "year")
+    val Preserves: Set[String] = Set("last4", "domain", "year", "first3")
 }
 
 case class Schema(

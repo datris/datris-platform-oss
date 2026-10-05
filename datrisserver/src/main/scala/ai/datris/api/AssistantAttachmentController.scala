@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{Gson, JsonObject}
 import ai.datris.model.{DatrisEnvironment, DatrisException}
-import ai.datris.util.{APIKeyValidator, AttachmentStore}
+import ai.datris.util.{APIKeyValidator, AiSampleValues, AttachmentStore, CodeGenTransformationEvaluator}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -79,11 +79,12 @@ class AssistantAttachmentController {
       * for the model. Text-shaped files get a decoded head; binary documents
       * get a one-line note (the model only needs to know it's a document →
       * vector store, not its contents). */
-    private def extractSample(filename: String, bytes: Array[Byte]): (String, String) = {
+    private[datris] def extractSample(filename: String, bytes: Array[Byte]): (String, String) = {
         val ext = filename.lastIndexOf('.') match {
             case -1 => ""
             case i => filename.substring(i + 1).toLowerCase
         }
+        if (!AiSampleValues.enabled) return withheldSample(filename, ext, bytes)
         ext match {
             case "csv" | "tsv" => ("CSV (structured)", headLines(bytes))
             case "json" | "ndjson" => ("JSON (structured)", headChars(bytes))
@@ -93,6 +94,50 @@ class AssistantAttachmentController {
                 ("document (unstructured)", "(binary ." + ext + " document, " + bytes.length + " bytes — text not extracted; route to a vector store)")
             case _ =>
                 ("unknown", headChars(bytes))
+        }
+    }
+
+    /** DATRIS_AI_SAMPLE_VALUES=false: the filename, detected type, record
+      * count, numbered CSV columns (line 1 is never printed) and top-level
+      * JSON key names, never a value. The stored
+      * bytes are unchanged, so tools can still upload the file. */
+    private def withheldSample(filename: String, ext: String, bytes: Array[Byte]): (String, String) = {
+        val note = "Values withheld by configuration (" + AiSampleValues.EnvVar + "=false); the file is attached and can still be uploaded to a pipeline."
+        def lines(items: String*): String = (("File: " + filename) +: items :+ note).mkString("\n")
+        lazy val text = new String(bytes, "UTF-8")
+        val unparsed = "Structure unavailable (" + bytes.length + " bytes)."
+        ext match {
+            case "csv" | "tsv" =>
+                val rows = text.split("\n").iterator.map(_.stripSuffix("\r")).filter(_.trim.nonEmpty).toList
+                val delimiter = if (ext == "tsv") "\t" else ","
+                // An attachment has no header option, so line 1 is never printed:
+                // columns are numbered and every line counts as a row.
+                val width = rows.headOption.map(h => CodeGenTransformationEvaluator.splitLine(h, delimiter).size).getOrElse(0)
+                val columns = (1 to width).map("column_" + _)
+                val t = "CSV (structured)"
+                val rowLine = "Rows: " + rows.size + " (every line counted; column names withheld)"
+                (t, lines("Type: " + t, rowLine, "Columns: " + columns.mkString(", ")))
+            case "json" | "ndjson" =>
+                val t = "JSON (structured)"
+                val outline = AiSampleValues.jsonTopLevel(text) match {
+                    case Some((records, keys)) => Seq("Records: " + records, "Top-level keys: " + keys.mkString(", "))
+                    case None => Seq(unparsed)
+                }
+                (t, lines(("Type: " + t) +: outline: _*))
+            case "xml" =>
+                val t = "XML (structured)"
+                val outline = AiSampleValues.xmlTopLevel(text) match {
+                    case Some((root, records, names)) => Seq("Root element: " + root, "Records: " + records, "Record elements: " + names.mkString(", "))
+                    case None => Seq(unparsed)
+                }
+                (t, lines(("Type: " + t) +: outline: _*))
+            case "pdf" | "docx" | "doc" | "pptx" | "xlsx" =>
+                ("document (unstructured)", "(binary ." + ext + " document, " + bytes.length + " bytes — text not extracted; route to a vector store)")
+            case "txt" | "md" | "html" | "htm" =>
+                val t = "document (unstructured text)"
+                (t, lines("Type: " + t, "Size: " + bytes.length + " bytes"))
+            case _ =>
+                ("unknown", lines("Type: unknown", "Size: " + bytes.length + " bytes"))
         }
     }
 

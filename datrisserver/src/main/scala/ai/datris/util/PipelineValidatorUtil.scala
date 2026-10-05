@@ -40,7 +40,27 @@ object PipelineValidatorUtil {
         config.copy(destination = config.destination.copy(database = newDb))
     }
 
-    def validate(config: PipelineConfig): Unit = {
+    /** Refuses an invalid pipeline config. Every refusal leaves as a
+      * [[ValidationException]] (still a [[DatrisException]]) carrying the
+      * validator's message unchanged, so controllers can answer 400 for a
+      * config the caller must fix and keep 500 for real server failures. */
+    def validate(config: PipelineConfig): Unit = asValidation(validateConfig(config))
+
+    /** Runs `body`, turning a [[DatrisException]] it raises into a
+      * [[ValidationException]] with the same message and stack. Anything else
+      * (a config-store or secret-store failure surfacing as a plain runtime
+      * exception) passes through untouched, so it stays a 500. */
+    private[util] def asValidation[T](body: => T): T =
+        try body
+        catch {
+            case v: ValidationException => throw v
+            case d: DatrisException =>
+                val v = new ValidationException(d.getMessage)
+                v.setStackTrace(d.getStackTrace)
+                throw v
+        }
+
+    private def validateConfig(config: PipelineConfig): Unit = {
         if (config.name == null)
             throw new DatrisException("pipeline 'name' is not defined in the JSON")
         if (config.name.length > 80)
@@ -145,19 +165,43 @@ object PipelineValidatorUtil {
     /** Source fields carrying `protect` (FieldProtection). Refused here, at
       * save, so a pipeline can never silently store plaintext: unknown and
       * reserved (not yet supported: fpe, tokenize) methods, `preserve` outside
-      * `mask` or outside last4/domain/year, a string-producing method (encrypt
+      * `mask` or outside last4/domain/year/first3, a string-producing method (encrypt
       * included) on a non-string source or destination field, any method but
       * hmac on a key field (mask and redact would make rows share a key,
       * encrypt's fresh IV per value would split one key into many, drop
       * removes it), and any source that is not delimited or JSON. */
     private def validateFieldProtection(config: PipelineConfig): Unit = {
+        // Preset rules run first: a preset applies even when no field has
+        // `protect` yet (that is exactly the case it refuses).
+        val preset = ProtectionPreset.presetOf(config)
+        preset.foreach { p =>
+            if (!ProtectionPreset.Presets.contains(p.toLowerCase))
+                throw new DatrisException(
+                    "Unknown protection.preset '" + p + "' (supported: " + ProtectionPreset.Presets.toList.sorted.mkString(", ") + ")"
+                )
+        }
+
+        val fa = config.source.fileAttributes
+        def notDelimitedOrJson: Boolean = fa != null && (fa.xmlAttributes != null || fa.unstructuredAttributes != null)
+        // With a preset the source checks come before the schema: a preset on
+        // a pipeline with no source schema is still refused on XML/unstructured.
+        preset.foreach { p =>
+            if (notDelimitedOrJson) throw new DatrisException("Field protection needs a delimited or JSON source")
+            // JSON keys are not schema fields, so the preset could neither
+            // enforce nor evolve them: refused rather than silently inert.
+            if (ProtectionPreset.nonDelimitedKind(config).contains("json"))
+                throw new DatrisException(
+                    "Preset '" + p.toLowerCase + "' needs a delimited source: a JSON pipeline's keys are not visible to the preset. " +
+                        "List the keys to protect explicitly, or use the proposal endpoint with a field list"
+                )
+        }
+
         val sp = config.source.schemaProperties
         if (sp == null || sp.fields == null) return
         val protectedFields = sp.fields.asScala.filter(f => f != null && f.protect != null).toList
-        if (protectedFields.isEmpty) return
+        if (protectedFields.isEmpty && preset.isEmpty) return
 
-        val fa = config.source.fileAttributes
-        if (fa != null && (fa.xmlAttributes != null || fa.unstructuredAttributes != null))
+        if (notDelimitedOrJson)
             throw new DatrisException("Field protection needs a delimited or JSON source")
 
         val destFields: Map[String, SchemaField] =
@@ -193,7 +237,7 @@ object PipelineValidatorUtil {
                     throw new DatrisException("Field '" + f.name + "': protect.preserve is only valid with method 'mask'")
                 if (!ProtectionPolicy.Preserves.contains(p.preserve.trim.toLowerCase))
                     throw new DatrisException(
-                        "Field '" + f.name + "': unknown protect.preserve '" + p.preserve + "' (last4, domain, year)"
+                        "Field '" + f.name + "': unknown protect.preserve '" + p.preserve + "' (last4, domain, year, first3)"
                     )
             }
             if (f.name != null && keyFields.contains(f.name.trim.toLowerCase)) {
@@ -215,6 +259,30 @@ object PipelineValidatorUtil {
                             "Field '" + d.name + "': protect.method '" + method + "' produces a string; the destination field type must be 'string'"
                         )
                 }
+            }
+        }
+
+        preset.foreach { p =>
+            ProtectionPreset.missing(config) match {
+                case (field, klass) :: rest =>
+                    val more =
+                        if (rest.isEmpty) ""
+                        else " (" + rest.size + " more field" + (if (rest.size == 1) "" else "s") + " also need protection or an exemption)"
+                    // A non-string source or destination type only takes drop.
+                    val srcType = sp.fields.asScala.find(f => f != null && f.name == field).map(_.`type`).orNull
+                    val destType = destFields.get(field.trim.toLowerCase).map(_.`type`).orNull
+                    val how =
+                        if (!isString(srcType))
+                            (if (srcType == null) ". It has no type" else ". Its source type is " + srcType) +
+                                ", so only protect method 'drop' applies: drop it or list it under protection.presetExempt"
+                        else if (destType != null && !isString(destType))
+                            ". Its destination type is " + destType +
+                                ", so only protect method 'drop' applies: drop it or list it under protection.presetExempt"
+                        else ". Add protect to it or list it under protection.presetExempt"
+                    throw new DatrisException(
+                        "Preset '" + p.toLowerCase + "': field '" + field + "' looks like " + klass + " and has no protection" + more + how
+                    )
+                case Nil => ()
             }
         }
     }

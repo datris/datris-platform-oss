@@ -28,6 +28,10 @@ export interface PipelineStatusDetail {
   aiSummary?: string;
   aiDiagnosis?: string;
   aiSuggestion?: string;
+  /** Long-form text for the detail view, e.g. the full stack trace on a failed
+   *  run's terminal event (description carries the plain message). Absent on
+   *  most events and on events written by older servers. */
+  detail?: string;
 }
 
 /** One job in the `withrollup=true` wrapper. The `result*` fields are present

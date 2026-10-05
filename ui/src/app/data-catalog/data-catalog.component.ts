@@ -8,6 +8,7 @@ import { caseTwinMessage, findCaseTwin, sanitizeCatalogName } from '../shared/sa
 import { AuthService } from '../auth.service';
 import { CatalogChatContextService, CatalogSnapshot } from '../catalog-chat/catalog-chat-context.service';
 import { CatalogAssistantStateService } from '../catalog-chat/catalog-assistant-state.service';
+import { httpErrorText } from '../shared/http-error';
 
 interface CatalogInfo {
   name: string;
@@ -645,9 +646,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   /** Error bodies are JSON ({"error": "..."}), which Angular parses into an
    *  object — concatenating it renders "[object Object]" and hides the remedy. */
   private errText(err: any): string {
-    if (err && err.error && typeof err.error.error === 'string') return err.error.error;
-    if (err && typeof err.error === 'string' && err.error) return err.error;
-    return (err && err.message) || 'unknown error';
+    return httpErrorText(err, 'unknown error');
   }
 
   /** Clear the transient error banner and its auto-dismiss timer. Called when

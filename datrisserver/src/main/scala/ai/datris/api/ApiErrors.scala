@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.config.CapabilityInterceptor
-import ai.datris.model.DatrisException
+import ai.datris.model.{DatrisException, ValidationException}
 import ai.datris.util.APIKeyValidator
 import com.google.gson.JsonObject
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -18,7 +18,9 @@ import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
   * caller, and turned an API-key rejection raised inside the controller
   * (Skip-list routes the capability interceptor does not gate) into a 500.
   * [[internal]] answers key rejections with the same 401/503 JSON the
-  * interceptor uses and everything else with `500 {"error": <message>}`,
+  * interceptor uses, a [[ValidationException]] (an invalid config the caller
+  * must fix) with `400 {"error": <message>}`, and everything else with
+  * `500 {"error": <message>}`,
   * first line only. The stack trace belongs in the server log, which every
   * call site already writes before calling this. */
 object ApiErrors {
@@ -32,7 +34,10 @@ object ApiErrors {
     }
 
     /** The message with any embedded stack trace cut off: first line only,
-      * or the exception class name when there is no message. */
+      * or the exception class name when there is no message. Run status
+      * events no longer embed traces (ErrorText.messageChain; the trace is in
+      * the event's `detail`), but the exceptions StreamNotifier rethrows to
+      * the upload API still do, as may older or third-party messages. */
     def firstLine(e: Throwable): String = {
         val m = Option(e.getMessage).map(_.trim).filter(_.nonEmpty).getOrElse(e.getClass.getSimpleName)
         m.split("\\r?\\n", 2)(0).trim
@@ -45,6 +50,8 @@ object ApiErrors {
             if (d.getMessage == APIKeyValidator.MissingKeyMessage)
                 (HttpStatus.UNAUTHORIZED.value, AuthenticationRequiredBody)
             else CapabilityInterceptor.rejectionResponse(d.getMessage)
+        case v: ValidationException =>
+            (HttpStatus.BAD_REQUEST.value, errorBody(firstLine(v)))
         case _ =>
             (HttpStatus.INTERNAL_SERVER_ERROR.value, errorBody(firstLine(e)))
     }

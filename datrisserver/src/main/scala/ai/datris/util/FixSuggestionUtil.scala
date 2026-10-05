@@ -34,10 +34,22 @@ object FixSuggestionUtil {
       * @param extraContext optional additional context (e.g. script output logs); may be null
       * @return a FixSuggestion, or null when AI is disabled or the call/parse fails
       */
-    def suggest(kind: String, configJson: String, errorMessage: String, extraContext: String = null): FixSuggestion = {
+    def suggest(kind: String, configJson: String, errorMessage: String, extraContext: String = null): FixSuggestion =
+        suggest(kind, configJson, errorMessage, extraContext, prompt => AIUtil.extractText(AIUtil.callAI(prompt)))
+
+    /** Seam for specs: `ai(prompt)` returns the model's extracted text. With
+      * DATRIS_AI_SAMPLE_VALUES=false a pipeline error (and any run output) is
+      * reduced by [[AiSampleValues.scrubErrorForModel]] before it reaches the
+      * prompt, so data-quality reasons and script output that quote row values
+      * are withheld. Tap errors are unchanged (tap diagnosis is not covered). */
+    private[datris] def suggest(kind: String, configJson: String, errorMessage: String, extraContext: String, ai: String => String): FixSuggestion = {
         try {
             if (!DatrisEnvironment.current.aiEnabled || DatrisEnvironment.current.aiConfig == null)
                 return null
+
+            val scrub = kind == "pipeline" && !AiSampleValues.enabled
+            val error = if (scrub) AiSampleValues.scrubErrorForModel(errorMessage) else errorMessage
+            val extra = if (scrub) AiSampleValues.scrubErrorForModel(extraContext) else extraContext
 
             val prompt =
                 s"""You are a data ${kind} error analyst. A ${kind} run failed with the error below.
@@ -51,10 +63,9 @@ object FixSuggestionUtil {
                    |${truncate(configJson)}
                    |
                    |Error:
-                   |${truncate(errorMessage)}${extraSection(extraContext)}""".stripMargin
+                   |${truncate(error)}${extraSection(extra)}""".stripMargin
 
-            val responseText = AIUtil.extractText(AIUtil.callAI(prompt))
-            parse(responseText)
+            parse(ai(prompt))
         } catch {
             case e: Exception =>
                 logger.warn("Failed to get AI fix suggestion (best-effort, continuing without it)", e)

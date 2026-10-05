@@ -158,9 +158,11 @@ object UnityCatalogSync {
   * as `UnityCatalogSync` (Jackson skips Scala defaults, Gson skips
   * constructors); read through `ProtectionConfig.purgeSourceOn`. */
 case class ProtectionConfig @JsonCreator() (
-    @JsonProperty("purgeSource") purgeSource: java.lang.Boolean = null
+    @JsonProperty("purgeSource") purgeSource: java.lang.Boolean = null,
+    @JsonProperty("preset") preset: String = null,
+    @JsonProperty("presetExempt") presetExempt: java.util.List[String] = null
 ) {
-    def this() = this(null)
+    def this() = this(null, null, null)
 }
 
 object ProtectionConfig {
