@@ -40,7 +40,18 @@ object PipelineValidatorUtil {
         config.copy(destination = config.destination.copy(database = newDb))
     }
 
-    def validate(config: PipelineConfig): Unit = {
+    /** Refuses an invalid pipeline config. Every refusal leaves as a
+      * [[ValidationException]] (still a [[DatrisException]]) carrying the
+      * validator's message unchanged, so controllers can answer 400 for a
+      * config the caller must fix and keep 500 for real server failures. */
+    def validate(config: PipelineConfig): Unit =
+        try validateConfig(config)
+        catch {
+            case v: ValidationException => throw v
+            case d: DatrisException => throw new ValidationException(d.getMessage)
+        }
+
+    private def validateConfig(config: PipelineConfig): Unit = {
         if (config.name == null)
             throw new DatrisException("pipeline 'name' is not defined in the JSON")
         if (config.name.length > 80)

@@ -191,7 +191,7 @@ Each run that protects data adds one status line such as `Protected 3 fields: mr
 - `drop` works on a field of any type.
 - A column named in the destination's `keyFields` may only use `hmac`: `mask` and `redact` would give different rows the same key (so upserts would merge them), `encrypt` gives the same value a different ciphertext on every run (so upserts would never match), and `drop` would remove the key.
 - The source must be delimited (CSV and similar) or JSON. For JSON pipelines the source schema lists `_json` plus one entry for each protected **top-level** key; nested keys are not supported yet.
-- Unknown methods, `preserve` on anything but `mask`, and the reserved methods `fpe` and `tokenize` are rejected when the pipeline is saved. Like other validation errors, the save returns HTTP 500 with `{"error": "..."}` naming the field.
+- Unknown methods, `preserve` on anything but `mask`, and the reserved methods `fpe` and `tokenize` are rejected when the pipeline is saved. Like other validation errors, the save returns HTTP 400 with `{"error": "..."}` naming the field.
 
 ## The key
 

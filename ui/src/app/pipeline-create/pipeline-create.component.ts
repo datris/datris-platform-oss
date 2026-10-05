@@ -1889,9 +1889,22 @@ export class PipelineCreateComponent implements OnInit {
         this.router.navigate(['/pipelines']);
       },
       error: (err: any) => {
+        // The server answers a refused save (400; 500 on older servers) with
+        // {"error": "<message>"}. Show the message text, not the raw JSON.
         let detail: string;
-        if (typeof err.error === 'string' && err.error.trim()) {
-          detail = err.error;
+        let body: any = err.error;
+        if (typeof body === 'string' && body.trim()) {
+          try {
+            const parsed = JSON.parse(body);
+            if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) body = parsed;
+          } catch {
+            // not JSON: shown as is below
+          }
+        }
+        if (typeof body === 'string' && body.trim()) {
+          detail = body;
+        } else if (typeof body?.error === 'string' && body.error.trim()) {
+          detail = body.error;
         } else if (err.error?.message) {
           detail = err.error.message;
         } else if (err.status) {

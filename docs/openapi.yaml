@@ -968,7 +968,7 @@ paths:
         `preserve` outside `mask`, a string-producing method on a non-string
         field, any method but `hmac` on a `keyFields` column, or a source that is not
         delimited or JSON). Like every other validator error, the rejection
-        returns HTTP 500 with `{"error": "..."}` naming the field.
+        returns HTTP 400 with `{"error": "..."}` naming the field.
       requestBody:
         required: true
         content:
@@ -1034,8 +1034,22 @@ paths:
                     description: Advisory messages about the saved configuration; the pipeline is saved regardless.
                     items:
                       type: string
+        '400':
+          description: >-
+            The configuration was refused and nothing was saved: it failed
+            validation, it selects a Postgres destination when no Postgres is
+            reachable, or it conflicts with another pipeline's source-of-authority
+            declaration. Fix the configuration and save again.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: What is wrong with the configuration
         '500':
-          description: Error
+          description: Server error (for example the configuration store is unreachable)
 
     delete:
       tags: [Pipelines]

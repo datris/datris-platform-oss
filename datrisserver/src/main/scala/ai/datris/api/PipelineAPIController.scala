@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
-import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion, UnityCatalogSync}
+import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion, UnityCatalogSync, ValidationException}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
@@ -309,6 +309,11 @@ class PipelineAPIController {
             out.add("warnings", arr)
             ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
+            case v: ValidationException =>
+                // An invalid config is the caller's to fix: 400, same body
+                // shape as the 500 below, no stack trace in the log.
+                logger.warn("POST /pipeline rejected: " + v.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.errorBody(v))
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
