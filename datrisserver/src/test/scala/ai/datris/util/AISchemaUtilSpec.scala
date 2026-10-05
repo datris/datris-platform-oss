@@ -365,8 +365,14 @@ class AISchemaUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
     // ---- E2E finding (2026-10-05): a declined result never has a blank or duplicate field name ----
 
     private def assertNamesUsable(names: List[String], config: String): Unit = {
-        assert(names.forall(_.trim.nonEmpty), "blank field name: " + config)
-        assert(names.map(_.toLowerCase).distinct.size == names.size, "duplicate field name: " + config)
+        // Unicode-aware: format/control characters and blank "letters" removed,
+        // Unicode spaces (non-breaking included) stripped.
+        def key(n: String): String =
+            n.replaceAll("[\\p{Cf}\\p{Cc}\\u115F\\u1160\\u3164\\uFFA0\\u2800]", "").replaceAll("^[\\p{Z}\\s]+|[\\p{Z}\\s]+$", "").toLowerCase(
+                java.util.Locale.ROOT
+            )
+        assert(names.forall(n => key(n).nonEmpty), "blank field name: " + config)
+        assert(names.map(key).distinct.size == names.size, "duplicate field name: " + config)
     }
 
     test("on-mode decline on a 0-byte file gives column_1, as the off-mode result does, never a blank name") {
@@ -465,6 +471,84 @@ class AISchemaUtilSpec extends AnyFunSuite with AiSampleValuesMarkers {
                 val (names, header) = parsed(config)
                 assert(names == List("na\\me", "d\te"), config)
                 assert(header, config)
+            }
+        }
+    }
+
+    // ---- Review round 4: non-breaking/blank-letter cells; JSON-safe name and delimiter ----
+
+    test("on-mode decline: a duplicate padded with a non-breaking space takes column_N") {
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("t", "id,\u00A0id,name\nx,y,z", ",", true, declined)
+                val (names, header) = parsed(config)
+                assert(names == List("id", "column_2", "name"), config)
+                assert(header, config)
+                assertNamesUsable(names, config)
+            }
+        }
+    }
+
+    test("on-mode decline: a cell holding only a Hangul filler (renders blank) takes column_N") {
+        inEnv {
+            sampled {
+                val config = AISchemaUtil.buildCsvConfig("t", "name,\u3164,amount\nx,y,z", ",", true, declined)
+                val (names, _) = parsed(config)
+                assert(names == List("name", "column_2", "amount"), config)
+                assertNamesUsable(names, config)
+            }
+        }
+    }
+
+    /** Today's config text (AISchemaUtil.buildConfig + csvAttributes), copied so
+      * "byte-identical for ordinary names and delimiters" is checked exactly. */
+    private def todaysAllStringsConfig(pipeline: String, fields: Seq[String], delimiter: String, header: Boolean): String = {
+        val fieldsJson = fields.map(f => s"""{"name":"$f","type":"string"}""").mkString("[", ",", "]")
+        s"""{
+           |  "name": "$pipeline",
+           |  "source": {
+           |    "schemaProperties": {
+           |      "fields": $fieldsJson
+           |    },
+           |    "fileAttributes": {
+           |      "csvAttributes": { "delimiter": "$delimiter", "header": $header, "encoding": "UTF-8" }
+           |    }
+           |  },
+           |  "destination": { "database": { "dbName": "DATABASE_NAME", "schema": "SCHEMA_NAME", "table": "TABLE_NAME", "usePostgres": true } }
+           |}""".stripMargin
+    }
+
+    test("ordinary pipeline names and delimiters (including the \\t tab form) produce byte-identical config text") {
+        Seq("," -> "a,b", "|" -> "a|b", ";" -> "a;b", "\\t" -> "a\tb").foreach { case (d, line) =>
+            Seq("people", "my_pipeline_2").foreach { name =>
+                val got = AISchemaUtil.buildCsvConfigAllStrings(name, line + "\nx", d, true)
+                assert(got == todaysAllStringsConfig(name, Seq("a", "b"), d, true), "delimiter " + d + ": " + got)
+            }
+        }
+        inEnv {
+            sampled {
+                val (_, ai) = capturing(typedFields)
+                val got = AISchemaUtil.buildCsvConfig("people", csv, "\\t", true, ai)
+                assert(got.contains("\"delimiter\": \"\\t\""), got)
+                assert(got.contains("\"name\": \"people\""), got)
+            }
+        }
+    }
+
+    test("on-mode decline with a quote in the pipeline name or the delimiter still returns the fallback (no 500)") {
+        inEnv {
+            sampled {
+                val c1 = AISchemaUtil.buildCsvConfig("a\"b", csv, ",", true, declined)
+                val o1 = obj(c1)
+                assert(o1.get("aiDeclined").getAsBoolean, c1)
+                assert(o1.get("name").getAsString == "a\"b", c1)
+                Seq("\"", "\\").foreach { d =>
+                    val c = AISchemaUtil.buildCsvConfig("people", "x" + d + "y\n1" + d + "2", d, true, declined)
+                    val o = obj(c)
+                    assert(o.get("aiDeclined").getAsBoolean, c)
+                    val attrs = o.getAsJsonObject("source").getAsJsonObject("fileAttributes").getAsJsonObject("csvAttributes")
+                    assert(attrs.get("delimiter").getAsString == d, c)
+                }
             }
         }
     }

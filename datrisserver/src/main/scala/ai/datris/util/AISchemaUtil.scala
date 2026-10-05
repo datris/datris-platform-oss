@@ -26,7 +26,7 @@ object AISchemaUtil {
         buildConfig(
             pipeline = pipeline,
             fieldsJson = fieldsJson,
-            sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": $header, "encoding": "UTF-8" }""",
+            sourceAttributesJson = s""""csvAttributes": { "delimiter": ${jsonString(myDelimiter)}, "header": $header, "encoding": "UTF-8" }""",
             usePostgres = true,
             useMongoDB = false
         )
@@ -53,7 +53,7 @@ object AISchemaUtil {
         buildConfig(
             pipeline = pipeline,
             fieldsJson = fieldsJson,
-            sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": $lineOneIsHeader, "encoding": "UTF-8" }""",
+            sourceAttributesJson = s""""csvAttributes": { "delimiter": ${jsonString(myDelimiter)}, "header": $lineOneIsHeader, "encoding": "UTF-8" }""",
             usePostgres = true,
             useMongoDB = false
         )
@@ -87,7 +87,7 @@ object AISchemaUtil {
                 buildConfig(
                     pipeline = pipeline,
                     fieldsJson = stringFieldsJson(declinedHeaderNames(cells)),
-                    sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": true, "encoding": "UTF-8" }""",
+                    sourceAttributesJson = s""""csvAttributes": { "delimiter": ${jsonString(myDelimiter)}, "header": true, "encoding": "UTF-8" }""",
                     usePostgres = true,
                     useMongoDB = false
                 )
@@ -119,11 +119,30 @@ object AISchemaUtil {
         }
     }
 
-    /** What a header cell names, for blank and duplicate checks: invisible
-      * characters (byte-order mark, zero-width space/joiners, word joiner)
-      * removed, Unicode whitespace stripped from both ends, lower-cased. */
-    private def nameKey(c: String): String =
-        c.replaceAll("[\\uFEFF\\u200B-\\u200D\\u2060]", "").strip().toLowerCase(java.util.Locale.ROOT)
+    /** What a header cell names, for blank and duplicate checks: format and
+      * control characters (byte-order mark, zero-width space/joiners, word
+      * joiner, …) and blank "letters" (Hangul fillers, braille blank)
+      * removed, Unicode spaces (including non-breaking ones) stripped from
+      * both ends, lower-cased. */
+    private[util] def nameKey(c: String): String =
+        c.replaceAll("[\\p{Cf}\\p{Cc}\\u115F\\u1160\\u3164\\uFFA0\\u2800]", "")
+            .replaceAll("^[\\p{Z}\\s]+|[\\p{Z}\\s]+$", "")
+            .toLowerCase(java.util.Locale.ROOT)
+
+    /** A JSON string literal for `s` in the hand-built config. A value that is
+      * already a valid JSON string body when quoted (every ordinary name and
+      * delimiter, including the two-character `\\t` tab form) is written
+      * as-is, so that output is unchanged; anything else (a quote, a lone
+      * backslash) is escaped by Gson so the config always parses. */
+    private def jsonString(s: String): String = {
+        val raw = "\"" + s + "\""
+        val valid =
+            try {
+                val e = JsonParser.parseString(raw)
+                e.isJsonPrimitive && e.getAsJsonPrimitive.isString
+            } catch { case _: Exception => false }
+        if (valid) raw else new com.google.gson.JsonPrimitive(s).toString
+    }
 
     /** `[{"name":…,"type":"string"},…]` with each name JSON-escaped. */
     private def stringFieldsJson(names: List[String]): String = {
@@ -171,7 +190,7 @@ object AISchemaUtil {
         buildConfig(
             pipeline = pipeline,
             fieldsJson = fieldsJson,
-            sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": $header, "encoding": "UTF-8" }""",
+            sourceAttributesJson = s""""csvAttributes": { "delimiter": ${jsonString(myDelimiter)}, "header": $header, "encoding": "UTF-8" }""",
             usePostgres = true,
             useMongoDB = false
         )
@@ -221,7 +240,7 @@ object AISchemaUtil {
         }
 
         s"""{
-           |  "name": "$pipeline",
+           |  "name": ${jsonString(pipeline)},
            |  "source": {
            |    "schemaProperties": {
            |      "fields": $fieldsJson
