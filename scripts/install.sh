@@ -60,6 +60,7 @@
 #                       interactive run asks (default No); a non-interactive
 #                       run leaves them off. Ignored on an upgrade (the .env is
 #                       never edited; the lines to add are printed instead).
+#                       1/true/yes/on or 0/false/no/off; anything else stops.
 #   DATRIS_NO_START=1   write files but don't run compose
 #   DATRIS_SKIP_DOCTOR=1  skip the pre-upgrade `datris doctor` check on an upgrade
 set -eu
@@ -83,6 +84,16 @@ mask() {
   [ "$n" -le 12 ] && { printf '****'; return; }
   printf '%s...%s' "$(printf '%s' "$v" | cut -c1-7)" "$(printf '%s' "$v" | cut -c"$((n-3))"-"$n")"
 }
+
+# DATRIS_GOVERNED, read once for both the fresh-install and upgrade branches:
+# GOVERNED_REQ is 1 (on), 0 (off) or empty (unset — an interactive fresh
+# install asks). Anything unrecognized stops before any file is written.
+case "${DATRIS_GOVERNED:-}" in
+  "") GOVERNED_REQ="" ;;
+  1|[Tt][Rr][Uu][Ee]|[Yy]|[Yy][Ee][Ss]|[Oo][Nn]) GOVERNED_REQ=1 ;;
+  0|[Ff][Aa][Ll][Ss][Ee]|[Nn]|[Nn][Oo]|[Oo][Ff][Ff]) GOVERNED_REQ=0 ;;
+  *) die "DATRIS_GOVERNED must be 1 or 0 (got '${DATRIS_GOVERNED}')" ;;
+esac
 
 # --- preflight ------------------------------------------------------------
 command -v docker >/dev/null 2>&1 || die "Docker is not installed. Get it at https://docs.docker.com/get-docker/"
@@ -225,7 +236,7 @@ GOVERNED_ON=0
 if [ -f "$ENV_FILE" ]; then
   warn "Existing .env found — leaving it untouched (upgrade mode, no prompts)."
   warn "To change installed databases/stores, edit $ENV_FILE (see comments) and re-run '$COMPOSE up -d'."
-  if [ -n "${DATRIS_GOVERNED:-}" ] && [ "${DATRIS_GOVERNED}" != "0" ]; then
+  if [ "$GOVERNED_REQ" = "1" ]; then
     warn ""
     warn "DATRIS_GOVERNED is ignored on upgrade — the existing .env is not edited."
     warn "To switch on the governance controls, add these lines to $ENV_FILE:"
@@ -233,6 +244,10 @@ if [ -f "$ENV_FILE" ]; then
     warn "  USE_API_KEYS=true"
     warn "  USE_AUDIT_LOG=true"
     warn "  USE_AGENT_POLICY=true"
+    warn "Before recreating, read and save the admin bootstrap password (it is only in the"
+    warn "log of the container that seeded admin, and recreating discards that log):"
+    warn "  cd $DIR && $COMPOSE logs datris | grep \"Bootstrap login\""
+    warn "If nothing is printed, see https://docs.datris.ai/user-auth#recovering-admin-access"
     warn "then run: cd $DIR && $COMPOSE up -d --force-recreate datris mcp-server"
   fi
 else
@@ -807,12 +822,11 @@ else
   # User login, API keys, the audit log and the agent policy ship off; they
   # are switched on for production here (DATRIS_GOVERNED=1 or the prompt,
   # default No) and only on a fresh install. An existing .env is never edited.
-  GOVERNED="${DATRIS_GOVERNED:-}"
-  if [ -z "$GOVERNED" ] && [ -n "$TTY" ]; then
+  GOVERNED_ON="$GOVERNED_REQ"
+  if [ -z "$GOVERNED_REQ" ] && [ -n "$TTY" ]; then
     ask "  Switch on the governance controls for production (user login, API keys, audit log, agent policy)? [y/N]: "
-    case "$ANS" in y*|Y*) GOVERNED=1 ;; esac
+    case "$ANS" in y*|Y*) GOVERNED_ON=1 ;; esac
   fi
-  case "$GOVERNED" in 1|true|TRUE|yes|YES|y|Y) GOVERNED_ON=1 ;; esac
   if [ "$GOVERNED_ON" = "1" ]; then
     set_env USE_USER_AUTH true
     set_env USE_API_KEYS true
@@ -855,10 +869,24 @@ fi
 SEED_DONE=1
 trap - EXIT INT TERM
 
+# First-login and API-key hint for a fresh install with the governance
+# controls on; printed at the end of a normal run and under DATRIS_NO_START.
+print_governed_hint() {
+  [ "$GOVERNED_ON" = "1" ] || return 0
+  say ""
+  say "Governance controls are on (user login, API keys, audit log, agent policy)."
+  say "  First login: user admin, with the bootstrap password the server prints once to its"
+  say "  log on first boot (save it; recreating the container discards that log):"
+  say "    cd $DIR && $COMPOSE logs datris | grep \"Bootstrap login\""
+  say "  Change it after you log in. CLI, MCP and API clients need a key from"
+  say "  Configuration -> API Keys (pass it as x-api-key / DATRIS_API_KEY)."
+}
+
 # --- launch ---------------------------------------------------------------
 if [ "${DATRIS_NO_START:-}" = "1" ]; then
   ok "Files written to $DIR. Skipping start (DATRIS_NO_START=1)."
   say "Run it with:  cd $DIR && $COMPOSE up -d"
+  print_governed_hint
   exit 0
 fi
 
@@ -942,16 +970,9 @@ say "  MCP:  http://localhost:3000"
 say ""
 say "First boot may pull an embedding model (~2.2 GB) if you chose the bundled"
 say "embedding server — give it a couple minutes."
-if [ "$GOVERNED_ON" = "1" ]; then
-  say ""
-  say "Governance controls are on (user login, API keys, audit log, agent policy)."
-  say "  First login: user admin, with the bootstrap password the server prints once to its log:"
-  say "    cd $DIR && $COMPOSE logs datris | grep \"Bootstrap login\""
-  say "  Change it after you log in. CLI, MCP and API clients need a key from"
-  say "  Configuration -> API Keys (pass it as x-api-key / DATRIS_API_KEY)."
-fi
+print_governed_hint
 say "Logs:   cd $DIR && $COMPOSE logs -f datris"
-say "Stop:  cd $DIR && $COMPOSE down          (full teardown incl. opt-in services:"
+say "Stop:   cd $DIR && $COMPOSE down          (full teardown incl. opt-in services:"
 say "        cd $DIR && $COMPOSE --profile \"*\" down)"
 say ""
 say "If Datris is useful to you, a GitHub star helps other people find it:"

@@ -33,7 +33,15 @@ User login, API keys, the audit log and the agent policy ship in the open-source
 curl -fsSL https://get.datris.ai/install.sh | DATRIS_GOVERNED=1 sh
 ```
 
-**Existing install:** add these four lines to `./datris/.env`:
+**Existing install:** first read and save the `admin` bootstrap password. The server prints it once, in the log of the container that seeded `admin`, and recreating the container (the next command) discards that log:
+
+```bash
+cd datris && docker compose logs datris | grep "Bootstrap login"
+```
+
+If nothing is printed, the line is already gone (the container was upgraded or recreated since `admin` was seeded); follow [Recovering admin access](/user-auth#recovering-admin-access) to get a new one. If you already set your own `admin` password, use that.
+
+Then add these four lines to `./datris/.env`:
 
 ```bash
 USE_USER_AUTH=true
@@ -50,13 +58,7 @@ cd datris && docker compose up -d --force-recreate datris mcp-server
 
 `datris doctor` reports any of the four that is still off as a `governance.controls` warning.
 
-Open [http://localhost:4200](http://localhost:4200). The first login is `admin` with the bootstrap password the server prints once to its log:
-
-```bash
-cd datris && docker compose logs datris | grep "Bootstrap login"
-```
-
-Change it after you log in (your username in the top-right → **Change password**).
+Open [http://localhost:4200](http://localhost:4200). The first login is `admin` with the bootstrap password. On a new install it is in the log of the first boot (`cd datris && docker compose logs datris | grep "Bootstrap login"`); on an existing install use the one you saved above. Change it after you log in (your username in the top-right → **Change password**).
 
 ## 3. Set one policy rule
 

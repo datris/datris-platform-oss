@@ -32,7 +32,7 @@ docker compose up -d datris
 Do **not** use `docker compose restart` to apply an `.env` change. `restart` reuses the existing container with its **old** environment, so your edit is silently ignored. Always use `up -d` (which recreates the container) or a `down` / `up`.
 </Warning>
 
-**Enabling `USE_USER_AUTH` is a clean toggle.** When the user table is empty the server seeds an `admin` user with a random bootstrap password and prints it once to its log (`docker compose logs datris | grep "Bootstrap login"`), so after you recreate the container your first login is `admin` with that password — there's no separate provisioning step and no lockout risk. Change it after you log in. See [User Authentication](/user-auth) for the full walkthrough.
+**Enabling `USE_USER_AUTH` is a clean toggle.** When the user table is empty the server seeds an `admin` user with a random bootstrap password and prints it once, in the log of that container only (`docker compose logs datris | grep "Bootstrap login"`). Read and save it **before** you recreate the container to turn the flag on, because recreating discards that log; your first login is then `admin` with that password, and there's no separate provisioning step. If the line is already gone, follow [Recovering admin access](/user-auth#recovering-admin-access). Change the password after you log in. See [User Authentication](/user-auth) for the full walkthrough.
 
 ## Full Reference
 

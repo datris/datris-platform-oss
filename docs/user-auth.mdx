@@ -18,34 +18,36 @@ When the flag is off, the toggle has zero effect on data — pipelines, taps, se
 
 ## Enabling it
 
-1. Add the flag to your `.env`:
-
-   ```bash
-   USE_USER_AUTH=true
-   ```
-
-2. Recreate the Datris container:
-
-   ```bash
-   docker compose up -d --force-recreate datris
-   ```
-
-3. Open the UI. You'll see the login screen.
-
-4. Read the seed account's bootstrap password from the server log. The server generates it at random and prints it once, when it seeds `admin`:
+1. Read and save the seed account's bootstrap password. The server generates it at random when it seeds `admin` (on the first boot, whether or not `USE_USER_AUTH` is on) and prints it once, in the log of that container only. Recreating the container (step 3) discards that log, so read it first:
 
    ```bash
    docker compose logs datris | grep "Bootstrap login"
    ```
 
-5. Log in as `admin` with that password, then change it right away (your username in the top-right → **Change password**, minimum 5 characters). After that, `admin` is your administrator account.
+   If nothing is printed, the container has been upgraded or recreated since `admin` was seeded and the line is gone; see [Recovering admin access](#recovering-admin-access). If you already set your own `admin` password, use that.
+
+2. Add the flag to your `.env`:
+
+   ```bash
+   USE_USER_AUTH=true
+   ```
+
+3. Recreate the Datris container:
+
+   ```bash
+   docker compose up -d --force-recreate datris
+   ```
+
+4. Open the UI. You'll see the login screen.
+
+5. Log in as `admin` with the password from step 1, then change it right away (your username in the top-right → **Change password**, minimum 5 characters). After that, `admin` is your administrator account.
 
 <Tip>
 A new install can switch on login, API keys, the audit log and the agent policy in one step: run the installer with `DATRIS_GOVERNED=1`. See [Switch on the governance controls](/quick-start#2-switch-on-the-governance-controls).
 </Tip>
 
 <Note>
-The default `admin` row is seeded on **every startup** (idempotent — only when the user table is empty), regardless of whether `USE_USER_AUTH` is on, with a fresh bootstrap password printed once to the log. If the stack has been running a while, the line may be far back in the log; `docker compose logs datris | grep "Bootstrap login"` finds it. That means flipping the flag on later "just works" — there's no separate provisioning step.
+The default `admin` row is seeded on **every startup** (idempotent — only when the user table is empty), regardless of whether `USE_USER_AUTH` is on, with a fresh bootstrap password printed once to that container's log. The line does not survive an upgrade or a recreate of the container, so save it when you first install. That means flipping the flag on later "just works" — there's no separate provisioning step.
 </Note>
 
 ## Roles
@@ -70,7 +72,22 @@ Click your username in the top-right → **Change password**. Enter your current
 
 If you've forgotten your password and there's another admin: have them delete and re-add your user with a new initial password and send it to you; log in with it and change it.
 
-If you're the **only** admin and you've lost the password, you'll need to clear your user row directly in MongoDB (the user table lives in the platform's internal database, default `oss`). After deletion, restart Datris — the seed runs only when the user table is empty, so remove any other user rows too. With no users left, the seed recreates `admin` with a new bootstrap password printed once to the log (`docker compose logs datris | grep "Bootstrap login"`). Log in with it and change it through the UI.
+If you're the **only** admin and you've lost the password, see [Recovering admin access](#recovering-admin-access).
+
+## Recovering admin access
+
+Use this when you are the only admin and cannot log in: you lost the password, or the `admin` bootstrap password is no longer in the server log (it is printed once, and an upgrade or recreate of the container discards it).
+
+At startup the server gives every account that has no password a new random bootstrap password and prints it once. So clear the account's password in MongoDB, then recreate the server. With the bundled MongoDB and the default environment `oss`, users live in the `oss-user` collection of the `oss` database (the server's internal database):
+
+```bash
+docker compose exec mongodb mongosh oss --quiet \
+  --eval 'db.getCollection("oss-user").updateOne({username: "admin"}, {$set: {passwordHash: null}})'
+docker compose up -d --force-recreate datris
+docker compose logs datris | grep "Assigned a bootstrap password"
+```
+
+The last line prints `User 'admin' had no password set ... Assigned a bootstrap password: <password>`. Log in as `admin` with it and change it right away. Other users are untouched. Until you recreate the server, the cleared account cannot log in at all.
 
 ## Reverting
 
