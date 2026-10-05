@@ -3,6 +3,22 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.43.0" description="October 5, 2026">
+  **A HIPAA Safe Harbor preset, a switch that keeps row values away from AI helpers, clearer errors, and an installer agents can run.**
+
+  - **HIPAA Safe Harbor preset for field protection.** Datris recognises the Safe Harbor identifier classes from field names with a fixed table and no AI call, proposes a method for each, and lists what needs a person's review. When enforced, a pipeline cannot be saved with an unprotected identifier and new columns are protected before they land. Available in the wizard, on the pipeline page and to agents. An aid, not a certification. See [Field Protection](/transformation/field-protection).
+  - **One switch so helpers send no row values to a model.** With `DATRIS_AI_SAMPLE_VALUES=false`, schema generation, profiling, Assistant attachments and AI rule and transformation generation work from structure only. The default is unchanged, and `datris doctor` reports the setting.
+  - **A new mask option** keeps the first three characters.
+  - **Schema generation and profiling no longer fail when the model declines.** You get a usable result with a note.
+  - **An invalid pipeline is reported as an invalid request**, with the same message, shown as plain text.
+  - **Failed runs show the error, not a Java stack trace.** The trace is behind a toggle in the Ops activity view and in the server log.
+  - **Fixed: a column the destination already declares is no longer added twice** when it later arrives as a new source column.
+  - **Fixed: editing a pipeline in the wizard keeps its protection settings.**
+  - **Install Datris from an agent.** See [Install for Agents](/install-for-agents). The installer also stops clearly when no AI provider is given and cleans up after a failed first run.
+
+  **Upgrading:** `docker compose pull && docker compose up -d --force-recreate`. The server, UI and MCP server images changed. A refused pipeline save now returns HTTP 400 where it returned 500, with the same message. A failed run's stack trace moved from the status description to a separate detail field. To use `DATRIS_AI_SAMPLE_VALUES` on an existing install, add it to your `.env`.
+</Update>
+
 <Update label="v1.42.0" description="October 3, 2026">
   **Field protection for PII and PHI, reveal for authorized users, and tighter rules for secrets.**
 
