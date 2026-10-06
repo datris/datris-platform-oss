@@ -319,7 +319,8 @@ class Transformation(jobContext: JobContext) {
         if (data.isDelimited && data.rowCount > 0 && data.header != null) {
             val delimiter = CsvAttributes.delimiterOf(config)
             statusUtil.info("processing", "CodeGen transformation on " + data.rowCount + " rows")
-            val result = CodeGenTransformationEvaluator.transformCsv(instruction, data, delimiter, config.name)
+            val result =
+                CodeGenTransformationEvaluator.transformCsv(instruction, data, delimiter, config, (line: String) => statusUtil.info("processing", line))
             // The transformation may add, drop or reorder columns. Carry the
             // emitted header forward so downstream loaders project by name
             // against the new shape instead of positionally against the old
@@ -346,7 +347,8 @@ class Transformation(jobContext: JobContext) {
         } else if (data.isDocument) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen transformation on " + (if (isJson) "JSON" else "XML") + " data")
-            val transformed = CodeGenTransformationEvaluator.transformRaw(instruction, data, isJson, config.name)
+            val transformed =
+                CodeGenTransformationEvaluator.transformRaw(instruction, data, isJson, config, (line: String) => statusUtil.info("processing", line))
             jobContext.copy(data = data.withStaged(transformed))
         } else {
             jobContext

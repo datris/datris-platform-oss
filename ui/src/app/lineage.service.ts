@@ -88,10 +88,32 @@ export interface ColumnLineage {
   sourceFields: string[];
   destinationFields: string[];
   destinationSchema: 'declared' | 'inherited' | 'none';
-  transformation: { kind: 'ai' | 'rowFunctions' | 'preprocessor' | 'none'; instruction?: string };
+  transformation: {
+    kind: 'ai' | 'rowFunctions' | 'preprocessor' | 'protect' | 'none';
+    instruction?: string;
+    /** Stored CodeGen script for an AI transformation (when one is recorded). */
+    scriptGeneratedAt?: string;
+    scriptModel?: string;
+    scriptStatus?: 'ready' | 'pending' | string;
+    scriptPendingReason?: string;
+  };
   edges: ColumnEdge[];
   unresolved: string[];
   inferred: { available: boolean; computed?: boolean; computedAt?: string; model?: string; note?: string; error?: string };
+}
+
+/** One stored CodeGen script (GET /api/v1/pipelines/{name}/codegen-scripts). */
+export interface CodegenScript {
+  kind: 'dataQuality' | 'transformation' | string;
+  instruction: string;
+  script?: string | null;
+  generatedAt?: string | null;
+  model?: string | null;
+  modelIsCurrent?: boolean;
+  status: 'ready' | 'pending' | string;
+  pendingReason?: string | null;
+  origin?: 'save' | 'run' | 'regenerate' | string | null;
+  storage?: string | null;
 }
 
 export interface LineageGraph {
@@ -143,5 +165,20 @@ export class LineageService {
     if (opts?.version) params = params.set('version', String(opts.version));
     if (opts?.infer) params = params.set('infer', 'true');
     return this.http.get<ColumnLineage>('/api/v1/lineage/columns/' + encodeURIComponent(pipeline), { params });
+  }
+
+  /** The pipeline's stored CodeGen scripts (AI rule, AI transformation). */
+  codegenScripts(pipeline: string): Observable<{ pipeline: string; scripts: CodegenScript[] }> {
+    return this.http.get<{ pipeline: string; scripts: CodegenScript[] }>(
+      '/api/v1/pipelines/' + encodeURIComponent(pipeline) + '/codegen-scripts'
+    );
+  }
+
+  /** Force a new CodeGen script for one kind; resolves with the new entry. */
+  regenerateCodegenScript(pipeline: string, kind: string): Observable<CodegenScript> {
+    return this.http.post<CodegenScript>(
+      '/api/v1/pipelines/' + encodeURIComponent(pipeline) + '/codegen-scripts/' + encodeURIComponent(kind) + '/regenerate',
+      {}
+    );
   }
 }

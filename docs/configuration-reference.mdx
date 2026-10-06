@@ -385,7 +385,7 @@ The following buckets are created automatically by the `minio-init` container:
 | `{environment}-tap-ledger` | Document-tap ledger of processed documents |
 | `{environment}-tap-prompt` | Tap prompt fragments |
 | `{environment}-code-repo` | Git repository connections for repo-backed tap scripts |
-| `{environment}-codegen-scripts` | Last CodeGen transformation script per pipeline |
+| `{environment}-codegen-scripts` | Index of each pipeline's stored CodeGen scripts (AI rule, AI transformation): where the script is stored, fingerprint, model, generated-at, ready or pending. The script text is in the object store under `pipeline-scripts/<pipeline>/` |
 | `{environment}-run-lineage` | One document per pipeline run (what it read, wrote, and how it ended) |
 | `{environment}-column-lineage` | AI-inferred column mappings per pipeline version |
 | `{environment}-user` | User accounts (when `USE_USER_AUTH=true`) |

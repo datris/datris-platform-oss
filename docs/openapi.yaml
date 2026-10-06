@@ -28,6 +28,43 @@ components:
       description: Optional API key for authentication (enabled via application.yaml)
 
   schemas:
+    CodegenScript:
+      type: object
+      description: A stored CodeGen script (AI data-quality rule or AI transformation).
+      properties:
+        kind:
+          type: string
+          enum: [dataQuality, transformation]
+        instruction:
+          type: string
+        script:
+          type: string
+          nullable: true
+        generatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        model:
+          type: string
+          nullable: true
+          description: The CodeGen model that wrote the script.
+        modelIsCurrent:
+          type: boolean
+          description: False when the CodeGen model setting has changed since.
+        status:
+          type: string
+          enum: [ready, pending]
+        pendingReason:
+          type: string
+          nullable: true
+        origin:
+          type: string
+          enum: [save, run, regenerate]
+          nullable: true
+        storage:
+          type: string
+          description: Script store (`minio` for the built-in object store).
+          nullable: true
     FieldProtectionPolicy:
       type: object
       description: >-
@@ -1023,7 +1060,7 @@ paths:
                   $ref: '#/components/schemas/UnityCatalogSync'
       responses:
         '200':
-          description: Pipeline created/updated. `warnings` is advisory; the pipeline is saved either way (empty array when there is nothing to say). Today it warns when an object-store Iceberg pipeline's Unity Catalog secret points at a Databricks workspace with catalogMode register or rest, which Databricks cannot serve; set catalogMode managed or use the databricks destination.
+          description: Pipeline created/updated. `warnings` is advisory; the pipeline is saved either way (empty array when there is nothing to say). It warns when an object-store Iceberg pipeline's Unity Catalog secret points at a Databricks workspace with catalogMode register or rest, which Databricks cannot serve (set catalogMode managed or use the databricks destination), and when a CodeGen script could not be generated at save. `codegenScripts` reports, per AI data-quality rule and AI transformation, whether the script generated at save is `ready` or `pending` (empty array when the pipeline has neither). Saving a pipeline with an AI instruction can wait for up to two model calls; re-saving with an unchanged instruction and source schema makes none.
           content:
             application/json:
               schema:
@@ -1034,6 +1071,30 @@ paths:
                     description: Advisory messages about the saved configuration; the pipeline is saved regardless.
                     items:
                       type: string
+                  codegenScripts:
+                    type: array
+                    description: >-
+                      One entry per AI kind the pipeline has. `pending` means no
+                      script was generated at save (no AI key, model
+                      unreachable, AI disabled, or a JSON/XML source with no
+                      column schema); `pendingReason` says why and the first
+                      run generates and stores the script.
+                    items:
+                      type: object
+                      properties:
+                        kind:
+                          type: string
+                          enum: [dataQuality, transformation]
+                        status:
+                          type: string
+                          enum: [ready, pending]
+                        pendingReason:
+                          type: string
+                        generatedAt:
+                          type: string
+                          format: date-time
+                        model:
+                          type: string
         '400':
           description: >-
             The configuration was refused and nothing was saved: it failed
@@ -1350,6 +1411,77 @@ paths:
         '500':
           description: Error
 
+  /api/v1/pipelines/{name}/codegen-scripts:
+    get:
+      tags: [Pipelines]
+      summary: Stored CodeGen scripts for a pipeline
+      description: >-
+        The Python scripts the pipeline's AI data-quality rule and AI
+        transformation run. A script is generated when the pipeline is saved
+        (from the source schema, no row values) or, when none can be used, by
+        the first run that needs it, and every later run executes the stored
+        script without a model call. A changed instruction or source schema
+        regenerates it; a changed CodeGen model does not (`modelIsCurrent` is
+        false then; use the regenerate endpoint to adopt the new model).
+        Requires `pipeline:read`.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: One entry per AI kind the pipeline has
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  scripts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CodegenScript'
+        '404':
+          description: Unknown pipeline
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/regenerate:
+    post:
+      tags: [Pipelines]
+      summary: Force a new CodeGen script
+      description: >-
+        Generates a new script for `kind` now, from the source schema, with
+        the current CodeGen model, and replaces the stored one. If generation
+        fails the error is returned (502) and the current script stays in
+        place. For a JSON or XML pipeline the script is marked pending and the
+        next run generates it from its data. Requires `pipeline:create`.
+        Audited.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+      responses:
+        '200':
+          description: The new script entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodegenScript'
+        '400':
+          description: Unknown kind, or the pipeline has no AI instruction of that kind
+        '404':
+          description: Unknown pipeline
+        '502':
+          description: Generation failed; the current script is unchanged
   /api/v1/pipeline/dest-types:
     get:
       tags: [Pipelines]
@@ -5491,7 +5623,7 @@ paths:
         with confidence `exact`, stamped provenance columns as `system`) is
         always returned. For pipelines with an AI transformation, `infer=true`
         runs the opt-in extraction — the codegen model reads the instruction,
-        the field lists and the last generated script, and returns only
+        the field lists and the stored CodeGen script, and returns only
         mappings it can evidence (`rename` / `derive` / `drop`, confidence
         `inferred`). Inferred results are cached per definition version and
         never recomputed unless the definition changes.
@@ -5544,8 +5676,20 @@ paths:
                     properties:
                       kind:
                         type: string
-                        enum: [ai, rowFunctions, preprocessor, none]
+                        enum: [ai, rowFunctions, protect, preprocessor, none]
                       instruction:
+                        type: string
+                      scriptGeneratedAt:
+                        type: string
+                        description: AI transformation only — when the stored CodeGen script was generated.
+                      scriptModel:
+                        type: string
+                        description: AI transformation only — the model that wrote the stored script.
+                      scriptStatus:
+                        type: string
+                        enum: [ready, pending]
+                        description: AI transformation only — absent when no script is recorded yet.
+                      scriptPendingReason:
                         type: string
                   edges:
                     type: array

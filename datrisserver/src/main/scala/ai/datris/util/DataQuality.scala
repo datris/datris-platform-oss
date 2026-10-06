@@ -116,11 +116,11 @@ class DataQuality(jobContext: JobContext) {
         val failures = if (data.isDelimited && data.rowCount > 0 && data.header != null) {
             val delimiter = CsvAttributes.delimiterOf(config)
             statusUtil.info("processing", "CodeGen rule validating " + data.rowCount + " rows")
-            CodeGenRuleEvaluator.evaluateCsv(instruction, data, delimiter)
+            CodeGenRuleEvaluator.evaluateCsv(instruction, data, delimiter, config, (line: String) => statusUtil.info("processing", line))
         } else if (data.isDocument) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen rule on " + (if (isJson) "JSON" else "XML") + " data")
-            CodeGenRuleEvaluator.evaluateRaw(instruction, data, isJson)
+            CodeGenRuleEvaluator.evaluateRaw(instruction, data, isJson, config, (line: String) => statusUtil.info("processing", line))
         } else {
             List.empty
         }

@@ -30,13 +30,32 @@ case class InferredColumnLineage(
     note: String = null
 )
 
-/** The last CodeGen transformation script generated for a pipeline, kept in
-  * `<env>-codegen-scripts` so column-lineage inference has real evidence
-  * beyond the instruction text. One row per pipeline; overwritten each run. */
+/** The CodeGen script (AI data-quality rule or AI transformation) a pipeline
+  * runs, indexed in `<env>-codegen-scripts` keyed `pipeline|kind`. The script
+  * text lives in the script store (`storage` + `scriptPath`, or the repo
+  * fields); `script` is only set on rows written before scripts were stored
+  * (kept so lineage can still read them). Written at pipeline save, at a run
+  * that had no usable script, or on a forced regenerate (`origin`).
+  *
+  * `fingerprint` hashes the instruction and the source schema signature;
+  * `generatedAgainst` is the delimited header the script was written for;
+  * `status` is `ready` or `pending` (no script yet, `pendingReason` says
+  * why); `contractVersion` is the evaluator's script contract at generation. */
 case class CodeGenScript(
     pipeline: String,
     kind: String,
     instruction: String,
     script: String,
-    generatedAt: String = null
+    generatedAt: String = null,
+    storage: String = null,
+    scriptPath: String = null,
+    scriptRepoPath: String = null,
+    scriptCommitSha: String = null,
+    fingerprint: String = null,
+    generatedAgainst: java.util.List[String] = null,
+    model: String = null,
+    status: String = null,
+    pendingReason: String = null,
+    origin: String = null,
+    contractVersion: Int = 0
 )

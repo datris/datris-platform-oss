@@ -64,6 +64,10 @@ object CapabilityRoutes {
         Route("GET", "/api/v1/pipeline", "pipeline", "read"),
         Route("GET", "/api/v1/pipelines", "pipeline", "read"),
         Route("GET", "/api/v1/pipelines/*/unity-catalog", "pipeline", "read"),
+        // Stored CodeGen scripts: read, and force a new one (regenerate writes
+        // what the pipeline runs, so it needs the right to create pipelines).
+        Route("GET", "/api/v1/pipelines/*/codegen-scripts", "pipeline", "read"),
+        Route("POST", "/api/v1/pipelines/*/codegen-scripts/*/regenerate", "pipeline", "create"),
         Route("POST", "/api/v1/pipeline", "pipeline", "create"),
         Route("DELETE", "/api/v1/pipeline", "pipeline", "delete"),
         Route("POST", "/api/v1/pipeline/generate", "pipeline", "create"),

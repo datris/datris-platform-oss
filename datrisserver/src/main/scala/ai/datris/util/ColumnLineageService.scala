@@ -22,8 +22,8 @@ import scala.collection.JavaConverters._
   *    Stamped `_datris_*` columns are `system` edges.
   *  - **Inferred** (opt-in per request, cached per `pipeline|version`): when
   *    the pipeline has an AI transformation, the codegen model reads the
-  *    instruction, the field lists and — when a run has happened — the last
-  *    generated script, and returns only mappings the evidence supports.
+  *    instruction, the field lists and — when one is stored — the pipeline's
+  *    CodeGen transformation script, and returns only mappings the evidence supports.
   *    Never blocks a run: computed on request, out of band.
   */
 object ColumnLineageService {
@@ -96,12 +96,26 @@ object ColumnLineageService {
         if (sp == null || sp.fields == null) Nil
         else sp.fields.asScala.toList.filter(f => f != null && f.name != null && f.name.nonEmpty).map(_.name)
 
-    private[datris] def transformationInfo(c: PipelineConfig): JsonObject = {
+    /** The transformation summary from the config alone (no script fields). */
+    private[datris] def transformationInfo(c: PipelineConfig): JsonObject = transformationInfo(c, null)
+
+    /** The transformation summary; for an AI transformation with `scripts`,
+      * also the stored script's `scriptGeneratedAt`, `scriptModel` and
+      * `scriptStatus` (`ready` | `pending`, with `scriptPendingReason`). */
+    private[datris] def transformationInfo(c: PipelineConfig, scripts: PipelineScripts): JsonObject = {
         val o = new JsonObject()
         val t = c.transformation
         if (t != null && t.aiTransformation != null && t.aiTransformation.instruction != null) {
             o.addProperty("kind", "ai")
             o.addProperty("instruction", t.aiTransformation.instruction)
+            if (scripts != null)
+                try scripts.record(c.name, PipelineScripts.Transformation).foreach { r =>
+                        if (r.generatedAt != null) o.addProperty("scriptGeneratedAt", r.generatedAt)
+                        if (r.model != null) o.addProperty("scriptModel", r.model)
+                        o.addProperty("scriptStatus", Option(r.status).getOrElse(PipelineScripts.Ready))
+                        if (r.pendingReason != null) o.addProperty("scriptPendingReason", r.pendingReason)
+                    }
+                catch { case e: Exception => logger.warn("CodeGen script record unreadable for " + c.name + ": " + e.getMessage) }
         } else if (t != null && t.rowFunctions != null && !t.rowFunctions.isEmpty) {
             o.addProperty("kind", "rowFunctions")
         } else if (FieldProtection.protectedFields(c).nonEmpty) {
@@ -207,23 +221,40 @@ object ColumnLineageService {
         }
     }
 
-    private def infer(c: PipelineConfig, version: Int, src: List[String], dst: List[String], exact: List[ColumnEdge]): InferredColumnLineage = {
+    private def infer(c: PipelineConfig, version: Int, src: List[String], dst: List[String], exact: List[ColumnEdge]): InferredColumnLineage =
+        infer(c, version, src, dst, exact, PipelineScripts, CodeGenRuleEvaluator.codegenAI)
+
+    /** Seam for specs: the script comes from `scripts` (store, or a legacy
+      * record's text; unreadable ⇒ absent) and `ai` is the model call. */
+    private[datris] def infer(
+        c: PipelineConfig,
+        version: Int,
+        src: List[String],
+        dst: List[String],
+        exact: List[ColumnEdge],
+        scripts: PipelineScripts,
+        ai: (String, String) => String
+    ): InferredColumnLineage = {
         val instruction = c.transformation.aiTransformation.instruction
-        val script = CodeGenScriptIO.read(c.name, "transformation").filter(_.instruction == instruction)
+        val script: Option[String] =
+            try
+                scripts.record(c.name, PipelineScripts.Transformation)
+                    .filter(_.instruction == instruction)
+                    .flatMap(_ => scripts.readText(c.name, PipelineScripts.Transformation))
+            catch { case _: Exception => None }
         val user = new StringBuilder()
         user.append("Input fields: ").append(src.mkString(", ")).append("\n")
         user.append("Output fields: ").append(dst.mkString(", ")).append("\n")
         user.append("Already exact (passthrough): ").append(exact.filter(_.op == "passthrough").map(_.to).mkString(", ")).append("\n\n")
         user.append("Transformation instruction: \"").append(instruction).append("\"\n")
-        script.foreach(s => user.append("\nGenerated script implementing it:\n").append(s.script.take(12000)).append("\n"))
-        val cfg = DatrisEnvironment.aiConfigForCodegen
-        val text = AIUtil.extractText(AIUtil.callAIWithSystem(SystemPrompt, user.toString, cfg), cfg)
+        script.foreach(s => user.append("\nGenerated script implementing it:\n").append(s.take(12000)).append("\n"))
+        val text = ai(SystemPrompt, user.toString)
         val edges = parseInferred(text, src, dst)
         InferredColumnLineage(
             c.name,
             version,
             edges.asJava,
-            cfg.model,
+            scala.util.Try(DatrisEnvironment.aiConfigForCodegen.model).getOrElse(null),
             java.time.Instant.now().toString,
             if (edges.isEmpty) "No mappings evidenced by the instruction" + (if (script.isDefined) " or script" else "") else null
         )
@@ -244,7 +275,7 @@ object ColumnLineageService {
         // the schema is inherited this is the source order.
         val declaredDst = fieldNames(if (c.destination != null) c.destination.schemaProperties else null).filterNot(_.startsWith(ProvenanceStamper.Prefix))
         val dst = if (declaredDst.nonEmpty) declaredDst else exact.filter(_.op == "passthrough").map(_.to) ++ unresolved
-        val tx = transformationInfo(c)
+        val tx = transformationInfo(c, PipelineScripts)
         val canInfer = tx.get("kind").getAsString == "ai" && (src.nonEmpty || dst.nonEmpty)
 
         val inferredMeta = new JsonObject()

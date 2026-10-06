@@ -60,6 +60,11 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
   neighborhoodLoading = false;
   columnsOpen = false;
   inferring = false;
+  /** Stored transformation script shown under the instruction (View). */
+  scriptText: string | null = null;
+  scriptLoading = false;
+  regenerating = false;
+  scriptError = '';
 
   readonly legend: { type: LineageNodeType; color: string; label: string }[] = [
     { type: 'source', color: COLOR.source, label: 'Source' },
@@ -420,6 +425,43 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
         if (this.neighborhood?.columns) this.neighborhood.columns.inferred.error = e?.error?.error || 'inference failed';
         this.inferring = false;
       }
+    });
+  }
+
+  /** Loads the stored CodeGen transformation script; toggles it closed when shown. */
+  viewScript(): void {
+    const c = this.columns();
+    if (!c || this.scriptLoading) return;
+    if (this.scriptText !== null) { this.scriptText = null; return; }
+    this.scriptLoading = true;
+    this.scriptError = '';
+    this.lineageService.codegenScripts(c.pipeline).subscribe({
+      next: r => {
+        const tx = (r.scripts || []).find(s => s.kind === 'transformation');
+        this.scriptText = tx?.script || '';
+        if (!tx?.script) this.scriptError = 'No stored script yet.';
+        this.scriptLoading = false;
+      },
+      error: e => { this.scriptError = e?.error?.error || 'Could not load the script'; this.scriptLoading = false; }
+    });
+  }
+
+  /** Forces a new transformation script, then shows the new generated-at / model. */
+  regenerateScript(): void {
+    const c = this.columns();
+    if (!c || this.regenerating) return;
+    this.regenerating = true;
+    this.scriptError = '';
+    this.lineageService.regenerateCodegenScript(c.pipeline, 'transformation').subscribe({
+      next: r => {
+        c.transformation.scriptGeneratedAt = r.generatedAt || undefined;
+        c.transformation.scriptModel = r.model || undefined;
+        c.transformation.scriptStatus = r.status;
+        c.transformation.scriptPendingReason = r.pendingReason || undefined;
+        if (this.scriptText !== null) this.scriptText = r.script || '';
+        this.regenerating = false;
+      },
+      error: e => { this.scriptError = e?.error?.error || 'Regenerate failed'; this.regenerating = false; }
     });
   }
 

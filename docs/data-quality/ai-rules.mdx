@@ -3,7 +3,7 @@ title: "Data Quality — AI Rule"
 description: "AI-powered data quality rules"
 ---
 
-The `aiRule` validates data using a plain-English instruction. Datris generates a Python validation script from your instruction via an LLM (single API call), then runs the script in the container against all data.
+The `aiRule` validates data using a plain-English instruction. Datris generates a Python validation script from your instruction via an LLM (single API call) when the pipeline is saved, stores it, and runs the stored script in the container against all data on every run.
 ## Configuration
 
 Define the AI rule in the `aiRule` field within the `dataQuality` block of the pipeline configuration.
@@ -17,9 +17,9 @@ Define the AI rule in the `aiRule` field within the `dataQuality` block of the p
 
 ## How it works
 
-1. **Prompt generation** — Datris extracts column names and a few sample rows from the data, combines them with your instruction, and sends a single prompt to the configured AI model.
+1. **Prompt generation** — At pipeline save, Datris combines the source schema (delimiter, column names and types) with your instruction and sends a single prompt to the configured AI model. When a run has to generate the script instead (see [When the script is generated](#when-the-script-is-generated)), it uses the column names and a few sample rows from that run's data.
 2. **Script generation** — The AI model generates a self-contained Python 3 validation script (stdlib only, no pip packages).
-3. **Local execution** — The generated script is written to a temp file and executed via `python3` against the full data file. Processing cost is zero after the initial API call.
+3. **Local execution** — On every run, the stored script is written to a temp file and executed via `python3` against the full data file. Runs make no model call.
 4. **Result parsing** — The script outputs a JSON array of failures: `[{"index": <row_number>, "reason": "..."}]`. Datris parses this and maps failures back to the original data. The `index` is **0-based**: the first record is index `0`, the second is index `1`, and so on.
 5. **Cleanup** — Temp files are deleted after execution.
 
@@ -52,13 +52,28 @@ For all formats, the instruction is the same plain-English description. The LLM 
 
 ---
 
+## When the script is generated
+
+The script is generated once and stored, not on every run:
+
+- **At save** — Saving a pipeline with an AI rule (`POST /api/v1/pipeline`, the MCP `create_pipeline` tool, or the UI wizard) generates the script from the source schema: the delimiter and the ordered field names and types. No sample rows are available when a pipeline is saved, so state any format the rule depends on in the instruction (for example "dates are YYYY-MM-DD"). The script is stored in the built-in object store under `pipeline-scripts/<pipeline>/`.
+- **Every run** — Each run executes the stored script. A run makes no model call, gives the same result for the same data, and keeps working if the model is unreachable. The status shows "Running stored CodeGen script generated at ...".
+- **Re-saving** — Saving again regenerates only when the instruction or the source schema (delimiter, field names, types or order) changed. Re-saving an unchanged pipeline makes no model call. A changed CodeGen model does not regenerate: the script keeps the model that wrote it.
+- **Pending** — If the script cannot be generated at save (no AI key, model unreachable, AI disabled), the pipeline is still saved, the save response carries a warning and `codegenScripts` lists the script as `pending` with the reason. JSON and XML pipelines have no column schema to generate from, so they are always saved pending. The first run generates the script from its data, stores it, and later runs reuse it.
+- **Header differs** — If the header that reaches the rule differs from the one the script was written for (for example a column was removed by field protection or is missing from the file), that run generates a script for itself only and keeps the stored one. The status says why.
+- **Failures** — A stored script that exits with an error, times out, or prints output that is not a JSON array fails the run. It is not regenerated automatically: the error names when the script was generated and the regenerate endpoint.
+
+To read the stored script, call `GET /api/v1/pipelines/{name}/codegen-scripts`. To replace it (for example to adopt a new CodeGen model, or after a wrong script), call `POST /api/v1/pipelines/{name}/codegen-scripts/dataQuality/regenerate`, which needs the `pipeline:create` capability. If generation fails there, the current script stays in place.
+
+Pipelines created before stored scripts generate their script on the first run after the upgrade and reuse it after that.
+
 ## Values withheld
 
 When the server sets `DATRIS_AI_SAMPLE_VALUES=false`, the prompt carries the column names and schema types (or a value-free skeleton of a JSON or XML file) and the line "Sample rows withheld by configuration" instead of sample rows. The generated script still runs on the full data. Because the model cannot see what the values look like, state any format the rule depends on in the instruction (for example "dates are YYYY-MM-DD"). See [Field Protection](/transformation/field-protection#what-still-sees-raw-data).
 
 ## Behavior
 
-- The AI rule generates the Python script once per rule evaluation
+- The AI rule's Python script is generated when the pipeline is saved (or by the first run that needs one) and reused by every run until the instruction or source schema changes
 - The generated script runs in the container via `python3` with a 5-minute timeout
 - Scripts are constrained to Python standard library only (no external packages)
 - Rules with `onFailureIsError: true` are counted as errors; `onFailureIsError: false` are warnings

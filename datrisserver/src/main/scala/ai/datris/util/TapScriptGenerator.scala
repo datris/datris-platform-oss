@@ -432,9 +432,17 @@ object TapScriptGenerator {
     }
 
     /**
-     * Store a script (user-provided or AI-generated) in MinIO.
+     * Store a script (user-provided or AI-generated) in MinIO under
+     * `keyPrefix` (`tap-scripts/` for taps, `pipeline-scripts/<pipeline>/`
+     * for pipeline CodeGen scripts). Returns the object key.
      */
-    def storeScript(tapName: String, script: String, oldScriptPath: String = null): String = {
+    def storeScript(
+        tapName: String,
+        script: String,
+        oldScriptPath: String = null,
+        keyPrefix: String = "tap-scripts/",
+        objects: ObjectStoreUtility = null
+    ): String = {
         // Do NOT delete oldScriptPath. The UI's auto-revert (regression detect
         // or user-initiated "Revert to original") restores the prior scriptPath
         // and expects the file to still exist in MinIO. Deleting on every
@@ -446,21 +454,27 @@ object TapScriptGenerator {
         val env = DatrisEnvironment.current.environment
         val bucketName = env + "-config"
         val uuid = UUID.randomUUID().toString.substring(0, 8)
-        val key = "tap-scripts/" + tapName + "_" + uuid + ".py"
+        val key = keyPrefix + tapName + "_" + uuid + ".py"
 
-        ObjectStoreUtil.writeBucketObject(bucketName, key, script)
+        Option(objects).getOrElse(ObjectStoreUtil).writeBucketObject(bucketName, key, script)
         key
     }
 
     /**
      * Delete a script from MinIO.
      */
-    def deleteScript(scriptPath: String): Unit = {
-        if (scriptPath != null) {
+    def deleteScript(scriptPath: String): Unit = deleteScriptUnder(scriptPath, null, null)
+
+    /**
+     * Delete a script from MinIO. `keyPrefix`, when non-null, must prefix the
+     * path; a path outside it is left alone.
+     */
+    def deleteScriptUnder(scriptPath: String, keyPrefix: String, objects: ObjectStoreUtility): Unit = {
+        if (scriptPath != null && (keyPrefix == null || scriptPath.startsWith(keyPrefix))) {
             val env = DatrisEnvironment.current.environment
             val bucketName = env + "-config"
             try {
-                ObjectStoreUtil.deleteBucketObject(bucketName, scriptPath)
+                Option(objects).getOrElse(ObjectStoreUtil).deleteBucketObject(bucketName, scriptPath)
             } catch {
                 case e: Exception =>
                     logger.warn("Failed to delete tap script from object store: " + scriptPath + ", error: " + e.getMessage)
