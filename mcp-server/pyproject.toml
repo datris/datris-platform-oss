@@ -30,6 +30,7 @@ dependencies = [
     # list_tools decorator API this server is written against.
     "mcp[cli]>=1.28,<2",
     "requests",
+    "urllib3>=2.8.0",
     "click",
     "httpx",
     "httpx-sse",

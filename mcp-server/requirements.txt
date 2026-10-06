@@ -3,6 +3,7 @@
 # via a surprise pull on the next image build.
 mcp[cli]>=1.28,<2
 requests
+urllib3>=2.8.0
 python-dotenv
 uvicorn
 starlette

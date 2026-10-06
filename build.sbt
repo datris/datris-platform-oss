@@ -233,11 +233,10 @@ lazy val allDependencies = Seq(
     // Connection pooling for Postgres (slf4j-only transitives; no Spark conflicts)
     "com.zaxxer" % "HikariCP" % "5.1.0",
     "com.mysql" % "mysql-connector-j" % "8.4.0",
-    // 3.23.1 patches the client-side encryption key leak into DEBUG logs.
-    // The SdkProxyRoutePlanner resource-consumption advisory has no patched
-    // release (every version through 4.0.1 is flagged) — revisit on the next
-    // driver release.
-    "net.snowflake" % "snowflake-jdbc" % "3.23.1",
+    // 4.3.4 patches the sensitive-values-in-logs advisory and is past the
+    // SdkProxyRoutePlanner resource-consumption range (<= 4.0.1). 4.x is a
+    // major line; the Snowflake destination E2E must pass before release.
+    "net.snowflake" % "snowflake-jdbc" % "4.4.0",
     // Databricks OSS JDBC driver (Apache 2.0) — an uber jar with its own deps
     // shaded under com.databricks.jdbc.internal.*, so it can't collide with
     // Spark's arrow/netty. Used by DatabricksLoader / DatabricksQueryUtil.
@@ -269,8 +268,8 @@ lazy val allDependencies = Seq(
     "org.springframework.security" % "spring-security-crypto" % "6.4.13",
 
     // Spark
-    "org.apache.spark" %% "spark-core" % "3.5.7",
-    "org.apache.spark" %% "spark-sql" % "3.5.7",
+    "org.apache.spark" %% "spark-core" % "3.5.9",
+    "org.apache.spark" %% "spark-sql" % "3.5.9",
     // hadoop-aws must match the hadoop-common that Spark ships. Spark 3.5.x
     // bundles hadoop 3.3.4 — using a newer hadoop-aws (3.3.5+) leaves it
     // calling IOStatisticsBinding overloads that don't exist in 3.3.4, with
@@ -332,13 +331,13 @@ lazy val allDependencies = Seq(
 
     // Document text extraction
     "org.apache.pdfbox" % "pdfbox" % "3.0.4",
-    // POI 5.4.x patches the OOXML input-validation advisory; jsoup 1.23.1
-    // patches the Cleaner raw-text-element exposure. All three POI artifacts
+    // POI 5.4.x patches the OOXML input-validation advisory; jsoup 1.23.2
+    // patches the Cleaner raw-text-element exposure and its follow-up. All three POI artifacts
     // move together.
     "org.apache.poi" % "poi" % "5.4.1",
     "org.apache.poi" % "poi-ooxml" % "5.4.1",
     "org.apache.poi" % "poi-scratchpad" % "5.4.1",
-    "org.jsoup" % "jsoup" % "1.23.1",
+    "org.jsoup" % "jsoup" % "1.23.2",
 
     // Email parsing
     "org.eclipse.angus" % "angus-mail" % "2.0.3",
