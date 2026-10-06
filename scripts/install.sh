@@ -165,8 +165,11 @@ ok "Fetched compose file and runtime scripts."
 # device node can be readable yet fail to open ("Device not configured") when
 # there's no controlling terminal (CI, some `curl | sh` contexts). Actually
 # try to open it (error suppressed) so we fall back cleanly instead of aborting.
+# `true`, not `:` — `:` is a special builtin, and in dash (Debian/Ubuntu sh) a
+# failed redirection on a special builtin exits the shell (status 2) even
+# inside `if`, so a headless Linux install died here silently.
 TTY=""
-if { : < /dev/tty; } 2>/dev/null; then TTY="/dev/tty"; fi
+if { true < /dev/tty; } 2>/dev/null; then TTY="/dev/tty"; fi
 
 # Prompt helpers — all input flows through the TTY, never stdin (which is the
 # script itself under `curl | sh`).
