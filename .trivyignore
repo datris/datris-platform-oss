@@ -9,3 +9,12 @@
 CVE-2025-47273
 CVE-2026-59890
 GHSA-6v7p-g79w-8964
+
+# urllib3 2.7.0 VENDORED INSIDE pip 26.2.1 (pip/_vendor/vendor.txt) in the
+# datris-mcp-server image. The image's real site-packages carries urllib3
+# 2.8.0 (pinned >=2.8.0 in requirements.txt); pip is never invoked at runtime,
+# and the vendored copy only serves pip's own index fetches during the build.
+# Re-check when pip bumps its vendor set.
+CVE-2026-97687
+CVE-2026-97688
+CVE-2026-97689
