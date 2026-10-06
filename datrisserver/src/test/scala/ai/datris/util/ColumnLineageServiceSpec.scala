@@ -167,4 +167,109 @@ class ColumnLineageServiceSpec extends AnyFunSuite {
         assert(ti.exists(e => e._1 == List("ssn") && e._2 == "" && e._3 == "drop"), s"$ti")
         assert(!ti.exists(_._2 == "ssn"), s"$ti")
     }
+
+    // --- story: codegen-script-pinning (plans/stories/codegen-script-pinning.md)
+    //
+    // Pinned seam: inference and transformationInfo read the script through a
+    // PipelineScripts instance (see PipelineScriptsSpec for its constructor),
+    // and inference takes the model call as a function:
+    // {{{
+    // object ColumnLineageService {
+    //     private[datris] def infer(c: PipelineConfig, version: Int, src: List[String], dst: List[String],
+    //                               exact: List[ColumnEdge], scripts: PipelineScripts,
+    //                               ai: (String, String) => String): InferredColumnLineage
+    //     private[datris] def transformationInfo(c: PipelineConfig, scripts: PipelineScripts): JsonObject
+    // }
+    // }}}
+
+    private val txInstruction = "add full_name from first and last"
+
+    private class LineageRecords extends CodeGenScriptRecords {
+        val rows = scala.collection.mutable.Map[(String, String), CodeGenScript]()
+        override def read(pipeline: String, kind: String): Option[CodeGenScript] = rows.get((pipeline, kind))
+        override def write(record: CodeGenScript): Unit = rows((record.pipeline, record.kind)) = record
+        override def delete(pipeline: String, kind: String): Unit = rows.remove((pipeline, kind))
+    }
+
+    private class LineageStore(objects: Map[String, String]) extends CodeStore {
+        override def storage: String = "minio"
+        override def readScript(ref: ScriptRef): Option[String] = Option(ref.scriptPath).flatMap(objects.get)
+        override def storeScript(name: String, script: String, prior: ScriptRef, actor: String): StoredScript =
+            throw new UnsupportedOperationException("lineage never writes scripts")
+        override def deleteScript(ref: ScriptRef): Unit = ()
+        override def scriptExists(ref: ScriptRef): Boolean = readScript(ref).isDefined
+    }
+
+    private def lineageScripts(rec: CodeGenScript, objects: Map[String, String]): PipelineScripts = {
+        val recs = new LineageRecords
+        if (rec != null) recs.write(rec)
+        new PipelineScripts(recs, _ => new LineageStore(objects), (_, _) => fail("no generation here"), () => "model-now")
+    }
+
+    private def aiCfg(): PipelineConfig =
+        cfg(Seq("first", "last"), Seq("full_name"), ai.datris.model.Transformation(aiTransformation = AITransformation(txInstruction)))
+
+    private object LineageEnv extends AiSampleValuesMarkers
+
+    private def capturedInferencePrompt(scripts: PipelineScripts): String = {
+        var user: String = null
+        TenantContext.set(LineageEnv.testEnv)
+        try ColumnLineageService.infer(aiCfg(), 1, List("first", "last"), List("full_name"), Nil, scripts, (_, u) => { user = u; "[]" })
+        finally TenantContext.clear()
+        assert(user != null, "inference made its model call")
+        user
+    }
+
+    test("inference reads the script from the store") {
+        val rec = CodeGenScript(
+            pipeline = "p",
+            kind = "transformation",
+            instruction = txInstruction,
+            script = null,
+            generatedAt = "2026-10-06T00:00:00Z",
+            storage = "minio",
+            scriptPath = "pipeline-scripts/p/transformation_1.py",
+            status = "ready",
+            origin = "save",
+            model = "model-a"
+        )
+        val prompt = capturedInferencePrompt(lineageScripts(rec, Map("pipeline-scripts/p/transformation_1.py" -> "STORE_SCRIPT_TEXT = 1")))
+        assert(prompt.contains("STORE_SCRIPT_TEXT = 1"), prompt)
+
+        // An unreadable script is treated as absent: inference still runs on the instruction.
+        val missing = capturedInferencePrompt(lineageScripts(rec, Map.empty))
+        assert(missing.contains(txInstruction))
+        assert(!missing.contains("Generated script implementing it"), missing)
+    }
+
+    test("a legacy record's text is still used") {
+        val legacy = CodeGenScript("p", "transformation", txInstruction, "LEGACY_SCRIPT_TEXT = 1", "2026-01-01T00:00:00Z")
+        val prompt = capturedInferencePrompt(lineageScripts(legacy, Map.empty))
+        assert(prompt.contains("LEGACY_SCRIPT_TEXT = 1"), prompt)
+    }
+
+    test("transformationInfo carries the script fields") {
+        val rec = CodeGenScript(
+            pipeline = "p",
+            kind = "transformation",
+            instruction = txInstruction,
+            script = null,
+            generatedAt = "2026-10-06T01:02:03Z",
+            storage = "minio",
+            scriptPath = "pipeline-scripts/p/transformation_1.py",
+            status = "ready",
+            origin = "save",
+            model = "model-a"
+        )
+        val o = ColumnLineageService.transformationInfo(aiCfg(), lineageScripts(rec, Map("pipeline-scripts/p/transformation_1.py" -> "x = 1")))
+        assert(o.get("kind").getAsString == "ai")
+        assert(o.get("instruction").getAsString == txInstruction)
+        assert(o.get("scriptGeneratedAt").getAsString == "2026-10-06T01:02:03Z", o.toString)
+        assert(o.get("scriptModel").getAsString == "model-a", o.toString)
+        assert(o.get("scriptStatus").getAsString == "ready", o.toString)
+
+        val pending = rec.copy(status = "pending", pendingReason = "No AI provider key is configured", scriptPath = null, generatedAt = null, model = null)
+        val p = ColumnLineageService.transformationInfo(aiCfg(), lineageScripts(pending, Map.empty))
+        assert(p.get("scriptStatus").getAsString == "pending", p.toString)
+    }
 }
