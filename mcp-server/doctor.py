@@ -9,6 +9,10 @@ jar — and merges both halves into one report with the same shape.
 Every check is deterministic, read-only, and prints a remediation command; it
 never runs one. Values from `.env` / container env are never printed — only key
 names (and hashes where two values are compared).
+
+`version.update` is the only check that leaves the machine: one GET to
+datris.ai carrying the server version, OS and CPU architecture, switched off
+by DATRIS_UPDATE_CHECK=0 in the environment or in `.env`.
 """
 import hashlib
 import json
@@ -48,7 +52,14 @@ CREDENTIAL_KEY = re.compile(r"(PASSWORD|PASSWD|TOKEN|SECRET|_KEY\b|APIKEY|API_KE
 ANON_VOLUME = re.compile(r"^[0-9a-f]{64}$")
 
 # Keys `.env` may hold that no compose service is expected to forward.
-ENV_KEYS_NOT_FORWARDED = re.compile(r"^(COMPOSE_|DOCKER_)")
+# DATRIS_UPDATE_CHECK is read by this CLI from `.env`, never by a container.
+ENV_KEYS_NOT_FORWARDED = re.compile(r"^(COMPOSE_|DOCKER_|DATRIS_UPDATE_CHECK$)")
+
+# Update check (version.update). See check_version_update for the contract.
+UPDATE_URL = "https://get.datris.ai/version"
+UPDATE_CHECK_ENV = "DATRIS_UPDATE_CHECK"
+UPDATE_CHECK_OFF = ("0", "false", "off", "no")
+UPGRADE_DOCS_URL = "https://docs.datris.ai/production/upgrades"
 
 STATUS_ICON = {"ok": "✓", "warn": "!", "error": "✗", "skip": "○"}
 
@@ -411,6 +422,79 @@ def check_mcp_reachable(mcp_url, timeout=3):
     return result("mcp.reachable", "ok", f"MCP server at {mcp_url} answered HTTP {status}")
 
 
+def _version_tuple(value):
+    """(major, minor, patch) as integers from "1.43.0" or "1.43.0-SNAPSHOT"; None if unparseable."""
+    m = re.match(r"^\s*v?(\d+)\.(\d+)\.(\d+)", str(value or ""))
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def _cli_version():
+    try:
+        from importlib.metadata import version
+        return version("datris-mcp-server")
+    except Exception:
+        return "unknown"
+
+
+# Contract with datris.ai (the website builds its endpoint to this):
+#   GET https://get.datris.ai/version?version=<server>&os=<os>&arch=<arch>
+#   header User-Agent: datris-doctor/<cli version>
+# os is platform.system().lower() (linux, darwin, windows); arch is
+# platform.machine().lower() (x86_64, arm64, aarch64). No other header,
+# cookie, body or query parameter, and never an API key. The answer is
+# 200 {"latest": "1.45.0"}; any other status or body (a redirect included,
+# which is not followed) counts as unreachable.
+# Nothing is written to disk. Off when DATRIS_UPDATE_CHECK is 0/false/off in
+# the process environment or the parsed .env (the process environment wins).
+def check_version_update(version_info, env, timeout=3, url=UPDATE_URL, cli_version=None):
+    import platform
+    import requests
+    setting = os.environ.get(UPDATE_CHECK_ENV)
+    if setting is None:
+        setting = (env or {}).get(UPDATE_CHECK_ENV)
+    if setting is not None and setting.strip().lower() in UPDATE_CHECK_OFF:
+        return result("version.update", "skip", f"off ({UPDATE_CHECK_ENV}=0)")
+    running = (version_info or {}).get("version") if isinstance(version_info, dict) else None
+    if not running:
+        return result("version.update", "skip", "server version unknown; nothing sent")
+    unreachable = result("version.update", "skip", "could not reach datris.ai; nothing received")
+    try:
+        resp = requests.get(
+            url,
+            params={"version": str(running), "os": platform.system().lower(), "arch": platform.machine().lower()},
+            headers={"User-Agent": f"datris-doctor/{cli_version or _cli_version()}"},
+            timeout=min(timeout, 3),
+            allow_redirects=False,
+        )
+    except requests.RequestException:
+        return unreachable
+    try:
+        if resp.status_code != 200:
+            return unreachable
+        try:
+            body = resp.json()
+        except ValueError:
+            return unreachable
+    finally:
+        close = getattr(resp, "close", None)
+        if close:
+            close()
+    latest = body.get("latest") if isinstance(body, dict) else None
+    latest_t = _version_tuple(latest)
+    running_t = _version_tuple(running)
+    if latest_t is None or running_t is None:
+        return unreachable
+    if latest_t > running_t:
+        latest_s = ".".join(str(n) for n in latest_t)
+        return result(
+            "version.update", "warn",
+            f"a newer version {latest_s} is available (running {running})",
+            "datris doctor --pre-upgrade && docker compose pull && docker compose up -d --remove-orphans"
+            f"   # see {UPGRADE_DOCS_URL}",
+        )
+    return result("version.update", "ok", f"up to date ({running})")
+
+
 def check_disk_usage_host(runner):
     rc, root, _ = runner.run(["docker", "info", "--format", "{{.DockerRootDir}}"])
     root = root.strip()
@@ -568,9 +652,10 @@ def _timed(fn, *args, **kwargs):
     return r
 
 
-def run_host_checks(runner, mcp_url, version_info=None, pre_upgrade=False):
+def run_host_checks(runner, mcp_url, version_info=None, pre_upgrade=False, dotenv=None, cli_version=None):
     """Every host-side check, in report order. Without Docker on PATH every
-    check is a skip that says so."""
+    check is a skip that says so. `dotenv` is the parsed project `.env`, read
+    for the DATRIS_UPDATE_CHECK switch; --pre-upgrade makes no update request."""
     if not runner.has_docker():
         ids = ["volumes.anonymous", "volumes.dangling", "vault.hcl_drift", "env.not_forwarded", "env.container_drift",
                "compose.orphans", "build.stale_jar", "disk.usage"]
@@ -579,6 +664,7 @@ def run_host_checks(runner, mcp_url, version_info=None, pre_upgrade=False):
         rows = [result(i, "skip", "docker not on PATH — run `datris doctor` on the machine running Docker") for i in ids]
         if not pre_upgrade:
             rows.append(_timed(check_mcp_reachable, mcp_url))
+            rows.append(_timed(check_version_update, version_info, dotenv or {}, cli_version=cli_version))
         return rows
     rows = [
         _timed(check_volumes_anonymous, runner),
@@ -594,6 +680,7 @@ def run_host_checks(runner, mcp_url, version_info=None, pre_upgrade=False):
     else:
         rows.append(_timed(check_build_stale_jar, runner, version_info))
         rows.append(_timed(check_mcp_reachable, mcp_url))
+        rows.append(_timed(check_version_update, version_info, dotenv or {}, cli_version=cli_version))
     return rows
 
 

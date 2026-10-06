@@ -113,6 +113,7 @@ Two independent flags control access. Set them together — see [the supported m
 | `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional URL receiving a JSON POST on incident open / awaiting-approval / resolved / failed, and on doctor checks flipping to error when the periodic run is on |
 | `DOCTOR_ONSTARTUP` | `true` | Log the cheap [doctor](/doctor) checks at boot as `DOCTOR` lines. Maps to `doctor.onStartup` |
 | `DOCTOR_INTERVAL_MINUTES` | `0` | Re-run the server-side doctor checks every N minutes and POST checks that flip to error (or recover) to `INCIDENT_WEBHOOK_URL`. `0` = off. AI probes never run on the timer. Maps to `doctor.intervalMinutes` |
+| `DATRIS_UPDATE_CHECK` | `1` | Host-side only, read by the `datris doctor` CLI from the project `.env` or its environment (not by any container). `0`, `false` or `off` stops the `version.update` check from asking datris.ai whether a newer version exists; with it on, a full `datris doctor` run sends the server version, OS and CPU architecture. See [Doctor](/doctor#update-check) |
 
 One further audit setting lives only in `application.yaml`: `auditLog.emitLogLine` (default `true`; mirror each entry to the `ai.datris.audit` logger for SIEM pickup).
 

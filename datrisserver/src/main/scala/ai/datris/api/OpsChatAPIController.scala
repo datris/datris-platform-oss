@@ -156,7 +156,7 @@ class OpsChatAPIController {
 
         // Re-inject the dashboard snapshot on every turn as a leading user
         // message. Cheapest possible cadence — ship dumb, optimize if
-        // telemetry shows it wastes tokens (decision recorded in the plan).
+        // token usage shows it is wasteful (decision recorded in the plan).
         val withContext: List[(String, String)] = contextSnapshot match {
             case Some(ctx) => ("user", OpsAgentPrompt.renderContextMessage(ctx, openIncidents())) :: userMessages
             case None => userMessages

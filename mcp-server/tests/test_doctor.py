@@ -129,6 +129,13 @@ def test_env_not_forwarded_ok_when_referenced(tmp_path):
     assert doc.check_env_not_forwarded(FakeRunner({}, str(tmp_path)))["status"] == "ok"
 
 
+def test_env_not_forwarded_ignores_update_check_switch(tmp_path):
+    # DATRIS_UPDATE_CHECK is read by the doctor CLI from .env, not by a container.
+    (tmp_path / ".env").write_text("DATRIS_UPDATE_CHECK=0\n")
+    (tmp_path / "docker-compose.yml").write_text("services:\n  datris:\n    image: x\n")
+    assert doc.check_env_not_forwarded(FakeRunner({}, str(tmp_path)))["status"] == "ok"
+
+
 # 10. env.container_drift
 def _compose_config(env):
     return json.dumps({"services": {"datris": {"container_name": "datris", "environment": env}}})
