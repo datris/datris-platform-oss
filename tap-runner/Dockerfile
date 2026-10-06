@@ -1,7 +1,7 @@
 # datris-tap-runner — isolated tap execution sidecar (tap-execution-isolation Phase 3).
 # Holds NO platform secrets: no JVM, no Vault, no /datris/.env, no /config, no Docker socket.
 # Pinned by digest (multi-arch manifest list); Dependabot docker sends digest-bump PRs.
-FROM python:3.12-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
 # The Debian packages in the slim image lag behind bookworm-security fixes
 # (libpcre2 CVEs flagged by the weekly Trivy image scan).
@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools
 # declare extras run with no per-run install. (Tap-declared extras install into a
 # throwaway venv at runtime — see app.py.)
 RUN pip install --no-cache-dir \
-    requests beautifulsoup4 pandas lxml feedparser boto3 pyyaml openpyxl \
+    "urllib3>=2.8.0" requests beautifulsoup4 pandas lxml feedparser boto3 pyyaml openpyxl \
     python-dateutil pytz google-cloud-storage azure-storage-blob
 
 # Non-root runtime user. Root FS is mounted read-only at deploy time; the only

@@ -10,6 +10,7 @@ description: "Release history for Datris"
   - **Off with one line:** `DATRIS_UPDATE_CHECK=0` in `.env` (run doctor from the install directory or pass `--project-dir`, or set it in the environment). A fresh install prints a short notice, and the installer writes the line when given `DATRIS_UPDATE_CHECK=0`.
   - **Never in the way.** If datris.ai cannot be reached within three seconds the row is skipped and doctor's result is unaffected.
   - **How to verify:** [Security Architecture](/production/security-architecture#no-telemetry) lists both outbound requests Datris can make and commands to confirm there are no others.
+  - **Security updates.** Refreshed the server, UI and tap-runner dependencies and the tap-runner base image to clear the open vulnerability reports. No behaviour change.
 
   **Upgrading:** the update check is on after you upgrade the CLI (`pip install -U datris-mcp-server` / `brew upgrade datris`), so each `datris doctor` run now makes one request to datris.ai; add `DATRIS_UPDATE_CHECK=0` to `.env` to keep it off. On a deployment behind the latest release, `datris doctor` now exits 1 where it exited 0. `datris doctor --pre-upgrade` is unchanged.
 </Update>

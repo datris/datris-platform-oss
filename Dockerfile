@@ -4,7 +4,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # pebble is a loose (non-dpkg) service-manager binary shipped in the Ubuntu base;
 # nothing here uses it and its bundled Go stdlib trips Trivy, so drop it.
 RUN rm -f /usr/bin/pebble
-RUN pip3 install --break-system-packages requests beautifulsoup4 pandas lxml feedparser boto3 pyyaml openpyxl python-dateutil pytz google-cloud-storage azure-storage-blob
+RUN pip3 install --break-system-packages "urllib3>=2.8.0" requests beautifulsoup4 pandas lxml feedparser boto3 pyyaml openpyxl python-dateutil pytz google-cloud-storage azure-storage-blob
 ARG JAR_FILE=datrisserver/target/scala-*/*.jar
 RUN mkdir -p /usr/src/datrisserver /usr/src/datrisserver/config
 COPY ${JAR_FILE} /usr/src/datrisserver/datrisserver.jar

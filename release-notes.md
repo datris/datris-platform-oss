@@ -8,6 +8,7 @@
 - **Off with one line.** Add `DATRIS_UPDATE_CHECK=0` to `.env` (run doctor from the install directory or pass `--project-dir`, or set it in the environment) and doctor sends nothing. A fresh install prints a short notice about the check, and `DATRIS_UPDATE_CHECK=0` given to the installer writes the line for you.
 - **Never in the way.** If datris.ai cannot be reached within three seconds, the row is skipped and doctor's result is unaffected.
 - **How to verify.** [Security Architecture](/production/security-architecture#no-telemetry) now lists both outbound requests Datris can make, what each sends, and commands to confirm there are no others.
+- **Security updates.** Refreshed the server, UI and tap-runner dependencies and the tap-runner base image to clear the open vulnerability reports. No behaviour change.
 
 **Upgrading**
 

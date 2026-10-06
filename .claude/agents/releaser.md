@@ -30,5 +30,5 @@ VERSION: <old> -> <new>
 FILES: <bumped files>
 NOTES: <release-notes.md first three lines>
 VERIFY: <command> -> pass/fail
-NEXT (human): git tag v<version> && git push --tags; then MCP Registry publish
+NEXT (human): git tag v<version> && git push --tags; after the images exist, bump LATEST_VERSION in datris-website src/data/latest-version.ts (release step 9); then MCP Registry publish
 ```
