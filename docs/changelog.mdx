@@ -3,6 +3,19 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.44.0" description="October 6, 2026">
+  **One switch to turn on the governance controls, a doctor check that reports when they are off, and corrected first-login instructions.**
+
+  - **Switch on the governance controls in one step.** A fresh install takes `DATRIS_GOVERNED=1` to turn on user login, API keys, the audit log and the agent policy; an interactive install asks once, defaulting to no. An existing install adds four documented lines to its `.env`. Nothing changes for installs that do not ask for it. See [Quick Start](/quick-start#2-switch-on-the-governance-controls).
+  - **`datris doctor` reports the governance controls.** A new `governance.controls` row names any control that is off, with the lines to add. A warning, never an error. See [Doctor](/doctor).
+  - **First-login instructions corrected.** `admin` is created with a bootstrap password printed once to the server log, not a blank password. The docs and login screen say where to read it and to save it before recreating the container. A new [Recovering admin access](/user-auth#recovering-admin-access) section covers the case where it is gone.
+  - **Fixed: a headless install on Debian or Ubuntu stopped silently** right after fetching the runtime files. It now continues.
+  - **Governed installs skip a check that needs a key.** The installer no longer waits on the post-boot store check when API keys are enforced; it prints the command to run once a key exists.
+  - **Docs and website wording** now say the controls are switched on for production rather than "on by default".
+
+  **Upgrading:** `docker compose pull && docker compose up -d --force-recreate`. The server, UI and MCP server images changed. No defaults change. `datris doctor` now exits 1 on an install with any of the four controls off, where it exited 0. Before turning the controls on, save the `admin` bootstrap password from the server log (`docker compose logs datris | grep "Bootstrap login"`); if nothing is printed, see [Recovering admin access](/user-auth#recovering-admin-access).
+</Update>
+
 <Update label="v1.43.0" description="October 5, 2026">
   **A HIPAA Safe Harbor preset, a switch that keeps row values away from AI helpers, clearer errors, and an installer agents can run.**
 
