@@ -935,7 +935,15 @@ say "Pulling images and starting Datris (first run downloads ~a few GB)..."
 # The installer host has no DB clients, so external-store validation happens
 # here: once the server answers, /health/services probes every configured
 # store (bundled or external) and we surface the result by name.
-if [ "$FRESH_ENV" = "1" ] && command -v curl >/dev/null 2>&1; then
+# With the governance controls on, the endpoint needs an API key (none exists
+# yet on a fresh install), so the check is skipped with a note instead of
+# waiting out the retries and reporting "Server not answering".
+if [ "$FRESH_ENV" = "1" ] && [ "$GOVERNED_ON" = "1" ]; then
+  say ""
+  say "Skipping the post-boot store check: with API keys on, /api/v1/health/services needs a key."
+  say "Once you have issued one (Configuration -> API Keys), check your stores with:"
+  say "  curl -H \"x-api-key: <your key>\" http://localhost:8080/api/v1/health/services"
+elif [ "$FRESH_ENV" = "1" ] && command -v curl >/dev/null 2>&1; then
   say ""
   say "Waiting for first boot, then checking your stores (this can take a couple minutes)..."
   HEALTH=""

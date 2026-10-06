@@ -735,7 +735,23 @@ class DoctorServiceSpec extends AnyFunSuite {
             assert(r.status == "warn", off + " off: " + r.detail)
             assert(r.detail.contains(off), "detail names the control that is off (" + off + "): " + r.detail)
             governanceVars.filterNot(_ == off).foreach(on => assert(r.detail.contains(on), "detail also names those that are on (" + on + "): " + r.detail))
+            // The detail must not claim a control that is on is off.
+            val offPart = r.detail.substring(0, r.detail.indexOf("; on:"))
+            governanceVars.filterNot(_ == off).foreach(on => assert(!offPart.contains(on), on + " is on but listed as off: " + r.detail))
+            val summary = r.detail.substring(r.detail.indexOf(" — ") + 3)
+            Map(
+                "USE_USER_AUTH" -> "user login",
+                "USE_API_KEYS" -> "API keys",
+                "USE_AUDIT_LOG" -> "audit log",
+                "USE_AGENT_POLICY" -> "agent policy"
+            ).foreach { case (v, label) =>
+                if (v == off) assert(summary.contains(label), "summary names the control that is off (" + label + "): " + r.detail)
+                else assert(!summary.contains(label), "summary claims " + label + " is off though " + v + " is on: " + r.detail)
+            }
         }
+        val twoOff = governanceCheck(new FakeProbes(governance = governanceState(Set("USE_USER_AUTH", "USE_API_KEYS")))).run()
+        assert(twoOff.detail.contains("user login and API keys are off"), twoOff.detail)
+        assert(!twoOff.detail.contains("audit log") && !twoOff.detail.contains("agent policy"), twoOff.detail)
         val allOff = governanceCheck(new FakeProbes(governance = governanceState(governanceVars.toSet))).run()
         assert(allOff.status == "warn", allOff.detail)
         governanceVars.foreach(v => assert(allOff.detail.contains(v), "default install names all four (" + v + "): " + allOff.detail))

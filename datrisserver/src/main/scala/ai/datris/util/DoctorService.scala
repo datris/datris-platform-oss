@@ -537,6 +537,17 @@ object DoctorService {
 
     object GovernanceControlsCheck {
         val Vars: Seq[String] = Seq("USE_USER_AUTH", "USE_API_KEYS", "USE_AUDIT_LOG", "USE_AGENT_POLICY")
+        val Labels: Map[String, String] = Map(
+            "USE_USER_AUTH" -> "user login",
+            "USE_API_KEYS" -> "API keys",
+            "USE_AUDIT_LOG" -> "the audit log",
+            "USE_AGENT_POLICY" -> "the agent policy"
+        )
+
+        /** "a", "a and b", "a, b and c". */
+        def humanList(items: Seq[String]): String =
+            if (items.size <= 1) items.mkString
+            else items.init.mkString(", ") + " and " + items.last
         val DocsLink = "https://docs.datris.ai/quick-start#2-switch-on-the-governance-controls"
     }
 
@@ -556,7 +567,8 @@ object DoctorService {
             else
                 warn(
                     "off: " + off.mkString(", ") + (if (on.nonEmpty) "; on: " + on.mkString(", ") else "") +
-                        " — user login, API keys, the audit log and the agent policy are off until switched on for production",
+                        " — " + humanList(off.map(Labels)) + (if (off.size == 1) " is" else " are") +
+                        " off until switched on for production",
                     "Add " + off.map(_ + "=true").mkString(", ") + " to .env, then run " +
                         "`docker compose up -d --force-recreate datris mcp-server`. See " + DocsLink + "."
                 )
