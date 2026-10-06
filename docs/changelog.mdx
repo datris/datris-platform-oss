@@ -3,7 +3,7 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
-<Update label="Unreleased" description="Next release">
+<Update label="v1.44.1" description="October 6, 2026">
   **`datris doctor` tells you when a newer version is available.**
 
   - **Know when you are behind.** A new `version.update` row reads "up to date" or names the newer version and the upgrade command. To find out, doctor tells datris.ai your Datris version, operating system and CPU architecture, and nothing else, each time you run it. Never from the server, on a timer, or during `--pre-upgrade`; nothing is stored on your machine. See [Doctor](/doctor#update-check).
@@ -12,7 +12,7 @@ description: "Release history for Datris"
   - **How to verify:** [Security Architecture](/production/security-architecture#no-telemetry) lists both outbound requests Datris can make and commands to confirm there are no others.
   - **Security updates.** Refreshed the server, UI and tap-runner dependencies and the tap-runner base image to clear the open vulnerability reports. No behaviour change.
 
-  **Upgrading:** the update check is on after you upgrade the CLI (`pip install -U datris-mcp-server` / `brew upgrade datris`), so each `datris doctor` run now makes one request to datris.ai; add `DATRIS_UPDATE_CHECK=0` to `.env` to keep it off. On a deployment behind the latest release, `datris doctor` now exits 1 where it exited 0. `datris doctor --pre-upgrade` is unchanged.
+  **Upgrading:** run `docker compose pull && docker compose up -d --force-recreate` (all four images changed). The update check is on after you upgrade the CLI (`pip install -U datris-mcp-server` / `brew upgrade datris`), so each `datris doctor` run now makes one request to datris.ai; add `DATRIS_UPDATE_CHECK=0` to `.env` to keep it off. On a deployment behind the latest release, `datris doctor` now exits 1 where it exited 0. `datris doctor --pre-upgrade` is unchanged.
 </Update>
 
 <Update label="v1.44.0" description="October 6, 2026">
