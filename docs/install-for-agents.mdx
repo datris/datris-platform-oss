@@ -69,6 +69,7 @@ The installer reads these on a fresh install. Values you pass are written to `<i
 | `KAFKA_BOOTSTRAP_SERVERS` | An external Kafka broker list. Written to `.env`. |
 | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_PASSWORD` | Snowflake destination credentials, written to `.env` when `SNOWFLAKE_ACCOUNT` is set. |
 | `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`, `DATABRICKS_TOKEN` | Databricks destination credentials, written to `.env` when `DATABRICKS_HOST` is set. |
+| `DATRIS_GOVERNED=1` | Switch on the governance controls for production on a fresh install: writes `USE_USER_AUTH`, `USE_API_KEYS`, `USE_AUDIT_LOG` and `USE_AGENT_POLICY` as `true`. `1`, `true`, `yes` or `on` switch them on; `0`, `false`, `no` or `off` leave them off without asking; any other value stops the install before anything is written. Unset, an interactive run asks (default No) and a run without a terminal leaves them off. Ignored on an upgrade: the existing `.env` is not edited, and the installer prints the four lines to add. With it on, the first UI login is `admin` with the bootstrap password the server prints once on its first boot (`docker compose logs datris \| grep "Bootstrap login"`; save it, since recreating the container discards that log), and every CLI, MCP and API client needs a key. The same hint is printed under `DATRIS_NO_START=1`. See [Switch on the governance controls](/quick-start#2-switch-on-the-governance-controls). |
 | `DATRIS_NO_START=1` | Write the files and `.env`, then stop before pulling images or starting anything. Useful to inspect what an install would do. |
 | `DATRIS_SKIP_DOCTOR=1` | On an upgrade, skip the pre-upgrade `datris doctor` check. |
 
@@ -155,11 +156,12 @@ done
 curl -fsS http://localhost:8080/api/v1/version
 
 # Per-store status: "up", "down" or "not_configured"
+# (with DATRIS_GOVERNED=1 or USE_API_KEYS=true add: -H "x-api-key: <key>")
 curl -fsS http://localhost:8080/api/v1/health/services
 ```
 
 - [`GET /api/v1/version`](/api-reference/version-api) returns the server version and settings such as `useApiKeys`.
-- [`GET /api/v1/health/services`](/api-reference/health-api) returns a `status` for each store. A store you chose not to install reports `not_configured`; one that is configured but unreachable reports `down` with a message.
+- [`GET /api/v1/health/services`](/api-reference/health-api) returns a `status` for each store. A store you chose not to install reports `not_configured`; one that is configured but unreachable reports `down` with a message. With `DATRIS_GOVERNED=1` (or `USE_API_KEYS=true`) this call needs a key, `-H "x-api-key: <key>"` with a key from Configuration → API Keys; without one it returns `401 {"error":"Authentication required"}`, which `curl -f` turns into exit 22. `/api/v1/version` stays keyless.
 - `docker compose ps` in the install directory (add `-f docker-compose.standalone.yml` for the single file) shows each container's state and health.
 
 For a deeper check, install the `datris` CLI (`pip install datris-mcp-server` or `brew install datris/tap/datris`) and run [`datris doctor`](/doctor) from the install directory. It checks Vault, the AI slots, disk, data volumes, the `.env` and whether the MCP server answers. Exit codes: `0` ok, `1` warnings, `2` errors, `3` server unreachable. When API keys are on, set `DATRIS_API_KEY` first.

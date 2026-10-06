@@ -54,6 +54,13 @@
 #                       same store named in DATRIS_PROFILES.
 #   KAFKA_BOOTSTRAP_SERVERS, SNOWFLAKE_ACCOUNT/USER/PRIVATE_KEY/PASSWORD,
 #   DATABRICKS_HOST/CLIENT_ID/CLIENT_SECRET/TOKEN — external store credentials
+#   DATRIS_GOVERNED=1   switch on the governance controls for production on a
+#                       fresh install: writes USE_USER_AUTH, USE_API_KEYS,
+#                       USE_AUDIT_LOG and USE_AGENT_POLICY as true. Unset, an
+#                       interactive run asks (default No); a non-interactive
+#                       run leaves them off. Ignored on an upgrade (the .env is
+#                       never edited; the lines to add are printed instead).
+#                       1/true/yes/on or 0/false/no/off; anything else stops.
 #   DATRIS_NO_START=1   write files but don't run compose
 #   DATRIS_SKIP_DOCTOR=1  skip the pre-upgrade `datris doctor` check on an upgrade
 set -eu
@@ -77,6 +84,16 @@ mask() {
   [ "$n" -le 12 ] && { printf '****'; return; }
   printf '%s...%s' "$(printf '%s' "$v" | cut -c1-7)" "$(printf '%s' "$v" | cut -c"$((n-3))"-"$n")"
 }
+
+# DATRIS_GOVERNED, read once for both the fresh-install and upgrade branches:
+# GOVERNED_REQ is 1 (on), 0 (off) or empty (unset — an interactive fresh
+# install asks). Anything unrecognized stops before any file is written.
+case "${DATRIS_GOVERNED:-}" in
+  "") GOVERNED_REQ="" ;;
+  1|[Tt][Rr][Uu][Ee]|[Yy]|[Yy][Ee][Ss]|[Oo][Nn]) GOVERNED_REQ=1 ;;
+  0|[Ff][Aa][Ll][Ss][Ee]|[Nn]|[Nn][Oo]|[Oo][Ff][Ff]) GOVERNED_REQ=0 ;;
+  *) die "DATRIS_GOVERNED must be 1 or 0 (got '${DATRIS_GOVERNED}')" ;;
+esac
 
 # --- preflight ------------------------------------------------------------
 command -v docker >/dev/null 2>&1 || die "Docker is not installed. Get it at https://docs.docker.com/get-docker/"
@@ -148,8 +165,11 @@ ok "Fetched compose file and runtime scripts."
 # device node can be readable yet fail to open ("Device not configured") when
 # there's no controlling terminal (CI, some `curl | sh` contexts). Actually
 # try to open it (error suppressed) so we fall back cleanly instead of aborting.
+# `true`, not `:` — `:` is a special builtin, and in dash (Debian/Ubuntu sh) a
+# failed redirection on a special builtin exits the shell (status 2) even
+# inside `if`, so a headless Linux install died here silently.
 TTY=""
-if { : < /dev/tty; } 2>/dev/null; then TTY="/dev/tty"; fi
+if { true < /dev/tty; } 2>/dev/null; then TTY="/dev/tty"; fi
 
 # Prompt helpers — all input flows through the TTY, never stdin (which is the
 # script itself under `curl | sh`).
@@ -215,9 +235,24 @@ trap cleanup_partial_env EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+GOVERNED_ON=0
 if [ -f "$ENV_FILE" ]; then
   warn "Existing .env found — leaving it untouched (upgrade mode, no prompts)."
   warn "To change installed databases/stores, edit $ENV_FILE (see comments) and re-run '$COMPOSE up -d'."
+  if [ "$GOVERNED_REQ" = "1" ]; then
+    warn ""
+    warn "DATRIS_GOVERNED is ignored on upgrade — the existing .env is not edited."
+    warn "To switch on the governance controls, add these lines to $ENV_FILE:"
+    warn "  USE_USER_AUTH=true"
+    warn "  USE_API_KEYS=true"
+    warn "  USE_AUDIT_LOG=true"
+    warn "  USE_AGENT_POLICY=true"
+    warn "Before recreating, read and save the admin bootstrap password (it is only in the"
+    warn "log of the container that seeded admin, and recreating discards that log):"
+    warn "  cd $DIR && $COMPOSE logs datris | grep \"Bootstrap login\""
+    warn "If nothing is printed, see https://docs.datris.ai/user-auth#recovering-admin-access"
+    warn "then run: cd $DIR && $COMPOSE up -d --force-recreate datris mcp-server"
+  fi
 else
   FRESH_ENV=1
   (umask 077 && curl -fsSL "$REPO_RAW/$REF/.env.example" -o "$ENV_FILE") || die "could not download .env.example"
@@ -786,6 +821,25 @@ else
 
   [ -n "$PROFILES" ] && set_env COMPOSE_PROFILES "$PROFILES"
 
+  # ---- governance controls ----
+  # User login, API keys, the audit log and the agent policy ship off; they
+  # are switched on for production here (DATRIS_GOVERNED=1 or the prompt,
+  # default No) and only on a fresh install. An existing .env is never edited.
+  GOVERNED_ON="$GOVERNED_REQ"
+  if [ -z "$GOVERNED_REQ" ] && [ -n "$TTY" ]; then
+    ask "  Switch on the governance controls for production (user login, API keys, audit log, agent policy)? [y/N]: "
+    case "$ANS" in y*|Y*) GOVERNED_ON=1 ;; esac
+  fi
+  if [ "$GOVERNED_ON" = "1" ]; then
+    set_env USE_USER_AUTH true
+    set_env USE_API_KEYS true
+    set_env USE_AUDIT_LOG true
+    set_env USE_AGENT_POLICY true
+    add_summary governance on "user login, API keys, audit log, agent policy"
+  else
+    add_summary governance off "switch on for production: https://docs.datris.ai/quick-start"
+  fi
+
   # set_env keeps the file at 600 on every write; re-apply once more as the
   # final step anyway, since the file now holds keys and DB passwords.
   chmod 600 "$ENV_FILE" 2>/dev/null || true
@@ -818,10 +872,24 @@ fi
 SEED_DONE=1
 trap - EXIT INT TERM
 
+# First-login and API-key hint for a fresh install with the governance
+# controls on; printed at the end of a normal run and under DATRIS_NO_START.
+print_governed_hint() {
+  [ "$GOVERNED_ON" = "1" ] || return 0
+  say ""
+  say "Governance controls are on (user login, API keys, audit log, agent policy)."
+  say "  First login: user admin, with the bootstrap password the server prints once to its"
+  say "  log on first boot (save it; recreating the container discards that log):"
+  say "    cd $DIR && $COMPOSE logs datris | grep \"Bootstrap login\""
+  say "  Change it after you log in. CLI, MCP and API clients need a key from"
+  say "  Configuration -> API Keys (pass it as x-api-key / DATRIS_API_KEY)."
+}
+
 # --- launch ---------------------------------------------------------------
 if [ "${DATRIS_NO_START:-}" = "1" ]; then
   ok "Files written to $DIR. Skipping start (DATRIS_NO_START=1)."
   say "Run it with:  cd $DIR && $COMPOSE up -d"
+  print_governed_hint
   exit 0
 fi
 
@@ -870,7 +938,15 @@ say "Pulling images and starting Datris (first run downloads ~a few GB)..."
 # The installer host has no DB clients, so external-store validation happens
 # here: once the server answers, /health/services probes every configured
 # store (bundled or external) and we surface the result by name.
-if [ "$FRESH_ENV" = "1" ] && command -v curl >/dev/null 2>&1; then
+# With the governance controls on, the endpoint needs an API key (none exists
+# yet on a fresh install), so the check is skipped with a note instead of
+# waiting out the retries and reporting "Server not answering".
+if [ "$FRESH_ENV" = "1" ] && [ "$GOVERNED_ON" = "1" ]; then
+  say ""
+  say "Skipping the post-boot store check: with API keys on, /api/v1/health/services needs a key."
+  say "Once you have issued one (Configuration -> API Keys), check your stores with:"
+  say "  curl -H \"x-api-key: <your key>\" http://localhost:8080/api/v1/health/services"
+elif [ "$FRESH_ENV" = "1" ] && command -v curl >/dev/null 2>&1; then
   say ""
   say "Waiting for first boot, then checking your stores (this can take a couple minutes)..."
   HEALTH=""
@@ -905,6 +981,7 @@ say "  MCP:  http://localhost:3000"
 say ""
 say "First boot may pull an embedding model (~2.2 GB) if you chose the bundled"
 say "embedding server — give it a couple minutes."
+print_governed_hint
 say "Logs:   cd $DIR && $COMPOSE logs -f datris"
 say "Stop:   cd $DIR && $COMPOSE down          (full teardown incl. opt-in services:"
 say "        cd $DIR && $COMPOSE --profile \"*\" down)"

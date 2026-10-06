@@ -106,7 +106,8 @@ class HealthCheckAPIController {
             // Public infrastructure endpoint — health probes, container
             // orchestrators, and the UI's status indicators all need to
             // reach this without auth. The `apiKey` parameter is kept for
-            // forward compat but ignored.
+            // forward compat but ignored. Not public when useUserAuth and
+            // useApiKeys are both on: RoleEnforcementInterceptor then 401s keyless callers.
 
             val env = DatrisEnvironment.current
             val results = new java.util.LinkedHashMap[String, Any]()
