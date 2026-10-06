@@ -64,19 +64,35 @@ Taps are Python that agents (or people) write and Datris runs. On Docker Compose
 
 ## Air-gapped operation
 
-Every store Datris depends on is bundled or pointable at one you already run. For the AI features, local models through Ollama cover chat and code generation, and the bundled `bge-m3` embedding server covers embeddings, so a deployment can run with no cloud AI provider. The bundled embedding model downloads once on first start; pre-pull the images and the model on a connected machine and move them across.
+Every store Datris depends on is bundled or pointable at one you already run. For the AI features, local models through Ollama cover chat and code generation, and the bundled `bge-m3` embedding server covers embeddings, so a deployment can run with no cloud AI provider. The bundled embedding model downloads once on first start; pre-pull the images and the model on a connected machine and move them across. Add `DATRIS_UPDATE_CHECK=0` to `.env` so `datris doctor` does not try to reach datris.ai (without a route out the attempt only times out after 3 s and is reported as skipped).
 
 ## No telemetry
 
-The platform sends no usage data, crash reports, or license checks. There is no beacon in the server, the UI, the MCP server, or the installer. Verify it yourself:
+The platform sends no usage data, crash reports, or license checks. There is no beacon in the server, the UI, the MCP server, or the installer, and no install id or other identifier is created. Verify it yourself:
 
 ```bash
 git clone https://github.com/datris/datris-platform-oss.git && cd datris-platform-oss
-grep -rniE "telemetry|analytics|posthog|sentry|segment\.io" \
-  --include='*.scala' --include='*.ts' --include='*.py' --include='*.sh' . | grep -v test
+
+# No analytics, error-reporting or beacon library or vendor anywhere in the code.
+# Prints nothing.
+grep -rniE "telemetry|posthog|sentry|segment\.(io|com)|mixpanel|amplitude|google-analytics|googletagmanager|datadoghq|newrelic|bugsnag|rollbar\.com|hotjar" \
+  --exclude-dir=node_modules --exclude-dir=.venv --include='*.scala' --include='*.ts' --include='*.py' --include='*.sh' --include='*.html' . \
+  | grep -vE '/tests?/|\.spec\.ts'
+
+# Every datris.ai address the code calls. Prints exactly two lines.
+grep -rnE "[\"']https://([a-z0-9-]+\.)?datris\.ai/[^\"' ]*[\"']" \
+  --exclude-dir=node_modules --exclude-dir=.venv --include='*.scala' --include='*.ts' --include='*.py' --include='*.sh' . \
+  | grep -vE '/tests?/|\.spec\.ts|docs\.datris\.ai'
 ```
 
-One outbound request exists and you should know about it: when a person opens the AI configuration screen, the server fetches the current model catalog from `datris.ai/models.json` so the model pickers show what is recommended today. It is triggered by that screen only, cached for five minutes, times out in three seconds, and falls back to a list baked into the UI when the fetch fails — so it is harmless in an air-gapped install and carries no identifying payload beyond the request itself. The documentation site you are reading measures page views; the platform does not.
+The second command prints two lines, one for each outbound request Datris can make. These are the only two; links to the documentation site (`docs.datris.ai`) are shown to you, never fetched.
+
+| Request | When | What is sent | Timeout and failure | How to switch it off |
+|---|---|---|---|---|
+| Model catalog, `GET https://datris.ai/models.json` (`ModelCatalogAPIController.scala`) | Only when a person opens the AI configuration screen; cached for five minutes | Nothing beyond the request itself | 3 s; the model pickers fall back to a list built into the UI | No setting; block the address at your firewall and the built-in list is used |
+| Update check, `GET https://get.datris.ai/version` (`mcp-server/doctor.py`) | Only when a person (or a script) runs `datris doctor` on the host. Never from the server, never on a timer, never from `datris doctor --pre-upgrade` or the installer | The server version, the operating system and the CPU architecture as query parameters (`?version=1.44.0&os=linux&arch=x86_64`), and a `User-Agent: datris-doctor/<cli version>` header. No API key, cookie, body, hostname or identifier | 3 s; the `version.update` row becomes a skip ("could not reach datris.ai; nothing received") and never changes the exit code | `DATRIS_UPDATE_CHECK=0` in the project `.env` (run doctor from the install directory or pass `--project-dir`, or set it in the environment); the row then reads "off" and nothing is sent |
+
+Datris uses the update check to count the versions in use by distinct source address. Nothing is stored on your machine. The documentation site you are reading measures page views; the platform does not.
 
 ## Vulnerability handling
 

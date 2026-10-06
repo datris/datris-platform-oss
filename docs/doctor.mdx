@@ -45,6 +45,7 @@ The server-side report is also available at `GET /api/v1/doctor` for scripts. It
 | `compose.orphans` | Containers from a previous compose file are still present and may hold ports | `docker compose up -d --remove-orphans` |
 | `build.stale_jar` | Building from source, and the running server's git commit or build time is behind the checkout | Rebuild with `--no-cache` |
 | `mcp.reachable` | The MCP server's SSE endpoint doesn't answer within 3 s | Check the `mcp-server` container |
+| `version.update` | Never errors. Warns when datris.ai reports a newer release than the running server; ok when current. Skipped when switched off (`DATRIS_UPDATE_CHECK=0`), when the server version is unknown (nothing is sent), or when datris.ai cannot be reached within 3 s. Not run by `--pre-upgrade` | `datris doctor --pre-upgrade && docker compose pull && docker compose up -d --remove-orphans`. See [Upgrading](/production/upgrades) |
 
 Checks below the line run only from the CLI on the machine running Docker; the UI and MCP surfaces report them as not applicable. Secret values never appear in any output — only key names.
 
@@ -68,7 +69,20 @@ Exit codes make it scriptable:
 | 2 | At least one error |
 | 3 | Server unreachable — host checks ran, server checks skipped |
 
-Skipped checks (Docker not on this machine, a service not running) never affect the exit code. A default install, with the governance controls still off, exits `1` because of the `governance.controls` warning; switch the controls on (or treat `1` as passing) if a script gates on exit `0`.
+Skipped checks (Docker not on this machine, a service not running, datris.ai not reachable) never affect the exit code. A default install, with the governance controls still off, or a deployment that is behind the latest release, exits `1` because of the `governance.controls` or `version.update` warning; switch the controls on and upgrade (or treat `1` as passing) if a script gates on exit `0`.
+
+### Update check
+
+A full `datris doctor` run (not `--pre-upgrade`) makes one request that leaves the machine, so the `version.update` row can tell you whether a newer version exists. It is the only check that does. The request is:
+
+```
+GET https://get.datris.ai/version?version=<server version>&os=<os>&arch=<arch>
+User-Agent: datris-doctor/<cli version>
+```
+
+`os` is `linux`, `darwin` or `windows`; `arch` is the CPU architecture as the OS names it (`x86_64`, `arm64`, `aarch64`). Nothing else is sent: no API key, cookie, body, hostname or identifier. The answer is `{"latest": "1.45.0"}`; anything else, a redirect included (it is not followed), is treated as unreachable. It times out after 3 s, and failure is a skip that never changes the exit code. Nothing is written to disk. The server itself never makes this request, and neither does the periodic run, the UI, the `run_doctor` tool or the installer.
+
+To switch it off, add `DATRIS_UPDATE_CHECK=0` to the project `.env` (doctor reads it from `--project-dir`) or set it in the environment; `0`, `false` and `off` all work, and the environment wins over `.env`. The row then reads "off (DATRIS_UPDATE_CHECK=0)" and nothing is sent. See [Security Architecture](/production/security-architecture#no-telemetry).
 
 ## Before an upgrade
 

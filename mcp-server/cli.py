@@ -1028,15 +1028,19 @@ def doctor(pre_upgrade, probes, json_output, compose_file, project_dir):
     Exit codes: 0 all ok, 1 any warning, 2 any error, 3 server unreachable (server checks skipped).
     Unlike other commands this talks to the server directly (DATRIS_URL, DATRIS_API_KEY) — a dead
     MCP server is itself a finding.
+    A full run sends one GET to datris.ai carrying only the server version, OS and CPU architecture
+    to report whether a newer version exists; DATRIS_UPDATE_CHECK=0 (environment or .env) switches it off.
     """
     import doctor as doc
     runner = doc.Runner(compose_file=compose_file, project_dir=os.path.abspath(project_dir))
+    dotenv = doc.parse_dotenv(os.path.join(os.path.abspath(project_dir), ".env"))
     datris_url = os.getenv("DATRIS_URL", "http://localhost:8080")
     api_key = os.getenv("DATRIS_API_KEY", "")
     server_report, version_info, server_error = None, None, None
     if not pre_upgrade:
         server_report, version_info, server_error = doc.fetch_server(datris_url, api_key, CLI_VERSION, probes=probes)
-    host = doc.run_host_checks(runner, MCP_URL, version_info=version_info, pre_upgrade=pre_upgrade)
+    host = doc.run_host_checks(runner, MCP_URL, version_info=version_info, pre_upgrade=pre_upgrade,
+                               dotenv=dotenv, cli_version=CLI_VERSION)
     report = doc.merge_report(server_report, host, CLI_VERSION, mode="pre-upgrade" if pre_upgrade else "full",
                               server_error=server_error, datris_url=datris_url)
     code = doc.exit_code(report, server_unreachable=(server_error is not None))

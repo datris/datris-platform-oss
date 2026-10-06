@@ -130,7 +130,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
 
             case RouteCheck.Unmapped =>
                 // No mapping for this route. In log-only mode this is just
-                // informational telemetry — it tells us which routes still
+                // an informational log line — it tells us which routes still
                 // need classification. In enforce mode we still let it
                 // through; fail-closed for unmapped routes is a Phase 2+
                 // tightening once the mapping is comprehensive.

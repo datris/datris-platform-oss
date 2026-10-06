@@ -63,6 +63,9 @@
 #                       1/true/yes/on or 0/false/no/off; anything else stops.
 #   DATRIS_NO_START=1   write files but don't run compose
 #   DATRIS_SKIP_DOCTOR=1  skip the pre-upgrade `datris doctor` check on an upgrade
+#   DATRIS_UPDATE_CHECK=0  write the opt-out into .env (datris doctor then never
+#                       contacts datris.ai). Fresh install only; on an upgrade
+#                       add the line to .env yourself.
 set -eu
 
 REPO_RAW="https://raw.githubusercontent.com/datris/datris-platform-oss"
@@ -93,6 +96,13 @@ case "${DATRIS_GOVERNED:-}" in
   1|[Tt][Rr][Uu][Ee]|[Yy]|[Yy][Ee][Ss]|[Oo][Nn]) GOVERNED_REQ=1 ;;
   0|[Ff][Aa][Ll][Ss][Ee]|[Nn]|[Nn][Oo]|[Oo][Ff][Ff]) GOVERNED_REQ=0 ;;
   *) die "DATRIS_GOVERNED must be 1 or 0 (got '${DATRIS_GOVERNED}')" ;;
+esac
+
+# DATRIS_UPDATE_CHECK: 0/false/no/off writes the opt-out into a fresh .env;
+# anything else (or unset) leaves the default, which is on.
+case "${DATRIS_UPDATE_CHECK:-}" in
+  0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) UPDATE_CHECK_OFF=1 ;;
+  *) UPDATE_CHECK_OFF=0 ;;
 esac
 
 # --- preflight ------------------------------------------------------------
@@ -491,6 +501,11 @@ else
     die "No AI provider key set, and Datris cannot start without one. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY, the Azure OpenAI trio (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_MODEL), or AI_PROVIDER=bedrock, then re-run. Nothing was pulled or started."
   fi
 
+  if [ "$UPDATE_CHECK_OFF" = "1" ]; then
+    set_env DATRIS_UPDATE_CHECK 0
+    ok "Wrote DATRIS_UPDATE_CHECK=0 to .env (datris doctor will not check for a newer version)"
+  fi
+
   # ---- store selection -----------------------------------------------------
   PROFILES="${DATRIS_PROFILES:-}"
   add_profile() {
@@ -885,11 +900,22 @@ print_governed_hint() {
   say "  Configuration -> API Keys (pass it as x-api-key / DATRIS_API_KEY)."
 }
 
+# Fresh install only: say what the doctor update check sends and how to
+# switch it off. Not printed on an upgrade.
+print_update_check_hint() {
+  [ "$FRESH_ENV" = "1" ] || return 0
+  [ "$UPDATE_CHECK_OFF" = "1" ] && return 0
+  say ""
+  say "datris doctor reports when a newer version exists by sending your Datris version, OS and CPU architecture to datris.ai."
+  say "  To switch that off, add DATRIS_UPDATE_CHECK=0 to $DIR/.env (run doctor from there or pass --project-dir), or set it in the environment."
+}
+
 # --- launch ---------------------------------------------------------------
 if [ "${DATRIS_NO_START:-}" = "1" ]; then
   ok "Files written to $DIR. Skipping start (DATRIS_NO_START=1)."
   say "Run it with:  cd $DIR && $COMPOSE up -d"
   print_governed_hint
+  print_update_check_hint
   exit 0
 fi
 
@@ -982,6 +1008,7 @@ say ""
 say "First boot may pull an embedding model (~2.2 GB) if you chose the bundled"
 say "embedding server — give it a couple minutes."
 print_governed_hint
+print_update_check_hint
 say "Logs:   cd $DIR && $COMPOSE logs -f datris"
 say "Stop:   cd $DIR && $COMPOSE down          (full teardown incl. opt-in services:"
 say "        cd $DIR && $COMPOSE --profile \"*\" down)"

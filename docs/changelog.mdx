@@ -3,6 +3,17 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="Unreleased" description="Next release">
+  **`datris doctor` tells you when a newer version is available.**
+
+  - **Know when you are behind.** A new `version.update` row reads "up to date" or names the newer version and the upgrade command. To find out, doctor tells datris.ai your Datris version, operating system and CPU architecture, and nothing else, each time you run it. Never from the server, on a timer, or during `--pre-upgrade`; nothing is stored on your machine. See [Doctor](/doctor#update-check).
+  - **Off with one line:** `DATRIS_UPDATE_CHECK=0` in `.env` (run doctor from the install directory or pass `--project-dir`, or set it in the environment). A fresh install prints a short notice, and the installer writes the line when given `DATRIS_UPDATE_CHECK=0`.
+  - **Never in the way.** If datris.ai cannot be reached within three seconds the row is skipped and doctor's result is unaffected.
+  - **How to verify:** [Security Architecture](/production/security-architecture#no-telemetry) lists both outbound requests Datris can make and commands to confirm there are no others.
+
+  **Upgrading:** the update check is on after you upgrade the CLI (`pip install -U datris-mcp-server` / `brew upgrade datris`), so each `datris doctor` run now makes one request to datris.ai; add `DATRIS_UPDATE_CHECK=0` to `.env` to keep it off. On a deployment behind the latest release, `datris doctor` now exits 1 where it exited 0. `datris doctor --pre-upgrade` is unchanged.
+</Update>
+
 <Update label="v1.44.0" description="October 6, 2026">
   **One switch to turn on the governance controls, a doctor check that reports when they are off, and corrected first-login instructions.**
 
