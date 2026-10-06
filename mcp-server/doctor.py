@@ -440,8 +440,9 @@ def _cli_version():
 #   GET https://get.datris.ai/version?version=<server>&os=<os>&arch=<arch>
 #   header User-Agent: datris-doctor/<cli version>
 # os is platform.system().lower() (linux, darwin, windows); arch is
-# platform.machine().lower() (x86_64, arm64, aarch64). No other header,
-# cookie, body or query parameter, and never an API key. The answer is
+# platform.machine().lower() (x86_64, arm64, aarch64). No other header of
+# ours (requests adds its standard Accept/Accept-Encoding/Connection), no
+# cookie, body or other query parameter, and never an API key. The answer is
 # 200 {"latest": "1.45.0"}; any other status or body (a redirect included,
 # which is not followed) counts as unreachable.
 # Nothing is written to disk. Off when DATRIS_UPDATE_CHECK is 0/false/off in
@@ -449,9 +450,10 @@ def _cli_version():
 def check_version_update(version_info, env, timeout=3, url=UPDATE_URL, cli_version=None):
     import platform
     import requests
-    setting = os.environ.get(UPDATE_CHECK_ENV)
+    # An empty value counts as unset, in the environment and in .env.
+    setting = os.environ.get(UPDATE_CHECK_ENV) or None
     if setting is None:
-        setting = (env or {}).get(UPDATE_CHECK_ENV)
+        setting = (env or {}).get(UPDATE_CHECK_ENV) or None
     if setting is not None and setting.strip().lower() in UPDATE_CHECK_OFF:
         return result("version.update", "skip", f"off ({UPDATE_CHECK_ENV}=0)")
     running = (version_info or {}).get("version") if isinstance(version_info, dict) else None

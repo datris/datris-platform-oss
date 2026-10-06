@@ -907,7 +907,7 @@ print_update_check_hint() {
   [ "$UPDATE_CHECK_OFF" = "1" ] && return 0
   say ""
   say "datris doctor reports when a newer version exists by sending your Datris version, OS and CPU architecture to datris.ai."
-  say "  To switch that off, add DATRIS_UPDATE_CHECK=0 to $DIR/.env."
+  say "  To switch that off, add DATRIS_UPDATE_CHECK=0 to $DIR/.env (run doctor from there or pass --project-dir), or set it in the environment."
 }
 
 # --- launch ---------------------------------------------------------------

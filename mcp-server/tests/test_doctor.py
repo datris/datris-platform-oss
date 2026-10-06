@@ -335,7 +335,7 @@ def test_version_update_constants():
 def test_version_update_off_via_process_env(update_env):
     import requests
     update_env.setattr(requests, "get", _no_request)
-    for value in ("0", "false", "off"):
+    for value in ("0", "false", "off", "no", "OFF"):
         update_env.setenv("DATRIS_UPDATE_CHECK", value)
         res = doc.check_version_update({"version": "1.43.0"}, {})
         assert res["id"] == "version.update"
@@ -357,6 +357,15 @@ def test_version_update_off_via_dotenv(update_env):
     res = doc.check_version_update({"version": "1.43.0"}, {"DATRIS_UPDATE_CHECK": "0"})
     assert len(calls) == 1
     assert res["status"] == "ok"
+
+
+def test_version_update_empty_process_env_does_not_override_dotenv(update_env):
+    import requests
+    update_env.setattr(requests, "get", _no_request)
+    update_env.setenv("DATRIS_UPDATE_CHECK", "")
+    res = doc.check_version_update({"version": "1.43.0"}, {"DATRIS_UPDATE_CHECK": "0"})
+    assert res["status"] == "skip"
+    assert "DATRIS_UPDATE_CHECK=0" in res["detail"]
 
 
 def test_version_update_skips_without_server_version(update_env):
