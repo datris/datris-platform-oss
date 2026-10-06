@@ -229,7 +229,11 @@ def test_no_docker_all_host_checks_skip(tmp_path, monkeypatch):
     r = FakeRunner({}, str(tmp_path), docker=False)
     monkeypatch.setattr(doc, "check_mcp_reachable", lambda url, timeout=3: doc.result("mcp.reachable", "ok", "up"))
     rows = doc.run_host_checks(r, "http://localhost:3000/sse")
-    host_only = [row for row in rows if row["id"] != "mcp.reachable"]
+    # version.update rides along with mcp.reachable in the no-docker branch
+    # (plans/stories/doctor-update-check.md Step 3); without a server version it
+    # is a skip of its own, not a "docker not on PATH" skip.
+    assert "version.update" in [row["id"] for row in rows]
+    host_only = [row for row in rows if row["id"] not in ("mcp.reachable", "version.update")]
     assert host_only and all(row["status"] == "skip" for row in host_only)
     assert all("docker not on PATH" in row["detail"] for row in host_only)
     report = doc.merge_report({"surface": {"server": "1.28.2"}, "checks": [doc.result("vault.token_ttl", "ok", "fine", surface="server")]}, rows, "1.28.2")
@@ -285,3 +289,193 @@ def test_parse_dotenv_strips_quotes_and_comments(tmp_path):
 def test_parse_docker_time():
     assert doc._parse_docker_time("2026-09-01T10:00:00.123456789Z") == pytest.approx(1_788_256_800.123456, abs=1)
     assert doc._parse_docker_time("0001-01-01T00:00:00Z") is None
+
+
+# 14. version.update — disclosed, opt-out update check
+#     (plans/stories/doctor-update-check.md). The only check that leaves the
+#     machine: one GET to datris.ai carrying version, os and arch.
+class _UpdateResp:
+    def __init__(self, code=200, body=None, text=None):
+        self.status_code = code
+        self._body = body
+        self.text = text if text is not None else (json.dumps(body) if body is not None else "")
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("not json")
+        return self._body
+
+    def close(self):
+        pass
+
+
+def _no_request(*a, **k):
+    raise AssertionError("requests.get must not be called: %r %r" % (a, k))
+
+
+@pytest.fixture
+def update_env(monkeypatch):
+    """Process env with no DATRIS_UPDATE_CHECK set."""
+    monkeypatch.delenv("DATRIS_UPDATE_CHECK", raising=False)
+    return monkeypatch
+
+
+def test_version_update_constants():
+    assert doc.UPDATE_CHECK_ENV == "DATRIS_UPDATE_CHECK"
+    assert doc.UPDATE_URL.startswith("https://get.datris.ai/version")
+
+
+def test_version_update_off_via_process_env(update_env):
+    import requests
+    update_env.setattr(requests, "get", _no_request)
+    for value in ("0", "false", "off"):
+        update_env.setenv("DATRIS_UPDATE_CHECK", value)
+        res = doc.check_version_update({"version": "1.43.0"}, {})
+        assert res["id"] == "version.update"
+        assert res["status"] == "skip", value
+        assert "DATRIS_UPDATE_CHECK=0" in res["detail"]
+
+
+def test_version_update_off_via_dotenv(update_env):
+    import requests
+    update_env.setattr(requests, "get", _no_request)
+    res = doc.check_version_update({"version": "1.43.0"}, {"DATRIS_UPDATE_CHECK": "0"})
+    assert res["status"] == "skip"
+    assert "DATRIS_UPDATE_CHECK=0" in res["detail"]
+
+    # process env wins: 1 in the environment overrides 0 in .env
+    calls = []
+    update_env.setattr(requests, "get", lambda *a, **k: calls.append((a, k)) or _UpdateResp(200, {"latest": "1.43.0"}))
+    update_env.setenv("DATRIS_UPDATE_CHECK", "1")
+    res = doc.check_version_update({"version": "1.43.0"}, {"DATRIS_UPDATE_CHECK": "0"})
+    assert len(calls) == 1
+    assert res["status"] == "ok"
+
+
+def test_version_update_skips_without_server_version(update_env):
+    import requests
+    update_env.setattr(requests, "get", _no_request)
+    res = doc.check_version_update(None, {})
+    assert res["id"] == "version.update"
+    assert res["status"] == "skip"
+    assert "nothing sent" in res["detail"]
+
+
+def test_version_update_network_failure_is_skip_not_error(update_env):
+    import requests
+
+    def raiser(exc):
+        def get(*a, **k):
+            raise exc
+        return get
+
+    fakes = [
+        raiser(requests.ConnectionError("no route")),
+        raiser(requests.Timeout("3s")),
+        lambda *a, **k: _UpdateResp(500, None, text="oops"),
+        lambda *a, **k: _UpdateResp(200, None, text="<html>not json</html>"),
+        lambda *a, **k: _UpdateResp(200, {"unexpected": "shape"}),
+        lambda *a, **k: _UpdateResp(200, {"latest": "not-a-version"}),
+    ]
+    for fake in fakes:
+        update_env.setattr(requests, "get", fake)
+        res = doc.check_version_update({"version": "1.43.0"}, {})
+        assert res["id"] == "version.update"
+        assert res["status"] == "skip", res
+        assert res["status"] != "error"
+        report = doc.merge_report({"checks": []}, [res], "1.43.0")
+        assert doc.exit_code(report) == 0
+    # the unreachable wording from the story
+    update_env.setattr(requests, "get", fakes[0])
+    assert "could not reach datris.ai" in doc.check_version_update({"version": "1.43.0"}, {})["detail"]
+
+
+def test_version_update_reports_newer(update_env):
+    import requests
+    update_env.setattr(requests, "get", lambda *a, **k: _UpdateResp(200, {"latest": "1.44.0"}))
+    res = doc.check_version_update({"version": "1.43.0"}, {})
+    assert res["id"] == "version.update"
+    assert res["status"] == "warn"
+    assert "1.44.0" in res["detail"] and "1.43.0" in res["detail"]
+    assert "docker compose pull" in res["remediation"]
+    assert "datris doctor --pre-upgrade" in res["remediation"]
+
+    for latest in ("1.43.0", "1.42.9"):
+        update_env.setattr(requests, "get", lambda *a, _l=latest, **k: _UpdateResp(200, {"latest": _l}))
+        res = doc.check_version_update({"version": "1.43.0"}, {})
+        assert res["status"] == "ok", latest
+        assert "1.43.0" in res["detail"]
+
+    # integer-tuple comparison, not string: 1.10.0 is newer than 1.9.0
+    update_env.setattr(requests, "get", lambda *a, **k: _UpdateResp(200, {"latest": "1.10.0"}))
+    assert doc.check_version_update({"version": "1.9.0"}, {})["status"] == "warn"
+    # a suffix on the running version is ignored
+    update_env.setattr(requests, "get", lambda *a, **k: _UpdateResp(200, {"latest": "1.43.0"}))
+    assert doc.check_version_update({"version": "1.43.0-SNAPSHOT"}, {})["status"] == "ok"
+
+
+def test_version_update_sends_only_version_os_arch(update_env):
+    import platform
+    import requests
+    calls = []
+
+    def get(*a, **k):
+        calls.append((a, k))
+        return _UpdateResp(200, {"latest": "1.43.0"})
+
+    update_env.setattr(requests, "get", get)
+    update_env.setenv("DATRIS_API_KEY", "should-never-be-sent")
+    doc.check_version_update({"version": "1.43.0"}, {"DATRIS_API_KEY": "nor-this"})
+    assert len(calls) == 1, "exactly one request"
+    args, kwargs = calls[0]
+    url = args[0] if args else kwargs.get("url")
+    assert url == doc.UPDATE_URL
+    params = kwargs.get("params") or {}
+    assert set(params) == {"version", "os", "arch"}
+    assert params["version"] == "1.43.0"
+    assert params["os"] == platform.system().lower()
+    assert params["arch"] == platform.machine().lower()
+    headers = kwargs.get("headers") or {}
+    assert set(headers) == {"User-Agent"}, headers
+    assert headers["User-Agent"].startswith("datris-doctor/")
+    assert not any(h.lower() == "x-api-key" for h in headers)
+    assert "should-never-be-sent" not in json.dumps(kwargs, default=str)
+    assert "nor-this" not in json.dumps(kwargs, default=str)
+    assert not any(k in kwargs for k in ("cookies", "data", "json", "auth"))
+    assert kwargs.get("timeout") is not None and kwargs["timeout"] <= 3
+
+
+def test_pre_upgrade_makes_no_update_request(tmp_path, monkeypatch):
+    import requests
+    r = FakeRunner({}, str(tmp_path))
+    called = []
+    monkeypatch.setattr(doc, "check_mcp_reachable", lambda *a, **k: doc.result("mcp.reachable", "ok", ""))
+    monkeypatch.setattr(doc, "check_version_update", lambda *a, **k: called.append("update") or doc.result("version.update", "ok", ""))
+    monkeypatch.setattr(requests, "get", _no_request)
+    rows = doc.run_host_checks(r, "http://localhost:3000/sse", version_info={"version": "1.43.0"}, pre_upgrade=True, dotenv={})
+    assert "version.update" not in [row["id"] for row in rows]
+    assert called == []
+    # same for the no-docker pre-upgrade branch
+    r = FakeRunner({}, str(tmp_path), docker=False)
+    rows = doc.run_host_checks(r, "http://localhost:3000/sse", version_info={"version": "1.43.0"}, pre_upgrade=True, dotenv={})
+    assert "version.update" not in [row["id"] for row in rows]
+    assert called == []
+
+
+def test_full_mode_runs_version_update_with_dotenv(tmp_path, monkeypatch):
+    r = FakeRunner({}, str(tmp_path))
+    seen = []
+    monkeypatch.setattr(doc, "check_mcp_reachable", lambda *a, **k: doc.result("mcp.reachable", "ok", ""))
+
+    def fake_update(version_info, env, *a, **k):
+        seen.append((version_info, env))
+        return doc.result("version.update", "ok", "up to date (1.43.0)")
+
+    monkeypatch.setattr(doc, "check_version_update", fake_update)
+    vi = {"version": "1.43.0"}
+    dotenv = {"DATRIS_UPDATE_CHECK": "0"}
+    rows = doc.run_host_checks(r, "http://localhost:3000/sse", version_info=vi, dotenv=dotenv)
+    ids = [row["id"] for row in rows]
+    assert "version.update" in ids
+    assert ids.index("version.update") > ids.index("mcp.reachable")
+    assert seen == [(vi, dotenv)]
