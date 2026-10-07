@@ -76,6 +76,20 @@ trait CodeStore {
       * the pin. None for a backend with no branch (built-in store) or a file
       * missing at head. */
     def pullLatest(ref: ScriptRef): Option[(String, String)] = None
+
+    /** Some(headSha) when the script's file at branch head differs from the
+      * recorded commit's. Default: compare [[pullLatest]] with [[readScript]];
+      * the repository store overrides it with a non-caching blob compare. */
+    def driftHead(ref: ScriptRef): Option[String] =
+        pullLatest(ref).flatMap { case (content, headSha) =>
+            if (ref == null || headSha == ref.scriptCommitSha) None
+            else {
+                val pinned =
+                    try readScript(ref)
+                    catch { case e: Throwable if scala.util.control.NonFatal(e) => None }
+                if (pinned.contains(content)) None else Some(headSha)
+            }
+        }
 }
 
 /** Tap-typed adapter over a [[CodeStore]] (see plans/tap-github-storage.md).
@@ -171,14 +185,15 @@ object MinioCodeStore extends TapCodeStore {
   * configured branch. Requires an enabled CodeRepoConfig. `familyOf` maps a
   * script's logical name (tap name, or CodeGen kind) to its family, which
   * decides the repository path and the commit message. */
-class GithubScriptStore(familyOf: String => ScriptFamily) extends CodeStore {
+class GithubScriptStore(familyOf: String => ScriptFamily, disabledMessage: String = null) extends CodeStore {
     val storage = "github"
 
+    // Resolved at call time: the companion's messages are not initialised
+    // while the companion object itself is being constructed.
     private def config: CodeRepoConfig =
-        CodeRepoConfigIO.readEnabled().getOrElse(throw new DatrisException(
-            "This tap stores its script in a code repository, but no enabled repository is configured. " +
-                "Re-enable it under Configuration > Code Repository, or move the tap back to built-in storage."
-        ))
+        CodeRepoConfigIO.readEnabled().getOrElse(
+            throw new DatrisException(Option(disabledMessage).getOrElse(GithubScriptStore.TapDisabledMessage))
+        )
 
     override def readScript(ref: ScriptRef): Option[String] = {
         if (ref == null || ref.scriptRepoPath == null || ref.scriptRepoPath.isEmpty) return None
@@ -241,6 +256,21 @@ class GithubScriptStore(familyOf: String => ScriptFamily) extends CodeStore {
         }
     }
 
+    /** Drift check without downloading into the cache: the branch-head sha
+      * when the file's blob at branch head differs from its blob at the
+      * recorded commit. Nothing is written to [[TapScriptCache]], so polling
+      * drift never evicts pinned commits. */
+    override def driftHead(ref: ScriptRef): Option[String] = {
+        if (ref == null || ref.scriptRepoPath == null || ref.scriptRepoPath.isEmpty || ref.scriptCommitSha == null) return None
+        val cfg = config
+        val headSha = GithubClient.branchHeadSha(cfg)
+        if (headSha == ref.scriptCommitSha) return None
+        GithubClient.getFile(cfg, ref.scriptRepoPath, headSha).flatMap { head =>
+            val pinned = GithubClient.getFile(cfg, ref.scriptRepoPath, ref.scriptCommitSha)
+            if (pinned.exists(_.blobSha == head.blobSha)) None else Some(headSha)
+        }
+    }
+
     /** Branch-head read for the drift-pull flow: returns (content, headSha),
       * bypassing the pin; the head version is cached under its sha. */
     override def pullLatest(ref: ScriptRef): Option[(String, String)] = {
@@ -255,7 +285,15 @@ class GithubScriptStore(familyOf: String => ScriptFamily) extends CodeStore {
 }
 
 /** The tap scripts' repository store. */
-object GithubScriptStore extends GithubScriptStore(name => ScriptFamily.Tap(name))
+object GithubScriptStore extends GithubScriptStore(name => ScriptFamily.Tap(name), null) {
+    val TapDisabledMessage: String =
+        "This tap stores its script in a code repository, but no enabled repository is configured. " +
+            "Re-enable it under Configuration > Code Repository, or move the tap back to built-in storage."
+
+    val PipelineDisabledMessage: String =
+        "This pipeline's CodeGen script is stored in a code repository, but no enabled repository is configured. " +
+            "Re-enable it under Configuration > Code Repository, or regenerate the script with storage=builtin to move it back to built-in storage."
+}
 
 /** Tap adapter over [[GithubScriptStore]], plus the repository helpers
   * (repo path, commit message, drift pull) and the factory for a pipeline's
@@ -320,7 +358,7 @@ object GithubCodeStore extends TapCodeStore {
     def forPipeline(pipeline: String): CodeStore = {
         if (pipeline == null || pipeline.trim.isEmpty || pipeline.contains("/") || pipeline.contains(".."))
             throw new DatrisException("Invalid pipeline name for script storage: " + pipeline)
-        new GithubScriptStore(kind => ScriptFamily.Pipeline(pipeline, kind))
+        new GithubScriptStore(kind => ScriptFamily.Pipeline(pipeline, kind), GithubScriptStore.PipelineDisabledMessage)
     }
 
     /** Branch-head read for the drift-pull flow: returns (content, headSha),

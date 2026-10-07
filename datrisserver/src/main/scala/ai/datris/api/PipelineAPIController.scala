@@ -394,6 +394,16 @@ class PipelineAPIController {
                     .body[String](
                         QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " has no AI " + kind + " instruction to generate a script for"))
                     )
+            if (storage == "github" && CodeRepoConfigIO.readEnabled().isEmpty)
+                return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body[String](
+                        QueryAPIController.errorBody(
+                            new DatrisException(
+                                "No code repository is configured. Set one up under Configuration > Code Repository before using GitHub storage."
+                            )
+                        )
+                    )
             val actor = ResolvedKeyAccess.keyLabel(request).orNull
             val force = overwrite != null && overwrite.booleanValue
             PipelineScripts.regenerate(config, kind, actor, Option(storage).filter(_.nonEmpty).orNull, force) match {
@@ -406,7 +416,6 @@ class PipelineAPIController {
                     auditCodegenScript(request, "regenerate", name, kind, "failure", Some(error))
                     val status =
                         if (error.contains(PipelineScripts.ConflictMarker)) HttpStatus.CONFLICT
-                        else if (error.startsWith("Unknown script storage")) HttpStatus.BAD_REQUEST
                         else HttpStatus.BAD_GATEWAY
                     ResponseEntity
                         .status(status)
@@ -446,7 +455,7 @@ class PipelineAPIController {
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
             CapabilityCheck.assertOwnerScope(request, "pipeline", "create", config.createdByKeyLabel)
-            val response = PipelineAPIController.pullCodegenScriptWith(PipelineScripts, name, kind, ResolvedKeyAccess.keyLabel(request).orNull)
+            val response = PipelineAPIController.pullCodegenScriptWith(PipelineScripts, name, kind, ResolvedKeyAccess.keyLabel(request).orNull, config)
             if (response.getStatusCode.is2xxSuccessful) auditCodegenScript(request, "pull", name, kind, "success", None)
             else auditCodegenScript(request, "pull", name, kind, "failure", Some(String.valueOf(response.getBody)))
             response
@@ -1067,16 +1076,26 @@ object PipelineAPIController {
     /** POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/pull after the key
       * and capability checks: 400 for an unknown kind, no stored script or a
       * built-in script; 502 when the repository cannot be read; 200 with the
-      * kind's GET entry on success. */
-    def pullCodegenScriptWith(scripts: PipelineScripts, name: String, kind: String, actor: String): ResponseEntity[String] = {
+      * kind's GET entry on success. With `config` (the pipeline as saved now)
+      * the adopted script's fingerprint is set to the current instruction and
+      * schema, so the next run or save does not regenerate over it. */
+    def pullCodegenScriptWith(
+        scripts: PipelineScripts,
+        name: String,
+        kind: String,
+        actor: String,
+        config: PipelineConfig = null
+    ): ResponseEntity[String] = {
         def bad(status: HttpStatus, msg: String): ResponseEntity[String] =
             ResponseEntity.status(status).body[String](QueryAPIController.errorBody(new DatrisException(msg)))
         if (!PipelineScripts.Kinds.contains(kind)) return bad(HttpStatus.BAD_REQUEST, PipelineScripts.unknownKindMessage(kind))
+        if (config != null && PipelineScripts.instructionOf(config, kind).isEmpty)
+            return bad(HttpStatus.BAD_REQUEST, "Pipeline: " + name + " has no AI " + kind + " instruction")
         scripts.record(name, kind) match {
             case None => bad(HttpStatus.BAD_REQUEST, "Pipeline " + name + " has no stored " + kind + " script")
             case Some(r) if !PipelineScripts.isRepoBacked(r) => bad(HttpStatus.BAD_REQUEST, PipelineScripts.notRepositoryMessage(name, kind))
             case Some(_) =>
-                scripts.pull(name, kind, actor) match {
+                scripts.pull(name, kind, actor, config) match {
                     case Left(error) => bad(HttpStatus.BAD_GATEWAY, "CodeGen script was not pulled (the recorded commit is unchanged): " + error)
                     case Right(rec) =>
                         val entry = codegenScriptEntry(scripts, name, kind, rec.instruction, scripts.modelNow)

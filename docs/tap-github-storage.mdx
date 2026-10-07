@@ -131,7 +131,7 @@ Tap files (`taps/<tap>.py`) are untouched, and the token needs no new permission
 
 **Commit messages.** `{name}` is `<pipeline>/<kind>` (`orders/dataQuality`,
 `orders/transformation`), `{action}` is `create`, `update` or `delete`, and `{user}` is the label
-of the API key that saved the pipeline, or `datris` when the script was generated during a run.
+of the API key that saved the pipeline, or `datris` when there is none (the script was generated during a run, or saved from a UI session without an API key).
 With the default template (or an empty one) pipeline scripts use
 `pipeline({name}): {action} via Datris`, for example `pipeline(orders/transformation): update via Datris`.
 A custom template is applied as written, so a template written for taps (for example one starting
@@ -174,8 +174,9 @@ existed before repository storage was enabled stay in built-in storage until you
 - A run that generates a pending script and cannot commit it runs the generated script, logs a
   warning, and the script stays pending.
 
-If repository storage is disabled while scripts point at it, their runs fail with the same message
-taps get; regenerate with `storage=builtin` to recover.
+If repository storage is disabled while scripts point at it, their runs fail with "This pipeline's
+CodeGen script is stored in a code repository, but no enabled repository is configured"; re-enable
+the repository, or regenerate with `storage=builtin` to move the script back to built-in storage.
 
 **Delete.** Deleting the pipeline makes a delete commit per script file; git history is kept. A
 repository failure is logged and does not block the delete.

@@ -736,6 +736,32 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(repo.commits.size == commitsBefore)
     }
 
+    test("a pull that resolves a save-time conflict is not regenerated over by the next run or save") {
+        val s = withRepo()
+        val base = csvCfg()
+        s.onSave(null, base, "todd")
+        val before = records.read("orders", Dq).get
+        val editSha = repo.hubEdit(before.scriptRepoPath, "print('hand edit')")
+        val changed = csvCfg(dqRule = "age must be between 0 and 120")
+        val o = s.onSave(base, changed, "todd").find(_.kind == Dq).get
+        assert(o.warning != null && o.warning.contains("pull"), s"$o")
+
+        // The warning's advice: pull, with the pipeline as saved now.
+        assert(s.pull("orders", Dq, "todd", changed).isRight)
+        val pulled = records.read("orders", Dq).get
+        assert(pulled.scriptCommitSha == editSha && pulled.origin == "repository")
+        val commitsBefore = repo.commits.size
+        val callsBefore = calls.size
+
+        val gen = new RunGen
+        val run = s.forRun(changed, Dq, header, gen.fn)
+        assert(run.action == "stored" && run.script == "print('hand edit')" && gen.count == 0, s"$run")
+        s.onSave(changed, changed, "todd")
+        assert(calls.size == callsBefore, "no model call after the pull")
+        assert(repo.commits.size == commitsBefore, "the hand edit is not overwritten")
+        assert(repo.head(pulled.scriptRepoPath).contains("print('hand edit')"))
+    }
+
     test("a store failure at save leaves the script pending") {
         val s = withRepo()
         repo.down = "401 Bad credentials"

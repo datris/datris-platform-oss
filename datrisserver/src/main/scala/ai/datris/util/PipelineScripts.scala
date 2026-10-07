@@ -181,10 +181,17 @@ class PipelineScripts(
         )
         try records.write(rec)
         catch {
+            case e: Throwable if backend == Github =>
+                // The commit stays (history) and the record keeps the old pin;
+                // name the new commit so it can be adopted with pull.
+                throw new DatrisException(
+                    "The " + kind + " script was committed to '" + rec.scriptRepoPath + "' at " + rec.scriptCommitSha +
+                        " but its record could not be written (" + messageOf(e) + "); adopt that commit with POST " +
+                        pullPath(config.name, kind)
+                )
             case e: Throwable =>
-                // A built-in object nobody points at is removed; a repository
-                // commit stays (history) and the record keeps the old pin.
-                if (backend != Github) deleteObject(rec)
+                // A built-in object nobody points at is removed.
+                deleteObject(rec)
                 throw e
         }
         sameBackendPrior.foreach(old => if (backend != Github && !sameObject(old, rec)) deleteObject(old))
@@ -359,18 +366,8 @@ class PipelineScripts(
       * unreachable repository (logged). */
     def drift(pipeline: String, kind: String): Option[String] =
         records.read(pipeline, kind).filter(isRepoBacked).flatMap { r =>
-            try {
-                val store = storeOf(pipeline, Github)
-                store.pullLatest(refOf(r)).flatMap { case (content, headSha) =>
-                    if (headSha == r.scriptCommitSha) None
-                    else {
-                        val pinned =
-                            try store.readScript(refOf(r))
-                            catch { case e: Throwable if scala.util.control.NonFatal(e) => None }
-                        if (pinned.contains(content)) None else Some(headSha)
-                    }
-                }
-            } catch {
+            try storeOf(pipeline, Github).driftHead(refOf(r))
+            catch {
                 case e: Throwable if scala.util.control.NonFatal(e) =>
                     logger.warn("CodeGen script drift check failed for " + pipeline + "/" + kind + ": " + messageOf(e))
                     None
@@ -379,10 +376,23 @@ class PipelineScripts(
 
     /** Adopt the branch-head version of a repository-backed script: the record
       * pins the head commit, origin "repository", ready. No commit is made.
-      * The fingerprint is kept, so later saves with an unchanged instruction
-      * and schema keep the adopted edit. Left for a built-in script. */
-    def pull(pipeline: String, kind: String, actor: String): Either[String, CodeGenScript] = {
+      * With `config` (the pipeline as it is now) the record's fingerprint
+      * becomes the current instruction and schema's, so a pull made to
+      * resolve a save-time conflict is not regenerated over by the next run
+      * or save; later saves keep the adopted edit while the instruction and
+      * schema stay unchanged. Without `config` the recorded fingerprint is
+      * kept. Left for a built-in script. */
+    def pull(pipeline: String, kind: String, actor: String, config: PipelineConfig = null): Either[String, CodeGenScript] = {
         if (!Kinds.contains(kind)) return Left(unknownKindMessage(kind))
+        val current: Option[String] =
+            if (config == null) None
+            else
+                instructionOf(config, kind) match {
+                    case Some(i) => Some(fingerprint(i, schemaSignature(config)))
+                    case None =>
+                        return Left("Pipeline " + pipeline + " has no AI " + (if (kind == PipelineScripts.DataQuality) "data-quality rule"
+                                                                              else "transformation"))
+                }
         records.read(pipeline, kind) match {
             case None => Left("Pipeline " + pipeline + " has no stored " + kind + " script")
             case Some(r) if !isRepoBacked(r) => Left(notRepositoryMessage(pipeline, kind))
@@ -393,13 +403,17 @@ class PipelineScripts(
                         case Some((content, _)) if content == null || content.trim.isEmpty =>
                             Left("'" + r.scriptRepoPath + "' is empty at the head of the configured branch; there is nothing to pull")
                         case Some((_, headSha)) =>
-                            val rec = r.copy(
+                            val base = r.copy(
                                 scriptCommitSha = headSha,
                                 generatedAt = java.time.Instant.now().toString,
                                 status = Ready,
                                 pendingReason = null,
                                 origin = "repository"
                             )
+                            val rec = current match {
+                                case Some(fp) => base.copy(fingerprint = fp, contractVersion = contractVersion(kind), generatedAgainst = null)
+                                case None => base
+                            }
                             records.write(rec)
                             logger.info(
                                 "CodeGen script " + pipeline + "/" + kind + " pinned to repository commit " + headSha +
