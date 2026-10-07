@@ -475,6 +475,7 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
     c.transformation.scriptPendingReason = r.pendingReason || undefined;
     c.transformation.scriptStorage = r.storage || undefined;
     c.transformation.scriptCommitSha = r.commitSha || undefined;
+    c.transformation.scriptConflict = r.conflict ? (r.conflictReason || 'unresolved repository conflict') : undefined;
     if (this.scriptText !== null) this.scriptText = r.script || '';
   }
 

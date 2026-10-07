@@ -100,6 +100,8 @@ export interface ColumnLineage {
     scriptStorage?: string;
     /** Recorded commit of a repository-backed script. */
     scriptCommitSha?: string;
+    /** Unresolved repository conflict: runs keep the recorded commit until pull or overwrite. */
+    scriptConflict?: string;
   };
   edges: ColumnEdge[];
   unresolved: string[];
@@ -126,6 +128,9 @@ export interface CodegenScript {
   drift?: boolean;
   /** Branch-head commit, present when `drift` is true. */
   headSha?: string;
+  /** True while a new script was not committed because the repository file changed; runs keep the recorded commit. */
+  conflict?: boolean;
+  conflictReason?: string;
 }
 
 /** Options for a forced regenerate. */

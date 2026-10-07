@@ -159,9 +159,21 @@ response carries a warning naming the two ways forward: pull the edit, or replac
 without `overwrite=true` is rejected the same way (409). A hand edit is never overwritten silently;
 an overwritten edit stays in the repository history.
 
+Until the conflict is resolved, runs keep executing the recorded commit, without the new instruction
+or schema and with no model call. The run's status line names the commit and says to pull or
+regenerate with `overwrite=true`, and the read endpoint shows `conflict: true` with the
+`conflictReason`. Saving the same configuration again makes no model call and repeats the warning.
+Pull or a regenerate with `overwrite=true` clears the conflict. A run that meets the same conflict
+(for example after a version restore) records it the same way and runs the recorded commit.
+
 **Moving a script.** An existing script keeps its storage on every save. To move one, call
 regenerate with `storage=github` or `storage=builtin`; the old copy is left in place. Scripts that
 existed before repository storage was enabled stay in built-in storage until you move them.
+
+Leftover copies are not tracked. Deleting the pipeline removes only the copies its scripts point at
+now, so files and objects left behind by earlier moves stay until you remove them. Moving a script
+back to the repository writes over a leftover file at the same path without a conflict check, and
+the commit is labelled `create`.
 
 **When the repository is unreachable or the token has expired:**
 

@@ -130,6 +130,9 @@
                 <ng-container *ngIf="!c.transformation.scriptStatus">No stored script yet; the next run generates it</ng-container>
                 · <a class="action-link script-link" (click)="viewScript()">{{ scriptLoading ? 'Loading…' : (scriptText !== null ? 'Hide' : 'View') }}</a>
                 <ng-container *ngIf="auth.canWrite()"> · <a class="action-link script-link" (click)="regenerateScript()">{{ regenerating ? 'Regenerating…' : 'Regenerate' }}</a></ng-container>
+                <div class="small" *ngIf="c.transformation.scriptConflict" [title]="c.transformation.scriptConflict">
+                  Not replaced: the repository file changed since {{ shortSha(c.transformation.scriptCommitSha) }}. Runs keep that commit until you load the latest or regenerate with overwrite.
+                </div>
                 <div class="small" *ngIf="scriptDriftHead">
                   Changed in the repository (head {{ shortSha(scriptDriftHead) }}); runs still use {{ shortSha(c.transformation.scriptCommitSha) }}
                   <ng-container *ngIf="auth.canWrite()"> · <a class="action-link script-link" (click)="pullScript()">{{ pulling ? 'Loading…' : 'Load latest' }}</a></ng-container>

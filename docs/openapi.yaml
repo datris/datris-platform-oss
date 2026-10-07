@@ -91,6 +91,18 @@ components:
         headSha:
           type: string
           description: Present when `drift` is true. The branch-head commit the pull endpoint would record.
+        conflict:
+          type: boolean
+          description: >-
+            True while a new script was not committed because the file was
+            edited in the code repository since the recorded commit. Runs keep
+            executing the recorded commit, without the new instruction or
+            schema and with no model call, until the edit is pulled or the
+            script is regenerated with `overwrite=true`. Present when the
+            script has a record.
+        conflictReason:
+          type: string
+          description: Present when `conflict` is true. The warning the save or regenerate returned.
     FieldProtectionPolicy:
       type: object
       description: >-
@@ -5794,6 +5806,11 @@ paths:
                       scriptCommitSha:
                         type: string
                         description: AI transformation only — the recorded commit of a repository-backed script.
+                      scriptConflict:
+                        type: string
+                        description: >-
+                          AI transformation only — present while a repository conflict is
+                          unresolved (runs keep the recorded commit); the warning text.
                   edges:
                     type: array
                     items:
