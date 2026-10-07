@@ -53,8 +53,14 @@ class DoctorServiceSpec extends AnyFunSuite {
             "USE_API_KEYS" -> true,
             "USE_AUDIT_LOG" -> true,
             "USE_AGENT_POLICY" -> true
-        )
+        ),
+        // CodeGen script isolation (plans/stories/codegen-script-isolation.md):
+        // USE_CODEGEN_RUNNER, and CodeGenRunner.health() when it is on.
+        var codegenEnabled: Boolean = true,
+        var codegenHealth: Either[String, Unit] = Right(())
     ) extends Probes {
+        override def codegenRunnerEnabled(): Boolean = codegenEnabled
+        override def codegenRunnerHealth(): Either[String, Unit] = codegenHealth
         override def anyPipelineProtects(): Boolean = protects
         override def governanceControls(): Map[String, Boolean] = governance
         def tapSecretRefs(): List[(String, String, Option[String])] = tapRefs
@@ -467,7 +473,10 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(full.checks.map(_.id).contains("staging.orphans"), full.checks.map(_.id).toString)
         val quickIds = DoctorService.run("quick", Set.empty, Map.empty, p, slots, "1.28.2").checks.map(_.id)
         assert(quickIds.contains("staging.area") && quickIds.contains("staging.orphans"), "startup-safe: " + quickIds)
-        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans", "tap.secret_scope", "ai.sample_values")) == Seq(
+        // codegen-script-isolation: registered and startup-safe; position not pinned.
+        assert(full.checks.map(_.id).contains("codegen.isolation"), full.checks.map(_.id).toString)
+        assert(quickIds.contains("codegen.isolation"), "startup-safe: " + quickIds)
+        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans", "tap.secret_scope", "ai.sample_values", "codegen.isolation")) == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
             "jdbc.mssql_driver",
@@ -789,5 +798,49 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(fullIds.indexOf("governance.controls") == fullIds.indexOf("ai.sample_values") + 1, "registered after ai.sample_values: " + fullIds)
         val startupIds = DoctorService.runStartup(offProbes, slots, "1.28.2").map(_.id)
         assert(!startupIds.contains("governance.controls"), "boot log has no DOCTOR governance.controls line: " + startupIds)
+    }
+
+    // codegen.isolation (plans/stories/codegen-script-isolation.md)
+    //
+    // Pinned seam:
+    //   trait Probes {
+    //       def codegenRunnerEnabled(): Boolean                 // CodeGenRunner.enabled (USE_CODEGEN_RUNNER)
+    //       def codegenRunnerHealth(): Either[String, Unit]     // CodeGenRunner.health(); Left = why it failed
+    //   }
+    //   class CodeGenIsolationCheck(probes: Probes) extends Check   // id "codegen.isolation", startupSafe = true
+    // The check must not call codegenRunnerHealth() when the runner is not enabled.
+
+    test("codegen.isolation is ok when the runner answers") {
+        val c = new CodeGenIsolationCheck(new FakeProbes(codegenEnabled = true, codegenHealth = Right(())))
+        assert(c.id == "codegen.isolation")
+        assert(c.startupSafe)
+        val r = c.run()
+        assert(r.status == "ok", r)
+        assert(r.detail.contains("datris-codegen-runner"), r.detail)
+        val all = DoctorService.checks(new FakeProbes(), slots, "1.0.0", Map.empty)
+        assert(all.exists(_.id == "codegen.isolation"), "codegen.isolation is part of the report")
+    }
+
+    test("warns when the runner is not enabled") {
+        var probed = false
+        val probes = new FakeProbes(codegenEnabled = false) {
+            override def codegenRunnerHealth(): Either[String, Unit] = { probed = true; Left("should not be probed") }
+        }
+        val r = new CodeGenIsolationCheck(probes).run()
+        assert(r.status == "warn", r)
+        assert(!probed, "no runner probe when USE_CODEGEN_RUNNER is off")
+        assert(r.detail.toLowerCase.contains("in-process") || r.detail.contains("USE_CODEGEN_RUNNER"), r.detail)
+        assert(r.remediation.toLowerCase.contains("compose"), "remediation tells the operator to refresh the compose file: " + r.remediation)
+        assert(r.remediation.contains("sbt"), "remediation says it is expected under sbt: " + r.remediation)
+    }
+
+    test("errors when enabled and the runner is unreachable") {
+        val r = new CodeGenIsolationCheck(
+            new FakeProbes(codegenEnabled = true, codegenHealth = Left("Connection refused: http://datris-codegen-runner:8090"))
+        ).run()
+        assert(r.status == "error", r)
+        assert(r.detail.contains("Connection refused"), "the probe's reason is shown: " + r.detail)
+        assert(r.detail.contains("datris-codegen-runner") || r.remediation.contains("datris-codegen-runner"), r)
+        assert(r.remediation.nonEmpty)
     }
 }
