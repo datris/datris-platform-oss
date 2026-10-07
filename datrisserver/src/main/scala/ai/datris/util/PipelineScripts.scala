@@ -291,7 +291,12 @@ class PipelineScripts(
             try storeRecord(config, kind, instruction, fp, script, header, "run", existing, null)
             catch {
                 case e: Throwable if scala.util.control.NonFatal(e) =>
-                    val why = messageOf(e)
+                    val why = e match {
+                        // The file was edited in the repository since the recorded
+                        // commit: say how to resolve it (pull or overwrite).
+                        case _: CodeRepoConflictException => conflictWarning(config.name, kind, existing.orNull)
+                        case _ => "the script could not be stored: " + messageOf(e)
+                    }
                     logger.warn("Could not store the CodeGen script generated at run for " + config.name + "/" + kind + ": " + why)
                     // Not written: the stored record (pending, or the previous
                     // script) is unchanged and the next run generates again.
@@ -304,7 +309,7 @@ class PipelineScripts(
                         fingerprint = fp,
                         model = currentModel(),
                         status = Pending,
-                        pendingReason = "the script could not be stored: " + why,
+                        pendingReason = why,
                         origin = "run",
                         contractVersion = contractVersion(kind)
                     )

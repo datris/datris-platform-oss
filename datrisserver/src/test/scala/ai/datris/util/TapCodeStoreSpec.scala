@@ -293,4 +293,72 @@ class TapCodeStoreSpec extends AnyFunSuite {
             null
         ) == "tap(orders/dataQuality): delete [skip ci]")
     }
+
+    // --- drift check and the disabled-repository message (story 2 review) ---
+
+    /** A store whose branch head is `head` with `headContent`, and whose pinned
+      * read returns `pinnedContent`. */
+    private class DriftStub(head: String, headContent: String, pinnedContent: String) extends CodeStore {
+        override def storage: String = "github"
+        override def readScript(ref: ScriptRef): Option[String] = Option(pinnedContent)
+        override def storeScript(name: String, script: String, prior: ScriptRef, actor: String): StoredScript = throw new UnsupportedOperationException
+        override def deleteScript(ref: ScriptRef): Unit = ()
+        override def scriptExists(ref: ScriptRef): Boolean = true
+        override def pullLatest(ref: ScriptRef): Option[(String, String)] = Option(headContent).map(c => (c, head))
+    }
+
+    private val pinnedRef = ScriptRef("transformation", "github", scriptRepoPath = "taps/pipelines/orders/transformation.py", scriptCommitSha = "s0")
+
+    test("driftHead default: same sha or same content is no drift; new content reports the head sha") {
+        assert(new DriftStub("s0", "print(1)", "print(1)").driftHead(pinnedRef).isEmpty, "same sha")
+        assert(new DriftStub("s1", "print(1)", "print(1)").driftHead(pinnedRef).isEmpty, "new sha, same content")
+        assert(new DriftStub("s1", "print(2)", "print(1)").driftHead(pinnedRef).contains("s1"), "new sha, new content")
+        assert(new DriftStub("s1", null, "print(1)").driftHead(pinnedRef).isEmpty, "file gone at head")
+        assert(new MinioScriptStore("pipeline-scripts/orders/").driftHead(pinnedRef).isEmpty, "built-in store has no branch")
+    }
+
+    test("GithubScriptStore.driftHead compares blob shas and never writes the script cache") {
+        val path = pinnedRef.scriptRepoPath
+        val cacheDir = Files.createTempDirectory("tap-cache-drift")
+        val prop = "datris.tap.cache.dir"
+        val old = sys.props.get(prop)
+        sys.props(prop) = cacheDir.toString
+        try {
+            def store(head: String, blobs: Map[String, String]): GithubScriptStore =
+                new GithubScriptStore(
+                    k => ScriptFamily.Pipeline("orders", k),
+                    null,
+                    () => Some(CodeRepoConfig(repo = "acme/scripts")),
+                    _ => head,
+                    (_, p, ref) => if (p == path) blobs.get(ref).map(b => RepoFile("content-" + b, b, ref)) else None
+                )
+            assert(store("s0", Map("s0" -> "b0")).driftHead(pinnedRef).isEmpty, "head is the recorded commit")
+            assert(store("s1", Map("s0" -> "b0", "s1" -> "b0")).driftHead(pinnedRef).isEmpty, "other files moved; same blob")
+            assert(store("s1", Map("s0" -> "b0", "s1" -> "b1")).driftHead(pinnedRef).contains("s1"), "the file changed")
+            assert(store("s1", Map("s0" -> "b0")).driftHead(pinnedRef).isEmpty, "file deleted at head")
+            assert(store("s1", Map("s1" -> "b1")).driftHead(pinnedRef).contains("s1"), "recorded commit unreadable counts as drift")
+            val written = Files.walk(cacheDir).filter(Files.isRegularFile(_)).count()
+            assert(written == 0, "drift polling writes nothing to the script cache")
+        } finally {
+            old match { case Some(v) => sys.props(prop) = v; case None => sys.props.remove(prop) }
+        }
+    }
+
+    test("a disabled repository: pipeline scripts get the pipeline message, taps keep theirs") {
+        val tapText =
+            "This tap stores its script in a code repository, but no enabled repository is configured. " +
+                "Re-enable it under Configuration > Code Repository, or move the tap back to built-in storage."
+        assert(GithubScriptStore.TapDisabledMessage == tapText, "tap text unchanged")
+        assert(GithubScriptStore.PipelineDisabledMessage.startsWith("This pipeline's CodeGen script is stored in a code repository"))
+        assert(GithubScriptStore.PipelineDisabledMessage.contains("storage=builtin"))
+        assert(!GithubScriptStore.PipelineDisabledMessage.contains("tap"))
+
+        val ref = ScriptRef("dataQuality", "github", scriptRepoPath = "taps/pipelines/orders/data-quality.py", scriptCommitSha = "s0")
+        val pipelineStore = new GithubScriptStore(k => ScriptFamily.Pipeline("orders", k), GithubScriptStore.PipelineDisabledMessage, () => None)
+        val e1 = intercept[ai.datris.model.DatrisException](pipelineStore.readScript(ref))
+        assert(e1.getMessage == GithubScriptStore.PipelineDisabledMessage)
+        val tapStore = new GithubScriptStore(n => ScriptFamily.Tap(n), null, () => None)
+        val e2 = intercept[ai.datris.model.DatrisException](tapStore.readScript(ref))
+        assert(e2.getMessage == tapText, "a store with no message (the tap store) uses the tap text")
+    }
 }

@@ -800,6 +800,25 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         val stored = records.read("orders", Dq).get
         assert(stored.status == "ready" && stored.storage == "github" && stored.scriptCommitSha == repo.headSha, s"$stored")
         assert(Option(repo.writes.last.actor).forall(_ == "datris"), "a run commits as datris")
+
+        // A run whose commit is rejected because the file was hand-edited:
+        // the generated script runs, the reason names pull / overwrite, the
+        // record and the hand edit are untouched.
+        repo.hubEdit(stored.scriptRepoPath, "print('hand edit')")
+        val changed = csvCfg(dqRule = "age must be between 0 and 120")
+        val writesBefore = repo.writes.size
+        val conflicted =
+            try s.forRun(changed, Dq, header, gen.fn)
+            catch { case e: Throwable => fail("a rejected commit must not fail the run: " + e) }
+        assert(gen.count == 3 && conflicted.action != "stored", s"$conflicted")
+        val reason = conflicted.record.pendingReason
+        assert(reason != null && reason.contains("pull") && reason.contains("overwrite=true"), reason)
+        assert(!reason.contains("this tap"), s"pipeline wording, not the tap message: $reason")
+        val line = PipelineScripts.statusLine(conflicted)
+        assert(line.contains("pull") && !line.contains("this tap"), line)
+        assert(records.read("orders", Dq).get == stored, "the record is unchanged")
+        assert(repo.writes.size == writesBefore)
+        assert(repo.head(stored.scriptRepoPath).contains("print('hand edit')"))
     }
 
     test("an unreadable recorded commit fails the run with no model call") {

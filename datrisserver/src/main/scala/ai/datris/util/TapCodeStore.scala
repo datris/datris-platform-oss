@@ -185,13 +185,19 @@ object MinioCodeStore extends TapCodeStore {
   * configured branch. Requires an enabled CodeRepoConfig. `familyOf` maps a
   * script's logical name (tap name, or CodeGen kind) to its family, which
   * decides the repository path and the commit message. */
-class GithubScriptStore(familyOf: String => ScriptFamily, disabledMessage: String = null) extends CodeStore {
+class GithubScriptStore(
+    familyOf: String => ScriptFamily,
+    disabledMessage: String = null,
+    readEnabled: () => Option[CodeRepoConfig] = () => CodeRepoConfigIO.readEnabled(),
+    branchHead: CodeRepoConfig => String = cfg => GithubClient.branchHeadSha(cfg),
+    fileAt: (CodeRepoConfig, String, String) => Option[RepoFile] = (cfg, path, ref) => GithubClient.getFile(cfg, path, ref)
+) extends CodeStore {
     val storage = "github"
 
     // Resolved at call time: the companion's messages are not initialised
     // while the companion object itself is being constructed.
     private def config: CodeRepoConfig =
-        CodeRepoConfigIO.readEnabled().getOrElse(
+        readEnabled().getOrElse(
             throw new DatrisException(Option(disabledMessage).getOrElse(GithubScriptStore.TapDisabledMessage))
         )
 
@@ -263,10 +269,10 @@ class GithubScriptStore(familyOf: String => ScriptFamily, disabledMessage: Strin
     override def driftHead(ref: ScriptRef): Option[String] = {
         if (ref == null || ref.scriptRepoPath == null || ref.scriptRepoPath.isEmpty || ref.scriptCommitSha == null) return None
         val cfg = config
-        val headSha = GithubClient.branchHeadSha(cfg)
+        val headSha = branchHead(cfg)
         if (headSha == ref.scriptCommitSha) return None
-        GithubClient.getFile(cfg, ref.scriptRepoPath, headSha).flatMap { head =>
-            val pinned = GithubClient.getFile(cfg, ref.scriptRepoPath, ref.scriptCommitSha)
+        fileAt(cfg, ref.scriptRepoPath, headSha).flatMap { head =>
+            val pinned = fileAt(cfg, ref.scriptRepoPath, ref.scriptCommitSha)
             if (pinned.exists(_.blobSha == head.blobSha)) None else Some(headSha)
         }
     }
@@ -285,7 +291,14 @@ class GithubScriptStore(familyOf: String => ScriptFamily, disabledMessage: Strin
 }
 
 /** The tap scripts' repository store. */
-object GithubScriptStore extends GithubScriptStore(name => ScriptFamily.Tap(name), null) {
+object GithubScriptStore
+    extends GithubScriptStore(
+        name => ScriptFamily.Tap(name),
+        null,
+        () => CodeRepoConfigIO.readEnabled(),
+        cfg => GithubClient.branchHeadSha(cfg),
+        (cfg, path, ref) => GithubClient.getFile(cfg, path, ref)
+    ) {
     val TapDisabledMessage: String =
         "This tap stores its script in a code repository, but no enabled repository is configured. " +
             "Re-enable it under Configuration > Code Repository, or move the tap back to built-in storage."
