@@ -52,12 +52,33 @@ Add an `aiTransformation` block to the `transformation` section:
 
 ## How it works
 
-1. Datris extracts column names and sample rows from the data, combines them with your instruction, and sends a single prompt to the AI model.
-2. The AI generates a self-contained Python 3 script (stdlib only) that reads the input file, applies the transformation, and writes the output.
-3. The script is executed locally via `python3`. Processing cost is zero after the initial API call.
+1. When the pipeline is saved, Datris combines the source schema (delimiter, column names and types) with your instruction and sends a single prompt to the AI model. When a run has to generate the script instead (see [When the script is generated](#when-the-script-is-generated)), it uses the column names and sample rows from that run's data.
+2. The AI generates a self-contained Python 3 script (stdlib only) that reads the input file, applies the transformation, and writes the output. The script is stored.
+3. Every run executes the stored script locally via `python3`. Runs make no model call.
 4. The transformed data replaces the original and continues through the pipeline to destinations.
 
 AI transformations run after data quality checks and before data is written to destinations.
+
+An `aiTransformation` whose `instruction` is empty or only whitespace is ignored: no script is generated at save and the run skips the stage with a status line saying so.
+
+## When the script is generated
+
+The script is generated once and stored, not on every run:
+
+- **At save** — Saving a pipeline with an AI transformation (`POST /api/v1/pipeline`, the MCP `create_pipeline` tool, or the UI wizard) generates the script from the source schema: the delimiter and the ordered field names and types. No sample rows are available when a pipeline is saved, so state any format the transformation depends on in the instruction (for example "dates are YYYY-MM-DD"). The script is stored in the built-in object store under `pipeline-scripts/<pipeline>/`, or committed to the code repository when one is enabled (see [Pipeline scripts](/tap-github-storage#pipeline-scripts)).
+- **Every run** — Each run executes the stored script. A run makes no model call, gives the same result for the same data, and keeps working if the model is unreachable. The status shows "Running stored CodeGen script generated at ...".
+- **Re-saving** — Saving again regenerates only when the instruction or the source schema (delimiter, field names, types or order) changed. Re-saving an unchanged pipeline makes no model call. A changed CodeGen model does not regenerate: the script keeps the model that wrote it.
+- **Pending** — If the script cannot be generated at save (no AI key, model unreachable, AI disabled), the pipeline is still saved, the save response carries a warning and `codegenScripts` lists the script as `pending` with the reason. JSON and XML pipelines have no column schema to generate from, so they are always saved pending. The first run generates the script from its data, stores it, and later runs reuse it.
+- **Header differs** — If the header that reaches the transformation differs from the one the script was written for (for example a column was removed by field protection or is missing from the file), that run generates a script for itself only and keeps the stored one. The status says why.
+- **Failures** — A stored script that exits with an error or times out fails the run. It is not regenerated automatically: the error names when the script was generated and the regenerate endpoint.
+
+To read the stored script, call `GET /api/v1/pipelines/{name}/codegen-scripts`. To replace it (for example to adopt a new CodeGen model, or after a wrong script), call `POST /api/v1/pipelines/{name}/codegen-scripts/transformation/regenerate`, which needs the `pipeline:create` capability. If generation fails there, the current script stays in place.
+
+With a code repository configured under **Configuration > Code Repository**, the script for a new pipeline is committed to it as `<pathPrefix>pipelines/<pipeline>/transformation.py` and every run executes the recorded commit. You can review it, blame it and edit it in the repository; an edit is used only after you adopt it with `POST /api/v1/pipelines/{name}/codegen-scripts/transformation/pull`. See [Pipeline scripts](/tap-github-storage#pipeline-scripts) for commit messages, conflicts, and what happens when the repository is unreachable.
+
+The **Columns** section of the [lineage panel](/provenance#column-level-lineage) shows when and by which model the stored transformation script was generated, or "Script pending" with the reason, and offers View and Regenerate.
+
+Pipelines created before stored scripts generate their script on the first run after the upgrade and reuse it after that.
 
 ## Values withheld
 

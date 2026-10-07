@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{Data, DatrisEnvironment, DatrisException, StagedFormat, StagedPayload}
+import ai.datris.model.{Data, DatrisEnvironment, DatrisException, PipelineConfig, SchemaField, StagedFormat, StagedPayload}
 import com.google.gson.{GsonBuilder, JsonArray}
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -32,10 +32,10 @@ object CodeGenRuleEvaluator {
           |- The script must be completely self-contained""".stripMargin
 
     /**
-     * Evaluate a plain-English rule against CSV data using CodeGen.
-     * Generates a Python script via LLM, executes it locally against the data.
-     * The script reads the staged payload (header line first) from a file; the
-     * rows never pass through the JVM heap.
+     * Evaluate a plain-English rule against CSV data using CodeGen, generating
+     * the script for this call only (no stored script). The script reads the
+     * staged payload (header line first) from a file; the rows never pass
+     * through the JVM heap.
      *
      * @param rule      Plain-English validation rule
      * @param data      The delimited payload (header + staged rows)
@@ -46,21 +46,45 @@ object CodeGenRuleEvaluator {
         evaluateCsv(rule, data, delimiter, codegenAI)
 
     /** Seam for specs: `ai(systemPrompt, userPrompt)` returns the script text. */
-    private[datris] def evaluateCsv(rule: String, data: Data, delimiter: String, ai: (String, String) => String): List[(Int, String)] = {
-        val headerLine = data.header.mkString(delimiter)
+    private[datris] def evaluateCsv(rule: String, data: Data, delimiter: String, ai: (String, String) => String): List[(Int, String)] =
+        runScript(generate(csvPrompt(rule, data, delimiter), ai), data, "csv")
 
-        val userPrompt =
-            if (!AiSampleValues.enabled)
-                s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
-                   |Columns: ${CodeGenRuleEvaluator.withheldColumns(data, delimiter)}
-                   |${withheldCsvLines(data)}
-                   |
-                   |Rule: "$rule"
-                   |
-                   |The CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.""".stripMargin
-            else {
-                val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
-                s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+    /** Pipeline run: executes the pipeline's stored script when it still
+      * matches (see [[PipelineScripts.forRun]]), else generates from this
+      * run's data. `note` receives the status line saying which. */
+    def evaluateCsv(rule: String, data: Data, delimiter: String, config: PipelineConfig, note: String => Unit): List[(Int, String)] =
+        evaluateCsv(rule, data, delimiter, config, note, PipelineScripts, codegenAI)
+
+    /** Seam for specs: script store/records and the model call injected. */
+    private[datris] def evaluateCsv(
+        rule: String,
+        data: Data,
+        delimiter: String,
+        config: PipelineConfig,
+        note: String => Unit,
+        scripts: PipelineScripts,
+        ai: (String, String) => String
+    ): List[(Int, String)] = {
+        val resolved = scripts.forRun(config, PipelineScripts.DataQuality, data.header, () => generate(csvPrompt(rule, data, delimiter), ai))
+        note(PipelineScripts.statusLine(resolved))
+        PipelineScripts.runResolved(resolved, config.name, PipelineScripts.DataQuality)(s => runScript(s, data, "csv"))
+    }
+
+    /** The run-time prompt for a delimited payload (sample rows, or the
+      * withheld lines when DATRIS_AI_SAMPLE_VALUES=false). */
+    private def csvPrompt(rule: String, data: Data, delimiter: String): String = {
+        val headerLine = data.header.mkString(delimiter)
+        if (!AiSampleValues.enabled)
+            s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+               |Columns: ${CodeGenRuleEvaluator.withheldColumns(data, delimiter)}
+               |${withheldCsvLines(data)}
+               |
+               |Rule: "$rule"
+               |
+               |The CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.""".stripMargin
+        else {
+            val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
+            s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
                |Columns: $headerLine
                |Sample rows:
                |${sampleRows.mkString("\n")}
@@ -68,10 +92,34 @@ object CodeGenRuleEvaluator {
                |Rule: "$rule"
                |
                |The CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.""".stripMargin
-            }
-
-        evaluate(userPrompt, data, "csv", ai)
+        }
     }
+
+    /** Line used in place of sample rows when a script is generated at
+      * pipeline save (no content is available then). */
+    private[util] val NoSampleAtSave =
+        "No sample rows are available when a pipeline is saved; write the script from the column names, types and the instruction alone, without assuming what the values look like."
+
+    /** The schema-only `Columns:` / `Column types:` lines for a save-time prompt. */
+    private[util] def schemaLines(fields: List[SchemaField], delimiter: String): String = {
+        val fs = fields.filter(f => f != null && f.name != null)
+        "Columns: " + fs.map(_.name).mkString(delimiter) + "\n" +
+            "Column types: " + fs.map(f => f.name + ":" + Option(f.`type`).getOrElse("string")).mkString(", ") + "\n" +
+            NoSampleAtSave
+    }
+
+    /** The save-time prompt: delimiter, ordered names and types, no row value. */
+    private[util] def schemaPrompt(rule: String, fields: List[SchemaField], delimiter: String): String =
+        s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+           |${schemaLines(fields, delimiter)}
+           |
+           |Rule: "$rule"
+           |
+           |The CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.""".stripMargin
+
+    /** Generate the rule's script from the source schema alone (pipeline save). */
+    def generateFromSchema(rule: String, fields: List[SchemaField], delimiter: String, ai: (String, String) => String): String =
+        generate(schemaPrompt(rule, fields, delimiter), ai)
 
     /** The codegen-slot call both evaluators use outside specs. */
     private[util] val codegenAI: (String, String) => String = (system, user) => {
@@ -144,7 +192,29 @@ object CodeGenRuleEvaluator {
         evaluateRaw(rule, data, isJson, codegenAI)
 
     /** Seam for specs: `ai(systemPrompt, userPrompt)` returns the script text. */
-    private[datris] def evaluateRaw(rule: String, data: Data, isJson: Boolean, ai: (String, String) => String): List[(Int, String)] = {
+    private[datris] def evaluateRaw(rule: String, data: Data, isJson: Boolean, ai: (String, String) => String): List[(Int, String)] =
+        runScript(generate(rawPrompt(rule, data, isJson), ai), data, if (isJson) "json" else "xml")
+
+    /** Pipeline run (see the delimited overload). */
+    def evaluateRaw(rule: String, data: Data, isJson: Boolean, config: PipelineConfig, note: String => Unit): List[(Int, String)] =
+        evaluateRaw(rule, data, isJson, config, note, PipelineScripts, codegenAI)
+
+    /** Seam for specs: script store/records and the model call injected. */
+    private[datris] def evaluateRaw(
+        rule: String,
+        data: Data,
+        isJson: Boolean,
+        config: PipelineConfig,
+        note: String => Unit,
+        scripts: PipelineScripts,
+        ai: (String, String) => String
+    ): List[(Int, String)] = {
+        val resolved = scripts.forRun(config, PipelineScripts.DataQuality, Nil, () => generate(rawPrompt(rule, data, isJson), ai))
+        note(PipelineScripts.statusLine(resolved))
+        PipelineScripts.runResolved(resolved, config.name, PipelineScripts.DataQuality)(s => runScript(s, data, if (isJson) "json" else "xml"))
+    }
+
+    private def rawPrompt(rule: String, data: Data, isJson: Boolean): String = {
         val format = if (isJson) "JSON" else "XML"
         val withheld = !AiSampleValues.enabled
 
@@ -154,26 +224,23 @@ object CodeGenRuleEvaluator {
             "Parse the file as XML. Each child element of the root is one record. Use xml.etree.ElementTree."
         }
 
-        val userPrompt =
-            if (withheld)
-                s"""Format: $format
-                   |${withheldStructure(data, isJson)}
-                   |
-                   |Rule: "$rule"
-                   |
-                   |$parseInstruction""".stripMargin
-            else {
-                val sample = sampleDocument(data, 2000)
-                s"""Format: $format
-                   |Sample data (first 2000 chars):
-                   |$sample
-                   |
-                   |Rule: "$rule"
-                   |
-                   |$parseInstruction""".stripMargin
-            }
-
-        evaluate(userPrompt, data, format.toLowerCase, ai)
+        if (withheld)
+            s"""Format: $format
+               |${withheldStructure(data, isJson)}
+               |
+               |Rule: "$rule"
+               |
+               |$parseInstruction""".stripMargin
+        else {
+            val sample = sampleDocument(data, 2000)
+            s"""Format: $format
+               |Sample data (first 2000 chars):
+               |$sample
+               |
+               |Rule: "$rule"
+               |
+               |$parseInstruction""".stripMargin
+        }
     }
 
     /** The first `chars` characters of the document exactly as the script will
@@ -273,28 +340,28 @@ object CodeGenRuleEvaluator {
         } finally reader.close()
     }
 
-    private def evaluate(userPrompt: String, data: Data, fileExtension: String, ai: (String, String) => String): List[(Int, String)] = {
+    /** The generate half: one model call, the script text cleaned of fences. */
+    private def generate(userPrompt: String, ai: (String, String) => String): String = {
         logger.info("CodeGen DQ: generating Python validation script")
-
-        // Step 1: Generate the Python script via LLM (uses codegen config when set)
-        val scriptContent = ai(SYSTEM_PROMPT, userPrompt)
-        val cleanScript = cleanGeneratedScript(scriptContent)
-
+        val cleanScript = cleanGeneratedScript(ai(SYSTEM_PROMPT, userPrompt))
         logger.info("CodeGen DQ: generated script (" + cleanScript.length + " chars)")
         logger.info("CodeGen DQ: script content:\n" + cleanScript)
+        cleanScript
+    }
 
-        // Step 2: Stream the data into the staging area; the script goes to a temp file
+    /** The run half: execute `script` against the staged payload (no model
+      * call) and parse its JSON failure list. */
+    private[datris] def runScript(script: String, data: Data, fileExtension: String): List[(Int, String)] = {
+        // Stream the data into the staging area; the script goes to a temp file
         val dataFile: Path = stageInput(data, fileExtension)
         val scriptFile: Path = Files.createTempFile("dq_codegen_", ".py")
 
         try {
-            Files.write(scriptFile, cleanScript.getBytes("UTF-8"))
+            Files.write(scriptFile, script.getBytes("UTF-8"))
 
-            // Step 3: Execute the script
             val result = executeWithTimeout(scriptFile.toString, dataFile.toString, SCRIPT_TIMEOUT_SECONDS)
             logger.info("CodeGen DQ: script executed, output length: " + result.length + " chars")
 
-            // Step 4: Parse the JSON result
             parseFailures(result)
         } catch {
             case e: DatrisException => throw e
@@ -321,7 +388,7 @@ object CodeGenRuleEvaluator {
         result.stdout
     }
 
-    private def cleanGeneratedScript(script: String): String = {
+    private[util] def cleanGeneratedScript(script: String): String = {
         var cleaned = script.trim
         // Remove markdown code fences if present
         if (cleaned.startsWith("```python"))
@@ -380,7 +447,7 @@ object CodeGenRuleEvaluator {
         -1
     }
 
-    private def escapeDelimiter(d: String): String = d match {
+    private[util] def escapeDelimiter(d: String): String = d match {
         case "\t" => "\\t"
         case other => other
     }

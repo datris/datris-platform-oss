@@ -301,7 +301,7 @@ case class DatrisEnvironment(
     def runLineageTableName: String = environment + "-run-lineage"
 
     /** AI-inferred column mappings per `pipeline|version` (ColumnLineageService)
-      * and the last CodeGen transformation script per pipeline (CodeGenScriptIO). */
+      * and the stored CodeGen script index per `pipeline|kind` (CodeGenScriptIO). */
     def columnLineageTableName: String = environment + "-column-lineage"
     def codegenScriptTableName: String = environment + "-codegen-scripts"
 

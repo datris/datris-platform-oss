@@ -119,4 +119,38 @@ class CodeGenRuleEvaluatorSpec extends AnyFunSuite with AiSampleValuesMarkers {
             }
         }
     }
+
+    // ---- story: codegen-script-pinning (plans/stories/codegen-script-pinning.md)
+    //
+    // Pinned seam: the run half of the evaluator takes script text and makes
+    // no model call.
+    // {{{
+    // object CodeGenRuleEvaluator {
+    //     private[datris] def runScript(script: String, data: Data, fileExtension: String): List[(Int, String)]
+    // }
+    // }}}
+
+    private val ageRuleScript =
+        """import csv, json, sys
+          |with open(sys.argv[1], newline='') as f:
+          |    rows = list(csv.DictReader(f))
+          |out = []
+          |for i, r in enumerate(rows):
+          |    if not (r.get('age') or '').strip().isdigit() or int(r['age']) > 150:
+          |        out.append({"index": i, "reason": "age out of range: " + str(r.get('age'))})
+          |print(json.dumps(out))
+          |""".stripMargin
+
+    test("running the same script text twice gives the same result") {
+        assume(
+            scala.util.Try(new ProcessBuilder("python3", "--version").start().waitFor() == 0).getOrElse(false),
+            "python3 not available"
+        )
+        inEnv {
+            val first = CodeGenRuleEvaluator.runScript(ageRuleScript, csvData(), "csv")
+            val second = CodeGenRuleEvaluator.runScript(ageRuleScript, csvData(), "csv")
+            assert(first == second)
+            assert(first.map(_._1) == List(0), s"row 0 (age 918273645) fails the rule: $first")
+        }
+    }
 }

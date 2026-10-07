@@ -155,4 +155,46 @@ class CodeGenTransformationEvaluatorSpec extends AnyFunSuite with AiSampleValues
             }
         }
     }
+
+    // ---- story: codegen-script-pinning (plans/stories/codegen-script-pinning.md)
+    //
+    // Pinned seam: the run half of the evaluator takes script text, makes no
+    // model call, runs it with the staged input as sys.argv[1] and a fresh
+    // output file as sys.argv[2], and returns that output file (the caller
+    // removes it).
+    // {{{
+    // object CodeGenTransformationEvaluator {
+    //     private[datris] def runScript(script: String, data: Data, fileExtension: String): java.nio.file.Path
+    // }
+    // }}}
+
+    private val upperScript =
+        """import csv, sys
+          |with open(sys.argv[1], newline='') as f, open(sys.argv[2], 'w', newline='') as o:
+          |    r = csv.reader(f)
+          |    w = csv.writer(o, lineterminator='\n')
+          |    hdr = next(r)
+          |    w.writerow(hdr + ['name_upper'])
+          |    for row in r:
+          |        w.writerow(row + [row[0].upper()])
+          |""".stripMargin
+
+    test("running the same script text twice gives the same result") {
+        assume(
+            scala.util.Try(new ProcessBuilder("python3", "--version").start().waitFor() == 0).getOrElse(false),
+            "python3 not available"
+        )
+        inEnv {
+            def once(): String = {
+                val out = CodeGenTransformationEvaluator.runScript(upperScript, csvData(), "csv")
+                try new String(java.nio.file.Files.readAllBytes(out), "UTF-8")
+                finally java.nio.file.Files.deleteIfExists(out)
+            }
+            val first = once()
+            val second = once()
+            assert(first == second)
+            assert(first.linesIterator.next() == (header :+ "name_upper").mkString(","), first)
+            assert(first.contains("ZQX-NAME-1,ZQX-SSN-2,918273645,ZQX-EMAIL-3,ZQX-NAME-1"), first)
+        }
+    }
 }

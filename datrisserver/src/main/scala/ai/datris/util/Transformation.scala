@@ -39,10 +39,16 @@ class Transformation(jobContext: JobContext) {
         }
 
         val jobContextAI = {
-            if (config.transformation.aiTransformation != null)
-                runAITransformation(jobContextRF)
-            else
+            // A blank instruction is no transformation: the save hook records
+            // no script for it, so the run skips it too.
+            if (config.transformation.aiTransformation == null)
                 jobContextRF
+            else if (PipelineScripts.instructionOf(config, PipelineScripts.Transformation).isDefined)
+                runAITransformation(jobContextRF)
+            else {
+                statusUtil.info("processing", "AI Transformation instruction is blank; skipping the AI transformation")
+                jobContextRF
+            }
         }
 
         statusUtil.info("end", "Process completed successfully")
@@ -319,7 +325,8 @@ class Transformation(jobContext: JobContext) {
         if (data.isDelimited && data.rowCount > 0 && data.header != null) {
             val delimiter = CsvAttributes.delimiterOf(config)
             statusUtil.info("processing", "CodeGen transformation on " + data.rowCount + " rows")
-            val result = CodeGenTransformationEvaluator.transformCsv(instruction, data, delimiter, config.name)
+            val result =
+                CodeGenTransformationEvaluator.transformCsv(instruction, data, delimiter, config, (line: String) => statusUtil.info("processing", line))
             // The transformation may add, drop or reorder columns. Carry the
             // emitted header forward so downstream loaders project by name
             // against the new shape instead of positionally against the old
@@ -346,7 +353,8 @@ class Transformation(jobContext: JobContext) {
         } else if (data.isDocument) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen transformation on " + (if (isJson) "JSON" else "XML") + " data")
-            val transformed = CodeGenTransformationEvaluator.transformRaw(instruction, data, isJson, config.name)
+            val transformed =
+                CodeGenTransformationEvaluator.transformRaw(instruction, data, isJson, config, (line: String) => statusUtil.info("processing", line))
             jobContext.copy(data = data.withStaged(transformed))
         } else {
             jobContext

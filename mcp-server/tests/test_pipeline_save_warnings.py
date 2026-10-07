@@ -233,3 +233,95 @@ def test_non_warnings_failure_body_is_still_a_failure(monkeypatch, body):
     out = _create(monkeypatch, body)
     assert "error" in out, out
     assert out["error"].startswith("Failed to register pipeline"), out
+
+
+# ------------------------- CodeGen scripts (codegen-script-pinning story) ---
+# POST /api/v1/pipeline also answers `codegenScripts`: per AI kind whether the
+# script generated at save is ready or pending (with the reason, also named in
+# `warnings`). create_pipeline passes both through; an older server's body
+# without the key adds nothing.
+
+PENDING_WARNING = (
+    "CodeGen transformation script is pending: No AI provider key is configured. "
+    "The pipeline is saved; its first run generates and stores the script."
+)
+CODEGEN_SCRIPTS = [
+    {"kind": "dataQuality", "status": "ready", "generatedAt": "2026-10-06T00:00:00Z", "model": "m"},
+    {"kind": "transformation", "status": "pending", "pendingReason": "No AI provider key is configured"},
+]
+
+
+def test_create_pipeline_forwards_codegen_scripts_and_pending_warning(monkeypatch):
+    out = _create(monkeypatch, json.dumps({"warnings": [PENDING_WARNING], "codegenScripts": CODEGEN_SCRIPTS}))
+    assert "error" not in out, out
+    assert out.get("status") == "Pipeline created", out
+    assert out.get("warnings") == [PENDING_WARNING], out
+    assert out.get("codegenScripts") == CODEGEN_SCRIPTS, out
+
+
+@pytest.mark.parametrize("body", [
+    json.dumps({"warnings": []}),
+    json.dumps({"warnings": [], "codegenScripts": []}),
+    json.dumps({"warnings": [], "codegenScripts": "nope"}),
+    "",
+])
+def test_create_pipeline_without_codegen_scripts_adds_no_key(monkeypatch, body):
+    out = _create(monkeypatch, body)
+    assert "error" not in out, out
+    assert "codegenScripts" not in out, out
+
+
+def test_create_pipeline_description_mentions_stored_codegen_scripts():
+    tools = {t.name: t for t in server._all_tools()}
+    text = tools["create_pipeline"].description
+    assert "codegenScripts" in text, "create_pipeline description should name the codegenScripts result field"
+    assert "pending" in text
+
+
+def test_openapi_post_pipeline_200_lists_codegen_scripts():
+    import yaml
+
+    spec = yaml.safe_load(_read(OPENAPI_YAML))
+    ok = spec["paths"]["/api/v1/pipeline"]["post"]["responses"]["200"]
+    schema = ok["content"]["application/json"]["schema"]
+    if "$ref" in schema:
+        schema = spec["components"]["schemas"][schema["$ref"].rsplit("/", 1)[-1]]
+    cg = schema["properties"]["codegenScripts"]
+    assert cg["type"] == "array", cg
+    assert "/api/v1/pipelines/{name}/codegen-scripts" in spec["paths"]
+    assert "/api/v1/pipelines/{name}/codegen-scripts/{kind}/regenerate" in spec["paths"]
+
+
+# ------------------- CodeGen scripts in the code repository (story 2) ---
+# A save whose repository commit is rejected (the file was edited in the
+# repository) answers 200 with a per-kind `warning`, also in `warnings`.
+
+CONFLICT_WARNING = (
+    "The CodeGen transformation script for pipeline orders was not replaced: 'taps/pipelines/orders/transformation.py' "
+    "changed in the code repository since the recorded commit abc1234, and a hand edit is never overwritten. "
+    "Adopt the repository version with POST /api/v1/pipelines/orders/codegen-scripts/transformation/pull (pull), "
+    "or replace it with POST /api/v1/pipelines/orders/codegen-scripts/transformation/regenerate?overwrite=true."
+)
+
+
+def test_create_pipeline_forwards_repository_conflict_warning(monkeypatch):
+    scripts = [{"kind": "transformation", "status": "ready", "warning": CONFLICT_WARNING}]
+    out = _create(monkeypatch, json.dumps({"warnings": [CONFLICT_WARNING], "codegenScripts": scripts}))
+    assert "error" not in out, out
+    assert out.get("warnings") == [CONFLICT_WARNING], out
+    assert out.get("codegenScripts") == scripts, out
+
+
+def test_create_pipeline_description_mentions_repository_warning():
+    tools = {t.name: t for t in server._all_tools()}
+    text = tools["create_pipeline"].description
+    assert "code repository" in text and "`warning`" in text
+
+
+def test_openapi_lists_codegen_script_pull():
+    import yaml
+
+    spec = yaml.safe_load(_read(OPENAPI_YAML))
+    assert "/api/v1/pipelines/{name}/codegen-scripts/{kind}/pull" in spec["paths"]
+    params = {p["name"] for p in spec["paths"]["/api/v1/pipelines/{name}/codegen-scripts/{kind}/regenerate"]["post"].get("parameters", [])}
+    assert {"storage", "overwrite"} <= params, params

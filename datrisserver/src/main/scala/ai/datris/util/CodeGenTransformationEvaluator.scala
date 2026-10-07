@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{Data, DatrisException, StagedFormat, StagedPayload}
+import ai.datris.model.{Data, DatrisException, PipelineConfig, SchemaField, StagedFormat, StagedPayload}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.file.{Files, Path}
@@ -29,10 +29,10 @@ object CodeGenTransformationEvaluator {
           |- Preserve all columns unless the transformation explicitly adds or removes them""".stripMargin
 
     /**
-     * Transform CSV data using CodeGen.
-     * Generates a Python script via LLM, executes it locally. The script reads
-     * the staged payload from a file and writes a file; its output is adopted
-     * into the staging area, so the rows never pass through the JVM heap.
+     * Transform CSV data using CodeGen, generating the script for this call
+     * only (no stored script). The script reads the staged payload from a file
+     * and writes a file; its output is adopted into the staging area, so the
+     * rows never pass through the JVM heap.
      *
      * @param instruction Plain-English transformation instruction
      * @param data        The delimited payload (header + staged rows)
@@ -50,22 +50,50 @@ object CodeGenTransformationEvaluator {
         pipelineName: String,
         ai: (String, String) => String
     ): CsvStagedResult = {
-        val header = data.header
-        val headerLine = header.mkString(delimiter)
+        val output = runScript(generate(csvPrompt(instruction, data, delimiter), ai), data, "csv")
+        try stageCsvOutput(output, data.header, data.rowCount, delimiter)
+        finally Files.deleteIfExists(output)
+    }
 
-        val userPrompt =
-            if (!AiSampleValues.enabled)
-                s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
-                   |Columns: ${CodeGenRuleEvaluator.withheldColumns(data, delimiter)}
-                   |${CodeGenRuleEvaluator.withheldCsvLines(data)}
-                   |
-                   |Transformation: "$instruction"
-                   |
-                   |The input CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.
-                   |Write a header row FIRST (the output column names, in order), then the data rows. Use the same delimiter.""".stripMargin
-            else {
-                val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
-                s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+    /** Pipeline run: executes the pipeline's stored script when it still
+      * matches (see [[PipelineScripts.forRun]]), else generates from this
+      * run's data. `note` receives the status line saying which. */
+    def transformCsv(instruction: String, data: Data, delimiter: String, config: PipelineConfig, note: String => Unit): CsvStagedResult =
+        transformCsv(instruction, data, delimiter, config, note, PipelineScripts, CodeGenRuleEvaluator.codegenAI)
+
+    /** Seam for specs: script store/records and the model call injected. */
+    private[datris] def transformCsv(
+        instruction: String,
+        data: Data,
+        delimiter: String,
+        config: PipelineConfig,
+        note: String => Unit,
+        scripts: PipelineScripts,
+        ai: (String, String) => String
+    ): CsvStagedResult = {
+        val resolved =
+            scripts.forRun(config, PipelineScripts.Transformation, data.header, () => generate(csvPrompt(instruction, data, delimiter), ai))
+        note(PipelineScripts.statusLine(resolved))
+        val output = PipelineScripts.runResolved(resolved, config.name, PipelineScripts.Transformation)(s => runScript(s, data, "csv"))
+        try stageCsvOutput(output, data.header, data.rowCount, delimiter)
+        finally Files.deleteIfExists(output)
+    }
+
+    /** The run-time prompt for a delimited payload. */
+    private def csvPrompt(instruction: String, data: Data, delimiter: String): String = {
+        val headerLine = data.header.mkString(delimiter)
+        if (!AiSampleValues.enabled)
+            s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+               |Columns: ${CodeGenRuleEvaluator.withheldColumns(data, delimiter)}
+               |${CodeGenRuleEvaluator.withheldCsvLines(data)}
+               |
+               |Transformation: "$instruction"
+               |
+               |The input CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.
+               |Write a header row FIRST (the output column names, in order), then the data rows. Use the same delimiter.""".stripMargin
+        else {
+            val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
+            s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
                |Columns: $headerLine
                |Sample rows:
                |${sampleRows.mkString("\n")}
@@ -74,12 +102,22 @@ object CodeGenTransformationEvaluator {
                |
                |The input CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.
                |Write a header row FIRST (the output column names, in order), then the data rows. Use the same delimiter.""".stripMargin
-            }
-
-        val output = transform(userPrompt, data, "csv", instruction, pipelineName, ai)
-        try stageCsvOutput(output, header, data.rowCount, delimiter)
-        finally Files.deleteIfExists(output)
+        }
     }
+
+    /** The save-time prompt: delimiter, ordered names and types, no row value. */
+    private[util] def schemaPrompt(instruction: String, fields: List[SchemaField], delimiter: String): String =
+        s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
+           |${CodeGenRuleEvaluator.schemaLines(fields, delimiter)}
+           |
+           |Transformation: "$instruction"
+           |
+           |The input CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.
+           |Write a header row FIRST (the output column names, in order), then the data rows. Use the same delimiter.""".stripMargin
+
+    /** Generate the transformation script from the source schema alone (pipeline save). */
+    def generateFromSchema(instruction: String, fields: List[SchemaField], delimiter: String, ai: (String, String) => String): String =
+        generate(schemaPrompt(instruction, fields, delimiter), ai)
 
     /** Two passes over the script's output file, neither holding it in heap.
       * Pass 1 reads the first record, counts the records and checks whether the
@@ -197,7 +235,32 @@ object CodeGenTransformationEvaluator {
         isJson: Boolean,
         pipelineName: String,
         ai: (String, String) => String
+    ): StagedPayload =
+        adoptRawOutput(runScript(generate(rawPrompt(instruction, data, isJson), ai), data, if (isJson) "json" else "xml"), isJson)
+
+    /** Pipeline run (see the delimited overload). */
+    def transformRaw(instruction: String, data: Data, isJson: Boolean, config: PipelineConfig, note: String => Unit): StagedPayload =
+        transformRaw(instruction, data, isJson, config, note, PipelineScripts, CodeGenRuleEvaluator.codegenAI)
+
+    /** Seam for specs: script store/records and the model call injected. */
+    private[datris] def transformRaw(
+        instruction: String,
+        data: Data,
+        isJson: Boolean,
+        config: PipelineConfig,
+        note: String => Unit,
+        scripts: PipelineScripts,
+        ai: (String, String) => String
     ): StagedPayload = {
+        val resolved = scripts.forRun(config, PipelineScripts.Transformation, Nil, () => generate(rawPrompt(instruction, data, isJson), ai))
+        note(PipelineScripts.statusLine(resolved))
+        val output = PipelineScripts.runResolved(resolved, config.name, PipelineScripts.Transformation)(s =>
+            runScript(s, data, if (isJson) "json" else "xml")
+        )
+        adoptRawOutput(output, isJson)
+    }
+
+    private def rawPrompt(instruction: String, data: Data, isJson: Boolean): String = {
         val format = if (isJson) "JSON" else "XML"
         val withheld = !AiSampleValues.enabled
 
@@ -207,29 +270,29 @@ object CodeGenTransformationEvaluator {
             "Parse the file as XML using xml.etree.ElementTree. Write the transformed XML to the output file."
         }
 
-        val userPrompt =
-            if (withheld)
-                s"""Format: $format
-                   |${CodeGenRuleEvaluator.withheldStructure(data, isJson)}
-                   |
-                   |Transformation: "$instruction"
-                   |
-                   |$parseInstruction""".stripMargin
-            else {
-                val sample = CodeGenRuleEvaluator.sampleDocument(data, 2000)
-                s"""Format: $format
-                   |Sample data (first 2000 chars):
-                   |$sample
-                   |
-                   |Transformation: "$instruction"
-                   |
-                   |$parseInstruction""".stripMargin
-            }
+        if (withheld)
+            s"""Format: $format
+               |${CodeGenRuleEvaluator.withheldStructure(data, isJson)}
+               |
+               |Transformation: "$instruction"
+               |
+               |$parseInstruction""".stripMargin
+        else {
+            val sample = CodeGenRuleEvaluator.sampleDocument(data, 2000)
+            s"""Format: $format
+               |Sample data (first 2000 chars):
+               |$sample
+               |
+               |Transformation: "$instruction"
+               |
+               |$parseInstruction""".stripMargin
+        }
+    }
 
-        val output = transform(userPrompt, data, format.toLowerCase, instruction, pipelineName, ai)
+    /** JSON: same rule as Data.withRawData → stageRawString (JSON that parses
+      * is staged as NDJSON, anything else is kept verbatim). XML verbatim. */
+    private def adoptRawOutput(output: Path, isJson: Boolean): StagedPayload =
         if (isJson) {
-            // Same rule as Data.withRawData → stageRawString: JSON that parses is
-            // staged as NDJSON, anything else is kept verbatim.
             val staged =
                 try Some(PayloadStager.stageJson("transform", Files.newInputStream(output)))
                 catch { case _: Exception => None }
@@ -241,44 +304,29 @@ object CodeGenTransformationEvaluator {
             }
         } else
             PayloadStager.adopt("transform", output, StagedFormat.Xml)
+
+    /** The generate half: one model call, the script text cleaned of fences. */
+    private def generate(userPrompt: String, ai: (String, String) => String): String = {
+        logger.info("CodeGen Transformation: generating Python transformation script")
+        val cleanScript = cleanGeneratedScript(ai(SYSTEM_PROMPT, userPrompt))
+        logger.info("CodeGen Transformation: generated script (" + cleanScript.length + " chars)")
+        logger.info("CodeGen Transformation: script content:\n" + cleanScript)
+        cleanScript
     }
 
-    /** Generate the script, run it with the staged input as `sys.argv[1]` and a
-      * fresh output file as `sys.argv[2]`, and return that output file's path.
-      * The caller adopts (or stages from) the output and removes it. */
-    private def transform(
-        userPrompt: String,
-        data: Data,
-        fileExtension: String,
-        instruction: String,
-        pipelineName: String,
-        ai: (String, String) => String
-    ): Path = {
-        logger.info("CodeGen Transformation: generating Python transformation script")
-
-        // Step 1: Generate the Python script via LLM (uses codegen config when set)
-        val scriptContent = ai(SYSTEM_PROMPT, userPrompt)
-        val cleanScript = cleanGeneratedScript(scriptContent)
-
-        logger.info("CodeGen Transformation: generated script (" + cleanScript.length + " chars)")
-        // Keep the last generated script per pipeline as evidence for
-        // column-lineage inference (never fails the transformation).
-        CodeGenScriptIO.write(pipelineName, "transformation", instruction, cleanScript)
-        logger.info("CodeGen Transformation: script content:\n" + cleanScript)
-
-        // Step 2: Stream the input into the staging area; script + output are temp files
+    /** The run half: run `script` (no model call) with the staged input as
+      * `sys.argv[1]` and a fresh output file as `sys.argv[2]`, and return that
+      * output file's path. The caller adopts (or stages from) the output and
+      * removes it. */
+    private[datris] def runScript(script: String, data: Data, fileExtension: String): Path = {
         val inputFile: Path = CodeGenRuleEvaluator.stageInput(data, fileExtension)
         val outputFile: Path = Files.createTempFile("tx_output_", "." + fileExtension)
         val scriptFile: Path = Files.createTempFile("tx_codegen_", ".py")
 
         try {
-            Files.write(scriptFile, cleanScript.getBytes("UTF-8"))
-
-            // Step 3: Execute the script
+            Files.write(scriptFile, script.getBytes("UTF-8"))
             executeWithTimeout(scriptFile.toString, inputFile.toString, outputFile.toString, SCRIPT_TIMEOUT_SECONDS)
             logger.info("CodeGen Transformation: script executed successfully")
-
-            // Step 4: Hand the output file back for adoption
             outputFile
         } catch {
             case e: DatrisException =>

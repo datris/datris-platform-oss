@@ -95,6 +95,7 @@ Leave it at `https://api.github.com` for github.com.
 | Edit the file directly in GitHub | Opening the tap loads the repository's latest version into the editor, with a banner explaining that runs keep the previously saved version until you test and save |
 | Save when the file changed externally | Rejected with a conflict message — pull the latest, reapply your edits, save again |
 | Delete the tap | A delete commit removes the file from the branch head; **git history is preserved** |
+| Save a pipeline with an AI rule or AI transformation | A commit per script under `pipelines/<pipeline>/`; runs pin to it (see [Pipeline scripts](#pipeline-scripts)) |
 
 Run history records the commit SHA each run executed, so any run can be traced to the exact
 script version in your repository.
@@ -111,6 +112,87 @@ The cloud action on the row moves a tap's script in either direction:
 Both directions are recorded as a new tap version, so the move itself is auditable and
 reversible.
 
+## Pipeline scripts
+
+The Python scripts behind a pipeline's [AI data-quality rule](/data-quality/ai-rules) and
+[AI transformation](/transformation/ai-transformation) use the same repository. With repository
+storage enabled, the script generated for a new pipeline (or for a pipeline that has no script
+yet) is committed instead of going to built-in storage.
+
+**Path layout.** Each pipeline gets a folder under the configured path prefix, on the configured
+branch. With the default prefix `taps/`:
+
+```
+taps/pipelines/<pipeline>/data-quality.py
+taps/pipelines/<pipeline>/transformation.py
+```
+
+Tap files (`taps/<tap>.py`) are untouched, and the token needs no new permission.
+
+**Commit messages.** `{name}` is `<pipeline>/<kind>` (`orders/dataQuality`,
+`orders/transformation`), `{action}` is `create`, `update` or `delete`, and `{user}` is the label
+of the API key that saved the pipeline, or `datris` when there is none (the script was generated during a run, or saved from a UI session without an API key).
+With the default template (or an empty one) pipeline scripts use
+`pipeline({name}): {action} via Datris`, for example `pipeline(orders/transformation): update via Datris`.
+A custom template is applied as written, so a template written for taps (for example one starting
+`tap(`) also prefixes pipeline commits that way.
+
+**Pinned runs.** The pipeline records the commit SHA of each script. Runs read that commit from
+the local cache, so a run makes no repository call once the commit is cached, and the run's
+status line names the short SHA ("Running stored CodeGen script generated at … (code repository
+commit abc1234)"). `GET /api/v1/pipelines/{name}/codegen-scripts` returns `storage: "github"`,
+`repoPath` and `commitSha` for each script.
+
+**Editing in the repository.** Runs stay on the recorded commit after an edit in GitHub. The
+read endpoint then reports `drift: true` with the branch-head `headSha`, and for the transformation script the Columns section
+of the [lineage panel](/provenance#column-level-lineage) shows "Changed in the repository" with a
+**Load latest** action. To adopt the edit, call
+`POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/pull` (needs `pipeline:create`); it records
+the head commit and makes no commit of its own. Later saves keep the adopted edit while the
+instruction and source schema are unchanged.
+
+**Conflicts.** When the instruction or schema changes, the save regenerates the script and commits
+it on top of the recorded commit. If the file was edited in the repository since then, the commit
+is rejected: the pipeline is saved, the script and its recorded commit are unchanged, and the save
+response carries a warning naming the two ways forward: pull the edit, or replace it with
+`POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/regenerate?overwrite=true`. A forced regenerate
+without `overwrite=true` is rejected the same way (409). A hand edit is never overwritten silently;
+an overwritten edit stays in the repository history.
+
+Until the conflict is resolved, runs keep executing the recorded commit, without the new instruction
+or schema and with no model call. The run's status line names the commit and says to pull or
+regenerate with `overwrite=true`, and the read endpoint shows `conflict: true` with the
+`conflictReason`. Saving the same configuration again makes no model call and repeats the warning.
+Pull or a regenerate with `overwrite=true` clears the conflict. A run that meets the same conflict
+(for example after a version restore) records it the same way and runs the recorded commit.
+
+**Moving a script.** An existing script keeps its storage on every save. To move one, call
+regenerate with `storage=github` or `storage=builtin`; the old copy is left in place. Scripts that
+existed before repository storage was enabled stay in built-in storage until you move them.
+
+Leftover copies are not tracked. Deleting the pipeline removes only the copies its scripts point at
+now, so files and objects left behind by earlier moves stay until you remove them. Moving a script
+back to the repository writes over a leftover file at the same path without a conflict check, and
+the commit is labelled `create`.
+
+**When the repository is unreachable or the token has expired:**
+
+- At save, the pipeline is saved and the script is pending with the reason; the save response
+  carries a warning. The first run after the repository is back generates and commits it.
+- A run whose recorded commit is cached is unaffected.
+- A run whose commit is not cached (the cache does not survive an image rebuild) fails with
+  "Code repository is unreachable and no cached copy … exists locally". It does not fall back to
+  generating a different script.
+- A run that generates a pending script and cannot commit it runs the generated script, logs a
+  warning, and the script stays pending.
+
+If repository storage is disabled while scripts point at it, their runs fail with "This pipeline's
+CodeGen script is stored in a code repository, but no enabled repository is configured"; re-enable
+the repository, or regenerate with `storage=builtin` to move the script back to built-in storage.
+
+**Delete.** Deleting the pipeline makes a delete commit per script file; git history is kept. A
+repository failure is logged and does not block the delete.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -121,3 +203,4 @@ reversible.
 | Test connection: access error on an org repo | Org policy blocks fine-grained PATs, the token awaits approval, or SSO authorization is required |
 | New taps still land in built-in storage | **Enable repository storage** isn't checked and saved |
 | Scheduled runs keep working while GitHub is down | Expected — runs read the pinned commit from the local cache |
+| Pipeline save warns that a script "changed in the code repository" | The script file was edited in GitHub — pull the edit, or regenerate with `overwrite=true` (see [Pipeline scripts](#pipeline-scripts)) |

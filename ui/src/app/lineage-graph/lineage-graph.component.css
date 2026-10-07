@@ -99,3 +99,7 @@
 .node-chip.derived { border-style: dashed; color: var(--text-secondary); }
 .node-chip .chip-icon { font-size: 13px; color: var(--accent-green); }
 .chip-evidence { font-size: 10px; color: var(--text-muted); margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--border-color); }
+.script-link { cursor: pointer; font-size: inherit; }
+.script-view { max-height: 260px; overflow: auto; font-size: 11px; background: var(--bg-secondary, rgba(0,0,0,0.2)); padding: 8px; border-radius: 4px; white-space: pre; margin: 6px 0 0; }
+.repo-badge { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid currentColor; opacity: 0.85; margin-left: 2px; }
+.repo-sha { font-size: 11px; }

@@ -5,10 +5,13 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{CodeRepoConfig, TapConfig}
+import ai.datris.model.{CodeRepoConfig, TapConfig, TenantContext}
 import org.scalatest.funsuite.AnyFunSuite
 
+import java.io.{BufferedReader, ByteArrayInputStream, InputStream}
+import java.net.URI
 import java.nio.file.Files
+import scala.collection.mutable
 
 class TapCodeStoreSpec extends AnyFunSuite {
 
@@ -87,5 +90,275 @@ class TapCodeStoreSpec extends AnyFunSuite {
         } finally {
             System.clearProperty("datris.tap.cache.dir")
         }
+    }
+
+    // --- pipeline scripts (story: codegen-script-pinning) -------------------
+    //
+    // Pinned seam (plans/stories/codegen-script-pinning.md, Files):
+    // {{{
+    // case class ScriptRef(name: String, storage: String, scriptPath: String = null,
+    //                      scriptRepoPath: String = null, scriptCommitSha: String = null)
+    // trait CodeStore {
+    //     def storage: String
+    //     def readScript(ref: ScriptRef): Option[String]
+    //     def storeScript(name: String, script: String, prior: ScriptRef, actor: String): StoredScript
+    //     def deleteScript(ref: ScriptRef): Unit
+    //     def scriptExists(ref: ScriptRef): Boolean
+    // }
+    // object MinioCodeStore {
+    //     /** Built-in store for one pipeline's CodeGen scripts, keys under `pipeline-scripts/<pipeline>/`. */
+    //     def forPipeline(pipeline: String, objects: ObjectStoreUtility = ObjectStoreUtil): CodeStore
+    // }
+    // }}}
+    // The object store is injected so the spec runs without MinIO.
+
+    /** In-memory object store keyed by (bucket, key). */
+    private class MemObjects extends ObjectStoreUtility {
+        val objects = mutable.LinkedHashMap[(String, String), String]()
+        override def getBucket(url: String): String = new URI(url).getHost
+        override def getKey(url: String): String = new URI(url).getPath.stripPrefix("/")
+        override def getURI(path: String): URI = new URI(path)
+        override def getObjectMetadata(b: String, k: String): StoredObjectMetadata = StoredObjectMetadata(0L, "text/plain")
+        override def readBucketObject(b: String, k: String): Option[String] = objects.get((b, k))
+        override def readBucketObjectFirstRow(b: String, k: String): Option[String] = objects.get((b, k)).map(_.linesIterator.next())
+        override def getBufferedReader(b: String, k: String): BufferedReader = throw new UnsupportedOperationException
+        override def getInputStream(b: String, k: String): InputStream = throw new UnsupportedOperationException
+        override def copyBucketObject(sb: String, sk: String, db: String, dk: String): Unit = throw new UnsupportedOperationException
+        override def writeBucketObject(b: String, k: String, content: String): Unit = objects((b, k)) = content
+        override def writeBucketObjectFromStream(b: String, k: String, s: ByteArrayInputStream, l: Long): Unit =
+            throw new UnsupportedOperationException
+        override def deleteFolder(b: String, k: String): Unit = objects.keys.filter(_._2.startsWith(k)).toList.foreach(objects.remove)
+        override def deleteBucketObject(b: String, k: String): Unit = objects.remove((b, k))
+        override def listObjects(b: String, k: String): List[String] = objects.keys.filter(x => x._1 == b && x._2.startsWith(k)).map(_._2).toList
+        override def listSummaries(b: String, k: String): List[StoredObjectSummary] = listObjects(b, k).map(StoredObjectSummary(_, 1L))
+        override def keyExists(b: String, k: String): Boolean = objects.contains((b, k))
+    }
+
+    private object SpecEnv extends AiSampleValuesMarkers
+
+    test("pipeline scripts are written under pipeline-scripts/<pipeline>/") {
+        TenantContext.set(SpecEnv.testEnv)
+        try {
+            val objects = new MemObjects
+            val store: CodeStore = MinioCodeStore.forPipeline("orders", objects)
+            assert(store.storage == "minio")
+
+            val stored = store.storeScript("dataQuality", "print('dq')", null, "todd")
+            assert(stored.storage == "minio")
+            assert(stored.scriptPath != null && stored.scriptPath.startsWith("pipeline-scripts/orders/"), stored.scriptPath)
+            assert(stored.scriptPath.endsWith(".py"), stored.scriptPath)
+            assert(objects.objects.keys.map(_._2).toList == List(stored.scriptPath), "exactly one object, under the pipeline prefix")
+            assert(!stored.scriptPath.startsWith("tap-scripts/"))
+
+            val ref = ScriptRef("dataQuality", "minio", scriptPath = stored.scriptPath)
+            assert(store.readScript(ref).contains("print('dq')"))
+            assert(store.scriptExists(ref))
+
+            // Another pipeline's scripts never share the prefix.
+            val other = MinioCodeStore.forPipeline("orders_v2", objects).storeScript("transformation", "print('tx')", null, "todd")
+            assert(other.scriptPath.startsWith("pipeline-scripts/orders_v2/"), other.scriptPath)
+
+            store.deleteScript(ref)
+            assert(store.readScript(ref).isEmpty)
+            assert(!store.scriptExists(ref))
+        } finally TenantContext.clear()
+    }
+
+    // --- pipeline scripts in the code repository (story: codegen-script-git-storage)
+    //
+    // Pinned seam (plans/stories/codegen-script-git-storage.md, Files):
+    // {{{
+    // // ai.datris.util
+    // sealed trait ScriptFamily
+    // object ScriptFamily {
+    //     case class Tap(name: String) extends ScriptFamily
+    //     /** kind: "dataQuality" | "transformation" (the CodeGen kind). */
+    //     case class Pipeline(pipeline: String, kind: String) extends ScriptFamily
+    // }
+    // object GithubCodeStore {
+    //     def scriptRepoPath(tapName: String, cfg: CodeRepoConfig): String          // unchanged
+    //     def scriptRepoPath(family: ScriptFamily, cfg: CodeRepoConfig): String
+    //     def commitMessage(cfg: CodeRepoConfig, tapName: String, action: String, actor: String): String   // unchanged
+    //     def commitMessage(cfg: CodeRepoConfig, family: ScriptFamily, action: String, actor: String): String
+    //     /** Repository-backed store for one pipeline's CodeGen scripts. */
+    //     def forPipeline(pipeline: String): CodeStore
+    // }
+    // }}}
+    // Pipeline paths: `<prefix>pipelines/<pipeline>/data-quality.py` and
+    // `<prefix>pipelines/<pipeline>/transformation.py`. `{name}` in a commit
+    // message is `<pipeline>/<kind>`, kind as above. A template that is null,
+    // empty or the stored tap default literal renders pipeline scripts with
+    // `pipeline({name}): {action} via Datris`.
+
+    private val TapDefaultTemplate = "tap({name}): {action} via Datris"
+
+    test("tap repo path and commit message are unchanged") {
+        val cfgs = Seq(
+            CodeRepoConfig(),
+            CodeRepoConfig(pathPrefix = "taps"),
+            CodeRepoConfig(pathPrefix = ""),
+            CodeRepoConfig(pathPrefix = null),
+            CodeRepoConfig(pathPrefix = "infra/datris/", commitMessageTemplate = "{action} {name} by {user}"),
+            CodeRepoConfig(commitMessageTemplate = ""),
+            CodeRepoConfig(commitMessageTemplate = null)
+        )
+        val expectedPaths = List("taps/orders.py", "taps/orders.py", "orders.py", "orders.py", "infra/datris/orders.py", "taps/orders.py", "taps/orders.py")
+        val expectedMessages = List(
+            "tap(orders): update via Datris",
+            "tap(orders): update via Datris",
+            "tap(orders): update via Datris",
+            "tap(orders): update via Datris",
+            "update orders by todd",
+            "tap(orders): update via Datris",
+            "tap(orders): update via Datris"
+        )
+        cfgs.zip(expectedPaths).zip(expectedMessages).foreach { case ((cfg, path), msg) =>
+            assert(GithubCodeStore.scriptRepoPath("orders", cfg) == path)
+            assert(GithubCodeStore.scriptRepoPath(ScriptFamily.Tap("orders"), cfg) == path, s"tap family path for $cfg")
+            assert(GithubCodeStore.commitMessage(cfg, "orders", "update", "todd") == msg)
+            assert(GithubCodeStore.commitMessage(cfg, ScriptFamily.Tap("orders"), "update", "todd") == msg, s"tap family message for $cfg")
+        }
+        // The stored default literal still renders as the tap default for taps.
+        val stored = CodeRepoConfig(commitMessageTemplate = TapDefaultTemplate)
+        assert(GithubCodeStore.commitMessage(stored, ScriptFamily.Tap("orders"), "delete", null) == "tap(orders): delete via Datris")
+        assert(GithubCodeStore.commitMessage(stored, "orders", "create", null) == "tap(orders): create via Datris")
+    }
+
+    test("a pipeline script path is <prefix>pipelines/<pipeline>/<kind>.py") {
+        val cfg = CodeRepoConfig()
+        assert(GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", "dataQuality"), cfg) == "taps/pipelines/orders/data-quality.py")
+        assert(GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", "transformation"), cfg) == "taps/pipelines/orders/transformation.py")
+        assert(
+            GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", "transformation"), CodeRepoConfig(pathPrefix = "infra/datris")) ==
+                "infra/datris/pipelines/orders/transformation.py"
+        )
+        assert(GithubCodeStore.scriptRepoPath(
+            ScriptFamily.Pipeline("orders", "dataQuality"),
+            CodeRepoConfig(pathPrefix = "")
+        ) == "pipelines/orders/data-quality.py")
+        assert(GithubCodeStore.scriptRepoPath(
+            ScriptFamily.Pipeline("orders", "dataQuality"),
+            CodeRepoConfig(pathPrefix = null)
+        ) == "pipelines/orders/data-quality.py")
+        // A pipeline's path never collides with a tap of the same name.
+        assert(
+            GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", "transformation"), cfg) !=
+                GithubCodeStore.scriptRepoPath(ScriptFamily.Tap("orders"), cfg)
+        )
+        // The repository-backed store for a pipeline stamps "github" (no network call).
+        assert(GithubCodeStore.forPipeline("orders").storage == "github")
+    }
+
+    test("with the stored tap default template the pipeline commit message is pipeline(<pipeline>/<kind>): <action> via Datris") {
+        Seq(
+            CodeRepoConfig(),
+            CodeRepoConfig(commitMessageTemplate = TapDefaultTemplate),
+            CodeRepoConfig(commitMessageTemplate = ""),
+            CodeRepoConfig(commitMessageTemplate = null)
+        )
+            .foreach { cfg =>
+                assert(
+                    GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "dataQuality"), "create", "todd") ==
+                        "pipeline(orders/dataQuality): create via Datris",
+                    s"$cfg"
+                )
+                assert(
+                    GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "transformation"), "update", null) ==
+                        "pipeline(orders/transformation): update via Datris"
+                )
+                assert(
+                    GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "transformation"), "delete", null) ==
+                        "pipeline(orders/transformation): delete via Datris"
+                )
+            }
+    }
+
+    test("a custom template is applied with name <pipeline>/<kind>") {
+        val cfg = CodeRepoConfig(commitMessageTemplate = "{action} {name} by {user}")
+        assert(GithubCodeStore.commitMessage(
+            cfg,
+            ScriptFamily.Pipeline("orders", "transformation"),
+            "update",
+            "ci-key"
+        ) == "update orders/transformation by ci-key")
+        // Generated during a run: no saving key.
+        assert(GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "dataQuality"), "create", null) == "create orders/dataQuality by datris")
+        assert(GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "dataQuality"), "create", "") == "create orders/dataQuality by datris")
+        // A custom template written for taps is applied as written.
+        val tapStyle = CodeRepoConfig(commitMessageTemplate = "tap({name}): {action} [skip ci]")
+        assert(GithubCodeStore.commitMessage(
+            tapStyle,
+            ScriptFamily.Pipeline("orders", "dataQuality"),
+            "delete",
+            null
+        ) == "tap(orders/dataQuality): delete [skip ci]")
+    }
+
+    // --- drift check and the disabled-repository message (story 2 review) ---
+
+    /** A store whose branch head is `head` with `headContent`, and whose pinned
+      * read returns `pinnedContent`. */
+    private class DriftStub(head: String, headContent: String, pinnedContent: String) extends CodeStore {
+        override def storage: String = "github"
+        override def readScript(ref: ScriptRef): Option[String] = Option(pinnedContent)
+        override def storeScript(name: String, script: String, prior: ScriptRef, actor: String): StoredScript = throw new UnsupportedOperationException
+        override def deleteScript(ref: ScriptRef): Unit = ()
+        override def scriptExists(ref: ScriptRef): Boolean = true
+        override def pullLatest(ref: ScriptRef): Option[(String, String)] = Option(headContent).map(c => (c, head))
+    }
+
+    private val pinnedRef = ScriptRef("transformation", "github", scriptRepoPath = "taps/pipelines/orders/transformation.py", scriptCommitSha = "s0")
+
+    test("driftHead default: same sha or same content is no drift; new content reports the head sha") {
+        assert(new DriftStub("s0", "print(1)", "print(1)").driftHead(pinnedRef).isEmpty, "same sha")
+        assert(new DriftStub("s1", "print(1)", "print(1)").driftHead(pinnedRef).isEmpty, "new sha, same content")
+        assert(new DriftStub("s1", "print(2)", "print(1)").driftHead(pinnedRef).contains("s1"), "new sha, new content")
+        assert(new DriftStub("s1", null, "print(1)").driftHead(pinnedRef).isEmpty, "file gone at head")
+        assert(new MinioScriptStore("pipeline-scripts/orders/").driftHead(pinnedRef).isEmpty, "built-in store has no branch")
+    }
+
+    test("GithubScriptStore.driftHead compares blob shas and never writes the script cache") {
+        val path = pinnedRef.scriptRepoPath
+        val cacheDir = Files.createTempDirectory("tap-cache-drift")
+        val prop = "datris.tap.cache.dir"
+        val old = sys.props.get(prop)
+        sys.props(prop) = cacheDir.toString
+        try {
+            def store(head: String, blobs: Map[String, String]): GithubScriptStore =
+                new GithubScriptStore(
+                    k => ScriptFamily.Pipeline("orders", k),
+                    null,
+                    () => Some(CodeRepoConfig(repo = "acme/scripts")),
+                    _ => head,
+                    (_, p, ref) => if (p == path) blobs.get(ref).map(b => RepoFile("content-" + b, b, ref)) else None
+                )
+            assert(store("s0", Map("s0" -> "b0")).driftHead(pinnedRef).isEmpty, "head is the recorded commit")
+            assert(store("s1", Map("s0" -> "b0", "s1" -> "b0")).driftHead(pinnedRef).isEmpty, "other files moved; same blob")
+            assert(store("s1", Map("s0" -> "b0", "s1" -> "b1")).driftHead(pinnedRef).contains("s1"), "the file changed")
+            assert(store("s1", Map("s0" -> "b0")).driftHead(pinnedRef).isEmpty, "file deleted at head")
+            assert(store("s1", Map("s1" -> "b1")).driftHead(pinnedRef).contains("s1"), "recorded commit unreadable counts as drift")
+            val written = Files.walk(cacheDir).filter(Files.isRegularFile(_)).count()
+            assert(written == 0, "drift polling writes nothing to the script cache")
+        } finally {
+            old match { case Some(v) => sys.props(prop) = v; case None => sys.props.remove(prop) }
+        }
+    }
+
+    test("a disabled repository: pipeline scripts get the pipeline message, taps keep theirs") {
+        val tapText =
+            "This tap stores its script in a code repository, but no enabled repository is configured. " +
+                "Re-enable it under Configuration > Code Repository, or move the tap back to built-in storage."
+        assert(GithubScriptStore.TapDisabledMessage == tapText, "tap text unchanged")
+        assert(GithubScriptStore.PipelineDisabledMessage.startsWith("This pipeline's CodeGen script is stored in a code repository"))
+        assert(GithubScriptStore.PipelineDisabledMessage.contains("storage=builtin"))
+        assert(!GithubScriptStore.PipelineDisabledMessage.contains("tap"))
+
+        val ref = ScriptRef("dataQuality", "github", scriptRepoPath = "taps/pipelines/orders/data-quality.py", scriptCommitSha = "s0")
+        val pipelineStore = new GithubScriptStore(k => ScriptFamily.Pipeline("orders", k), GithubScriptStore.PipelineDisabledMessage, () => None)
+        val e1 = intercept[ai.datris.model.DatrisException](pipelineStore.readScript(ref))
+        assert(e1.getMessage == GithubScriptStore.PipelineDisabledMessage)
+        val tapStore = new GithubScriptStore(n => ScriptFamily.Tap(n), null, () => None)
+        val e2 = intercept[ai.datris.model.DatrisException](tapStore.readScript(ref))
+        assert(e2.getMessage == tapText, "a store with no message (the tap store) uses the tap text")
     }
 }

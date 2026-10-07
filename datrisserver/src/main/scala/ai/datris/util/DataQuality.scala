@@ -48,8 +48,14 @@ class DataQuality(jobContext: JobContext) {
         }
 
         // AI rule (CodeGen)?
-        if (config.dataQuality.aiRule != null)
-            runAIRule(jobContext.data)
+        // A blank instruction is no rule: the save hook records no script for
+        // it, so the run skips it too (PipelineScripts.instructionOf).
+        if (config.dataQuality.aiRule != null) {
+            if (PipelineScripts.instructionOf(config, PipelineScripts.DataQuality).isDefined)
+                runAIRule(jobContext.data)
+            else
+                statusUtil.info("processing", "AI Data Quality instruction is blank; skipping the AI rule")
+        }
 
         statusUtil.info("end", "Process completed successfully")
     }
@@ -116,11 +122,11 @@ class DataQuality(jobContext: JobContext) {
         val failures = if (data.isDelimited && data.rowCount > 0 && data.header != null) {
             val delimiter = CsvAttributes.delimiterOf(config)
             statusUtil.info("processing", "CodeGen rule validating " + data.rowCount + " rows")
-            CodeGenRuleEvaluator.evaluateCsv(instruction, data, delimiter)
+            CodeGenRuleEvaluator.evaluateCsv(instruction, data, delimiter, config, (line: String) => statusUtil.info("processing", line))
         } else if (data.isDocument) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen rule on " + (if (isJson) "JSON" else "XML") + " data")
-            CodeGenRuleEvaluator.evaluateRaw(instruction, data, isJson)
+            CodeGenRuleEvaluator.evaluateRaw(instruction, data, isJson, config, (line: String) => statusUtil.info("processing", line))
         } else {
             List.empty
         }

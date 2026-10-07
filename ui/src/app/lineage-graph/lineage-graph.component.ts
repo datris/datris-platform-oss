@@ -3,7 +3,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import type { EChartsOption } from 'echarts';
 import {
-  ColumnEdge, ColumnLineage, EdgeEvidence, LineageEdge, LineageGraph, LineageNeighborhood, LineageNode, LineageNodeType, LineageService
+  CodegenScript, ColumnEdge, ColumnLineage, EdgeEvidence, LineageEdge, LineageGraph, LineageNeighborhood, LineageNode, LineageNodeType, LineageService
 } from '../lineage.service';
 import { AuthService } from '../auth.service';
 
@@ -60,6 +60,14 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
   neighborhoodLoading = false;
   columnsOpen = false;
   inferring = false;
+  /** Stored transformation script shown under the instruction (View). */
+  scriptText: string | null = null;
+  scriptLoading = false;
+  regenerating = false;
+  scriptError = '';
+  /** Branch-head sha when the repository-backed transformation script was edited in the repository. */
+  scriptDriftHead: string | null = null;
+  pulling = false;
 
   readonly legend: { type: LineageNodeType; color: string; label: string }[] = [
     { type: 'source', color: COLOR.source, label: 'Source' },
@@ -360,8 +368,9 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
     this.neighborhood = null;
     this.neighborhoodLoading = true;
     this.inferring = false;
+    this.scriptDriftHead = null;
     this.lineageService.neighborhood(node.type, node.name, { runs: 10, columns: true }).subscribe({
-      next: n => { this.neighborhood = n; this.neighborhoodLoading = false; this.render(); },
+      next: n => { this.neighborhood = n; this.neighborhoodLoading = false; this.checkScriptDrift(); this.render(); },
       error: () => { this.neighborhoodLoading = false; this.render(); }
     });
     this.render();
@@ -420,6 +429,87 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
         if (this.neighborhood?.columns) this.neighborhood.columns.inferred.error = e?.error?.error || 'inference failed';
         this.inferring = false;
       }
+    });
+  }
+
+  /** First 7 characters of a commit sha. */
+  shortSha(sha?: string | null): string {
+    return sha ? sha.slice(0, 7) : '';
+  }
+
+  /** For a repository-backed transformation script, asks the server whether
+   * the file at branch head differs from the recorded commit. */
+  checkScriptDrift(): void {
+    const c = this.columns();
+    this.scriptDriftHead = null;
+    if (!c || c.transformation.kind !== 'ai' || c.transformation.scriptStorage !== 'github') return;
+    this.lineageService.codegenScripts(c.pipeline).subscribe({
+      next: r => {
+        const tx = (r.scripts || []).find(s => s.kind === 'transformation');
+        this.scriptDriftHead = tx?.drift && tx.headSha ? tx.headSha : null;
+      },
+      error: () => { this.scriptDriftHead = null; }
+    });
+  }
+
+  /** Load latest: adopt the repository's branch-head version of the transformation script. */
+  pullScript(): void {
+    const c = this.columns();
+    if (!c || this.pulling) return;
+    this.pulling = true;
+    this.scriptError = '';
+    this.lineageService.pullCodegenScript(c.pipeline, 'transformation').subscribe({
+      next: r => {
+        this.applyScriptEntry(c, r);
+        this.scriptDriftHead = r.drift && r.headSha ? r.headSha : null;
+        this.pulling = false;
+      },
+      error: e => { this.scriptError = e?.error?.error || 'Load latest failed'; this.pulling = false; }
+    });
+  }
+
+  private applyScriptEntry(c: ColumnLineage, r: CodegenScript): void {
+    c.transformation.scriptGeneratedAt = r.generatedAt || undefined;
+    c.transformation.scriptModel = r.model || undefined;
+    c.transformation.scriptStatus = r.status;
+    c.transformation.scriptPendingReason = r.pendingReason || undefined;
+    c.transformation.scriptStorage = r.storage || undefined;
+    c.transformation.scriptCommitSha = r.commitSha || undefined;
+    c.transformation.scriptConflict = r.conflict ? (r.conflictReason || 'unresolved repository conflict') : undefined;
+    if (this.scriptText !== null) this.scriptText = r.script || '';
+  }
+
+  /** Loads the stored CodeGen transformation script; toggles it closed when shown. */
+  viewScript(): void {
+    const c = this.columns();
+    if (!c || this.scriptLoading) return;
+    if (this.scriptText !== null) { this.scriptText = null; return; }
+    this.scriptLoading = true;
+    this.scriptError = '';
+    this.lineageService.codegenScripts(c.pipeline).subscribe({
+      next: r => {
+        const tx = (r.scripts || []).find(s => s.kind === 'transformation');
+        this.scriptText = tx?.script || '';
+        if (!tx?.script) this.scriptError = 'No stored script yet.';
+        this.scriptLoading = false;
+      },
+      error: e => { this.scriptError = e?.error?.error || 'Could not load the script'; this.scriptLoading = false; }
+    });
+  }
+
+  /** Forces a new transformation script, then shows the new generated-at / model. */
+  regenerateScript(): void {
+    const c = this.columns();
+    if (!c || this.regenerating) return;
+    this.regenerating = true;
+    this.scriptError = '';
+    this.lineageService.regenerateCodegenScript(c.pipeline, 'transformation').subscribe({
+      next: r => {
+        this.applyScriptEntry(c, r);
+        this.scriptDriftHead = r.drift && r.headSha ? r.headSha : null;
+        this.regenerating = false;
+      },
+      error: e => { this.scriptError = e?.error?.error || 'Regenerate failed'; this.regenerating = false; }
     });
   }
 
