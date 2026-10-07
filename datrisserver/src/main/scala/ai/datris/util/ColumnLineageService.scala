@@ -100,8 +100,9 @@ object ColumnLineageService {
     private[datris] def transformationInfo(c: PipelineConfig): JsonObject = transformationInfo(c, null)
 
     /** The transformation summary; for an AI transformation with `scripts`,
-      * also the stored script's `scriptGeneratedAt`, `scriptModel` and
-      * `scriptStatus` (`ready` | `pending`, with `scriptPendingReason`). */
+      * also the stored script's `scriptGeneratedAt`, `scriptModel`,
+      * `scriptStatus` (`ready` | `pending`, with `scriptPendingReason`),
+      * `scriptStorage` and, for a repository-backed script, `scriptCommitSha`. */
     private[datris] def transformationInfo(c: PipelineConfig, scripts: PipelineScripts): JsonObject = {
         val o = new JsonObject()
         val t = c.transformation
@@ -115,6 +116,8 @@ object ColumnLineageService {
                         if (r.model != null) o.addProperty("scriptModel", r.model)
                         o.addProperty("scriptStatus", Option(r.status).getOrElse(PipelineScripts.Ready))
                         if (r.pendingReason != null) o.addProperty("scriptPendingReason", r.pendingReason)
+                        if (r.storage != null) o.addProperty("scriptStorage", r.storage)
+                        if (r.scriptCommitSha != null) o.addProperty("scriptCommitSha", r.scriptCommitSha)
                     }
                 catch { case e: Exception => logger.warn("CodeGen script record unreadable for " + c.name + ": " + e.getMessage) }
         } else if (t != null && t.rowFunctions != null && !t.rowFunctions.isEmpty) {

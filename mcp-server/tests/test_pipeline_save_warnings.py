@@ -290,3 +290,38 @@ def test_openapi_post_pipeline_200_lists_codegen_scripts():
     assert cg["type"] == "array", cg
     assert "/api/v1/pipelines/{name}/codegen-scripts" in spec["paths"]
     assert "/api/v1/pipelines/{name}/codegen-scripts/{kind}/regenerate" in spec["paths"]
+
+
+# ------------------- CodeGen scripts in the code repository (story 2) ---
+# A save whose repository commit is rejected (the file was edited in the
+# repository) answers 200 with a per-kind `warning`, also in `warnings`.
+
+CONFLICT_WARNING = (
+    "The CodeGen transformation script for pipeline orders was not replaced: 'taps/pipelines/orders/transformation.py' "
+    "changed in the code repository since the recorded commit abc1234, and a hand edit is never overwritten. "
+    "Adopt the repository version with POST /api/v1/pipelines/orders/codegen-scripts/transformation/pull (pull), "
+    "or replace it with POST /api/v1/pipelines/orders/codegen-scripts/transformation/regenerate?overwrite=true."
+)
+
+
+def test_create_pipeline_forwards_repository_conflict_warning(monkeypatch):
+    scripts = [{"kind": "transformation", "status": "ready", "warning": CONFLICT_WARNING}]
+    out = _create(monkeypatch, json.dumps({"warnings": [CONFLICT_WARNING], "codegenScripts": scripts}))
+    assert "error" not in out, out
+    assert out.get("warnings") == [CONFLICT_WARNING], out
+    assert out.get("codegenScripts") == scripts, out
+
+
+def test_create_pipeline_description_mentions_repository_warning():
+    tools = {t.name: t for t in server._all_tools()}
+    text = tools["create_pipeline"].description
+    assert "code repository" in text and "`warning`" in text
+
+
+def test_openapi_lists_codegen_script_pull():
+    import yaml
+
+    spec = yaml.safe_load(_read(OPENAPI_YAML))
+    assert "/api/v1/pipelines/{name}/codegen-scripts/{kind}/pull" in spec["paths"]
+    params = {p["name"] for p in spec["paths"]["/api/v1/pipelines/{name}/codegen-scripts/{kind}/regenerate"]["post"].get("parameters", [])}
+    assert {"storage", "overwrite"} <= params, params

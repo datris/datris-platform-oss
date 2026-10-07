@@ -96,6 +96,10 @@ export interface ColumnLineage {
     scriptModel?: string;
     scriptStatus?: 'ready' | 'pending' | string;
     scriptPendingReason?: string;
+    /** 'minio' (built-in) | 'github' (code repository). */
+    scriptStorage?: string;
+    /** Recorded commit of a repository-backed script. */
+    scriptCommitSha?: string;
   };
   edges: ColumnEdge[];
   unresolved: string[];
@@ -112,8 +116,24 @@ export interface CodegenScript {
   modelIsCurrent?: boolean;
   status: 'ready' | 'pending' | string;
   pendingReason?: string | null;
-  origin?: 'save' | 'run' | 'regenerate' | string | null;
+  origin?: 'save' | 'run' | 'regenerate' | 'repository' | string | null;
+  /** 'minio' (built-in) | 'github' (code repository). */
   storage?: string | null;
+  /** Repository-backed scripts: file path and the commit runs execute. */
+  repoPath?: string | null;
+  commitSha?: string | null;
+  /** True when the file at branch head differs from the recorded commit. */
+  drift?: boolean;
+  /** Branch-head commit, present when `drift` is true. */
+  headSha?: string;
+}
+
+/** Options for a forced regenerate. */
+export interface RegenerateOptions {
+  /** Move the script: 'github' (code repository) or 'builtin'. Default: its current backend. */
+  storage?: 'github' | 'builtin';
+  /** Replace a repository file that was edited since the recorded commit. */
+  overwrite?: boolean;
 }
 
 export interface LineageGraph {
@@ -175,9 +195,21 @@ export class LineageService {
   }
 
   /** Force a new CodeGen script for one kind; resolves with the new entry. */
-  regenerateCodegenScript(pipeline: string, kind: string): Observable<CodegenScript> {
+  regenerateCodegenScript(pipeline: string, kind: string, opts?: RegenerateOptions): Observable<CodegenScript> {
+    let params = new HttpParams();
+    if (opts?.storage) params = params.set('storage', opts.storage);
+    if (opts?.overwrite) params = params.set('overwrite', 'true');
     return this.http.post<CodegenScript>(
       '/api/v1/pipelines/' + encodeURIComponent(pipeline) + '/codegen-scripts/' + encodeURIComponent(kind) + '/regenerate',
+      {},
+      { params }
+    );
+  }
+
+  /** Adopt the code repository's branch-head version of a repository-backed script; resolves with the new entry. */
+  pullCodegenScript(pipeline: string, kind: string): Observable<CodegenScript> {
+    return this.http.post<CodegenScript>(
+      '/api/v1/pipelines/' + encodeURIComponent(pipeline) + '/codegen-scripts/' + encodeURIComponent(kind) + '/pull',
       {}
     );
   }

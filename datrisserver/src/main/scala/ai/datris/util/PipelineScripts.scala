@@ -24,15 +24,25 @@ import scala.collection.JavaConverters._
   * delimited run whose header differs from the header the script was written
   * against generates a script for that run only and keeps the stored one.
   *
+  * Two backends: the built-in object store (`storeFor`) and the code
+  * repository (`repoStoreFor`). A new script goes to `defaultStorage()`
+  * (the repository when one is enabled); an existing script keeps its
+  * backend until a forced regenerate asks for another. A repository-backed
+  * script is pinned to the commit recorded on its record; a commit whose base
+  * moved in the repository (a hand edit) is rejected and reported as a
+  * warning, never overwritten silently, and [[pull]] adopts the head version.
+  *
   * Store, record IO, the model call and the current-model lookup are
-  * parameters so specs run without Mongo, MinIO or a model; production
-  * defaults are on the companion object.
+  * parameters so specs run without Mongo, MinIO, GitHub or a model;
+  * production defaults are on the companion object.
   */
 class PipelineScripts(
     records: CodeGenScriptRecords,
     storeFor: String => CodeStore,
     ai: (String, String) => String,
-    currentModel: () => String
+    currentModel: () => String,
+    repoStoreFor: String => CodeStore = null,
+    defaultStorage: () => String = () => "minio"
 ) {
     import PipelineScripts._
 
@@ -44,7 +54,8 @@ class PipelineScripts(
       * config has: keep the stored script when its fingerprint still matches
       * (no model call), else generate from the schema and store it, or record
       * it pending with the reason. Kinds the config no longer has are removed.
-      * Never throws. */
+      * `actor` is the saving key's label (the commit's `{user}`). Never
+      * throws. */
     def onSave(previous: PipelineConfig, saved: PipelineConfig, actor: String): List[Outcome] = {
         if (saved == null || saved.name == null) return Nil
         Kinds.flatMap { kind =>
@@ -53,7 +64,7 @@ class PipelineScripts(
                     case None =>
                         removeKind(saved.name, kind)
                         None
-                    case Some(instruction) => Some(saveKind(saved, kind, instruction))
+                    case Some(instruction) => Some(saveKind(saved, kind, instruction, actor))
                 }
             } catch {
                 case e: Throwable if scala.util.control.NonFatal(e) =>
@@ -63,7 +74,7 @@ class PipelineScripts(
         }
     }
 
-    private def saveKind(config: PipelineConfig, kind: String, instruction: String): Outcome = {
+    private def saveKind(config: PipelineConfig, kind: String, instruction: String, actor: String): Outcome = {
         val fp = fingerprint(instruction, schemaSignature(config))
         val existing = records.read(config.name, kind)
         existing match {
@@ -80,9 +91,23 @@ class PipelineScripts(
                         Outcome(kind, Pending, reason)
                     case Some(fields) =>
                         try {
-                            val rec = generateAndStore(config, kind, instruction, fp, fields, "save", existing)
+                            val rec = generateAndStore(config, kind, instruction, fp, fields, "save", existing, actor)
                             Outcome(kind, Ready, generatedAt = rec.generatedAt, model = rec.model)
                         } catch {
+                            case _: CodeRepoConflictException =>
+                                // A hand edit in the repository: leave the record and the
+                                // file as they are, and say how to resolve it.
+                                val warning = conflictWarning(config.name, kind, existing.orNull)
+                                logger.warn("CodeGen script for " + config.name + "/" + kind + " not committed: " + warning)
+                                val r = existing.orNull
+                                Outcome(
+                                    kind,
+                                    Option(r).flatMap(x => Option(x.status)).getOrElse(Ready),
+                                    Option(r).map(_.pendingReason).orNull,
+                                    Option(r).map(_.generatedAt).orNull,
+                                    Option(r).map(_.model).orNull,
+                                    warning
+                                )
                             case e: Throwable if scala.util.control.NonFatal(e) =>
                                 val reason = messageOf(e)
                                 logger.warn("CodeGen script generation at save failed for " + config.name + "/" + kind + ": " + reason)
@@ -102,16 +127,23 @@ class PipelineScripts(
         fp: String,
         fields: List[SchemaField],
         origin: String,
-        existing: Option[CodeGenScript]
+        existing: Option[CodeGenScript],
+        actor: String,
+        storage: String = null,
+        overwrite: Boolean = false
     ): CodeGenScript = {
         val delimiter = CsvAttributes.delimiterOf(config)
         val script =
             if (kind == PipelineScripts.DataQuality) CodeGenRuleEvaluator.generateFromSchema(instruction, fields, delimiter, ai)
             else CodeGenTransformationEvaluator.generateFromSchema(instruction, fields, delimiter, ai)
         if (script == null || script.trim.isEmpty) throw new DatrisException("The model returned an empty script")
-        storeRecord(config, kind, instruction, fp, script, fields.map(_.name), origin, existing)
+        storeRecord(config, kind, instruction, fp, script, fields.map(_.name), origin, existing, actor, storage, overwrite)
     }
 
+    /** Store the script in the chosen backend and write the record. Within one
+      * backend the previous object is replaced (built-in) or the same file
+      * gets a new commit whose base is the recorded commit (repository); a
+      * move to another backend leaves the old copy in place, as tap moves do. */
     private def storeRecord(
         config: PipelineConfig,
         kind: String,
@@ -120,10 +152,16 @@ class PipelineScripts(
         script: String,
         generatedAgainst: List[String],
         origin: String,
-        existing: Option[CodeGenScript]
+        existing: Option[CodeGenScript],
+        actor: String,
+        storage: String = null,
+        overwrite: Boolean = false
     ): CodeGenScript = {
-        val store = storeFor(config.name)
-        val stored = store.storeScript(kind, script, existing.map(refOf).orNull, null)
+        val backend = chooseBackend(existing, storage)
+        val store = storeOf(config.name, backend)
+        val sameBackendPrior = existing.filter(r => backendOf(r) == backend)
+        val prior = sameBackendPrior.map(refOf).map(ref => if (overwrite) ref.copy(scriptCommitSha = null) else ref).orNull
+        val stored = store.storeScript(kind, script, prior, actor)
         val rec = CodeGenScript(
             pipeline = config.name,
             kind = kind,
@@ -144,13 +182,19 @@ class PipelineScripts(
         try records.write(rec)
         catch {
             case e: Throwable =>
-                deleteObject(store, refOf(rec))
+                // A built-in object nobody points at is removed; a repository
+                // commit stays (history) and the record keeps the old pin.
+                if (backend != Github) deleteObject(rec)
                 throw e
         }
-        existing.foreach(old => if (!sameObject(old, rec)) deleteObject(store, refOf(old)))
+        sameBackendPrior.foreach(old => if (backend != Github && !sameObject(old, rec)) deleteObject(old))
         rec
     }
 
+    /** Record the script pending. A built-in object is removed as before; a
+      * repository file is kept (no delete commit) and its pin stays on the
+      * record as the base of the next commit. The backend sticks: an existing
+      * record's, or the explicitly requested one. */
     private def writePending(
         config: PipelineConfig,
         kind: String,
@@ -158,13 +202,20 @@ class PipelineScripts(
         fp: String,
         reason: String,
         existing: Option[CodeGenScript],
-        origin: String = "save"
+        origin: String = "save",
+        storage: String = null
     ): CodeGenScript = {
+        val requested = normalizeStorage(storage)
+        val target: String = requested.orElse(existing.flatMap(r => Option(r.storage)).filter(_.nonEmpty)).orNull
+        val keepRepoRef = target == Github && existing.exists(r => backendOf(r) == Github && r.scriptRepoPath != null)
         val rec = CodeGenScript(
             pipeline = config.name,
             kind = kind,
             instruction = instruction,
             script = null,
+            storage = target,
+            scriptRepoPath = if (keepRepoRef) existing.get.scriptRepoPath else null,
+            scriptCommitSha = if (keepRepoRef) existing.get.scriptCommitSha else null,
             fingerprint = fp,
             status = Pending,
             pendingReason = reason,
@@ -172,13 +223,13 @@ class PipelineScripts(
             contractVersion = contractVersion(kind)
         )
         records.write(rec)
-        existing.foreach(old => deleteObject(storeFor(config.name), refOf(old)))
+        existing.foreach(old => if (backendOf(old) != Github && (target == null || target != Github)) deleteObject(old))
         rec
     }
 
     private def removeKind(pipeline: String, kind: String): Unit =
         records.read(pipeline, kind).foreach { old =>
-            deleteObject(storeFor(pipeline), refOf(old))
+            deleteObject(old)
             records.delete(pipeline, kind)
         }
 
@@ -188,7 +239,10 @@ class PipelineScripts(
       * reaching the stage (Nil for JSON/XML); `generate` builds a script from
       * this run's data and is called only when the stored one cannot be used.
       * Generation failures propagate (the run fails, as before); a failure to
-      * store a script generated at run is logged and the run continues. */
+      * store a script generated at run is logged and the run continues with
+      * the generated script, which stays pending. A repository-backed script
+      * whose recorded commit cannot be read fails the run (no fallback to
+      * generating). */
     def forRun(config: PipelineConfig, kind: String, runHeader: List[String], generate: () => String): Resolved = {
         val instruction = instructionOf(config, kind).getOrElse(throw new DatrisException("Pipeline " + config.name + " has no AI " + kind + " instruction"))
         val fp = fingerprint(instruction, schemaSignature(config))
@@ -219,7 +273,7 @@ class PipelineScripts(
                         transient
                     )
                 }
-                readStored(r) match {
+                readStoredForRun(r) match {
                     case Some(text) => return Resolved(Stored, text, null, r)
                     case None => "the stored script could not be read"
                 }
@@ -227,10 +281,13 @@ class PipelineScripts(
 
         val script = generate()
         val rec =
-            try storeRecord(config, kind, instruction, fp, script, header, "run", existing)
+            try storeRecord(config, kind, instruction, fp, script, header, "run", existing, null)
             catch {
                 case e: Throwable if scala.util.control.NonFatal(e) =>
-                    logger.warn("Could not store the CodeGen script generated at run for " + config.name + "/" + kind + ": " + messageOf(e))
+                    val why = messageOf(e)
+                    logger.warn("Could not store the CodeGen script generated at run for " + config.name + "/" + kind + ": " + why)
+                    // Not written: the stored record (pending, or the previous
+                    // script) is unchanged and the next run generates again.
                     CodeGenScript(
                         config.name,
                         kind,
@@ -239,7 +296,8 @@ class PipelineScripts(
                         java.time.Instant.now().toString,
                         fingerprint = fp,
                         model = currentModel(),
-                        status = Ready,
+                        status = Pending,
+                        pendingReason = "the script could not be stored: " + why,
                         origin = "run",
                         contractVersion = contractVersion(kind)
                     )
@@ -251,9 +309,19 @@ class PipelineScripts(
 
     /** Force a new script. Delimited: generate from the schema now and replace
       * the stored script (on failure the error is returned and the current
-      * script stays). JSON/XML: mark it pending so the next run generates. */
-    def regenerate(config: PipelineConfig, kind: String, actor: String): Either[String, CodeGenScript] = {
+      * script stays). JSON/XML: mark it pending so the next run generates.
+      * `storage` ("github" | "builtin"; null keeps the current backend) is the
+      * only way to move a script; `overwrite` replaces a repository file that
+      * changed since the recorded commit instead of rejecting the commit. */
+    def regenerate(
+        config: PipelineConfig,
+        kind: String,
+        actor: String,
+        storage: String = null,
+        overwrite: Boolean = false
+    ): Either[String, CodeGenScript] = {
         if (!Kinds.contains(kind)) return Left(unknownKindMessage(kind))
+        if (storage != null && storage.nonEmpty && normalizeStorage(storage).isEmpty) return Left(unknownStorageMessage(storage))
         val instruction = instructionOf(config, kind) match {
             case Some(i) => i
             case None =>
@@ -263,7 +331,8 @@ class PipelineScripts(
         val existing = records.read(config.name, kind)
         try {
             schemaFields(config) match {
-                case Some(fields) => Right(generateAndStore(config, kind, instruction, fp, fields, "regenerate", existing))
+                case Some(fields) =>
+                    Right(generateAndStore(config, kind, instruction, fp, fields, "regenerate", existing, actor, storage, overwrite))
                 case None =>
                     val rec = writePending(
                         config,
@@ -272,12 +341,75 @@ class PipelineScripts(
                         fp,
                         "Regenerate requested; this pipeline has no delimited schema to generate from, so the next run generates the script from its data",
                         existing,
-                        origin = "regenerate"
+                        origin = "regenerate",
+                        storage = storage
                     )
                     Right(rec)
             }
         } catch {
+            case _: CodeRepoConflictException => Left(conflictWarning(config.name, kind, existing.orNull))
             case e: Throwable if scala.util.control.NonFatal(e) => Left(messageOf(e))
+        }
+    }
+
+    // ------------------------------------------------------- drift and pull
+
+    /** Some(headSha) when the script's file at branch head differs from the
+      * recorded commit's; None for a built-in script, no drift, or an
+      * unreachable repository (logged). */
+    def drift(pipeline: String, kind: String): Option[String] =
+        records.read(pipeline, kind).filter(isRepoBacked).flatMap { r =>
+            try {
+                val store = storeOf(pipeline, Github)
+                store.pullLatest(refOf(r)).flatMap { case (content, headSha) =>
+                    if (headSha == r.scriptCommitSha) None
+                    else {
+                        val pinned =
+                            try store.readScript(refOf(r))
+                            catch { case e: Throwable if scala.util.control.NonFatal(e) => None }
+                        if (pinned.contains(content)) None else Some(headSha)
+                    }
+                }
+            } catch {
+                case e: Throwable if scala.util.control.NonFatal(e) =>
+                    logger.warn("CodeGen script drift check failed for " + pipeline + "/" + kind + ": " + messageOf(e))
+                    None
+            }
+        }
+
+    /** Adopt the branch-head version of a repository-backed script: the record
+      * pins the head commit, origin "repository", ready. No commit is made.
+      * The fingerprint is kept, so later saves with an unchanged instruction
+      * and schema keep the adopted edit. Left for a built-in script. */
+    def pull(pipeline: String, kind: String, actor: String): Either[String, CodeGenScript] = {
+        if (!Kinds.contains(kind)) return Left(unknownKindMessage(kind))
+        records.read(pipeline, kind) match {
+            case None => Left("Pipeline " + pipeline + " has no stored " + kind + " script")
+            case Some(r) if !isRepoBacked(r) => Left(notRepositoryMessage(pipeline, kind))
+            case Some(r) =>
+                try {
+                    storeOf(pipeline, Github).pullLatest(refOf(r)) match {
+                        case None => Left("'" + r.scriptRepoPath + "' is not on the configured branch of the code repository; there is nothing to pull")
+                        case Some((content, _)) if content == null || content.trim.isEmpty =>
+                            Left("'" + r.scriptRepoPath + "' is empty at the head of the configured branch; there is nothing to pull")
+                        case Some((_, headSha)) =>
+                            val rec = r.copy(
+                                scriptCommitSha = headSha,
+                                generatedAt = java.time.Instant.now().toString,
+                                status = Ready,
+                                pendingReason = null,
+                                origin = "repository"
+                            )
+                            records.write(rec)
+                            logger.info(
+                                "CodeGen script " + pipeline + "/" + kind + " pinned to repository commit " + headSha +
+                                    Option(actor).map(" by " + _).getOrElse("")
+                            )
+                            Right(rec)
+                    }
+                } catch {
+                    case e: Throwable if scala.util.control.NonFatal(e) => Left(messageOf(e))
+                }
         }
     }
 
@@ -287,21 +419,29 @@ class PipelineScripts(
     def record(pipeline: String, kind: String): Option[CodeGenScript] = records.read(pipeline, kind)
 
     /** The script text: from the script store, or from a legacy record's
-      * `script` field. An unreadable script is absent. */
+      * `script` field. A pending or unreadable script is absent. */
     def readText(pipeline: String, kind: String): Option[String] =
-        records.read(pipeline, kind).flatMap(readStored)
+        records.read(pipeline, kind).filter(_.status != Pending).flatMap(readStored)
 
-    private def readStored(r: CodeGenScript): Option[String] = {
-        val hasRef = (r.scriptPath != null && r.scriptPath.nonEmpty) || (r.scriptRepoPath != null && r.scriptRepoPath.nonEmpty)
-        if (hasRef)
-            try storeFor(r.pipeline).readScript(refOf(r))
+    private def hasRef(r: CodeGenScript): Boolean =
+        (r.scriptPath != null && r.scriptPath.nonEmpty) || (r.scriptRepoPath != null && r.scriptRepoPath.nonEmpty)
+
+    private def readStored(r: CodeGenScript): Option[String] =
+        if (hasRef(r))
+            try storeOf(r.pipeline, backendOf(r)).readScript(refOf(r))
             catch {
                 case e: Exception =>
                     logger.warn("CodeGen script unreadable for " + r.pipeline + "/" + r.kind + ": " + e.getMessage)
                     None
             }
         else Option(r.script).filter(_.nonEmpty)
-    }
+
+    /** As [[readStored]], except that a repository read failure (unreachable,
+      * token expired, repository disabled) propagates: a run must not fall
+      * back to generating a different script. */
+    private def readStoredForRun(r: CodeGenScript): Option[String] =
+        if (backendOf(r) == Github && hasRef(r)) storeOf(r.pipeline, Github).readScript(refOf(r))
+        else readStored(r)
 
     /** The CodeGen model setting right now. */
     def modelNow: String =
@@ -310,7 +450,8 @@ class PipelineScripts(
 
     // ---------------------------------------------------------------- delete
 
-    /** Remove both kinds' objects and records. Best effort, never throws. */
+    /** Remove both kinds' objects (a delete commit per file for repository
+      * scripts; history is kept) and records. Best effort, never throws. */
     def deleteAll(pipeline: String): Unit =
         Kinds.foreach { kind =>
             try removeKind(pipeline, kind)
@@ -322,10 +463,25 @@ class PipelineScripts(
     private def usable(r: CodeGenScript, fp: String, kind: String): Boolean =
         r.status == Ready && r.fingerprint == fp && r.contractVersion == contractVersion(kind)
 
-    private def deleteObject(store: CodeStore, ref: ScriptRef): Unit =
-        if (ref != null && (ref.scriptPath != null || ref.scriptRepoPath != null))
-            try store.deleteScript(ref)
-            catch { case e: Exception => logger.warn("Could not delete CodeGen script object " + ref + ": " + e.getMessage) }
+    /** Backend for a write: an explicit request, else the existing record's
+      * backend, else the install default. */
+    private def chooseBackend(existing: Option[CodeGenScript], requested: String): String =
+        normalizeStorage(requested).getOrElse {
+            existing.flatMap(r => Option(r.storage)).filter(_.nonEmpty).map(s => if (s == Github) Github else Builtin).getOrElse {
+                if (Option(defaultStorage()).contains(Github) && repoStoreFor != null) Github else Builtin
+            }
+        }
+
+    private def storeOf(pipeline: String, backend: String): CodeStore =
+        if (backend == Github) {
+            if (repoStoreFor == null) throw new DatrisException("No code repository store is available for pipeline scripts")
+            repoStoreFor(pipeline)
+        } else storeFor(pipeline)
+
+    private def deleteObject(r: CodeGenScript): Unit =
+        if (r != null && hasRef(r))
+            try storeOf(r.pipeline, backendOf(r)).deleteScript(refOf(r))
+            catch { case e: Exception => logger.warn("Could not delete CodeGen script object " + refOf(r) + ": " + e.getMessage) }
 
     private def sameObject(a: CodeGenScript, b: CodeGenScript): Boolean =
         a.storage == b.storage && a.scriptPath == b.scriptPath && a.scriptRepoPath == b.scriptRepoPath
@@ -343,7 +499,9 @@ object PipelineScripts
             if (!DatrisEnvironment.current.aiEnabled) throw new DatrisException("AI is not enabled on this server")
             CodeGenRuleEvaluator.codegenAI(system, user)
         },
-        () => scala.util.Try(DatrisEnvironment.aiConfigForCodegen.model).getOrElse(null)
+        () => scala.util.Try(DatrisEnvironment.aiConfigForCodegen.model).getOrElse(null),
+        (pipeline: String) => GithubCodeStore.forPipeline(pipeline),
+        () => if (CodeRepoConfigIO.readEnabled().isDefined) "github" else "minio"
     ) {
 
     val DataQuality = "dataQuality"
@@ -352,6 +510,10 @@ object PipelineScripts
 
     val Ready = "ready"
     val Pending = "pending"
+
+    /** Storage values on a record. */
+    val Github = "github"
+    val Builtin = "minio"
 
     val Stored = "stored"
     val GenerateAndStore = "generate-and-store"
@@ -366,7 +528,16 @@ object PipelineScripts
         case _ => 0
     }
 
-    case class Outcome(kind: String, status: String, pendingReason: String = null, generatedAt: String = null, model: String = null)
+    /** `warning` is set when a repository commit was rejected because the
+      * file changed in the repository since the recorded commit. */
+    case class Outcome(
+        kind: String,
+        status: String,
+        pendingReason: String = null,
+        generatedAt: String = null,
+        model: String = null,
+        warning: String = null
+    )
 
     /** action: "stored" | "generate-and-store" | "generate-once". */
     case class Resolved(action: String, script: String, reason: String, record: CodeGenScript)
@@ -376,6 +547,43 @@ object PipelineScripts
 
     def regeneratePath(pipeline: String, kind: String): String =
         "/api/v1/pipelines/" + pipeline + "/codegen-scripts/" + kind + "/regenerate"
+
+    def pullPath(pipeline: String, kind: String): String =
+        "/api/v1/pipelines/" + pipeline + "/codegen-scripts/" + kind + "/pull"
+
+    /** "github" for "github"; "minio" for "builtin" / "minio"; None for null,
+      * empty or anything else. */
+    def normalizeStorage(storage: String): Option[String] = storage match {
+        case "github" => Some(Github)
+        case "builtin" | "minio" => Some(Builtin)
+        case _ => None
+    }
+
+    def unknownStorageMessage(storage: String): String =
+        "Unknown script storage '" + storage + "'; expected github or builtin"
+
+    def notRepositoryMessage(pipeline: String, kind: String): String =
+        "The " + kind + " script for pipeline " + pipeline +
+            " is not stored in the code repository, so there is nothing to pull. Regenerate it with storage=github to move it there."
+
+    /** Text that marks a rejected repository commit (the API maps it to 409). */
+    val ConflictMarker = "changed in the code repository since the recorded commit"
+
+    /** The warning for a commit rejected because the file was edited in the
+      * repository: names pull and regenerate with overwrite=true. */
+    def conflictWarning(pipeline: String, kind: String, existing: CodeGenScript): String = {
+        val path = Option(existing).flatMap(r => Option(r.scriptRepoPath)).getOrElse("the script file")
+        val sha = Option(existing).flatMap(r => Option(r.scriptCommitSha)).map(" " + _.take(7)).getOrElse("")
+        "The CodeGen " + kind + " script for pipeline " + pipeline + " was not replaced: '" + path + "' " + ConflictMarker + sha +
+            ", and a hand edit is never overwritten. Runs keep using the recorded commit. Adopt the repository version with POST " +
+            pullPath(pipeline, kind) + " (pull), or replace it with POST " + regeneratePath(pipeline, kind) + "?overwrite=true."
+    }
+
+    private[util] def backendOf(r: CodeGenScript): String =
+        if (r != null && r.storage == Github) Github else Builtin
+
+    def isRepoBacked(r: CodeGenScript): Boolean =
+        r != null && r.storage == Github && r.scriptRepoPath != null && r.scriptRepoPath.nonEmpty
 
     /** sha-256 of the instruction and the schema signature. */
     def fingerprint(instruction: String, schemaSignature: String): String = {
@@ -426,10 +634,19 @@ object PipelineScripts
 
     /** The run's status line. */
     def statusLine(r: Resolved): String = r.action match {
-        case Stored => "Running stored CodeGen script generated at " + r.record.generatedAt
+        case Stored => "Running stored CodeGen script generated at " + r.record.generatedAt + commitNote(r.record)
         case GenerateOnce => "Generated CodeGen script for this run only (reason: " + r.reason + ")"
-        case _ => "Generated CodeGen script (reason: " + r.reason + "); stored for later runs"
+        case _ if r.record != null && r.record.status == Pending =>
+            "Generated CodeGen script (reason: " + r.reason + "); " + Option(r.record.pendingReason).getOrElse("it could not be stored") +
+                ", so it stays pending and the next run generates again"
+        case _ => "Generated CodeGen script (reason: " + r.reason + "); stored for later runs" + commitNote(r.record)
     }
+
+    /** " (code repository commit abc1234)" for a repository-backed record. */
+    private def commitNote(r: CodeGenScript): String =
+        if (r != null && r.storage == Github && r.scriptCommitSha != null && r.scriptCommitSha.nonEmpty)
+            " (code repository commit " + r.scriptCommitSha.take(7) + ")"
+        else ""
 
     /** Run a resolved script. A stored script that fails is not regenerated:
       * the run fails with a message naming when it was generated and how to

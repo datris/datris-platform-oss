@@ -68,6 +68,7 @@ object CapabilityRoutes {
         // what the pipeline runs, so it needs the right to create pipelines).
         Route("GET", "/api/v1/pipelines/*/codegen-scripts", "pipeline", "read"),
         Route("POST", "/api/v1/pipelines/*/codegen-scripts/*/regenerate", "pipeline", "create"),
+        Route("POST", "/api/v1/pipelines/*/codegen-scripts/*/pull", "pipeline", "create"),
         Route("POST", "/api/v1/pipeline", "pipeline", "create"),
         Route("DELETE", "/api/v1/pipeline", "pipeline", "delete"),
         Route("POST", "/api/v1/pipeline/generate", "pipeline", "create"),

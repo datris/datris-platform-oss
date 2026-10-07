@@ -59,12 +59,38 @@ components:
           nullable: true
         origin:
           type: string
-          enum: [save, run, regenerate]
+          enum: [save, run, regenerate, repository]
           nullable: true
+          description: >-
+            How the current script was recorded. `repository` means an edit
+            made in the code repository was adopted with the pull endpoint.
         storage:
           type: string
-          description: Script store (`minio` for the built-in object store).
+          description: >-
+            Script store: `minio` for the built-in object store, `github` for
+            the configured code repository.
           nullable: true
+        repoPath:
+          type: string
+          nullable: true
+          description: >-
+            Code repository only. Path of the script file on the configured
+            branch: `<pathPrefix>pipelines/<pipeline>/data-quality.py` or
+            `.../transformation.py`.
+        commitSha:
+          type: string
+          nullable: true
+          description: Code repository only. The commit every run executes.
+        drift:
+          type: boolean
+          description: >-
+            True when the file at the head of the configured branch differs
+            from the recorded commit (it was edited in the repository). Runs
+            keep using the recorded commit until the edit is pulled. Always
+            false for built-in storage.
+        headSha:
+          type: string
+          description: Present when `drift` is true. The branch-head commit the pull endpoint would record.
     FieldProtectionPolicy:
       type: object
       description: >-
@@ -1095,6 +1121,14 @@ paths:
                           format: date-time
                         model:
                           type: string
+                        warning:
+                          type: string
+                          description: >-
+                            Set when the script's file was edited in the code
+                            repository since the recorded commit, so the new
+                            script was not committed and the recorded one stays.
+                            Names the pull endpoint and regenerate with
+                            `overwrite=true`; also listed in `warnings`.
         '400':
           description: >-
             The configuration was refused and nothing was saved: it failed
@@ -1423,7 +1457,9 @@ paths:
         script without a model call. A changed instruction or source schema
         regenerates it; a changed CodeGen model does not (`modelIsCurrent` is
         false then; use the regenerate endpoint to adopt the new model).
-        Requires `pipeline:read`.
+        With a code repository configured, new scripts are committed to it
+        and runs execute the recorded commit; `drift` reports an edit made in
+        the repository since then. Requires `pipeline:read`.
       parameters:
         - in: path
           name: name
@@ -1455,8 +1491,69 @@ paths:
         the current CodeGen model, and replaces the stored one. If generation
         fails the error is returned (502) and the current script stays in
         place. For a JSON or XML pipeline the script is marked pending and the
-        next run generates it from its data. Requires `pipeline:create`.
-        Audited.
+        next run generates it from its data. The script stays in its current
+        store unless `storage` asks for another; the old copy is left in
+        place. A repository-backed script whose file was edited in the
+        repository since the recorded commit is not overwritten (409) unless
+        `overwrite=true`. Requires `pipeline:create`. Audited.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+        - in: query
+          name: storage
+          required: false
+          description: >-
+            Move the script: `github` (the configured code repository) or
+            `builtin` (the built-in object store). Default: its current store.
+          schema:
+            type: string
+            enum: [github, builtin]
+        - in: query
+          name: overwrite
+          required: false
+          description: >-
+            Replace a repository file that was edited since the recorded
+            commit. The edit stays in the repository history.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: The new script entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodegenScript'
+        '400':
+          description: Unknown kind or storage, or the pipeline has no AI instruction of that kind
+        '404':
+          description: Unknown pipeline
+        '409':
+          description: >-
+            The script's file was edited in the code repository since the
+            recorded commit; nothing was committed and the current script is
+            unchanged. Pull the edit, or repeat with `overwrite=true`.
+        '502':
+          description: Generation or the repository commit failed; the current script is unchanged
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/pull:
+    post:
+      tags: [Pipelines]
+      summary: Adopt a CodeGen script edited in the code repository
+      description: >-
+        For a script stored in the code repository: records the commit at the
+        head of the configured branch (origin `repository`), so later runs
+        execute the file as it is in the repository now. No commit is made.
+        Later saves keep the adopted script while the instruction and source
+        schema are unchanged. Requires `pipeline:create`. Audited.
       parameters:
         - in: path
           name: name
@@ -1471,17 +1568,17 @@ paths:
             enum: [dataQuality, transformation]
       responses:
         '200':
-          description: The new script entry
+          description: The script entry, now pinned to the head commit
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CodegenScript'
         '400':
-          description: Unknown kind, or the pipeline has no AI instruction of that kind
+          description: Unknown kind, no stored script, or the script is in built-in storage
         '404':
           description: Unknown pipeline
         '502':
-          description: Generation failed; the current script is unchanged
+          description: The code repository could not be read; the recorded commit is unchanged
   /api/v1/pipeline/dest-types:
     get:
       tags: [Pipelines]
@@ -5691,6 +5788,12 @@ paths:
                         description: AI transformation only — absent when no script is recorded yet.
                       scriptPendingReason:
                         type: string
+                      scriptStorage:
+                        type: string
+                        description: AI transformation only — `minio` (built-in) or `github` (code repository).
+                      scriptCommitSha:
+                        type: string
+                        description: AI transformation only — the recorded commit of a repository-backed script.
                   edges:
                     type: array
                     items:

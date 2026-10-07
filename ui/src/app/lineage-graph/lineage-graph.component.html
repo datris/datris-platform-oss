@@ -126,10 +126,14 @@
               </div>
               <div class="muted small" *ngIf="c.transformation.kind === 'ai' && c.transformation.instruction">
                 <ng-container *ngIf="c.transformation.scriptStatus === 'pending'">Script pending: {{ c.transformation.scriptPendingReason || 'the next run generates it' }}</ng-container>
-                <ng-container *ngIf="c.transformation.scriptStatus !== 'pending' && c.transformation.scriptGeneratedAt">Script generated {{ formatWhen(c.transformation.scriptGeneratedAt) }}<ng-container *ngIf="c.transformation.scriptModel"> by {{ c.transformation.scriptModel }}</ng-container></ng-container>
+                <ng-container *ngIf="c.transformation.scriptStatus !== 'pending' && c.transformation.scriptGeneratedAt">Script generated {{ formatWhen(c.transformation.scriptGeneratedAt) }}<ng-container *ngIf="c.transformation.scriptModel"> by {{ c.transformation.scriptModel }}</ng-container><ng-container *ngIf="c.transformation.scriptStorage === 'github'"> <span class="repo-badge" [title]="'Stored in the code repository, commit ' + (c.transformation.scriptCommitSha || '')">GitHub</span><code *ngIf="c.transformation.scriptCommitSha" class="repo-sha"> {{ shortSha(c.transformation.scriptCommitSha) }}</code></ng-container></ng-container>
                 <ng-container *ngIf="!c.transformation.scriptStatus">No stored script yet; the next run generates it</ng-container>
                 · <a class="action-link script-link" (click)="viewScript()">{{ scriptLoading ? 'Loading…' : (scriptText !== null ? 'Hide' : 'View') }}</a>
                 <ng-container *ngIf="auth.canWrite()"> · <a class="action-link script-link" (click)="regenerateScript()">{{ regenerating ? 'Regenerating…' : 'Regenerate' }}</a></ng-container>
+                <div class="small" *ngIf="scriptDriftHead">
+                  Changed in the repository (head {{ shortSha(scriptDriftHead) }}); runs still use {{ shortSha(c.transformation.scriptCommitSha) }}
+                  <ng-container *ngIf="auth.canWrite()"> · <a class="action-link script-link" (click)="pullScript()">{{ pulling ? 'Loading…' : 'Load latest' }}</a></ng-container>
+                </div>
                 <div class="error-text small" *ngIf="scriptError">{{ scriptError }}</div>
                 <pre class="script-view" *ngIf="scriptText">{{ scriptText }}</pre>
               </div>

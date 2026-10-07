@@ -56,7 +56,7 @@ For all formats, the instruction is the same plain-English description. The LLM 
 
 The script is generated once and stored, not on every run:
 
-- **At save** — Saving a pipeline with an AI rule (`POST /api/v1/pipeline`, the MCP `create_pipeline` tool, or the UI wizard) generates the script from the source schema: the delimiter and the ordered field names and types. No sample rows are available when a pipeline is saved, so state any format the rule depends on in the instruction (for example "dates are YYYY-MM-DD"). The script is stored in the built-in object store under `pipeline-scripts/<pipeline>/`.
+- **At save** — Saving a pipeline with an AI rule (`POST /api/v1/pipeline`, the MCP `create_pipeline` tool, or the UI wizard) generates the script from the source schema: the delimiter and the ordered field names and types. No sample rows are available when a pipeline is saved, so state any format the rule depends on in the instruction (for example "dates are YYYY-MM-DD"). The script is stored in the built-in object store under `pipeline-scripts/<pipeline>/`, or committed to the code repository when one is enabled (see [Pipeline scripts](/tap-github-storage#pipeline-scripts)).
 - **Every run** — Each run executes the stored script. A run makes no model call, gives the same result for the same data, and keeps working if the model is unreachable. The status shows "Running stored CodeGen script generated at ...".
 - **Re-saving** — Saving again regenerates only when the instruction or the source schema (delimiter, field names, types or order) changed. Re-saving an unchanged pipeline makes no model call. A changed CodeGen model does not regenerate: the script keeps the model that wrote it.
 - **Pending** — If the script cannot be generated at save (no AI key, model unreachable, AI disabled), the pipeline is still saved, the save response carries a warning and `codegenScripts` lists the script as `pending` with the reason. JSON and XML pipelines have no column schema to generate from, so they are always saved pending. The first run generates the script from its data, stores it, and later runs reuse it.
@@ -64,6 +64,8 @@ The script is generated once and stored, not on every run:
 - **Failures** — A stored script that exits with an error, times out, or prints output that is not a JSON array fails the run. It is not regenerated automatically: the error names when the script was generated and the regenerate endpoint.
 
 To read the stored script, call `GET /api/v1/pipelines/{name}/codegen-scripts`. To replace it (for example to adopt a new CodeGen model, or after a wrong script), call `POST /api/v1/pipelines/{name}/codegen-scripts/dataQuality/regenerate`, which needs the `pipeline:create` capability. If generation fails there, the current script stays in place.
+
+With a code repository configured under **Configuration > Code Repository**, the script for a new pipeline is committed to it as `<pathPrefix>pipelines/<pipeline>/data-quality.py` and every run executes the recorded commit. You can review it, blame it and edit it in the repository; an edit is used only after you adopt it with `POST /api/v1/pipelines/{name}/codegen-scripts/dataQuality/pull`. See [Pipeline scripts](/tap-github-storage#pipeline-scripts) for commit messages, conflicts, and what happens when the repository is unreachable.
 
 Pipelines created before stored scripts generate their script on the first run after the upgrade and reuse it after that.
 

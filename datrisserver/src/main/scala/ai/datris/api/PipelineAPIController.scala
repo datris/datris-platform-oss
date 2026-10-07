@@ -307,7 +307,7 @@ class PipelineAPIController {
             // transformation script now. Never fails the save: a script that
             // could not be generated is pending and the first run generates it.
             val outcomes =
-                try PipelineScripts.onSave(existing, preserved, VersionActor.resolve(request))
+                try PipelineScripts.onSave(existing, preserved, ResolvedKeyAccess.keyLabel(request).orNull)
                 catch {
                     case e: Exception =>
                         logger.warn("POST /pipeline " + preserved.name + ": CodeGen script save hook failed: " + e.getMessage)
@@ -358,18 +358,27 @@ class PipelineAPIController {
       * `transformation`). Delimited pipelines generate now from the schema and
       * replace the stored script (on failure the error is returned with a 502
       * and the current script stays); JSON/XML pipelines are marked pending so
-      * the next run generates. An unknown kind is 400 before any config read. */
+      * the next run generates. An unknown kind is 400 before any config read.
+      * `storage` (`github` | `builtin`, default the script's current backend)
+      * moves the script; `overwrite=true` replaces a repository file that was
+      * edited since the recorded commit (otherwise that is a 409). */
     @PostMapping(path = Array("/pipelines/{name}/codegen-scripts/{kind}/regenerate"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def regenerateCodegenScript(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
         @PathVariable("name") name: String,
         @PathVariable("kind") kind: String,
-        request: HttpServletRequest
+        request: HttpServletRequest,
+        @RequestParam(name = "storage", required = false) storage: String = null,
+        @RequestParam(name = "overwrite", required = false) overwrite: java.lang.Boolean = null
     ): ResponseEntity[String] = {
         if (!PipelineScripts.Kinds.contains(kind))
             return ResponseEntity
                 .status(HttpStatus.BAD_REQUEST)
                 .body[String](QueryAPIController.errorBody(new DatrisException(PipelineScripts.unknownKindMessage(kind))))
+        if (storage != null && storage.nonEmpty && PipelineScripts.normalizeStorage(storage).isEmpty)
+            return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body[String](QueryAPIController.errorBody(new DatrisException(PipelineScripts.unknownStorageMessage(storage))))
         try {
             logger.info("API endpoint POST /pipelines/" + name + "/codegen-scripts/" + kind + "/regenerate called")
             APIKeyValidator.validate(apiKey)
@@ -385,17 +394,22 @@ class PipelineAPIController {
                     .body[String](
                         QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " has no AI " + kind + " instruction to generate a script for"))
                     )
-            val actor = VersionActor.resolve(request)
-            PipelineScripts.regenerate(config, kind, actor) match {
+            val actor = ResolvedKeyAccess.keyLabel(request).orNull
+            val force = overwrite != null && overwrite.booleanValue
+            PipelineScripts.regenerate(config, kind, actor, Option(storage).filter(_.nonEmpty).orNull, force) match {
                 case Right(rec) =>
-                    auditCodegenRegenerate(request, name, kind, "success", None)
+                    auditCodegenScript(request, "regenerate", name, kind, "success", None)
                     val body = PipelineAPIController.codegenScriptsBody(config, PipelineScripts)
                     val entry = body.getAsJsonArray("scripts").asScala.map(_.getAsJsonObject).find(_.get("kind").getAsString == kind)
                     ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(entry.getOrElse(new JsonObject).toString)
                 case Left(error) =>
-                    auditCodegenRegenerate(request, name, kind, "failure", Some(error))
+                    auditCodegenScript(request, "regenerate", name, kind, "failure", Some(error))
+                    val status =
+                        if (error.contains(PipelineScripts.ConflictMarker)) HttpStatus.CONFLICT
+                        else if (error.startsWith("Unknown script storage")) HttpStatus.BAD_REQUEST
+                        else HttpStatus.BAD_GATEWAY
                     ResponseEntity
-                        .status(HttpStatus.BAD_GATEWAY)
+                        .status(status)
                         .body[String](
                             QueryAPIController.errorBody(new DatrisException("CodeGen script was not regenerated (the current script is unchanged): " + error))
                         )
@@ -408,7 +422,50 @@ class PipelineAPIController {
         }
     }
 
-    private def auditCodegenRegenerate(request: HttpServletRequest, pipeline: String, kind: String, outcome: String, error: Option[String]): Unit =
+    /** Adopt the repository's branch-head version of a repository-backed
+      * CodeGen script (an edit made in the repository): the script's record
+      * pins the head commit; later runs execute it. 400 for an unknown kind or
+      * a built-in script. */
+    @PostMapping(path = Array("/pipelines/{name}/codegen-scripts/{kind}/pull"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def pullCodegenScript(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable("name") name: String,
+        @PathVariable("kind") kind: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        if (!PipelineScripts.Kinds.contains(kind))
+            return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body[String](QueryAPIController.errorBody(new DatrisException(PipelineScripts.unknownKindMessage(kind))))
+        try {
+            logger.info("API endpoint POST /pipelines/" + name + "/codegen-scripts/" + kind + "/pull called")
+            APIKeyValidator.validate(apiKey)
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name)
+            if (config == null)
+                return ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
+            CapabilityCheck.assertOwnerScope(request, "pipeline", "create", config.createdByKeyLabel)
+            val response = PipelineAPIController.pullCodegenScriptWith(PipelineScripts, name, kind, ResolvedKeyAccess.keyLabel(request).orNull)
+            if (response.getStatusCode.is2xxSuccessful) auditCodegenScript(request, "pull", name, kind, "success", None)
+            else auditCodegenScript(request, "pull", name, kind, "failure", Some(String.valueOf(response.getBody)))
+            response
+        } catch {
+            case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    private def auditCodegenScript(
+        request: HttpServletRequest,
+        operation: String,
+        pipeline: String,
+        kind: String,
+        outcome: String,
+        error: Option[String]
+    ): Unit =
         try {
             if (ai.datris.audit.AuditLog.enabled)
                 ai.datris.audit.AuditLog.submit(
@@ -416,7 +473,7 @@ class PipelineAPIController {
                         ts = java.time.Instant.now(),
                         actor = ai.datris.audit.AuditActor.resolve(request),
                         category = "pipeline",
-                        action = "codegen-script-regenerate:" + kind,
+                        action = "codegen-script-" + operation + ":" + kind,
                         resourceType = Some("pipeline"),
                         resourceName = Some(pipeline),
                         outcome = outcome,
@@ -425,7 +482,7 @@ class PipelineAPIController {
                     )
                 )
         } catch {
-            case ex: Exception => logger.warn("Audit of CodeGen script regenerate failed for " + pipeline + ": " + ex.getMessage)
+            case ex: Exception => logger.warn("Audit of CodeGen script " + operation + " failed for " + pipeline + ": " + ex.getMessage)
         }
 
     @DeleteMapping(path = Array("/pipeline"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
@@ -928,7 +985,8 @@ object PipelineAPIController {
 
     /** POST /api/v1/pipeline body: `warnings` (the given ones plus one per
       * pending CodeGen script, naming its reason) and `codegenScripts`
-      * ([{kind, status, pendingReason?, generatedAt?, model?}]). */
+      * ([{kind, status, pendingReason?, generatedAt?, model?, warning?}];
+      * `warning` when a repository commit was rejected). */
     def saveResponseBody(warnings: List[String], outcomes: List[PipelineScripts.Outcome]): JsonObject = {
         val out = new JsonObject
         val arr = new com.google.gson.JsonArray
@@ -939,6 +997,7 @@ object PipelineAPIController {
                     ". The pipeline is saved; its first run generates and stores the script."
             )
         }
+        outcomes.filter(_.warning != null).foreach(o => arr.add(o.warning))
         out.add("warnings", arr)
         val scripts = new com.google.gson.JsonArray
         outcomes.foreach { o =>
@@ -948,6 +1007,7 @@ object PipelineAPIController {
             if (o.pendingReason != null) e.addProperty("pendingReason", o.pendingReason)
             if (o.generatedAt != null) e.addProperty("generatedAt", o.generatedAt)
             if (o.model != null) e.addProperty("model", o.model)
+            if (o.warning != null) e.addProperty("warning", o.warning)
             scripts.add(e)
         }
         out.add("codegenScripts", scripts)
@@ -956,7 +1016,8 @@ object PipelineAPIController {
 
     /** GET /api/v1/pipelines/{name}/codegen-scripts body: `scripts`, one entry
       * per AI kind the pipeline has (kind, instruction, script, generatedAt,
-      * model, modelIsCurrent, status, pendingReason, origin, storage). A kind
+      * model, modelIsCurrent, status, pendingReason, origin, storage,
+      * repoPath, commitSha, drift, and headSha when drift is true). A kind
       * with no record yet is pending. */
     def codegenScriptsBody(config: PipelineConfig, scripts: PipelineScripts): JsonObject = {
         val out = new JsonObject
@@ -965,28 +1026,63 @@ object PipelineAPIController {
         val currentModel = scripts.modelNow
         PipelineScripts.Kinds.foreach { kind =>
             PipelineScripts.instructionOf(config, kind).foreach { instruction =>
-                val e = new JsonObject
-                e.addProperty("kind", kind)
-                e.addProperty("instruction", instruction)
-                scripts.record(config.name, kind) match {
-                    case Some(r) =>
-                        e.addProperty("script", scripts.readText(config.name, kind).orNull)
-                        e.addProperty("generatedAt", r.generatedAt)
-                        e.addProperty("model", r.model)
-                        e.addProperty("modelIsCurrent", r.model != null && r.model == currentModel)
-                        e.addProperty("status", Option(r.status).getOrElse(PipelineScripts.Ready))
-                        e.addProperty("pendingReason", r.pendingReason)
-                        e.addProperty("origin", r.origin)
-                        e.addProperty("storage", r.storage)
-                    case None =>
-                        e.addProperty("status", PipelineScripts.Pending)
-                        e.addProperty("pendingReason", "No script is stored yet; the next run generates and stores it")
-                }
-                arr.add(e)
+                arr.add(codegenScriptEntry(scripts, config.name, kind, instruction, currentModel))
             }
         }
         out.add("scripts", arr)
         out
+    }
+
+    /** One entry of the GET body. */
+    def codegenScriptEntry(scripts: PipelineScripts, pipeline: String, kind: String, instruction: String, currentModel: String): JsonObject = {
+        val e = new JsonObject
+        e.addProperty("kind", kind)
+        e.addProperty("instruction", instruction)
+        scripts.record(pipeline, kind) match {
+            case Some(r) =>
+                e.addProperty("script", scripts.readText(pipeline, kind).orNull)
+                e.addProperty("generatedAt", r.generatedAt)
+                e.addProperty("model", r.model)
+                e.addProperty("modelIsCurrent", r.model != null && r.model == currentModel)
+                e.addProperty("status", Option(r.status).getOrElse(PipelineScripts.Ready))
+                e.addProperty("pendingReason", r.pendingReason)
+                e.addProperty("origin", r.origin)
+                e.addProperty("storage", r.storage)
+                e.addProperty("repoPath", r.scriptRepoPath)
+                e.addProperty("commitSha", r.scriptCommitSha)
+                scripts.drift(pipeline, kind) match {
+                    case Some(head) =>
+                        e.addProperty("drift", true)
+                        e.addProperty("headSha", head)
+                    case None => e.addProperty("drift", false)
+                }
+            case None =>
+                e.addProperty("status", PipelineScripts.Pending)
+                e.addProperty("pendingReason", "No script is stored yet; the next run generates and stores it")
+                e.addProperty("drift", false)
+        }
+        e
+    }
+
+    /** POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/pull after the key
+      * and capability checks: 400 for an unknown kind, no stored script or a
+      * built-in script; 502 when the repository cannot be read; 200 with the
+      * kind's GET entry on success. */
+    def pullCodegenScriptWith(scripts: PipelineScripts, name: String, kind: String, actor: String): ResponseEntity[String] = {
+        def bad(status: HttpStatus, msg: String): ResponseEntity[String] =
+            ResponseEntity.status(status).body[String](QueryAPIController.errorBody(new DatrisException(msg)))
+        if (!PipelineScripts.Kinds.contains(kind)) return bad(HttpStatus.BAD_REQUEST, PipelineScripts.unknownKindMessage(kind))
+        scripts.record(name, kind) match {
+            case None => bad(HttpStatus.BAD_REQUEST, "Pipeline " + name + " has no stored " + kind + " script")
+            case Some(r) if !PipelineScripts.isRepoBacked(r) => bad(HttpStatus.BAD_REQUEST, PipelineScripts.notRepositoryMessage(name, kind))
+            case Some(_) =>
+                scripts.pull(name, kind, actor) match {
+                    case Left(error) => bad(HttpStatus.BAD_GATEWAY, "CodeGen script was not pulled (the recorded commit is unchanged): " + error)
+                    case Right(rec) =>
+                        val entry = codegenScriptEntry(scripts, name, kind, rec.instruction, scripts.modelNow)
+                        ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(entry.toString)
+                }
+        }
     }
 
     private[api] def capabilityDenied(e: Exception): ResponseEntity[String] =

@@ -37,6 +37,20 @@ object ScriptRef {
         if (tap == null) null else ScriptRef(tap.name, tap.scriptStorage, tap.scriptPath, tap.scriptRepoPath, tap.scriptCommitSha)
 }
 
+/** Which family a repository-backed script belongs to: decides its path and
+  * commit message in the code repository. */
+sealed trait ScriptFamily
+
+object ScriptFamily {
+
+    /** A tap script: `<prefix><name>.py`. */
+    case class Tap(name: String) extends ScriptFamily
+
+    /** A pipeline CodeGen script: `<prefix>pipelines/<pipeline>/<file>.py`.
+      * kind: "dataQuality" | "transformation" (the CodeGen kind). */
+    case class Pipeline(pipeline: String, kind: String) extends ScriptFamily
+}
+
 /** Storage backend for Python scripts (tap scripts, pipeline CodeGen
   * scripts). MinIO is the built-in default; the github backend stores
   * scripts in the tenant's configured code repository. */
@@ -57,6 +71,11 @@ trait CodeStore {
 
     /** Whether the script exists in the backend. */
     def scriptExists(ref: ScriptRef): Boolean
+
+    /** Branch head of the script's file: (content, head commit sha), bypassing
+      * the pin. None for a backend with no branch (built-in store) or a file
+      * missing at head. */
+    def pullLatest(ref: ScriptRef): Option[(String, String)] = None
 }
 
 /** Tap-typed adapter over a [[CodeStore]] (see plans/tap-github-storage.md).
@@ -149,8 +168,10 @@ object MinioCodeStore extends TapCodeStore {
 
 /** Code-repository backend. Reads are pinned to the recorded commit sha and
   * served from an immutable local cache; writes are commits on the
-  * configured branch. Requires an enabled CodeRepoConfig. */
-object GithubScriptStore extends CodeStore {
+  * configured branch. Requires an enabled CodeRepoConfig. `familyOf` maps a
+  * script's logical name (tap name, or CodeGen kind) to its family, which
+  * decides the repository path and the commit message. */
+class GithubScriptStore(familyOf: String => ScriptFamily) extends CodeStore {
     val storage = "github"
 
     private def config: CodeRepoConfig =
@@ -191,13 +212,14 @@ object GithubScriptStore extends CodeStore {
 
     override def storeScript(name: String, script: String, prior: ScriptRef, actor: String): StoredScript = {
         val cfg = config
+        val family = familyOf(name)
         val path =
             if (prior != null && prior.storage == "github" && prior.scriptRepoPath != null && prior.scriptRepoPath.nonEmpty)
                 prior.scriptRepoPath
-            else GithubCodeStore.scriptRepoPath(name, cfg)
+            else GithubCodeStore.scriptRepoPath(family, cfg)
         val action = if (prior != null && prior.storage == "github") "update" else "create"
         val baseSha = if (prior != null && prior.storage == "github") prior.scriptCommitSha else null
-        val commitSha = GithubClient.putFile(cfg, path, script, GithubCodeStore.commitMessage(cfg, name, action, actor), baseSha)
+        val commitSha = GithubClient.putFile(cfg, path, script, GithubCodeStore.commitMessage(cfg, family, action, actor), baseSha)
         TapScriptCache.put(cfg.repo, commitSha, path, script)
         StoredScript(storage, scriptRepoPath = path, scriptCommitSha = commitSha)
     }
@@ -205,7 +227,7 @@ object GithubScriptStore extends CodeStore {
     override def deleteScript(ref: ScriptRef): Unit = {
         if (ref != null && ref.scriptRepoPath != null && ref.scriptRepoPath.nonEmpty) {
             val cfg = config
-            GithubClient.deleteFile(cfg, ref.scriptRepoPath, GithubCodeStore.commitMessage(cfg, ref.name, "delete", null))
+            GithubClient.deleteFile(cfg, ref.scriptRepoPath, GithubCodeStore.commitMessage(cfg, familyOf(ref.name), "delete", null))
         }
     }
 
@@ -218,45 +240,92 @@ object GithubScriptStore extends CodeStore {
             GithubClient.getFile(cfg, ref.scriptRepoPath, gitRef).isDefined
         }
     }
+
+    /** Branch-head read for the drift-pull flow: returns (content, headSha),
+      * bypassing the pin; the head version is cached under its sha. */
+    override def pullLatest(ref: ScriptRef): Option[(String, String)] = {
+        if (ref == null || ref.scriptRepoPath == null || ref.scriptRepoPath.isEmpty) return None
+        val cfg = config
+        val headSha = GithubClient.branchHeadSha(cfg)
+        GithubClient.getFile(cfg, ref.scriptRepoPath, headSha).map { file =>
+            TapScriptCache.put(cfg.repo, headSha, ref.scriptRepoPath, file.content)
+            (file.content, headSha)
+        }
+    }
 }
 
-/** Tap adapter over [[GithubScriptStore]], plus the tap-only helpers
-  * (repo path, commit message, drift pull). */
+/** The tap scripts' repository store. */
+object GithubScriptStore extends GithubScriptStore(name => ScriptFamily.Tap(name))
+
+/** Tap adapter over [[GithubScriptStore]], plus the repository helpers
+  * (repo path, commit message, drift pull) and the factory for a pipeline's
+  * repository-backed CodeGen script store. */
 object GithubCodeStore extends TapCodeStore {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     protected val underlying: CodeStore = GithubScriptStore
 
-    private def config: CodeRepoConfig =
-        CodeRepoConfigIO.readEnabled().getOrElse(throw new DatrisException(
-            "This tap stores its script in a code repository, but no enabled repository is configured. " +
-                "Re-enable it under Configuration > Code Repository, or move the tap back to built-in storage."
-        ))
+    /** The default commit template a CodeRepoConfig carries; for pipeline
+      * scripts it counts as "no template" (see [[commitMessage]]). */
+    val TapDefaultTemplate = "tap({name}): {action} via Datris"
+    val PipelineDefaultTemplate = "pipeline({name}): {action} via Datris"
 
-    def scriptRepoPath(tapName: String, cfg: CodeRepoConfig): String = {
+    private def normalizedPrefix(cfg: CodeRepoConfig): String = {
         val prefix = Option(cfg.pathPrefix).getOrElse("")
-        val normalized = if (prefix.isEmpty || prefix.endsWith("/")) prefix else prefix + "/"
-        normalized + tapName + ".py"
+        if (prefix.isEmpty || prefix.endsWith("/")) prefix else prefix + "/"
+    }
+
+    def scriptRepoPath(tapName: String, cfg: CodeRepoConfig): String =
+        normalizedPrefix(cfg) + tapName + ".py"
+
+    /** `<prefix><tap>.py` for a tap; `<prefix>pipelines/<pipeline>/data-quality.py`
+      * or `.../transformation.py` for a pipeline CodeGen script. */
+    def scriptRepoPath(family: ScriptFamily, cfg: CodeRepoConfig): String = family match {
+        case ScriptFamily.Tap(name) => scriptRepoPath(name, cfg)
+        case ScriptFamily.Pipeline(pipeline, kind) =>
+            normalizedPrefix(cfg) + "pipelines/" + pipeline + "/" + pipelineFileName(kind)
+    }
+
+    /** File name of a pipeline CodeGen script in the repository. */
+    def pipelineFileName(kind: String): String = kind match {
+        case "dataQuality" => "data-quality.py"
+        case "transformation" => "transformation.py"
+        case other => throw new DatrisException("Unknown CodeGen script kind for repository storage: " + other)
     }
 
     def commitMessage(cfg: CodeRepoConfig, tapName: String, action: String, actor: String): String = {
-        val template = Option(cfg.commitMessageTemplate).filter(_.nonEmpty).getOrElse("tap({name}): {action} via Datris")
+        val template = Option(cfg.commitMessageTemplate).filter(_.nonEmpty).getOrElse(TapDefaultTemplate)
+        render(template, tapName, action, actor)
+    }
+
+    /** Tap: as the String overload. Pipeline: `{name}` is `<pipeline>/<kind>`;
+      * a template that is null, empty or the stored tap default renders as
+      * `pipeline({name}): {action} via Datris`; any other template is applied
+      * as written. */
+    def commitMessage(cfg: CodeRepoConfig, family: ScriptFamily, action: String, actor: String): String = family match {
+        case ScriptFamily.Tap(name) => commitMessage(cfg, name, action, actor)
+        case ScriptFamily.Pipeline(pipeline, kind) =>
+            val template = Option(cfg.commitMessageTemplate).filter(t => t.nonEmpty && t != TapDefaultTemplate).getOrElse(PipelineDefaultTemplate)
+            render(template, pipeline + "/" + kind, action, actor)
+    }
+
+    private def render(template: String, name: String, action: String, actor: String): String =
         template
-            .replace("{name}", tapName)
+            .replace("{name}", name)
             .replace("{action}", action)
             .replace("{user}", if (actor != null && actor.nonEmpty) actor else "datris")
+
+    /** Repository-backed store for one pipeline's CodeGen scripts; the
+      * script's logical name is its CodeGen kind. */
+    def forPipeline(pipeline: String): CodeStore = {
+        if (pipeline == null || pipeline.trim.isEmpty || pipeline.contains("/") || pipeline.contains(".."))
+            throw new DatrisException("Invalid pipeline name for script storage: " + pipeline)
+        new GithubScriptStore(kind => ScriptFamily.Pipeline(pipeline, kind))
     }
 
     /** Branch-head read for the drift-pull flow: returns (content, headSha),
       * bypassing the pin. */
-    def pullLatest(tap: TapConfig): Option[(String, String)] = {
-        val cfg = config
-        val headSha = GithubClient.branchHeadSha(cfg)
-        GithubClient.getFile(cfg, tap.scriptRepoPath, headSha).map { file =>
-            TapScriptCache.put(cfg.repo, headSha, tap.scriptRepoPath, file.content)
-            (file.content, headSha)
-        }
-    }
+    def pullLatest(tap: TapConfig): Option[(String, String)] = underlying.pullLatest(ScriptRef.of(tap))
 }
 
 /** Immutable on-disk cache of repo scripts, keyed by commit sha — safe to keep
