@@ -75,7 +75,8 @@ describe('LineageService — CodeGen scripts', () => {
       scripts: [
         {
           kind: 'transformation', instruction: 'x', script: 'print(1)', status: 'ready', origin: 'save', storage: 'github',
-          repoPath: 'taps/pipelines/orders/transformation.py', commitSha: 'a'.repeat(40), drift: true, headSha: 'b'.repeat(40)
+          repoPath: 'taps/pipelines/orders/transformation.py', commitSha: 'a'.repeat(40), drift: true, headSha: 'b'.repeat(40),
+          conflict: true, conflictReason: 'The CodeGen transformation script for pipeline orders was not replaced: pull, or regenerate?overwrite=true.'
         }
       ]
     });
@@ -84,6 +85,24 @@ describe('LineageService — CodeGen scripts', () => {
     expect(tx.repoPath).toBe('taps/pipelines/orders/transformation.py');
     expect(tx.drift).toBeTrue();
     expect(tx.headSha).toBe('b'.repeat(40));
+    expect(tx.conflict).toBeTrue();
+    expect(tx.conflictReason).toContain('overwrite=true');
+  });
+
+  it('columns passes the transformation script repository and conflict fields through', () => {
+    let body: any;
+    service.columns('orders').subscribe(r => (body = r));
+    http.expectOne(r => r.url === '/api/v1/lineage/columns/orders').flush({
+      pipeline: 'orders', version: 1, versionSource: 'current', sourceFields: [], destinationFields: [], destinationSchema: 'none',
+      transformation: {
+        kind: 'ai', instruction: 'x', scriptStatus: 'ready', scriptStorage: 'github', scriptCommitSha: 'a'.repeat(40),
+        scriptConflict: 'not replaced: pull, or regenerate?overwrite=true'
+      },
+      edges: [], unresolved: [], inferred: { available: false }
+    });
+    expect(body.transformation.scriptStorage).toBe('github');
+    expect(body.transformation.scriptCommitSha).toBe('a'.repeat(40));
+    expect(body.transformation.scriptConflict).toContain('overwrite=true');
   });
 
   it('pullCodegenScript POSTs to /api/v1/pipelines/{name}/codegen-scripts/{kind}/pull', () => {

@@ -865,6 +865,32 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(!PipelineScripts.statusLine(after).contains("overwrite"))
     }
 
+    test("changing the instruction back clears the conflict marker") {
+        // At save.
+        val s = withRepo()
+        val base = csvCfg()
+        s.onSave(null, base, "todd")
+        val before = records.read("orders", Dq).get
+        repo.hubEdit(before.scriptRepoPath, "print('hand edit')")
+        val changed = csvCfg(dqRule = "age must be between 0 and 120")
+        s.onSave(base, changed, "todd")
+        assert(records.read("orders", Dq).get.conflictReason != null)
+        val callsBefore = calls.size
+        val out = s.onSave(changed, base, "todd").find(_.kind == Dq).get
+        assert(out.warning == null && out.status == "ready", s"$out")
+        assert(records.read("orders", Dq).get == before, "marker cleared, record otherwise as recorded")
+        assert(calls.size == callsBefore, "no model call")
+
+        // At run (the first thing to see the reverted config, e.g. a version restore).
+        s.onSave(base, changed, "todd")
+        assert(records.read("orders", Dq).get.conflictReason != null)
+        val gen = new RunGen
+        val r = s.forRun(base, Dq, header, gen.fn)
+        assert(r.action == "stored" && r.reason == null && gen.count == 0, s"$r")
+        assert(!PipelineScripts.statusLine(r).contains("overwrite"))
+        assert(records.read("orders", Dq).get == before)
+    }
+
     test("overwrite clears the conflict marker") {
         val s = withRepo()
         val base = csvCfg()

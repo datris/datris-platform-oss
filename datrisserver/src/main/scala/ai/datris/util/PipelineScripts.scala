@@ -76,7 +76,7 @@ class PipelineScripts(
 
     private def saveKind(config: PipelineConfig, kind: String, instruction: String, actor: String): Outcome = {
         val fp = fingerprint(instruction, schemaSignature(config))
-        val existing = records.read(config.name, kind)
+        val existing = clearStaleConflict(records.read(config.name, kind), fp)
         existing match {
             case Some(r) if usable(r, fp, kind) =>
                 Outcome(kind, Ready, generatedAt = r.generatedAt, model = r.model)
@@ -257,7 +257,7 @@ class PipelineScripts(
     def forRun(config: PipelineConfig, kind: String, runHeader: List[String], generate: () => String): Resolved = {
         val instruction = instructionOf(config, kind).getOrElse(throw new DatrisException("Pipeline " + config.name + " has no AI " + kind + " instruction"))
         val fp = fingerprint(instruction, schemaSignature(config))
-        val existing = records.read(config.name, kind)
+        val existing = clearStaleConflict(records.read(config.name, kind), fp)
         val header = Option(runHeader).getOrElse(Nil)
 
         val reason: String = existing match {
@@ -265,7 +265,13 @@ class PipelineScripts(
             case Some(r) if inConflict(r, fp) =>
                 readStoredForRun(r) match {
                     case Some(text) => return Resolved(Stored, text, r.conflictReason, r)
-                    case None => "the stored script could not be read"
+                    // The recorded commit has no such file (not an unreachable
+                    // repository, which throws above): nothing to run, so this run
+                    // generates, and so does every run until the conflict is
+                    // resolved with pull or regenerate?overwrite=true.
+                    case None =>
+                        "the recorded commit " + Option(r.scriptCommitSha).map(_.take(7)).orNull +
+                            " has no script file and the repository file changed since; pull, or regenerate with overwrite=true, to stop generating on every run"
                 }
             case Some(r) if r.status == Pending => "the script is pending" + Option(r.pendingReason).map(": " + _).getOrElse("")
             case Some(r) if r.status != Ready || r.fingerprint == null => "the stored script predates stored CodeGen scripts"
@@ -523,6 +529,19 @@ class PipelineScripts(
       * commit is still what runs execute. */
     private def inConflict(r: CodeGenScript, fp: String): Boolean =
         r.conflictFingerprint != null && r.conflictFingerprint == fp && isRepoBacked(r) && r.scriptCommitSha != null
+
+    /** The instruction and schema are back to the recorded script's: a
+      * conflict marked for another fingerprint no longer applies, so clear it
+      * (best effort) and return the cleared record. */
+    private def clearStaleConflict(existing: Option[CodeGenScript], fp: String): Option[CodeGenScript] =
+        existing.map { r =>
+            if (r.conflictFingerprint != null && r.conflictFingerprint != fp && r.fingerprint == fp) {
+                val cleared = r.copy(conflictFingerprint = null, conflictReason = null)
+                try records.write(cleared)
+                catch { case e: Exception => logger.warn("Could not clear the CodeGen script conflict for " + r.pipeline + "/" + r.kind + ": " + e.getMessage) }
+                cleared
+            } else r
+        }
 
     /** Record the conflict on the existing record (pin, script and status
       * unchanged). Best effort: a failed write is logged. */
