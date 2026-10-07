@@ -843,4 +843,15 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(r.detail.contains("datris-codegen-runner") || r.remediation.contains("datris-codegen-runner"), r)
         assert(r.remediation.nonEmpty)
     }
+
+    test("codegen.isolation: unreachable runner is a skip at startup, an error on demand") {
+        val p = new FakeProbes(codegenEnabled = true, codegenHealth = Left("Connection refused: http://datris-codegen-runner:8090"))
+        assert(new CodeGenIsolationCheck(p).run().status == "error")
+        val boot = new CodeGenIsolationCheck(p, startup = true).run()
+        assert(boot.status == "skip", boot)
+        assert(boot.detail.contains("not reachable yet"), boot.detail)
+        // Anything other than "not up yet" (old image, token, disk) stays an error at boot.
+        val old = new FakeProbes(codegenEnabled = true, codegenHealth = Left("CodeGen runner ... does not support /execute-file (404)"))
+        assert(new CodeGenIsolationCheck(old, startup = true).run().status == "error")
+    }
 }

@@ -588,7 +588,7 @@ object DoctorService {
       * datris-codegen-runner sidecar and it answers; warn: in-process
       * (USE_CODEGEN_RUNNER off); error: the runner is required but cannot run
       * a script. The runner is not probed when it is not enabled. */
-    class CodeGenIsolationCheck(probes: Probes) extends Check {
+    class CodeGenIsolationCheck(probes: Probes, startup: Boolean = false) extends Check {
         val id = "codegen.isolation"
         val startupSafe = true
         def run(): CheckResult =
@@ -602,6 +602,10 @@ object DoctorService {
             else
                 probes.codegenRunnerHealth() match {
                     case Right(_) => ok("generated scripts run in datris-codegen-runner")
+                    // At boot the sidecar may simply not be listening yet: a skip, not an error.
+                    // On demand the same failure is an error.
+                    case Left(why) if startup && CodeGenIsolationCheck.notUpYet(why) =>
+                        skip("datris-codegen-runner not reachable yet (" + why + ")")
                     case Left(why) =>
                         error(
                             "USE_CODEGEN_RUNNER is on but datris-codegen-runner cannot run a script: " + why +
@@ -612,6 +616,11 @@ object DoctorService {
                                 "codegen-scratch volume's disk is full."
                         )
                 }
+    }
+
+    object CodeGenIsolationCheck {
+        private[util] def notUpYet(why: String): Boolean =
+            why != null && (why.contains("Connection refused") || why.contains("Unknown host"))
     }
 
     /** Compares the server's version with whatever versions the calling
@@ -766,7 +775,7 @@ object DoctorService {
             new StagingAreaCheck(probes, StagingArea.payloadBudgetMB),
             new StagingOrphansCheck(probes),
             new TapSecretScopeCheck(probes),
-            new CodeGenIsolationCheck(probes),
+            new CodeGenIsolationCheck(probes, startup),
             new AiSampleValuesCheck(probes),
             new GovernanceControlsCheck(probes),
             new VersionSkewCheck(serverVersion, clients),

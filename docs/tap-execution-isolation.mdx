@@ -192,6 +192,9 @@ its output at once, in addition to the server's own staged copy. Each run's dire
 when the run ends (success, script failure, timeout or a dropped connection), and anything left
 by a killed runner is removed when it starts, so the volume holds nothing between runs. When the
 disk fills, the rule or transformation fails with an error naming the `codegen-scratch` volume.
+The script's printed output (for an AI rule, its failure list) comes back in one result message
+capped at 64 MB; a rule that prints a failure for nearly every row of a very large file fails with
+"result line longer than ..." rather than returning the list.
 
 **When the runner is absent.**
 

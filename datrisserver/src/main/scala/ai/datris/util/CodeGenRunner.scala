@@ -232,6 +232,11 @@ object CodeGenRunner {
                         // before reading a large body and closes, so the upload dies with a broken pipe
                         // and the status is lost. Re-ask with a tiny probe to name the real cause.
                         val cause = describe(e)
+                        if (e.isInstanceOf[java.net.SocketTimeoutException])
+                            throw transportFailure(
+                                settings,
+                                "did not answer within " + (timeoutSec + 30) + " s (script timeout " + timeoutSec + " s plus 30 s): " + cause
+                            )
                         val diagnosis = if (quiet || e.isInstanceOf[java.net.ConnectException]) None else health(settings).left.toOption
                         throw diagnosis match {
                             case Some(msg) if msg.contains("CodeGen runner") => new DatrisException(msg)
@@ -274,6 +279,9 @@ object CodeGenRunner {
                 val in = new java.io.BufferedInputStream(entity.getContent, Chunk)
                 try {
                     val obj: JsonObject =
+                        // The result line carries the script's stdout (a DQ rule's failure list) and is
+                        // held in memory, so it is capped at 64 MB: a rule printing a failure per row
+                        // of a huge file fails with "result line longer than ..." instead of a list.
                         try JsonParser.parseString(new String(readLine(in, 64 * 1024 * 1024), StandardCharsets.UTF_8)).getAsJsonObject
                         catch { case e: Exception => throw transportFailure(settings, "sent an unreadable result: " + describe(e)) }
                     def str(k: String) = if (obj.has(k) && !obj.get(k).isJsonNull) obj.get(k).getAsString else ""

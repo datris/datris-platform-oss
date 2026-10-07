@@ -90,6 +90,7 @@ secret = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|_KEY$|VAULT|AWS_|MO
 out["_env"] = sorted(os.environ)
 out["_secret_env"] = sorted(k for k in os.environ if secret.search(k))
 out["_info datris:8080"] = connect("datris", 8080)
+out["_info /tap-runner-token/token"] = can_read("/tap-runner-token/token")
 print(json.dumps(out))
 '''
 
@@ -172,6 +173,8 @@ def main():
         failed.append("secret-bearing variables: " + ", ".join(secrets))
     print("  %-36s %s  (reported only; see docs/tap-execution-isolation.mdx)" % (
         "datris:8080 (Datris API)", probes.get("_info datris:8080")))
+    print("  %-36s %s  (reported only: the runner's own token, grants nothing on the Datris API)" % (
+        "read /tap-runner-token/token", probes.get("_info /tap-runner-token/token")))
     if failed:
         print("FAIL: reachable from the runner: " + "; ".join(failed))
         return 1
