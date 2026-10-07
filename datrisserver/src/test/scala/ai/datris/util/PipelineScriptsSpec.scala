@@ -669,14 +669,18 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(o.warning != null, s"a conflict is a warning: $o")
         assert(o.warning.contains("pull"), o.warning)
         assert(o.warning.contains("overwrite=true"), o.warning)
-        assert(records.read("orders", Dq).get == before, "the record is left as it was")
+        // Story 2 E2E fix: the record also carries the conflict marker; pin,
+        // script, status and fingerprint are as they were.
+        val marked = records.read("orders", Dq).get
+        assert(marked.copy(conflictFingerprint = null, conflictReason = null) == before, "the record is left as it was")
+        assert(marked.conflictFingerprint != null && marked.conflictReason == o.warning, s"$marked")
         assert(repo.writes.size == writesBefore, "no commit landed")
         assert(repo.head(before.scriptRepoPath).contains("print('hand edit')"), "the hand edit is not overwritten")
 
         // A forced regenerate without overwrite is rejected the same way.
         val forced = s.regenerate(changed, Dq, "todd")
         assert(forced.isLeft && forced.left.get.contains("overwrite=true"), s"$forced")
-        assert(records.read("orders", Dq).get == before)
+        assert(records.read("orders", Dq).get.copy(conflictFingerprint = null, conflictReason = null) == before)
         assert(repo.head(before.scriptRepoPath).contains("print('hand edit')"))
     }
 
@@ -802,23 +806,76 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(Option(repo.writes.last.actor).forall(_ == "datris"), "a run commits as datris")
 
         // A run whose commit is rejected because the file was hand-edited:
-        // the generated script runs, the reason names pull / overwrite, the
-        // record and the hand edit are untouched.
+        // the recorded commit runs (one model call, then none), the reason
+        // names pull / overwrite, the pin and the hand edit are untouched.
         repo.hubEdit(stored.scriptRepoPath, "print('hand edit')")
         val changed = csvCfg(dqRule = "age must be between 0 and 120")
         val writesBefore = repo.writes.size
         val conflicted =
             try s.forRun(changed, Dq, header, gen.fn)
             catch { case e: Throwable => fail("a rejected commit must not fail the run: " + e) }
-        assert(gen.count == 3 && conflicted.action != "stored", s"$conflicted")
-        val reason = conflicted.record.pendingReason
+        assert(gen.count == 3 && conflicted.action == "stored" && conflicted.script == "print('run 2')", s"$conflicted")
+        val reason = conflicted.reason
         assert(reason != null && reason.contains("pull") && reason.contains("overwrite=true"), reason)
         assert(!reason.contains("this tap"), s"pipeline wording, not the tap message: $reason")
         val line = PipelineScripts.statusLine(conflicted)
         assert(line.contains("pull") && !line.contains("this tap"), line)
-        assert(records.read("orders", Dq).get == stored, "the record is unchanged")
+        assert(records.read("orders", Dq).get.copy(conflictFingerprint = null, conflictReason = null) == stored, "the pin is unchanged")
+        assert(records.read("orders", Dq).get.conflictReason == reason)
+        val again = s.forRun(changed, Dq, header, gen.fn)
+        assert(again.action == "stored" && gen.count == 3, "no model call while the conflict is unresolved")
         assert(repo.writes.size == writesBefore)
         assert(repo.head(stored.scriptRepoPath).contains("print('hand edit')"))
+    }
+
+    test("an unresolved save-time conflict runs the recorded commit with no model call until pull clears it") {
+        val s = withRepo()
+        val base = csvCfg()
+        s.onSave(null, base, "todd")
+        val before = records.read("orders", Dq).get
+        val editSha = repo.hubEdit(before.scriptRepoPath, "print('hand edit')")
+        val changed = csvCfg(dqRule = "age must be between 0 and 120")
+        val o = s.onSave(base, changed, "todd").find(_.kind == Dq).get
+        assert(o.warning.contains("Runs keep using the recorded commit"), o.warning)
+        assert(records.read("orders", Dq).get.conflictReason == o.warning)
+        val callsAfterSave = calls.size
+
+        val gen = new RunGen
+        Seq(1, 2).foreach { i =>
+            val r = s.forRun(changed, Dq, header, gen.fn)
+            assert(r.action == "stored", s"run $i: $r")
+            assert(r.script == "print('generated 1')", s"run $i executes the recorded commit: $r")
+            assert(r.record.scriptCommitSha == before.scriptCommitSha)
+            val line = PipelineScripts.statusLine(r)
+            assert(line.contains(before.scriptCommitSha.take(7)) && line.contains("pull") && line.contains("overwrite=true"), line)
+        }
+        assert(gen.count == 0 && calls.size == callsAfterSave, "no model call while in conflict")
+
+        // Re-saving the conflicted config makes no model call and repeats the warning.
+        val again = s.onSave(changed, changed, "todd").find(_.kind == Dq).get
+        assert(again.warning == o.warning && calls.size == callsAfterSave)
+
+        // Pull clears the marker and the runs move to the hand edit.
+        assert(s.pull("orders", Dq, "todd", changed).isRight)
+        val pulled = records.read("orders", Dq).get
+        assert(pulled.conflictFingerprint == null && pulled.conflictReason == null, s"$pulled")
+        assert(pulled.scriptCommitSha == editSha)
+        val after = s.forRun(changed, Dq, header, gen.fn)
+        assert(after.action == "stored" && after.reason == null && after.script == "print('hand edit')" && gen.count == 0)
+        assert(!PipelineScripts.statusLine(after).contains("overwrite"))
+    }
+
+    test("overwrite clears the conflict marker") {
+        val s = withRepo()
+        val base = csvCfg()
+        s.onSave(null, base, "todd")
+        repo.hubEdit(records.read("orders", Dq).get.scriptRepoPath, "print('hand edit')")
+        val changed = csvCfg(dqRule = "age must be between 0 and 120")
+        s.onSave(base, changed, "todd")
+        assert(records.read("orders", Dq).get.conflictReason != null)
+        assert(s.regenerate(changed, Dq, "todd", overwrite = true).isRight)
+        val rec = records.read("orders", Dq).get
+        assert(rec.conflictFingerprint == null && rec.conflictReason == null && rec.scriptCommitSha == repo.headSha, s"$rec")
     }
 
     test("an unreadable recorded commit fails the run with no model call") {

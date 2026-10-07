@@ -80,6 +80,9 @@ class PipelineScripts(
         existing match {
             case Some(r) if usable(r, fp, kind) =>
                 Outcome(kind, Ready, generatedAt = r.generatedAt, model = r.model)
+            case Some(r) if inConflict(r, fp) =>
+                // Still the conflicted instruction/schema: nothing new to try.
+                Outcome(kind, Option(r.status).getOrElse(Ready), r.pendingReason, r.generatedAt, r.model, r.conflictReason)
             case _ =>
                 schemaFields(config) match {
                     case None =>
@@ -99,6 +102,7 @@ class PipelineScripts(
                                 // file as they are, and say how to resolve it.
                                 val warning = conflictWarning(config.name, kind, existing.orNull)
                                 logger.warn("CodeGen script for " + config.name + "/" + kind + " not committed: " + warning)
+                                existing.foreach(markConflict(_, fp, warning))
                                 val r = existing.orNull
                                 Outcome(
                                     kind,
@@ -258,6 +262,11 @@ class PipelineScripts(
 
         val reason: String = existing match {
             case None => "no stored script for this pipeline yet"
+            case Some(r) if inConflict(r, fp) =>
+                readStoredForRun(r) match {
+                    case Some(text) => return Resolved(Stored, text, r.conflictReason, r)
+                    case None => "the stored script could not be read"
+                }
             case Some(r) if r.status == Pending => "the script is pending" + Option(r.pendingReason).map(": " + _).getOrElse("")
             case Some(r) if r.status != Ready || r.fingerprint == null => "the stored script predates stored CodeGen scripts"
             case Some(r) if r.fingerprint != fp => "the instruction or source schema changed since the script was generated"
@@ -290,10 +299,33 @@ class PipelineScripts(
         val rec =
             try storeRecord(config, kind, instruction, fp, script, header, "run", existing, null)
             catch {
+                case _: CodeRepoConflictException if existing.exists(r => isRepoBacked(r) && r.scriptCommitSha != null) =>
+                    // The file was edited in the repository since the recorded
+                    // commit: mark the conflict and run the recorded commit, so
+                    // this and later runs execute what the warning says and make
+                    // no further model call until it is resolved.
+                    val warning = conflictWarning(config.name, kind, existing.orNull)
+                    logger.warn("CodeGen script generated at run for " + config.name + "/" + kind + " not committed: " + warning)
+                    val marked = markConflict(existing.get, fp, warning)
+                    readStoredForRun(marked) match {
+                        case Some(text) => return Resolved(Stored, text, warning, marked)
+                        case None =>
+                            CodeGenScript(
+                                config.name,
+                                kind,
+                                instruction,
+                                null,
+                                java.time.Instant.now().toString,
+                                fingerprint = fp,
+                                model = currentModel(),
+                                status = Pending,
+                                pendingReason = warning,
+                                origin = "run",
+                                contractVersion = contractVersion(kind)
+                            )
+                    }
                 case e: Throwable if scala.util.control.NonFatal(e) =>
                     val why = e match {
-                        // The file was edited in the repository since the recorded
-                        // commit: say how to resolve it (pull or overwrite).
                         case _: CodeRepoConflictException => conflictWarning(config.name, kind, existing.orNull)
                         case _ => "the script could not be stored: " + messageOf(e)
                     }
@@ -359,7 +391,10 @@ class PipelineScripts(
                     Right(rec)
             }
         } catch {
-            case _: CodeRepoConflictException => Left(conflictWarning(config.name, kind, existing.orNull))
+            case _: CodeRepoConflictException =>
+                val warning = conflictWarning(config.name, kind, existing.orNull)
+                existing.foreach(markConflict(_, fp, warning))
+                Left(warning)
             case e: Throwable if scala.util.control.NonFatal(e) => Left(messageOf(e))
         }
     }
@@ -413,7 +448,9 @@ class PipelineScripts(
                                 generatedAt = java.time.Instant.now().toString,
                                 status = Ready,
                                 pendingReason = null,
-                                origin = "repository"
+                                origin = "repository",
+                                conflictFingerprint = null,
+                                conflictReason = null
                             )
                             val rec = current match {
                                 case Some(fp) => base.copy(fingerprint = fp, contractVersion = contractVersion(kind), generatedAgainst = null)
@@ -481,6 +518,20 @@ class PipelineScripts(
 
     private def usable(r: CodeGenScript, fp: String, kind: String): Boolean =
         r.status == Ready && r.fingerprint == fp && r.contractVersion == contractVersion(kind)
+
+    /** An unresolved repository conflict for this fingerprint: the recorded
+      * commit is still what runs execute. */
+    private def inConflict(r: CodeGenScript, fp: String): Boolean =
+        r.conflictFingerprint != null && r.conflictFingerprint == fp && isRepoBacked(r) && r.scriptCommitSha != null
+
+    /** Record the conflict on the existing record (pin, script and status
+      * unchanged). Best effort: a failed write is logged. */
+    private def markConflict(r: CodeGenScript, fp: String, warning: String): CodeGenScript = {
+        val marked = r.copy(conflictFingerprint = fp, conflictReason = warning)
+        try records.write(marked)
+        catch { case e: Exception => logger.warn("Could not record the CodeGen script conflict for " + r.pipeline + "/" + r.kind + ": " + e.getMessage) }
+        marked
+    }
 
     /** Backend for a write: an explicit request, else the existing record's
       * backend, else the install default. */
@@ -594,7 +645,8 @@ object PipelineScripts
         val path = Option(existing).flatMap(r => Option(r.scriptRepoPath)).getOrElse("the script file")
         val sha = Option(existing).flatMap(r => Option(r.scriptCommitSha)).map(" " + _.take(7)).getOrElse("")
         "The CodeGen " + kind + " script for pipeline " + pipeline + " was not replaced: '" + path + "' " + ConflictMarker + sha +
-            ", and a hand edit is never overwritten. Runs keep using the recorded commit. Adopt the repository version with POST " +
+            ", and a hand edit is never overwritten. Runs keep using the recorded commit, without the new instruction or schema " +
+            "and with no model call, until you resolve it: adopt the repository version with POST " +
             pullPath(pipeline, kind) + " (pull), or replace it with POST " + regeneratePath(pipeline, kind) + "?overwrite=true."
     }
 
@@ -653,6 +705,9 @@ object PipelineScripts
 
     /** The run's status line. */
     def statusLine(r: Resolved): String = r.action match {
+        case Stored if r.reason != null =>
+            "Running stored CodeGen script generated at " + r.record.generatedAt + commitNote(r.record) +
+                "; it was not replaced because the repository file changed since that commit: pull, or regenerate with overwrite=true, to apply the current instruction"
         case Stored => "Running stored CodeGen script generated at " + r.record.generatedAt + commitNote(r.record)
         case GenerateOnce => "Generated CodeGen script for this run only (reason: " + r.reason + ")"
         case _ if r.record != null && r.record.status == Pending =>

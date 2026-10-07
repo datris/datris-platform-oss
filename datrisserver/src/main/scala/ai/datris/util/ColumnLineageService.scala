@@ -118,6 +118,7 @@ object ColumnLineageService {
                         if (r.pendingReason != null) o.addProperty("scriptPendingReason", r.pendingReason)
                         if (r.storage != null) o.addProperty("scriptStorage", r.storage)
                         if (r.scriptCommitSha != null) o.addProperty("scriptCommitSha", r.scriptCommitSha)
+                        if (r.conflictReason != null) o.addProperty("scriptConflict", r.conflictReason)
                     }
                 catch { case e: Exception => logger.warn("CodeGen script record unreadable for " + c.name + ": " + e.getMessage) }
         } else if (t != null && t.rowFunctions != null && !t.rowFunctions.isEmpty) {

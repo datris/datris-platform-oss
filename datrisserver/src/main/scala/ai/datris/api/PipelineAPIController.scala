@@ -1059,6 +1059,8 @@ object PipelineAPIController {
                 e.addProperty("storage", r.storage)
                 e.addProperty("repoPath", r.scriptRepoPath)
                 e.addProperty("commitSha", r.scriptCommitSha)
+                e.addProperty("conflict", r.conflictReason != null)
+                if (r.conflictReason != null) e.addProperty("conflictReason", r.conflictReason)
                 scripts.drift(pipeline, kind) match {
                     case Some(head) =>
                         e.addProperty("drift", true)

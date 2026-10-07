@@ -40,7 +40,14 @@ case class InferredColumnLineage(
   * `fingerprint` hashes the instruction and the source schema signature;
   * `generatedAgainst` is the delimited header the script was written for;
   * `status` is `ready` or `pending` (no script yet, `pendingReason` says
-  * why); `contractVersion` is the evaluator's script contract at generation. */
+  * why); `contractVersion` is the evaluator's script contract at generation.
+  *
+  * `conflictFingerprint` / `conflictReason` mark an unresolved repository
+  * conflict: a new script for that fingerprint (instruction + schema) was not
+  * committed because the file was edited in the repository since
+  * `scriptCommitSha`. While the pipeline still has that fingerprint, runs
+  * execute the recorded commit with no model call. Cleared by pull, by
+  * regenerate with overwrite, or by any successful store. */
 case class CodeGenScript(
     pipeline: String,
     kind: String,
@@ -57,5 +64,7 @@ case class CodeGenScript(
     status: String = null,
     pendingReason: String = null,
     origin: String = null,
-    contractVersion: Int = 0
+    contractVersion: Int = 0,
+    conflictFingerprint: String = null,
+    conflictReason: String = null
 )
