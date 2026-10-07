@@ -48,8 +48,14 @@ class DataQuality(jobContext: JobContext) {
         }
 
         // AI rule (CodeGen)?
-        if (config.dataQuality.aiRule != null)
-            runAIRule(jobContext.data)
+        // A blank instruction is no rule: the save hook records no script for
+        // it, so the run skips it too (PipelineScripts.instructionOf).
+        if (config.dataQuality.aiRule != null) {
+            if (PipelineScripts.instructionOf(config, PipelineScripts.DataQuality).isDefined)
+                runAIRule(jobContext.data)
+            else
+                statusUtil.info("processing", "AI Data Quality instruction is blank; skipping the AI rule")
+        }
 
         statusUtil.info("end", "Process completed successfully")
     }

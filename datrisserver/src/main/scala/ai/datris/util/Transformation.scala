@@ -39,10 +39,16 @@ class Transformation(jobContext: JobContext) {
         }
 
         val jobContextAI = {
-            if (config.transformation.aiTransformation != null)
-                runAITransformation(jobContextRF)
-            else
+            // A blank instruction is no transformation: the save hook records
+            // no script for it, so the run skips it too.
+            if (config.transformation.aiTransformation == null)
                 jobContextRF
+            else if (PipelineScripts.instructionOf(config, PipelineScripts.Transformation).isDefined)
+                runAITransformation(jobContextRF)
+            else {
+                statusUtil.info("processing", "AI Transformation instruction is blank; skipping the AI transformation")
+                jobContextRF
+            }
         }
 
         statusUtil.info("end", "Process completed successfully")

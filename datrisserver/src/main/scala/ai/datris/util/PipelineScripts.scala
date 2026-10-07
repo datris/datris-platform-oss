@@ -157,7 +157,8 @@ class PipelineScripts(
         instruction: String,
         fp: String,
         reason: String,
-        existing: Option[CodeGenScript]
+        existing: Option[CodeGenScript],
+        origin: String = "save"
     ): CodeGenScript = {
         val rec = CodeGenScript(
             pipeline = config.name,
@@ -167,7 +168,7 @@ class PipelineScripts(
             fingerprint = fp,
             status = Pending,
             pendingReason = reason,
-            origin = "save",
+            origin = origin,
             contractVersion = contractVersion(kind)
         )
         records.write(rec)
@@ -270,9 +271,9 @@ class PipelineScripts(
                         instruction,
                         fp,
                         "Regenerate requested; this pipeline has no delimited schema to generate from, so the next run generates the script from its data",
-                        existing
-                    ).copy(origin = "regenerate")
-                    records.write(rec)
+                        existing,
+                        origin = "regenerate"
+                    )
                     Right(rec)
             }
         } catch {
