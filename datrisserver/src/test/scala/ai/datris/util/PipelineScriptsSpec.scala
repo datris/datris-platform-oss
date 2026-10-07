@@ -423,4 +423,393 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty)
         assert(scripts.readText("orders", Dq).isEmpty)
     }
+
+    // =====================================================================
+    // Story: CodeGen scripts 2 (plans/stories/codegen-script-git-storage.md).
+    // Scripts go to the code repository when one is enabled.
+    //
+    // Pinned seam (extends story 1's; story-1 four-argument construction
+    // keeps compiling and behaves as before):
+    // {{{
+    // trait CodeStore {
+    //     ...
+    //     /** Branch head of the script's file: (content, head commit sha).
+    //       * None for the built-in store (no branch). */
+    //     def pullLatest(ref: ScriptRef): Option[(String, String)] = None
+    // }
+    // class PipelineScripts(
+    //     records: CodeGenScriptRecords,
+    //     storeFor: String => CodeStore,              // pipeline => built-in store
+    //     ai: (String, String) => String,
+    //     currentModel: () => String,
+    //     repoStoreFor: String => CodeStore = null,   // pipeline => repository store (GithubCodeStore.forPipeline)
+    //     defaultStorage: () => String = () => "minio" // backend for a NEW script: "github" when
+    //                                                  // CodeRepoConfigIO.readEnabled is defined, else "minio"
+    // ) {
+    //     def regenerate(config: PipelineConfig, kind: String, actor: String,
+    //                    storage: String = null,       // "github" | "builtin"; null = the script's current backend
+    //                    overwrite: Boolean = false): Either[String, CodeGenScript]
+    //     /** Some(headSha) when the file at branch head differs from the recorded commit. */
+    //     def drift(pipeline: String, kind: String): Option[String]
+    //     /** Adopt the branch-head version: records its sha, origin "repository". Left for built-in scripts. */
+    //     def pull(pipeline: String, kind: String, actor: String): Either[String, CodeGenScript]
+    // }
+    // object PipelineScripts {
+    //     case class Outcome(kind: String, status: String, pendingReason: String = null,
+    //                        generatedAt: String = null, model: String = null,
+    //                        warning: String = null)   // set when a repository commit was rejected
+    // }
+    // }}}
+    // A repository store's `storeScript` receives the saving key's label as
+    // `actor` (null during a run, rendered "datris"), passes the recorded
+    // `prior.scriptCommitSha` as the base, and throws
+    // `CodeRepoConflictException` when the file changed in the repository
+    // since that base (as `GithubClient.putFile`). `readScript` throws the
+    // `DatrisException` `GithubScriptStore.readScript` throws when the
+    // repository is unreachable and the commit is not cached.
+    // =====================================================================
+
+    /** In-memory GitHub branch: a global commit sequence, per-path history kept. */
+    private class FakeRepo extends CodeStore {
+        case class Commit(sha: String, path: String, content: Option[String], base: String, actor: String)
+        val commits = mutable.ListBuffer[Commit]()
+
+        /** When set, every call fails as an unreachable repository / expired token would. */
+        var down: String = null
+
+        override def storage: String = "github"
+
+        def pathOf(kind: String): String =
+            "taps/pipelines/orders/" + (if (kind == "dataQuality") "data-quality.py" else "transformation.py")
+
+        def headSha: String = commits.lastOption.map(_.sha).orNull
+
+        private def contentAt(path: String, sha: String): Option[String] = {
+            val idx = commits.indexWhere(_.sha == sha)
+            if (idx < 0) None else commits.take(idx + 1).filter(_.path == path).lastOption.flatMap(_.content)
+        }
+        def head(path: String): Option[String] = commits.filter(_.path == path).lastOption.flatMap(_.content)
+
+        /** Every version of `path` ever committed (history is never rewritten). */
+        def history(path: String): List[String] = commits.filter(_.path == path).flatMap(_.content).toList
+
+        private def commit(path: String, content: Option[String], base: String, actor: String): String = {
+            val sha = "%040x".format(commits.size + 0xabc001)
+            commits += Commit(sha, path, content, base, actor)
+            sha
+        }
+
+        /** Somebody edits the file on GitHub. */
+        def hubEdit(path: String, content: String): String = commit(path, Some(content), null, "someone")
+
+        private def check(): Unit = if (down != null) throw new RuntimeException(down)
+
+        override def readScript(ref: ScriptRef): Option[String] = {
+            if (ref == null || ref.scriptRepoPath == null) return None
+            if (down != null)
+                throw new DatrisException(
+                    "Code repository is unreachable and no cached copy of '" + ref.scriptRepoPath + "' at " +
+                        Option(ref.scriptCommitSha).map(_.take(9)).orNull + " exists locally. " + down
+                )
+            if (ref.scriptCommitSha == null) head(ref.scriptRepoPath) else contentAt(ref.scriptRepoPath, ref.scriptCommitSha)
+        }
+
+        override def storeScript(name: String, script: String, prior: ScriptRef, actor: String): StoredScript = {
+            check()
+            val fromRepo = prior != null && prior.storage == "github" && prior.scriptRepoPath != null
+            val path = if (fromRepo) prior.scriptRepoPath else pathOf(name)
+            val base = if (fromRepo) prior.scriptCommitSha else null
+            if (base != null && head(path).isDefined && contentAt(path, base).isDefined && contentAt(path, base) != head(path))
+                throw new CodeRepoConflictException(
+                    "'" + path + "' changed in the repository since this tap was loaded. Pull the latest script, reapply your edits, and save again."
+                )
+            StoredScript("github", scriptRepoPath = path, scriptCommitSha = commit(path, Some(script), base, actor))
+        }
+
+        override def deleteScript(ref: ScriptRef): Unit = {
+            check()
+            if (ref != null && ref.scriptRepoPath != null && head(ref.scriptRepoPath).isDefined) commit(ref.scriptRepoPath, None, null, null)
+        }
+
+        override def scriptExists(ref: ScriptRef): Boolean = readScript(ref).isDefined
+
+        override def pullLatest(ref: ScriptRef): Option[(String, String)] = {
+            check()
+            if (ref == null || ref.scriptRepoPath == null) None else head(ref.scriptRepoPath).map(c => (c, headSha))
+        }
+
+        def writes: List[Commit] = commits.filter(c => c.actor != "someone").toList
+    }
+
+    private var repo: FakeRepo = _
+    private var repoEnabled = true
+
+    /** PipelineScripts with both backends; the install default follows `repoEnabled`. */
+    private def withRepo(): PipelineScripts = {
+        repo = new FakeRepo
+        repoEnabled = true
+        new PipelineScripts(
+            records,
+            _ => store,
+            fakeAi,
+            () => model,
+            repoStoreFor = _ => repo,
+            defaultStorage = () => if (repoEnabled) "github" else "minio"
+        )
+    }
+
+    test("with an enabled repository a new script is committed and the record holds storage, path and sha") {
+        val s = withRepo()
+        val out = s.onSave(null, csvCfg(txInstruction = instruction), "todd")
+        assert(out.map(_.status).toSet == Set("ready"), s"$out")
+        assert(repo.writes.size == 2, s"one commit per script: ${repo.commits}")
+        assert(repo.writes.forall(_.actor == "todd"), "the saving key's label is the commit {user}")
+        assert(store.objects.isEmpty, "nothing in built-in storage")
+        Seq(Dq -> "taps/pipelines/orders/data-quality.py", Tx -> "taps/pipelines/orders/transformation.py").foreach { case (k, path) =>
+            val rec = records.read("orders", k).getOrElse(fail(s"no $k record"))
+            assert(rec.storage == "github", s"$rec")
+            assert(rec.scriptRepoPath == path, s"$rec")
+            assert(rec.scriptPath == null)
+            val c = repo.writes.find(_.path == path).getOrElse(fail(s"no commit for $path"))
+            assert(rec.scriptCommitSha == c.sha, "the record pins the commit that wrote it")
+            assert(rec.status == "ready" && rec.origin == "save")
+            assert(s.readText("orders", k) == c.content)
+        }
+        // Runs execute the recorded commit; no model call, no new commit.
+        val gen = new RunGen
+        val r = s.forRun(csvCfg(txInstruction = instruction), Tx, header, gen.fn)
+        assert(r.action == "stored" && gen.count == 0 && calls.size == 2)
+        assert(repo.commits.size == 2)
+    }
+
+    test("with none it goes to built-in storage") {
+        val s = withRepo()
+        repoEnabled = false
+        s.onSave(null, csvCfg(txInstruction = instruction), "todd")
+        assert(repo.commits.isEmpty, "no commit without an enabled repository")
+        Seq(Dq, Tx).foreach { k =>
+            val rec = records.read("orders", k).get
+            assert(rec.storage == "minio" && rec.scriptPath != null && rec.scriptRepoPath == null && rec.scriptCommitSha == null, s"$rec")
+        }
+        assert(store.objects.size == 2)
+    }
+
+    test("a save-time regeneration keeps the script's current backend") {
+        // Built-in script, then a repository is enabled (upgrade path).
+        val s = withRepo()
+        repoEnabled = false
+        val base = csvCfg()
+        s.onSave(null, base, "todd")
+        assert(records.read("orders", Dq).get.storage == "minio")
+        repoEnabled = true
+        s.onSave(base, csvCfg(dqRule = "age must be between 0 and 120"), "todd")
+        assert(calls.size == 2, "the changed instruction regenerated")
+        assert(records.read("orders", Dq).get.storage == "minio", "an existing built-in script stays built-in")
+        assert(repo.commits.isEmpty)
+
+        // Repository script, then the default flips to built-in.
+        beforeEach()
+        val s2 = withRepo()
+        s2.onSave(null, base, "todd")
+        val first = records.read("orders", Dq).get
+        assert(first.storage == "github")
+        repoEnabled = false
+        s2.onSave(base, csvCfg(dqRule = "age must be between 0 and 120"), "todd")
+        val second = records.read("orders", Dq).get
+        assert(second.storage == "github" && second.scriptRepoPath == first.scriptRepoPath, s"$second")
+        assert(second.scriptCommitSha != first.scriptCommitSha, "a new commit on the same file")
+        assert(repo.writes.size == 2 && repo.writes.last.base == first.scriptCommitSha, "the recorded sha is the commit base")
+        assert(store.objects.isEmpty)
+    }
+
+    test("regenerate with storage moves the script") {
+        val s = withRepo()
+        repoEnabled = false
+        val cfg = csvCfg(txInstruction = instruction)
+        s.onSave(null, cfg, "todd")
+        assert(records.read("orders", Tx).get.storage == "minio")
+
+        // builtin -> github
+        assert(s.regenerate(cfg, Tx, "todd", storage = "github").isRight)
+        val moved = records.read("orders", Tx).get
+        assert(moved.storage == "github" && moved.scriptRepoPath == "taps/pipelines/orders/transformation.py", s"$moved")
+        assert(moved.scriptCommitSha == repo.headSha)
+        assert(moved.origin == "regenerate")
+        assert(s.readText("orders", Tx) == repo.head(moved.scriptRepoPath))
+
+        // A regenerate with no storage keeps the current backend (even with the default built-in).
+        assert(s.regenerate(cfg, Tx, "todd").isRight)
+        assert(records.read("orders", Tx).get.storage == "github")
+
+        // github -> builtin; the repository file is left in place, as for taps.
+        val commitsBefore = repo.commits.size
+        assert(s.regenerate(cfg, Tx, "todd", storage = "builtin").isRight)
+        val back = records.read("orders", Tx).get
+        assert(back.storage == "minio" && back.scriptPath != null && back.scriptRepoPath == null && back.scriptCommitSha == null, s"$back")
+        assert(repo.commits.size == commitsBefore, "no delete commit on a move")
+        assert(repo.head("taps/pipelines/orders/transformation.py").isDefined)
+        assert(s.readText("orders", Tx).exists(store.objects.values.toSet.contains))
+        // The data-quality script was not touched by any of this.
+        assert(records.read("orders", Dq).get.storage == "minio")
+    }
+
+    test("a commit rejected because the file changed returns a warning and leaves the record") {
+        val s = withRepo()
+        val base = csvCfg()
+        s.onSave(null, base, "todd")
+        val before = records.read("orders", Dq).get
+        repo.hubEdit(before.scriptRepoPath, "print('hand edit')")
+        val writesBefore = repo.writes.size
+
+        val changed = csvCfg(dqRule = "age must be between 0 and 120")
+        val out =
+            try s.onSave(base, changed, "todd")
+            catch { case e: Throwable => fail("onSave must never throw: " + e) }
+        val o = out.find(_.kind == Dq).getOrElse(fail(s"$out"))
+        assert(o.warning != null, s"a conflict is a warning: $o")
+        assert(o.warning.contains("pull"), o.warning)
+        assert(o.warning.contains("overwrite=true"), o.warning)
+        assert(records.read("orders", Dq).get == before, "the record is left as it was")
+        assert(repo.writes.size == writesBefore, "no commit landed")
+        assert(repo.head(before.scriptRepoPath).contains("print('hand edit')"), "the hand edit is not overwritten")
+
+        // A forced regenerate without overwrite is rejected the same way.
+        val forced = s.regenerate(changed, Dq, "todd")
+        assert(forced.isLeft && forced.left.get.contains("overwrite=true"), s"$forced")
+        assert(records.read("orders", Dq).get == before)
+        assert(repo.head(before.scriptRepoPath).contains("print('hand edit')"))
+    }
+
+    test("overwrite replaces it") {
+        val s = withRepo()
+        val base = csvCfg()
+        s.onSave(null, base, "todd")
+        val before = records.read("orders", Dq).get
+        repo.hubEdit(before.scriptRepoPath, "print('hand edit')")
+        val changed = csvCfg(dqRule = "age must be between 0 and 120")
+        s.onSave(base, changed, "todd") // conflict warning
+
+        val r = s.regenerate(changed, Dq, "todd", overwrite = true)
+        assert(r.isRight, s"$r")
+        val after = records.read("orders", Dq).get
+        assert(after.storage == "github" && after.scriptRepoPath == before.scriptRepoPath)
+        assert(after.scriptCommitSha == repo.headSha && after.scriptCommitSha != before.scriptCommitSha)
+        assert(after.fingerprint != before.fingerprint, "the record now matches the changed instruction")
+        assert(repo.head(after.scriptRepoPath) == s.readText("orders", Dq))
+        assert(!repo.head(after.scriptRepoPath).contains("print('hand edit')"))
+        assert(repo.history(after.scriptRepoPath).contains("print('hand edit')"), "history is kept")
+    }
+
+    test("pull records the head sha and later saves with unchanged inputs do not regenerate") {
+        val s = withRepo()
+        val cfg = csvCfg(txInstruction = instruction)
+        s.onSave(null, cfg, "todd")
+        val before = records.read("orders", Tx).get
+        assert(s.drift("orders", Tx).isEmpty, "no drift right after the commit")
+
+        val editSha = repo.hubEdit(before.scriptRepoPath, "print('hand edit')")
+        assert(s.drift("orders", Tx).contains(editSha), "drift reports the head sha")
+        // Runs stay on the recorded commit until the edit is adopted.
+        val gen = new RunGen
+        val pinned = s.forRun(cfg, Tx, header, gen.fn)
+        assert(pinned.action == "stored" && pinned.script == "print('generated 2')" && gen.count == 0, s"$pinned")
+
+        val commitsBefore = repo.commits.size
+        val pulled = s.pull("orders", Tx, "todd")
+        assert(pulled.isRight, s"$pulled")
+        val rec = records.read("orders", Tx).get
+        assert(rec.scriptCommitSha == editSha, s"$rec")
+        assert(rec.origin == "repository")
+        assert(rec.status == "ready")
+        assert(repo.commits.size == commitsBefore, "pull makes no commit")
+        assert(s.drift("orders", Tx).isEmpty)
+        assert(s.readText("orders", Tx).contains("print('hand edit')"))
+
+        val run = s.forRun(cfg, Tx, header, gen.fn)
+        assert(run.action == "stored" && run.script == "print('hand edit')" && gen.count == 0)
+
+        val callsBefore = calls.size
+        s.onSave(cfg, cfg.copy(version = 2), "todd")
+        s.onSave(null, cfg, "todd")
+        assert(calls.size == callsBefore, "unchanged inputs: no model call")
+        assert(records.read("orders", Tx).get == rec, "the adopted edit survives the save")
+        assert(repo.commits.size == commitsBefore)
+    }
+
+    test("a store failure at save leaves the script pending") {
+        val s = withRepo()
+        repo.down = "401 Bad credentials"
+        val out =
+            try s.onSave(null, csvCfg(), "todd")
+            catch { case e: Throwable => fail("onSave must never throw: " + e) }
+        assert(out.map(o => (o.kind, o.status)) == List((Dq, "pending")), s"$out")
+        assert(out.head.pendingReason.contains("Bad credentials"), s"$out")
+        val rec = records.read("orders", Dq).getOrElse(fail("pending record expected"))
+        assert(rec.status == "pending" && rec.pendingReason.contains("Bad credentials"), s"$rec")
+        assert(repo.commits.isEmpty)
+        assert(store.objects.isEmpty, "no silent fall back to built-in storage")
+    }
+
+    test("a store failure during a run still runs the generated script and stays pending") {
+        val s = withRepo()
+        val cfg = csvCfg()
+        repo.down = "connection refused"
+        s.onSave(null, cfg, "todd")
+        assert(records.read("orders", Dq).get.status == "pending")
+
+        val gen = new RunGen
+        val r =
+            try s.forRun(cfg, Dq, header, gen.fn)
+            catch { case e: Throwable => fail("a commit failure must not fail the run: " + e) }
+        assert(gen.count == 1 && r.script == "print('run 1')", s"$r")
+        assert(r.action != "stored")
+        val rec = records.read("orders", Dq).get
+        assert(rec.status == "pending", s"the script stays pending: $rec")
+        assert(repo.commits.isEmpty && store.objects.isEmpty)
+
+        // Repository back: the next run generates and commits, as the run's actor.
+        repo.down = null
+        val next = s.forRun(cfg, Dq, header, gen.fn)
+        assert(next.action == "generate-and-store" && gen.count == 2)
+        val stored = records.read("orders", Dq).get
+        assert(stored.status == "ready" && stored.storage == "github" && stored.scriptCommitSha == repo.headSha, s"$stored")
+        assert(Option(repo.writes.last.actor).forall(_ == "datris"), "a run commits as datris")
+    }
+
+    test("an unreadable recorded commit fails the run with no model call") {
+        val s = withRepo()
+        val cfg = csvCfg()
+        s.onSave(null, cfg, "todd")
+        val rec = records.read("orders", Dq).get
+        val callsBefore = calls.size
+        repo.down = "token expired"
+        val gen = new RunGen
+        val e = intercept[DatrisException](s.forRun(cfg, Dq, header, gen.fn))
+        assert(e.getMessage.contains("Code repository is unreachable"), e.getMessage)
+        assert(e.getMessage.contains(rec.scriptRepoPath), e.getMessage)
+        assert(gen.count == 0 && calls.size == callsBefore, "no fall back to generating")
+        assert(records.read("orders", Dq).get == rec)
+    }
+
+    test("deleteAll removes both files and survives a failing store") {
+        val s = withRepo()
+        s.onSave(null, csvCfg(txInstruction = instruction), "todd")
+        val paths = Seq(Dq, Tx).map(k => records.read("orders", k).get.scriptRepoPath)
+        val versions = paths.map(p => repo.head(p).get)
+        s.deleteAll("orders")
+        val deletes = repo.commits.filter(_.content.isEmpty)
+        assert(deletes.map(_.path).toSet == paths.toSet, s"a delete commit per file: ${repo.commits}")
+        paths.foreach(p => assert(repo.head(p).isEmpty, s"$p gone from branch head"))
+        paths.zip(versions).foreach { case (p, v) => assert(repo.history(p).contains(v), "history kept") }
+        assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty)
+
+        // A failing repository does not block the delete.
+        beforeEach()
+        val s2 = withRepo()
+        s2.onSave(null, csvCfg(txInstruction = instruction), "todd")
+        repo.down = "502 Bad Gateway"
+        try s2.deleteAll("orders")
+        catch { case e: Throwable => fail("deleteAll must not throw: " + e) }
+        assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty)
+    }
 }

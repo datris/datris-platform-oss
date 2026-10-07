@@ -168,4 +168,117 @@ class CodeGenScriptsApiSpec extends AnyFunSuite {
         assert(err.contains("bogus"), err)
         assert(err.contains("dataQuality") && err.contains("transformation"), s"names the valid kinds: $err")
     }
+
+    // =====================================================================
+    // Story: CodeGen scripts 2 (plans/stories/codegen-script-git-storage.md):
+    // repository-backed scripts on the read endpoint, and pull.
+    //
+    // Pinned seam (PipelineScripts' repository parameters, `drift` and
+    // `pull` are pinned in PipelineScriptsSpec):
+    // {{{
+    // object PipelineAPIController {
+    //     /** GET body entries also carry repoPath, commitSha, drift (boolean,
+    //       * always present) and headSha (when drift is true). */
+    //     def codegenScriptsBody(config: PipelineConfig, scripts: PipelineScripts): JsonObject
+    //     /** POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/pull after key
+    //       * and capability checks: 400 for an unknown kind or a built-in script,
+    //       * 200 with the kind's GET entry on success. */
+    //     def pullCodegenScriptWith(scripts: PipelineScripts, name: String, kind: String, actor: String): ResponseEntity[String]
+    // }
+    // }}}
+    // =====================================================================
+
+    /** One-file-per-path GitHub branch; every commit gets a new sha. */
+    private class FakeRepo extends CodeStore {
+        val versions = mutable.ListBuffer[(String, String, String)]() // (sha, path, content)
+        override def storage: String = "github"
+        def headSha: String = versions.lastOption.map(_._1).orNull
+        private def head(path: String): Option[String] = versions.filter(_._2 == path).lastOption.map(_._3)
+        def commit(path: String, content: String): String = {
+            val sha = "%040x".format(versions.size + 0xfeed01)
+            versions += ((sha, path, content))
+            sha
+        }
+        override def readScript(ref: ScriptRef): Option[String] =
+            versions.find(v => v._1 == ref.scriptCommitSha && v._2 == ref.scriptRepoPath).map(_._3)
+        override def storeScript(name: String, script: String, prior: ScriptRef, actor: String): StoredScript = {
+            val path = "taps/pipelines/orders/" + (if (name == "dataQuality") "data-quality.py" else "transformation.py")
+            StoredScript("github", scriptRepoPath = path, scriptCommitSha = commit(path, script))
+        }
+        override def deleteScript(ref: ScriptRef): Unit = ()
+        override def scriptExists(ref: ScriptRef): Boolean = readScript(ref).isDefined
+        override def pullLatest(ref: ScriptRef): Option[(String, String)] = head(ref.scriptRepoPath).map(c => (c, headSha))
+    }
+
+    private def repoScripts(repo: FakeRepo): PipelineScripts = {
+        val scripts = new PipelineScripts(
+            new MemRecords,
+            { val s = new MemStore; _ => s },
+            (_, _) => "print('[]')",
+            () => "model-a",
+            repoStoreFor = _ => repo,
+            defaultStorage = () => "github"
+        )
+        withEnv(scripts.onSave(null, cfg, "todd"))
+        scripts
+    }
+
+    private def entries(body: JsonObject): Map[String, JsonObject] =
+        body.getAsJsonArray("scripts").asScala.map(_.getAsJsonObject).map(e => e.get("kind").getAsString -> e).toMap
+
+    test("GET reports drift and headSha") {
+        val repo = new FakeRepo
+        val scripts = repoScripts(repo)
+        val before = entries(withEnv(PipelineAPIController.codegenScriptsBody(cfg, scripts)))
+        Seq("dataQuality" -> "taps/pipelines/orders/data-quality.py", "transformation" -> "taps/pipelines/orders/transformation.py").foreach {
+            case (k, path) =>
+                val e = before(k)
+                assert(e.get("storage").getAsString == "github", s"$e")
+                assert(e.get("repoPath").getAsString == path, s"$e")
+                assert(e.has("commitSha") && e.get("commitSha").getAsString.nonEmpty, s"$e")
+                assert(e.has("drift") && !e.get("drift").getAsBoolean, s"no drift yet: $e")
+        }
+        val pinnedTx = before("transformation").get("commitSha").getAsString
+
+        val editSha = repo.commit("taps/pipelines/orders/transformation.py", "print('hand edit')")
+        val after = entries(withEnv(PipelineAPIController.codegenScriptsBody(cfg, scripts)))
+        val tx = after("transformation")
+        assert(tx.get("drift").getAsBoolean, s"$tx")
+        assert(tx.get("headSha").getAsString == editSha, s"$tx")
+        assert(tx.get("commitSha").getAsString == pinnedTx, "the recorded commit is unchanged by drift")
+        assert(tx.get("script").getAsString == "print('[]')", "GET shows the recorded commit's script")
+        assert(!after("dataQuality").get("drift").getAsBoolean, s"${after("dataQuality")}")
+    }
+
+    test("pull needs pipeline create") {
+        Seq("transformation", "dataQuality").foreach { k =>
+            assert(
+                CapabilityRoutes.lookup("POST", "/api/v1/pipelines/orders/codegen-scripts/" + k + "/pull") ==
+                    RouteCheck.Require("pipeline", "create")
+            )
+        }
+    }
+
+    test("pull on a built-in script is 400") {
+        val (scripts, _) = savedScripts() // built-in store: dataQuality ready in "minio"
+        assert(scripts.record("orders", "dataQuality").exists(_.storage == "minio"))
+        val r = withEnv(PipelineAPIController.pullCodegenScriptWith(scripts, "orders", "dataQuality", "todd"))
+        assert(r.getStatusCode.value == 400, r.getBody)
+        val err = JsonParser.parseString(r.getBody).getAsJsonObject.get("error").getAsString
+        assert(err.toLowerCase.contains("repository"), s"says the script is not repository-backed: $err")
+        assert(scripts.record("orders", "dataQuality").exists(_.storage == "minio"), "record untouched")
+
+        val bogus = withEnv(PipelineAPIController.pullCodegenScriptWith(scripts, "orders", "bogus", "todd"))
+        assert(bogus.getStatusCode.value == 400, bogus.getBody)
+
+        // A repository-backed script pulls with 200.
+        val repo = new FakeRepo
+        val rs = repoScripts(repo)
+        val editSha = repo.commit("taps/pipelines/orders/transformation.py", "print('hand edit')")
+        val ok = withEnv(PipelineAPIController.pullCodegenScriptWith(rs, "orders", "transformation", "todd"))
+        assert(ok.getStatusCode.value == 200, ok.getBody)
+        val e = JsonParser.parseString(ok.getBody).getAsJsonObject
+        assert(e.get("commitSha").getAsString == editSha, s"$e")
+        assert(e.get("origin").getAsString == "repository", s"$e")
+    }
 }

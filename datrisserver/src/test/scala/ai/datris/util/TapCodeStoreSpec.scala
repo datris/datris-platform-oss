@@ -163,4 +163,134 @@ class TapCodeStoreSpec extends AnyFunSuite {
             assert(!store.scriptExists(ref))
         } finally TenantContext.clear()
     }
+
+    // --- pipeline scripts in the code repository (story: codegen-script-git-storage)
+    //
+    // Pinned seam (plans/stories/codegen-script-git-storage.md, Files):
+    // {{{
+    // // ai.datris.util
+    // sealed trait ScriptFamily
+    // object ScriptFamily {
+    //     case class Tap(name: String) extends ScriptFamily
+    //     /** kind: "dataQuality" | "transformation" (the CodeGen kind). */
+    //     case class Pipeline(pipeline: String, kind: String) extends ScriptFamily
+    // }
+    // object GithubCodeStore {
+    //     def scriptRepoPath(tapName: String, cfg: CodeRepoConfig): String          // unchanged
+    //     def scriptRepoPath(family: ScriptFamily, cfg: CodeRepoConfig): String
+    //     def commitMessage(cfg: CodeRepoConfig, tapName: String, action: String, actor: String): String   // unchanged
+    //     def commitMessage(cfg: CodeRepoConfig, family: ScriptFamily, action: String, actor: String): String
+    //     /** Repository-backed store for one pipeline's CodeGen scripts. */
+    //     def forPipeline(pipeline: String): CodeStore
+    // }
+    // }}}
+    // Pipeline paths: `<prefix>pipelines/<pipeline>/data-quality.py` and
+    // `<prefix>pipelines/<pipeline>/transformation.py`. `{name}` in a commit
+    // message is `<pipeline>/<kind>`, kind as above. A template that is null,
+    // empty or the stored tap default literal renders pipeline scripts with
+    // `pipeline({name}): {action} via Datris`.
+
+    private val TapDefaultTemplate = "tap({name}): {action} via Datris"
+
+    test("tap repo path and commit message are unchanged") {
+        val cfgs = Seq(
+            CodeRepoConfig(),
+            CodeRepoConfig(pathPrefix = "taps"),
+            CodeRepoConfig(pathPrefix = ""),
+            CodeRepoConfig(pathPrefix = null),
+            CodeRepoConfig(pathPrefix = "infra/datris/", commitMessageTemplate = "{action} {name} by {user}"),
+            CodeRepoConfig(commitMessageTemplate = ""),
+            CodeRepoConfig(commitMessageTemplate = null)
+        )
+        val expectedPaths = List("taps/orders.py", "taps/orders.py", "orders.py", "orders.py", "infra/datris/orders.py", "taps/orders.py", "taps/orders.py")
+        val expectedMessages = List(
+            "tap(orders): update via Datris",
+            "tap(orders): update via Datris",
+            "tap(orders): update via Datris",
+            "tap(orders): update via Datris",
+            "update orders by todd",
+            "tap(orders): update via Datris",
+            "tap(orders): update via Datris"
+        )
+        cfgs.zip(expectedPaths).zip(expectedMessages).foreach { case ((cfg, path), msg) =>
+            assert(GithubCodeStore.scriptRepoPath("orders", cfg) == path)
+            assert(GithubCodeStore.scriptRepoPath(ScriptFamily.Tap("orders"), cfg) == path, s"tap family path for $cfg")
+            assert(GithubCodeStore.commitMessage(cfg, "orders", "update", "todd") == msg)
+            assert(GithubCodeStore.commitMessage(cfg, ScriptFamily.Tap("orders"), "update", "todd") == msg, s"tap family message for $cfg")
+        }
+        // The stored default literal still renders as the tap default for taps.
+        val stored = CodeRepoConfig(commitMessageTemplate = TapDefaultTemplate)
+        assert(GithubCodeStore.commitMessage(stored, ScriptFamily.Tap("orders"), "delete", null) == "tap(orders): delete via Datris")
+        assert(GithubCodeStore.commitMessage(stored, "orders", "create", null) == "tap(orders): create via Datris")
+    }
+
+    test("a pipeline script path is <prefix>pipelines/<pipeline>/<kind>.py") {
+        val cfg = CodeRepoConfig()
+        assert(GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", "dataQuality"), cfg) == "taps/pipelines/orders/data-quality.py")
+        assert(GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", "transformation"), cfg) == "taps/pipelines/orders/transformation.py")
+        assert(
+            GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", "transformation"), CodeRepoConfig(pathPrefix = "infra/datris")) ==
+                "infra/datris/pipelines/orders/transformation.py"
+        )
+        assert(GithubCodeStore.scriptRepoPath(
+            ScriptFamily.Pipeline("orders", "dataQuality"),
+            CodeRepoConfig(pathPrefix = "")
+        ) == "pipelines/orders/data-quality.py")
+        assert(GithubCodeStore.scriptRepoPath(
+            ScriptFamily.Pipeline("orders", "dataQuality"),
+            CodeRepoConfig(pathPrefix = null)
+        ) == "pipelines/orders/data-quality.py")
+        // A pipeline's path never collides with a tap of the same name.
+        assert(
+            GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", "transformation"), cfg) !=
+                GithubCodeStore.scriptRepoPath(ScriptFamily.Tap("orders"), cfg)
+        )
+        // The repository-backed store for a pipeline stamps "github" (no network call).
+        assert(GithubCodeStore.forPipeline("orders").storage == "github")
+    }
+
+    test("with the stored tap default template the pipeline commit message is pipeline(<pipeline>/<kind>): <action> via Datris") {
+        Seq(
+            CodeRepoConfig(),
+            CodeRepoConfig(commitMessageTemplate = TapDefaultTemplate),
+            CodeRepoConfig(commitMessageTemplate = ""),
+            CodeRepoConfig(commitMessageTemplate = null)
+        )
+            .foreach { cfg =>
+                assert(
+                    GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "dataQuality"), "create", "todd") ==
+                        "pipeline(orders/dataQuality): create via Datris",
+                    s"$cfg"
+                )
+                assert(
+                    GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "transformation"), "update", null) ==
+                        "pipeline(orders/transformation): update via Datris"
+                )
+                assert(
+                    GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "transformation"), "delete", null) ==
+                        "pipeline(orders/transformation): delete via Datris"
+                )
+            }
+    }
+
+    test("a custom template is applied with name <pipeline>/<kind>") {
+        val cfg = CodeRepoConfig(commitMessageTemplate = "{action} {name} by {user}")
+        assert(GithubCodeStore.commitMessage(
+            cfg,
+            ScriptFamily.Pipeline("orders", "transformation"),
+            "update",
+            "ci-key"
+        ) == "update orders/transformation by ci-key")
+        // Generated during a run: no saving key.
+        assert(GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "dataQuality"), "create", null) == "create orders/dataQuality by datris")
+        assert(GithubCodeStore.commitMessage(cfg, ScriptFamily.Pipeline("orders", "dataQuality"), "create", "") == "create orders/dataQuality by datris")
+        // A custom template written for taps is applied as written.
+        val tapStyle = CodeRepoConfig(commitMessageTemplate = "tap({name}): {action} [skip ci]")
+        assert(GithubCodeStore.commitMessage(
+            tapStyle,
+            ScriptFamily.Pipeline("orders", "dataQuality"),
+            "delete",
+            null
+        ) == "tap(orders/dataQuality): delete [skip ci]")
+    }
 }
