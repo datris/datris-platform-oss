@@ -21,9 +21,15 @@ import scala.concurrent.ExecutionContext.Implicits.global
   * the inherited JVM environment, so `os.environ` in the child would still
   * contain every secret. `java.lang.ProcessBuilder` lets us start from an EMPTY
   * environment and add back only a minimal allowlist of benign system vars the
-  * Python runtime and TLS need. This is the same isolation TapScriptRunner
-  * applies to tap scripts; CodeGen DQ / transformation scripts run through here
-  * for the same reason. */
+  * Python runtime and TLS need.
+  *
+  * This is the IN-PROCESS lane only, not the isolation boundary: the child
+  * still shares this container's filesystem and network (Vault, databases,
+  * MinIO, the internet). It matches the in-process tap lane, not the tap
+  * runner sidecar. Generated DQ / transformation scripts reach it only through
+  * [[CodeGenRunner]] when `USE_CODEGEN_RUNNER` is not on (sbt / IDE, or an
+  * install on an older compose file); compose installs run them in the
+  * `datris-codegen-runner` sidecar instead. */
 object SandboxedPython {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 

@@ -6,6 +6,13 @@ networks:
   # (vault, postgres, mongodb, minio). Only the datris server bridges both.
   tap-net:
     driver: bridge
+  # Internal-only network for generated data-quality / transformation scripts
+  # (codegen-script-isolation). datris-codegen-runner sits here and nowhere
+  # else: no route to vault, postgres, mongodb or minio, and `internal: true`
+  # gives it no outbound internet either. Only the datris server joins both.
+  codegen-net:
+    driver: bridge
+    internal: true
 
 volumes:
   pip-cache:
@@ -23,6 +30,10 @@ volumes:
   mongodb-configdb:
   minio-data:
   datris-staging:    # staged pipeline payloads (DATRIS_TEMP_DIR), swept at boot
+  # Per-run scratch of datris-codegen-runner: each generated DQ / transformation
+  # script's input and output file, removed after every run and swept when the
+  # runner starts. Disk-backed (not tmpfs) so large files fit; named, never anonymous.
+  codegen-scratch:
   kafka-data:        # used by the opt-in kafka profile (COMPOSE_PROFILES=kafka)
   zookeeper-data:    # used by the opt-in kafka profile
   zookeeper-log:     # used by the opt-in kafka profile
@@ -427,6 +438,13 @@ services:
       TAP_RUNNER_URL: "http://datris-tap-runner:8090"
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
       TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
+      # Generated DQ / transformation script isolation. Compose default ON: the
+      # scripts run in the datris-codegen-runner sidecar (no secrets, no server
+      # files, no internet) and fail loudly if it is unreachable. Set
+      # USE_CODEGEN_RUNNER=false to run them in-process (warned at startup and
+      # per run). Shares the tap runner's token.
+      USE_CODEGEN_RUNNER: "${USE_CODEGEN_RUNNER:-true}"
+      CODEGEN_RUNNER_URL: "http://datris-codegen-runner:8090"
     volumes:
       - ./docker/config:/config
       - pip-cache:/root/.cache/pip
@@ -441,6 +459,7 @@ services:
     networks:
       - datris-net
       - tap-net
+      - codegen-net
 
   # Isolated tap execution sidecar (tap-execution-isolation Phase 3). Holds no
   # platform secrets and lives only on tap-net (no route to vault/postgres/mongo/
@@ -471,6 +490,39 @@ services:
       - no-new-privileges:true
     networks:
       - tap-net
+
+  # Isolated runner for generated data-quality and transformation scripts
+  # (codegen-script-isolation). Same image, token and hardening as
+  # datris-tap-runner, but on codegen-net only: no platform secrets, no route to
+  # vault/postgres/mongo/minio, no outbound internet. The server pushes the
+  # script and its input file to POST /execute-file; per-run files live on the
+  # codegen-scratch volume. Only used when the datris server has
+  # USE_CODEGEN_RUNNER=true. Note: it can still reach the datris API port.
+  datris-codegen-runner:
+    image: datrisai/datris-tap-runner:latest
+    #build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
+    container_name: datris-codegen-runner
+    environment:
+      TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
+      TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
+      CODEGEN_SCRATCH_DIR: /scratch
+    volumes:
+      - tap-runner-token:/tap-runner-token:ro
+      - codegen-scratch:/scratch
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+    read_only: true
+    # Interpreter temp files only: no packages are installed here (no exec) and
+    # no payload lands here (input/output go to /scratch).
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - codegen-net
 
   ui:
     image: datrisai/datris-ui:latest

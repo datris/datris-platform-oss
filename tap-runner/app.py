@@ -8,12 +8,19 @@ and sits on a network with no route to the secret-bearing services. The server P
 a single tap run to /execute; this runner executes it as a fresh subprocess in a
 per-run scratch dir and returns stdout/stderr/exitCode. Nothing here can read platform
 secrets off disk or reach Vault, because they simply are not present in this container.
+
+The same image also runs as datris-codegen-runner (codegen-script-isolation): the server
+POSTs a generated data-quality / transformation script plus its input file to
+/execute-file and gets the result and output file back. That service sits on an
+internal-only network (no internet) and keeps its per-run files on the codegen-scratch
+volume (CODEGEN_SCRATCH_DIR).
 """
 import errno
 import json
 import os
 import select
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -226,6 +233,168 @@ def execute(body, stream=None):
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+# ---- /execute-file: generated DQ / transformation scripts (codegen-script-isolation) ----
+# Used by the datris-codegen-runner service (same image as the tap runner, on the
+# internal-only codegen-net). Request body: ONE JSON line {"script", "timeoutSec",
+# "inputName", "outputName"?}, "\n", then the raw input bytes (Content-Length known).
+# Response: ONE JSON line {"stdout", "stderr", "exitCode", "timedOut", "outputBytes"},
+# "\n", then the output file bytes when "outputName" was given. The payload is copied
+# in 64 KB chunks both ways and lands only in a per-run directory under
+# CODEGEN_SCRATCH_DIR (the codegen-scratch volume in compose), removed after every run.
+CODEGEN_CHUNK = 64 * 1024
+CODEGEN_META_MAX = 16 * 1024 * 1024  # the metadata line carries the script text
+CODEGEN_UPLOAD_IDLE_SEC = 300
+SCRATCH_VOLUME_HINT = ("No space left on device in the codegen-scratch volume "
+                       "(CODEGEN_SCRATCH_DIR); free disk on the Docker host and retry")
+
+
+def _codegen_scratch_dir():
+    """Read at request time, so a test (or a restart with new env) sees the current value."""
+    return os.environ.get("CODEGEN_SCRATCH_DIR") or "/tmp"
+
+
+def _safe_name(name, default):
+    """Reduce a client-supplied file name to a plain basename inside the run dir."""
+    base = os.path.basename(str(name or "").replace("\\", "/"))
+    if base in ("", ".", "..") or base == "script.py":
+        return default
+    return base
+
+
+def sweep_codegen_scratch(root):
+    """Remove every cg_* run dir left behind by a killed runner. Only cg_* is touched."""
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return
+    for n in names:
+        p = os.path.join(root, n)
+        if n.startswith("cg_") and os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p, ignore_errors=True)
+
+
+class CodegenUploadError(Exception):
+    """The client went away (or stalled) before sending the whole input."""
+
+
+class CodegenNoSpace(Exception):
+    """ENOSPC while receiving the input."""
+
+
+def _receive_input(rfile, remaining, path):
+    """Copy exactly `remaining` bytes from the socket to `path`, 64 KB at a time.
+    On ENOSPC, keep draining the request body (so the client can read the 507)
+    and raise CodegenNoSpace."""
+    no_space = False
+    with open(path, "wb") as f:
+        while remaining > 0:
+            chunk = rfile.read(min(CODEGEN_CHUNK, remaining))
+            if not chunk:
+                raise CodegenUploadError("client closed the connection mid-upload")
+            remaining -= len(chunk)
+            if no_space:
+                continue
+            try:
+                f.write(chunk)
+            except OSError as e:
+                if e.errno != errno.ENOSPC:
+                    raise
+                no_space = True
+    if no_space:
+        raise CodegenNoSpace()
+
+
+def _run_codegen(script_path, in_path, out_path, scratch, timeout):
+    argv = ["python3", script_path, in_path] + ([out_path] if out_path else [])
+    try:
+        proc = subprocess.run(argv, capture_output=True, timeout=timeout,
+                              env=_base_env(scratch), cwd=scratch)
+        return {"stdout": proc.stdout.decode("utf-8", errors="replace"),
+                "stderr": proc.stderr.decode("utf-8", errors="replace"),
+                "exitCode": proc.returncode, "timedOut": False}
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        err = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        return {"stdout": out, "stderr": err, "exitCode": -1, "timedOut": True}
+
+
+def execute_file(meta, rfile, length, wfile, send_error=None, send_head=None):
+    """Run one generated script against a streamed input file.
+
+    `meta` is the parsed metadata line; `rfile` holds `length` more bytes (the input).
+    `send_head(content_length)` writes the 200 status line and headers; `send_error(code, obj)`
+    writes a JSON error response. Both default to bare writes on `wfile` (no HTTP framing)
+    so the function can be driven directly. The run dir is removed on every exit path."""
+    script = meta.get("script") or ""
+    timeout = int(meta.get("timeoutSec") or 300)
+    in_name = _safe_name(meta.get("inputName"), "input")
+    out_name = meta.get("outputName")
+    out_name = _safe_name(out_name, "output") if out_name else None
+    if out_name == in_name:
+        out_name = "output_" + in_name
+
+    if send_error is None:
+        def send_error(code, obj):
+            wfile.write(json.dumps(obj).encode("utf-8") + b"\n")
+    if send_head is None:
+        def send_head(_n):
+            pass
+
+    root = _codegen_scratch_dir()
+    scratch = None
+    try:
+        try:
+            scratch = tempfile.mkdtemp(prefix="cg_", dir=root)
+            script_path = os.path.join(scratch, "script.py")
+            with open(script_path, "w") as f:
+                f.write(script)
+            in_path = os.path.join(scratch, in_name)
+            out_path = os.path.join(scratch, out_name) if out_name else None
+            _receive_input(rfile, length, in_path)
+        except CodegenNoSpace:
+            send_error(507, {"error": SCRATCH_VOLUME_HINT})
+            return
+        except OSError as e:
+            if e.errno == errno.ENOSPC:
+                # Drain what is left so the client sees the 507 rather than a reset.
+                _discard(rfile, length)
+                send_error(507, {"error": SCRATCH_VOLUME_HINT})
+                return
+            raise
+
+        result = _run_codegen(script_path, in_path, out_path, scratch, timeout)
+        size = 0
+        if out_path and not result["timedOut"] and os.path.isfile(out_path):
+            size = os.path.getsize(out_path)
+        result["outputBytes"] = size
+        line = json.dumps(result).encode("utf-8") + b"\n"
+        send_head(len(line) + size)
+        for i in range(0, len(line), CODEGEN_CHUNK):
+            wfile.write(line[i:i + CODEGEN_CHUNK])
+        if size:
+            left = size
+            with open(out_path, "rb") as f:
+                while left > 0:
+                    data = f.read(min(CODEGEN_CHUNK, left))
+                    if not data:
+                        # Cannot happen once the script exited; pad so Content-Length holds.
+                        data = b"\0" * min(CODEGEN_CHUNK, left)
+                    wfile.write(data)
+                    left -= len(data)
+        wfile.flush()
+    finally:
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _discard(rfile, remaining):
+    while remaining > 0:
+        chunk = rfile.read(min(CODEGEN_CHUNK, remaining))
+        if not chunk:
+            return
+        remaining -= len(chunk)
+
+
 class Handler(BaseHTTPRequestHandler):
     # HTTP/1.1 so the streaming path can use chunked transfer encoding. Every
     # response still closes the connection (one run per connection, as before).
@@ -276,12 +445,60 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": "not found"})
 
+    def _execute_file(self):
+        """POST /execute-file. Never reads the whole body or builds the whole response
+        in memory: the metadata line is read on its own, the rest is streamed."""
+        self.close_connection = True
+        try:
+            length = int(self.headers.get("Content-Length", "-1"))
+        except ValueError:
+            length = -1
+        if length < 0:
+            self._send(411, {"error": "Content-Length required"})
+            return
+        # A stalled upload must not pin a thread forever; the run itself is bounded by timeoutSec.
+        self.connection.settimeout(CODEGEN_UPLOAD_IDLE_SEC)
+        line = self.rfile.readline(min(length, CODEGEN_META_MAX) + 1)
+        if not line.endswith(b"\n"):
+            self._send(400, {"error": "metadata line missing or too long"})
+            return
+        try:
+            meta = json.loads(line.decode("utf-8"))
+            if not isinstance(meta, dict):
+                raise ValueError("metadata is not an object")
+        except ValueError as e:
+            self._send(400, {"error": "bad metadata line: " + str(e)})
+            return
+
+        def send_head(n):
+            self.connection.settimeout(None)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(n))
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+        try:
+            execute_file(meta, self.rfile, length - len(line), self.wfile,
+                         send_error=self._send, send_head=send_head)
+        except (CodegenUploadError, BrokenPipeError, ConnectionResetError, socket.timeout):
+            # Client went away (or stalled): the run dir is already gone; nobody to answer.
+            return
+        except Exception as e:  # noqa: BLE001 - report to the server when headers are not out yet
+            try:
+                self._send(500, {"error": str(e)})
+            except Exception:  # noqa: BLE001
+                pass
+
     def do_POST(self):
-        if self.path != "/execute":
+        if self.path not in ("/execute", "/execute-file"):
             self._send(404, {"error": "not found"})
             return
         if TOKEN and self.headers.get("Authorization", "") != "Bearer " + TOKEN:
             self._send(401, {"error": "unauthorized"})
+            return
+        if self.path == "/execute-file":
+            self._execute_file()
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -300,5 +517,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if os.environ.get("CODEGEN_SCRATCH_DIR"):
+        # A killed runner leaves its in-flight run dirs behind; remove them before serving.
+        sweep_codegen_scratch(os.environ["CODEGEN_SCRATCH_DIR"])
     print("tap-runner listening on :%d" % PORT, flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

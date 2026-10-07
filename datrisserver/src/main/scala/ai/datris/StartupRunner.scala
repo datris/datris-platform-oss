@@ -242,6 +242,9 @@ class StartupRunner extends ApplicationRunner {
         ai.datris.util.TapScriptRunner.assertIsolationConfig()
         if (!ai.datris.util.TapScriptRunner.useTapRunner)
             ai.datris.util.TapScriptRunner.warnInProcess("startup")
+        ai.datris.util.CodeGenRunner.assertConfig()
+        if (!ai.datris.util.CodeGenRunner.enabled)
+            ai.datris.util.CodeGenRunner.warnInProcess("startup")
         initDatrisEnvironment()
         ai.datris.policy.PolicyReplay.port = serverPort
         if (recoveryAgentEnabled) {

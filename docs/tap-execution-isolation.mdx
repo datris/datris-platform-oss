@@ -156,3 +156,74 @@ through the API is the supported path and works regardless of mode.
 
 - **Isolated runner (compose/prod default)** — tap code stays separated from platform credentials and internal services. Isolated taps cannot open a *direct* connection to internal DB / MinIO / Vault; they return records and the pipeline writes destinations.
 - **In-process (`sbt` / IDE, or `USE_TAP_RUNNER=false`)** — tap `fetch()` runs inside the server JVM. Fine for local development without the sidecar, or a legacy tap that still opens a direct internal connection. The server logs a loud warning. Do not treat a laptop compose install as in-process — compose isolates by default.
+
+## Generated data-quality and transformation scripts
+
+[AI data-quality rules](/data-quality/ai-rules) and [AI transformations](/transformation/ai-transformation)
+work by having a model write a short Python script and running it against the pipeline's data.
+That script is shaped by the data it reads, so Datris treats it like tap code and runs it in an
+isolated runner too.
+
+On a compose install the scripts run in **`datris-codegen-runner`**, a sibling of the tap runner
+built from the same `datrisai/datris-tap-runner` image, with the same token and the same hardening
+(non-root, read-only root filesystem, all capabilities dropped, no privilege escalation). What
+differs is its network: it sits only on `codegen-net`, a compose network declared
+`internal: true` that only the `datris` server also joins.
+
+| | In-process (`sbt` / IDE, or `USE_CODEGEN_RUNNER=false`) | `datris-codegen-runner` (compose default) |
+|---|---|---|
+| Platform secrets in the environment | No (scrubbed) | No (none in the container) |
+| Server filesystem (config, secrets-store token, staged files) | Readable | **Not present** |
+| Internal services (database, object store, secrets store) | Reachable | **No route** |
+| Internet | Reachable | **No route** |
+| Datris API port | Reachable | Reachable (see below) |
+
+**How data moves.** The server pushes the script and the pipeline's staged input file to the
+runner; the script gets no token and has nothing to call. The runner writes the input to a
+per-run directory, runs `python3 script.py <input> [<output>]`, and sends back the result and,
+for a transformation, the output file. Both directions are copied in 64 KB chunks: neither side
+holds the file in memory. The server log shows the transfer and run time of each script
+(`CodeGen runner: sent ... in ... ms, script ran in ... ms, received ... in ... ms`).
+
+**Scratch space.** Per-run files live on the `codegen-scratch` named volume, mounted at `/scratch`
+in the runner. It is on disk, not in memory, so there is no new size limit: the bound is free disk
+on the Docker host, as it is for in-process runs. A transformation needs room for its input and
+its output at once, in addition to the server's own staged copy. Each run's directory is removed
+when the run ends (success, script failure, timeout or a dropped connection), and anything left
+by a killed runner is removed when it starts, so the volume holds nothing between runs. When the
+disk fills, the rule or transformation fails with an error naming the `codegen-scratch` volume.
+
+**When the runner is absent.**
+
+- `USE_CODEGEN_RUNNER=true` (the compose default): the runner is **required**. If it is stopped,
+  unreachable, an older image without the `/execute-file` endpoint, or rejects the token, the rule
+  or transformation fails with a message naming the runner. Datris never falls back to running the
+  script in-process.
+- `USE_CODEGEN_RUNNER` unset or `false` (`sbt` / IDE, or an install still on an older compose
+  file): scripts run in-process, with only the scrubbed environment, as before. The server logs a
+  warning at startup and on every run, and `datris doctor` reports `codegen.isolation` as `warn`.
+
+`datris doctor` shows which mode is in effect: `ok` when scripts run in the runner and it answers,
+`warn` when they run in-process, `error` when the runner is required but cannot run a script.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `USE_CODEGEN_RUNNER` | `true` (compose) / unset=`false` (sbt) | Run generated scripts in `datris-codegen-runner`. Set `false` to run them in-process. |
+| `CODEGEN_RUNNER_URL` | `http://datris-codegen-runner:8090` | Address of the runner service. |
+
+The runner shares `TAP_RUNNER_TOKEN` with the tap runner; nothing new to configure.
+
+**What changes for scripts.** Generated scripts are already told to use only the standard library
+and read the one file they are given. A script that opened a network connection or read a server
+path used to work in-process; in the runner it fails. That is intended.
+
+<Warning>
+**Not closed yet: the Datris API port.** The server listens on every network it joins, so the
+runner can still reach `datris:8080` over `codegen-net`. Keep `USE_API_KEYS` on in production so
+that port requires a key the script does not have.
+</Warning>
+
+To check the boundary on a running stack, run `python3 scripts/check-codegen-isolation.py` from a
+checkout: it sends a probe script to the runner and exits non-zero if the script can reach the
+internet, Vault, Postgres, MongoDB or MinIO, read a server path, write outside its scratch
+directory, or see a secret-bearing variable.

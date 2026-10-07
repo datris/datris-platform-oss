@@ -3,7 +3,7 @@ title: "Data Quality — AI Rule"
 description: "AI-powered data quality rules"
 ---
 
-The `aiRule` validates data using a plain-English instruction. Datris generates a Python validation script from your instruction via an LLM (single API call) when the pipeline is saved, stores it, and runs the stored script in the container against all data on every run.
+The `aiRule` validates data using a plain-English instruction. Datris generates a Python validation script from your instruction via an LLM (single API call) when the pipeline is saved, stores it, and runs the stored script against all data on every run, in an isolated runner container.
 ## Configuration
 
 Define the AI rule in the `aiRule` field within the `dataQuality` block of the pipeline configuration.
@@ -77,12 +77,16 @@ When the server sets `DATRIS_AI_SAMPLE_VALUES=false`, the prompt carries the col
 
 - An `aiRule` whose `instruction` is empty or only whitespace is ignored: no script is generated at save and the run skips the stage with a status line saying so.
 - The AI rule's Python script is generated when the pipeline is saved (or by the first run that needs one) and reused by every run until the instruction or source schema changes
-- The generated script runs in the container via `python3` with a 5-minute timeout
+- The generated script runs via `python3` with a 5-minute timeout, in the isolated `datris-codegen-runner` container on a compose install (see below)
 - Scripts are constrained to Python standard library only (no external packages)
 - Rules with `onFailureIsError: true` are counted as errors; `onFailureIsError: false` are warnings
 - All rows are evaluated; the abort message lists the first **100** errors and a count of any remaining
 - After all rows are evaluated, if **any errors** exist, processing is aborted
 - Warnings are summarized at the end of validation
+
+## Where the script runs
+
+On a compose install the generated script runs in `datris-codegen-runner`, an isolated container with no platform secrets, no access to the server's files, and no route to the internal services or the internet. The server sends it the script and the data file and reads back the result. If the runner is stopped or unreachable the rule fails with an error naming it; it never falls back to running the script in the server. See [Generated data-quality and transformation scripts](/tap-execution-isolation#generated-data-quality-and-transformation-scripts).
 
 ## Requirements
 

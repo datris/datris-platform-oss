@@ -344,10 +344,18 @@ object CodeGenTransformationEvaluator {
 
     private def executeWithTimeout(scriptPath: String, inputPath: String, outputPath: String, timeoutSec: Int): Unit = {
         // SECURITY: the script is LLM-generated and shaped by untrusted ingested
-        // data, so it runs through SandboxedPython — a scrubbed environment with
-        // no platform secrets in os.environ. Never use scala.sys.process here;
-        // it would inherit the JVM's full secret environment.
-        val result = SandboxedPython.run(Seq("python3", scriptPath, inputPath, outputPath), timeoutSec)
+        // data. CodeGenRunner runs it in the datris-codegen-runner sidecar (no
+        // platform secrets, no server filesystem, internal-only network) and
+        // streams the output back into `outputPath` when USE_CODEGEN_RUNNER is on;
+        // otherwise in-process through SandboxedPython, which only scrubs the
+        // environment. Never use scala.sys.process here; it would inherit the
+        // JVM's full secret environment.
+        val result = CodeGenRunner.run(
+            java.nio.file.Paths.get(scriptPath),
+            java.nio.file.Paths.get(inputPath),
+            Some(java.nio.file.Paths.get(outputPath)),
+            timeoutSec
+        )
         if (result.exitCode != 0) {
             val errOutput = result.stderr.take(1000)
             logger.error("CodeGen transformation script exited with code " + result.exitCode + ": " + errOutput)
