@@ -59,6 +59,8 @@ Add an `aiTransformation` block to the `transformation` section:
 
 AI transformations run after data quality checks and before data is written to destinations.
 
+An `aiTransformation` whose `instruction` is empty or only whitespace is ignored: no script is generated at save and the run skips the stage with a status line saying so.
+
 ## When the script is generated
 
 The script is generated once and stored, not on every run:

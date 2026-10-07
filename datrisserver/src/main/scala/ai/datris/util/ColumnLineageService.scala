@@ -105,7 +105,8 @@ object ColumnLineageService {
     private[datris] def transformationInfo(c: PipelineConfig, scripts: PipelineScripts): JsonObject = {
         val o = new JsonObject()
         val t = c.transformation
-        if (t != null && t.aiTransformation != null && t.aiTransformation.instruction != null) {
+        // A blank instruction is no AI transformation (the run skips it).
+        if (PipelineScripts.instructionOf(c, PipelineScripts.Transformation).isDefined) {
             o.addProperty("kind", "ai")
             o.addProperty("instruction", t.aiTransformation.instruction)
             if (scripts != null)
@@ -144,7 +145,7 @@ object ColumnLineageService {
         // make the field mapping unknowable the way a transformation does.
         val hasTransformation = {
             val t = c.transformation
-            (t != null && t.aiTransformation != null && t.aiTransformation.instruction != null) ||
+            PipelineScripts.instructionOf(c, PipelineScripts.Transformation).isDefined ||
             (t != null && t.rowFunctions != null && !t.rowFunctions.isEmpty) ||
             c.preprocessor != null
         }

@@ -73,6 +73,7 @@ When the server sets `DATRIS_AI_SAMPLE_VALUES=false`, the prompt carries the col
 
 ## Behavior
 
+- An `aiRule` whose `instruction` is empty or only whitespace is ignored: no script is generated at save and the run skips the stage with a status line saying so.
 - The AI rule's Python script is generated when the pipeline is saved (or by the first run that needs one) and reused by every run until the instruction or source schema changes
 - The generated script runs in the container via `python3` with a 5-minute timeout
 - Scripts are constrained to Python standard library only (no external packages)

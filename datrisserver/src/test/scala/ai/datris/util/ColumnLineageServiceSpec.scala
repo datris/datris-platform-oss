@@ -272,4 +272,20 @@ class ColumnLineageServiceSpec extends AnyFunSuite {
         val p = ColumnLineageService.transformationInfo(aiCfg(), lineageScripts(pending, Map.empty))
         assert(p.get("scriptStatus").getAsString == "pending", p.toString)
     }
+
+    // --- blank AI transformation instruction (E2E follow-up) -----------------
+    // The run skips an aiTransformation whose instruction is empty or
+    // whitespace, so lineage must not classify it as an AI transformation.
+
+    test("a blank AI transformation instruction is not classified as ai") {
+        Seq("", "   ", "\t").foreach { b =>
+            val c = cfg(Seq("a", "b"), null, ai.datris.model.Transformation(aiTransformation = AITransformation(b)))
+            assert(ColumnLineageService.transformationInfo(c).get("kind").getAsString == "none", s"blank '$b'")
+            assert(ColumnLineageService.transformationInfo(c, lineageScripts(null, Map.empty)).get("kind").getAsString == "none", s"blank '$b'")
+            val (edges, unresolved, label) = ColumnLineageService.deterministic(c)
+            assert(label == "inherited", s"blank '$b': destination schema inherited from the source, got $label")
+            assert(edges.map(e => (e.to, e.op)).toSet == Set(("a", "passthrough"), ("b", "passthrough")), s"blank '$b': $edges")
+            assert(unresolved.isEmpty, s"blank '$b': $unresolved")
+        }
+    }
 }
