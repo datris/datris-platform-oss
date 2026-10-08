@@ -102,6 +102,11 @@ object AuditLog {
 
     /** Set by the shutdown flush: strict retries stop here. */
     @volatile private var shutdownDeadlineNanos: Long = Long.MaxValue
+
+    /** Set once the shutdown flush has drained the queue: an entry submitted
+      * later would sit in memory until the JVM halts, so it is refused and
+      * accounted for instead. */
+    @volatile private var flushDone = false
     private val lastQueueWarnMs = new AtomicLong(0)
     private val indexedTables = mutable.Set[String]()
 
@@ -163,6 +168,11 @@ object AuditLog {
             if (sink != null) {
                 sink(withTable)
                 return true
+            }
+            if (flushDone) {
+                if (strict) markUnrecorded(withTable, "submitted after the shutdown flush")
+                else logger.warn("Audit entry not recorded (" + withTable.category + ":" + withTable.action + "): submitted after the shutdown flush")
+                return false
             }
             ensureWriter()
             if (strict) {
@@ -360,6 +370,7 @@ object AuditLog {
 
     private[datris] def resetShutdownForTest(): Unit = {
         shutdownDeadlineNanos = Long.MaxValue
+        flushDone = false
         flushed.set(false)
     }
 
@@ -376,7 +387,10 @@ object AuditLog {
             shutdownDeadlineNanos = deadline
             system("system", "stop")
             val pending = queue.drain()
-            pending.foreach(e =>
+            flushDone = true
+            // Anything a producer queued between drain() and the line above.
+            val stragglers = queue.drain()
+            (pending ++ stragglers).foreach(e =>
                 try { if (!write(e, deadline, tracked = false)) lost += 1 }
                 catch { case _: Throwable => lost += 1 }
             )

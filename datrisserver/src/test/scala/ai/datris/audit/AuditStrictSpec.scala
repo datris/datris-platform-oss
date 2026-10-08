@@ -330,4 +330,23 @@ class AuditStrictSpec extends AnyFunSuite with BeforeAndAfterEach with BeforeAnd
             AuditLog.resetShutdownForTest()
         }
     }
+
+    test("an entry submitted after the shutdown flush is counted as unrecorded under strict, not left in memory") {
+        install(strict = true)
+        assert(submit("late-before"))
+        eventually(assert(store.actions.contains("late-before")))
+        val err = new java.io.ByteArrayOutputStream()
+        val savedErr = System.err
+        System.setErr(new java.io.PrintStream(err, true))
+        try {
+            AuditLog.runShutdownFlushForTest(200L)
+            val before = AuditLog.unrecordedCount
+            assert(!submit("late-after"), "refused after the flush")
+            assert(AuditLog.unrecordedCount == before + 1)
+            assert(AuditLog.queueDepth == 0, "nothing queued behind the drain")
+        } finally {
+            System.setErr(savedErr)
+            AuditLog.resetShutdownForTest()
+        }
+    }
 }

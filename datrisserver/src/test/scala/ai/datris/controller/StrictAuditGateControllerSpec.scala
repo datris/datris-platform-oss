@@ -143,4 +143,15 @@ class StrictAuditGateControllerSpec extends AnyFunSuite {
         assert(consumer.paused().asScala.contains(tp2), "the newly assigned partition is paused on the next round: " + consumer.paused())
         assert(handled.isEmpty)
     }
+
+    test("stop() ends the Kafka consumer loop") {
+        val runner = new KafkaConsumerRunner("localhost:1", "strict-evidence-spec")
+        val t = new Thread(runner, "kafka-consumer-spec")
+        t.setDaemon(true)
+        t.start()
+        Thread.sleep(200)
+        assert(runner.stop(10000L), "the loop reported it ended")
+        t.join(10000L)
+        assert(!t.isAlive, "the consumer thread exited")
+    }
 }

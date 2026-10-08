@@ -60,19 +60,43 @@ class KafkaConsumerRunner(
         consumer.wakeup()
     }
 
+    @volatile private var running = true
+    @volatile private var loopStarted = false
+    private val exited = new java.util.concurrent.CountDownLatch(1)
+
+    /** Stop consuming (server shutdown): the loop finishes the record in hand,
+      * closes the consumer (auto-commit commits only records already handled,
+      * whose audit entries are queued) and exits. Waits up to `timeoutMs`;
+      * true when the loop has ended (or never started). */
+    def stop(timeoutMs: Long): Boolean = {
+        running = false
+        try consumer.wakeup()
+        catch { case _: Exception => }
+        !loopStarted || exited.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
     def run(): Unit = {
         logger.info("Kafka consumer started")
-
-        while (true) {
-            try {
-                if (topics.nonEmpty) {
-                    poller.pollOnce(Duration.ofMillis(1000))
-                } else {
-                    Thread.sleep(500)
+        loopStarted = true
+        KafkaConsumerRunner.active = this
+        try {
+            while (running) {
+                try {
+                    if (topics.nonEmpty) {
+                        poller.pollOnce(Duration.ofMillis(1000))
+                    } else {
+                        Thread.sleep(500)
+                    }
+                } catch {
+                    case _: org.apache.kafka.common.errors.WakeupException => // expected on resubscribe and stop
+                    case _: InterruptedException if !running =>
                 }
-            } catch {
-                case _: org.apache.kafka.common.errors.WakeupException => // expected on resubscribe
             }
+            logger.info("Kafka consumer stopped")
+        } finally {
+            try consumer.close(Duration.ofSeconds(5))
+            catch { case e: Exception => logger.warn("Kafka consumer close: " + e.getMessage) }
+            exited.countDown()
         }
     }
 
@@ -125,6 +149,16 @@ class KafkaConsumerRunner(
 }
 
 object KafkaConsumerRunner {
+
+    /** The running consumer, for [[KafkaConsumerLifecycle]]. */
+    @volatile private[datris] var active: KafkaConsumerRunner = null
+
+    /** Server shutdown: stop the running consumer, if any. */
+    def stopActive(timeoutMs: Long): Unit = {
+        val r = active
+        if (r != null && !r.stop(timeoutMs))
+            LoggerFactory.getLogger(classOf[KafkaConsumerRunner]).warn("Kafka consumer did not stop within " + timeoutMs + "ms")
+    }
 
     /** One poll of the consumer, gated by AUDIT_LOG_STRICT (`accepting` is
       * AuditLog.acceptingWrites, always true in default mode).
