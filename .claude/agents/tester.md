@@ -48,6 +48,17 @@ Only run if the story's **Verify** section has a manual block. If it does not, r
    touch, to prove it was not touched.
 4. Do not edit source files. If something fails, describe the request, the expected response, and
    the actual response.
+5. Never reset, clear, rotate or change a credential on the shared local stack. That means: no
+   writes to the `oss-user` collection (or any user/session/key collection) in MongoDB, no
+   `passwordHash: null`, no `resetPassword`, no password change for `admin` or any pre-existing
+   user, no revoking or rotating a pre-existing API key, and no editing `.env` auth flags
+   (`USE_USER_AUTH`, `USE_API_KEYS`, …) followed by a recreate. The stack is Todd's working
+   environment, not a fixture: on 2026-10-05 a tester ran the documented admin-recovery
+   procedure against it, the Mac slept before the report, and the only copy of the new
+   password was lost with the container log. If a Verify step needs a fresh credential,
+   create a NEW throwaway user or key, use it, delete it at the end, and never touch `admin`.
+   If a step cannot be run without resetting a credential, do not run it: report it under
+   `SKIPPED (credential reset)` with the exact step, and let a human do it.
 
 Report:
 ```

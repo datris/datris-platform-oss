@@ -3,6 +3,19 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.45.0" description="October 8, 2026">
+  **AI rule and transformation scripts are generated once, stored with your pipeline, and run in an isolated container.**
+
+  - **One script per instruction, written when you save.** Saving a pipeline with an AI data-quality rule or an AI transformation generates its Python script then and stores it. Every run executes that stored script: an unchanged instruction behaves the same on every run, runs make no model call, and a model outage no longer stops ingestion. A later save regenerates only when the instruction or the source schema changed; pipelines created before the upgrade generate and store on their first run. See [AI rules](/data-quality/ai-rules#when-the-script-is-generated) and [AI transformation](/transformation/ai-transformation#when-the-script-is-generated).
+  - **Read, review and replace the script.** The save response, a new API endpoint and the Lineage panel show each script, when it was generated and by which model. Regenerate on demand; a failing script is never silently replaced, and the run error says when it was generated and how to replace it.
+  - **Scripts in your code repository.** With a code repository configured, pipeline scripts are committed under `pipelines/<pipeline>/` next to your taps, and runs execute the recorded commit. Hand edits are adopted deliberately with one call; a save that would overwrite one is refused with a warning, and runs keep the recorded commit until you resolve it. See [Pipeline scripts](/tap-github-storage#pipeline-scripts).
+  - **Generated scripts run outside the server.** On compose, they execute in a new hardened container, `datris-codegen-runner`: no platform secrets, no server filesystem, no route to the database, object store, secrets store, internet or the Datris API; a dedicated scratch volume emptied after every run. `datris doctor` reports the mode. See [Execution isolation](/tap-execution-isolation#generated-data-quality-and-transformation-scripts).
+  - **Blank AI instructions are ignored** instead of calling the model.
+  - **Doctor covers the new container** in the environment-drift check and a new `codegen.isolation` row.
+
+  **Upgrading:** refresh `docker-compose.yml` (`git pull` or re-download `docker-compose.standalone.yml`), then `docker compose pull && docker compose up -d`. All four images changed; one new container, one new internal network (`codegen-net`) and one new named volume (`codegen-scratch`) appear; no `.env` change. Pulling images without refreshing the compose file keeps scripts in-process with a startup and doctor warning; refreshing the compose file without pulling fails loudly on every AI rule and transformation, never silently in-process. Scripts are now written from column names and types, not sample rows. A failing script stays until you change the instruction or regenerate. Scripts that reached the network or server files now fail; `USE_CODEGEN_RUNNER=false` restores in-process execution. Keep `codegen-net` `internal: true`.
+</Update>
+
 <Update label="v1.44.1" description="October 6, 2026">
   **`datris doctor` tells you when a newer version is available.**
 

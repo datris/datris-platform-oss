@@ -1,19 +1,24 @@
 # Release Notes
 
-## v1.44.1 — October 6, 2026
+## v1.45.0 — October 8, 2026
 
-**`datris doctor` tells you when a newer version is available.**
+**AI rule and transformation scripts are generated once, stored with your pipeline, and run in an isolated container.**
 
-- **Know when you are behind.** A new `version.update` row in `datris doctor` reads "up to date" or names the newer version and the upgrade command. To find out, doctor tells datris.ai your Datris version, operating system and CPU architecture, and nothing else, each time you run it. Datris uses this to count the versions in use. It never happens from the server, on a timer, or during `datris doctor --pre-upgrade`, and nothing is stored on your machine. See [Doctor](/doctor#update-check).
-- **Off with one line.** Add `DATRIS_UPDATE_CHECK=0` to `.env` (run doctor from the install directory or pass `--project-dir`, or set it in the environment) and doctor sends nothing. A fresh install prints a short notice about the check, and `DATRIS_UPDATE_CHECK=0` given to the installer writes the line for you.
-- **Never in the way.** If datris.ai cannot be reached within three seconds, the row is skipped and doctor's result is unaffected.
-- **How to verify.** [Security Architecture](/production/security-architecture#no-telemetry) now lists both outbound requests Datris can make, what each sends, and commands to confirm there are no others.
-- **Security updates.** Refreshed the server, UI and tap-runner dependencies and the tap-runner base image to clear the open vulnerability reports. No behaviour change.
+- **One script per instruction, written when you save.** Saving a pipeline with an AI data-quality rule or an AI transformation generates its Python script right then and stores it. Every run executes that stored script, so an unchanged instruction gives the same behaviour on every run, runs make no model call, and a model outage no longer stops ingestion. A later save regenerates only when the instruction or the source schema changed. Pipelines created before the upgrade generate and store on their first run. See [AI rules](/data-quality/ai-rules#when-the-script-is-generated) and [AI transformation](/transformation/ai-transformation#when-the-script-is-generated).
+- **Read, review and replace the script.** The save response and a new API endpoint show each pipeline's scripts, when they were generated and by which model. The Lineage panel shows the same for the transformation. A script you do not like can be regenerated on demand; a script that fails is never silently replaced, and the run error says when it was generated and how to replace it.
+- **Scripts in your code repository.** With a code repository configured, pipeline scripts are committed next to your tap scripts, under `pipelines/<pipeline>/`, and runs execute the exact commit that was recorded. Edit the file in the repository and adopt the edit deliberately with one call; a save that would overwrite a hand edit is refused with a warning, and runs keep the recorded commit until you resolve it. Installs without a repository see no change. See [Pipeline scripts](/tap-github-storage#pipeline-scripts).
+- **Generated scripts run outside the server.** On a compose install, AI rule and transformation scripts now execute in a new hardened container, `datris-codegen-runner`, with no platform secrets, no view of the server's filesystem, no route to the database, object store or secrets store, no outbound internet, and no access to the Datris API. Scratch space is a dedicated volume emptied after every run. Pipelines behave the same. `datris doctor` reports which mode is in effect. See [Execution isolation](/tap-execution-isolation#generated-data-quality-and-transformation-scripts).
+- **Blank AI instructions are ignored.** An empty or whitespace-only instruction no longer calls the model; the stage is skipped with a status line saying so.
+- **Doctor covers the new container.** The environment-drift check includes `datris-codegen-runner`, and a new `codegen.isolation` row reports whether scripts are isolated.
 
 **Upgrading**
 
-Run `docker compose pull && docker compose up -d --force-recreate`. All four images changed.
+Refresh `docker-compose.yml` (`git pull`, or re-download `docker-compose.standalone.yml`), then run `docker compose pull && docker compose up -d`. All four images changed. One new container, one new internal network (`codegen-net`) and one new named volume (`codegen-scratch`) appear. No `.env` change is needed.
 
-- **The update check is on after you upgrade the CLI** (`pip install -U datris-mcp-server` or `brew upgrade datris`). A deployment that made no request to datris.ai outside the Configuration screen now makes one each time someone runs `datris doctor`. To keep it off, add `DATRIS_UPDATE_CHECK=0` to `.env`; the installer never edits an existing `.env`, so the line survives every upgrade.
-- **`datris doctor` exit code.** On a deployment that is behind the latest release, doctor now reports a warning and exits 1 where it exited 0 before. Upgrade, switch the check off, or treat 1 as passing if a script gates on 0. `datris doctor --pre-upgrade`, which the installer runs, is unchanged.
+- **Refresh the compose file and pull images together.** An install that pulls images but keeps its old compose file keeps running scripts inside the server, with a startup warning and a `codegen.isolation` doctor warning until the file is refreshed. An install that refreshes the compose file but keeps old images fails loudly on every AI rule and transformation until it pulls; scripts never fall back to running inside the server.
+- **Scripts are written from column names and types, not sample rows.** For delimited pipelines saved after the upgrade, an instruction that depends on how values look must state the format.
+- **A wrong or failing script stays until you act.** Change the instruction, or regenerate it. Changing the CodeGen model no longer changes a pipeline's script; regenerate to adopt the new model.
+- **Saving a pipeline with AI instructions can wait for up to two model calls.**
+- **Scripts that reached the network or server files now fail.** That is the point of the isolation. Set `USE_CODEGEN_RUNNER=false` in `.env` to run them inside the server as before.
+- **Keep `codegen-net` internal.** The compose file marks it `internal: true`; removing that would make the server reject traffic from your own host. If you must, also set `CODEGEN_RUNNER_API_BLOCK=false`.
 - No other configuration changes are required.
