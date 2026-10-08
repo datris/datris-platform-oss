@@ -222,3 +222,99 @@ def test_a_dedicated_volume_and_the_tmp_dir_are_emptied_at_start(tmp_path):
     finally:
         proc.kill()
         proc.wait()
+
+
+# ---------------------------------------------------------------- deep trees / stray children
+# Review round 3: a tree deeper than the recursion limit (and, on Linux, deeper than
+# PATH_MAX via chdir) must neither fail the run nor survive it, nor crash the start-up sweep.
+
+DEEP = 1500
+
+DEEP_SCRIPT = (
+    "import os\n"
+    "base = os.getcwd()\n"
+    "for start in ('.', '..'):\n"
+    "    os.chdir(base)\n"
+    "    os.chdir(start)\n"
+    "    os.mkdir('deep_' + str(len(start)))\n"
+    "    os.chdir('deep_' + str(len(start)))\n"
+    "    for i in range(%d):\n"
+    "        os.mkdir('a')\n"
+    "        os.chdir('a')\n"
+    "    open('leaf', 'w').write('x')\n"
+    "os.chdir(base)\n"
+    "print('ok')\n" % DEEP
+)
+
+
+def test_a_tree_deeper_than_the_recursion_limit_is_removed_and_the_run_succeeds(runner, dedicated):
+    scratch, tmpdir = dedicated
+    status, result, _ = _post(runner, {"script": DEEP_SCRIPT, "timeoutSec": 60, "inputName": "in.csv"}, b"a\n")
+    assert status == 200, result
+    assert result["exitCode"] == 0, result
+    assert _wait_listing(scratch, [], 15) == []
+    # The runner still works afterwards.
+    status, result, _ = _post(runner, {"script": "print(2)\n", "timeoutSec": 30, "inputName": "in.csv"}, b"a\n")
+    assert status == 200 and result["stdout"].strip() == "2"
+
+
+def _make_deep(root, depth):
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        for _ in range(depth):
+            os.mkdir("a")
+            os.chdir("a")
+        open("leaf", "w").write("x")
+    finally:
+        os.chdir(cwd)
+
+
+def test_the_start_up_sweep_survives_a_deep_tree(tmp_path):
+    scratch = tmp_path / "scratch"
+    (scratch / "cg_deep").mkdir(parents=True)
+    (scratch / "loose_deep").mkdir()
+    _make_deep(str(scratch / "cg_deep"), DEEP)
+    _make_deep(str(scratch / "loose_deep"), DEEP)
+    port = _free_port()
+    env = dict(os.environ, CODEGEN_SCRATCH_DIR=str(scratch), CODEGEN_SCRATCH_DEDICATED="1",
+               TAP_RUNNER_PORT=str(port), TAP_RUNNER_TOKEN="",
+               TAP_RUNNER_TOKEN_FILE="/nonexistent/tap-runner-token")
+    env.pop("CODEGEN_TMP_DIR", None)
+    proc = subprocess.Popen([sys.executable, os.path.join(APP_DIR, "app.py")], env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + 30
+        healthy = False
+        while time.monotonic() < deadline and not healthy:
+            if proc.poll() is not None:
+                break
+            try:
+                c = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+                c.request("GET", "/health")
+                healthy = c.getresponse().status == 200
+                c.close()
+            except OSError:
+                time.sleep(0.1)
+        assert healthy, "runner did not come up: " + (proc.stdout.read().decode()[-2000:] if proc.poll() is not None else "")
+        assert os.listdir(scratch) == []
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_a_child_the_script_leaves_running_is_killed_with_it(runner, dedicated):
+    scratch, _ = dedicated
+    late = os.path.join(str(scratch), "late.txt")
+    child = "import time; time.sleep(1.5); open(%r, 'w').write('x')" % late
+    script = (
+        "import subprocess, sys\n"
+        "subprocess.Popen([sys.executable, '-c', %r],\n"
+        "                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "print('spawned')\n" % child
+    )
+    status, result, _ = _post(runner, {"script": script, "timeoutSec": 30, "inputName": "in.csv"}, b"a\n")
+    assert status == 200 and result["exitCode"] == 0, result
+    assert result["timedOut"] is False
+    time.sleep(2.5)
+    assert not os.path.exists(late), "the stray child kept running after the run"

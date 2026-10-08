@@ -20,6 +20,7 @@ import json
 import os
 import select
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -285,29 +286,92 @@ def _codegen_tmp_dir():
 
 
 def _remove(p):
-    """Remove a file, link or tree, including dirs a script made unreadable (same uid)."""
+    """Remove a file, link or tree, including dirs a script made unreadable (same uid)
+    and trees deeper than the recursion limit or PATH_MAX. Never raises."""
     try:
         if os.path.islink(p) or not os.path.isdir(p):
             os.unlink(p)
             return
-        _chmod_tree(p)
-        shutil.rmtree(p, ignore_errors=True)
+        _remove_tree(p)
+    except Exception as e:  # noqa: BLE001 - a cleanup helper must never throw
+        _log("codegen cleanup: could not remove %s: %s" % (p, e))
+
+
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _remove_tree(top):
+    """Iterative, fd-relative removal that never goes more than two levels deep: every
+    subdirectory found below the top level is first renamed up into `top` (flattening
+    the tree), so neither recursion depth nor path length depends on how deep a script
+    nested its directories. At most two directory fds are open at once."""
+    try:
+        os.chmod(top, 0o700)
     except OSError:
         pass
+    root_fd = os.open(top, _DIR_FLAGS)
+    try:
+        queue = [None]  # None = top itself; otherwise a name directly under top
+        counter = 0
+        while queue:
+            name = queue.pop()
+            if name is not None:
+                try:
+                    os.chmod(name, 0o700, dir_fd=root_fd)
+                except (OSError, NotImplementedError):
+                    pass
+                try:
+                    fd = os.open(name, _DIR_FLAGS, dir_fd=root_fd)
+                except OSError:
+                    continue
+            else:
+                fd = root_fd
+            try:
+                try:
+                    entries = list(os.scandir(fd))
+                except OSError:
+                    entries = []
+                for e in entries:
+                    try:
+                        is_dir = e.is_dir(follow_symlinks=False)
+                    except OSError:
+                        is_dir = False
+                    if not is_dir:
+                        try:
+                            os.unlink(e.name, dir_fd=fd)
+                        except OSError:
+                            pass
+                    elif fd == root_fd:
+                        queue.append(e.name)
+                    else:
+                        while True:
+                            counter += 1
+                            flat = ".cg_flat_%d" % counter
+                            try:
+                                os.rename(e.name, flat, src_dir_fd=fd, dst_dir_fd=root_fd)
+                                queue.append(flat)
+                                break
+                            except FileExistsError:
+                                continue
+                            except OSError as err:
+                                if err.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                                    continue
+                                break
+            finally:
+                if fd != root_fd:
+                    os.close(fd)
+            if name is not None:
+                try:
+                    os.rmdir(name, dir_fd=root_fd)
+                except OSError:
+                    pass
+    finally:
+        os.close(root_fd)
+    os.rmdir(top)
 
 
-def _chmod_tree(p):
-    try:
-        os.chmod(p, 0o700)
-    except OSError:
-        return
-    try:
-        entries = list(os.scandir(p))
-    except OSError:
-        return
-    for e in entries:
-        if e.is_dir(follow_symlinks=False):
-            _chmod_tree(e.path)
+def _log(msg):
+    print(msg, file=sys.stderr, flush=True)
 
 
 def _empty_dir(root, keep=()):
@@ -400,18 +464,40 @@ def _receive_input(rfile, remaining, path):
         raise CodegenNoSpace()
 
 
+def _kill_group(proc):
+    """Kill the script's whole process group, so a child it spawned cannot keep writing
+    into scratch after the run (a process that calls setsid() itself escapes this)."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 def _run_codegen(script_path, in_path, out_path, scratch, timeout):
     argv = ["python3", script_path, in_path] + ([out_path] if out_path else [])
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            env=_base_env(scratch), cwd=scratch, start_new_session=True)
     try:
-        proc = subprocess.run(argv, capture_output=True, timeout=timeout,
-                              env=_base_env(scratch), cwd=scratch)
-        return {"stdout": proc.stdout.decode("utf-8", errors="replace"),
-                "stderr": proc.stderr.decode("utf-8", errors="replace"),
-                "exitCode": proc.returncode, "timedOut": False}
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        err = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
-        return {"stdout": out, "stderr": err, "exitCode": -1, "timedOut": True}
+        out, err = proc.communicate(timeout=timeout)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        # Still running is a timeout; an exited script whose stray child held the pipes is not.
+        script_running = proc.poll() is None
+        _kill_group(proc)
+        try:
+            out, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            out, err = b"", b""
+        timed_out = script_running
+    finally:
+        # The script has exited (or was killed): take any leftover children with it.
+        _kill_group(proc)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    return {"stdout": (out or b"").decode("utf-8", errors="replace"),
+            "stderr": (err or b"").decode("utf-8", errors="replace"),
+            "exitCode": -1 if timed_out else proc.returncode, "timedOut": timed_out}
 
 
 def execute_file(meta, rfile, length, wfile, send_error=None, send_head=None):
@@ -446,11 +532,15 @@ def execute_file(meta, rfile, length, wfile, send_error=None, send_head=None):
             return
         cleaned.append(True)
         if scratch:
-            _chmod_tree(scratch)
-            shutil.rmtree(scratch, ignore_errors=True)
-            with _ACTIVE_LOCK:
-                _ACTIVE_RUNS.discard(scratch)
-        _cleanup_after_run(root)
+            try:
+                _remove(scratch)
+            finally:
+                with _ACTIVE_LOCK:
+                    _ACTIVE_RUNS.discard(scratch)
+        try:
+            _cleanup_after_run(root)
+        except Exception as e:  # noqa: BLE001 - a wipe failure must not fail a finished run
+            _log("codegen cleanup after run failed: %s" % e)
 
     try:
         try:
@@ -642,6 +732,9 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if os.environ.get("CODEGEN_SCRATCH_DIR"):
         # A killed runner leaves its in-flight run dirs behind; remove them before serving.
-        sweep_codegen_scratch(os.environ["CODEGEN_SCRATCH_DIR"])
+        try:
+            sweep_codegen_scratch(os.environ["CODEGEN_SCRATCH_DIR"])
+        except Exception as e:  # noqa: BLE001 - never refuse to serve over a sweep failure
+            _log("codegen scratch sweep at start failed (serving anyway): %s" % e)
     print("tap-runner listening on :%d" % PORT, flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

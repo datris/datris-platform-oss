@@ -193,7 +193,10 @@ when the run ends (success, script failure, timeout or a dropped connection). An
 script wrote, on the volume outside its own directory or in the runner's small `/tmp`, is removed
 at the same time, and everything left by a killed runner is removed when it starts, so nothing
 carries from one run to the next. Runs that overlap in time share the volume, as concurrent tap
-runs share theirs. When the
+runs share theirs. Processes a script starts are stopped when the script ends (one that detaches into a new session is not). The runner image
+treats its scratch directory as dedicated (`CODEGEN_SCRATCH_DEDICATED=1`) and empties all of it,
+so if you run the image outside compose, point `CODEGEN_SCRATCH_DIR` only at an otherwise unused
+directory (see the [Configuration Reference](/configuration-reference#container-environment-variables)). When the
 disk fills, the rule or transformation fails with an error naming the `codegen-scratch` volume.
 The script's printed output (for an AI rule, its failure list) comes back in one result message
 capped at 64 MB; a rule that prints a failure for nearly every row of a very large file fails with
