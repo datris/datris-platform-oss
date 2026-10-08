@@ -44,6 +44,13 @@ class AuditInterceptor extends HandlerInterceptor {
             // log cannot take is refused before the handler runs, so nothing
             // happens that would go unrecorded. Default mode never refuses.
             if (AuditLog.strict && !AuditLog.acceptingWrites) {
+                // The audit-log status read is never gated: it is how the UI
+                // banner and scripts see `acceptingWrites: false`. While the
+                // gate is closed it is not recorded either (it changes nothing).
+                if (AuditInterceptor.isStatusRead(request)) {
+                    request.setAttribute(AuditLog.RecordedAttr, java.lang.Boolean.TRUE)
+                    return true
+                }
                 val logReads = Option(DatrisEnvironment.values).exists(_.auditLogLogReads)
                 if (AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads).isDefined) {
                     logger.warn("Refusing " + request.getMethod + " " + request.getRequestURI + ": audit log not accepting entries (AUDIT_LOG_STRICT)")
@@ -171,4 +178,12 @@ object AuditInterceptor {
 
     /** Retry-After on a strict-mode refusal (seconds). */
     val RetryAfterSeconds = "5"
+
+    val StatusPath = "/api/v1/audit-log/status"
+
+    /** `GET /api/v1/audit-log/status`, exempt from the strict gate. */
+    def isStatusRead(request: HttpServletRequest): Boolean = {
+        val uri = request.getRequestURI
+        "GET".equalsIgnoreCase(request.getMethod) && uri != null && (uri == StatusPath || uri == StatusPath + "/")
+    }
 }

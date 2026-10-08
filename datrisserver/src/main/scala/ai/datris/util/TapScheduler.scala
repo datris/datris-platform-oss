@@ -23,6 +23,12 @@ object TapScheduler {
       * dropped when the tap's cron parses or the tap leaves the tick. */
     private val invalidCronWarned = new java.util.concurrent.ConcurrentHashMap[String, String]()
 
+    /** One warning per period in which the strict audit gate is closed. */
+    private val auditGateLogged = new java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Test seam: replaces the background cron run (null = TapRunner). */
+    @volatile private[util] var fireOverride: TapConfig => Unit = null
+
     /** Test seam: forget which bad crons have already been logged. */
     private[util] def resetInvalidCronWarnings(): Unit = invalidCronWarned.clear()
 
@@ -33,6 +39,16 @@ object TapScheduler {
       * "unscheduled" and skipped silently (taps stored with "" before blank
       * normalisation at save time must not log an error every tick). */
     private[util] def checkSchedules(taps: Seq[TapConfig], now: Date): Unit = {
+        // Strict evidence mode: a scheduled run is an audited action, so no
+        // tap fires while the audit log cannot take entries. Due taps fire on
+        // the first tick after it recovers (the anchor is the last run).
+        if (!ai.datris.audit.AuditLog.acceptingWrites) {
+            if (auditGateLogged.compareAndSet(false, true))
+                logger.warn("TapScheduler: skipping scheduled and retry runs while the audit log is not accepting entries (AUDIT_LOG_STRICT)")
+            return
+        }
+        if (auditGateLogged.compareAndSet(true, false))
+            logger.info("TapScheduler: audit log accepting entries again; scheduled runs resume")
         taps.foreach(tap => {
             val scheduled = tap.cronExpression != null && tap.cronExpression.trim.nonEmpty
             if (scheduled && tap.enabled && tap.lastRunStatus != "running") {
@@ -94,6 +110,11 @@ object TapScheduler {
       * settles, generate a fix suggestion if the failure is final (no retries
       * left, or not safe to retry). */
     private def fireCronRun(tap: TapConfig): Unit = {
+        val o = fireOverride
+        if (o != null) {
+            o(tap)
+            return
+        }
         val thread = new Thread(() => {
             val md = new com.google.gson.JsonObject()
             md.addProperty("trigger", "cron")

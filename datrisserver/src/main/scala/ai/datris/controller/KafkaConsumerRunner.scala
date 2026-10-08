@@ -9,6 +9,7 @@ import ai.datris.model.{PipelineConfig, DatrisEnvironment}
 import ai.datris.util.{PipelineConfigIO, ObjectStoreUtil}
 import ai.datris.model.GlobalJobContext
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecords, KafkaConsumer}
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -37,6 +38,7 @@ class KafkaConsumerRunner(
 
     private val consumer = new KafkaConsumer[String, String](props)
     private val topics: mutable.Set[String] = mutable.Set.empty
+    private var gateLogged = false
 
     def addTopics(newTopics: Seq[String]): Unit = synchronized {
         topics ++= newTopics
@@ -55,10 +57,35 @@ class KafkaConsumerRunner(
 
         while (true) {
             try {
-                if (topics.nonEmpty) {
+                if (topics.nonEmpty && !ai.datris.audit.AuditLog.acceptingWrites) {
+                    // Strict evidence mode: do not consume while the audit log
+                    // cannot take entries (nothing polled = no offset committed).
+                    if (!gateLogged) {
+                        logger.warn("Kafka consumer paused: audit log not accepting entries (AUDIT_LOG_STRICT)")
+                        gateLogged = true
+                    }
+                    Thread.sleep(1000)
+                } else if (topics.nonEmpty) {
+                    if (gateLogged) {
+                        logger.info("Kafka consumer resumed: audit log accepting entries again")
+                        gateLogged = false
+                    }
                     val records: ConsumerRecords[String, String] = consumer.poll(Duration.ofMillis(1000))
-                    for (record <- records.asScala) {
-                        handler(record.topic(), record.key(), record.value())
+                    val processed = mutable.Map[TopicPartition, Long]()
+                    val it = records.asScala.iterator
+                    var paused = false
+                    while (!paused && it.hasNext) {
+                        val record = it.next()
+                        if (!ai.datris.audit.AuditLog.acceptingWrites) {
+                            // The gate closed mid-batch: rewind every partition to
+                            // its first unprocessed record so auto-commit never
+                            // commits past a message that was not ingested.
+                            KafkaConsumerRunner.rewindOffsets(records, processed.toMap).foreach { case (tp, off) => consumer.seek(tp, off) }
+                            paused = true
+                        } else {
+                            handler(record.topic(), record.key(), record.value())
+                            processed(new TopicPartition(record.topic(), record.partition())) = record.offset()
+                        }
                     }
                 } else {
                     Thread.sleep(500)
@@ -115,4 +142,20 @@ class KafkaConsumerRunner(
             GlobalJobContext.addJobContext(jobContext)
         }
     }
+}
+
+object KafkaConsumerRunner {
+
+    /** For a batch interrupted by the strict audit gate: the offset to seek
+      * each partition back to (its first record not yet handled). Partitions
+      * fully handled are absent. */
+    private[controller] def rewindOffsets(records: ConsumerRecords[String, String], processed: Map[TopicPartition, Long]): Map[TopicPartition, Long] =
+        records.partitions().asScala.toList.flatMap { tp =>
+            val recs = records.records(tp).asScala
+            val next = processed.get(tp) match {
+                case Some(last) => recs.find(_.offset() > last)
+                case None => recs.headOption
+            }
+            next.map(r => tp -> r.offset())
+        }.toMap
 }

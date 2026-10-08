@@ -367,4 +367,30 @@ class ProvenanceStamperSpec extends AnyFunSuite {
         assert(v1.config.destination.qdrant.metadata == v0.config.destination.qdrant.metadata)
         assert(v1.config.destination.qdrant.metadata.get(ProvenanceStamper.RunId) == "run-123")
     }
+
+    test("strict mode fails NDJSON that mixes objects with other JSON values; default stamps the objects") {
+        val lines = Seq("{\"id\":1}", "42", "{\"id\":3}")
+        val e = intercept[DatrisException] {
+            ProvenanceStamper.stamp(ctxOf(jsonConfig(), stagedNdJson(lines: _*), new RecordingStatusUtil), strict = true)
+        }
+        assert(e.getMessage.contains("not JSON objects"), e.getMessage)
+        val out = ProvenanceStamper.stamp(ctxOf(jsonConfig(), stagedNdJson(lines: _*), new RecordingStatusUtil), strict = false)
+        val rows = rowsOf(out.data)
+        assert(rows(1) == "42" && rows.head.contains(ProvenanceStamper.RunId) && rows(2).contains(ProvenanceStamper.RunId), rows.toString)
+    }
+
+    test("strict mode fails unstructured data with no vector destination; default proceeds") {
+        def unstructuredCtx: JobContext =
+            JobContext("run-123", tapMetadata, Data(10L, null, null, null, null, Array[Byte](1, 2)), config(stamp = true), null, INITIALIZED, null, null)
+        val e = intercept[DatrisException] { ProvenanceStamper.stamp(unstructuredCtx, strict = true) }
+        assert(e.getMessage.contains("no vector destination"), e.getMessage)
+        ProvenanceStamper.stamp(unstructuredCtx, strict = false) // must not throw
+    }
+
+    test("strict mode accepts an empty NDJSON payload (nothing to stamp, nothing loaded)") {
+        val ctx = ctxOf(jsonConfig(), stagedNdJson(), new RecordingStatusUtil)
+        assert(ctx.data.isNdJson && ctx.data.staged.rowCount == 0)
+        val out = ProvenanceStamper.stamp(ctx, strict = true) // must not throw
+        assert(out eq ctx)
+    }
 }

@@ -42,6 +42,17 @@ class MinioWebhookController {
             }
         }
 
+        // Strict evidence mode: while the audit log cannot take entries, refuse
+        // the trigger before anything is queued. MinIO retries a non-2xx
+        // webhook delivery, so the object is ingested once the log recovers.
+        if (!ai.datris.audit.AuditLog.acceptingWrites) {
+            logger.warn("Refusing /minio-events: audit log not accepting entries (AUDIT_LOG_STRICT); MinIO will retry")
+            return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Retry-After", ai.datris.config.AuditInterceptor.RetryAfterSeconds)
+                .body("Audit log not accepting entries and AUDIT_LOG_STRICT is on; retry later")
+        }
+
         logger.info(s"Received MinIO event: $payload")
         QueueUtil.add(DatrisEnvironment.current.fileNotifierQueue, payload)
         auditTrigger(payload)

@@ -19,7 +19,7 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import java.time.Instant
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong, AtomicReference}
 import scala.collection.mutable
 
 /** Durable, admin-readable record of who did what on the platform.
@@ -94,6 +94,14 @@ object AuditLog {
     private val started = new AtomicBoolean(false)
     private val dropped = new AtomicLong(0)
     private val unrecorded = new AtomicLong(0)
+
+    /** The entry the writer thread is persisting right now (strict shutdown
+      * accounting: an entry still in flight when the flush gives up is
+      * counted as unrecorded rather than lost silently at JVM exit). */
+    private val inFlight = new AtomicReference[AuditEntry](null)
+
+    /** Set by the shutdown flush: strict retries stop here. */
+    @volatile private var shutdownDeadlineNanos: Long = Long.MaxValue
     private val lastQueueWarnMs = new AtomicLong(0)
     private val indexedTables = mutable.Set[String]()
 
@@ -134,6 +142,14 @@ object AuditLog {
     /** Test seam: fixed delay between strict retries; < 0 = the real backoff. */
     @volatile private[datris] var retryDelayMsOverride: Long = -1L
 
+    /** Test seam: strict producer wait for room; < 0 = StrictOfferTimeoutMs. */
+    @volatile private[datris] var strictOfferTimeoutMsOverride: Long = -1L
+
+    private def strictOfferTimeoutMs: Long = {
+        val o = strictOfferTimeoutMsOverride
+        if (o >= 0) o else StrictOfferTimeoutMs
+    }
+
     /** Enqueue an entry. Returns false when auditing is off or the entry was
       * rejected; never throws. Never blocks in default mode; under strict it
       * waits (bounded) for room instead of evicting an older entry. */
@@ -151,14 +167,14 @@ object AuditLog {
             ensureWriter()
             if (strict) {
                 val queued =
-                    try queue.offerBlocking(withTable, StrictOfferTimeoutMs)
+                    try queue.offerBlocking(withTable, strictOfferTimeoutMs)
                     catch {
                         case _: InterruptedException =>
                             Thread.currentThread().interrupt()
                             false
                     }
                 if (!queued) {
-                    markUnrecorded(withTable, "audit queue full for " + StrictOfferTimeoutMs + "ms")
+                    markUnrecorded(withTable, "audit queue full for " + strictOfferTimeoutMs + "ms")
                     return false
                 }
             } else if (queue.offer(withTable)) {
@@ -243,7 +259,7 @@ object AuditLog {
             md.addProperty("category", r.category)
             md.addProperty("action", r.action)
         }
-        submit(AuditEntry(
+        val entry = AuditEntry(
             ts = Instant.now(),
             actor = AuditActor.resolve(request),
             category = "security",
@@ -255,7 +271,15 @@ object AuditLog {
             errorMessage = Some(reason),
             request = Some(requestInfo(request)),
             metadata = Some(md)
-        ))
+        )
+        // Strict with the gate closed: a denial changes nothing, so do not hold
+        // the request thread waiting for queue room; count it at once.
+        if (strict && !acceptingWrites && sinkOverride == null)
+            markUnrecorded(
+                entry.copy(tableName = Option(entry.tableName).getOrElse(DatrisEnvironment.current.auditLogTableName)),
+                "audit log not accepting entries"
+            )
+        else submit(entry)
     }
 
     def requestInfo(request: HttpServletRequest): AuditRequestInfo = {
@@ -302,7 +326,11 @@ object AuditLog {
     private def writerLoop(): Unit = {
         while (true) {
             try {
-                queue.poll(1000L).foreach(write)
+                queue.poll(1000L).foreach { e =>
+                    inFlight.set(e)
+                    try write(e)
+                    finally inFlight.compareAndSet(e, null)
+                }
             } catch {
                 case _: InterruptedException => return
                 case e: Throwable =>
@@ -311,15 +339,26 @@ object AuditLog {
         }
     }
 
+    /** Bounded: under strict, retries stop at ShutdownFlushMs (for the
+      * writer thread's in-flight entry too) and whatever is left is counted as
+      * unrecorded, so a store that is down cannot hang the stop. */
     private def flushOnShutdown(): Unit = {
         try {
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ShutdownFlushMs)
+            shutdownDeadlineNanos = deadline
             system("system", "stop")
             val pending = queue.drain()
-            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ShutdownFlushMs)
             pending.foreach(e =>
                 try write(e, deadline)
                 catch { case _: Throwable => }
             )
+            if (strict) {
+                // The writer thread may still be retrying (or hanging in) its
+                // entry: wait for it up to the deadline, then count it.
+                while (inFlight.get() != null && System.nanoTime() < deadline) Thread.sleep(20)
+                val left = inFlight.getAndSet(null)
+                if (left != null) markUnrecorded(left, "still being written at shutdown")
+            }
         } catch {
             case _: Throwable =>
         }
@@ -358,8 +397,11 @@ object AuditLog {
                     return
                 case e: Exception =>
                     attempt += 1
-                    if (System.nanoTime() >= deadlineNanos) {
-                        markUnrecorded(entry, "not persisted before shutdown: " + e.getMessage)
+                    if (System.nanoTime() >= math.min(deadlineNanos, shutdownDeadlineNanos)) {
+                        // The writer's own entry is counted by whichever of the
+                        // writer and the shutdown flush releases it first.
+                        if (inFlight.get() ne entry) markUnrecorded(entry, "not persisted before shutdown: " + e.getMessage)
+                        else if (inFlight.compareAndSet(entry, null)) markUnrecorded(entry, "not persisted before shutdown: " + e.getMessage)
                         return
                     }
                     if (attempt == 1 || attempt % 20 == 0)

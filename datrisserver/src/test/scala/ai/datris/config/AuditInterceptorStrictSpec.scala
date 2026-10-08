@@ -220,4 +220,23 @@ class AuditInterceptorStrictSpec extends AnyFunSuite with BeforeAndAfterEach wit
         }
         gate.countDown()
     }
+
+    test("the audit-log status read is never gated, even with AUDIT_LOG_READS on") {
+        val e = env(strict = true).copy(auditLogLogReads = true)
+        DatrisEnvironment.values = e
+        TenantContext.set(e)
+        down = true
+        fillToHighWater("st")
+        assert(!AuditLog.acceptingWrites)
+        val req = request("GET", "/api/v1/audit-log/status")
+        val (resp, body) = response()
+        assert(interceptor.preHandle(req, resp, new Object), "the status read passes the closed gate")
+        verify(resp, never()).setStatus(anyInt())
+        assert(body.toString.isEmpty)
+        verify(req).setAttribute(AuditLog.RecordedAttr, java.lang.Boolean.TRUE)
+        // Other audited reads are still refused.
+        val (resp2, _) = response()
+        assert(!interceptor.preHandle(request("GET", "/api/v1/pipelines"), resp2, new Object))
+        verify(resp2).setStatus(503)
+    }
 }

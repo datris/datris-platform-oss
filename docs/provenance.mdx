@@ -50,7 +50,7 @@ By default stamping is best effort: a run whose data cannot be stamped still loa
 
 - a JSON payload that is not newline-delimited JSON, or has a line that does not parse;
 - unstructured data with no vector destination (there is no metadata map to carry the stamp);
-- a `fields` selection that yields no value for the run (for example only `_datris_tap_run` on a direct upload);
+- for JSON and vector data, a `fields` selection that yields no value for the run (for example only `_datris_tap_run` on a direct upload; delimited data still gets the columns, empty);
 - an XML source, which is never stamped.
 
 ### Strict mode

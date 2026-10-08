@@ -16,6 +16,7 @@ import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 /** Story: strict evidence mode (plans/stories/strict-evidence-mode.md).
@@ -254,5 +255,33 @@ class AuditStrictSpec extends AnyFunSuite with BeforeAndAfterEach with BeforeAnd
         eventually(assert(AuditLog.queueDepth == 0 && store.actions.contains("h-last")))
         assert(AuditLog.acceptingWrites, "drained: the gate reopens")
         assert(store.actions.size == HighWater + 1, "every entry persisted")
+    }
+
+    test("strict producer that times out waiting for room counts the entry as unrecorded and logs it at ERROR") {
+        install(strict = true)
+        store.down = true
+        occupyWriter("t-held")
+        (1 to QueueCapacity).foreach(i => assert(submit("t" + i)))
+        assert(AuditLog.queueDepth == QueueCapacity)
+        val unrecordedBefore = AuditLog.unrecordedCount
+        val metricBefore = counter("datris_audit_unrecorded_total")
+        val droppedBefore = AuditLog.droppedCount
+        val auditLogger = org.slf4j.LoggerFactory.getLogger("ai.datris.audit").asInstanceOf[ch.qos.logback.classic.Logger]
+        val appender = new ch.qos.logback.core.read.ListAppender[ch.qos.logback.classic.spi.ILoggingEvent]()
+        appender.start()
+        auditLogger.addAppender(appender)
+        AuditLog.strictOfferTimeoutMsOverride = 20L
+        try {
+            assert(!submit("t-over"), "the entry could not be queued")
+            assert(AuditLog.queueDepth == QueueCapacity, "nothing was evicted")
+            assert(AuditLog.unrecordedCount == unrecordedBefore + 1)
+            assert(counter("datris_audit_unrecorded_total") == metricBefore + 1)
+            assert(AuditLog.droppedCount == droppedBefore)
+            val errors = appender.list.asScala.filter(_.getLevel == ch.qos.logback.classic.Level.ERROR).map(_.getFormattedMessage)
+            assert(errors.exists(_.contains("t-over")), "the whole entry is on the audit stream: " + errors)
+        } finally {
+            AuditLog.strictOfferTimeoutMsOverride = -1L
+            auditLogger.detachAppender(appender)
+        }
     }
 }
