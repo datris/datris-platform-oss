@@ -119,7 +119,7 @@ class AuthAPIController {
             }
         } catch {
             case e: Exception =>
-                logger.error("Error in /auth/oidc/login: " + Throwables.getStackTraceAsString(e))
+                logger.error("Error in /auth/oidc/login: " + OidcLogin.logSafe(Throwables.getStackTraceAsString(e)))
                 ssoRedirect(OidcLogin.Failed)
         }
     }
@@ -215,7 +215,7 @@ class AuthAPIController {
             redirect("/")
         } catch {
             case e: Exception =>
-                logger.error("Error in /auth/oidc/callback: " + Throwables.getStackTraceAsString(e))
+                logger.error("Error in /auth/oidc/callback: " + OidcLogin.logSafe(Throwables.getStackTraceAsString(e)))
                 refuse(OidcLogin.Failed, "internal error: " + e.getClass.getSimpleName)
         }
     }

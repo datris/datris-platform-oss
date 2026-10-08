@@ -74,3 +74,37 @@ class OidcLogSafeSpec extends AnyFunSuite {
         assert(OidcLogin.logSafe(null) == null)
     }
 }
+
+/** Review round 3: discovery endpoints that are not absolute http(s) URLs
+  * are rejected in parseDiscovery, without echoing the value, so the URL /
+  * URI constructors downstream never throw with provider text in the message. */
+class OidcDiscoveryEndpointSpec extends AnyFunSuite {
+
+    private val Issuer = "http://idp/realms/datris"
+
+    private def doc(auth: String, token: String, jwks: String): String = {
+        val o = new com.google.gson.JsonObject
+        o.addProperty("issuer", Issuer)
+        o.addProperty("authorization_endpoint", auth)
+        o.addProperty("token_endpoint", token)
+        o.addProperty("jwks_uri", jwks)
+        o.toString
+    }
+
+    private val ok = (s"$Issuer/auth", s"$Issuer/token", s"$Issuer/certs")
+
+    test("a discovery doc with a non-http jwks_uri is rejected without echoing it") {
+        assert(OidcLogin.parseDiscovery(doc(ok._1, ok._2, ok._3), Issuer).isRight)
+        val r = OidcLogin.parseDiscovery(doc(ok._1, ok._2, "jwks\r\nFORGED LINE"), Issuer)
+        assert(r.isLeft)
+        assert(!r.left.get.contains("FORGED"), r)
+        assert(OidcLogin.parseDiscovery(doc(ok._1, ok._2, "file:///etc/passwd"), Issuer).isLeft)
+    }
+
+    test("authorization and token endpoints with whitespace or control characters are rejected") {
+        val a = OidcLogin.parseDiscovery(doc("http://idp/auth \r\nFORGED", ok._2, ok._3), Issuer)
+        assert(a.isLeft && !a.left.get.contains("FORGED"), a)
+        val t = OidcLogin.parseDiscovery(doc(ok._1, "ftp://idp/token", ok._3), Issuer)
+        assert(t.isLeft, t)
+    }
+}

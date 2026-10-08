@@ -132,7 +132,7 @@ docker compose up -d --force-recreate datris
 
 The server checks the settings once at startup, without contacting the identity provider. If `OIDC_ISSUER`, `OIDC_CLIENT_ID` or `OIDC_REDIRECT_URI` is missing, the issuer or redirect URI is not an http(s) URL, or the Vault secret `oss/oidc` (key `clientSecret`) is not there, the server still starts and password login keeps working: SSO is switched off, the reason is logged once at ERROR, and the button is hidden. `OIDC_ENABLED=true` without `USE_USER_AUTH=true` also leaves SSO off (logged once at WARN).
 
-An identity provider that is down or unreachable is different: the server does not contact it until someone presses the button, so it starts normally and the **Sign in with SSO** button stays visible. Each press then fails, the person lands back on the login screen with a "could not be completed" message, and the server logs one ERROR line per attempt. Password login is unaffected. SSO works again as soon as the provider is reachable; no restart is needed.
+An identity provider that is down or unreachable is different: the server does not contact it until someone presses the button, so it starts normally and the **Sign in with SSO** button stays visible. Each press then fails: the person lands back on the login screen with a "could not be completed" message (or, if the provider went down after a recent successful sign-in, the browser cannot reach the provider's sign-in page), and the server logs one ERROR line per failed attempt. Password login is unaffected. SSO works again as soon as the provider is reachable; no restart is needed.
 
 ### How a person maps to a user and role
 

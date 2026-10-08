@@ -143,9 +143,18 @@ object OidcLogin {
             val docIssuer = str("issuer").getOrElse(return Left("discovery document has no issuer"))
             if (docIssuer != issuer)
                 return Left("discovery issuer '" + docIssuer + "' does not match the configured issuer '" + issuer + "'")
-            val auth = str("authorization_endpoint").getOrElse(return Left("discovery document has no authorization_endpoint"))
-            val token = str("token_endpoint").getOrElse(return Left("discovery document has no token_endpoint"))
-            val jwks = str("jwks_uri").getOrElse(return Left("discovery document has no jwks_uri"))
+            // Each endpoint must be an absolute http(s) URL, so the URI / URL
+            // constructors downstream cannot throw (and echo the value into a
+            // log). The value itself is never echoed.
+            def endpoint(name: String): Either[String, String] =
+                str(name) match {
+                    case None => Left("discovery document has no " + name)
+                    case Some(v) if !isHttpUrl(v) => Left("discovery " + name + " is not an http(s) URL")
+                    case Some(v) => Right(v)
+                }
+            val auth = endpoint("authorization_endpoint").fold(e => return Left(e), identity)
+            val token = endpoint("token_endpoint").fold(e => return Left(e), identity)
+            val jwks = endpoint("jwks_uri").fold(e => return Left(e), identity)
             Right(Discovery(docIssuer, auth, token, jwks))
         } catch {
             case e: Exception => Left("discovery document could not be parsed: " + e.getMessage)
@@ -276,13 +285,18 @@ object OidcLogin {
 
     /** Settings problem that switches SSO off, or None when the settings are
       * usable. Does not touch the network or Vault. */
+    /** An absolute http(s) URL with a host that java.net.URI and URL accept. */
+    def isHttpUrl(s: String): Boolean =
+        s != null && !s.exists(c => Character.isWhitespace(c) || Character.isISOControl(c)) && {
+            try {
+                val u = new URI(s)
+                (u.getScheme == "http" || u.getScheme == "https") && u.getHost != null && { u.toURL; true }
+            } catch { case _: Exception => false }
+        }
+
     def configProblem(issuer: String, clientId: String, redirectUri: String, secretName: String): Option[String] = {
         def blank(s: String) = s == null || s.trim.isEmpty
-        def httpUrl(s: String) =
-            try {
-                val u = new URI(s.trim)
-                (u.getScheme == "http" || u.getScheme == "https") && u.getHost != null
-            } catch { case _: Exception => false }
+        def httpUrl(s: String) = isHttpUrl(s.trim)
         if (blank(issuer)) Some("OIDC_ISSUER is not set")
         else if (!httpUrl(issuer)) Some("OIDC_ISSUER is not an http(s) URL: " + issuer)
         else if (blank(clientId)) Some("OIDC_CLIENT_ID is not set")
