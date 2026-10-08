@@ -331,3 +331,26 @@ def test_a_child_the_script_leaves_running_is_killed_with_it(runner, dedicated):
     assert result["timedOut"] is False
     time.sleep(2.5)
     assert not os.path.exists(late), "the stray child kept running after the run"
+
+
+def test_enospc_creating_the_input_file_answers_507_promptly(runner, tmp_path, monkeypatch):
+    """No free inode: open() of the input file itself fails with ENOSPC. The body is
+    drained once and the client gets a prompt 507, with nothing left in scratch."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("CODEGEN_SCRATCH_DIR", str(scratch))
+    real_open = open
+
+    def fake_open(path, mode="r", *a, **kw):
+        if os.path.basename(str(path)) == "in.csv" and any(c in mode for c in "wxa"):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_open(path, mode, *a, **kw)
+
+    monkeypatch.setattr(app, "open", fake_open, raising=False)
+    t0 = time.monotonic()
+    status, body = _raw_post(runner, {"script": "print(1)\n", "timeoutSec": 30, "inputName": "in.csv"},
+                             b"z" * (5 * 1024 * 1024))
+    assert time.monotonic() - t0 < 10, "the 507 must not wait for a socket timeout"
+    assert status == 507, (status, body[:300])
+    assert b"codegen-scratch" in body
+    assert _wait_listing(scratch, []) == []

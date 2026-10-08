@@ -434,9 +434,16 @@ def _receive_input(rfile, remaining, path):
     """Copy exactly `remaining` bytes from the socket to `path`, 64 KB at a time.
     Always consumes the whole body (so the client can read the answer). ENOSPC on a
     write, the final flush or the close (a buffered file reports a full disk when it
-    flushes) raises CodegenNoSpace once the body is consumed."""
+    flushes) raises CodegenNoSpace once the body is consumed. So does ENOSPC on creating
+    the file itself (no free inode, or no room for a directory entry)."""
     no_space = False
-    f = open(path, "wb")
+    try:
+        f = open(path, "wb")
+    except OSError as e:
+        if e.errno != errno.ENOSPC:
+            raise
+        _discard(rfile, remaining)
+        raise CodegenNoSpace()
     try:
         while remaining > 0:
             chunk = rfile.read(min(CODEGEN_CHUNK, remaining))
