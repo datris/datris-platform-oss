@@ -26,7 +26,13 @@ Datris is fully self-hosted. It runs as a set of containers on infrastructure yo
                       └────────────────────────────────────────────────────────────────┘
 ```
 
+The diagram does not draw two exits you configure yourself: the AI provider in each AI slot, and the agent you connect with an API key.
+
 Every request follows the same path: the key identifies the caller, the capability check decides whether the route is allowed at all, the [agent policy](/agent-policy) decides whether it runs now, waits for a person, or is refused, and only then does the server consult Vault for the credential the run needs. Policy is evaluated before Vault is touched.
+
+## Where data can go
+
+Your data goes only where you send it. Besides the destinations your pipelines write to, data leaves the perimeter only to the AI provider you choose for each AI slot, to the agents you connect, and, if you turn them on, to web search and a GitHub repository for scripts. The chat assistants need a cloud AI provider, while code generation and embeddings can run on local models. [Data Flows](/production/data-flows) lists, for row values, schemas, credentials, provider keys, logs and scripts, every place each can go and the setting that changes it.
 
 ## Identity and authorization
 
@@ -64,7 +70,7 @@ Taps are Python that agents (or people) write and Datris runs. On Docker Compose
 
 ## Air-gapped operation
 
-Every store Datris depends on is bundled or pointable at one you already run. For the AI features, local models through Ollama cover chat and code generation, and the bundled `bge-m3` embedding server covers embeddings, so a deployment can run with no cloud AI provider. The bundled embedding model downloads once on first start; pre-pull the images and the model on a connected machine and move them across. Add `DATRIS_UPDATE_CHECK=0` to `.env` so `datris doctor` does not try to reach datris.ai (without a route out the attempt only times out after 3 s and is reported as skipped).
+Every store Datris depends on is bundled or pointable at one you already run. For the AI features, local models through Ollama cover code generation and the one-shot helpers (profiling, fix suggestions, tap diagnosis), and the bundled `bge-m3` embedding server covers embeddings. The chat assistants (the Assistant, Search chat, Catalog chat, the Configuration assistant, Ops chat and the recovery agent) need one of the supported cloud providers today, so an air-gapped deployment runs without them. See [No cloud exit](/production/data-flows#no-cloud-exit). The bundled embedding model downloads once on first start; pre-pull the images and the model on a connected machine and move them across. Add `DATRIS_UPDATE_CHECK=0` to `.env` so `datris doctor` does not try to reach datris.ai (without a route out the attempt only times out after 3 s and is reported as skipped).
 
 ## No telemetry
 

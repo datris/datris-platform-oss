@@ -143,6 +143,7 @@
             "group": "Production",
             "pages": [
               "production/security-architecture",
+              "production/data-flows",
               "production/upgrades",
               "production/vulnerability-disclosure",
               "production/licensing-support"
