@@ -319,7 +319,7 @@ object AuditLog {
             val t = new Thread(() => writerLoop(), "audit-log-writer")
             t.setDaemon(true)
             t.start()
-            Runtime.getRuntime.addShutdownHook(new Thread(() => flushOnShutdown(), "audit-log-flush"))
+            Runtime.getRuntime.addShutdownHook(new Thread(() => jvmShutdownHook(), "audit-log-flush"))
         }
     }
 
@@ -339,36 +339,93 @@ object AuditLog {
         }
     }
 
-    /** Bounded: under strict, retries stop at ShutdownFlushMs (for the
-      * writer thread's in-flight entry too) and whatever is left is counted as
-      * unrecorded, so a store that is down cannot hang the stop. */
-    private def flushOnShutdown(): Unit = flushOnShutdown(ShutdownFlushMs)
+    /** True once a Spring context owns the shutdown flush (see
+      * [[AuditLogLifecycle]]): it then runs after the web server has stopped
+      * taking requests and before Spring shuts logging down, and the JVM
+      * shutdown hook below stands aside. */
+    @volatile private[datris] var lifecycleManaged = false
+
+    private val flushed = new AtomicBoolean(false)
+
+    /** Runs the shutdown flush once (Spring lifecycle stop, or the JVM hook
+      * when no Spring context manages it). */
+    private[datris] def shutdownFlush(): Unit =
+        if (started.get() && flushed.compareAndSet(false, true)) flushOnShutdown(ShutdownFlushMs)
+
+    private def jvmShutdownHook(): Unit = if (!lifecycleManaged) shutdownFlush()
 
     /** Test seam: run the shutdown flush with a short bound. The caller resets
       * with [[resetShutdownForTest]] once the writer has settled. */
     private[datris] def runShutdownFlushForTest(flushMs: Long): Unit = flushOnShutdown(flushMs)
 
-    private[datris] def resetShutdownForTest(): Unit = shutdownDeadlineNanos = Long.MaxValue
+    private[datris] def resetShutdownForTest(): Unit = {
+        shutdownDeadlineNanos = Long.MaxValue
+        flushed.set(false)
+    }
 
+    /** Bounded to `flushMs` in both modes: every persist attempt runs on
+      * [[flushExecutor]] with the time left, so a config store that hangs
+      * (rather than fails) cannot hold the JVM. Under strict, retries stop at
+      * the deadline (for the writer thread's in-flight entry too) and each
+      * entry left is counted as unrecorded once. The outcome is also written
+      * to stderr, which outlives the logging system at JVM exit. */
     private def flushOnShutdown(flushMs: Long): Unit = {
+        var lost = 0
         try {
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(flushMs)
             shutdownDeadlineNanos = deadline
             system("system", "stop")
             val pending = queue.drain()
             pending.foreach(e =>
-                try write(e, deadline, tracked = false)
-                catch { case _: Throwable => }
+                try { if (!write(e, deadline, tracked = false)) lost += 1 }
+                catch { case _: Throwable => lost += 1 }
             )
             if (strict) {
                 // The writer thread may still be retrying (or hanging in) its
                 // entry: wait for it up to the deadline, then count it.
                 while (inFlight.get() != null && System.nanoTime() < deadline) Thread.sleep(20)
                 val left = inFlight.getAndSet(null)
-                if (left != null) markUnrecorded(left, "still being written at shutdown")
+                if (left != null) {
+                    markUnrecorded(left, "still being written at shutdown")
+                    lost += 1
+                }
             }
         } catch {
             case _: Throwable =>
+        } finally {
+            if (strict || lost > 0)
+                try
+                    System.err.println(
+                        "audit-unrecorded total=" + unrecorded.get() + " at shutdown (" + lost + " entr" + (if (lost == 1) "y" else "ies") +
+                            " not persisted by the shutdown flush" + (if (strict) "" else "; AUDIT_LOG_STRICT off") + ")"
+                    )
+                catch { case _: Throwable => }
+        }
+    }
+
+    /** One daemon thread for persist attempts made by the shutdown flush, so
+      * each attempt can be abandoned at the deadline. */
+    private lazy val flushExecutor: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newSingleThreadExecutor { (r: Runnable) =>
+            val t = new Thread(r, "audit-log-flush-persist")
+            t.setDaemon(true)
+            t
+        }
+
+    /** persist(entry) with a hard time limit; throws on timeout (the attempt
+      * is interrupted and abandoned). */
+    private def persistWithin(entry: AuditEntry, remainingNanos: Long): Unit = {
+        val f = flushExecutor.submit(new java.util.concurrent.Callable[Unit] { def call(): Unit = persist(entry) })
+        try f.get(math.max(0L, remainingNanos), TimeUnit.NANOSECONDS)
+        catch {
+            case _: java.util.concurrent.TimeoutException =>
+                f.cancel(true)
+                throw new java.util.concurrent.TimeoutException("config store did not answer before the shutdown deadline")
+            case ee: java.util.concurrent.ExecutionException =>
+                ee.getCause match {
+                    case e: Exception => throw e
+                    case t => throw new RuntimeException(t)
+                }
         }
     }
 
@@ -376,14 +433,17 @@ object AuditLog {
       * persist (strict). */
     private final class NoConfigStore extends RuntimeException("Audit log requires the Mongo config store")
 
-    /** Persist one entry. Default: one attempt, a failure is logged and the
-      * entry skipped. Strict: the same entry is retried with backoff until it
-      * lands (the writer holds the queue's order meanwhile); only the shutdown
-      * flush stops at `deadlineNanos`. */
-    /** `tracked`: the entry is the writer thread's (published in [[inFlight]]),
+    /** Persist one entry; true when it was stored. Default: one attempt, a
+      * failure is logged and the entry skipped. Strict: the same entry is
+      * retried with backoff until it lands (the writer holds the queue's order
+      * meanwhile); only the shutdown deadline stops it.
+      *
+      * `tracked`: the entry is the writer thread's (published in [[inFlight]]),
       * so at the shutdown deadline it is counted only if the writer, not the
-      * flush, releases it. Entries the flush drained are always counted. */
-    private def write(entry: AuditEntry, deadlineNanos: Long, tracked: Boolean): Unit = {
+      * flush, releases it. `tracked = false` is the shutdown flush: each
+      * attempt is time-limited, the deadline is checked before every attempt,
+      * and an entry left at the deadline is always counted (strict). */
+    private def write(entry: AuditEntry, deadlineNanos: Long, tracked: Boolean): Boolean = {
         val json = entry.toJson
         if (emitLogLine)
             auditLogger.info("audit {}", StructuredArguments.raw("audit", json.toString))
@@ -392,25 +452,30 @@ object AuditLog {
         var attempt = 0
         var delayMs = RetryInitialMs
         while (true) {
+            if (!tracked && System.nanoTime() >= deadlineNanos) {
+                if (strict) markUnrecorded(entry, "shutdown flush deadline reached")
+                else logger.warn("Audit entry not persisted (" + entry.category + ":" + entry.action + "): shutdown flush deadline reached")
+                return false
+            }
             try {
-                persist(entry)
+                if (tracked) persist(entry) else persistWithin(entry, deadlineNanos - System.nanoTime())
                 if (attempt > 0)
                     logger.info(
                         "Audit entry persisted after " + attempt + " retr" + (if (attempt == 1) "y" else "ies") + " (" + entry.category + ":" + entry.action + ")"
                     )
-                return
+                return true
             } catch {
-                case _: NoConfigStore if !strict => return
+                case _: NoConfigStore if !strict => return false
                 case e: Exception if !strict =>
                     logger.warn("Audit entry not persisted (" + entry.category + ":" + entry.action + "): " + e.getMessage, e)
-                    return
+                    return false
                 case e: Exception =>
                     attempt += 1
                     if (System.nanoTime() >= math.min(deadlineNanos, shutdownDeadlineNanos)) {
                         // The writer's own entry is counted by whichever of the
                         // writer and the shutdown flush releases it first.
                         if (!tracked || inFlight.compareAndSet(entry, null)) markUnrecorded(entry, "not persisted before shutdown: " + e.getMessage)
-                        return
+                        return false
                     }
                     if (attempt == 1 || attempt % 20 == 0)
                         logger.warn(
@@ -418,10 +483,13 @@ object AuditLog {
                                 .action + "), AUDIT_LOG_STRICT is on, retrying (attempt " + attempt + ", queue depth " + queue.size + "): " + e.getMessage
                         )
                     val fixed = retryDelayMsOverride
-                    Thread.sleep(if (fixed >= 0) fixed else delayMs)
+                    val sleepMs = if (fixed >= 0) fixed else delayMs
+                    // The flush never sleeps past its deadline.
+                    Thread.sleep(if (tracked) sleepMs else math.max(0L, math.min(sleepMs, TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime()))))
                     delayMs = math.min(delayMs * 2, RetryMaxMs)
             }
         }
+        false
     }
 
     private def persist(entry: AuditEntry): Unit = {

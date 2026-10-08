@@ -304,4 +304,30 @@ class AuditStrictSpec extends AnyFunSuite with BeforeAndAfterEach with BeforeAnd
             assert(store.actions.isEmpty)
         } finally AuditLog.resetShutdownForTest()
     }
+
+    test("strict shutdown flush is bounded when the store hangs instead of failing, and counts every entry left once") {
+        install(strict = true)
+        store.gate = new CountDownLatch(1) // every persist blocks: a hanging store
+        occupyWriter("h-hung")
+        (1 to 10).foreach(i => assert(submit("hg" + i)))
+        val queued = AuditLog.queueDepth
+        assert(queued == 10)
+        val before = AuditLog.unrecordedCount
+        val err = new java.io.ByteArrayOutputStream()
+        val savedErr = System.err
+        System.setErr(new java.io.PrintStream(err, true))
+        try {
+            val t0 = System.nanoTime()
+            AuditLog.runShutdownFlushForTest(300L)
+            val tookMs = (System.nanoTime() - t0) / 1000000L
+            assert(tookMs < 2000, "the flush returned within its bound despite the hanging store: " + tookMs + "ms")
+            // 10 queued + the "system stop" entry + the writer's in-flight entry.
+            assert(AuditLog.unrecordedCount == before + queued + 1 + 1, "each entry counted once: " + (AuditLog.unrecordedCount - before))
+            assert(store.actions.isEmpty)
+            assert(err.toString.contains("audit-unrecorded total=" + AuditLog.unrecordedCount + " at shutdown"), "stderr: " + err)
+        } finally {
+            System.setErr(savedErr)
+            AuditLog.resetShutdownForTest()
+        }
+    }
 }

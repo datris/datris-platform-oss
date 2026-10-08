@@ -297,6 +297,9 @@ services:
     image: datrisai/datris-server:latest
     #build: .  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris
+    # Time for a graceful stop: Spring shutdown plus the audit log flush
+    # (bounded to 10 s) before Docker kills the JVM.
+    stop_grace_period: 30s
     ports:
       - "8080:8080"
     # No depends_on for postgres/tei: both are optional (replicas-gated above)

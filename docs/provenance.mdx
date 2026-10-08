@@ -58,7 +58,7 @@ By default stamping is best effort: a run whose data cannot be stamped still loa
 If every landed row must carry its stamp, set `PROVENANCE_STRICT=true` in `.env` and recreate the Datris container. Then a pipeline with `provenance.stamp` on fails its run with `Provenance could not be stamped (<reason>) and PROVENANCE_STRICT is on; nothing was loaded` instead of loading unstamped rows. The failure happens before any destination is written. Delimited, JSON and vector data that can be stamped are stamped exactly as in the default mode.
 
 - **XML sources are exempt.** XML cannot be stamped, so under strict mode an XML pipeline with stamping on still saves and still loads unstamped; its run status says `Provenance stamping skipped (XML source is exempt from PROVENANCE_STRICT)`. Those rows are outside the strict guarantee. `datris doctor` lists such pipelines under `provenance.strict`.
-- **Field names are checked.** A pipeline whose `provenance.fields` names a field that does not exist is refused when it is saved.
+- **Field names are checked.** A pipeline whose `provenance.fields` names a field that does not exist is refused when it is saved, even with `stamp` off; a pipeline saved earlier with such a name must have it removed before it can be saved again.
 - **Stamping stays opt-in.** Strict mode does not turn stamping on; pipelines without `provenance.stamp` are untouched.
 
 ## Resolving a stamp
