@@ -36,7 +36,7 @@ Your data goes only where you send it. Besides the destinations your pipelines w
 
 ## Identity and authorization
 
-- **Humans** log in to the UI with a username and password (BCrypt, cost 12). The first boot creates an `admin` account with a random bootstrap password, printed once to the server log (`docker compose logs datris | grep "Bootstrap login"`); change it at first login. Sessions are opaque random tokens in an `HttpOnly`, `SameSite=Strict` cookie with an 8-hour TTL. Three roles — admin, editor, viewer. See [User Authentication](/user-auth).
+- **Humans** log in to the UI with a username and password (BCrypt, cost 12). The first boot creates an `admin` account with a random bootstrap password, printed once to the server log (`docker compose logs datris | grep "Bootstrap login"`); change it at first login. Sessions are opaque random tokens in an `HttpOnly`, `SameSite=Strict` cookie with an 8-hour TTL. Three roles — admin, editor, viewer. With `OIDC_ENABLED=true`, people can instead **sign in with SSO** through your identity provider (OpenID Connect authorization code flow with PKCE; ID tokens checked for signature, issuer, audience, expiry and nonce, RS256/ES256 only); they become ordinary Datris users with one of the three roles, and the built-in `admin` account can never be reached through SSO. See [User Authentication](/user-auth) and [Single sign-on (OIDC)](/user-auth#single-sign-on-oidc).
 - **Programmatic clients** — the CLI, MCP agents, scripts — each hold their own labeled API key, sent as `x-api-key` and validated against Vault. Every key carries an explicit list of capabilities (`resource:action[:scope]`); a call outside that list returns 403, and the MCP tool catalog an agent sees is filtered to match. Templates (`read-only`, `rag-builder`, `reporting`, `ops`) cover the common shapes. Keys are stored hashed, shown once, and revocable individually. See [API Keys](/api-keys).
 - **Tap scripts** never receive a platform key. Each run gets a short-lived, read-only token for the platform API that the tap wrapper attaches automatically.
 
@@ -108,8 +108,8 @@ Private reporting, response targets, advisories, SBOMs, and dependency scanning 
 
 Stated so you can plan around it rather than discover it:
 
-- No MFA, password-complexity rules, or account lockout — passwords have a minimum length only.
-- No OIDC / SSO integration yet. It is on the roadmap; open a discussion if you need it.
+- No built-in MFA. MFA comes from your identity provider through OIDC single sign-on (`OIDC_ENABLED=true`, see [Single sign-on (OIDC)](/user-auth#single-sign-on-oidc)): people who sign in with SSO get whatever MFA, password rules and lockout the provider enforces. Local accounts, including the `admin` recovery account, still have a minimum password length only and no complexity rules or lockout.
+- No SAML, and no group-to-role mapping from the identity provider yet: an SSO user's role is set on the Users screen (or `OIDC_DEFAULT_ROLE` for new people).
 - No built-in rate limiting or WAF — put one in front of production deployments.
 - No enforced encryption at rest — enable it per store.
 - CORS allowed origins default to `*` for development — set `cors.allowedOrigins` to your real origins in production.
@@ -119,9 +119,10 @@ Stated so you can plan around it rather than discover it:
 
 1. Run Vault in non-dev mode with sealed root tokens.
 2. Put a TLS-terminating reverse proxy in front of the server; do not expose 8080.
-3. Switch on the governance controls: `DATRIS_GOVERNED=1` on a new install, or `USE_USER_AUTH=true` and `USE_API_KEYS=true` (with the two below) in `.env`; change the admin bootstrap password immediately; issue one scoped key per agent.
-4. Turn on `USE_AGENT_POLICY=true` and start from **Use recommended**; turn on `USE_AUDIT_LOG=true` and ship the log line to your aggregator. `datris doctor` shows `governance.controls` as ok once all four are on.
-5. Keep the isolated tap runner on (the Compose default).
-6. Set `DATRIS_ENV=production`, `sslmode=require` on external Postgres, and `cors.allowedOrigins`.
-7. Enable encryption at rest on the stores; rotate API keys periodically.
-8. Run the [doctor](/doctor) self-check before every upgrade.
+3. Switch on the governance controls: `DATRIS_GOVERNED=1` on a new install, or `USE_USER_AUTH=true` and `USE_API_KEYS=true` (with the agent policy and audit log in step 5) in `.env`; change the admin bootstrap password immediately; issue one scoped key per agent.
+4. Turn on SSO (`OIDC_ENABLED=true` with your identity provider's issuer and client) so people sign in with their company account and its MFA; keep the `admin` password for recovery. See [Single sign-on (OIDC)](/user-auth#single-sign-on-oidc).
+5. Turn on `USE_AGENT_POLICY=true` and start from **Use recommended**; turn on `USE_AUDIT_LOG=true` and ship the log line to your aggregator. `datris doctor` shows `governance.controls` as ok once all four are on.
+6. Keep the isolated tap runner on (the Compose default).
+7. Set `DATRIS_ENV=production`, `sslmode=require` on external Postgres, and `cors.allowedOrigins`.
+8. Enable encryption at rest on the stores; rotate API keys periodically.
+9. Run the [doctor](/doctor) self-check before every upgrade.

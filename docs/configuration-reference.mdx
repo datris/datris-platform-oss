@@ -95,6 +95,13 @@ Two independent flags control access. Set them together — see [the supported m
 | `USE_USER_AUTH` | `false` | Require login for the UI; gate Configuration and Users tabs to `admin`. See [User Authentication](/user-auth) |
 | `USE_API_KEYS` | `false` | Require `x-api-key` on every REST and MCP request. Maps to `useApiKeys` above |
 | `MULTI_TENANT` | `false` | Advanced: per-tenant database isolation. Requires `USE_API_KEYS=true`; each request is routed to the tenant environment its API key belongs to |
+| `OIDC_ENABLED` | `false` | `oidc.enabled`: single sign-on through your identity provider ("Sign in with SSO" on the login page). Only takes effect with `USE_USER_AUTH=true`; a wrong or incomplete setting switches SSO off (ERROR in the log) and never blocks startup or password login. See [Single sign-on (OIDC)](/user-auth#single-sign-on-oidc) |
+| `OIDC_ISSUER` | empty | `oidc.issuer`: the provider's issuer URL; must equal the `issuer` in its discovery document exactly |
+| `OIDC_CLIENT_ID` | empty | `oidc.clientId`: the client id registered at the provider. The client secret is not an env var: it lives in Vault under `oss/oidc` (`oidc.secretName`), key `clientSecret` |
+| `OIDC_REDIRECT_URI` | empty | `oidc.redirectUri`: `https://<ui-host>/api/v1/auth/oidc/callback`, registered at the provider |
+| `OIDC_SCOPES` | `openid email profile` | `oidc.scopes`: scopes requested at sign-in |
+| `OIDC_USERNAME_CLAIM` | `email` | `oidc.usernameClaim`: the ID-token claim that becomes the Datris username |
+| `OIDC_DEFAULT_ROLE` | empty | `oidc.defaultRole`: role for a person with no Datris user. Empty refuses them; `viewer` or `editor` creates them. `admin` is not accepted and counts as empty |
 | `CAPABILITY_ENFORCEMENT` | `enforce` | Default: scoped keys missing the required capability get HTTP 403. Override to `log-only` to emit `would-deny` log lines without rejecting — useful only when iterating on a new scope policy and you want a trial run before flipping enforcement on. Legacy `*:*` keys are unaffected either way |
 | `DATRIS_ALLOW_PRIVATE_EGRESS` | `false` | HTTP taps and REST endpoint destinations refuse loopback, link-local, private, and cloud-metadata addresses. Set `true` only if your endpoints legitimately live on an internal network. See [Tap Execution & Isolation](/tap-execution-isolation#always-on-protections). |
 | `USE_CODEGEN_RUNNER` | `true` (compose) / unset=`false` (sbt) | Run the Python scripts generated for AI data-quality rules and AI transformations in the isolated `datris-codegen-runner` sidecar (no platform secrets, no server files, no internet). With it on, a stopped or unreachable runner fails the rule or transformation; there is no in-process fallback. Set `false` to run them in-process (warned at startup, per run, and by `datris doctor`). See [Tap Execution & Isolation](/tap-execution-isolation#generated-data-quality-and-transformation-scripts). |
@@ -204,6 +211,7 @@ Region lives in the credentials secret rather than on the pipeline config so the
 | `secrets.qdrantSecretName` | Vault path for Qdrant connection |
 | `secrets.weaviateSecretName` | Vault path for Weaviate connection |
 | `secrets.milvusSecretName` | Vault path for Milvus connection |
+| `oidc.secretName` | Vault path for the OIDC single sign-on client secret (default `oss/oidc`, key `clientSecret`). A platform secret: no tap or pipeline can reference it |
 | `secrets.chromaSecretName` | Vault path for Chroma connection |
 | `secrets.pgvectorSecretName` | Vault path for pgvector PostgreSQL connection |
 
@@ -420,6 +428,7 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `SCRATCH_INLINE_ROWS` | `200` | Override `scratchInlineRows`: rows inlined on a Live Read run's status and the maximum `limit` per `/pipeline/result` page. |
 | `SCRATCH_RETENTION_HOURS` | `24` | Override `scratchRetentionHours`: hours a Live Read result object survives before the hourly sweep deletes it. Live Read results hold whatever the source returned, so shorten this rather than lengthen it on shared hosts. |
 | `USE_USER_AUTH` | `false` | Enable username/password login + admin gating. See [User Authentication](/user-auth). |
+| `OIDC_ENABLED` | `false` | Single sign-on through your identity provider; needs `USE_USER_AUTH=true`. With `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`, `OIDC_SCOPES` (`openid email profile`), `OIDC_USERNAME_CLAIM` (`email`) and `OIDC_DEFAULT_ROLE` (empty). Client secret in Vault, `oss/oidc` key `clientSecret`. See [Single sign-on (OIDC)](/user-auth#single-sign-on-oidc). |
 | `USE_API_KEYS` | `false` | Enable per-tenant API-key gating on the REST/MCP API. See [API Keys](/api-keys). |
 | `MULTI_TENANT` | `false` | Advanced: switch to per-tenant database isolation, with each request routed by its API key. Requires `USE_API_KEYS=true`. |
 | `ANTHROPIC_OVERLOAD_FALLBACK_MODEL` | `claude-sonnet-5` | Model used for the current request when Anthropic returns a sustained `overloaded_error` on an Opus call (after the automatic retries). Only consulted when the configured model is an Anthropic Opus variant — other providers ignore it. Bump when a newer Sonnet ships to keep the fallback current. |

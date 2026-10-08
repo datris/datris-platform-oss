@@ -476,6 +476,12 @@ components:
           type: string
         useUserAuth:
           type: string
+        oidcEnabled:
+          type: string
+          description: >-
+            "true" only when OIDC single sign-on is effectively on (user auth on,
+            OIDC enabled and its settings valid at startup); the login page shows
+            "Sign in with SSO" only then. Older servers omit the field.
         useApiKeys:
           type: string
         useAuditLog:
@@ -4348,6 +4354,67 @@ paths:
           description: User auth is not enabled on this server
         '500':
           description: Error
+
+  /api/v1/auth/oidc/login:
+    get:
+      tags: [Auth]
+      summary: Start single sign-on (OIDC)
+      description: >-
+        Browser navigation, not an API call. Sets the short-lived HttpOnly
+        `datris-oidc-tx` cookie (state, nonce and PKCE verifier; ten minutes,
+        `SameSite=Lax`, path `/api/v1/auth/oidc`) and redirects to the identity
+        provider's authorization endpoint with `response_type=code`,
+        `code_challenge_method=S256`, `state` and `nonce`. Only available when
+        user auth and OIDC are both on.
+      security: []
+      responses:
+        '302':
+          description: >-
+            Redirect to the identity provider, or to `/login?ssoError=sso_failed`
+            when its discovery document cannot be fetched.
+        '404':
+          description: Single sign-on is not enabled on this server
+
+  /api/v1/auth/oidc/callback:
+    get:
+      tags: [Auth]
+      summary: Single sign-on (OIDC) callback
+      description: >-
+        The redirect URI registered at the identity provider. Checks `state`
+        against the `datris-oidc-tx` cookie, exchanges the code (client secret
+        from Vault, PKCE verifier), validates the ID token, resolves the Datris
+        user and sets the session cookie. Every outcome is a redirect: `/` on
+        success, otherwise `/login?ssoError=<code>` with one of `sso_denied`,
+        `sso_failed`, `sso_no_account`, `sso_unverified_email`,
+        `sso_identity_changed`. Provider error text is logged on the server,
+        never returned. Recorded in the audit log as `auth` / `login`.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error_description
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to `/` (signed in, session cookie set) or to `/login?ssoError=<code>`
+        '404':
+          description: Single sign-on is not enabled on this server
 
   /api/v1/auth/logout:
     post:
