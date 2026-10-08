@@ -228,6 +228,9 @@ class AuthAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error in PATCH /auth/users: " + Throwables.getStackTraceAsString(e))
+                // A change that already succeeded keeps its explicit row; clear the
+                // recorded mark so the interceptor still writes the failure row.
+                request.removeAttribute(AuditLog.RecordedAttr)
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("""{"error":"Internal error"}""")
         }
     }

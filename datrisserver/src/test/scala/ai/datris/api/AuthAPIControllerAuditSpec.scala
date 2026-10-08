@@ -73,7 +73,15 @@ class AuthAPIControllerAuditSpec extends AnyFunSuite with BeforeAndAfterEach {
         override def getAllItemsAsJSON(tableName: String): List[String] = rows.values.toList
         override def getItemJSON(tableName: String, keyName: String, key: String, valueName: String): Option[String] = rows.get(key)
         override def insertJSON(tableName: String, json: String): Unit = rows.put(keyOf(json), json)
-        override def upsertJSON(tableName: String, keyFields: java.util.List[String], json: String): Unit = rows.put(keyOf(json), json)
+
+        /** When set, a write that clears the password hash fails (simulated store error). */
+        var failPasswordClear = false
+        override def upsertJSON(tableName: String, keyFields: java.util.List[String], json: String): Unit = {
+            val o = JsonParser.parseString(json).getAsJsonObject
+            if (failPasswordClear && (!o.has("passwordHash") || o.get("passwordHash").isJsonNull))
+                throw new RuntimeException("simulated store failure")
+            rows.put(keyOf(json), json)
+        }
         override def deleteItemJSON(tableName: String, keyName: String, key: String, sortKeyName: String, sortKeyValue: Number): Unit =
             rows.remove(key)
         override def deleteAll(tableName: String): Long = { val n = rows.size; rows.clear(); n.toLong }
@@ -225,6 +233,8 @@ class AuthAPIControllerAuditSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(e.actor.label == "session:admin")
         val role = e.metadata.flatMap(m => Option(m.get("role"))).map(_.getAsString)
         assert(role.contains("editor"), s"metadata: ${e.metadata}")
+        val from = e.metadata.flatMap(m => Option(m.get("from"))).map(_.getAsString)
+        assert(from.contains(User.RoleViewer), s"metadata.from is the previous role: ${e.metadata}")
         verify(r).setAttribute(eqTo(AuditLog.RecordedAttr), any())
     }
 
@@ -238,6 +248,16 @@ class AuthAPIControllerAuditSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(rows.forall(_.actor.label == "session:admin"))
         val update = rows.find(_.action == "update").get
         assert(update.metadata.flatMap(m => Option(m.get("role"))).map(_.getAsString).contains("editor"))
+    }
+
+    test("PATCH where the role change succeeds and the password reset fails keeps the update row and lets the interceptor record the failure") {
+        db.failPasswordClear = true
+        val (status, r) = patch("""{"role":"editor","resetPassword":true}""")
+        assert(status == 500)
+        assert(db.user(Probe).map(_.role).contains(User.RoleEditor))
+        assert(userRows.map(_.action) == Seq("update"), s"captured: ${captured.map(e => e.category + "/" + e.action)}")
+        // The recorded mark is cleared so the interceptor writes its failure row for the 500.
+        verify(r).removeAttribute(AuditLog.RecordedAttr)
     }
 
     test("PATCH with an empty body records nothing from the controller") {
