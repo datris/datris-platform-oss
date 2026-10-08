@@ -83,6 +83,9 @@ object AuditLog {
     // Producers
     // ------------------------------------------------------------------
 
+    /** Test sink; null = the bounded queue. Still gated by [[enabled]]. */
+    @volatile private[datris] var sinkOverride: AuditEntry => Unit = null
+
     /** Enqueue an entry. Returns false when auditing is off or the entry was
       * rejected; never throws, never blocks. */
     def submit(entry: AuditEntry): Boolean = {
@@ -91,6 +94,11 @@ object AuditLog {
             val withTable =
                 if (entry.tableName != null) entry
                 else entry.copy(tableName = DatrisEnvironment.current.auditLogTableName)
+            val sink = sinkOverride
+            if (sink != null) {
+                sink(withTable)
+                return true
+            }
             ensureWriter()
             if (queue.offer(withTable)) {
                 dropped.incrementAndGet()

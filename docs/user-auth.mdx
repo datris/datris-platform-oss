@@ -89,6 +89,8 @@ docker compose logs datris | grep "Assigned a bootstrap password"
 
 The last line prints `User 'admin' had no password set ... Assigned a bootstrap password: <password>`. Log in as `admin` with it and change it right away. Other users are untouched. Until you recreate the server, the cleared account cannot log in at all.
 
+With the [audit log](/audit-log) on, the rotation is also recorded as `user` / `rotate-password` on the account, with the `system` actor and the time, just before that boot's `system` / `start` entry. The password itself is never in the audit log: it was printed to the log of the server container that started at that time, so if you find a `rotate-password` row you did not expect, that container's log is where the password went. An admin clearing a password from **Configuration → Users** is recorded separately as `user` / `reset-password`, with the admin as the actor.
+
 ## Reverting
 
 Set `USE_USER_AUTH=false` (or remove the line) and recreate the Datris container. The login screen disappears; the Configuration tab is unrestricted again. **User rows persist in the database** — they just aren't checked. Flipping back on later returns you to the same set of users with the same passwords.
