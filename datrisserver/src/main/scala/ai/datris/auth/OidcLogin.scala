@@ -153,8 +153,9 @@ object OidcLogin {
     }
 
     /** Validate an ID token: signature against the provider's keys (RS256 or
-      * ES256 only; `none` and HMAC are refused), then `iss`, `aud` (and `azp`
-      * when there are several audiences), `exp` against `now`, `nonce`, `sub`. */
+      * ES256 only; `none` and HMAC are refused), then `iss`, `aud`, `azp` (when
+      * present, and always when there are several audiences), `exp` against
+      * `now`, `nonce`, `sub`. */
     def validateIdToken(
         token: String,
         jwkSource: JWKSource[SecurityContext],
@@ -173,10 +174,11 @@ object OidcLogin {
             if (claims.getIssuer != issuer) return Left("ID token issuer mismatch")
             val aud = Option(claims.getAudience).map(_.asScala.toList).getOrElse(Nil)
             if (!aud.contains(clientId)) return Left("ID token audience does not include the client id")
-            if (aud.size > 1) {
-                val azp = Option(claims.getClaim("azp")).map(_.toString).orNull
-                if (azp != clientId) return Left("ID token azp does not match the client id")
-            }
+            // OIDC Core 3.1.3.7: azp is required to equal the client id when
+            // there are several audiences, and must equal it whenever present.
+            val azp = Option(claims.getClaim("azp")).map(_.toString)
+            if (aud.size > 1 && !azp.contains(clientId)) return Left("ID token azp does not match the client id")
+            if (azp.exists(_ != clientId)) return Left("ID token azp does not match the client id")
             val exp = Option(claims.getExpirationTime).getOrElse(return Left("ID token has no exp"))
             if (!exp.toInstant.plusSeconds(ClockSkewSeconds).isAfter(now)) return Left("ID token expired")
             val tokenNonce = Option(claims.getClaim("nonce")).map(_.toString).orNull
@@ -229,6 +231,27 @@ object OidcLogin {
                 if (CreatableRoles.contains(role)) Create(role, username, subject)
                 else Refused(NoAccount, "no Datris user " + username + " and no default role")
         }
+    }
+
+    /** Callback query parameters whose values never reach the audit log:
+      * the one-time authorization code and the state. */
+    val RedactedCallbackParams: Set[String] = Set("code", "state")
+
+    /** The callback's raw query string with the values of
+      * [[RedactedCallbackParams]] masked (`code=***&state=***`). Parameter
+      * order and everything else are kept byte-for-byte. */
+    def redactCallbackQuery(qs: String): String = {
+        if (qs == null || qs.isEmpty) return qs
+        qs.split("&", -1)
+            .map { kv =>
+                val i = kv.indexOf('=')
+                val name = if (i < 0) kv else kv.substring(0, i)
+                val decoded =
+                    try java.net.URLDecoder.decode(name, StandardCharsets.UTF_8)
+                    catch { case _: Exception => name }
+                if (RedactedCallbackParams.contains(decoded.trim.toLowerCase(java.util.Locale.ROOT))) name + "=***" else kv
+            }
+            .mkString("&")
     }
 
     /** Settings problem that switches SSO off, or None when the settings are

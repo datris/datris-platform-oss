@@ -147,7 +147,7 @@ class AuthAPIController {
             md.addProperty("method", "oidc")
             md.addProperty("ssoError", codeOut)
             AuditLog.record(
-                request,
+                auditView(request),
                 "auth",
                 "login",
                 "user",
@@ -208,7 +208,7 @@ class AuthAPIController {
             val md = new JsonObject
             md.addProperty("method", "oidc")
             md.addProperty("role", user.role)
-            AuditLog.record(request, "auth", "login", "user", user.username, httpStatus = HttpStatus.FOUND.value(), metadata = md)
+            AuditLog.record(auditView(request), "auth", "login", "user", user.username, httpStatus = HttpStatus.FOUND.value(), metadata = md)
             logger.info("OIDC sign-in: " + user.username + " (" + user.role + ")")
             redirect("/")
         } catch {
@@ -441,6 +441,14 @@ class AuthAPIController {
         cookie.setAttribute("SameSite", "Lax")
         cookie
     }
+
+    /** The callback request as the audit log sees it: the authorization code
+      * and state are masked in the stored query string. Attributes (the
+      * recorded mark) still land on the real request. */
+    private def auditView(request: HttpServletRequest): HttpServletRequest =
+        new jakarta.servlet.http.HttpServletRequestWrapper(request) {
+            override def getQueryString: String = OidcLogin.redactCallbackQuery(super.getQueryString)
+        }
 
     private def redirect(location: String): ResponseEntity[String] =
         ResponseEntity.status(HttpStatus.FOUND).location(URI.create(location)).header("Cache-Control", "no-store").build()
