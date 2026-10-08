@@ -130,7 +130,9 @@ At the provider, register a **confidential** client (one with a client secret) t
 docker compose up -d --force-recreate datris
 ```
 
-If a setting is missing or wrong, or the Vault secret is not there, the server still starts and password login keeps working: SSO is switched off, the reason is logged once at ERROR, and the button is hidden. `OIDC_ENABLED=true` without `USE_USER_AUTH=true` does nothing (logged at WARN). An identity provider that is down does not stop the server either; people who press the button see a "could not be completed" message on the login screen.
+The server checks the settings once at startup, without contacting the identity provider. If `OIDC_ISSUER`, `OIDC_CLIENT_ID` or `OIDC_REDIRECT_URI` is missing, the issuer or redirect URI is not an http(s) URL, or the Vault secret `oss/oidc` (key `clientSecret`) is not there, the server still starts and password login keeps working: SSO is switched off, the reason is logged once at ERROR, and the button is hidden. `OIDC_ENABLED=true` without `USE_USER_AUTH=true` also leaves SSO off (logged once at WARN).
+
+An identity provider that is down or unreachable is different: the server does not contact it until someone presses the button, so it starts normally and the **Sign in with SSO** button stays visible. Each press then fails, the person lands back on the login screen with a "could not be completed" message, and the server logs one ERROR line per attempt. Password login is unaffected. SSO works again as soon as the provider is reachable; no restart is needed.
 
 ### How a person maps to a user and role
 
@@ -158,6 +160,9 @@ docker run -d --name keycloak -p 8081:8080 \
 KC="docker exec keycloak /opt/keycloak/bin/kcadm.sh"
 $KC config credentials --server http://localhost:8080 --realm master --user admin --password admin
 $KC create realms -s realm=datris -s enabled=true
+# Local development only: Keycloak requires HTTPS for any host other than
+# localhost, and the issuer here is http://host.docker.internal. Never do this on a real realm.
+$KC update realms/datris -s sslRequired=NONE
 $KC create clients -r datris -s clientId=datris -s secret=datris-local-secret -s publicClient=false \
   -s standardFlowEnabled=true -s directAccessGrantsEnabled=false \
   -s 'redirectUris=["http://localhost:4200/api/v1/auth/oidc/callback"]' \

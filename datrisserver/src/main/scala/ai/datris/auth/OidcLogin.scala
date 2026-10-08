@@ -233,6 +233,26 @@ object OidcLogin {
         }
     }
 
+    /** A provider- or browser-supplied string made safe for one log line:
+      * CR and LF become the two-character escapes `\r` / `\n`, tab `\t`, and
+      * every other ISO control character (including DEL and the C1 range,
+      * e.g. NEL) and the Unicode line/paragraph separators become a
+      * backslash-u escape with four hex digits, so nobody can forge extra log lines
+      * through the callback's `error_description`, a discovery body or a
+      * token-endpoint error. Null stays null. */
+    def logSafe(s: String): String = {
+        if (s == null) return null
+        val sb = new StringBuilder(s.length)
+        s.foreach {
+            case '\r' => sb.append("\\r")
+            case '\n' => sb.append("\\n")
+            case '\t' => sb.append("\\t")
+            case c if Character.isISOControl(c) || c.toInt == 0x2028 || c.toInt == 0x2029 => sb.append('\\').append('u').append("%04x".format(c.toInt))
+            case c => sb.append(c)
+        }
+        sb.toString
+    }
+
     /** Callback query parameters whose values never reach the audit log:
       * the one-time authorization code and the state. */
     val RedactedCallbackParams: Set[String] = Set("code", "state")

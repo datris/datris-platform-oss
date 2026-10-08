@@ -53,3 +53,24 @@ class OidcCallbackAuditSpec extends AnyFunSuite {
         assert(OidcLogin.validateIdToken(token(Some("other-client")), jwks, "http://idp", "datris", "n1", now).isLeft)
     }
 }
+
+/** E2E adversarial follow-up: provider- and browser-supplied text (the
+  * callback's error / error_description, discovery and token-endpoint error
+  * bodies) cannot forge extra server log lines. */
+class OidcLogSafeSpec extends AnyFunSuite {
+
+    test("CR, LF and other control characters are escaped before logging") {
+        val forged = "line1\r\n2026-10-08T00:00:00Z ERROR FAKE forged"
+        val safe = OidcLogin.logSafe(forged)
+        assert(!safe.exists(c => c == '\r' || c == '\n'))
+        assert(safe == "line1\\r\\n2026-10-08T00:00:00Z ERROR FAKE forged")
+
+        val others = "a\tb" + 0x1b.toChar + "[31m" + 0x85.toChar + "c" + 0x2028.toChar + "d" + 0x7f.toChar
+        val safeOthers = OidcLogin.logSafe(others)
+        assert(!safeOthers.exists(c => Character.isISOControl(c) || c.toInt == 0x2028), safeOthers)
+        assert(safeOthers == "a\\tb\\" + "u001b[31m\\" + "u0085c\\" + "u2028d\\" + "u007f")
+
+        assert(OidcLogin.logSafe("access_denied (User cancelled)") == "access_denied (User cancelled)")
+        assert(OidcLogin.logSafe(null) == null)
+    }
+}

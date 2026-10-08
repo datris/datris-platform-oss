@@ -99,7 +99,7 @@ class AuthAPIController {
         try {
             OidcLogin.provider(env.oidcIssuer) match {
                 case Left(err) =>
-                    logger.error("OIDC sign-in could not start: " + err)
+                    logger.error("OIDC sign-in could not start: " + OidcLogin.logSafe(err))
                     ssoRedirect(OidcLogin.Failed)
                 case Right((discovery, _)) =>
                     val state = OidcLogin.randomToken()
@@ -142,7 +142,9 @@ class AuthAPIController {
         response.addCookie(buildOidcTxCookie("", 0))
 
         def refuse(codeOut: String, logLine: String, username: String = null): ResponseEntity[String] = {
-            logger.warn("OIDC sign-in refused (" + codeOut + "): " + logLine)
+            // Provider- and browser-supplied text: control characters escaped so it
+            // stays one log line.
+            logger.warn("OIDC sign-in refused (" + codeOut + "): " + OidcLogin.logSafe(logLine))
             val md = new JsonObject
             md.addProperty("method", "oidc")
             md.addProperty("ssoError", codeOut)
