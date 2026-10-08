@@ -79,4 +79,15 @@ class AuditClassifierSpec extends AnyFunSuite {
         assert(c("post", "/api/v1/pipeline").contains(AuditRoute("pipeline", "create", "pipeline")))
         assert(c("delete", "/api/v1/keys/x").contains(AuditRoute("key", "revoke", "key")))
     }
+
+    // Story: OIDC single sign-on 1 (plans/stories/oidc-sso-login.md). The SSO
+    // callback is a GET, and GETs are dropped unless logReads is on, yet every
+    // SSO sign-in (success or refusal) must reach the audit log as auth/login.
+    test("an SSO sign-in is recorded as auth login with logReads off") {
+        assert(c("GET", "/api/v1/auth/oidc/callback").contains(AuditRoute("auth", "login", "user")))
+        assert(c("GET", "/api/v1/auth/oidc/callback", logReads = true).contains(AuditRoute("auth", "login", "user")))
+        // Unchanged neighbours: the password login route and the skip-listed /me read.
+        assert(c("POST", "/api/v1/auth/login").contains(AuditRoute("auth", "login", "user")))
+        assert(c("GET", "/api/v1/auth/me").isEmpty)
+    }
 }
