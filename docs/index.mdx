@@ -19,13 +19,13 @@ Your agents already acquire, validate, and load data. Without a control plane, t
 
 - **One MCP door** — 73 capabilities behind a single [MCP server](/mcp-server) (stdio and SSE). Claude, Cursor, OpenClaw, and any MCP-compatible agent learn one interface instead of 73 integrations
 - **Vault-brokered credentials** — the agent references a secret by name; it never holds a key. Agent-written code runs in an [isolated container](/tap-execution-isolation) with no keys inside
-- **Every run recorded** — job state, row counts, and provenance for every run; every generated script [versioned in git](/tap-github-storage)
+- **Every run recorded** — job state and row counts for every run, provenance on its rows with stamping on (see [strict mode](/provenance#strict-mode)); every generated script [versioned in git](/tap-github-storage)
 - **Durable state** — pipelines and [sync bookmarks](/taps) live in the platform, not in the agent's context, so a regenerated script picks up where the old one left off
 - **Explain and repair** — when a run fails, [AI Error Explanation](/ai-error-explanation) returns the root cause in plain English instead of a stack trace
 
 ### The Operating Loop
 
-Same loop every run, same audit trail every time — so the agent's job is reasoning about the data, not improvising infrastructure.
+Same loop every run, and with the audit log on the same audit trail every time ([strict mode](/audit-log#strict-mode) makes it complete) — so the agent's job is reasoning about the data, not improvising infrastructure.
 
 | Step | What Datris does |
 |------|------------------|

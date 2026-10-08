@@ -28,10 +28,10 @@ Your agents already acquire, validate, and load data. Without a control plane, t
 
 - **One MCP door** — 79 tools behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 79 integrations
 - **Vault-brokered credentials** — the agent references a secret by name and never holds a key; agent-written code runs in an isolated container with no keys inside
-- **Scoped keys, approval gates, audit log** — each agent gets its own API key limited to the capabilities you grant; an [agent policy](https://docs.datris.ai/agent-policy) decides per action whether an agent runs it, waits for a person to approve, or is refused; an [audit log](https://docs.datris.ai/audit-log) records who did what
-- **Every run recorded** — job state, row counts, and provenance for every run; every generated script versioned in git
+- **Scoped keys, approval gates, audit log** — each agent gets its own API key limited to the capabilities you grant; an [agent policy](https://docs.datris.ai/agent-policy) decides per action whether an agent runs it, waits for a person to approve, or is refused; an [audit log](https://docs.datris.ai/audit-log), once you turn it on (`USE_AUDIT_LOG=true`), records who did what, best effort by default and without loss in [strict mode](https://docs.datris.ai/audit-log#strict-mode)
+- **Every run recorded** — job state and row counts for every run, provenance on its rows with stamping on; every generated script versioned in git
 - **Durable state** — pipelines and sync bookmarks live in the platform, not the chat, so regenerating a script never loses its place
-- **The operating loop** — Acquire (AI-generated taps) → Validate (plain-English rules) → Land (multi-destination pipelines) → Observe (provenance and job state) → Explain & Repair (AI error explanation), with the same audit trail every time
+- **The operating loop** — Acquire (AI-generated taps) → Validate (plain-English rules) → Land (multi-destination pipelines) → Observe (provenance and job state) → Explain & Repair (AI error explanation), with the same audit trail every time once the audit log is on (see [strict mode](https://docs.datris.ai/audit-log#strict-mode))
 - **Self-host anywhere** — on-prem, any cloud, or your laptop; 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault), AGPL-3.0, no managed service
 
 ## Quick Start

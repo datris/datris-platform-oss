@@ -19,7 +19,7 @@ To deliberately throw away the persisted config and re-seed from `.env`, wipe th
 
 ### Bucket 2 — Container environment variables (`.env`, read every boot)
 
-The deployment-level settings in the [Container Environment Variables](#container-environment-variables) table — `JAVA_OPTS`, `PIPELINE_MAX_PAYLOAD_MB`, `USE_USER_AUTH`, `USE_API_KEYS`, `USE_AUDIT_LOG`, `CAPABILITY_ENFORCEMENT`, `TAP_SCRIPT_TIMEOUT_SECONDS`, `TAP_RUN_TIMEOUT_SECONDS`, the tap-runner vars, etc. — are **not** Vault-seeded. They're plain container env vars read **fresh on every boot**, so changing them in `.env` after install works normally:
+The deployment-level settings in the [Container Environment Variables](#container-environment-variables) table — `JAVA_OPTS`, `PIPELINE_MAX_PAYLOAD_MB`, `USE_USER_AUTH`, `USE_API_KEYS`, `USE_AUDIT_LOG`, `AUDIT_LOG_STRICT`, `PROVENANCE_STRICT`, `CAPABILITY_ENFORCEMENT`, `TAP_SCRIPT_TIMEOUT_SECONDS`, `TAP_RUN_TIMEOUT_SECONDS`, the tap-runner vars, etc. — are **not** Vault-seeded. They're plain container env vars read **fresh on every boot**, so changing them in `.env` after install works normally:
 
 ```bash
 # 1. Edit the value in .env, then:
@@ -114,6 +114,8 @@ Two independent flags control access. Set them together — see [the supported m
 | `USE_AUDIT_LOG` | `false` | Record who created, changed, ran, or deleted what — readable by admins under Configuration → Audit Log and mirrored to the server log. Restart to change. See [Audit Log](/audit-log) |
 | `AUDIT_LOG_RETENTION_DAYS` | `90` | Days to keep audit entries in the config store; `0` keeps them forever. Maps to `auditLog.retentionDays` |
 | `AUDIT_LOG_READS` | `false` | Also record reads — queries, searches, listings, metadata. Off by default because they dwarf the write trail. Maps to `auditLog.logReads` |
+| `AUDIT_LOG_STRICT` | `false` | Strict evidence mode for the audit log (needs `USE_AUDIT_LOG=true`). `false`: best effort, an entry the config store cannot take is dropped and counted in `datris_audit_dropped_total`. `true`: nothing is dropped; while the audit queue is backed up, requests that would be audited get HTTP 503 before they run. Restart to change. Maps to `auditLog.strict`. See [Audit Log](/audit-log#strict-mode) |
+| `PROVENANCE_STRICT` | `false` | Strict evidence mode for provenance stamping. `false`: a run with `provenance.stamp` on whose data cannot be stamped loads unstamped. `true`: that run fails before anything is loaded, and unknown `provenance.fields` names are refused on save. XML sources are exempt: they are never stamped and still load unstamped. Does not turn stamping on. Restart to change. Maps to `provenance.strict`. See [Provenance](/provenance#strict-mode) |
 | `USE_AGENT_POLICY` | `false` | Per-action auto / approve / deny for agent-initiated changes, with a human approval queue under Activity → Approvals. With it on and no rules set, nothing changes. Restart to change. See [Agent Policy](/agent-policy) |
 | `RECOVERY_AGENT_ENABLED` | `false` | The platform opens, diagnoses and — within the agent policy's recovery mode — repairs incidents for failed, stale or anomalous data flows. Needs `USE_AGENT_POLICY=true`. See [Incidents](/incidents) |
 | `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional URL receiving a JSON POST on incident open / awaiting-approval / resolved / failed, and on doctor checks flipping to error when the periodic run is on |
@@ -427,6 +429,8 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `USE_AUDIT_LOG` | `false` | Enable the [Audit Log](/audit-log) — who did what, by login or API key. |
 | `AUDIT_LOG_RETENTION_DAYS` | `90` | Days to keep audit entries; `0` = forever. |
 | `AUDIT_LOG_READS` | `false` | Also record reads (queries, searches, listings). |
+| `AUDIT_LOG_STRICT` | `false` | Refuse audited requests (503) instead of dropping audit entries when the config store cannot keep up. Needs `USE_AUDIT_LOG=true`. See [Audit Log](/audit-log#strict-mode). |
+| `PROVENANCE_STRICT` | `false` | Fail a stamping pipeline's run instead of loading unstamped rows. XML sources are exempt and load unstamped. See [Provenance](/provenance#strict-mode). |
 | `USE_AGENT_POLICY` | `false` | Enable the [Agent Policy](/agent-policy) — auto / approve / deny per agent action, with a human approval queue. |
 | `RECOVERY_AGENT_ENABLED` | `false` | Enable the [recovery agent](/incidents) — platform-opened incidents with a bounded repair loop. |
 | `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional JSON webhook for incident lifecycle events and periodic-doctor flips. |

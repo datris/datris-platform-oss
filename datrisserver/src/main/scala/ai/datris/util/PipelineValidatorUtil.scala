@@ -75,6 +75,7 @@ object PipelineValidatorUtil {
         validateSecretReferences(config)
         validateUnityCatalog(config)
         validateFieldProtection(config)
+        validateProvenance(config)
 
         if (config.source.fileAttributes != null && config.source.fileAttributes.unstructuredAttributes != null)
             validateUnstructured(config)
@@ -106,6 +107,23 @@ object PipelineValidatorUtil {
             "source.databaseAttributes.mysqlSecretsName" -> Option(config.source).flatMap(s => Option(s.databaseAttributes)).map(_.mysqlSecretsName)
         )
         refs.flatMap { case (label, v) => v.filter(_ != null).map(label -> _) }
+    }
+
+    /** Under PROVENANCE_STRICT, every name in `provenance.fields` must be one
+      * of [[ProvenanceStamper.AllFields]]: an unknown name would be silently
+      * skipped at run time, so the stamp would not carry what the pipeline
+      * asked for. Default mode accepts unknown names (today's behaviour). An
+      * XML source with `provenance.stamp` is accepted in both modes: it is
+      * exempt and loads unstamped. */
+    private[util] def validateProvenance(config: PipelineConfig): Unit = {
+        val strict = Option(DatrisEnvironment.values).exists(_.provenanceStrict)
+        if (!strict || config == null || config.provenance == null || config.provenance.fields == null) return
+        val unknown = config.provenance.fields.asScala.filterNot(f => f != null && ProvenanceStamper.AllFields.contains(f)).distinct
+        if (unknown.nonEmpty)
+            throw new DatrisException(
+                "provenance.fields contains unknown field name(s) " + unknown.map(n => "'" + n + "'").mkString(", ") +
+                    " (PROVENANCE_STRICT is on); known fields: " + ProvenanceStamper.AllFields.mkString(", ")
+            )
     }
 
     /** No pipeline may reference a server-managed secret (SecretNames.ServerManaged). */

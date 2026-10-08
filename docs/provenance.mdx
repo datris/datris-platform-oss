@@ -1,12 +1,12 @@
 ---
 title: "Data lineage for AI agents"
 sidebarTitle: "Provenance & Lineage"
-description: "Trace any landed row back to the run, config version, script commit, and source that produced it. Agents query the same graph to check impact before changing anything and to find datasets by meaning."
+description: "Trace any stamped row back to the run, config version, script commit, and source that produced it. Agents query the same graph to check impact before changing anything and to find datasets by meaning."
 ---
 
 Every answer an agent gives from Datris data should be traceable. Three features make that real:
 
-- **Provenance stamping** (opt-in per pipeline) writes run identity onto every row, document, message and vector chunk a pipeline lands.
+- **Provenance stamping** (opt-in per pipeline) writes run identity onto every row, document, message and vector chunk a pipeline lands, when stamping succeeds (XML sources are never stamped; see [Strict mode](#strict-mode) for what happens when stamping fails).
 - **Lineage** shows the chain *Source → Tap → Pipeline → Dataset → Catalog*, derived deterministically from your configuration — no AI, no inference.
 - **`find_data`** lets an agent discover a dataset by meaning, learn where it lives, how fresh it is, and exactly how to query it — without Datris executing anything on its behalf.
 
@@ -21,7 +21,7 @@ Turn it on per pipeline: **Catalog → pipeline → Edit → Destination step �
 }
 ```
 
-From the next run on, every row the pipeline lands carries six extra fields:
+From the next run on, when stamping succeeds, every row the pipeline lands carries six extra fields (see [When stamping fails](#when-stamping-fails)):
 
 | Field | Meaning |
 |-------|---------|
@@ -35,7 +35,7 @@ From the next run on, every row the pipeline lands carries six extra fields:
 How the fields land depends on the destination:
 
 - **PostgreSQL, Snowflake, Databricks** — columns, auto-added as text to existing tables on the first stamped run (the same additive schema evolution new CSV columns already get).
-- **MongoDB and JSON data** — keys on each document. XML data is not stamped.
+- **MongoDB and JSON data** — keys on each document. XML data is not stamped: an XML source always loads unstamped, in strict mode too.
 - **Object store (CSV/Parquet)** — columns in the written files, from the first stamped run on.
 - **Kafka / ActiveMQ** — fields in each message; consumers that ignore unknown fields are unaffected.
 - **Vector stores** — payload metadata on every chunk, so search results cite the run and source per chunk.
@@ -43,6 +43,23 @@ How the fields land depends on the destination:
 Rows are **never rewritten retroactively**: provenance starts at the first run after the toggle is turned on, and older rows read as null/absent. Stamped columns are always stored as text and are never proposed for retyping by the destination-typing flow.
 
 A subset of fields can be selected with `"provenance": { "stamp": true, "fields": ["_datris_run_id", "_datris_ingested_at"] }`.
+
+### When stamping fails
+
+By default stamping is best effort: a run whose data cannot be stamped still loads, unstamped. When stamping throws an error, the run's status records `Provenance stamping skipped (error): <reason>`; the other cases load unstamped with no status line. Known cases:
+
+- a JSON payload that is not newline-delimited JSON, or has a line that does not parse;
+- unstructured data with no vector destination (there is no metadata map to carry the stamp);
+- a `fields` selection that yields no value for the run (for example only `_datris_tap_run` on a direct upload);
+- an XML source, which is never stamped.
+
+### Strict mode
+
+If every landed row must carry its stamp, set `PROVENANCE_STRICT=true` in `.env` and recreate the Datris container. Then a pipeline with `provenance.stamp` on fails its run with `Provenance could not be stamped (<reason>) and PROVENANCE_STRICT is on; nothing was loaded` instead of loading unstamped rows. The failure happens before any destination is written. Delimited, JSON and vector data that can be stamped are stamped exactly as in the default mode.
+
+- **XML sources are exempt.** XML cannot be stamped, so under strict mode an XML pipeline with stamping on still saves and still loads unstamped; its run status says `Provenance stamping skipped (XML source is exempt from PROVENANCE_STRICT)`. Those rows are outside the strict guarantee. `datris doctor` lists such pipelines under `provenance.strict`.
+- **Field names are checked.** A pipeline whose `provenance.fields` names a field that does not exist is refused when it is saved.
+- **Stamping stays opt-in.** Strict mode does not turn stamping on; pipelines without `provenance.stamp` are untouched.
 
 ## Resolving a stamp
 

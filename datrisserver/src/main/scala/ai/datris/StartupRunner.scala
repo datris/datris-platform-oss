@@ -43,6 +43,14 @@ class StartupRunner extends ApplicationRunner {
     @Value("${auditLog.emitLogLine:true}")
     var auditLogEmitLogLine: Boolean = _
 
+    // Strict evidence mode (AUDIT_LOG_STRICT / PROVENANCE_STRICT). Off by
+    // default: today's best-effort behaviour.
+    @Value("${auditLog.strict:false}")
+    var auditLogStrict: Boolean = _
+
+    @Value("${provenance.strict:false}")
+    var provenanceStrict: Boolean = _
+
     // Agent policy — approval gate for agent-initiated actions. Off by
     // default; needs a restart to flip, like the sibling flags.
     @Value("${useAgentPolicy:false}")
@@ -268,6 +276,11 @@ class StartupRunner extends ApplicationRunner {
         if (useAuditLog)
             logger.info("Audit log enabled: collection=" + environment + "-audit-log, retentionDays=" + auditLogRetentionDays +
                 ", logReads=" + auditLogLogReads + ", emitLogLine=" + auditLogEmitLogLine)
+        logger.info(
+            "Evidence mode: audit log " + (if (!useAuditLog) "off" else if (auditLogStrict) "strict (AUDIT_LOG_STRICT)" else "best effort") +
+                (if (auditLogStrict && !useAuditLog) " (AUDIT_LOG_STRICT is set but has no effect while USE_AUDIT_LOG is off)" else "") +
+                ", provenance " + (if (provenanceStrict) "strict (PROVENANCE_STRICT; XML sources exempt)" else "best effort")
+        )
         initUserAuth()
         // Seed v1 definition snapshots for any pre-versioning taps/pipelines so
         // their version history isn't empty. Idempotent — skips entities that
@@ -446,7 +459,9 @@ class StartupRunner extends ApplicationRunner {
             incidentTableName = environment + "-incident",
             incidentWebhookUrl = incidentWebhookUrl,
             auditLogLogReads = auditLogLogReads,
-            auditLogEmitLogLine = auditLogEmitLogLine
+            auditLogEmitLogLine = auditLogEmitLogLine,
+            auditLogStrict = auditLogStrict,
+            provenanceStrict = provenanceStrict
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

@@ -27,10 +27,23 @@ import scala.collection.mutable
   * Write path: request threads (via [[ai.datris.config.AuditInterceptor]] and
   * the direct `system` / `record` / `denied` calls) hand entries to a bounded
   * queue; one daemon writer thread drains it into Mongo (`{env}-audit-log`).
-  * The request is never blocked and never sees a write failure. Every entry
-  * is also emitted as a structured INFO line on logger `ai.datris.audit`
-  * (one JSON object per event under the `production` profile) so a SIEM
-  * already scraping container logs gets the trail with no integration work.
+  * Every entry is also emitted as a structured INFO line on logger
+  * `ai.datris.audit` (one JSON object per event under the `production`
+  * profile) so a SIEM already scraping container logs gets the trail with no
+  * integration work.
+  *
+  * Default (best effort): the request is never blocked and never sees a write
+  * failure. Queue overflow evicts the oldest entry (`datris_audit_dropped_total`)
+  * and a failed Mongo write is logged and skipped.
+  *
+  * Strict (AUDIT_LOG_STRICT, see [[strict]]): nothing is evicted and a failed
+  * write is retried with backoff until it lands, in order. While the queue is
+  * at its high-water mark ([[acceptingWrites]] false) the
+  * [[ai.datris.config.AuditInterceptor]] refuses audited requests with 503, so
+  * the handler never runs. An entry that still cannot be queued in time is
+  * counted (`datris_audit_unrecorded_total`) and emitted at ERROR on
+  * `ai.datris.audit`. Residual: queued entries live in memory, so a hard kill
+  * can lose entries that were accepted but not yet written.
   *
   * Everything here is a no-op while `useAuditLog` is off: no writer thread,
   * no collection, no indexes. */
@@ -61,9 +74,26 @@ object AuditLog {
     private val QueueCapacity = 10000
     private val WarnFraction = 0.8
 
+    /** Strict: below `QueueCapacity - Headroom` new audited requests are
+      * admitted. The headroom is sized above the request thread pool so every
+      * request already past the gate can still queue its entry. */
+    private val Headroom = 1000
+
+    /** Strict: how long a producer waits for room before the entry is counted
+      * as unrecorded. */
+    private val StrictOfferTimeoutMs = 5000L
+
+    /** Strict: retry backoff for a failed persist (doubling, capped). */
+    private val RetryInitialMs = 100L
+    private val RetryMaxMs = 5000L
+
+    /** Strict: how long the shutdown flush keeps retrying before giving up. */
+    private val ShutdownFlushMs = 10000L
+
     private val queue = new AuditQueue(QueueCapacity)
     private val started = new AtomicBoolean(false)
     private val dropped = new AtomicLong(0)
+    private val unrecorded = new AtomicLong(0)
     private val lastQueueWarnMs = new AtomicLong(0)
     private val indexedTables = mutable.Set[String]()
 
@@ -75,9 +105,20 @@ object AuditLog {
         v != null && v.useAuditLog
     }
 
+    /** AUDIT_LOG_STRICT in effect (needs the audit log on). */
+    def strict: Boolean = enabled && DatrisEnvironment.values.auditLogStrict
+
     /** Snapshot for the UI's disabled/enabled banner and for tests. */
     def droppedCount: Long = dropped.get()
     def queueDepth: Int = queue.size
+
+    /** Entries that could not be queued under strict (since startup). */
+    def unrecordedCount: Long = unrecorded.get()
+
+    /** False only under strict while the queue is at its high-water mark
+      * (capacity minus headroom): audited requests are then refused. Always
+      * true in default mode. */
+    def acceptingWrites: Boolean = !strict || queue.hasRoom(Headroom)
 
     // ------------------------------------------------------------------
     // Producers
@@ -86,8 +127,16 @@ object AuditLog {
     /** Test sink; null = the bounded queue. Still gated by [[enabled]]. */
     @volatile private[datris] var sinkOverride: AuditEntry => Unit = null
 
+    /** Test seam for the persist step of [[write]]; null = Mongo. A throw is a
+      * failed persist. */
+    @volatile private[datris] var persistOverride: AuditEntry => Unit = null
+
+    /** Test seam: fixed delay between strict retries; < 0 = the real backoff. */
+    @volatile private[datris] var retryDelayMsOverride: Long = -1L
+
     /** Enqueue an entry. Returns false when auditing is off or the entry was
-      * rejected; never throws, never blocks. */
+      * rejected; never throws. Never blocks in default mode; under strict it
+      * waits (bounded) for room instead of evicting an older entry. */
     def submit(entry: AuditEntry): Boolean = {
         if (!enabled) return false
         try {
@@ -100,7 +149,19 @@ object AuditLog {
                 return true
             }
             ensureWriter()
-            if (queue.offer(withTable)) {
+            if (strict) {
+                val queued =
+                    try queue.offerBlocking(withTable, StrictOfferTimeoutMs)
+                    catch {
+                        case _: InterruptedException =>
+                            Thread.currentThread().interrupt()
+                            false
+                    }
+                if (!queued) {
+                    markUnrecorded(withTable, "audit queue full for " + StrictOfferTimeoutMs + "ms")
+                    return false
+                }
+            } else if (queue.offer(withTable)) {
                 dropped.incrementAndGet()
                 Metrics.counter("datris_audit_dropped_total").increment()
             }
@@ -216,6 +277,15 @@ object AuditLog {
 
     def redact(md: JsonObject): JsonObject = LogRedactUtil.redactJson(md).getAsJsonObject
 
+    /** Strict: an entry that will never reach the store. Counted and emitted
+      * whole at ERROR on `ai.datris.audit` so the log stream still has it. */
+    private def markUnrecorded(entry: AuditEntry, why: String): Unit = {
+        unrecorded.incrementAndGet()
+        Metrics.counter("datris_audit_unrecorded_total").increment()
+        try auditLogger.error("audit-unrecorded ({}) {}", why: Any, StructuredArguments.raw("audit", entry.toJson.toString): Any)
+        catch { case _: Exception => }
+    }
+
     // ------------------------------------------------------------------
     // Writer
     // ------------------------------------------------------------------
@@ -245,8 +315,9 @@ object AuditLog {
         try {
             system("system", "stop")
             val pending = queue.drain()
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ShutdownFlushMs)
             pending.foreach(e =>
-                try write(e)
+                try write(e, deadline)
                 catch { case _: Throwable => }
             )
         } catch {
@@ -254,23 +325,67 @@ object AuditLog {
         }
     }
 
-    private def write(entry: AuditEntry): Unit = {
+    /** No Mongo config store: the entry is log-only (default) or a failed
+      * persist (strict). */
+    private final class NoConfigStore extends RuntimeException("Audit log requires the Mongo config store")
+
+    private def write(entry: AuditEntry): Unit = write(entry, Long.MaxValue)
+
+    /** Persist one entry. Default: one attempt, a failure is logged and the
+      * entry skipped. Strict: the same entry is retried with backoff until it
+      * lands (the writer holds the queue's order meanwhile); only the shutdown
+      * flush stops at `deadlineNanos`. */
+    private def write(entry: AuditEntry, deadlineNanos: Long): Unit = {
         val json = entry.toJson
         if (emitLogLine)
             auditLogger.info("audit {}", StructuredArguments.raw("audit", json.toString))
         Metrics.counter("datris_audit_events_total", "category", entry.category, "outcome", entry.outcome).increment()
 
-        val coll = collectionFor(entry.tableName)
-        if (coll == null) return
-        try {
-            ensureIndexes(entry.tableName, coll)
-            val key = entry.category + ":" + entry.action
-            if (Collapsible.contains(key)) writeCollapsed(entry, coll)
-            else coll.insertOne(entry.toDocument)
-        } catch {
-            case e: Exception =>
-                logger.warn("Audit entry not persisted (" + entry.category + ":" + entry.action + "): " + e.getMessage, e)
+        var attempt = 0
+        var delayMs = RetryInitialMs
+        while (true) {
+            try {
+                persist(entry)
+                if (attempt > 0)
+                    logger.info(
+                        "Audit entry persisted after " + attempt + " retr" + (if (attempt == 1) "y" else "ies") + " (" + entry.category + ":" + entry.action + ")"
+                    )
+                return
+            } catch {
+                case _: NoConfigStore if !strict => return
+                case e: Exception if !strict =>
+                    logger.warn("Audit entry not persisted (" + entry.category + ":" + entry.action + "): " + e.getMessage, e)
+                    return
+                case e: Exception =>
+                    attempt += 1
+                    if (System.nanoTime() >= deadlineNanos) {
+                        markUnrecorded(entry, "not persisted before shutdown: " + e.getMessage)
+                        return
+                    }
+                    if (attempt == 1 || attempt % 20 == 0)
+                        logger.warn(
+                            "Audit entry not persisted (" + entry.category + ":" + entry
+                                .action + "), AUDIT_LOG_STRICT is on, retrying (attempt " + attempt + ", queue depth " + queue.size + "): " + e.getMessage
+                        )
+                    val fixed = retryDelayMsOverride
+                    Thread.sleep(if (fixed >= 0) fixed else delayMs)
+                    delayMs = math.min(delayMs * 2, RetryMaxMs)
+            }
         }
+    }
+
+    private def persist(entry: AuditEntry): Unit = {
+        val o = persistOverride
+        if (o != null) {
+            o(entry)
+            return
+        }
+        val coll = collectionFor(entry.tableName)
+        if (coll == null) throw new NoConfigStore
+        ensureIndexes(entry.tableName, coll)
+        val key = entry.category + ":" + entry.action
+        if (Collapsible.contains(key)) writeCollapsed(entry, coll)
+        else coll.insertOne(entry.toDocument)
     }
 
     /** Same actor + category + action + resource within the window → one
@@ -357,8 +472,11 @@ object AuditLog {
             val last = lastQueueWarnMs.get()
             if (now - last > 60000L && lastQueueWarnMs.compareAndSet(last, now))
                 logger.warn(
-                    "Audit log queue is " + depth + "/" + QueueCapacity + " full — entries will be dropped if the config store cannot keep up (dropped so far: " + dropped
-                        .get() + ")"
+                    if (strict)
+                        "Audit log queue is " + depth + "/" + QueueCapacity + " full — AUDIT_LOG_STRICT is on: audited requests get 503 from " + (QueueCapacity - Headroom) + " until the config store catches up"
+                    else
+                        "Audit log queue is " + depth + "/" + QueueCapacity + " full — entries will be dropped if the config store cannot keep up (dropped so far: " + dropped
+                            .get() + ")"
                 )
         }
     }

@@ -75,7 +75,7 @@ With user authentication on, the assistant needs a signed-in admin session. A cl
 
 ## Audited as you
 
-With user authentication on, every change the assistant makes lands in the [audit log](/audit-log#who-is-recorded) attributed to the signed-in admin, exactly as if you had made it in the sub-tab, with `via: config-chat` in the entry detail so you can tell which changes came through the panel. With user authentication off there is no signed-in user, and the entry is recorded like any other UI action.
+With user authentication on and the audit log on, every change the assistant makes lands in the [audit log](/audit-log#who-is-recorded) (best effort by default; see [strict mode](/audit-log#strict-mode)) attributed to the signed-in admin, exactly as if you had made it in the sub-tab, with `via: config-chat` in the entry detail so you can tell which changes came through the panel. With user authentication off there is no signed-in user, and the entry is recorded like any other UI action.
 
 ## Refresh and Show me
 

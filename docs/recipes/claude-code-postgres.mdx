@@ -4,7 +4,7 @@ sidebarTitle: "Claude Code → PostgreSQL"
 description: "Connect Claude Code to Datris over MCP, gate the destructive actions behind human approval, load a table, and see the audit and lineage records it leaves behind."
 ---
 
-This recipe is for the moment you want an agent to load data into a database you care about, and you are not willing to hand it the database credentials. Claude Code never sees a PostgreSQL connection string here. It talks to Datris over MCP, Datris holds the credentials, validates the data against a schema, and records who did what.
+This recipe is for the moment you want an agent to load data into a database you care about, and you are not willing to hand it the database credentials. Claude Code never sees a PostgreSQL connection string here. It talks to Datris over MCP, Datris holds the credentials, validates the data against a schema, and, with the audit log on, records who did what (see [strict mode](/audit-log#strict-mode)).
 
 You will end up with:
 
@@ -103,7 +103,7 @@ Reject it. On its next poll Claude is told so. If you had approved it, the platf
 
 **Configuration → Audit Log** now shows the whole session newest first: the pipeline create, the run, the query, the parked delete, and your rejection, each with the actor `claude-code` or your login. Filter by actor to see only what the agent did. **Export CSV** if someone else needs the trail, and note that the export is itself recorded.
 
-**Catalog → Lineage** shows the `orders` pipeline and the table it wrote, with freshness and the run that produced it. Turn on **Stamp provenance on landed data** in the pipeline's destination step if you want every row in PostgreSQL to carry the run id, so a row can be traced back to its run, config version, and source at any later date.
+**Catalog → Lineage** shows the `orders` pipeline and the table it wrote, with freshness and the run that produced it. Turn on **Stamp provenance on landed data** in the pipeline's destination step if you want every row in PostgreSQL to carry the run id when stamping succeeds ([strict mode](/provenance#strict-mode) fails the run otherwise), so a row can be traced back to its run, config version, and source at any later date.
 
 ## What you have now
 

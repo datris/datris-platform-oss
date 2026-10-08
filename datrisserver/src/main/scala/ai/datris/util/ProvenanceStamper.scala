@@ -31,6 +31,13 @@ import scala.collection.JavaConverters._
   *
   * Rows are never rewritten retroactively: provenance starts at the first run
   * after the toggle is turned on.
+  *
+  * Failure policy (PROVENANCE_STRICT): by default stamping is best effort, a
+  * payload that cannot be stamped loads unstamped (a status line records the
+  * miss when stamping threw). Under strict the run fails instead, before any
+  * loader starts. XML sources are exempt in both modes: they are never stamped
+  * and always load unstamped (under strict the exemption is written to the
+  * job status).
   */
 object ProvenanceStamper {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -51,31 +58,80 @@ object ProvenanceStamper {
     def enabled(config: PipelineConfig): Boolean =
         config != null && config.provenance != null && config.provenance.stamp
 
-    def stamp(ctx: JobContext): JobContext = {
+    /** What a stamper did with the payload. Only `NotStamped` (and a thrown
+      * exception) fails a run, and only under PROVENANCE_STRICT. */
+    private[util] sealed trait Outcome
+    private[util] case object Stamped extends Outcome
+    private[util] case object AlreadyStamped extends Outcome
+
+    /** Nothing to stamp: an empty payload loads no rows. */
+    private[util] case object NothingToStamp extends Outcome
+    private[util] final case class Exempt(reason: String) extends Outcome
+    private[util] final case class NotStamped(reason: String) extends Outcome
+
+    val XmlExemptStatus = "Provenance stamping skipped (XML source is exempt from PROVENANCE_STRICT)"
+
+    private[util] def strictFailureMessage(reason: String): String =
+        "Provenance could not be stamped (" + reason + ") and PROVENANCE_STRICT is on; nothing was loaded"
+
+    def stamp(ctx: JobContext): JobContext =
+        stamp(ctx, Option(DatrisEnvironment.values).exists(_.provenanceStrict))
+
+    /** `strict` = PROVENANCE_STRICT; the public overload reads the environment. */
+    private[datris] def stamp(ctx: JobContext, strict: Boolean): JobContext = {
         if (!enabled(ctx.config)) return ctx
-        try {
-            val values = stampValues(ctx, java.time.Instant.now().toString)
-            if (values.isEmpty) return ctx
-            // Dispatch on the staged format: never touch the deprecated
-            // `rows` / `rawData` accessors, which materialize the payload.
-            val stamped =
-                if (ctx.data == null) ctx
-                else if (ctx.data.isDelimited && ctx.data.header != null) stampDelimited(ctx, values)
-                else if (ctx.data.isDocument) stampRaw(ctx, values)
-                else if (ctx.data.rawBytes != null) stampVector(ctx, values)
-                else ctx
-            if ((stamped ne ctx) && ctx.statusUtil != null)
-                ctx.statusUtil.info("processing", "Provenance stamped: " + values.map(_._1).mkString(", "))
-            stamped
-        } catch {
-            // Stamping must never fail a job that would otherwise load. Record
-            // the miss and continue unstamped.
-            case e: Exception =>
+        val attempt: Either[Exception, (JobContext, Outcome, List[(String, String)])] =
+            try Right(stampOnce(ctx))
+            catch { case e: Exception => Left(e) }
+        attempt match {
+            case Left(e) if strict =>
+                logger.error(
+                    "ProvenanceStamper: stamping failed for pipeline: " + ctx.config.name + " — PROVENANCE_STRICT is on, failing the run: " + e.getMessage
+                )
+                throw new DatrisException(strictFailureMessage(String.valueOf(e.getMessage)))
+            case Left(e) =>
+                // Default (best effort): stamping never fails a job that would
+                // otherwise load. Record the miss and continue unstamped.
                 logger.warn("ProvenanceStamper: stamping failed for pipeline: " + ctx.config.name + " — loading unstamped: " + e.getMessage)
                 if (ctx.statusUtil != null)
                     ctx.statusUtil.info("processing", "Provenance stamping skipped (error): " + e.getMessage)
                 ctx
+            case Right((stamped, outcome, values)) =>
+                outcome match {
+                    case NotStamped(reason) if strict =>
+                        logger.error(
+                            "ProvenanceStamper: pipeline " + ctx.config.name + " could not be stamped (" + reason + ") — PROVENANCE_STRICT is on, failing the run"
+                        )
+                        throw new DatrisException(strictFailureMessage(reason))
+                    case Exempt(_) if strict =>
+                        if (ctx.statusUtil != null) ctx.statusUtil.info("processing", XmlExemptStatus)
+                    case _ =>
+                }
+                try {
+                    if ((stamped ne ctx) && ctx.statusUtil != null)
+                        ctx.statusUtil.info("processing", "Provenance stamped: " + values.map(_._1).mkString(", "))
+                } catch {
+                    case e: Exception => logger.warn("ProvenanceStamper: could not record the stamp status line: " + e.getMessage)
+                }
+                stamped
         }
+    }
+
+    /** One stamping attempt: the resulting context (unchanged when nothing was
+      * stamped, exactly as best-effort mode loads it), what happened, and the
+      * (field, value) pairs. Exceptions propagate to [[stamp]]. */
+    private def stampOnce(ctx: JobContext): (JobContext, Outcome, List[(String, String)]) = {
+        val values = stampValues(ctx, java.time.Instant.now().toString)
+        if (values.isEmpty) return (ctx, NotStamped("provenance.fields selects no known field"), values)
+        // Dispatch on the staged format: never touch the deprecated
+        // `rows` / `rawData` accessors, which materialize the payload.
+        val (stamped, outcome) =
+            if (ctx.data == null) (ctx, NotStamped("the job has no data"))
+            else if (ctx.data.isDelimited && ctx.data.header != null) stampDelimited(ctx, values)
+            else if (ctx.data.isDocument) stampRaw(ctx, values)
+            else if (ctx.data.rawBytes != null) stampVector(ctx, values)
+            else (ctx, NotStamped("the data format cannot be stamped"))
+        (stamped, outcome, values)
     }
 
     /** The (field, value) pairs for this run. Null values are kept (they stamp
@@ -99,10 +155,10 @@ object ProvenanceStamper {
         }
     }
 
-    private def stampDelimited(ctx: JobContext, values: List[(String, String)]): JobContext = {
+    private def stampDelimited(ctx: JobContext, values: List[(String, String)]): (JobContext, Outcome) = {
         val data = ctx.data
         // Idempotence guard: never double-stamp (e.g. a replayed context).
-        if (data.header.exists(_.startsWith(Prefix))) return ctx
+        if (data.header.exists(_.startsWith(Prefix))) return (ctx, AlreadyStamped)
 
         val delimiter = CsvAttributes.delimiterOf(ctx.config)
 
@@ -132,9 +188,12 @@ object ProvenanceStamper {
                 ctx.config.destination.copy(schemaProperties = appendSchemaFields(ctx.config.destination.schemaProperties, names))
             else ctx.config.destination
 
-        ctx.copy(
-            data = data.withStaged(newStaged).copy(header = newHeader, headerWithSchema = newHeaderWithSchema),
-            config = ctx.config.copy(source = newSource, destination = newDestination)
+        (
+            ctx.copy(
+                data = data.withStaged(newStaged).copy(header = newHeader, headerWithSchema = newHeaderWithSchema),
+                config = ctx.config.copy(source = newSource, destination = newDestination)
+            ),
+            Stamped
         )
     }
 
@@ -153,35 +212,41 @@ object ProvenanceStamper {
         else value
     }
 
-    private def stampRaw(ctx: JobContext, values: List[(String, String)]): JobContext = {
+    private def stampRaw(ctx: JobContext, values: List[(String, String)]): (JobContext, Outcome) = {
         // XML documents are not stamped — no safe generic injection point.
+        // Exempt in both modes (PROVENANCE_STRICT included).
         if (
             ctx.config.source != null && ctx.config.source.fileAttributes != null &&
             ctx.config.source.fileAttributes.xmlAttributes != null
-        ) return ctx
+        ) return (ctx, Exempt("XML source"))
         // Only NDJSON is stampable; an opaque text document is left alone (as
         // `injectJson` did for anything that is not JSON).
-        if (!ctx.data.isNdJson) return ctx
+        if (!ctx.data.isNdJson) return (ctx, NotStamped("the payload is not NDJSON"))
         stampNdJson(ctx, values) match {
-            case Some(staged) => ctx.copy(data = ctx.data.withStaged(staged))
-            case None => ctx
+            case (Some(staged), outcome) => (ctx.copy(data = ctx.data.withStaged(staged)), outcome)
+            case (None, outcome) => (ctx, outcome)
         }
     }
 
     /** Stream the staged NDJSON through the stamp, one record per line, into a
       * new staged file. Same rules as [[injectJson]]: every line must parse, only
       * objects are stamped, an already-stamped payload (no object changed) is
-      * left untouched. Returns None when nothing was stamped. */
-    private def stampNdJson(ctx: JobContext, values: List[(String, String)]): Option[StagedPayload] = {
+      * left untouched. Returns the new staged payload (None when nothing was
+      * stamped: the payload then loads as it was) and the outcome. A payload
+      * that mixes objects with other JSON values is stamped as before, but its
+      * outcome is NotStamped: the non-object records load without a stamp. */
+    private def stampNdJson(ctx: JobContext, values: List[(String, String)]): (Option[StagedPayload], Outcome) = {
         val nonNull = values.filter(_._2 != null)
-        if (nonNull.isEmpty) return None
+        if (nonNull.isEmpty) return (None, NotStamped("the selected provenance fields have no value for this run"))
         val source = ctx.data.staged
-        if (source.isEmpty || source.rowCount == 0) return None
+        if (source.isEmpty || source.rowCount == 0) return (None, NothingToStamp)
         val gson = PayloadStager.gson
         val format = StagedFormat.NdJson
         val (path, writer) = StagingArea.newWriter("stamp", format)
         var changed = false
         var failed = false
+        var failedLine = 0L
+        var nonObject = 0L
         var count = 0L
         val records = ctx.data.recordIterator()
         try {
@@ -198,7 +263,7 @@ object ProvenanceStamper {
                                 changed = true
                             }
                             gson.toJson(el)
-                        } else line
+                        } else { nonObject += 1; line }
                     }
                 if (count > 0) writer.write("\n")
                 writer.write(out)
@@ -208,15 +273,22 @@ object ProvenanceStamper {
             // A line that does not parse: leave the payload untouched. Anything
             // else (an I/O failure writing the new file) propagates to stamp()'s
             // catch, which records the miss on the job status.
-            case _: JsonParseException => failed = true
+            case _: JsonParseException => failed = true; failedLine = count + 1
         } finally {
             records.close()
             writer.close()
         }
         if (failed || !changed) {
             Files.deleteIfExists(path)
-            None
-        } else Some(StagedPayload(path.toString, format, count, Files.size(path), source.arraySource))
+            val outcome =
+                if (failed) NotStamped("NDJSON line " + failedLine + " does not parse")
+                else if (nonObject > 0) NotStamped(nonObject + " NDJSON record(s) are not JSON objects")
+                else AlreadyStamped
+            (None, outcome)
+        } else {
+            val outcome = if (nonObject > 0) NotStamped(nonObject + " NDJSON record(s) are not JSON objects") else Stamped
+            (Some(StagedPayload(path.toString, format, count, Files.size(path), source.arraySource)), outcome)
+        }
     }
 
     /** Inject the stamp keys into a JSON payload: array of objects, a single
@@ -269,11 +341,12 @@ object ProvenanceStamper {
         }
     }
 
-    private def stampVector(ctx: JobContext, values: List[(String, String)]): JobContext = {
+    private def stampVector(ctx: JobContext, values: List[(String, String)]): (JobContext, Outcome) = {
         val nonNull = values.filter(_._2 != null)
-        if (nonNull.isEmpty) return ctx
+        if (nonNull.isEmpty) return (ctx, NotStamped("the selected provenance fields have no value for this run"))
         val dest = ctx.config.destination
-        if (dest == null) return ctx
+        if (dest == null) return (ctx, NotStamped("unstructured data with no vector destination"))
+        val hasVector = dest.qdrant != null || dest.weaviate != null || dest.pgvector != null || dest.milvus != null || dest.chroma != null
 
         def extend(metadata: java.util.Map[String, String]): java.util.Map[String, String] = {
             val m = new java.util.LinkedHashMap[String, String]()
@@ -289,6 +362,11 @@ object ProvenanceStamper {
             milvus = if (dest.milvus != null) dest.milvus.copy(metadata = extend(dest.milvus.metadata)) else null,
             chroma = if (dest.chroma != null) dest.chroma.copy(metadata = extend(dest.chroma.metadata)) else null
         )
-        ctx.copy(config = ctx.config.copy(destination = newDest))
+        // Without a vector destination there is no metadata map to carry the
+        // stamp: best effort proceeds exactly as before, strict refuses.
+        (
+            ctx.copy(config = ctx.config.copy(destination = newDest)),
+            if (hasVector) Stamped else NotStamped("unstructured data with no vector destination")
+        )
     }
 }

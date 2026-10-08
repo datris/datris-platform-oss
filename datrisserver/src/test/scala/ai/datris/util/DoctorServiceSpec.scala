@@ -476,7 +476,17 @@ class DoctorServiceSpec extends AnyFunSuite {
         // codegen-script-isolation: registered and startup-safe; position not pinned.
         assert(full.checks.map(_.id).contains("codegen.isolation"), full.checks.map(_.id).toString)
         assert(quickIds.contains("codegen.isolation"), "startup-safe: " + quickIds)
-        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans", "tap.secret_scope", "ai.sample_values", "codegen.isolation")) == Seq(
+        // strict-evidence-mode: registered and startup-safe; position not pinned.
+        assert(quickIds.contains("audit.strict") && quickIds.contains("provenance.strict"), "startup-safe: " + quickIds)
+        assert(full.checks.map(_.id).filterNot(Set(
+            "staging.area",
+            "staging.orphans",
+            "tap.secret_scope",
+            "ai.sample_values",
+            "codegen.isolation",
+            "audit.strict",
+            "provenance.strict"
+        )) == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
             "jdbc.mssql_driver",

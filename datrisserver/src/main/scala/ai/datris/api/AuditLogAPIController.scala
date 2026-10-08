@@ -80,8 +80,9 @@ class AuditLogAPIController {
         }
     }
 
-    /** Operational status for the UI banner — whether auditing is on and how
-      * many entries have been dropped under backpressure since startup. */
+    /** Operational status for the UI banner — whether auditing is on, how
+      * many entries have been dropped under backpressure since startup, and
+      * the strict-mode state. */
     @GetMapping(path = Array("/status"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def status(): ResponseEntity[String] = {
         val out = new JsonObject()
@@ -94,6 +95,12 @@ class AuditLogAPIController {
         }
         out.addProperty("dropped", AuditLog.droppedCount)
         out.addProperty("queueDepth", AuditLog.queueDepth)
+        // Strict evidence mode (AUDIT_LOG_STRICT): effective only with the
+        // audit log on. `unrecorded` counts entries that could not be queued;
+        // `acceptingWrites` false means audited requests are being refused.
+        out.addProperty("strict", AuditLog.strict)
+        out.addProperty("unrecorded", AuditLog.unrecordedCount)
+        out.addProperty("acceptingWrites", AuditLog.acceptingWrites)
         new ResponseEntity[String](gson.toJson(out), HttpStatus.OK)
     }
 
