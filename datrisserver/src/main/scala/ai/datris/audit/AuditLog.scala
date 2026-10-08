@@ -328,7 +328,7 @@ object AuditLog {
             try {
                 queue.poll(1000L).foreach { e =>
                     inFlight.set(e)
-                    try write(e)
+                    try write(e, Long.MaxValue, tracked = true)
                     finally inFlight.compareAndSet(e, null)
                 }
             } catch {
@@ -342,14 +342,22 @@ object AuditLog {
     /** Bounded: under strict, retries stop at ShutdownFlushMs (for the
       * writer thread's in-flight entry too) and whatever is left is counted as
       * unrecorded, so a store that is down cannot hang the stop. */
-    private def flushOnShutdown(): Unit = {
+    private def flushOnShutdown(): Unit = flushOnShutdown(ShutdownFlushMs)
+
+    /** Test seam: run the shutdown flush with a short bound. The caller resets
+      * with [[resetShutdownForTest]] once the writer has settled. */
+    private[datris] def runShutdownFlushForTest(flushMs: Long): Unit = flushOnShutdown(flushMs)
+
+    private[datris] def resetShutdownForTest(): Unit = shutdownDeadlineNanos = Long.MaxValue
+
+    private def flushOnShutdown(flushMs: Long): Unit = {
         try {
-            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ShutdownFlushMs)
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(flushMs)
             shutdownDeadlineNanos = deadline
             system("system", "stop")
             val pending = queue.drain()
             pending.foreach(e =>
-                try write(e, deadline)
+                try write(e, deadline, tracked = false)
                 catch { case _: Throwable => }
             )
             if (strict) {
@@ -368,13 +376,14 @@ object AuditLog {
       * persist (strict). */
     private final class NoConfigStore extends RuntimeException("Audit log requires the Mongo config store")
 
-    private def write(entry: AuditEntry): Unit = write(entry, Long.MaxValue)
-
     /** Persist one entry. Default: one attempt, a failure is logged and the
       * entry skipped. Strict: the same entry is retried with backoff until it
       * lands (the writer holds the queue's order meanwhile); only the shutdown
       * flush stops at `deadlineNanos`. */
-    private def write(entry: AuditEntry, deadlineNanos: Long): Unit = {
+    /** `tracked`: the entry is the writer thread's (published in [[inFlight]]),
+      * so at the shutdown deadline it is counted only if the writer, not the
+      * flush, releases it. Entries the flush drained are always counted. */
+    private def write(entry: AuditEntry, deadlineNanos: Long, tracked: Boolean): Unit = {
         val json = entry.toJson
         if (emitLogLine)
             auditLogger.info("audit {}", StructuredArguments.raw("audit", json.toString))
@@ -400,8 +409,7 @@ object AuditLog {
                     if (System.nanoTime() >= math.min(deadlineNanos, shutdownDeadlineNanos)) {
                         // The writer's own entry is counted by whichever of the
                         // writer and the shutdown flush releases it first.
-                        if (inFlight.get() ne entry) markUnrecorded(entry, "not persisted before shutdown: " + e.getMessage)
-                        else if (inFlight.compareAndSet(entry, null)) markUnrecorded(entry, "not persisted before shutdown: " + e.getMessage)
+                        if (!tracked || inFlight.compareAndSet(entry, null)) markUnrecorded(entry, "not persisted before shutdown: " + e.getMessage)
                         return
                     }
                     if (attempt == 1 || attempt % 20 == 0)

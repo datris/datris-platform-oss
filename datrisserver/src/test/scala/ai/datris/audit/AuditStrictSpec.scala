@@ -284,4 +284,24 @@ class AuditStrictSpec extends AnyFunSuite with BeforeAndAfterEach with BeforeAnd
             auditLogger.detachAppender(appender)
         }
     }
+
+    test("strict shutdown flush counts every drained entry and the writer's in-flight entry exactly once") {
+        install(strict = true)
+        store.down = true
+        occupyWriter("f-held")
+        (1 to 20).foreach(i => assert(submit("f" + i)))
+        val queued = AuditLog.queueDepth
+        assert(queued == 20)
+        val before = AuditLog.unrecordedCount
+        try {
+            AuditLog.runShutdownFlushForTest(100L)
+            // Past the writer's retry delay: it wakes, fails again, and must
+            // not count the entry the flush already counted.
+            Thread.sleep(300)
+            // drained = the 20 queued + the "system stop" entry; + 1 in flight.
+            assert(AuditLog.unrecordedCount == before + queued + 1 + 1, "each entry counted once: " + (AuditLog.unrecordedCount - before))
+            assert(AuditLog.queueDepth == 0)
+            assert(store.actions.isEmpty)
+        } finally AuditLog.resetShutdownForTest()
+    }
 }
