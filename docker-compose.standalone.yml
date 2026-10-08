@@ -490,6 +490,8 @@ services:
     image: datrisai/datris-tap-runner:latest
     #build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris-tap-runner
+    # tini as PID 1 reaps orphaned grandchildren of tap processes (app.py does not).
+    init: true
     environment:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
       TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
@@ -522,6 +524,8 @@ services:
     image: datrisai/datris-tap-runner:latest
     #build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris-codegen-runner
+    # tini as PID 1 reaps orphaned grandchildren of scripts (app.py does not).
+    init: true
     environment:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
       TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
