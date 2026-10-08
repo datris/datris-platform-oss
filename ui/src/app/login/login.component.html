@@ -36,6 +36,12 @@
       </button>
     </form>
 
+    <ng-container *ngIf="oidcEnabled">
+      <div class="divider"><span>or</span></div>
+      <a class="sso-btn" [href]="ssoLoginUrl">Sign in with SSO</a>
+    </ng-container>
+
+    <p class="error" *ngIf="ssoError">{{ ssoError }}</p>
     <p class="error" *ngIf="error">{{ error }}</p>
     <p class="hint">First login: <code>admin</code> with the bootstrap password the server printed once to its log on first boot (<code>docker compose logs datris | grep "Bootstrap login"</code>). Change it after you sign in. Not in the log? See <a href="https://docs.datris.ai/user-auth#recovering-admin-access" target="_blank" rel="noopener">Recovering admin access</a>.</p>
   </div>

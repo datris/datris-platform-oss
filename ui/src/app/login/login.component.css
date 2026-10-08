@@ -121,6 +121,40 @@ input::placeholder {
   cursor: not-allowed;
 }
 
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 12px;
+  color: #5a6b8a;
+  font-size: 0.8rem;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid rgba(99, 179, 237, 0.15);
+}
+
+.sso-btn {
+  display: block;
+  padding: 12px 24px;
+  background: transparent;
+  color: #f0f4ff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border: 1px solid rgba(99, 179, 237, 0.35);
+  border-radius: 6px;
+  text-decoration: none;
+  transition: border-color 0.15s, box-shadow 0.25s;
+}
+
+.sso-btn:hover {
+  border-color: #00b4ff;
+  box-shadow: 0 0 24px rgba(0, 180, 255, 0.25);
+}
+
 .error {
   color: #f87171;
   font-size: 0.85rem;
