@@ -225,7 +225,9 @@ You can run all three slots on a local Ollama instance — no cloud API keys nee
 | `oss/codegen` | ollama | same as above | `qwen2.5-coder:7b-instruct` |
 | `oss/embedding` | ollama | same as above | `bge-m3` |
 
-If you only need local **chat** but want to keep the bundled embedding service (TEI), leave `oss/embedding` pointed at `http://tei:80/v1/embeddings` with `model="BAAI/bge-m3"` and only switch the AI Primary and CodeGen slots to Ollama.
+With every slot on Ollama no data goes to a cloud model, but the chat assistants (the Assistant, Search chat and the other chat panels) cannot run on Ollama and need a cloud provider; [Data Flows](/production/data-flows) lists where each kind of data goes for each provider choice.
+
+If you only need local AI Primary and CodeGen but want to keep the bundled embedding service (TEI), leave `oss/embedding` pointed at `http://tei:80/v1/embeddings` with `model="BAAI/bge-m3"` and only switch the AI Primary and CodeGen slots to Ollama.
 
 The Configuration UI makes this easy — select **Ollama (if optional service enabled)** as the provider and type your model name. For the AI Primary and CodeGen slots the endpoint defaults to `http://host.docker.internal:11434/v1/chat/completions` (edit it to `http://ollama:11434/v1/chat/completions` for the bundled service); for the Embedding slot it defaults to `http://ollama:11434/v1/embeddings`. No API key is required.
 

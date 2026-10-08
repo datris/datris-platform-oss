@@ -1,0 +1,103 @@
+---
+title: "Data Flows"
+description: "For a security reviewer: every place each kind of data Datris handles can go, which feature sends it there, and which setting changes that"
+---
+
+Datris runs inside your perimeter, and your data goes only where you send it. Every destination outside the platform's own containers is one you configure: the AI provider in each AI slot, the agents you connect with an API key, the destinations your pipelines write to, and, if you turn them on, web search and a GitHub repository for scripts. No customer data reaches Datris.ai the company. This page lists, for each kind of data, where it can go and which setting changes that.
+
+Destinations are not in the table: a pipeline destination (your Postgres, warehouse, object store or vector store) is where you send data on purpose, and the rows land there as you configured them.
+
+## The matrix
+
+The two model columns are alternatives. Each AI slot (AI Primary, CodeGen, embedding) points either at a local model you run or at a cloud provider, and a flow goes to whichever one that slot names. "Local model" means an Ollama endpoint you run, or the bundled `bge-m3` embedding service. "Cloud AI provider" means Anthropic, OpenAI, Amazon Bedrock, Azure OpenAI or Grok. "Connected agent" means an MCP client, the CLI or a script holding one of your API keys. Each number links to the note for that row.
+
+| Data | Local model | Cloud AI provider | Connected agent | Datris.ai |
+|------|-------------|-------------------|-----------------|-----------|
+| Row values and samples | When an AI helper, the answer endpoint or an embedding runs [1](#1-row-values-and-samples) | When an AI helper, the answer endpoint, a chat assistant or an embedding runs [1](#1-row-values-and-samples) | Only through the query, search, profile, tap and Live Read tools its key allows [1](#1-row-values-and-samples) | Never |
+| Column names and schema | When an AI helper runs [2](#2-column-names-and-schema) | When an AI helper or a chat assistant runs [2](#2-column-names-and-schema) | Only through the pipeline, catalog and lineage tools its key allows [2](#2-column-names-and-schema) | Never |
+| Source credentials | Never; field names only [3](#3-source-credentials) | Never; field names only [3](#3-source-credentials) | Only a value the agent itself stores; never returned [3](#3-source-credentials) | Never |
+| AI provider keys | Only its own key, if you set one [4](#4-ai-provider-keys) | Only its own key, to authenticate [4](#4-ai-provider-keys) | Write only: it can set a key, never read one [4](#4-ai-provider-keys) | Never |
+| Logs and error text | When a fix suggestion or tap diagnosis runs [5](#5-logs-and-error-text) | When a fix suggestion, tap diagnosis, the recovery agent or a chat assistant runs [5](#5-logs-and-error-text) | Only through the status, log and incident tools its key allows [5](#5-logs-and-error-text) | Never |
+| Generated scripts | When CodeGen writes, fixes, reviews or optimizes a script [6](#6-generated-scripts) | When CodeGen writes, fixes, reviews or optimizes a script, or a chat assistant reads one [6](#6-generated-scripts) | Only through the tap and pipeline tools its key allows [6](#6-generated-scripts) | Never |
+
+The chat assistants cannot run on a local model. The Assistant, Search chat, Catalog chat, the Configuration assistant, Ops chat and the recovery agent run on the AI Primary provider and need Anthropic, OpenAI, Amazon Bedrock, Azure OpenAI or Grok; with AI Primary on Ollama they return an error instead of answering. One-shot helpers on AI Primary (profiling, header validation, fix suggestions, tap diagnosis, the answer endpoint) and everything on the CodeGen slot do run on a local model.
+
+A connected agent is a program you run. What it receives goes wherever that program sends it, usually to the model provider behind it, so choose its key's capabilities with that in mind.
+
+## Notes
+
+### 1. Row values and samples
+
+- **AI helpers that write configuration or code** send sample rows: schema generation from a file, data profiling, JSON Schema and XSD generation, files attached to an Assistant chat, and the sample rows in the prompts that generate an [AI data-quality rule](/data-quality/ai-rules) or an [AI transformation](/transformation/ai-transformation). Profiling uses AI Primary, schema, rule and transformation generation use CodeGen, and an attachment goes to the chat assistant it is attached to. Switch: `DATRIS_AI_SAMPLE_VALUES=false` makes each of them work from structure only. The generated rule or transformation script runs on your data inside the platform; the rows themselves are not sent at run time.
+- **Features that answer questions over your data** send that data by design: Search chat, the answer endpoint (`POST /api/v1/ai/answer`, the `ai_answer` tool), and the Assistant reading query results or a Live Read preview. Search chat and the Assistant are chat assistants, so they need a cloud provider; the answer endpoint uses AI Primary and can be local.
+- **Embeddings.** A pipeline with a vector destination sends each document chunk to the embedding endpoint, and a vector search sends the query text. Field protection does not apply to documents. Switch: point the embedding slot at the bundled `bge-m3` service or Ollama and nothing leaves; a cloud embedding endpoint is OpenAI or Azure OpenAI, because Anthropic offers no embedding model.
+- **Connected agent.** The `query_*` tools, `search_*` tools, `ai_answer`, `profile_data`, `test_tap`, `run_tap` and `get_pipeline_result` (Live Read) return rows. Switch: API key capabilities decide which of these a key may call; Agent Policy can hold a tap run for approval but never gates reads.
+- **Field protection** is the control across all of these: a column marked `protect` is already a pseudonym, mask, ciphertext or gone before AI rules, transformations, Live Read and destinations see it, so every later reader gets the protected value. The preprocessor and the file-level helpers above run before protection; see [What still sees raw data](/transformation/field-protection#what-still-sees-raw-data).
+
+What `DATRIS_AI_SAMPLE_VALUES=false` does not cover:
+
+- Search chat and the answer endpoint;
+- the Assistant reading query results or a Live Read preview;
+- the Assistant or the recovery agent reading a run's status, logs or job details with their tools;
+- tap script generation, tap script review and diagnosis, and fix suggestions for failed tap runs;
+- embeddings, which still send every document chunk and search query to the embedding endpoint.
+
+The first four match the list under [What still sees raw data](/transformation/field-protection#what-still-sees-raw-data). For these, use field protection, a local model where one is supported, or an AI provider you have an agreement with for that data.
+
+### 2. Column names and schema
+
+- **AI helpers** send field names and types: protection suggestions, natural-language to SQL (the table's column names), column-level lineage inference (field names, the transformation instruction and its script), the catalog search ranking (pipeline names, descriptions and tags), and header validation, which compares a file's header line with the pipeline schema.
+- With `DATRIS_AI_SAMPLE_VALUES=false`, a first line that looks like data is sent as `column_1`, `column_2`, … and a JSON object keyed by data is collapsed; the rules are in [Field Protection](/transformation/field-protection#what-still-sees-raw-data). Header validation (`validateFileHeader`) is not covered by the switch: it sends the header line as it is. Stored schema field names are always sent.
+- **Chat assistants** read pipeline definitions, schemas and the catalog through their tools.
+- **Connected agent.** `get_pipeline`, `list_pipelines`, `find_data`, `get_lineage`, `get_provenance` and the `list_postgres_*` style tools return names and schemas. Switch: API key capabilities.
+
+### 3. Source credentials
+
+- Credentials live in Vault. At run time a tap's secret is injected as environment variables into the isolated tap runner and reaches only the tap's own process and its source. Destination credentials are read by the server's writer. Neither is put in a model prompt.
+- Tap script generation receives the field names of the tap's secret, never the values. Tap output is masked before it is stored, shown or sent to tap diagnosis, review or fix: every secret value of four or more characters is replaced. Masking matches the exact value, so a script that prints an encoded or partial form of a secret defeats it; do not log credentials.
+- The in-platform Assistant and the Configuration assistant collect a credential through a form, never in chat, so it does not enter the model's context. Text you paste into any chat does.
+- **Connected agent.** `list_tap_secrets`, `get_tap_secret_fields` and `get_platform_secret_fields` return names only. `create_tap_secret` takes a value the agent supplies and never returns it; an agent can change or delete only tap secrets, never a platform secret. Switches: API key capabilities (`secret:read`, `secret:write`), Agent Policy on `secret:write`, and `DATRIS_TAP_SECRET_SCOPE`, which keeps a tap (and so anyone who can write and run one) from reading a platform secret unless set to `any`.
+
+### 4. AI provider keys
+
+- Each provider's key is sent only to that provider, in the request's authentication header. Amazon Bedrock is signed with your AWS credentials instead, and Azure can use Microsoft Entra ID in place of a key.
+- The secrets API masks key fields, and logged configuration is redacted.
+- **Connected agent.** `update_secret` can set an AI slot's key; nothing returns one. Switches: API key capabilities (`secret:write`) and Agent Policy.
+
+### 5. Logs and error text
+
+- **Fix suggestions** for a failed pipeline run and the **recovery agent's** first incident prompt include the error text, which can quote row values. Switch: with `DATRIS_AI_SAMPLE_VALUES=false` that text is reduced to exception classes and the server's own messages. Anything the recovery agent or the Assistant then reads through its tools is not reduced.
+- **Tap diagnosis, review, fix and optimization** send the tap's captured output and error (with secrets masked, see note 3). The switch does not cover them.
+- **Web search.** If you configure the optional web-search slot (`ai.webSearch.secretName`), tap generation and diagnosis can send a search query built from the tap's description and error to Anthropic or OpenAI web search, which searches the public web. This is a fifth destination, not in the table; it is off until you configure it.
+- **Connected agent.** `get_job_status`, `get_pipeline_status`, `get_tap_logs`, `get_incident` and `list_incidents` return run messages and logs. Switch: API key capabilities.
+
+### 6. Generated scripts
+
+- Tap scripts and the scripts behind AI rules and transformations are generated, fixed, reviewed and optimized by the CodeGen slot, so their text goes to that model. Tap diagnosis uses AI Primary.
+- Scripts are stored in the platform's object store. If you connect a [code repository](/tap-github-storage), every save is also a commit to that GitHub repository; this is a destination you choose, not in the table.
+- **Connected agent.** `get_tap`, `get_tap_version`, `get_pipeline` and the version tools return script text. Switches: API key capabilities, and Agent Policy for creating, changing and restoring taps and pipelines.
+
+## Switches
+
+| Switch | Default | What it moves |
+|--------|---------|---------------|
+| AI Primary, CodeGen and embedding provider ([AI Configuration](/ai-configuration)) | Chosen at install; embeddings default to the bundled `bge-m3` service | Which model column a flow goes to. Anthropic and OpenAI are equal choices for AI Primary and CodeGen; the chat assistants need a cloud provider |
+| `DATRIS_AI_SAMPLE_VALUES` (datris service) | `true` | `false`: AI helpers that write configuration or code send structure, not row values, and pipeline error text is reduced. See note 1 for what it does not cover |
+| `protect` on a field ([Field Protection](/transformation/field-protection)) | none | The field is a pseudonym, mask, ciphertext or dropped before AI stages, Live Read, agents' queries and destinations see it |
+| `DATRIS_TAP_SECRET_SCOPE` (datris service) | `tap` | Taps may use only tap secrets. `any` lets a tap read platform secrets |
+| API key capabilities ([API Keys](/api-keys)) | Off until `USE_API_KEYS=true` | Which tools, and so which data, a connected agent can reach at all |
+| Agent Policy ([Agent Policy](/agent-policy)) | Off until `USE_AGENT_POLICY=true` | Whether an agent's run, write or secret change happens now, waits for approval, or is refused. Reads are never gated |
+| Web search (`ai.webSearch.secretName`) | Not configured | Lets tap generation and diagnosis send a search query to Anthropic or OpenAI web search |
+| Code repository ([GitHub Script Storage](/tap-github-storage)) | Off; scripts stay in the object store | Every script save becomes a commit to your GitHub repository |
+
+## No cloud exit
+
+To run with nothing leaving your perimeter for a model:
+
+1. Point AI Primary and CodeGen at Ollama and the embedding slot at the bundled `bge-m3` service (or Ollama); see [Fully local with Ollama](/ai-configuration#fully-local-with-ollama).
+2. Leave web search unconfigured.
+3. Connect only agents that run on a model you trust with what their key can read, or none.
+
+What stops working: the Assistant, Search chat, Catalog chat, the Configuration assistant, Ops chat and the recovery agent, because the chat assistants need a cloud provider today. Profiling, schema generation, AI rules and transformations, tap generation, fix suggestions, tap diagnosis, the answer endpoint and vector search keep working, with the quality of the local model you choose.
+
+The only request the platform server makes to datris.ai is the model catalog fetch, which sends nothing beyond the request itself; it and the `datris doctor` update check are described on [Security Architecture](/production/security-architecture#no-telemetry).
