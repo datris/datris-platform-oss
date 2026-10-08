@@ -344,6 +344,11 @@ def _remove_tree(top):
                     elif fd == root_fd:
                         queue.append(e.name)
                     else:
+                        try:
+                            # rename(2) of a directory to a new parent needs write on the moved dir
+                            os.chmod(e.name, 0o700, dir_fd=fd)
+                        except (OSError, NotImplementedError):
+                            pass
                         while True:
                             counter += 1
                             flat = ".cg_flat_%d" % counter

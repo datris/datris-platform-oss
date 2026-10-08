@@ -197,6 +197,12 @@ def test_a_dedicated_volume_and_the_tmp_dir_are_emptied_at_start(tmp_path):
     (scratch / "escape.txt").write_text("left by a script")
     (scratch / "escape_dir" / "inner").mkdir(parents=True)
     os.chmod(scratch / "escape_dir" / "inner", 0)
+    # depth 2 below a top-level entry, locked: must still be removed
+    (scratch / "escape2" / "a" / "b" / "c").mkdir(parents=True)
+    (scratch / "escape2" / "a" / "b" / "c" / "leaf").write_text("x")
+    os.chmod(scratch / "escape2" / "a" / "b", 0)
+    (scratch / "escape3" / "a" / "b" / "c").mkdir(parents=True)
+    os.chmod(scratch / "escape3" / "a" / "b", 0o500)
     tmpdir.mkdir()
     (tmpdir / "x").write_text("left in tmp")
     port = _free_port()
@@ -243,6 +249,13 @@ DEEP_SCRIPT = (
     "        os.chdir('a')\n"
     "    open('leaf', 'w').write('x')\n"
     "os.chdir(base)\n"
+    "for start in ('.', '..'):\n"
+    "    d = os.path.join(start, 'locked_' + str(len(start)))\n"
+    "    os.makedirs(os.path.join(d, 'a', 'b', 'c'))\n"
+    "    open(os.path.join(d, 'a', 'b', 'c', 'leaf'), 'w').write('x')\n"
+    "    os.chmod(os.path.join(d, 'a', 'b'), 0o500)\n"
+    "    os.makedirs(os.path.join(d, 'z', 'y', 'x'))\n"
+    "    os.chmod(os.path.join(d, 'z', 'y'), 0)\n"
     "print('ok')\n" % DEEP
 )
 
