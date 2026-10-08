@@ -292,7 +292,7 @@ If you handle regulated data, set `DATRIS_AI_SAMPLE_VALUES=false` on the datris 
 
 What is still sent is structure, and some structure can carry data, so these rules apply:
 
-- **Column names from a file.** Schema generation, profiling and the CodeGen prompts take the `header` flag as a statement that line 1 is a header. With `header=true`, line 1 is sent as column names only when it looks like a header, cell by cell:
+- **Column names from a file.** Schema generation, profiling and the CodeGen prompts take the `header` flag as a statement that line 1 is a header. The run-time header check (`dataQuality.validateFileHeader`) is not covered by the switch: it sends line 1 to the model as it is. With `header=true`, line 1 is sent as column names only when it looks like a header, cell by cell:
   - a cell is sent as a name only if it uses letters, digits, underscores and spaces (no dash, dot or other punctuation), starts with a letter or underscore, has at most 64 characters and at most two digits, is not all digits, and is not two or more capitalised words (a full name). Any other cell is sent as `column_N`. So `full_name`, `email`, `first name`, `addr1` and `zip_code` are sent; `First Name`, `e-mail` and `account123` become `column_N`.
   - if any cell has a dash next to a digit (`MRN-12345`, `2024-01-05`), an `@`, more than four digits in a row, more than two digits, or no letter at all (`42`, `555 1234`), the whole line is treated as data and every column is numbered.
 
