@@ -16,7 +16,8 @@ import org.springframework.web.filter.OncePerRequestFilter
 
 import java.net.{InetAddress, NetworkInterface, URI}
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong}
+import java.util.concurrent.{Executors, ScheduledExecutorService, TimeUnit}
+import java.util.concurrent.atomic.AtomicLong
 import scala.collection.JavaConverters._
 import scala.util.Try
 
@@ -161,7 +162,9 @@ object CodeGenNetGuard {
     def parseLiteral(s: String): Option[InetAddress] = {
         if (s == null) return None
         val bare = s.trim.takeWhile(_ != '%')
-        if (bare.isEmpty || !bare.forall(c => Character.digit(c, 16) >= 0 || c == '.' || c == ':')) return None
+        // A separator is required: a hex-only token ("abc") is a hostname and would be resolved.
+        if (bare.isEmpty || !bare.exists(c => c == '.' || c == ':')) return None
+        if (!bare.forall(c => Character.digit(c, 16) >= 0 || c == '.' || c == ':')) return None
         Try(InetAddress.getByName(bare)).toOption
     }
 
@@ -202,9 +205,12 @@ object CodeGenNetGuard {
   * (see [[CodeGenNetGuard]]). Registered before every other filter and
   * interceptor, so it applies to every path (API, actuator, MinIO events)
   * before any authentication. The decision is logged at boot and whenever it
-  * changes; the runner's hostname is re-resolved every 30 s (every 2 s while
-  * it does not resolve), so a runner that starts after the server, or
-  * restarts with a new address, is covered. */
+  * changes. The first decision is made synchronously while the bean is
+  * created (before the server accepts requests); after that one daemon
+  * thread re-resolves the runner every 30 s (every 2 s while it does not
+  * resolve), so a runner that starts after the server, or restarts with a
+  * new address, is covered. Requests only read the current decision: no
+  * DNS on a request thread. */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 class CodeGenNetGuardFilter extends OncePerRequestFilter {
@@ -215,21 +221,41 @@ class CodeGenNetGuardFilter extends OncePerRequestFilter {
     private val hostOrReason: Either[String, String] = CodeGenNetGuard.settings(sys.env)
     @volatile private var decision: Decision = Inactive
     @volatile private var lastRunnerKeys: Set[Key] = Set.empty
-    @volatile private var nextRefresh: Long = 0L
-    private val refreshing = new AtomicBoolean(false)
     private val lastBlockLog = new AtomicLong(0L)
     private val blockedSinceLog = new AtomicLong(0L)
 
-    hostOrReason match {
-        case Left(why) => log.info("CodeGen runner API block off: " + why)
-        case Right(_) => refresh(force = true)
+    private val scheduler: Option[ScheduledExecutorService] = hostOrReason match {
+        case Left(why) =>
+            log.info("CodeGen runner API block off: " + why)
+            None
+        case Right(host) =>
+            refresh(host, force = true)
+            val ex = Executors.newSingleThreadScheduledExecutor { r: Runnable =>
+                val t = new Thread(r, "codegen-net-guard")
+                t.setDaemon(true)
+                t
+            }
+            scheduleNext(ex, host)
+            Some(ex)
     }
 
-    private def refresh(force: Boolean): Unit = hostOrReason.foreach { host =>
-        if (refreshing.compareAndSet(false, true)) refreshAs(host, force)
+    private def scheduleNext(ex: ScheduledExecutorService, host: String): Unit =
+        Try(ex.schedule(
+            new Runnable {
+                override def run(): Unit =
+                    try refresh(host, force = false)
+                    finally scheduleNext(ex, host)
+            },
+            if (decision.active) RefreshMillis else UnresolvedRetryMillis,
+            TimeUnit.MILLISECONDS
+        )) // RejectedExecutionException after shutdown: stop rescheduling.
+
+    override def destroy(): Unit = {
+        scheduler.foreach(_.shutdownNow())
+        super.destroy()
     }
 
-    private def refreshAs(host: String, force: Boolean): Unit = {
+    private def refresh(host: String, force: Boolean): Unit = {
         try {
             val addrs = resolve(host)
             val keys = addrs.map(key).toSet
@@ -245,16 +271,12 @@ class CodeGenNetGuardFilter extends OncePerRequestFilter {
             decision = d
         } catch {
             case e: Exception => log.warn("CodeGen runner API block: refresh failed, keeping the previous decision: " + e)
-        } finally {
-            nextRefresh = System.currentTimeMillis() + (if (decision.active) RefreshMillis else UnresolvedRetryMillis)
-            refreshing.set(false)
         }
     }
 
     override def shouldNotFilter(request: HttpServletRequest): Boolean = hostOrReason.isLeft
 
     override def doFilterInternal(request: HttpServletRequest, response: HttpServletResponse, chain: FilterChain): Unit = {
-        if (System.currentTimeMillis() >= nextRefresh) refresh(force = false)
         if (blocked(request.getLocalAddr, request.getRemoteAddr, decision)) {
             logBlocked(request)
             response.setStatus(HttpServletResponse.SC_FORBIDDEN)

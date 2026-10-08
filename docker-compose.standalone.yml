@@ -29,6 +29,8 @@ networks:
   # gives it no outbound internet either. Only the datris server joins both.
   codegen-net:
     driver: bridge
+    # The API guard assumes this; removing it 403s host traffic (the server
+    # would route via codegen-net) — set CODEGEN_RUNNER_API_BLOCK=false if you must.
     internal: true
 
 volumes:

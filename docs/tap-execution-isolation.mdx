@@ -241,7 +241,9 @@ network when that network is the server's only one, or when another service (UI,
 runner, Vault, databases, MinIO) is on it. In those cases it refuses only the runner's own address
 and logs a warning. While the runner's name does not resolve, nothing is refused and the server
 retries every 2 seconds. A runner that resolves to the server itself or to loopback turns the guard
-off, with a warning. Outside compose (for example a Kubernetes Service address) the runner's source
+off, with a warning. The guard relies on `codegen-net` staying `internal: true`: without it the
+server can send and receive host traffic through that network, and every request from the Docker
+host would get `403`. If you must remove it, set `CODEGEN_RUNNER_API_BLOCK=false`. Outside compose (for example a Kubernetes Service address) the runner's source
 address may not match, so use a network policy there.
 
 <Warning>

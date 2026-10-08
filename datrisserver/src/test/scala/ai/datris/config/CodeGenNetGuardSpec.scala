@@ -97,6 +97,11 @@ class CodeGenNetGuardSpec extends AnyFunSuite {
     test("addresses that are not IP literals are never resolved and never match") {
         val d = composeDecision
         assert(parseLiteral("datris-codegen-runner").isEmpty)
+        assert(parseLiteral("abc").isEmpty, "hex-only token is a hostname, never resolved")
+        assert(parseLiteral("cafe").isEmpty)
+        assert(parseLiteral("1234").isEmpty)
+        assert(parseLiteral("172.20.0.3").isDefined)
+        assert(parseLiteral("::1").isDefined)
         assert(parseLiteral(null).isEmpty)
         assert(parseLiteral("fe80::1%eth0").isDefined)
         assert(!blocked(null, null, d))
