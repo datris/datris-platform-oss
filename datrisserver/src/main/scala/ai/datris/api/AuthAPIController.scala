@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.audit.AuditLog
 import ai.datris.config.{RequiresRole, SessionAuthenticator}
 import ai.datris.model.{DatrisEnvironment, User, UserContext}
 import ai.datris.util.{PasswordHasher, SessionStore, UserStore}
@@ -191,7 +192,7 @@ class AuthAPIController {
 
     @PatchMapping(path = Array("/users/{username}"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     @RequiresRole(Array("admin"))
-    def patchUser(@PathVariable username: String, @RequestBody body: String): ResponseEntity[String] = {
+    def patchUser(@PathVariable username: String, @RequestBody body: String, request: HttpServletRequest): ResponseEntity[String] = {
         try {
             val u = UserStore.normalize(username)
             val current = UserStore.find(u).getOrElse(
@@ -211,17 +212,25 @@ class AuthAPIController {
                 if (current.role == User.RoleAdmin && newRole != User.RoleAdmin && UserStore.adminCount() <= 1)
                     return ResponseEntity.status(HttpStatus.CONFLICT).body("""{"error":"Cannot demote the last admin"}""")
                 UserStore.updateRole(u, newRole)
+                val md = new JsonObject
+                md.addProperty("role", newRole)
+                md.addProperty("from", current.role)
+                AuditLog.record(request, "user", "update", "user", u, metadata = md)
             }
 
             // reset password (admin sets back to null → user must set on next login)
             if (obj.has("resetPassword") && obj.get("resetPassword").getAsBoolean) {
                 UserStore.updatePasswordHash(u, null)
+                AuditLog.record(request, "user", "reset-password", "user", u)
             }
 
             ResponseEntity.ok("""{"ok":true}""")
         } catch {
             case e: Exception =>
                 logger.error("Error in PATCH /auth/users: " + Throwables.getStackTraceAsString(e))
+                // A change that already succeeded keeps its explicit row; clear the
+                // recorded mark so the interceptor still writes the failure row.
+                request.removeAttribute(AuditLog.RecordedAttr)
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("""{"error":"Internal error"}""")
         }
     }

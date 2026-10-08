@@ -37,6 +37,8 @@ object AuditClassifier {
         Supplemental("POST", "/api/v1/auth/logout", AuditRoute("auth", "logout", "user")),
         Supplemental("POST", "/api/v1/auth/change-password", AuditRoute("auth", "change-password", "user")),
         Supplemental("POST", "/api/v1/auth/users", AuditRoute("user", "create", "user")),
+        // The controller records role changes (update, metadata.role) and password
+        // resets (reset-password) explicitly; this row covers a PATCH that does neither.
         Supplemental("PATCH", "/api/v1/auth/users/*", AuditRoute("user", "update", "user")),
         Supplemental("DELETE", "/api/v1/auth/users/*", AuditRoute("user", "delete", "user")),
         Supplemental("POST", "/api/v1/keys", AuditRoute("key", "issue", "key")),

@@ -16,14 +16,19 @@ import java.time.Instant
 object UserStore {
     private val gson = new Gson
 
+    /** Test override for the backing store; null = the package [[NoSQLDbUtil]]. */
+    @volatile private[datris] var dbOverride: NoSQLDbUtility = null
+
+    private def db: NoSQLDbUtility = Option(dbOverride).getOrElse(NoSQLDbUtil)
+
     private def tableName: String = DatrisEnvironment.current.userTableName
 
     def list(): List[User] = {
-        NoSQLDbUtil.getAllItemsAsJSON(tableName).map(json => gson.fromJson(json, classOf[User]))
+        db.getAllItemsAsJSON(tableName).map(json => gson.fromJson(json, classOf[User]))
     }
 
     def find(username: String): Option[User] = {
-        Option(NoSQLDbUtil.getItemJSON(tableName, "username", normalize(username), null).orNull)
+        Option(db.getItemJSON(tableName, "username", normalize(username), null).orNull)
             .map(json => gson.fromJson(json, classOf[User]))
     }
 
@@ -41,20 +46,20 @@ object UserStore {
             updatedAt = now,
             lastLoginAt = null
         )
-        NoSQLDbUtil.insertJSON(tableName, gson.toJson(user))
+        db.insertJSON(tableName, gson.toJson(user))
         user
     }
 
     /** Insert without checking — used by the bootstrap seeder. */
     def insert(user: User): Unit = {
-        NoSQLDbUtil.insertJSON(tableName, gson.toJson(user))
+        db.insertJSON(tableName, gson.toJson(user))
     }
 
     def updatePasswordHash(username: String, passwordHash: String): Unit = {
         val u = normalize(username)
         val current = find(u).getOrElse(throw new IllegalArgumentException("User '" + u + "' not found"))
         val updated = current.copy(passwordHash = passwordHash, updatedAt = Instant.now().toString)
-        NoSQLDbUtil.upsertJSON(tableName, java.util.Collections.singletonList("username"), gson.toJson(updated))
+        db.upsertJSON(tableName, java.util.Collections.singletonList("username"), gson.toJson(updated))
     }
 
     def updateRole(username: String, role: String): Unit = {
@@ -63,19 +68,19 @@ object UserStore {
         val u = normalize(username)
         val current = find(u).getOrElse(throw new IllegalArgumentException("User '" + u + "' not found"))
         val updated = current.copy(role = role, updatedAt = Instant.now().toString)
-        NoSQLDbUtil.upsertJSON(tableName, java.util.Collections.singletonList("username"), gson.toJson(updated))
+        db.upsertJSON(tableName, java.util.Collections.singletonList("username"), gson.toJson(updated))
     }
 
     def touchLastLogin(username: String): Unit = {
         val u = normalize(username)
         find(u).foreach { current =>
             val updated = current.copy(lastLoginAt = Instant.now().toString, updatedAt = Instant.now().toString)
-            NoSQLDbUtil.upsertJSON(tableName, java.util.Collections.singletonList("username"), gson.toJson(updated))
+            db.upsertJSON(tableName, java.util.Collections.singletonList("username"), gson.toJson(updated))
         }
     }
 
     def delete(username: String): Unit = {
-        NoSQLDbUtil.deleteItemJSON(tableName, "username", normalize(username))
+        db.deleteItemJSON(tableName, "username", normalize(username))
     }
 
     def adminCount(): Int = list().count(_.role == User.RoleAdmin)
