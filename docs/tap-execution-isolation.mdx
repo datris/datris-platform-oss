@@ -176,7 +176,7 @@ differs is its network: it sits only on `codegen-net`, a compose network declare
 | Server filesystem (config, secrets-store token, staged files) | Readable | **Not present** |
 | Internal services (database, object store, secrets store) | Reachable | **No route** |
 | Internet | Reachable | **No route** |
-| Datris API port | Reachable | Reachable (see below) |
+| Datris API port | Reachable | **Refused** (403 from the server, see below) |
 
 **How data moves.** The server pushes the script and the pipeline's staged input file to the
 runner; the script gets no token and has nothing to call. The runner writes the input to a
@@ -219,6 +219,7 @@ capped at 64 MB; a rule that prints a failure for nearly every row of a very lar
 |---|---|---|
 | `USE_CODEGEN_RUNNER` | `true` (compose) / unset=`false` (sbt) | Run generated scripts in `datris-codegen-runner`. Set `false` to run them in-process. |
 | `CODEGEN_RUNNER_URL` | `http://datris-codegen-runner:8090` | Address of the runner service. |
+| `CODEGEN_RUNNER_API_BLOCK` | `true` | The server refuses requests from the runner (see below). Set `false` only if the guard refuses traffic it should not. |
 
 The runner shares `TAP_RUNNER_TOKEN` with the tap runner; nothing new to configure.
 
@@ -226,13 +227,30 @@ The runner shares `TAP_RUNNER_TOKEN` with the tap runner; nothing new to configu
 and read the one file they are given. A script that opened a network connection or read a server
 path used to work in-process; in the runner it fails. That is intended.
 
+**The Datris API port.** The server listens on every network it joins, so `datris:8080` is
+reachable over `codegen-net`, but the runner never needs to call the server (the server pushes to
+it). With `USE_CODEGEN_RUNNER=true` the server refuses, with `403` and before any authentication,
+every request that arrives on its own `codegen-net` interface and every request whose source is
+the runner's address. This covers every path on the port, including `/actuator`. At startup the
+server resolves the host in `CODEGEN_RUNNER_URL`, finds its own interface in the same subnet, and
+logs the decision (`CodeGen runner API block: ...`). It re-resolves the runner every 30 seconds,
+so a runner that starts after the server or restarts with a new address is covered.
+
+The guard is built not to refuse anyone else. It does not refuse traffic arriving on the runner's
+network when that network is the server's only one, or when another service (UI, MCP server, tap
+runner, Vault, databases, MinIO) is on it. In those cases it refuses only the runner's own address
+and logs a warning. While the runner's name does not resolve, nothing is refused and the server
+retries every 2 seconds. A runner that resolves to the server itself or to loopback turns the guard
+off, with a warning. Outside compose (for example a Kubernetes Service address) the runner's source
+address may not match, so use a network policy there.
+
 <Warning>
-**Not closed yet: the Datris API port.** The server listens on every network it joins, so the
-runner can still reach `datris:8080` over `codegen-net`. Keep `USE_API_KEYS` on in production so
-that port requires a key the script does not have.
+`CODEGEN_RUNNER_API_BLOCK=false` turns the guard off, and the runner can call the Datris API again.
+Use it only if the guard refuses traffic it should not, and keep `USE_API_KEYS` on so the port
+requires a key the script does not have.
 </Warning>
 
 To check the boundary on a running stack, run `python3 scripts/check-codegen-isolation.py` from a
 checkout: it sends a probe script to the runner and exits non-zero if the script can reach the
-internet, Vault, Postgres, MongoDB or MinIO, read a server path, write outside its scratch
-directory, or see a secret-bearing variable.
+internet, Vault, Postgres, MongoDB or MinIO, call the Datris API (anything but the server's
+`403`), read a server path, write outside its scratch directory, or see a secret-bearing variable.

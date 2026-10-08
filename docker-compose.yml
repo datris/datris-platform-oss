@@ -445,6 +445,9 @@ services:
       # per run). Shares the tap runner's token.
       USE_CODEGEN_RUNNER: "${USE_CODEGEN_RUNNER:-true}"
       CODEGEN_RUNNER_URL: "http://datris-codegen-runner:8090"
+      # The server refuses (403, before auth) every request from the CodeGen
+      # runner: the runner never calls the server. `false` turns that off.
+      CODEGEN_RUNNER_API_BLOCK: "${CODEGEN_RUNNER_API_BLOCK:-true}"
     volumes:
       - ./docker/config:/config
       - pip-cache:/root/.cache/pip
@@ -499,7 +502,8 @@ services:
   # vault/postgres/mongo/minio, no outbound internet. The server pushes the
   # script and its input file to POST /execute-file; per-run files live on the
   # codegen-scratch volume. Only used when the datris server has
-  # USE_CODEGEN_RUNNER=true. Note: it can still reach the datris API port.
+  # USE_CODEGEN_RUNNER=true. The server refuses (403) any request it makes to
+  # the datris API port (CODEGEN_RUNNER_API_BLOCK).
   datris-codegen-runner:
     image: datrisai/datris-tap-runner:latest
     #build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub

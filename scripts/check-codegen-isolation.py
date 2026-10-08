@@ -9,21 +9,21 @@ It uses `docker exec <server> python3` (the datris server is the only other
 member of codegen-net) to read the runner token and POST a probe script to the
 runner's /execute-file, exactly as a generated script is sent. The probe tries
 to reach the internet, vault, postgres, mongodb and minio; to read server-side
-paths; to write outside its scratch; and lists its environment. It prints one
-line per probe and exits:
+paths; to write outside its scratch; to call the Datris API (datris:8080, which
+must answer 403 to the runner, or not be reachable at all); and lists its
+environment. It prints one line per probe and exits:
 
     0  every probe is blocked and no secret-bearing variable is visible
     1  something the runner must not reach was reachable (named in the output)
     2  the probe could not be run (container missing, runner unreachable, ...)
-
-Whether the runner can reach the Datris API (datris:8080) is reported but does
-not fail the check: that is a documented open item.
 
 Negative control, to prove the probe can detect a route: point it at the tap
 runner, which has internet access by design. It must exit 1 with the public
 host reachable:
 
     python3 scripts/check-codegen-isolation.py --url http://datris-tap-runner:8090
+
+(The tap runner also reaches the Datris API: taps call back into it by design.)
 """
 import argparse
 import json
@@ -32,7 +32,7 @@ import sys
 
 # The script the runner executes. Standard library only; prints one JSON object.
 PROBE = r'''
-import json, os, re, socket, sys
+import json, os, re, socket, sys, urllib.error, urllib.request
 
 def connect(host, port, timeout=3):
     try:
@@ -63,6 +63,19 @@ def can_write(dirpath):
     except Exception as e:
         return "blocked (%s)" % type(e).__name__
 
+def api(url):
+    """The server refuses the runner with 403 (its own codegen-net guard); no route is fine too."""
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return "reachable (HTTP %d)" % r.status
+    except urllib.error.HTTPError as e:
+        body = e.read()[:500]
+        if e.code == 403 and b"codegen-net" in body:
+            return "blocked (HTTP 403 from the server's codegen-net guard)"
+        return "reachable (HTTP %d)" % e.code
+    except Exception as e:
+        return "blocked (%s)" % type(e).__name__
+
 def resolve(host):
     try:
         socket.getaddrinfo(host, 443)
@@ -78,6 +91,7 @@ out = {
     "postgres:5432": connect("postgres", 5432),
     "mongodb:27017": connect("mongodb", 27017),
     "minio:9000": connect("minio", 9000),
+    "datris:8080 (Datris API)": api("http://datris:8080/actuator/health"),
     "read /config/application.yaml": can_read("/config/application.yaml"),
     "read /vault-token": can_read("/vault-token"),
     "read /tmp/datris-staging": can_read("/tmp/datris-staging"),
@@ -89,7 +103,6 @@ out = {
 secret = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|_KEY$|VAULT|AWS_|MONGO|POSTGRES|MINIO)", re.I)
 out["_env"] = sorted(os.environ)
 out["_secret_env"] = sorted(k for k in os.environ if secret.search(k))
-out["_info datris:8080"] = connect("datris", 8080)
 out["_info /tap-runner-token/token"] = can_read("/tap-runner-token/token")
 print(json.dumps(out))
 '''
@@ -164,15 +177,13 @@ def main():
         if name.startswith("_"):
             continue
         print("  %-36s %s" % (name, state))
-        if state == "reachable":
+        if state.startswith("reachable"):
             failed.append(name)
     print("  %-36s %s" % ("environment", ", ".join(probes.get("_env", []))))
     secrets = probes.get("_secret_env", [])
     if secrets:
         print("  %-36s %s" % ("SECRET-BEARING VARIABLES", ", ".join(secrets)))
         failed.append("secret-bearing variables: " + ", ".join(secrets))
-    print("  %-36s %s  (reported only; see docs/tap-execution-isolation.mdx)" % (
-        "datris:8080 (Datris API)", probes.get("_info datris:8080")))
     print("  %-36s %s  (reported only: the runner's own token, grants nothing on the Datris API)" % (
         "read /tap-runner-token/token", probes.get("_info /tap-runner-token/token")))
     if failed:
