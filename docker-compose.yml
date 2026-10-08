@@ -305,6 +305,18 @@ services:
       # mode without rebuilding the JAR. Spring's relaxed binding maps these env
       # names onto useUserAuth / useApiKeys / multiTenant in application.yaml.
       USEUSERAUTH: "${USE_USER_AUTH:-false}"
+      # OIDC single sign-on ("Sign in with SSO" on the login page). Off by
+      # default; only takes effect with USE_USER_AUTH=true. OIDC_* maps to
+      # oidc.* in application.yaml (OIDC_CLIENTID → oidc.clientId, ...). The
+      # client secret is never set here: it lives in Vault (oss/oidc, key
+      # clientSecret). See docs/user-auth.mdx, "Single sign-on (OIDC)".
+      OIDC_ENABLED: "${OIDC_ENABLED:-false}"
+      OIDC_ISSUER: "${OIDC_ISSUER:-}"
+      OIDC_CLIENTID: "${OIDC_CLIENT_ID:-}"
+      OIDC_REDIRECTURI: "${OIDC_REDIRECT_URI:-}"
+      OIDC_SCOPES: "${OIDC_SCOPES:-openid email profile}"
+      OIDC_USERNAMECLAIM: "${OIDC_USERNAME_CLAIM:-email}"
+      OIDC_DEFAULTROLE: "${OIDC_DEFAULT_ROLE:-}"
       USEAPIKEYS: "${USE_API_KEYS:-false}"
       MULTITENANT: "${MULTI_TENANT:-false}"
       # Audit log: durable record of who created / changed / ran / deleted what,
