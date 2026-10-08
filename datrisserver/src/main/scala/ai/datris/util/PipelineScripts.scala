@@ -749,6 +749,9 @@ object PipelineScripts
         else
             try run(r.script)
             catch {
+                // The runner could not be used: the script is not at fault, so no
+                // "regenerate it" advice; the message names the runner.
+                case e: CodeGenRunnerUnavailable => throw e
                 case e: Throwable if scala.util.control.NonFatal(e) =>
                     throw new DatrisException(
                         "The stored CodeGen " + (if (kind == DataQuality) "data quality" else "transformation") + " script (generated at " +

@@ -21,6 +21,17 @@ RUN pip install --no-cache-dir \
 # writable path is a tmpfs scratch (see docker-compose), used per run.
 RUN useradd -r -u 10001 -m -d /home/runner runner
 
+# /scratch: mount point of the codegen-scratch named volume when this image runs as
+# datris-codegen-runner (CODEGEN_SCRATCH_DIR=/scratch). Created here, owned by runner
+# with mode 0700, so Docker initialises the empty named volume with that ownership on
+# first mount. The tap runner service does not mount it.
+RUN mkdir -p /scratch && chown runner:runner /scratch && chmod 0700 /scratch
+# Both take effect only where CODEGEN_SCRATCH_DIR is set (datris-codegen-runner):
+# the scratch volume is dedicated, so everything under it is removed after each run and
+# at start (not only cg_* run dirs), and the /tmp tmpfs is emptied after each run, so a
+# script cannot leave files for the next one. The tap runner sets neither and is unaffected.
+ENV CODEGEN_SCRATCH_DEDICATED=1 CODEGEN_TMP_DIR=/tmp
+
 WORKDIR /app
 COPY app.py /app/app.py
 USER runner

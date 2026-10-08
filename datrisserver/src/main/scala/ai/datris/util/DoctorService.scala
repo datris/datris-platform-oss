@@ -165,6 +165,14 @@ object DoctorService {
           * ([[GovernanceControlsCheck.Vars]]) -> on/off. The default reports
           * the shipped state (all off); LiveProbes reads DatrisEnvironment. */
         def governanceControls(): Map[String, Boolean] = GovernanceControlsCheck.Vars.map(_ -> false).toMap
+
+        /** USE_CODEGEN_RUNNER: generated DQ / transformation scripts run in
+          * the datris-codegen-runner sidecar. */
+        def codegenRunnerEnabled(): Boolean
+
+        /** [[CodeGenRunner.health]]: Left = why the runner cannot run a script
+          * (unreachable, older image, token rejected, scratch not writable). */
+        def codegenRunnerHealth(): Either[String, Unit]
     }
 
     private val Day = 86400L
@@ -575,6 +583,46 @@ object DoctorService {
         }
     }
 
+    /** Where generated data-quality and transformation scripts run
+      * (plans/stories/codegen-script-isolation.md). ok: in the
+      * datris-codegen-runner sidecar and it answers; warn: in-process
+      * (USE_CODEGEN_RUNNER off); error: the runner is required but cannot run
+      * a script. The runner is not probed when it is not enabled. */
+    class CodeGenIsolationCheck(probes: Probes, startup: Boolean = false) extends Check {
+        val id = "codegen.isolation"
+        val startupSafe = true
+        def run(): CheckResult =
+            if (!probes.codegenRunnerEnabled())
+                warn(
+                    "generated data-quality and transformation scripts run in-process (USE_CODEGEN_RUNNER is not true): " +
+                        "they share the server container's files and network",
+                    "On a compose install, refresh docker-compose.yml (git pull, or re-download docker-compose.standalone.yml) " +
+                        "and run `docker compose up -d` to add the datris-codegen-runner sidecar. Expected under sbt / an IDE."
+                )
+            else
+                probes.codegenRunnerHealth() match {
+                    case Right(_) => ok("generated scripts run in datris-codegen-runner")
+                    // At boot the sidecar may simply not be listening yet: a skip, not an error.
+                    // On demand the same failure is an error.
+                    case Left(why) if startup && CodeGenIsolationCheck.notUpYet(why) =>
+                        skip("datris-codegen-runner not reachable yet (" + why + ")")
+                    case Left(why) =>
+                        error(
+                            "USE_CODEGEN_RUNNER is on but datris-codegen-runner cannot run a script: " + why +
+                                " — AI data-quality rules and AI transformations fail until it can",
+                            "Run `docker compose pull datris-codegen-runner && docker compose up -d datris-codegen-runner`, then " +
+                                "`docker compose logs datris-codegen-runner`. A 404 means an older datrisai/datris-tap-runner image; " +
+                                "a token error means recreate datris and datris-codegen-runner together; a disk error means the " +
+                                "codegen-scratch volume's disk is full."
+                        )
+                }
+    }
+
+    object CodeGenIsolationCheck {
+        private[util] def notUpYet(why: String): Boolean =
+            why != null && (why.contains("Connection refused") || why.contains("Unknown host"))
+    }
+
     /** Compares the server's version with whatever versions the calling
       * clients report (`?cli=`, `?mcp=`, `?ui=`). Major.minor must match. */
     class VersionSkewCheck(serverVersion: String, clients: Map[String, String]) extends Check {
@@ -727,6 +775,7 @@ object DoctorService {
             new StagingAreaCheck(probes, StagingArea.payloadBudgetMB),
             new StagingOrphansCheck(probes),
             new TapSecretScopeCheck(probes),
+            new CodeGenIsolationCheck(probes, startup),
             new AiSampleValuesCheck(probes),
             new GovernanceControlsCheck(probes),
             new VersionSkewCheck(serverVersion, clients),
@@ -957,6 +1006,10 @@ object DoctorService {
 
         def probeChat(config: AIConfig, timeoutMs: Int): (Int, String) =
             ai.datris.util.aiutil.AIHttp.probeModel(config, timeoutMs)
+
+        def codegenRunnerEnabled(): Boolean = CodeGenRunner.enabled
+
+        def codegenRunnerHealth(): Either[String, Unit] = CodeGenRunner.health()
 
         def probeEmbedding(provider: String, endpoint: String, model: String, apiKey: String, timeoutMs: Int): (Int, String) = {
             val env = DatrisEnvironment.values

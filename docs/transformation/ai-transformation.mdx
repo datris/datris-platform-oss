@@ -3,7 +3,7 @@ title: "AI Transformation"
 description: "AI-powered data transformation"
 ---
 
-AI transformations apply natural language instructions to transform data. Describe the transformation in plain English — Datris generates a Python script from your instruction and runs it in the container against all data.
+AI transformations apply natural language instructions to transform data. Describe the transformation in plain English — Datris generates a Python script from your instruction and runs it against all data in an isolated runner container.
 ## Configuration
 
 Add an `aiTransformation` block to the `transformation` section:
@@ -58,6 +58,8 @@ Add an `aiTransformation` block to the `transformation` section:
 4. The transformed data replaces the original and continues through the pipeline to destinations.
 
 AI transformations run after data quality checks and before data is written to destinations.
+
+On a compose install the script runs in `datris-codegen-runner`, an isolated container with no platform secrets, no access to the server's files, and no route to the internal services or the internet. The server sends it the script and the input file and streams the output file back. If the runner is stopped or unreachable the transformation fails with an error naming it; it never falls back to running the script in the server. See [Generated data-quality and transformation scripts](/tap-execution-isolation#generated-data-quality-and-transformation-scripts).
 
 An `aiTransformation` whose `instruction` is empty or only whitespace is ignored: no script is generated at save and the run skips the stage with a status line saying so.
 

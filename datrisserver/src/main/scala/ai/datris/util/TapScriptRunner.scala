@@ -1883,7 +1883,7 @@ object TapScriptRunner {
     private def tapRunnerUrl: String =
         sys.env.getOrElse("TAP_RUNNER_URL", "http://datris-tap-runner:8090")
     private def envTapRunnerToken: String = sys.env.getOrElse("TAP_RUNNER_TOKEN", "")
-    private def isWeakTapRunnerToken(t: String): Boolean =
+    private[util] def isWeakTapRunnerToken(t: String): Boolean =
         t == null || WeakTapRunnerTokens.contains(t.trim)
     private def readMintedTapRunnerToken(): Option[String] = {
         try {

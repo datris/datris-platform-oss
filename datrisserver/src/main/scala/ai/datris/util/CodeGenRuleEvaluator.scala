@@ -376,10 +376,13 @@ object CodeGenRuleEvaluator {
 
     private def executeWithTimeout(scriptPath: String, dataPath: String, timeoutSec: Int): String = {
         // SECURITY: the script is LLM-generated and shaped by untrusted ingested
-        // data, so it runs through SandboxedPython — a scrubbed environment with
-        // no platform secrets in os.environ. Never use scala.sys.process here;
-        // it would inherit the JVM's full secret environment.
-        val result = SandboxedPython.run(Seq("python3", scriptPath, dataPath), timeoutSec)
+        // data. CodeGenRunner runs it in the datris-codegen-runner sidecar (no
+        // platform secrets, no server filesystem, internal-only network) when
+        // USE_CODEGEN_RUNNER is on; otherwise in-process through SandboxedPython,
+        // which only scrubs the environment (it shares this container's files and
+        // network). Never use scala.sys.process here; it would inherit the JVM's
+        // full secret environment.
+        val result = CodeGenRunner.run(Paths.get(scriptPath), Paths.get(dataPath), None, timeoutSec)
         if (result.exitCode != 0) {
             val errOutput = result.stderr.take(1000)
             logger.error("CodeGen script exited with code " + result.exitCode + ": " + errOutput)

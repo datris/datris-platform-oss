@@ -129,7 +129,7 @@ mkdir -p "$DIR"
 if [ "${DATRIS_NO_START:-}" != "1" ]; then
   PROJECT=$(basename "$(cd "$DIR" && pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g; s/^[_-]*//')
   CONFLICTS=""
-  for name in minio activemq mongodb postgres vault vault-init tei datris datris-tap-runner ui mcp-server minio-init qdrant weaviate chroma zookeeper kafka kafka-ui; do
+  for name in minio activemq mongodb postgres vault vault-init tei datris datris-tap-runner datris-codegen-runner ui mcp-server minio-init qdrant weaviate chroma zookeeper kafka kafka-ui; do
     if docker inspect "$name" >/dev/null 2>&1; then
       owner=$(docker inspect "$name" --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null)
       [ "$owner" = "$PROJECT" ] && continue
