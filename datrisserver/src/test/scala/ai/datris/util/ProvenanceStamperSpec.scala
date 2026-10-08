@@ -8,6 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.model._
 import org.scalatest.funsuite.AnyFunSuite
 
+import java.nio.file.Files
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 
@@ -197,5 +198,173 @@ class ProvenanceStamperSpec extends AnyFunSuite {
         assert(stamped.data.rowCount == 2)
         assert(rowsOf(stamped.data).forall(_.split(",", -1).length == 2 + ProvenanceStamper.AllFields.size))
         assert(materialized.isEmpty, s"ProvenanceStamper materialized the payload via $materialized (this is the 'staged payload materialized by' warning)")
+    }
+
+    // ------------------------------------------------------------------
+    // Strict evidence mode (plans/stories/strict-evidence-mode.md)
+    //
+    // Pinned seam (does not exist on main at 3de8be3; the implementation adds it):
+    // {{{
+    // // ai.datris.util.ProvenanceStamper — the public stamp(ctx) reads
+    // // DatrisEnvironment.values.provenanceStrict (PROVENANCE_STRICT) and
+    // // delegates here.
+    // private[datris] def stamp(ctx: JobContext, strict: Boolean): JobContext
+    // }}}
+    // Under strict, a NotStamped outcome or a caught exception throws
+    //   DatrisException("Provenance could not be stamped (<reason>) and PROVENANCE_STRICT is on; nothing was loaded")
+    // An XML source is Exempt: never throws, loads unstamped, and under strict
+    // only writes ctx.statusUtil.info("processing",
+    //   "Provenance stamping skipped (XML source is exempt from PROVENANCE_STRICT)").
+    // Default mode is silent for XML, as today.
+    // ------------------------------------------------------------------
+
+    private class RecordingStatusUtil extends StatusUtil {
+        val messages = new ListBuffer[(String, String)]()
+        override def overrideProcessName(processName: String): Unit = ()
+        override def info(state: String, description: String): Unit = messages += ((state, description))
+        override def warn(state: String, description: String): Unit = messages += ((state, description))
+        override def error(state: String, description: String): Unit = messages += ((state, description))
+    }
+
+    private val XmlExemptLine = "Provenance stamping skipped (XML source is exempt from PROVENANCE_STRICT)"
+
+    /** Fields that are constant for a run: excludes _datris_ingested_at, which
+      * is Instant.now() and would differ between two stamp calls. */
+    private def constantFields: java.util.List[String] =
+        new java.util.ArrayList[String](ProvenanceStamper.AllFields.filterNot(_ == ProvenanceStamper.IngestedAt).asJava)
+
+    private def jsonConfig(selected: java.util.List[String] = null): PipelineConfig =
+        config(stamp = true, selected).copy(
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("id", "amount")),
+                fileAttributes = FileAttributes(jsonAttributes = JsonAttributes())
+            )
+        )
+
+    private def xmlConfig: PipelineConfig =
+        config(stamp = true).copy(
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("id", "amount")),
+                fileAttributes = FileAttributes(xmlAttributes = XmlAttributes())
+            )
+        )
+
+    /** A staged NDJSON payload written line by line, exactly as given (a
+      * broken line stays broken; PayloadStager would refuse to stage it as NDJSON). */
+    private def stagedNdJson(lines: String*): Data = {
+        val (path, writer) = StagingArea.newWriter("spec", StagedFormat.NdJson)
+        try writer.write(lines.mkString("\n"))
+        finally writer.close()
+        new Data(10L, null, null, StagedPayload(path.toString, StagedFormat.NdJson, lines.size.toLong, Files.size(path)), null)
+    }
+
+    private def ctxOf(cfg: PipelineConfig, data: Data, status: StatusUtil): JobContext =
+        JobContext("run-123", tapMetadata, data, cfg, null, INITIALIZED, null, status)
+
+    /** A delimited payload whose staged rows cannot be read: stampDelimited
+      * throws inside stamp(), the path the catch at ProvenanceStamper.scala:70-78 covers. */
+    private def throwingDelimitedCtx(status: StatusUtil): JobContext = {
+        val base = delimitedCtx(config(stamp = true), tapMetadata)
+        val broken = new Data(base.data.size, base.data.header, base.data.headerWithSchema, base.data.staged, base.data.rawBytes) {
+            override def rowIterator(): CloseableIterator[String] = throw new java.io.IOException("disk full")
+        }
+        base.copy(data = broken, statusUtil = status)
+    }
+
+    test("default mode loads unstamped when stamping throws") {
+        val status = new RecordingStatusUtil
+        val ctx = throwingDelimitedCtx(status)
+        val out = ProvenanceStamper.stamp(ctx, strict = false)
+        assert(out eq ctx, "the job continues with the unstamped context")
+        assert(out.data.header == List("id", "amount"), "no provenance columns: " + out.data.header)
+        assert(
+            status.messages.exists { case (s, d) => s == "processing" && d.startsWith("Provenance stamping skipped (error)") && d.contains("disk full") },
+            "the miss is on the job status: " + status.messages
+        )
+    }
+
+    test("strict mode fails when stamping throws") {
+        val status = new RecordingStatusUtil
+        val e = intercept[DatrisException] { ProvenanceStamper.stamp(throwingDelimitedCtx(status), strict = true) }
+        assert(e.getMessage.startsWith("Provenance could not be stamped ("), e.getMessage)
+        assert(e.getMessage.contains("disk full"), "the reason is named: " + e.getMessage)
+        assert(e.getMessage.contains("PROVENANCE_STRICT is on; nothing was loaded"), e.getMessage)
+    }
+
+    test("strict mode loads an XML source unstamped and records the exemption on the job status") {
+        val status = new RecordingStatusUtil
+        val ctx = ctxOf(xmlConfig, Data(10L, null, null, null, "<rows><row><id>1</id></row></rows>"), status)
+        assert(ctx.data.isVerbatimDocument, "fixture stages as an XML document")
+        val out = ProvenanceStamper.stamp(ctx, strict = true) // must not throw
+        assert(out.data eq ctx.data, "the XML payload is loaded unstamped")
+        assert(out.config eq ctx.config, "no schema or destination change")
+        assert(status.messages.contains(("processing", XmlExemptLine)), "exemption recorded: " + status.messages)
+        assert(!status.messages.exists(_._2.startsWith("Provenance stamped")), status.messages)
+    }
+
+    test("default mode loads an XML source unstamped with no status line") {
+        val status = new RecordingStatusUtil
+        val ctx = ctxOf(xmlConfig, Data(10L, null, null, null, "<rows><row><id>1</id></row></rows>"), status)
+        val out = ProvenanceStamper.stamp(ctx, strict = false)
+        assert(out.data eq ctx.data)
+        assert(!status.messages.exists(_._2.contains("Provenance")), "default mode stays silent for XML: " + status.messages)
+    }
+
+    test("strict mode fails NDJSON with an unparseable line") {
+        val lines = Seq("{\"id\":1}", "{\"id\":2", "{\"id\":3}")
+        val strictCtx = ctxOf(jsonConfig(), stagedNdJson(lines: _*), new RecordingStatusUtil)
+        assert(strictCtx.data.isNdJson, "fixture is a staged NDJSON payload")
+        val e = intercept[DatrisException] { ProvenanceStamper.stamp(strictCtx, strict = true) }
+        assert(e.getMessage.startsWith("Provenance could not be stamped ("), e.getMessage)
+        assert(e.getMessage.contains("PROVENANCE_STRICT is on; nothing was loaded"), e.getMessage)
+        // Default mode, same payload: loads unstamped, as today.
+        val defaultCtx = ctxOf(jsonConfig(), stagedNdJson(lines: _*), new RecordingStatusUtil)
+        val out = ProvenanceStamper.stamp(defaultCtx, strict = false)
+        assert(rowsOf(out.data) == lines.toList, "default leaves the payload untouched")
+    }
+
+    test("strict mode accepts an already stamped payload") {
+        // Delimited: the idempotence guard (ProvenanceStamper.scala:105).
+        val once = ProvenanceStamper.stamp(delimitedCtx(config(stamp = true), tapMetadata), strict = false)
+        assert(once.data.header.exists(_.startsWith(ProvenanceStamper.Prefix)), "fixture is stamped")
+        val again = ProvenanceStamper.stamp(once, strict = true) // must not throw
+        assert(again.data.header == once.data.header)
+        assert(rowsOf(again.data) == rowsOf(once.data))
+
+        // NDJSON: every object already carries _datris_run_id (nothing changed).
+        val stampedJson = ProvenanceStamper.stamp(ctxOf(jsonConfig(), stagedNdJson("{\"id\":1}", "{\"id\":2}"), new RecordingStatusUtil), strict = false)
+        assert(rowsOf(stampedJson.data).forall(_.contains(ProvenanceStamper.RunId)), "fixture is stamped")
+        val jsonAgain = ProvenanceStamper.stamp(stampedJson, strict = true) // must not throw
+        assert(rowsOf(jsonAgain.data) == rowsOf(stampedJson.data))
+    }
+
+    test("strict mode stamps delimited, NDJSON and vector data exactly as default mode does") {
+        // Delimited
+        val d0 = ProvenanceStamper.stamp(delimitedCtx(config(stamp = true, constantFields), tapMetadata), strict = false)
+        val d1 = ProvenanceStamper.stamp(delimitedCtx(config(stamp = true, constantFields), tapMetadata), strict = true)
+        assert(d1.data.header == d0.data.header && d1.data.header.contains(ProvenanceStamper.RunId), d1.data.header)
+        assert(d1.data.headerWithSchema == d0.data.headerWithSchema)
+        assert(rowsOf(d1.data) == rowsOf(d0.data))
+        assert(d1.config.source.schemaProperties.fields == d0.config.source.schemaProperties.fields)
+        assert(d1.config.destination.schemaProperties.fields == d0.config.destination.schemaProperties.fields)
+
+        // NDJSON
+        val lines = Seq("{\"id\":1,\"amount\":5}", "{\"id\":2,\"amount\":9}")
+        val j0 = ProvenanceStamper.stamp(ctxOf(jsonConfig(constantFields), stagedNdJson(lines: _*), new RecordingStatusUtil), strict = false)
+        val j1 = ProvenanceStamper.stamp(ctxOf(jsonConfig(constantFields), stagedNdJson(lines: _*), new RecordingStatusUtil), strict = true)
+        assert(rowsOf(j1.data) == rowsOf(j0.data))
+        assert(rowsOf(j1.data).forall(_.contains("\"" + ProvenanceStamper.RunId + "\":\"run-123\"")), rowsOf(j1.data).toString)
+
+        // Vector (unstructured bytes into a vector destination's metadata map)
+        def vectorCtx: JobContext = {
+            val meta = new java.util.LinkedHashMap[String, String]()
+            meta.put("team", "x")
+            val cfg = config(stamp = true, constantFields).copy(destination = Destination(qdrant = QdrantConfig("docs", null, meta, "emb", "qd")))
+            JobContext("run-123", tapMetadata, Data(10L, null, null, null, null, Array[Byte](1, 2)), cfg, null, INITIALIZED, null, null)
+        }
+        val v0 = ProvenanceStamper.stamp(vectorCtx, strict = false)
+        val v1 = ProvenanceStamper.stamp(vectorCtx, strict = true)
+        assert(v1.config.destination.qdrant.metadata == v0.config.destination.qdrant.metadata)
+        assert(v1.config.destination.qdrant.metadata.get(ProvenanceStamper.RunId) == "run-123")
     }
 }
