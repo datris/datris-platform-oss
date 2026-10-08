@@ -3,6 +3,17 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.46.0" description="October 8, 2026">
+  **Strict evidence mode, a complete record of password changes, a data-flow matrix, and graceful shutdown.**
+
+  - **Strict evidence mode.** `PROVENANCE_STRICT=true` makes a stamping pipeline fail its run instead of loading rows it could not stamp (XML sources are exempt and say so). `AUDIT_LOG_STRICT=true` refuses an audited request with a clear 503 while the audit log cannot record it, instead of dropping an older entry; bucket drops, Kafka messages and scheduled tap runs wait the same way, and everything replays in order when the store returns. Both default to off. `datris doctor` reports the mode; the audit-log status endpoint shows `acceptingWrites`. See [Audit Log](/audit-log#strict-mode) and [Provenance](/provenance#strict-mode).
+  - **Password resets and rotations are audited.** `reset-password` names the account and the acting session or key; role changes carry the new and previous role; the startup bootstrap rotation is `rotate-password` with the `system` actor (the password never enters the audit log); the first-boot `admin` seed is `create` with reason `bootstrap`. See [Recovering admin access](/user-auth#recovering-admin-access).
+  - **Data Flows.** A new [page](/production/data-flows) lists, for each kind of data, every place it can go and the switch that changes it, with a no-cloud-exit recipe. Evidence claims across the docs now say when they hold.
+  - **Graceful shutdown.** `docker stop` now reaches the server: requests drain, the Kafka consumer closes cleanly, queued audit entries are written, exit code 143. Previously every stop was a hard kill after ten seconds.
+
+  **Upgrading:** `docker compose pull && docker compose up -d`; only the server image changed. Refresh the compose file for the new 30 s stop grace period. Stops are now graceful (exit 143, usually 1-3 s; up to ~12 s with the audit log on and the store down). Strict mode is opt-in; with both switches off, behaviour is unchanged. Audit action names changed: password reset is `reset-password` (was `update`), first-boot seed is `create` + reason `bootstrap` (was `seed-admin`); existing rows unchanged. New: status fields `strict`/`unrecorded`/`acceptingWrites`, doctor checks `audit.strict`/`provenance.strict`, metric `datris_audit_unrecorded_total`.
+</Update>
+
 <Update label="v1.45.0" description="October 8, 2026">
   **AI rule and transformation scripts are generated once, stored with your pipeline, and run in an isolated container.**
 
