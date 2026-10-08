@@ -6,10 +6,12 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.AuditLog
+import ai.datris.auth.OidcLogin
 import ai.datris.config.{RequiresRole, SessionAuthenticator}
 import ai.datris.model.{DatrisEnvironment, User, UserContext}
-import ai.datris.util.{PasswordHasher, SessionStore, UserStore}
+import ai.datris.util.{PasswordHasher, SecretsUtil, SessionStore, UserStore}
 
+import java.net.URI
 import java.time.{Instant, ZoneId}
 import java.time.format.DateTimeFormatter
 import com.google.common.base.Throwables
@@ -78,6 +80,141 @@ class AuthAPIController {
             case e: Exception =>
                 logger.error("Error in /auth/login: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("""{"error":"Internal error"}""")
+        }
+    }
+
+    // -------- OIDC single sign-on --------
+    //
+    // Both endpoints carry no @RequiresRole: RoleEnforcementInterceptor exempts
+    // this controller's un-annotated methods, and CapabilityRoutes skip-lists
+    // /api/v1/auth/**. Every failure lands on /login?ssoError=<code> with one
+    // of OidcLogin.Codes; provider error text goes to the server log only.
+
+    /** Start an SSO sign-in: remember state, nonce and the PKCE verifier in a
+      * short-lived cookie and send the browser to the identity provider. */
+    @GetMapping(path = Array("/oidc/login"))
+    def oidcLogin(response: HttpServletResponse): ResponseEntity[String] = {
+        if (!OidcLogin.active) return oidcNotEnabled()
+        val env = DatrisEnvironment.values
+        try {
+            OidcLogin.provider(env.oidcIssuer) match {
+                case Left(err) =>
+                    logger.error("OIDC sign-in could not start: " + err)
+                    ssoRedirect(OidcLogin.Failed)
+                case Right((discovery, _)) =>
+                    val state = OidcLogin.randomToken()
+                    val nonce = OidcLogin.randomToken()
+                    val verifier = OidcLogin.randomToken()
+                    response.addCookie(buildOidcTxCookie(state + "." + nonce + "." + verifier, OidcTxMaxAgeSeconds))
+                    val url = OidcLogin.authorizationUrl(
+                        discovery.authorizationEndpoint,
+                        env.oidcClientId,
+                        env.oidcRedirectUri,
+                        env.oidcScopes,
+                        state,
+                        nonce,
+                        OidcLogin.pkceChallenge(verifier)
+                    )
+                    redirect(url)
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("Error in /auth/oidc/login: " + Throwables.getStackTraceAsString(e))
+                ssoRedirect(OidcLogin.Failed)
+        }
+    }
+
+    /** The identity provider's redirect back: check state, exchange the code,
+      * validate the ID token, resolve the Datris user, start a session. */
+    @GetMapping(path = Array("/oidc/callback"))
+    def oidcCallback(
+        @RequestParam(name = "code", required = false) code: String,
+        @RequestParam(name = "state", required = false) state: String,
+        @RequestParam(name = "error", required = false) error: String,
+        @RequestParam(name = "error_description", required = false) errorDescription: String,
+        request: HttpServletRequest,
+        response: HttpServletResponse
+    ): ResponseEntity[String] = {
+        if (!OidcLogin.active) return oidcNotEnabled()
+        val env = DatrisEnvironment.values
+        // The transaction is single-use: clear it whatever happens next.
+        val tx = Option(readCookie(request, OidcTxCookieName)).map(_.split("\\.", -1)).filter(_.length == 3)
+        response.addCookie(buildOidcTxCookie("", 0))
+
+        def refuse(codeOut: String, logLine: String, username: String = null): ResponseEntity[String] = {
+            logger.warn("OIDC sign-in refused (" + codeOut + "): " + logLine)
+            val md = new JsonObject
+            md.addProperty("method", "oidc")
+            md.addProperty("ssoError", codeOut)
+            AuditLog.record(
+                request,
+                "auth",
+                "login",
+                "user",
+                username,
+                outcome = if (codeOut == OidcLogin.Failed) "failure" else "denied",
+                httpStatus = HttpStatus.FOUND.value(),
+                metadata = md,
+                errorMessage = codeOut
+            )
+            ssoRedirect(codeOut)
+        }
+
+        try {
+            if (error != null && error.nonEmpty)
+                return refuse(
+                    OidcLogin.Denied,
+                    "provider returned error=" + error.take(100) + Option(errorDescription).map(d => " (" + d.take(300) + ")").getOrElse("")
+                )
+            if (tx.isEmpty) return refuse(OidcLogin.Failed, "no sign-in transaction cookie (expired, or the sign-in was not started here)")
+            val Array(txState, txNonce, txVerifier) = tx.get
+            if (state == null || state.isEmpty || !java.security.MessageDigest.isEqual(state.getBytes("UTF-8"), txState.getBytes("UTF-8")))
+                return refuse(OidcLogin.Failed, "state does not match the sign-in transaction")
+            if (code == null || code.isEmpty) return refuse(OidcLogin.Failed, "no authorization code in the callback")
+
+            val (discovery, jwks) = OidcLogin.provider(env.oidcIssuer) match {
+                case Left(err) => return refuse(OidcLogin.Failed, err)
+                case Right(p) => p
+            }
+            val clientSecret =
+                try SecretsUtil.getSecretMap(env.oidcSecretName).flatMap(m => Option(m.get("clientSecret"))).map(_.trim).filter(_.nonEmpty)
+                catch { case scala.util.control.NonFatal(_) => None }
+            if (clientSecret.isEmpty) return refuse(OidcLogin.Failed, "Vault secret " + env.oidcSecretName + " has no clientSecret")
+
+            val idToken = OidcLogin.exchangeCode(discovery.tokenEndpoint, env.oidcClientId, clientSecret.get, env.oidcRedirectUri, code, txVerifier) match {
+                case Left(err) => return refuse(OidcLogin.Failed, err)
+                case Right(t) => t
+            }
+            val claims = OidcLogin.validateIdToken(idToken, jwks, env.oidcIssuer, env.oidcClientId, txNonce, Instant.now()) match {
+                case Left(err) => return refuse(OidcLogin.Failed, err)
+                case Right(c) => c
+            }
+
+            val user: User = OidcLogin.resolveUser(claims, env.oidcUsernameClaim, env.oidcDefaultRole, UserStore.find) match {
+                case OidcLogin.Refused(c, detail) => return refuse(c, detail, claimedUsername(claims, env.oidcUsernameClaim))
+                case OidcLogin.Existing(u, subject) =>
+                    if (u.oidcSubject == null || u.oidcSubject.isEmpty) UserStore.setOidcSubject(u.username, subject)
+                    u
+                case OidcLogin.Create(role, username, subject) =>
+                    // A random password nobody is told: never a null hash.
+                    val created = UserStore.create(username, PasswordHasher.hash(PasswordHasher.generateTemporary()), role, subject)
+                    logger.info("OIDC sign-in created user " + username + " with role " + role)
+                    created
+            }
+
+            val session = SessionStore.create(user.username)
+            UserStore.touchLastLogin(user.username)
+            response.addCookie(buildSessionCookie(session.token, cookieMaxAgeSeconds))
+            val md = new JsonObject
+            md.addProperty("method", "oidc")
+            md.addProperty("role", user.role)
+            AuditLog.record(request, "auth", "login", "user", user.username, httpStatus = HttpStatus.FOUND.value(), metadata = md)
+            logger.info("OIDC sign-in: " + user.username + " (" + user.role + ")")
+            redirect("/")
+        } catch {
+            case e: Exception =>
+                logger.error("Error in /auth/oidc/callback: " + Throwables.getStackTraceAsString(e))
+                refuse(OidcLogin.Failed, "internal error: " + e.getClass.getSimpleName)
         }
     }
 
@@ -287,6 +424,39 @@ class AuthAPIController {
         cookie.setAttribute("SameSite", "Strict")
         cookie
     }
+
+    private val OidcTxCookieName = "datris-oidc-tx"
+    private val OidcTxCookiePath = "/api/v1/auth/oidc"
+    private val OidcTxMaxAgeSeconds = 600
+
+    /** The SSO transaction cookie (state, nonce, PKCE verifier). SameSite=Lax,
+      * not Strict: the callback is a navigation from the identity provider's
+      * site, and a Strict cookie would not be sent on it. */
+    private def buildOidcTxCookie(value: String, maxAgeSeconds: Int): Cookie = {
+        val cookie = new Cookie(OidcTxCookieName, value)
+        cookie.setHttpOnly(true)
+        cookie.setSecure(SessionAuthenticator.cookieSecure)
+        cookie.setPath(OidcTxCookiePath)
+        cookie.setMaxAge(maxAgeSeconds)
+        cookie.setAttribute("SameSite", "Lax")
+        cookie
+    }
+
+    private def redirect(location: String): ResponseEntity[String] =
+        ResponseEntity.status(HttpStatus.FOUND).location(URI.create(location)).header("Cache-Control", "no-store").build()
+
+    private def ssoRedirect(code: String): ResponseEntity[String] =
+        redirect("/login?ssoError=" + (if (OidcLogin.Codes.contains(code)) code else OidcLogin.Failed))
+
+    private def oidcNotEnabled(): ResponseEntity[String] =
+        ResponseEntity.status(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_JSON).body("""{"error":"Single sign-on is not enabled on this server"}""")
+
+    /** The normalized username a refused token claimed, for the audit entry. */
+    private def claimedUsername(claims: com.nimbusds.jwt.JWTClaimsSet, usernameClaim: String): String =
+        claims.getClaim(Option(usernameClaim).filter(_.nonEmpty).getOrElse("email")) match {
+            case s: String => UserStore.normalize(s).take(256)
+            case _ => null
+        }
 
     private def readCookie(request: HttpServletRequest, name: String): String = {
         val cookies = request.getCookies

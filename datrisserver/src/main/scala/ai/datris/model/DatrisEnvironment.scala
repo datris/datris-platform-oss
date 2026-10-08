@@ -247,6 +247,17 @@ case class DatrisEnvironment(
     extendedThinking: Boolean = true,
     hosted: Boolean = false,
     useUserAuth: Boolean = false,
+    // OIDC single sign-on for UI users (ai.datris.auth.OidcLogin). Only takes
+    // effect with useUserAuth on; StartupRunner sets oidcEnabled back to false
+    // when the settings or the Vault secret are unusable.
+    oidcEnabled: Boolean = false,
+    oidcIssuer: String = "",
+    oidcClientId: String = "",
+    oidcSecretName: String = "oss/oidc",
+    oidcRedirectUri: String = "",
+    oidcScopes: String = "openid email profile",
+    oidcUsernameClaim: String = "email",
+    oidcDefaultRole: String = "",
     userTableName: String = null,
     userSessionTableName: String = null,
     // Max definition versions retained per entity. Older

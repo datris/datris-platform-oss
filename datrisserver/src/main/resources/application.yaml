@@ -46,6 +46,22 @@ dateTimezone: "America/New_York"
 environment: oss
 useApiKeys: "false"
 useUserAuth: "false"
+# OIDC single sign-on for UI users ("Sign in with SSO" on the login page).
+# Only takes effect with useUserAuth on. Off by default so existing deploys
+# are unchanged; a restart is required to flip it. The client secret lives in
+# Vault under secretName, key clientSecret. A wrong or incomplete setting
+# switches SSO off (logged at ERROR) and never blocks startup or password
+# login. Env vars: OIDC_ENABLED, OIDC_ISSUER, OIDC_CLIENT_ID,
+# OIDC_REDIRECT_URI, OIDC_SCOPES, OIDC_USERNAME_CLAIM, OIDC_DEFAULT_ROLE.
+oidc:
+  enabled: "false"
+  issuer: ""                     # must equal the issuer in the provider's discovery document
+  clientId: ""
+  secretName: "oss/oidc"         # Vault secret holding clientSecret
+  redirectUri: ""                # https://<ui-host>/api/v1/auth/oidc/callback, registered at the provider
+  scopes: "openid email profile"
+  usernameClaim: "email"         # ID-token claim that becomes the Datris username
+  defaultRole: ""                # empty = refuse unknown people; viewer or editor = create them with that role
 multiTenant: "false"
 # Durable audit log of who did what (admin-readable under Configuration →
 # Audit Log). Off by default so existing deploys are unchanged; a restart is

@@ -26,6 +26,32 @@ class StartupRunner extends ApplicationRunner {
     @Value("${useUserAuth:false}")
     var useUserAuth: Boolean = _
 
+    // OIDC single sign-on (ai.datris.auth.OidcLogin). Off by default; only
+    // takes effect with useUserAuth on. Validated once at startup.
+    @Value("${oidc.enabled:false}")
+    var oidcEnabled: Boolean = _
+
+    @Value("${oidc.issuer:}")
+    var oidcIssuer: String = _
+
+    @Value("${oidc.clientId:}")
+    var oidcClientId: String = _
+
+    @Value("${oidc.secretName:oss/oidc}")
+    var oidcSecretName: String = _
+
+    @Value("${oidc.redirectUri:}")
+    var oidcRedirectUri: String = _
+
+    @Value("${oidc.scopes:openid email profile}")
+    var oidcScopes: String = _
+
+    @Value("${oidc.usernameClaim:email}")
+    var oidcUsernameClaim: String = _
+
+    @Value("${oidc.defaultRole:}")
+    var oidcDefaultRole: String = _
+
     @Value("${multiTenant:false}")
     var multiTenant: Boolean = _
 
@@ -282,6 +308,7 @@ class StartupRunner extends ApplicationRunner {
                 ", provenance " + (if (provenanceStrict) "strict (PROVENANCE_STRICT; XML sources exempt)" else "best effort")
         )
         initUserAuth()
+        initOidc()
         // Seed v1 definition snapshots for any pre-versioning taps/pipelines so
         // their version history isn't empty. Idempotent — skips entities that
         // already have version records.
@@ -312,6 +339,50 @@ class StartupRunner extends ApplicationRunner {
         } catch {
             case e: Exception =>
                 logger.warn("User-auth init failed (continuing): " + e.getMessage)
+        }
+    }
+
+    /** One validation pass over the OIDC settings. Never stops the server and
+      * never touches password login: an unusable setting or a missing Vault
+      * secret switches SSO off (logged once at ERROR) so the button is hidden.
+      * The identity provider itself is not contacted here; an unreachable
+      * provider shows up as a failed sign-in, not a failed start. */
+    private def initOidc(): Unit = {
+        val env = DatrisEnvironment.values
+        if (!env.oidcEnabled) return
+        def off(reason: String): Unit = {
+            logger.error("OIDC single sign-on is OFF: " + reason + ". Password login is unaffected.")
+            DatrisEnvironment.init(DatrisEnvironment.values.copy(oidcEnabled = false))
+        }
+        if (!env.useUserAuth) {
+            logger.warn("OIDC_ENABLED is true but USE_USER_AUTH is false; single sign-on does nothing until user auth is enabled")
+            DatrisEnvironment.init(env.copy(oidcEnabled = false))
+            return
+        }
+        if (env.multiTenant)
+            logger.warn("OIDC single sign-on is not verified with MULTI_TENANT=true; it signs people in to the default tenant's user store")
+        ai.datris.auth.OidcLogin.configProblem(env.oidcIssuer, env.oidcClientId, env.oidcRedirectUri, env.oidcSecretName) match {
+            case Some(problem) => off(problem)
+            case None =>
+                val secret =
+                    try SecretsUtil.getSecretMap(env.oidcSecretName).flatMap(m => Option(m.get("clientSecret"))).map(_.trim).filter(_.nonEmpty)
+                    catch { case scala.util.control.NonFatal(_) => None }
+                if (secret.isEmpty) off("Vault secret " + env.oidcSecretName + " with key clientSecret was not found")
+                else {
+                    val role = env.oidcDefaultRole
+                    if (role.nonEmpty && !ai.datris.auth.OidcLogin.CreatableRoles.contains(role))
+                        logger.warn(
+                            "OIDC_DEFAULT_ROLE '" + role + "' is not viewer or editor and is treated as unset: people without a Datris user are refused"
+                        )
+                    if (!env.oidcRedirectUri.endsWith(ai.datris.auth.OidcLogin.CallbackPath))
+                        logger.warn(
+                            "OIDC_REDIRECT_URI does not end with " + ai.datris.auth.OidcLogin.CallbackPath + "; the provider will send people elsewhere"
+                        )
+                    logger.info(
+                        "OIDC single sign-on enabled: issuer=" + env.oidcIssuer + ", clientId=" + env.oidcClientId + ", usernameClaim=" +
+                            env.oidcUsernameClaim + ", defaultRole=" + (if (role.isEmpty) "(none)" else role)
+                    )
+                }
         }
     }
 
@@ -443,6 +514,14 @@ class StartupRunner extends ApplicationRunner {
             postgresDatabase = postgresDatabase,
             hosted = hosted,
             useUserAuth = useUserAuth,
+            oidcEnabled = oidcEnabled,
+            oidcIssuer = Option(oidcIssuer).map(_.trim).getOrElse(""),
+            oidcClientId = Option(oidcClientId).map(_.trim).getOrElse(""),
+            oidcSecretName = Option(oidcSecretName).map(_.trim).getOrElse(""),
+            oidcRedirectUri = Option(oidcRedirectUri).map(_.trim).getOrElse(""),
+            oidcScopes = Option(oidcScopes).map(_.trim).filter(_.nonEmpty).getOrElse("openid email profile"),
+            oidcUsernameClaim = Option(oidcUsernameClaim).map(_.trim).filter(_.nonEmpty).getOrElse("email"),
+            oidcDefaultRole = Option(oidcDefaultRole).map(_.trim.toLowerCase(java.util.Locale.ROOT)).getOrElse(""),
             userTableName = environment + "-user",
             userSessionTableName = environment + "-user-session",
             versionCap = versionCap,
