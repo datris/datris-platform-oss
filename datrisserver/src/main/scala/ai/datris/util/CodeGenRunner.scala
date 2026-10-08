@@ -38,6 +38,11 @@ import java.nio.file.{Files, Path}
   * `{"stdout","stderr","exitCode","timedOut","outputBytes"}` + `\n` + the
   * output file bytes. Both directions are streamed in 64 KB chunks; neither
   * the input nor the output is ever held whole in memory. */
+/** The script never ran (or its result was lost) because the CodeGen runner
+  * could not be used: unreachable, older image, token rejected, scratch full.
+  * Distinct from a script failure so callers do not blame the script. */
+class CodeGenRunnerUnavailable(message: String) extends DatrisException(message)
+
 object CodeGenRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
@@ -152,7 +157,7 @@ object CodeGenRunner {
     }
 
     private def transportFailure(settings: Settings, detail: String): DatrisException =
-        new DatrisException("CodeGen runner (" + ServiceName + " at " + settings.url + ") " + detail)
+        new CodeGenRunnerUnavailable("CodeGen runner (" + ServiceName + " at " + settings.url + ") " + detail)
 
     /** Records when the last of `expected` bytes has been read (the upload is
       * then done; the HTTP client stops at Content-Length and never reads EOF). */
@@ -239,7 +244,7 @@ object CodeGenRunner {
                             )
                         val diagnosis = if (quiet || e.isInstanceOf[java.net.ConnectException]) None else health(settings).left.toOption
                         throw diagnosis match {
-                            case Some(msg) if msg.contains("CodeGen runner") => new DatrisException(msg)
+                            case Some(msg) if msg.contains("CodeGen runner") => new CodeGenRunnerUnavailable(msg)
                             case Some(msg) => transportFailure(settings, "is unreachable: " + cause + " (" + msg + ")")
                             case None => transportFailure(settings, "is unreachable: " + cause)
                         }

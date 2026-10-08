@@ -189,8 +189,11 @@ holds the file in memory. The server log shows the transfer and run time of each
 in the runner. It is on disk, not in memory, so there is no new size limit: the bound is free disk
 on the Docker host, as it is for in-process runs. A transformation needs room for its input and
 its output at once, in addition to the server's own staged copy. Each run's directory is removed
-when the run ends (success, script failure, timeout or a dropped connection), and anything left
-by a killed runner is removed when it starts, so the volume holds nothing between runs. When the
+when the run ends (success, script failure, timeout or a dropped connection). Anything else a
+script wrote, on the volume outside its own directory or in the runner's small `/tmp`, is removed
+at the same time, and everything left by a killed runner is removed when it starts, so nothing
+carries from one run to the next. Runs that overlap in time share the volume, as concurrent tap
+runs share theirs. When the
 disk fills, the rule or transformation fails with an error naming the `codegen-scratch` volume.
 The script's printed output (for an AI rule, its failure list) comes back in one result message
 capped at 64 MB; a rule that prints a failure for nearly every row of a very large file fails with

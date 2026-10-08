@@ -261,16 +261,96 @@ def _safe_name(name, default):
     return base
 
 
-def sweep_codegen_scratch(root):
-    """Remove every cg_* run dir left behind by a killed runner. Only cg_* is touched."""
+# Run dirs of in-flight requests: never wiped by another run's cleanup. Creating a run
+# dir and registering it, and the after-run wipe of the volume root, both hold the lock,
+# so a wipe can never see a new run dir before it is registered.
+_ACTIVE_RUNS = set()
+_ACTIVE_LOCK = threading.Lock()
+
+
+def _scratch_dedicated():
+    """True when CODEGEN_SCRATCH_DIR is a volume used for nothing else (the image sets
+    CODEGEN_SCRATCH_DEDICATED=1): then everything under it is ours to remove, not only
+    cg_* run dirs. Without it (a bare `python3 app.py`, tests) only cg_* is touched."""
+    return bool(os.environ.get("CODEGEN_SCRATCH_DIR")) and os.environ.get("CODEGEN_SCRATCH_DEDICATED") == "1"
+
+
+def _codegen_tmp_dir():
+    """The interpreter temp dir (the runner's /tmp tmpfs) to empty after each run, so a
+    script cannot leave files there for the next one. Only when CODEGEN_SCRATCH_DIR is
+    set (the codegen runner), never in the tap runner."""
+    if not os.environ.get("CODEGEN_SCRATCH_DIR"):
+        return None
+    return os.environ.get("CODEGEN_TMP_DIR") or None
+
+
+def _remove(p):
+    """Remove a file, link or tree, including dirs a script made unreadable (same uid)."""
+    try:
+        if os.path.islink(p) or not os.path.isdir(p):
+            os.unlink(p)
+            return
+        _chmod_tree(p)
+        shutil.rmtree(p, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def _chmod_tree(p):
+    try:
+        os.chmod(p, 0o700)
+    except OSError:
+        return
+    try:
+        entries = list(os.scandir(p))
+    except OSError:
+        return
+    for e in entries:
+        if e.is_dir(follow_symlinks=False):
+            _chmod_tree(e.path)
+
+
+def _empty_dir(root, keep=()):
     try:
         names = os.listdir(root)
     except OSError:
         return
     for n in names:
         p = os.path.join(root, n)
-        if n.startswith("cg_") and os.path.isdir(p) and not os.path.islink(p):
-            shutil.rmtree(p, ignore_errors=True)
+        if p in keep:
+            continue
+        _remove(p)
+
+
+def _cleanup_after_run(root):
+    """Leave nothing a finished run wrote: on a dedicated scratch volume, everything
+    except other in-flight run dirs (a script can write ../ into the volume root);
+    and the interpreter temp dir."""
+    if _scratch_dedicated():
+        with _ACTIVE_LOCK:
+            _empty_dir(root, set(_ACTIVE_RUNS))
+    tmp = _codegen_tmp_dir()
+    if tmp and os.path.realpath(tmp) != os.path.realpath(root):
+        _empty_dir(tmp)
+
+
+def sweep_codegen_scratch(root):
+    """At start: remove what a killed runner left. Every cg_* run dir always; on a
+    dedicated volume everything else too, and the interpreter temp dir."""
+    if _scratch_dedicated():
+        _empty_dir(root)
+    else:
+        try:
+            names = os.listdir(root)
+        except OSError:
+            names = []
+        for n in names:
+            p = os.path.join(root, n)
+            if n.startswith("cg_") and os.path.isdir(p) and not os.path.islink(p):
+                _remove(p)
+    tmp = _codegen_tmp_dir()
+    if tmp and os.path.realpath(tmp) != os.path.realpath(root):
+        _empty_dir(tmp)
 
 
 class CodegenUploadError(Exception):
@@ -283,10 +363,12 @@ class CodegenNoSpace(Exception):
 
 def _receive_input(rfile, remaining, path):
     """Copy exactly `remaining` bytes from the socket to `path`, 64 KB at a time.
-    On ENOSPC, keep draining the request body (so the client can read the 507)
-    and raise CodegenNoSpace."""
+    Always consumes the whole body (so the client can read the answer). ENOSPC on a
+    write, the final flush or the close (a buffered file reports a full disk when it
+    flushes) raises CodegenNoSpace once the body is consumed."""
     no_space = False
-    with open(path, "wb") as f:
+    f = open(path, "wb")
+    try:
         while remaining > 0:
             chunk = rfile.read(min(CODEGEN_CHUNK, remaining))
             if not chunk:
@@ -300,6 +382,20 @@ def _receive_input(rfile, remaining, path):
                 if e.errno != errno.ENOSPC:
                     raise
                 no_space = True
+        if not no_space:
+            try:
+                f.flush()
+            except OSError as e:
+                if e.errno != errno.ENOSPC:
+                    raise
+                no_space = True
+    finally:
+        try:
+            f.close()
+        except OSError as e:
+            if e.errno != errno.ENOSPC:
+                raise
+            no_space = True
     if no_space:
         raise CodegenNoSpace()
 
@@ -342,49 +438,76 @@ def execute_file(meta, rfile, length, wfile, send_error=None, send_head=None):
 
     root = _codegen_scratch_dir()
     scratch = None
+    cleaned = []
+
+    def cleanup():
+        """Remove this run's dir and, on a dedicated volume, anything else a run left. Idempotent."""
+        if cleaned:
+            return
+        cleaned.append(True)
+        if scratch:
+            _chmod_tree(scratch)
+            shutil.rmtree(scratch, ignore_errors=True)
+            with _ACTIVE_LOCK:
+                _ACTIVE_RUNS.discard(scratch)
+        _cleanup_after_run(root)
+
     try:
         try:
-            scratch = tempfile.mkdtemp(prefix="cg_", dir=root)
+            with _ACTIVE_LOCK:
+                scratch = tempfile.mkdtemp(prefix="cg_", dir=root)
+                _ACTIVE_RUNS.add(scratch)
             script_path = os.path.join(scratch, "script.py")
             with open(script_path, "w") as f:
                 f.write(script)
             in_path = os.path.join(scratch, in_name)
             out_path = os.path.join(scratch, out_name) if out_name else None
-            _receive_input(rfile, length, in_path)
-        except CodegenNoSpace:
-            send_error(507, {"error": SCRATCH_VOLUME_HINT})
-            return
         except OSError as e:
             if e.errno == errno.ENOSPC:
-                # Drain what is left so the client sees the 507 rather than a reset.
+                # Nothing of the body was read yet: drain it so the client sees the 507.
                 _discard(rfile, length)
+                cleanup()
                 send_error(507, {"error": SCRATCH_VOLUME_HINT})
                 return
             raise
+        try:
+            _receive_input(rfile, length, in_path)
+        except CodegenNoSpace:
+            # _receive_input consumed the whole body; answer at once.
+            cleanup()
+            send_error(507, {"error": SCRATCH_VOLUME_HINT})
+            return
 
         result = _run_codegen(script_path, in_path, out_path, scratch, timeout)
         size = 0
-        if out_path and not result["timedOut"] and os.path.isfile(out_path):
-            size = os.path.getsize(out_path)
-        result["outputBytes"] = size
-        line = json.dumps(result).encode("utf-8") + b"\n"
-        send_head(len(line) + size)
-        for i in range(0, len(line), CODEGEN_CHUNK):
-            wfile.write(line[i:i + CODEGEN_CHUNK])
-        if size:
+        out_file = None
+        try:
+            if out_path and not result["timedOut"] and os.path.isfile(out_path):
+                out_file = open(out_path, "rb")
+                size = os.fstat(out_file.fileno()).st_size
+            # Clean up BEFORE answering: the open handle keeps the output readable after
+            # its directory is gone, and the client never sees the end of a response
+            # while the run's files still exist.
+            cleanup()
+            result["outputBytes"] = size
+            line = json.dumps(result).encode("utf-8") + b"\n"
+            send_head(len(line) + size)
+            for i in range(0, len(line), CODEGEN_CHUNK):
+                wfile.write(line[i:i + CODEGEN_CHUNK])
             left = size
-            with open(out_path, "rb") as f:
-                while left > 0:
-                    data = f.read(min(CODEGEN_CHUNK, left))
-                    if not data:
-                        # Cannot happen once the script exited; pad so Content-Length holds.
-                        data = b"\0" * min(CODEGEN_CHUNK, left)
-                    wfile.write(data)
-                    left -= len(data)
-        wfile.flush()
+            while left > 0:
+                data = out_file.read(min(CODEGEN_CHUNK, left))
+                if not data:
+                    # Cannot happen once the script exited; pad so Content-Length holds.
+                    data = b"\0" * min(CODEGEN_CHUNK, left)
+                wfile.write(data)
+                left -= len(data)
+            wfile.flush()
+        finally:
+            if out_file is not None:
+                out_file.close()
     finally:
-        if scratch:
-            shutil.rmtree(scratch, ignore_errors=True)
+        cleanup()
 
 
 def _discard(rfile, remaining):
