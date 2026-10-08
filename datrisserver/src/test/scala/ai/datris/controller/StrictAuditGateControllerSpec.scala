@@ -105,4 +105,42 @@ class StrictAuditGateControllerSpec extends AnyFunSuite {
         assert(handled.toList == List(0L, 1L))
         assert(consumer.position(tp) == 2L, "auto-commit would commit offset 2, the first record not ingested")
     }
+
+    test("records a rebalance hands back while the gate is closed are rewound, not handled, and paused next round") {
+        val tp = new TopicPartition("t", 0)
+        val tp2 = new TopicPartition("t", 1)
+        val consumer = new MockConsumer[String, String](OffsetResetStrategy.EARLIEST)
+        // Subscribed, as KafkaConsumerRunner is (MockConsumer only rebalances a subscription).
+        consumer.subscribe(List("t").asJava)
+        consumer.rebalance(List(tp).asJava)
+        consumer.updateBeginningOffsets(Map(tp -> java.lang.Long.valueOf(0L), tp2 -> java.lang.Long.valueOf(5L)).asJava)
+        val handled = scala.collection.mutable.ArrayBuffer[Long]()
+        val poller =
+            new KafkaConsumerRunner.GatedPoller(
+                consumer,
+                () => false,
+                (r: ConsumerRecord[String, String]) => handled += r.offset(),
+                LoggerFactory.getLogger(getClass)
+            )
+
+        poller.pollOnce(Duration.ofMillis(10))
+        assert(consumer.paused().asScala == Set(tp))
+
+        // The rebalance must happen INSIDE poll (as it does in a real consumer):
+        // a rebalance between two pollOnce calls is paused before the poll and
+        // never reaches the stray-records path. MockConsumer runs a scheduled
+        // poll task at the start of poll(), before it collects records.
+        consumer.schedulePollTask(() => {
+            consumer.rebalance(List(tp, tp2).asJava)
+            consumer.addRecord(rec(tp2, 5))
+            consumer.addRecord(rec(tp2, 6))
+        })
+        poller.pollOnce(Duration.ofMillis(10))
+        assert(handled.isEmpty, "nothing handled while the gate is closed")
+        assert(consumer.position(tp2) == 5L, "tp2 rewound to its first returned offset")
+
+        poller.pollOnce(Duration.ofMillis(10))
+        assert(consumer.paused().asScala.contains(tp2), "the newly assigned partition is paused on the next round: " + consumer.paused())
+        assert(handled.isEmpty)
+    }
 }
