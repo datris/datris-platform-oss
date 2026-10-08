@@ -1187,4 +1187,106 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val dropped = presetConfig("""[{"name":"dob","type":"date","protect":{"method":"drop"}}]""", """{"preset":"hipaa-safe-harbor"}""")
         assert(validationError(dropped).isEmpty, s"got: ${validationError(dropped)}")
     }
+
+    // --- Strict evidence mode: provenance.fields (plans/stories/strict-evidence-mode.md) ---
+    //
+    // Pinned seam (does not exist on main at 3de8be3; the implementation adds it):
+    // {{{
+    // // ai.datris.model.DatrisEnvironment — from `${provenance.strict:false}` (PROVENANCE_STRICT)
+    // provenanceStrict: Boolean = false
+    //
+    // // ai.datris.util.PipelineValidatorUtil — reads DatrisEnvironment.values.provenanceStrict
+    // // (null environment = default mode). Called from validateConfig next to
+    // // validateSecretReferences / validateUnityCatalog / validateFieldProtection,
+    // // i.e. before the structured/unstructured branch and any config-store lookup.
+    // private[util] def validateProvenance(config: PipelineConfig): Unit
+    // }}}
+    // Under strict, a name in provenance.fields that is not one of
+    // ProvenanceStamper.AllFields is refused with a DatrisException naming it.
+    // An XML source with provenance.stamp is accepted in both modes.
+
+    private def strictEnv(strict: Boolean): ai.datris.model.DatrisEnvironment = ai.datris.model.DatrisEnvironment(
+        initialized = true,
+        environment = "test",
+        fileNotifierQueue = null,
+        ttlFileNotifierQueueMessages = 0,
+        pipelineTopic = null,
+        pipelineTableName = null,
+        archivedMetadataTableName = null,
+        pipelineStatusTableName = null,
+        fileNotifierMessageTableName = null,
+        dataPullTableName = null,
+        useApiKeys = false,
+        apiKeysSecretName = null,
+        postgresSecretName = null,
+        mongoDbSecretName = null,
+        kafkaProducerSecretName = null,
+        kafkaConsumerConfig = null,
+        mongoDbConfig = ai.datris.model.MongoDBConfig("mongodb://unused", "datris", "datris"),
+        minIOConfig = null,
+        activeMQConfig = null,
+        aiConfig = null,
+        aiEnabled = false,
+        embeddingSecretName = null,
+        qdrantSecretName = null,
+        weaviateSecretName = null,
+        milvusSecretName = null,
+        chromaSecretName = null,
+        pgvectorSecretName = null,
+        multiTenant = false,
+        provenanceStrict = strict
+    )
+
+    private def withProvenanceStrict[A](strict: Boolean)(body: => A): A = {
+        val saved = ai.datris.model.DatrisEnvironment.values
+        ai.datris.model.DatrisEnvironment.values = strictEnv(strict)
+        try body
+        finally ai.datris.model.DatrisEnvironment.values = saved
+    }
+
+    private def provenanceConfig(fileAttributes: String, fieldsJson: String): PipelineConfig =
+        parse(
+            s"""{"name":"prov",
+               |"source":{"fileAttributes":{$fileAttributes},"schemaProperties":{"fields":[{"name":"id","type":"string"}]}},
+               |"destination":{"database":{"dbName":"db","schema":"public","table":"t","usePostgres":true}},
+               |"provenance":{"stamp":true$fieldsJson}}""".stripMargin
+        )
+
+    private val unknownField = "_datris_bogus"
+    private val csvAttrs = """"csvAttributes":{"delimiter":",","header":true}"""
+    private val xmlAttrs = """"xmlAttributes":{"everyRowContainsObject":true}"""
+
+    test("strict rejects an unknown provenance field name") {
+        val cfg = provenanceConfig(csvAttrs, s""","fields":["_datris_run_id","$unknownField"]""")
+        withProvenanceStrict(strict = true) {
+            val e = intercept[DatrisException] { PipelineValidatorUtil.validateProvenance(cfg) }
+            assert(e.getMessage.contains(unknownField), "the unknown name is named: " + e.getMessage)
+            assert(e.getMessage.contains("provenance.fields"), e.getMessage)
+            assert(!e.getMessage.contains("'_datris_run_id'"), "a known name is not reported: " + e.getMessage)
+            // Reached from validate, before any config-store lookup.
+            val viaValidate = validationError(cfg)
+            assert(viaValidate.exists(_.contains(unknownField)), s"validate refuses it too, got: $viaValidate")
+        }
+    }
+
+    test("default accepts an unknown provenance field name") {
+        val cfg = provenanceConfig(csvAttrs, s""","fields":["$unknownField"]""")
+        withProvenanceStrict(strict = false) {
+            PipelineValidatorUtil.validateProvenance(cfg) // must not throw
+        }
+        val saved = ai.datris.model.DatrisEnvironment.values
+        ai.datris.model.DatrisEnvironment.values = null
+        try PipelineValidatorUtil.validateProvenance(cfg) // no environment = default mode
+        finally ai.datris.model.DatrisEnvironment.values = saved
+    }
+
+    test("strict accepts provenance.stamp on an XML source") {
+        withProvenanceStrict(strict = true) {
+            PipelineValidatorUtil.validateProvenance(provenanceConfig(xmlAttrs, "")) // must not throw
+            PipelineValidatorUtil.validateProvenance(provenanceConfig(xmlAttrs, ""","fields":["_datris_run_id","_datris_source"]"""))
+        }
+        withProvenanceStrict(strict = false) {
+            PipelineValidatorUtil.validateProvenance(provenanceConfig(xmlAttrs, ""))
+        }
+    }
 }

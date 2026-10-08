@@ -28,4 +28,8 @@ SPARK_JAVA17_OPENS=(
   --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED
 )
 
-java ${JAVA_OPTS} "${SPARK_JAVA17_OPENS[@]}" -Djava.net.preferIPv4Stack=true -Dspring.config.additional-location=file:/usr/src/datrisserver/config/ -jar /usr/src/datrisserver/datrisserver.jar
+# exec: the JVM replaces this shell as PID 1, so `docker stop` delivers
+# SIGTERM to Java and the graceful shutdown (Spring context close, audit log
+# flush) runs instead of the JVM being killed when the stop timeout expires.
+# Nothing may follow this line.
+exec java ${JAVA_OPTS} "${SPARK_JAVA17_OPENS[@]}" -Djava.net.preferIPv4Stack=true -Dspring.config.additional-location=file:/usr/src/datrisserver/config/ -jar /usr/src/datrisserver/datrisserver.jar

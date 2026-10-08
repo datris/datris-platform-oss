@@ -268,6 +268,14 @@ case class DatrisEnvironment(
     auditLogRetentionDays: Int = 90, // 0 = never expire
     auditLogLogReads: Boolean = false, // query/search/metadata/GET routes
     auditLogEmitLogLine: Boolean = true,
+    // Strict evidence mode (AUDIT_LOG_STRICT): with the audit log on, an
+    // audited request is refused (503) rather than an entry being dropped when
+    // the config store cannot keep up. Default off = best effort, drops counted.
+    auditLogStrict: Boolean = false,
+    // Strict evidence mode (PROVENANCE_STRICT): a pipeline with provenance
+    // stamping on fails its run instead of loading unstamped rows (XML sources
+    // are exempt). Default off = a stamping miss loads unstamped.
+    provenanceStrict: Boolean = false,
     // Agent policy: auto / approve / deny per action for agent-initiated
     // requests, with a human approval queue (see ai.datris.policy). Off by
     // default; with it on and no policy saved, everything is still `auto`.

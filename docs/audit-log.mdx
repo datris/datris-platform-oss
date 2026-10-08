@@ -1,12 +1,12 @@
 ---
 title: "Audit log for AI agent data access"
 sidebarTitle: "Audit Log"
-description: "A durable record of every create, change, run, and delete: humans by login, agents by API key, the Assistant on the user's behalf. Filterable in the UI, exportable to CSV, mirrored to your SIEM."
+description: "With the audit log on, a durable record of creates, changes, runs, and deletes: humans by login, agents by API key, the Assistant on the user's behalf. Best effort by default, strict mode on request. Filterable in the UI, exportable to CSV, mirrored to your SIEM."
 ---
 
 The audit log answers questions like *who deleted that pipeline last Tuesday*, *which key rotated that secret*, *did anyone log in from a new address overnight*, and *what did the `claude-desktop` agent do against pipeline X*.
 
-It is separate from the [Agent Monitor](/monitoring#agent-monitor), which is a live, in-memory view of the last 200 MCP tool calls. The audit log is durable, covers every platform write (not just MCP), is admin-only, and is queryable.
+It is separate from the [Agent Monitor](/monitoring#agent-monitor), which is a live, in-memory view of the last 200 MCP tool calls. The audit log is durable, admin-only, and queryable. With the audit log on it covers every platform write (not just MCP). By default delivery is best effort: if the config store cannot keep up, entries can be dropped and are counted. [Strict mode](#strict-mode) refuses a request instead of losing its entry.
 
 ## Enabling it
 
@@ -20,6 +20,8 @@ Off by default — existing installs are unchanged until you opt in.
    AUDIT_LOG_RETENTION_DAYS=90
    # optional — also record reads (queries, searches, listings)
    AUDIT_LOG_READS=false
+   # optional — refuse audited requests rather than drop entries (see Strict mode)
+   AUDIT_LOG_STRICT=false
    ```
 
 2. Recreate the Datris container:
@@ -56,7 +58,7 @@ In the legacy no-auth mode (`USE_USER_AUTH=false`, `USE_API_KEYS=false`) there i
 
 ## What is recorded
 
-Writes, runs, deletes, logins, key and user management, and every denied request. Reads are not recorded by default — they are high-volume and rarely what an audit is about — with one exception: reading a **secret** is always logged.
+With the audit log on: writes, runs, deletes, logins, key and user management, and every denied request (best effort by default; see [Strict mode](#strict-mode) for the complete guarantee). Reads are not recorded by default — they are high-volume and rarely what an audit is about — with one exception: reading a **secret** is always logged.
 
 | Category | Actions |
 |---|---|
@@ -105,7 +107,29 @@ Entries live in the platform's MongoDB config store (collection `{environment}-a
 
 Every entry is **also written to the server log** on the logger `ai.datris.audit`, one line per event. Under the `production` Spring profile that line is a JSON object, so any log aggregator or SIEM already reading the container's output gets the full audit trail with no extra integration. That stream is the long-term record; Mongo is the queryable window. Turn the mirror off with `auditLog.emitLogLine: false` if you only want the database copy.
 
-Two Prometheus metrics track health on the existing `/actuator/prometheus` endpoint: `datris_audit_events_total{category,outcome}` and `datris_audit_dropped_total`. Entries are written asynchronously and never slow a request; if the config store cannot keep up, the oldest pending entries are dropped and counted, and the Audit Log tab shows a warning.
+Two Prometheus metrics track health on the existing `/actuator/prometheus` endpoint: `datris_audit_events_total{category,outcome}` and `datris_audit_dropped_total`. By default (best effort) entries are written asynchronously and never slow a request; if the config store cannot keep up, the oldest pending entries are dropped and counted in `datris_audit_dropped_total`, and the Audit Log tab shows a warning. If you need no entry to be lost, turn on [strict mode](#strict-mode).
+
+## Strict mode
+
+By default the audit log favours availability: a request is never blocked, and an entry that cannot be written is dropped and counted. If you need the opposite trade, a request that cannot be recorded does not happen, set:
+
+```bash
+USE_AUDIT_LOG=true
+AUDIT_LOG_STRICT=true
+```
+
+and recreate the Datris container. `AUDIT_LOG_STRICT` does nothing while `USE_AUDIT_LOG` is off (`datris doctor` warns about that combination under `audit.strict`).
+
+With strict mode on:
+
+- **Nothing is evicted.** A full queue never pushes an older entry out, and `datris_audit_dropped_total` stays at 0.
+- **A failed write is retried, not skipped.** While the config store (MongoDB) is down, the writer retries the same entry with backoff and keeps the rest of the queue in order. When the store comes back, every queued entry is written once, in the order it was accepted.
+- **Audited requests are refused while the queue is backed up.** Once the pending queue reaches its high-water mark (9,000 of 10,000 entries), every request that would be audited (writes; reads too with `AUDIT_LOG_READS=true`; secret reads always) gets HTTP **503** with a `Retry-After` header and a JSON message naming `AUDIT_LOG_STRICT`, before the request is handled. Tap callbacks and HTTP ingest triggers fail with the same 503. Triggers that do not come over the API wait instead: the MinIO bucket webhook answers 503 and MinIO redelivers the event later (this relies on MinIO's webhook event queue: the bundled `minio-init` sets `queue_dir` with a limit of 1,000 undelivered events, past which MinIO drops events, and a MinIO you configured yourself without `queue_dir` does not redeliver at all), the Kafka consumer stops reading (no offset is committed past an unprocessed message), and scheduled tap runs are skipped until the queue drains, then fire on the next tick. Unaudited reads keep working, and `GET /api/v1/audit-log/status` is never refused, so the UI banner and scripts can see the state (that status read is not recorded while the gate is closed). Requests are accepted again as soon as the queue drains.
+- **An entry that still cannot be queued is counted.** A request refused by authentication or authorization while the gate is closed is not held: its denial entry is counted straight away. If a request already past the gate waits more than a few seconds for room, its entry is counted in `datris_audit_unrecorded_total` and written whole at ERROR level on the `ai.datris.audit` logger, so the log stream still has it.
+
+`GET /api/v1/audit-log/status` reports `strict`, `unrecorded`, and `acceptingWrites` alongside `dropped` and `queueDepth`.
+
+**Residual risk.** Accepted entries wait in an in-memory queue until the writer stores them. A hard kill of the server (out-of-memory kill, `docker kill`, host crash) loses entries that were accepted but not yet written; the `ai.datris.audit` log line is emitted when an entry is written, not when it is accepted. A normal stop (`docker stop`, `docker compose stop` or `down`) flushes the queue first. The flush is bounded to 10 seconds, even when the config store hangs rather than fails: entries it cannot store in that time are counted in `datris_audit_unrecorded_total` (strict mode), and, under strict mode or whenever an entry was left behind, the total is printed to the container's stderr as `audit-unrecorded total=N at shutdown`, so it survives the server's logging shutdown. The Kafka consumer stops before the flush, and an entry submitted after the flush (for example by a tap run still finishing) is refused and counted the same way. Compose gives the server 30 seconds to stop before killing it.
 
 ## Cross-referencing the Agent Monitor
 

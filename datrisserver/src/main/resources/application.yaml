@@ -55,6 +55,13 @@ auditLog:
   retentionDays: 90       # Mongo TTL on entries; 0 = never expire
   logReads: false         # also record query/search/metadata/GET routes (high volume)
   emitLogLine: true       # mirror each entry to logger ai.datris.audit (JSON under the production profile)
+  strict: false           # AUDIT_LOG_STRICT: refuse audited requests (503) instead of dropping entries when the store cannot keep up
+# Provenance stamping (per pipeline, provenance.stamp). strict: false = a run
+# whose data cannot be stamped loads unstamped with a status line (best effort);
+# true = the run fails instead (XML sources are exempt and load unstamped).
+# Env var: PROVENANCE_STRICT.
+provenance:
+  strict: false
 # Recovery agent: the platform opens incidents for final tap failures, failed
 # pipeline jobs, stale scheduled taps and volume anomalies, diagnoses them with
 # the Ops assistant's judgment, and — within the agent policy's recovery mode

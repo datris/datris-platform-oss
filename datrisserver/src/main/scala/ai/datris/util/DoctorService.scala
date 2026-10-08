@@ -166,6 +166,20 @@ object DoctorService {
           * the shipped state (all off); LiveProbes reads DatrisEnvironment. */
         def governanceControls(): Map[String, Boolean] = GovernanceControlsCheck.Vars.map(_ -> false).toMap
 
+        /** AUDIT_LOG_STRICT as configured (DatrisEnvironment.auditLogStrict). */
+        def auditLogStrict(): Boolean = false
+
+        /** [[ai.datris.audit.AuditLog.acceptingWrites]]: false only under
+          * strict while the audit queue is at its high-water mark. */
+        def auditAcceptingWrites(): Boolean = true
+
+        /** PROVENANCE_STRICT (DatrisEnvironment.provenanceStrict). */
+        def provenanceStrict(): Boolean = false
+
+        /** Names of pipelines with provenance.stamp on and an XML source.
+          * Throws when the pipeline configs cannot be read. */
+        def xmlStampingPipelines(): List[String] = Nil
+
         /** USE_CODEGEN_RUNNER: generated DQ / transformation scripts run in
           * the datris-codegen-runner sidecar. */
         def codegenRunnerEnabled(): Boolean
@@ -647,6 +661,67 @@ object DoctorService {
         }
     }
 
+    /** Strict evidence mode for the audit log (AUDIT_LOG_STRICT). ok with the
+      * effective mode; warn when strict is set but the audit log is off (the
+      * switch does nothing); error when strict and audited requests are being
+      * refused because the config store is not taking entries. */
+    class AuditStrictCheck(probes: Probes) extends Check {
+        val id = "audit.strict"
+        val startupSafe = true
+        def run(): CheckResult = {
+            val strict = probes.auditLogStrict()
+            val auditOn = probes.governanceControls().getOrElse("USE_AUDIT_LOG", false)
+            if (!strict)
+                ok(
+                    if (auditOn) "audit log best effort (AUDIT_LOG_STRICT off): entries dropped under backpressure are counted in datris_audit_dropped_total"
+                    else "audit log off"
+                )
+            else if (!auditOn)
+                warn(
+                    "AUDIT_LOG_STRICT is true but USE_AUDIT_LOG is off: nothing is audited, so strict mode has no effect",
+                    "Set USE_AUDIT_LOG=true in .env and recreate datris (`docker compose up -d datris`), or unset AUDIT_LOG_STRICT."
+                )
+            else if (!probes.auditAcceptingWrites())
+                error(
+                    "AUDIT_LOG_STRICT is on and the audit log is not accepting entries: audited requests are refused with 503",
+                    "The config store (MongoDB) is not taking audit writes. Check `docker compose ps mongodb` and `docker compose logs datris`; " +
+                        "queued entries are written in order once it recovers."
+                )
+            else ok("audit log strict (AUDIT_LOG_STRICT): an audited request is refused rather than its entry dropped")
+        }
+    }
+
+    /** Strict evidence mode for provenance (PROVENANCE_STRICT). ok with the
+      * effective mode; warn (never error) when strict is on and a stamping
+      * pipeline has an XML source: XML is exempt and loads unstamped, so those
+      * pipelines are outside the guarantee. */
+    class ProvenanceStrictCheck(probes: Probes) extends Check {
+        val id = "provenance.strict"
+        val startupSafe = true
+        def run(): CheckResult = {
+            if (!probes.provenanceStrict())
+                return ok("provenance stamping best effort (PROVENANCE_STRICT off): a run that cannot be stamped loads unstamped")
+            val xml =
+                try Right(probes.xmlStampingPipelines())
+                catch { case e: Exception => Left(String.valueOf(e.getMessage)) }
+            xml match {
+                case Left(why) =>
+                    warn(
+                        "provenance strict (PROVENANCE_STRICT); could not read pipeline configs to list XML exemptions: " + why,
+                        "Re-run `datris doctor` once the config store is reachable."
+                    )
+                case Right(Nil) =>
+                    ok("provenance strict (PROVENANCE_STRICT): a stamping pipeline fails its run rather than loading unstamped rows")
+                case Right(names) =>
+                    warn(
+                        "provenance strict (PROVENANCE_STRICT), but these stamping pipelines have an XML source, which is exempt and loads unstamped: " +
+                            names.mkString(", "),
+                        "XML cannot be stamped. Those pipelines are outside the strict guarantee; convert the source to JSON or CSV if every row must carry provenance."
+                    )
+            }
+        }
+    }
+
     /** Which hardening env vars reached the JVM. Always ok — evidence for the
       * CLI's `env.not_forwarded` check, and a line in the report so a
       * documented-but-unforwarded var is visible without shelling in. */
@@ -778,6 +853,8 @@ object DoctorService {
             new CodeGenIsolationCheck(probes, startup),
             new AiSampleValuesCheck(probes),
             new GovernanceControlsCheck(probes),
+            new AuditStrictCheck(probes),
+            new ProvenanceStrictCheck(probes),
             new VersionSkewCheck(serverVersion, clients),
             new EnvSeenCheck(probes),
             new AiModelReachableCheck(probes, slots)
@@ -960,6 +1037,19 @@ object DoctorService {
                 "USE_AGENT_POLICY" -> env.useAgentPolicy
             )
         }
+
+        override def auditLogStrict(): Boolean = DatrisEnvironment.values.auditLogStrict
+
+        override def auditAcceptingWrites(): Boolean = ai.datris.audit.AuditLog.acceptingWrites
+
+        override def provenanceStrict(): Boolean = DatrisEnvironment.values.provenanceStrict
+
+        override def xmlStampingPipelines(): List[String] =
+            PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName)
+                .filter { c =>
+                    ProvenanceStamper.enabled(c) && c.source != null && c.source.fileAttributes != null && c.source.fileAttributes.xmlAttributes != null
+                }
+                .map(_.name)
 
         override def pipelinesWithNonIdentifierFields(): List[String] =
             PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName)

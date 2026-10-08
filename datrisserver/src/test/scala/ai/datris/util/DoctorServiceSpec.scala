@@ -476,7 +476,17 @@ class DoctorServiceSpec extends AnyFunSuite {
         // codegen-script-isolation: registered and startup-safe; position not pinned.
         assert(full.checks.map(_.id).contains("codegen.isolation"), full.checks.map(_.id).toString)
         assert(quickIds.contains("codegen.isolation"), "startup-safe: " + quickIds)
-        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans", "tap.secret_scope", "ai.sample_values", "codegen.isolation")) == Seq(
+        // strict-evidence-mode: registered and startup-safe; position not pinned.
+        assert(quickIds.contains("audit.strict") && quickIds.contains("provenance.strict"), "startup-safe: " + quickIds)
+        assert(full.checks.map(_.id).filterNot(Set(
+            "staging.area",
+            "staging.orphans",
+            "tap.secret_scope",
+            "ai.sample_values",
+            "codegen.isolation",
+            "audit.strict",
+            "provenance.strict"
+        )) == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
             "jdbc.mssql_driver",
@@ -853,5 +863,83 @@ class DoctorServiceSpec extends AnyFunSuite {
         // Anything other than "not up yet" (old image, token, disk) stays an error at boot.
         val old = new FakeProbes(codegenEnabled = true, codegenHealth = Left("CodeGen runner ... does not support /execute-file (404)"))
         assert(new CodeGenIsolationCheck(old, startup = true).run().status == "error")
+    }
+
+    // audit.strict / provenance.strict (plans/stories/strict-evidence-mode.md)
+    //
+    // Pinned seam (does not exist on main at 3de8be3; the implementation adds it):
+    //   trait Probes {
+    //       def auditLogStrict(): Boolean = false          // DatrisEnvironment.values.auditLogStrict (AUDIT_LOG_STRICT)
+    //       def auditAcceptingWrites(): Boolean = true     // AuditLog.acceptingWrites
+    //       def provenanceStrict(): Boolean = false        // DatrisEnvironment.values.provenanceStrict (PROVENANCE_STRICT)
+    //       /** Names of pipelines with provenance.stamp on and an XML source.
+    //         * Throws when the pipeline configs cannot be read. */
+    //       def xmlStampingPipelines(): List[String] = Nil
+    //   }
+    // USE_AUDIT_LOG is read from the existing governanceControls() map.
+    // Check ids "audit.strict" and "provenance.strict", both startupSafe,
+    // registered in DoctorService.checks (found by id here).
+    // provenance.strict never errors.
+
+    private def strictCheck(id: String, p: Probes): Check = {
+        val all = DoctorService.checks(p, slots, "1.28.2", Map.empty)
+        all.find(_.id == id).getOrElse(fail("no " + id + " check in " + all.map(_.id)))
+    }
+
+    test("audit.strict warns when strict is set and the audit log is off") {
+        val off = new FakeProbes(governance =
+            Map(
+                "USE_USER_AUTH" -> true,
+                "USE_API_KEYS" -> true,
+                "USE_AUDIT_LOG" -> false,
+                "USE_AGENT_POLICY" -> true
+            )
+        ) {
+            override def auditLogStrict(): Boolean = true
+        }
+        val c = strictCheck("audit.strict", off)
+        assert(c.startupSafe)
+        val r = c.run()
+        assert(r.status == "warn", r.detail)
+        assert((r.detail + " " + r.remediation).contains("USE_AUDIT_LOG"), r.detail + " | " + r.remediation)
+        assert((r.detail + " " + r.remediation).contains("AUDIT_LOG_STRICT"), r.detail + " | " + r.remediation)
+
+        // Effective mode is ok: strict on with the log on, or strict off.
+        val on = new FakeProbes() { override def auditLogStrict(): Boolean = true }
+        assert(strictCheck("audit.strict", on).run().status == "ok")
+        assert(strictCheck("audit.strict", new FakeProbes()).run().status == "ok")
+        // Strict, on, and the queue is past the high-water mark: error.
+        val full = new FakeProbes() {
+            override def auditLogStrict(): Boolean = true
+            override def auditAcceptingWrites(): Boolean = false
+        }
+        assert(strictCheck("audit.strict", full).run().status == "error")
+    }
+
+    test("provenance.strict warns and names stamping pipelines with an XML source as exempt") {
+        val p = new FakeProbes() {
+            override def provenanceStrict(): Boolean = true
+            override def xmlStampingPipelines(): List[String] = List("xml-orders", "xml-feed")
+        }
+        val c = strictCheck("provenance.strict", p)
+        assert(c.startupSafe)
+        val r = c.run()
+        assert(r.status == "warn", r.detail)
+        assert(r.detail.contains("xml-orders") && r.detail.contains("xml-feed"), r.detail)
+        assert(r.detail.toLowerCase.contains("exempt"), r.detail)
+        val failing = new FakeProbes() {
+            override def provenanceStrict(): Boolean = true
+            override def xmlStampingPipelines(): List[String] = throw new RuntimeException("mongo down")
+        }
+        assert(strictCheck("provenance.strict", failing).run().status != "error", "provenance.strict never errors")
+    }
+
+    test("provenance.strict is ok when strict is on and no stamping pipeline has an XML source") {
+        val p = new FakeProbes() { override def provenanceStrict(): Boolean = true }
+        val r = strictCheck("provenance.strict", p).run()
+        assert(r.status == "ok", r.detail)
+        // Strict off: ok whatever the pipelines are (the XML exemption only matters under strict).
+        val offWithXml = new FakeProbes() { override def xmlStampingPipelines(): List[String] = List("xml-orders") }
+        assert(strictCheck("provenance.strict", offWithXml).run().status == "ok")
     }
 }

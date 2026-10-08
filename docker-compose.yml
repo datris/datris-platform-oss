@@ -276,6 +276,9 @@ services:
     image: datrisai/datris-server:latest
     #build: .  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris
+    # Time for a graceful stop: Spring shutdown plus the audit log flush
+    # (bounded to 10 s) before Docker kills the JVM.
+    stop_grace_period: 30s
     ports:
       - "8080:8080"
     # No depends_on for postgres/tei: both are optional (replicas-gated above)
@@ -312,6 +315,14 @@ services:
       USEAUDITLOG: "${USE_AUDIT_LOG:-false}"
       AUDITLOG_RETENTIONDAYS: "${AUDIT_LOG_RETENTION_DAYS:-90}"
       AUDITLOG_LOGREADS: "${AUDIT_LOG_READS:-false}"
+      # Strict evidence mode (off by default = best effort, losses counted).
+      # AUDITLOG_STRICT maps to auditLog.strict: with the audit log on, an audited
+      # request gets 503 instead of an entry being dropped when the config store
+      # cannot keep up. PROVENANCE_STRICT maps to provenance.strict: a pipeline
+      # with provenance stamping on fails its run instead of loading unstamped
+      # rows (XML sources are exempt and load unstamped).
+      AUDITLOG_STRICT: "${AUDIT_LOG_STRICT:-false}"
+      PROVENANCE_STRICT: "${PROVENANCE_STRICT:-false}"
       # Agent policy: lets an admin mark agent actions auto / approve / deny and
       # approve queued ones under Activity → Approvals. Off by default; when on
       # with no policy saved, behavior is unchanged until a rule is set.

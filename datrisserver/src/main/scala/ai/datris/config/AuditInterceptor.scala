@@ -39,8 +39,37 @@ class AuditInterceptor extends HandlerInterceptor {
     private val PathVarNames = Seq("name", "username", "label")
 
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
-        if (AuditLog.enabled)
+        if (AuditLog.enabled) {
+            // Strict evidence mode: an audited request whose entry the audit
+            // log cannot take is refused before the handler runs, so nothing
+            // happens that would go unrecorded. Default mode never refuses.
+            if (AuditLog.strict && !AuditLog.acceptingWrites) {
+                // The audit-log status read is never gated: it is how the UI
+                // banner and scripts see `acceptingWrites: false`. While the
+                // gate is closed it is not recorded either (it changes nothing).
+                if (AuditInterceptor.isStatusRead(request)) {
+                    request.setAttribute(AuditLog.RecordedAttr, java.lang.Boolean.TRUE)
+                    return true
+                }
+                val logReads = Option(DatrisEnvironment.values).exists(_.auditLogLogReads)
+                if (AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads).isDefined) {
+                    logger.warn("Refusing " + request.getMethod + " " + request.getRequestURI + ": audit log not accepting entries (AUDIT_LOG_STRICT)")
+                    val body = new JsonObject()
+                    body.addProperty("error", "audit_log_unavailable")
+                    body.addProperty(
+                        "message",
+                        "The audit log cannot record this request right now and AUDIT_LOG_STRICT is on, so it was not performed. Retry shortly."
+                    )
+                    response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE)
+                    response.setHeader("Retry-After", AuditInterceptor.RetryAfterSeconds)
+                    response.setContentType("application/json")
+                    response.getWriter.write(body.toString)
+                    response.getWriter.flush()
+                    return false
+                }
+            }
             request.setAttribute(StartAttr, java.lang.Long.valueOf(System.nanoTime()))
+        }
         true
     }
 
@@ -142,5 +171,19 @@ class AuditInterceptor extends HandlerInterceptor {
         } catch {
             case _: Exception => None
         }
+    }
+}
+
+object AuditInterceptor {
+
+    /** Retry-After on a strict-mode refusal (seconds). */
+    val RetryAfterSeconds = "5"
+
+    val StatusPath = "/api/v1/audit-log/status"
+
+    /** `GET /api/v1/audit-log/status`, exempt from the strict gate. */
+    def isStatusRead(request: HttpServletRequest): Boolean = {
+        val uri = request.getRequestURI
+        "GET".equalsIgnoreCase(request.getMethod) && uri != null && (uri == StatusPath || uri == StatusPath + "/")
     }
 }

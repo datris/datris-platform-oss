@@ -1,9 +1,9 @@
 ---
 title: "Quick Start"
-description: "Fifteen minutes from install to a governed pipeline: an agent builds a tap, a person approves the run, and every landed row cites where it came from"
+description: "Fifteen minutes from install to a governed pipeline: an agent builds a tap, a person approves the run, and with provenance stamping on every landed row cites where it came from"
 ---
 
-This walkthrough ends where Datris is different: an agent lands data from a public source, but only after a person approves the run, and every row it lands can be traced back to the run, the script, and the source. You will need Docker, one AI provider key (Anthropic, OpenAI, or Grok), and an MCP client — Claude Desktop, Claude Code, or Cursor.
+This walkthrough ends where Datris is different: an agent lands data from a public source, but only after a person approves the run, and with provenance stamping on every row it lands can be traced back to the run, the script, and the source. You will need Docker, one AI provider key (Anthropic, OpenAI, or Grok), and an MCP client — Claude Desktop, Claude Code, or Cursor.
 
 <Tip>
 Want the plain REST version first — register a pipeline, upload a CSV, query it? That walkthrough is on [File Upload](/ingestion/file-upload#end-to-end-example-csv-to-postgresql).
@@ -99,7 +99,7 @@ Watch the Agent Monitor: `create_pipeline`, `create_tap`, `test_tap`. The agent 
 
 ## 7. Turn on provenance stamping
 
-In the UI: **Catalog → `earthquakes` → Edit → Destination step → "Stamp provenance on landed data"** → save. From the next run on, every row this pipeline lands carries six extra columns naming the run, the time, the config version, the tap run, the script commit, and the source. (Do this before the run rather than after — an approval executes exactly what was proposed, and a pipeline changed underneath a pending approval is refused as stale.)
+In the UI: **Catalog → `earthquakes` → Edit → Destination step → "Stamp provenance on landed data"** → save. From the next run on, with stamping on, every row this pipeline lands carries six extra columns naming the run, the time, the config version, the tap run, the script commit, and the source. (Do this before the run rather than after — an approval executes exactly what was proposed, and a pipeline changed underneath a pending approval is refused as stale.)
 
 ## 8. Run it — and watch it wait for you
 
@@ -133,7 +133,7 @@ curl -X POST http://localhost:8080/api/v1/query/postgres \
 
 - An agent with a **scoped key** could build and test, but its run was **gated by policy** — enforced by the platform, not by a prompt.
 - A **person approved** exactly what was proposed, and the platform executed it on their behalf.
-- Every landed row carries **provenance**, and the agent can resolve it back to the run, script, and source.
+- With stamping on, every landed row carries **provenance** ([strict mode](/provenance#strict-mode) fails a run that cannot be stamped), and the agent can resolve it back to the run, script, and source.
 - The **audit log** holds the request, the decision, and the result.
 
 ## Next steps

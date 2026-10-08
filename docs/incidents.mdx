@@ -53,7 +53,7 @@ During diagnosis it holds **read-only tools** — it cannot change anything whil
 
 **Verification is mandatory**: after acting, the tap must complete a real run healthily, and when it feeds a pipeline the load must finish without error. If verification fails, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown.
 
-Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so the [audit log](/audit-log) is the incident's complete ledger — and revoking that key stops the agent entirely, independent of any flag.
+Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so with the audit log on, the [audit log](/audit-log) is the incident's complete ledger ([strict mode](/audit-log#strict-mode) guarantees no entry is dropped) — and revoking that key stops the agent entirely, independent of any flag.
 
 ## Limits
 
