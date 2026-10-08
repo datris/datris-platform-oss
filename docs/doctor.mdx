@@ -42,7 +42,7 @@ The server-side report is also available at `GET /api/v1/doctor` for scripts. It
 | `volumes.dangling` | A dangling anonymous volume holds a recognizable Postgres / MongoDB / MinIO data directory — data left behind by a container recreate | Inspect before pruning; copy into the named volume to recover |
 | `vault.hcl_drift` | `docker/vault.hcl` changed after the vault container started (Vault reads its config only at start) | `docker compose up -d --force-recreate vault` |
 | `env.not_forwarded` | `.env` sets a key that no service in the compose file references, so the value never reaches a container | Add it to the service's `environment:` block |
-| `env.container_drift` | A datris container was created with a different `.env` than the current one (`restart` does not reload env). Error when a credential-looking key differs | `docker compose up -d --force-recreate --no-deps <service>` |
+| `env.container_drift` | A datris container (`datris`, `mcp-server`, `datris-tap-runner` or `datris-codegen-runner`) was created with a different `.env` than the current one (`restart` does not reload env). Error when a credential-looking key differs | `docker compose up -d --force-recreate --no-deps <service>` |
 | `compose.orphans` | Containers from a previous compose file are still present and may hold ports | `docker compose up -d --remove-orphans` |
 | `build.stale_jar` | Building from source, and the running server's git commit or build time is behind the checkout | Rebuild with `--no-cache` |
 | `mcp.reachable` | The MCP server's SSE endpoint doesn't answer within 3 s | Check the `mcp-server` container |

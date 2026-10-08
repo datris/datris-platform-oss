@@ -167,6 +167,32 @@ def test_env_container_drift_non_credential_is_warn_and_match_is_ok(tmp_path):
     assert doc.check_env_container_drift(r)["status"] == "ok"
 
 
+def test_env_container_drift_covers_the_codegen_runner(tmp_path):
+    """datris-codegen-runner shares the tap runner's token: a stale TAP_RUNNER_TOKEN
+    there is a credential drift like anywhere else."""
+    assert "datris-codegen-runner" in doc.ENV_DRIFT_SERVICES
+    config = json.dumps({"services": {"datris-codegen-runner": {
+        "container_name": "datris-codegen-runner",
+        "environment": {"TAP_RUNNER_TOKEN": "new-token", "CODEGEN_SCRATCH_DIR": "/scratch"}}}})
+    r = FakeRunner({
+        "docker compose config --format json": config,
+        "docker inspect -f {{json .Config.Env}} datris-codegen-runner":
+            json.dumps(["TAP_RUNNER_TOKEN=old-token", "CODEGEN_SCRATCH_DIR=/scratch"]),
+    }, str(tmp_path))
+    res = doc.check_env_container_drift(r)
+    assert res["status"] == "error"
+    assert "datris-codegen-runner" in res["detail"] and "TAP_RUNNER_TOKEN" in res["detail"]
+    assert "force-recreate --no-deps datris-codegen-runner" in res["remediation"]
+    assert "old-token" not in json.dumps(res) and "new-token" not in json.dumps(res)
+    r = FakeRunner({
+        "docker compose config --format json": config,
+        "docker inspect -f {{json .Config.Env}} datris-codegen-runner":
+            json.dumps(["TAP_RUNNER_TOKEN=new-token", "CODEGEN_SCRATCH_DIR=/scratch"]),
+    }, str(tmp_path))
+    res = doc.check_env_container_drift(r)
+    assert res["status"] == "ok" and "datris-codegen-runner" in res["detail"]
+
+
 def test_compose_orphans_handles_both_ps_json_shapes(tmp_path):
     for ps in (
         json.dumps([{"Service": "datris"}, {"Service": "ollama"}]),

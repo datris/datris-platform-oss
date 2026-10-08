@@ -43,7 +43,7 @@ STATEFUL_CONTAINERS = list(STATEFUL_DATA_MOUNTS)
 # Services whose container env is compared with the current compose rendering
 # (service name -> default container_name). `restart` does not reload env; a
 # rotated MONGO_PASSWORD kept failing auth every minute until recreate.
-ENV_DRIFT_SERVICES = ["datris", "mcp-server", "datris-tap-runner"]
+ENV_DRIFT_SERVICES = ["datris", "mcp-server", "datris-tap-runner", "datris-codegen-runner"]
 
 # Vault slots checked from the host before an upgrade (server may be down).
 AI_SLOT_SECRETS = [("ai-primary", "oss/ai-primary"), ("codegen", "oss/codegen"), ("embedding", "oss/embedding")]
