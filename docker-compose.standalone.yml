@@ -81,6 +81,11 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      # The healthcheck runs `mc ready local`. Define the `local` alias through
+      # the environment so it does not depend on the mc config file in the
+      # container's writable layer, which an `mc alias` run inside the
+      # container can rewrite and leave the healthcheck failing forever.
+      MC_HOST_local: http://minioadmin:minioadmin@127.0.0.1:9000
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
