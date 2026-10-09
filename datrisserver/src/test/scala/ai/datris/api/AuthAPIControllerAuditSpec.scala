@@ -199,7 +199,7 @@ class AuthAPIControllerAuditSpec extends AnyFunSuite with BeforeAndAfterEach {
         UserContext.set(adminUser)
         val r = req(Probe)
         val resp = new AuthAPIController().patchUser(Probe, body, r)
-        (resp.getStatusCodeValue, r)
+        (resp.getStatusCode.value, r)
     }
 
     private def userRows: Seq[AuditEntry] = captured.filter(_.category == "user").toSeq

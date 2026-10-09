@@ -98,7 +98,7 @@ class VersionAPIControllerSpec extends AnyFunSuite with BeforeAndAfterEach {
         DatrisEnvironment.init(e)
         TenantContext.set(e)
         val response = new VersionAPIController().getVersion(null)
-        assert(response.getStatusCodeValue == 200, response.getBody)
+        assert(response.getStatusCode.value == 200, response.getBody)
         val parsed = new Gson().fromJson(response.getBody, classOf[java.util.Map[String, String]])
         parsed.asScala.toMap
     }
