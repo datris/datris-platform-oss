@@ -148,11 +148,14 @@ lazy val datrisserver = project
             "io.airlift" % "aircompressor" % "2.0.3",
             "org.lz4" % "lz4-java" % "1.8.1",
             // kafka-clients 3.9.x switched lz4 to the at.yawk.lz4 fork (the
-            // org.lz4 pin above still covers Spark). 1.11.1 patches the native
-            // XXHash JVM crash on invalid byte ranges. Both lz4 jars ship the
-            // same net.jpountz classes; the assembly MergeStrategy.first
-            // dedupe handles the overlap, as it already did before this bump.
-            "at.yawk.lz4" % "lz4-java" % "1.11.1",
+            // org.lz4 pin above still covers Spark). 1.11.1 patched the native
+            // XXHash JVM crash on invalid byte ranges; 1.11.4 adds the
+            // unvalidated-length allocation, empty-block recursion, per-frame
+            // buffer reallocation and shared-tmpdir native extraction fixes.
+            // Both lz4 jars ship the same net.jpountz classes; the assembly
+            // MergeStrategy.first dedupe handles the overlap, as it already
+            // did before this bump.
+            "at.yawk.lz4" % "lz4-java" % "1.11.4",
             "org.apache.ivy" % "ivy" % "2.5.2"
         ),
         // gitHeadCommit + builtAtMillis let /api/v1/version say WHICH jar is
