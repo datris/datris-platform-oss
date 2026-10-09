@@ -3,6 +3,19 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.47.0" description="October 9, 2026">
+  **Single sign-on through your identity provider, and security updates.**
+
+  - **Sign in with SSO.** With user authentication on, people can sign in through your identity provider (Okta, Microsoft Entra ID, Google Workspace, Keycloak, Auth0, or any OpenID Connect provider) from a new **Sign in with SSO** button on the login screen. OpenID Connect authorization code flow with PKCE, so MFA, password rules and lockout come from your provider. SSO users are ordinary Datris users with one of the three roles; sessions, role checks, the Users screen and the audit log work as for password users. API keys, the CLI and MCP clients are unchanged. See [Single sign-on (OIDC)](/user-auth#single-sign-on-oidc).
+  - **You decide who gets in.** Users already on **Configuration → Users** sign in with their role; anyone else is refused unless `OIDC_DEFAULT_ROLE` is `viewer` or `editor`. The built-in `admin` account is never reachable through SSO. The first sign-in binds the user to the provider's subject id; a different identity with the same username is refused.
+  - **Never in the way of password login.** A wrong or incomplete setting switches SSO off with one ERROR line and the server starts as usual; an unreachable provider fails the SSO button with a clear message while password login keeps working, and SSO recovers on its own.
+  - **Audited.** Every SSO sign-in and refusal is an `auth` / `login` entry with `method: oidc`.
+  - **Security updates.** Refreshed server and UI build dependencies to clear the open vulnerability reports. No behaviour change.
+  - **MinIO health check** no longer depends on a config file inside the container.
+
+  **Upgrading:** refresh the compose file (`git pull` or re-download `docker-compose.standalone.yml`), then `docker compose pull && docker compose up -d`; the server and UI images changed. SSO is off by default. To turn it on, set `USE_USER_AUTH=true`, `OIDC_ENABLED=true`, `OIDC_ISSUER`, `OIDC_CLIENT_ID` and `OIDC_REDIRECT_URI`, put the client secret in Vault under `oss/oidc` (key `clientSecret`), and recreate the server. A secret named `oidc` is now platform-managed (taps and pipelines cannot reference it). The version endpoint gains `oidcEnabled`. SSO is single-tenant; no SAML or provider group-to-role mapping yet.
+</Update>
+
 <Update label="v1.46.0" description="October 8, 2026">
   **Strict evidence mode, a complete record of password changes, a data-flow matrix, and graceful shutdown.**
 
