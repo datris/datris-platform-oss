@@ -81,6 +81,11 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      # The healthcheck runs `mc ready local`. Define the `local` alias through
+      # the environment so it does not depend on the mc config file in the
+      # container's writable layer, which an `mc alias` run inside the
+      # container can rewrite and leave the healthcheck failing forever.
+      MC_HOST_local: http://minioadmin:minioadmin@127.0.0.1:9000
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
@@ -326,6 +331,18 @@ services:
       # mode without rebuilding the JAR. Spring's relaxed binding maps these env
       # names onto useUserAuth / useApiKeys / multiTenant in application.yaml.
       USEUSERAUTH: "${USE_USER_AUTH:-false}"
+      # OIDC single sign-on ("Sign in with SSO" on the login page). Off by
+      # default; only takes effect with USE_USER_AUTH=true. OIDC_* maps to
+      # oidc.* in application.yaml (OIDC_CLIENTID → oidc.clientId, ...). The
+      # client secret is never set here: it lives in Vault (oss/oidc, key
+      # clientSecret). See docs/user-auth.mdx, "Single sign-on (OIDC)".
+      OIDC_ENABLED: "${OIDC_ENABLED:-false}"
+      OIDC_ISSUER: "${OIDC_ISSUER:-}"
+      OIDC_CLIENTID: "${OIDC_CLIENT_ID:-}"
+      OIDC_REDIRECTURI: "${OIDC_REDIRECT_URI:-}"
+      OIDC_SCOPES: "${OIDC_SCOPES:-openid email profile}"
+      OIDC_USERNAMECLAIM: "${OIDC_USERNAME_CLAIM:-email}"
+      OIDC_DEFAULTROLE: "${OIDC_DEFAULT_ROLE:-}"
       USEAPIKEYS: "${USE_API_KEYS:-false}"
       MULTITENANT: "${MULTI_TENANT:-false}"
       # Audit log: durable record of who created / changed / ran / deleted what,

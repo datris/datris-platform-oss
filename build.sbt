@@ -135,8 +135,9 @@ lazy val datrisserver = project
             "org.apache.logging.log4j" % "log4j-slf4j2-impl" % "2.25.5",
             // nimbus-jose-jwt (transitive via weaviate's oauth2-oidc-sdk, same
             // tree as the json-smart override below): DoS on deeply nested
-            // JSON, patched in 10.0.2. Only exercised when a Weaviate
-            // destination authenticates via OIDC.
+            // JSON, patched in 10.0.2. OIDC single sign-on (ai.datris.auth.
+            // OidcLogin) now uses it directly too: the direct dependency in
+            // allDependencies and this override move together.
             "com.nimbusds" % "nimbus-jose-jwt" % "10.0.2",
             // Single-artifact CVE patch bumps over stale transitives:
             // beanutils RCE/deserialization (everit), json-smart recursion DoS
@@ -216,6 +217,10 @@ lazy val allDependencies = Seq(
 
     // HTTP
     "org.apache.httpcomponents" % "httpclient" % "4.5.14",
+
+    // OIDC single sign-on: JWKS + ID-token validation. Same version as the
+    // dependencyOverrides pin above; the two move together.
+    "com.nimbusds" % "nimbus-jose-jwt" % "10.0.2",
 
     // Google
     "com.google.guava" % "guava" % "33.0.0-jre",

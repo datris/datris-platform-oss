@@ -34,6 +34,10 @@ object AuditClassifier {
       * controller method is missing from both this table and CapabilityRoutes. */
     private val supplemental: Seq[Supplemental] = Seq(
         Supplemental("POST", "/api/v1/auth/login", AuditRoute("auth", "login", "user")),
+        // OIDC single sign-on: the provider sends the browser back with a GET.
+        // Recorded with logReads off because it is a sign-in, not a read; the
+        // controller records success and refusal explicitly with the username.
+        Supplemental("GET", "/api/v1/auth/oidc/callback", AuditRoute("auth", "login", "user")),
         Supplemental("POST", "/api/v1/auth/logout", AuditRoute("auth", "logout", "user")),
         Supplemental("POST", "/api/v1/auth/change-password", AuditRoute("auth", "change-password", "user")),
         Supplemental("POST", "/api/v1/auth/users", AuditRoute("user", "create", "user")),

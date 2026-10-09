@@ -33,7 +33,7 @@ object UserStore {
     }
 
     /** Create a user. Throws if the username already exists. */
-    def create(username: String, passwordHash: String, role: String): User = {
+    def create(username: String, passwordHash: String, role: String, oidcSubject: String = null): User = {
         val u = normalize(username)
         if (find(u).isDefined)
             throw new IllegalArgumentException("User '" + u + "' already exists")
@@ -44,7 +44,8 @@ object UserStore {
             role = role,
             createdAt = now,
             updatedAt = now,
-            lastLoginAt = null
+            lastLoginAt = null,
+            oidcSubject = oidcSubject
         )
         db.insertJSON(tableName, gson.toJson(user))
         user
@@ -77,6 +78,14 @@ object UserStore {
             val updated = current.copy(lastLoginAt = Instant.now().toString, updatedAt = Instant.now().toString)
             db.upsertJSON(tableName, java.util.Collections.singletonList("username"), gson.toJson(updated))
         }
+    }
+
+    /** Bind the identity provider's `sub` to the user (first SSO sign-in). */
+    def setOidcSubject(username: String, subject: String): Unit = {
+        val u = normalize(username)
+        val current = find(u).getOrElse(throw new IllegalArgumentException("User '" + u + "' not found"))
+        val updated = current.copy(oidcSubject = subject, updatedAt = Instant.now().toString)
+        db.upsertJSON(tableName, java.util.Collections.singletonList("username"), gson.toJson(updated))
     }
 
     def delete(username: String): Unit = {

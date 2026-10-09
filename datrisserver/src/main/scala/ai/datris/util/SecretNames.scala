@@ -40,8 +40,9 @@ object SecretNames {
     /** Secrets the server issues and owns that nothing user-authored (a tap's
       * secretName, a pipeline's credentials or connection secret) may
       * reference: their values would be handed to a script or a destination
-      * with no audit. The field-protection keys and the API-key stores. */
-    val ServerManaged: Set[String] = Set("field-protection", "api-keys", "api-key-metadata", "ui-api-key")
+      * with no audit. The field-protection keys, the API-key stores and the
+      * OIDC single sign-on client secret. */
+    val ServerManaged: Set[String] = Set("field-protection", "api-keys", "api-key-metadata", "ui-api-key", "oidc")
 
     /** True when `name` (a bare name or an `<env>/<name>` path; trimmed,
       * case-insensitive) is one of [[ServerManaged]]. */

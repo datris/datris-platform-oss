@@ -49,6 +49,9 @@ class VersionAPIController {
                 "multiTenant" -> DatrisEnvironment.current.multiTenant.toString,
                 "hosted" -> DatrisEnvironment.current.hosted.toString,
                 "useUserAuth" -> DatrisEnvironment.values.useUserAuth.toString,
+                // OIDC single sign-on: "true" only when it is effectively on
+                // (user auth on and the startup validation passed).
+                "oidcEnabled" -> (DatrisEnvironment.values.useUserAuth && DatrisEnvironment.values.oidcEnabled).toString,
                 "useApiKeys" -> DatrisEnvironment.values.useApiKeys.toString,
                 "useAuditLog" -> DatrisEnvironment.values.useAuditLog.toString,
                 "useAgentPolicy" -> DatrisEnvironment.values.useAgentPolicy.toString,

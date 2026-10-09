@@ -46,7 +46,8 @@ class VersionAPIControllerSpec extends AnyFunSuite with BeforeAndAfterEach {
         scriptTimeout: Int = 300,
         scriptSet: Boolean = false,
         runTimeout: Int = 3600,
-        runSet: Boolean = false
+        runSet: Boolean = false,
+        useUserAuth: Boolean = false
     ): DatrisEnvironment = DatrisEnvironment(
         initialized = true,
         environment = "test",
@@ -80,7 +81,8 @@ class VersionAPIControllerSpec extends AnyFunSuite with BeforeAndAfterEach {
         tapScriptTimeoutSecondsSet = scriptSet,
         tapRunTimeoutSeconds = runTimeout,
         tapRunTimeoutSecondsSet = runSet,
-        pipelineMaxPayloadMB = payloadMB
+        pipelineMaxPayloadMB = payloadMB,
+        useUserAuth = useUserAuth
     )
 
     private var savedValues: DatrisEnvironment = _
@@ -140,5 +142,28 @@ class VersionAPIControllerSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(json.contains("useTapRunner"))
         assert(json.contains("postgresDatabase"))
         assert(json.contains("mongodbDatabase"))
+    }
+
+    // Story: OIDC single sign-on 1 (plans/stories/oidc-sso-login.md). One extra
+    // string field, "true" only when OIDC is effectively on. Pinned:
+    // DatrisEnvironment gains `oidcEnabled: Boolean = false` (plus the other
+    // oidc* fields, all defaulted) next to `useUserAuth`.
+    test("oidcEnabled is false by default and when useUserAuth is off") {
+        val byDefault = body(env())
+        assert(byDefault.get("oidcEnabled").contains("false"), byDefault)
+
+        val byDefaultWithUserAuth = body(env(useUserAuth = true))
+        assert(byDefaultWithUserAuth.get("oidcEnabled").contains("false"), byDefaultWithUserAuth)
+
+        // OIDC_ENABLED=true with USE_USER_AUTH=false does nothing.
+        val oidcWithoutUserAuth = env(useUserAuth = false).copy(
+            oidcEnabled = true,
+            oidcIssuer = "http://host.docker.internal:8081/realms/datris",
+            oidcClientId = "datris",
+            oidcRedirectUri = "http://localhost:4200/api/v1/auth/oidc/callback"
+        )
+        val off = body(oidcWithoutUserAuth)
+        assert(off.get("oidcEnabled").contains("false"), off)
+        assert(off.get("useUserAuth").contains("false"), off)
     }
 }
