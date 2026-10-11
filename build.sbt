@@ -30,7 +30,11 @@ lazy val datrisserver = project
         // artifacts together to 2.18.11 keeps the pair consistent and clears the
         // jackson-core/databind CVEs (2.18.11 closes the four core/databind advisories
         // published 2026-10-02 on top of the 2.18.10 and 2.18.9 @JsonView/@JsonIgnoreProperties
-        // fixes). Bump all four together or none.
+        // fixes). Bump all four together or none. Jackson 3 (tools.jackson) is
+        // deliberately kept off the classpath (spring-boot-starter-jackson is
+        // excluded below): Spark, jackson-module-scala and logstash-logback-encoder
+        // all need Jackson 2, and Boot 4's Jackson 2 HTTP converters must stay the
+        // only ones that deserialise @RequestBody payloads.
         dependencyOverrides ++= Seq(
             "com.fasterxml.jackson.core" % "jackson-core" % "2.18.11",
             "com.fasterxml.jackson.core" % "jackson-annotations" % "2.18.11",
@@ -46,17 +50,17 @@ lazy val datrisserver = project
             "org.apache.hadoop" % "hadoop-client-api" % "3.3.4",
             "org.apache.hadoop" % "hadoop-client-runtime" % "3.3.4",
             // Embedded Tomcat (Spring Boot's servlet container — the process
-            // serving the API). Pinned ahead of what Boot 3.5.16 manages so the
-            // override acts as an explicit floor: a Boot downgrade can't
+            // serving the API). Pinned ahead of what Boot 4.0.8 manages
+            // (11.0.24) so the override acts as an explicit floor: a Boot downgrade can't
             // silently reintroduce the critical CVEs fixed here (partial-PUT
             // RCE, HTTP/2 header validation, digest-auth bypass and replay,
             // security-constraint / FORM-auth authorization bypasses —
             // GHSA-9xv2-5v5q-p794, GHSA-gcx9-497g-6cp6, GHSA-h3x4-894j-xpx5).
             // All three tomcat-embed-* artifacts MUST move together — a version
             // mismatch between them makes the embedded server fail to start.
-            "org.apache.tomcat.embed" % "tomcat-embed-core" % "10.1.59",
-            "org.apache.tomcat.embed" % "tomcat-embed-el" % "10.1.59",
-            "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "10.1.59",
+            "org.apache.tomcat.embed" % "tomcat-embed-core" % "11.0.26",
+            "org.apache.tomcat.embed" % "tomcat-embed-el" % "11.0.26",
+            "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "11.0.26",
             // CVE patch bumps over what Spark 3.5.x pulls transitively. Avro
             // 1.11.4 is a patch release over Spark's 1.11.2 (CVE-2024-47561,
             // code execution reading untrusted Avro). ZooKeeper 3.8.6 replaces
@@ -256,24 +260,29 @@ lazy val allDependencies = Seq(
     // Logging
     "org.slf4j" % "slf4j-api" % "2.0.16",
 
-    // Spring Boot. 3.5.x because the 3.2.x/6.1.x lines are past OSS EOL —
-    // their CVE fixes are commercial-only. 3.5.16 manages Spring Framework
-    // 6.2.19, which carries the OSS fixes for the 2025/2026 Framework CVEs
-    // (spring-core auth flaw, webmvc XSS/DoS, SpEL DoS).
-    "org.springframework.boot" % "spring-boot-starter" % "3.5.16",
-    "org.springframework.boot" % "spring-boot-starter-web" % "3.5.16",
+    // Spring Boot. 4.0.x because the Framework 6.2 / Boot 3.5 lines are past
+    // OSS support. 4.0.8 manages Spring Framework 7.0.9, which carries the OSS
+    // fixes for the spring-webmvc advisories GHSA-j9f9-w8pj-32f8 (SSE stream
+    // corruption with view fragments) and GHSA-pc63-qcmh-9cmg (XsltView SSRF/RCE).
+    // spring-boot-starter-jackson is excluded so Jackson 3 never reaches the
+    // classpath; spring-boot-jackson2 keeps the Jackson 2 ObjectMapper
+    // (ParameterNamesModule) and HTTP converters (SpringBootVersionSpec guards this).
+    "org.springframework.boot" % "spring-boot-starter" % "4.0.8",
+    ("org.springframework.boot" % "spring-boot-starter-webmvc" % "4.0.8")
+        .exclude("org.springframework.boot", "spring-boot-starter-jackson"),
+    "org.springframework.boot" % "spring-boot-jackson2" % "4.0.8",
     // Actuator + Prometheus metrics (/actuator/prometheus). The registry version
-    // must match what Boot 3.5.16 manages (micrometer 1.15.12) — sbt has no BOM.
-    "org.springframework.boot" % "spring-boot-starter-actuator" % "3.5.16",
-    "io.micrometer" % "micrometer-registry-prometheus" % "1.15.12",
+    // must match what Boot 4.0.8 manages (micrometer 1.16.7) — sbt has no BOM.
+    "org.springframework.boot" % "spring-boot-starter-actuator" % "4.0.8",
+    "io.micrometer" % "micrometer-registry-prometheus" % "1.16.7",
     // JSON console logs when the production profile is active (see logback-spring.xml).
+    // Stays on 8.1: 9.0 depends on Jackson 3.
     "net.logstash.logback" % "logstash-logback-encoder" % "8.1",
 
     // Password hashing for UI user auth (BCrypt). The crypto module is
-    // standalone (no spring-framework deps), so it can run ahead of the Boot
-    // version: 6.2.x OSS ended at 6.2.9 (the 6.2.10 CVE fix is
-    // commercial-only), so the password-length fix comes from the 6.4 line.
-    "org.springframework.security" % "spring-security-crypto" % "6.4.13",
+    // standalone (no spring-framework deps); 7.0.7 is the version Boot 4.0.8
+    // manages.
+    "org.springframework.security" % "spring-security-crypto" % "7.0.7",
 
     // Spark
     "org.apache.spark" %% "spark-core" % "3.5.9",
