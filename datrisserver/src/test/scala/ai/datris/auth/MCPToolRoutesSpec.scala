@@ -33,8 +33,25 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 79)
+        assert(MCPToolRoutes.allToolNames.size == 81)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
+    }
+
+    // Story: Catalog backup and restore (plans/stories/catalog-backup-restore.md).
+    // export is a pipeline read, restore a pipeline create; both fail closed for
+    // keys without the mapped capability.
+    test("export_catalog and restore_catalog are mapped to the catalog export/restore routes") {
+        val tools = MCPToolRoutes.tools.toMap
+        assert(tools.get("export_catalog") == Some(MCPToolRoutes.Mapped("GET", "/api/v1/catalog/example/export")))
+        assert(tools.get("restore_catalog") == Some(MCPToolRoutes.Mapped("POST", "/api/v1/catalog/example/restore")))
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/catalog/sales/export") == RouteCheck.Require("pipeline", "read"))
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/catalog/sales/restore") == RouteCheck.Require("pipeline", "create"))
+        assert(MCPToolRoutes.allowedTools(key("pipeline:read")).contains("export_catalog"))
+        assert(!MCPToolRoutes.allowedTools(key("pipeline:read")).contains("restore_catalog"))
+        assert(MCPToolRoutes.allowedTools(key("pipeline:create")).contains("restore_catalog"))
+        assert(!MCPToolRoutes.allowedTools(key("job:read")).contains("export_catalog"))
+        assert(MCPToolRoutes.allowedTools(legacyKey).contains("export_catalog"))
+        assert(MCPToolRoutes.allowedTools(legacyKey).contains("restore_catalog"))
     }
 
     test("discovery + provenance routes are capability-mapped as metadata reads") {
