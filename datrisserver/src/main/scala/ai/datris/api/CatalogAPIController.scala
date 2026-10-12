@@ -569,13 +569,13 @@ class CatalogAPIController {
                 restored.add("taps", toArray(tapResult.ok))
                 restored.add("pipelines", toArray(pipelineResult.ok))
                 out.add("restored", restored)
-                out.add("skipped", toArray(skipped.toSeq))
+                out.add("skipped", toArray(skipped.toList))
                 out.add("failed", failedArray(failures))
                 // Probed from the archived items, never the caller-supplied
                 // manifest list, and only reported where the caller may read
                 // secrets, so a restore is no secret-existence oracle.
                 out.add("missingSecrets", missingSecretsArray(CatalogArchive.requiredSecrets(contents.taps, contents.pipelines), warnings, request))
-                out.add("warnings", toArray(warnings.distinct.toSeq))
+                out.add("warnings", toArray(warnings.distinct.toList))
                 out.addProperty("tapsDisabled", true)
                 out.addProperty("stateRestored", states.nonEmpty && stateFailures.isEmpty)
                 logger.info(
@@ -680,7 +680,7 @@ class CatalogAPIController {
             taps = taps.map(_.name),
             pipelines = pipelines.map(_.name),
             requiredSecrets = required,
-            warnings = warnings.toSeq
+            warnings = warnings.toList
         )
         val entries = CatalogArchive.archiveEntries(
             manifest,

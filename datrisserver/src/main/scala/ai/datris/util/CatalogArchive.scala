@@ -159,7 +159,7 @@ object CatalogArchive {
                             fields += ("transformation.rowFunctions[" + i + "].parameters[" + j + "]")
                     }
             }
-        fields.toSeq.map(f => p.name + ": " + f + " was removed from the archive; re-enter it after restore")
+        fields.toList.map(f => p.name + ": " + f + " was removed from the archive; re-enter it after restore")
     }
 
     /** Marker shared by every [[redactionWarnings]] line. */
@@ -190,7 +190,7 @@ object CatalogArchive {
             add(a.mysqlSecretsName)
         }
         if (p.unityCatalog != null) add(p.unityCatalog.credentialsSecret)
-        out.distinct.toSeq
+        out.distinct.toList
     }
 
     /** One row per secret name the taps and pipelines reference, with every
@@ -204,7 +204,7 @@ object CatalogArchive {
         }
         taps.filter(_ != null).foreach(t => nonBlank(t.secretName).foreach(s => add(s, t.name, "tap")))
         pipelines.filter(_ != null).foreach(p => pipelineSecretNames(p).foreach(s => add(s, p.name, "platform")))
-        order.toSeq.map { case (name, (users, kind)) => RequiredSecret(name, users.toSeq, kind) }
+        order.toList.map { case (name, (users, kind)) => RequiredSecret(name, users.toList, kind) }
     }
 
     /** Outcome of checking one required secret on the restore target. */
@@ -251,7 +251,7 @@ object CatalogArchive {
             nonBlank(d.database.warehouse).foreach(v => out += ("destination.database.warehouse" -> v))
         if (p.dataQuality != null)
             nonBlank(p.dataQuality.validationSchema).filter(_.startsWith("s3://")).foreach(v => out += ("dataQuality.validationSchema" -> v))
-        out.toSeq.map { case (field, value) => p.name + ": " + field + "=" + value + " may not be valid on another install" }
+        out.toList.map { case (field, value) => p.name + ": " + field + "=" + value + " may not be valid on another install" }
     }
 
     // ------------------------------------------------------------ manifest
@@ -289,7 +289,7 @@ object CatalogArchive {
             val o = JsonParser.parseString(new String(bytes, StandardCharsets.UTF_8)).getAsJsonObject
             def str(k: String): String = if (o.has(k) && !o.get(k).isJsonNull) o.get(k).getAsString else null
             def arr(obj: JsonObject, k: String): Seq[String] =
-                if (obj.has(k) && obj.get(k).isJsonArray) obj.getAsJsonArray(k).asScala.toSeq.filterNot(_.isJsonNull).map(_.getAsString)
+                if (obj.has(k) && obj.get(k).isJsonArray) obj.getAsJsonArray(k).asScala.toList.filterNot(_.isJsonNull).map(_.getAsString)
                 else Nil
             if (!o.has("formatVersion") || o.get("formatVersion").isJsonNull)
                 return Left("manifest.json has no formatVersion")
@@ -301,7 +301,7 @@ object CatalogArchive {
             if (version < 1) return Left("Invalid archive formatVersion " + version)
             val secrets =
                 if (o.has("requiredSecrets") && o.get("requiredSecrets").isJsonArray)
-                    o.getAsJsonArray("requiredSecrets").asScala.toSeq.filter(_.isJsonObject).map { e =>
+                    o.getAsJsonArray("requiredSecrets").asScala.toList.filter(_.isJsonObject).map { e =>
                         val s = e.getAsJsonObject
                         RequiredSecret(
                             if (s.has("name") && !s.get("name").isJsonNull) s.get("name").getAsString else null,
@@ -355,7 +355,7 @@ object CatalogArchive {
                 out += Entry(codegenPath(p.name, kind), utf8(text))
             }
         }
-        out.toSeq
+        out.toList
     }
 
     // ------------------------------------------------------------ zip
@@ -494,7 +494,7 @@ object CatalogArchive {
                     }
             }
         }
-        RepoScriptPlan(clashes.toSeq, reuse.toSet, write.toSet)
+        RepoScriptPlan(clashes.toList, reuse.toSet, write.toSet)
     }
 
     /** Capability checks a restore runs for one archived item before writing
@@ -505,7 +505,7 @@ object CatalogArchive {
       * cannot replace another key's item. `live` is (catalog, createdByKeyLabel). */
     def restoreScopeChecks(target: String, caller: String, live: Option[(String, String)]): Seq[(String, Map[String, String])] =
         ("create" -> CatalogOps.scopeContext(target, caller)) +:
-            live.toSeq.map { case (catalog, owner) => "update" -> CatalogOps.scopeContext(catalog, owner) }
+            live.toList.map { case (catalog, owner) => "update" -> CatalogOps.scopeContext(catalog, owner) }
 
     /** Tap states the restore writes (tap -> state JSON): none when
       * `restoreState` is false, and never for a tap that existed before. */
@@ -538,31 +538,51 @@ object CatalogArchive {
     def readContents(manifest: Manifest, entries: Map[String, Array[Byte]]): Either[String, Contents] = {
         val gson = new Gson
         def text(path: String): Option[String] = entries.get(path).map(b => new String(b, StandardCharsets.UTF_8))
-        val names = manifest.taps ++ manifest.pipelines
-        names.find(n => n == null || n.isEmpty || unsafePath(n) || n.contains("/")).foreach { bad =>
-            return Left("Archive manifest lists an invalid item name '" + bad + "'")
+        val tapNames = manifest.taps.toList
+        val pipelineNames = manifest.pipelines.toList
+
+        // Strict, closure-free validation: every check runs here, in order,
+        // and the first failure is the result (no non-local return can
+        // escape into the caller from a lazily evaluated collection).
+        (tapNames ++ pipelineNames).find(n => n == null || n.isEmpty || unsafePath(n) || n.contains("/")) match {
+            case Some(bad) => Left("Archive manifest lists an invalid item name '" + bad + "'")
+            case None =>
+                def parseAll[T](names: List[String], path: String => String, kind: String, cls: Class[T], nameOf: T => String): Either[String, List[T]] = {
+                    val out = List.newBuilder[T]
+                    var rest = names
+                    var failure: Option[String] = None
+                    while (rest.nonEmpty && failure.isEmpty) {
+                        val n = rest.head
+                        val parsed: Either[String, T] = text(path(n)) match {
+                            case None => Left("Archive is missing " + path(n))
+                            case Some(json) =>
+                                scala.util.Try(gson.fromJson(json, cls)) match {
+                                    case scala.util.Failure(e) => Left(path(n) + " is not a valid " + kind + " config: " + e.getMessage)
+                                    case scala.util.Success(v) if v == null || nameOf(v) != n => Left(path(n) + " does not define " + kind + " '" + n + "'")
+                                    case scala.util.Success(v) => Right(v)
+                                }
+                        }
+                        parsed match {
+                            case Left(err) => failure = Some(err)
+                            case Right(v) => out += v
+                        }
+                        rest = rest.tail
+                    }
+                    failure.map(Left(_)).getOrElse(Right(out.result()))
+                }
+                for {
+                    taps <- parseAll[TapConfig](tapNames, tapConfigPath, "tap", classOf[TapConfig], _.name).right
+                    pipelines <- parseAll[PipelineConfig](pipelineNames, pipelineConfigPath, "pipeline", classOf[PipelineConfig], _.name).right
+                } yield {
+                    val scripts = tapNames.flatMap(n => text(tapScriptPath(n)).map(n -> _)).toMap
+                    val schemas = pipelineNames.map { n =>
+                        val prefix = PipelinesDir + n + "/validation-schema/"
+                        n -> entries.collect {
+                            case (path, bytes) if path.startsWith(prefix) && path.length > prefix.length => path.substring(prefix.length) -> bytes
+                        }
+                    }.filter(_._2.nonEmpty).toMap
+                    Contents(taps, pipelines, scripts, schemas)
+                }
         }
-        val taps = manifest.taps.map { n =>
-            val json = text(tapConfigPath(n)).getOrElse(return Left("Archive is missing " + tapConfigPath(n)))
-            val t =
-                try gson.fromJson(json, classOf[TapConfig])
-                catch { case e: Exception => return Left(tapConfigPath(n) + " is not a valid tap config: " + e.getMessage) }
-            if (t == null || t.name != n) return Left(tapConfigPath(n) + " does not define tap '" + n + "'")
-            t
-        }
-        val pipelines = manifest.pipelines.map { n =>
-            val json = text(pipelineConfigPath(n)).getOrElse(return Left("Archive is missing " + pipelineConfigPath(n)))
-            val p =
-                try gson.fromJson(json, classOf[PipelineConfig])
-                catch { case e: Exception => return Left(pipelineConfigPath(n) + " is not a valid pipeline config: " + e.getMessage) }
-            if (p == null || p.name != n) return Left(pipelineConfigPath(n) + " does not define pipeline '" + n + "'")
-            p
-        }
-        val scripts = manifest.taps.flatMap(n => text(tapScriptPath(n)).map(n -> _)).toMap
-        val schemas = manifest.pipelines.map { n =>
-            val prefix = PipelinesDir + n + "/validation-schema/"
-            n -> entries.collect { case (path, bytes) if path.startsWith(prefix) && path.length > prefix.length => path.substring(prefix.length) -> bytes }
-        }.filter(_._2.nonEmpty).toMap
-        Right(Contents(taps, pipelines, scripts, schemas))
     }
 }

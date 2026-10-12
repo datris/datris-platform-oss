@@ -321,6 +321,27 @@ class CatalogArchiveSpec extends AnyFunSuite {
         assert(secretNotCheckedWarning("codegen") == "codegen: not checked, this key may not read secrets")
     }
 
+    // E2E finding: a missing config for the SECOND listed tap/pipeline is a
+    // Left from readContents, never an exception (Scala 2.12 lazy Stream +
+    // non-local return escaped into the controller as a 500).
+    test("readContents returns Left when a later manifest tap or pipeline has no config entry") {
+        val m = utf8("""{"formatVersion":1,"catalog":"sales","taps":["first_tap","ghost_tap"],"pipelines":[],"requiredSecrets":[],"warnings":[]}""")
+        val zip = rawZip(Seq("manifest.json" -> m, "taps/first_tap.json" -> utf8(new com.google.gson.Gson().toJson(tap("first_tap", "sales")))))
+        val entries = unpack(zip).fold(e => fail(e), identity)
+        val mf = parseManifest(entries("manifest.json")).fold(e => fail(e), identity)
+        val result = readContents(mf, entries)
+        assert(result == Left("Archive is missing taps/ghost_tap.json"), result)
+
+        val mp = utf8("""{"formatVersion":1,"catalog":"sales","taps":[],"pipelines":["p1","ghost_p"],"requiredSecrets":[],"warnings":[]}""")
+        val zip2 = rawZip(Seq("manifest.json" -> mp, "pipelines/p1.json" -> utf8(new com.google.gson.Gson().toJson(pipeline("p1", "sales")))))
+        val entries2 = unpack(zip2).fold(e => fail(e), identity)
+        val result2 = readContents(parseManifest(entries2("manifest.json")).fold(e => fail(e), identity), entries2)
+        assert(result2 == Left("Archive is missing pipelines/ghost_p.json"), result2)
+
+        val ok = readContents(mf, entries + ("taps/ghost_tap.json" -> utf8(new com.google.gson.Gson().toJson(tap("ghost_tap", "sales")))))
+        assert(ok.isRight && ok.right.get.taps.map(_.name) == Seq("first_tap", "ghost_tap"), ok)
+    }
+
     // ------------------------------------------------------ Acceptance bullet 3
 
     test("unpack rejects an entry that climbs out with ..") {
