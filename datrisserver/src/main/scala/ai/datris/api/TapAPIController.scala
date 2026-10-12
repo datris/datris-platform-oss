@@ -58,6 +58,28 @@ object TapAPIController {
     private val recentRunStarts: java.util.concurrent.ConcurrentHashMap[String, java.lang.Long] =
         new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
 
+    /** Body of `GET /tap/generate/status`. Inactive is exactly `{active: false}`;
+      * active carries phase/attempt/elapsed plus the CodeGen `provider`/`model`. */
+    private[api] def generateStatusBody(
+        p: Option[TapGenerationProgress.Progress],
+        nowMs: Long
+    ): java.util.Map[String, Any] = {
+        val response = new java.util.LinkedHashMap[String, Any]()
+        p match {
+            case Some(p) =>
+                response.put("active", java.lang.Boolean.TRUE)
+                response.put("phase", p.phase)
+                response.put("attempt", Integer.valueOf(p.attempt))
+                response.put("elapsedSeconds", java.lang.Long.valueOf((nowMs - p.startedAtMs) / 1000))
+                response.put("phaseElapsedSeconds", java.lang.Long.valueOf((nowMs - p.phaseStartedAtMs) / 1000))
+                response.put("provider", p.provider)
+                response.put("model", p.model)
+            case None =>
+                response.put("active", java.lang.Boolean.FALSE)
+        }
+        response
+    }
+
     /** Effective `testLimit` for a `/tap/run` request.
       *
       *  `bodyTestLimit` is `body.get("testLimit")` straight off the Jackson-parsed
@@ -840,6 +862,8 @@ class TapAPIController {
             response.put("packages", result.packages)
             response.put("scriptPath", result.scriptPath)
             response.put("injectedPrompts", result.injectedPrompts)
+            response.put("provider", result.provider)
+            response.put("model", result.model)
             gateMsg.foreach(response.put("error", _))
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
@@ -862,18 +886,7 @@ class TapAPIController {
         try {
             APIKeyValidator.validate(apiKey)
             val gson = new Gson
-            val response = new java.util.LinkedHashMap[String, Any]()
-            TapGenerationProgress.get(tap) match {
-                case Some(p) =>
-                    val now = System.currentTimeMillis()
-                    response.put("active", java.lang.Boolean.TRUE)
-                    response.put("phase", p.phase)
-                    response.put("attempt", Integer.valueOf(p.attempt))
-                    response.put("elapsedSeconds", java.lang.Long.valueOf((now - p.startedAtMs) / 1000))
-                    response.put("phaseElapsedSeconds", java.lang.Long.valueOf((now - p.phaseStartedAtMs) / 1000))
-                case None =>
-                    response.put("active", java.lang.Boolean.FALSE)
-            }
+            val response = TapAPIController.generateStatusBody(TapGenerationProgress.get(tap), System.currentTimeMillis())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>

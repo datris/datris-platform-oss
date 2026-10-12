@@ -7,6 +7,7 @@ import { ModelCatalogService, ModelOption } from '../model-catalog.service';
 import { AuthService } from '../auth.service';
 import { ConfigChatContextService } from '../config-chat/config-chat-context.service';
 import { ConfigAssistantStateService } from '../config-chat/config-assistant-state.service';
+import { providerDisplayName } from '../shared/provider-label';
 
 type ConfigTab = 'ai-providers' | 'users' | 'secrets' | 'keys' | 'data-sources' | 'code-repo' | 'audit-log' | 'agent-policy' | 'doctor';
 
@@ -849,8 +850,7 @@ export class ConfigurationComponent implements OnInit, OnDestroy {
     flagIfMissingKey(this.codegenProvider, this.codegenModel);
     flagIfMissingKey(this.embeddingProvider, this.embeddingModel);
     if (missing.size > 0) {
-      const label = (p: string) => p === 'anthropic' ? 'Anthropic' : p === 'openai' ? 'OpenAI' : p === 'azure' ? 'Azure OpenAI' : p === 'bedrock' ? 'Amazon Bedrock' : p === 'grok' ? 'Grok (xAI)' : p;
-      const names = Array.from(missing).map(label).join(' and ');
+      const names = Array.from(missing).map(p => providerDisplayName(p)).join(' and ');
       this.error = `Enter the ${names} API key on the right — it's required by a section you've selected.`;
       this.success = '';
       return;

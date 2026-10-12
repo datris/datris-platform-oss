@@ -38,7 +38,9 @@ export class TapService {
 
   /** Live phase of an in-flight generateScript call for this tap — polled
    *  while the blocking generate request runs, so the wait shows real
-   *  progress ({active, phase, attempt, elapsedSeconds}). */
+   *  progress ({active, phase, attempt, elapsedSeconds, phaseElapsedSeconds,
+   *  provider, model} — provider/model are the CodeGen config generating the
+   *  script; older servers omit them). */
   generateStatus(tapName: string): Observable<any> {
     return this.http.get<any>('/api/v1/tap/generate/status', { params: { tap: tapName } });
   }

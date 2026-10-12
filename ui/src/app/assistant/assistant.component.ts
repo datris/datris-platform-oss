@@ -5,6 +5,8 @@ import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
 import { ApprovalsService, PolicyToolOutcome } from '../approvals.service';
 import { httpErrorText } from '../shared/http-error';
+import { providerDisplayName } from '../shared/provider-label';
+import { AuthService } from '../auth.service';
 
 interface StarterPrompt {
   label: string;
@@ -51,7 +53,8 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     private tapService: TapService,
     private route: ActivatedRoute,
     private router: Router,
-    private zone: NgZone
+    private zone: NgZone,
+    private auth: AuthService
   ) { }
 
   ngOnInit(): void {
@@ -240,6 +243,22 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
 
   get isEmptyState(): boolean {
     return !this.state.loadingInit && !this.state.initError && this.state.turns.length === 0;
+  }
+
+  /** Chat provider and model from /assistant/init (aiConfigForChat), e.g.
+   *  "Anthropic · claude-fable-5-1 · extended thinking on". Empty when the
+   *  server reports no model (older server / not configured). */
+  get modelLine(): string {
+    const info = this.state.initInfo;
+    if (!info || !info.model) return '';
+    return providerDisplayName(info.provider) + ' · ' + info.model +
+      (info.extendedThinking ? ' · extended thinking on' : '');
+  }
+
+  /** Whether the current user can navigate to /configuration (mirrors the
+   *  top-nav gate) so the model line never offers a link that bounces. */
+  get canSeeConfig(): boolean {
+    return !this.auth.userAuthEnabled || this.auth.current()?.role === 'admin';
   }
 
   get reasoningLabel(): string {

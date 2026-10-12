@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+- **See which model is answering.** The Assistant now shows the chat provider and model at the top of the conversation, and when it generates a tap script it can tell you which CodeGen provider and model wrote it. Change either on Configuration → AI Providers.
+
 ## v1.47.1 — October 11, 2026
 
 **Server framework update.**

@@ -20,16 +20,25 @@ import java.util.concurrent.ConcurrentHashMap
   * itself will tell me the outcome". */
 object TapGenerationProgress {
 
-    case class Progress(phase: String, attempt: Int, startedAtMs: Long, phaseStartedAtMs: Long)
+    /** `provider`/`model` are the CodeGen config that is generating the script
+      * (captured at start so the first status poll can name it). */
+    case class Progress(
+        phase: String,
+        attempt: Int,
+        startedAtMs: Long,
+        phaseStartedAtMs: Long,
+        provider: String,
+        model: String
+    )
 
     private val active = new ConcurrentHashMap[String, Progress]()
 
     /** Tenant-scoped key: two tenants may generate same-named taps concurrently. */
     private def key(tapName: String): String = DatrisEnvironment.current.environment + "|" + tapName
 
-    def start(tapName: String): Unit = {
+    def start(tapName: String, provider: String, model: String): Unit = {
         val now = System.currentTimeMillis()
-        active.put(key(tapName), Progress("calling-model", 1, now, now))
+        active.put(key(tapName), Progress("calling-model", 1, now, now, provider, model))
     }
 
     def phase(tapName: String, phase: String, attempt: Int = 0): Unit = {
