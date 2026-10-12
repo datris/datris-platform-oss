@@ -58,17 +58,6 @@ object TapAPIController {
     private val recentRunStarts: java.util.concurrent.ConcurrentHashMap[String, java.lang.Long] =
         new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
 
-    /** Effective `testLimit` for a `/tap/run` request.
-      *
-      *  `bodyTestLimit` is `body.get("testLimit")` straight off the Jackson-parsed
-      *  `@RequestBody` map: null when absent, Integer for `20`, Double for `20.0`,
-      *  String for `"20"`.
-      *
-      *  Only `mode=test` caps at all — a `testLimit` sent with `mode=run` is ignored,
-      *  not an error, because production runs must read every row. Absent/null means
-      *  the default preview size (`testRecordSampleSize`); an explicit 0 or negative
-      *  value is the deliberate unlimited opt-out.
-      */
     /** Body of `GET /tap/generate/status`. Inactive is exactly `{active: false}`;
       * active carries phase/attempt/elapsed plus the CodeGen `provider`/`model`. */
     private[api] def generateStatusBody(
@@ -91,6 +80,17 @@ object TapAPIController {
         response
     }
 
+    /** Effective `testLimit` for a `/tap/run` request.
+      *
+      *  `bodyTestLimit` is `body.get("testLimit")` straight off the Jackson-parsed
+      *  `@RequestBody` map: null when absent, Integer for `20`, Double for `20.0`,
+      *  String for `"20"`.
+      *
+      *  Only `mode=test` caps at all — a `testLimit` sent with `mode=run` is ignored,
+      *  not an error, because production runs must read every row. Absent/null means
+      *  the default preview size (`testRecordSampleSize`); an explicit 0 or negative
+      *  value is the deliberate unlimited opt-out.
+      */
     private[api] def resolveTestLimit(mode: String, bodyTestLimit: Any): Int = {
         if (mode == null || mode.toLowerCase != "test") return 0
 

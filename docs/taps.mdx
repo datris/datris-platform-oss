@@ -20,7 +20,7 @@ team can review and edit tap code with normal git tooling. See
 
 The wizard offers two ways to implement a tap:
 
-- **I Have My Own Code** — paste your own Python `fetch()` script directly. The script runs through the same test / auto-fix / post-run review flow and can use any of the pre-installed packages or bring its own. (AI-generated scripts are still available through the Assistant and MCP `create_tap` with an `instruction`.)
+- **I Have My Own Code** — paste your own Python `fetch()` script directly. The script runs through the same test / auto-fix / post-run review flow and can use any of the pre-installed packages or bring its own. (AI-generated scripts are still available through the Assistant and MCP `create_tap` with an `instruction`. Generation reports the CodeGen provider and model that wrote the script (the primary model when no CodeGen model is set): `POST /api/v1/tap/generate` and its `/status` poll return `provider` and `model`, and `create_tap` returns them as `generatedWith`, so the Assistant can tell you which model generated the tap.)
 - **HTTP Endpoint** — you host the tap as an HTTP service, in any language; no code runs on the platform. See [HTTP taps](#http-taps-bring-your-own-service-in-any-language) below.
 
 Whichever you pick, the tap's **output shape** — structured records vs. documents — is determined by what it returns, not by a setting. A tap that returns `{uri, filename, content}` dicts is a document tap (files staged for a vector-store pipeline, deduplicated via a ledger); anything else is structured. The wizard detects the shape from your test run and applies the matching pipeline rules.
@@ -82,7 +82,7 @@ You can stop chatting at any time and edit the Instruction box directly, or skip
 
 **Credentials (Optional)** — Select an existing tap secret, edit one, or create a new one. Secret keys are injected as environment variables at runtime — the AI generates code that reads them via `os.environ.get('KEY_NAME')`. **Never hardcode credentials in scripts.**
 
-**Generate Script** — Click to have the AI produce a Python script with a `fetch()` function. The result appears below in a scrollable preview, along with any extra pip packages it needs. While it runs, the progress line names the CodeGen provider and model doing the work (the primary model when no CodeGen model is set), and the finished script shows *Generated with &lt;provider&gt; &lt;model&gt;*. The `create_tap` MCP tool returns the same information as `generatedWith`.
+**Generate Script** — Click to have the AI produce a Python script with a `fetch()` function. The result appears below in a scrollable preview, along with any extra pip packages it needs.
 
 The generated script can use these pre-installed packages:
 - `requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`
