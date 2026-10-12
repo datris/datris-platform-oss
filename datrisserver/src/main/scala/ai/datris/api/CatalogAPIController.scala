@@ -571,7 +571,10 @@ class CatalogAPIController {
                 out.add("restored", restored)
                 out.add("skipped", toArray(skipped.toSeq))
                 out.add("failed", failedArray(failures))
-                out.add("missingSecrets", missingSecretsArray(manifest.requiredSecrets))
+                // Probed from the archived items, never the caller-supplied
+                // manifest list, and only reported where the caller may read
+                // secrets, so a restore is no secret-existence oracle.
+                out.add("missingSecrets", missingSecretsArray(CatalogArchive.requiredSecrets(contents.taps, contents.pipelines), warnings, request))
                 out.add("warnings", toArray(warnings.distinct.toSeq))
                 out.addProperty("tapsDisabled", true)
                 out.addProperty("stateRestored", states.nonEmpty && stateFailures.isEmpty)
@@ -658,13 +661,9 @@ class CatalogAPIController {
         pipelines.foreach(p => warnings ++= CatalogArchive.installWarnings(p))
         pipelines.foreach(p => warnings ++= CatalogArchive.redactionWarnings(p))
 
+        // The stored `_type` only for a secret the caller may read; otherwise the hint stays.
         val required = CatalogArchive.requiredSecrets(taps, pipelines).map { r =>
-            val storedType =
-                SecretsUtil
-                    .tryGetSecretMap(DatrisEnvironment.current.environment + "/" + r.name)
-                    .toOption
-                    .flatten
-                    .flatMap(m => Option(m.get("_type")))
+            val storedType = checkSecret(r.name, request)._2.flatMap(m => Option(m.get("_type")))
             r.copy(kind = storedType.getOrElse(r.kind))
         }
 
@@ -769,16 +768,35 @@ class CatalogAPIController {
                 store.storeScript(tap, script, prior, actor)
         }
 
-    private def missingSecretsArray(required: Seq[CatalogArchive.RequiredSecret]): JsonArray = {
+    /** Check one secret name against this install, gated by the caller's
+      * secret read scope (see CatalogArchive.secretCheck). Also returns the
+      * stored fields when the caller may read them. */
+    private def checkSecret(name: String, request: HttpServletRequest): (CatalogArchive.SecretCheck, Option[java.util.Map[String, String]]) = {
+        val lookup = SecretsUtil.tryGetSecretMap(DatrisEnvironment.current.environment + "/" + name).toOption
+        val check = CatalogArchive.secretCheck(
+            lookup,
+            f => UnityCatalogAPIController.canRead(request, f),
+            CapabilityCheck.grants(request, "secret", "read", Map.empty)
+        )
+        (check, if (check == CatalogArchive.SecretCheck.Present) lookup.flatten else None)
+    }
+
+    private def missingSecretsArray(
+        required: Seq[CatalogArchive.RequiredSecret],
+        warnings: mutable.ArrayBuffer[String],
+        request: HttpServletRequest
+    ): JsonArray = {
         val arr = new JsonArray
         required.foreach { r =>
-            val present =
-                SecretsUtil.tryGetSecretMap(DatrisEnvironment.current.environment + "/" + r.name).toOption.flatten.isDefined
-            if (!present) {
-                val o = new JsonObject
-                o.addProperty("name", r.name)
-                o.add("usedBy", toArray(r.usedBy))
-                arr.add(o)
+            checkSecret(r.name, request)._1 match {
+                case CatalogArchive.SecretCheck.Present =>
+                case CatalogArchive.SecretCheck.Missing =>
+                    val o = new JsonObject
+                    o.addProperty("name", r.name)
+                    o.add("usedBy", toArray(r.usedBy))
+                    arr.add(o)
+                case CatalogArchive.SecretCheck.Unchecked =>
+                    warnings += CatalogArchive.secretNotCheckedWarning(r.name)
             }
         }
         arr

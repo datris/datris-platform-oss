@@ -351,11 +351,14 @@ class TapAPIController {
       * versioned write. Shared with the catalog restore (`CatalogAPIController`).
       * Left is the refusal response (400/409); other failures are thrown.
       *
-      * `restored = true` is only for a catalog restore of a tap that did not
-      * exist before: the archived `lastTestRunScriptId` is kept (it names the
-      * same bytes on built-in storage) and the test-before-cron gate is not
-      * applied, because the restore writes the tap with `enabled = false` and
-      * the gate applies again on the save that re-enables it. */
+      * `restored = true` is only for a catalog restore, both for a new tap and
+      * for overwriting an existing member of the target catalog. In both
+      * cases the test-before-cron gate is skipped when the tap is saved with
+      * `enabled = false` (restore always does); the gate applies again on the
+      * save that re-enables it. For a NEW tap the archived
+      * `lastTestRunScriptId` is also kept (it names the same bytes on built-in
+      * storage); an existing tap keeps its stored, server-owned test fields as
+      * on any save. */
     def saveTapInternal(
         tapConfig: TapConfig,
         changeNote: String,

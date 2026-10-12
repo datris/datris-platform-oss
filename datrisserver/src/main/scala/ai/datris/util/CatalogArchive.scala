@@ -207,6 +207,34 @@ object CatalogArchive {
         order.toSeq.map { case (name, (users, kind)) => RequiredSecret(name, users.toSeq, kind) }
     }
 
+    /** Outcome of checking one required secret on the restore target. */
+    sealed trait SecretCheck
+    object SecretCheck {
+        case object Present extends SecretCheck
+        case object Missing extends SecretCheck
+
+        /** The caller may not read it (or the lookup failed): neither present
+          * nor missing is reported, so a restore is no existence oracle. */
+        case object Unchecked extends SecretCheck
+    }
+
+    /** `lookup`: None = the lookup failed; Some(None) = the secret does not
+      * exist; Some(Some(fields)) = it exists. `canRead(fields)` is the
+      * list_platform_secrets read predicate for an existing secret;
+      * `canReadUntyped` is that predicate with no `_type` (only a key that
+      * may read every secret learns that one is missing). */
+    def secretCheck(
+        lookup: Option[Option[java.util.Map[String, String]]],
+        canRead: java.util.Map[String, String] => Boolean,
+        canReadUntyped: Boolean
+    ): SecretCheck = lookup match {
+        case Some(Some(fields)) => if (canRead(fields)) SecretCheck.Present else SecretCheck.Unchecked
+        case Some(None) => if (canReadUntyped) SecretCheck.Missing else SecretCheck.Unchecked
+        case None => SecretCheck.Unchecked
+    }
+
+    def secretNotCheckedWarning(name: String): String = name + ": not checked, this key may not read secrets"
+
     // ------------------------------------------------------------ warnings
 
     /** Install-specific values of one pipeline that are copied verbatim and

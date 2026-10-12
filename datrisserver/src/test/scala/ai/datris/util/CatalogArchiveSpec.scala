@@ -306,6 +306,21 @@ class CatalogArchiveSpec extends AnyFunSuite {
         assert(existing.contains("create" -> Map("catalog" -> "sales", "owner" -> "keyA")), existing)
     }
 
+    // Reviewer round 2, finding 1: missingSecrets is no secret-existence oracle.
+    test("secretCheck reports present or missing only where the caller may read secrets") {
+        val fields = new java.util.HashMap[String, String]()
+        fields.put("_type", "platform")
+        val yes: java.util.Map[String, String] => Boolean = _ => true
+        val no: java.util.Map[String, String] => Boolean = _ => false
+        assert(secretCheck(Some(Some(fields)), yes, canReadUntyped = true) == SecretCheck.Present)
+        assert(secretCheck(Some(None), yes, canReadUntyped = true) == SecretCheck.Missing)
+        // A scoped key: an unreadable existing secret and a missing one look the same.
+        assert(secretCheck(Some(Some(fields)), no, canReadUntyped = false) == SecretCheck.Unchecked)
+        assert(secretCheck(Some(None), no, canReadUntyped = false) == SecretCheck.Unchecked)
+        assert(secretCheck(None, yes, canReadUntyped = true) == SecretCheck.Unchecked)
+        assert(secretNotCheckedWarning("codegen") == "codegen: not checked, this key may not read secrets")
+    }
+
     // ------------------------------------------------------ Acceptance bullet 3
 
     test("unpack rejects an entry that climbs out with ..") {
