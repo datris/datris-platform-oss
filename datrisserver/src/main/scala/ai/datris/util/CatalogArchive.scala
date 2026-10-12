@@ -105,10 +105,65 @@ object CatalogArchive {
         )
     }
 
-    /** Pipeline definition as exported: ownership and version cleared. Unity
-      * Catalog settings are configuration and stay. */
-    def stripPipelineForExport(p: PipelineConfig): PipelineConfig =
-        p.copy(createdByKeyLabel = null, version = 1)
+    /** Pipeline definition as exported: ownership and version cleared, and
+      * every inline credential removed (see [[redactionWarnings]]): the
+      * preprocessor's and the REST destination's `bearerToken`/`apiKey`, and
+      * parameters 3 and 4 (bearer token, API key) of each `restEndpoint` row
+      * function. Unity Catalog settings are configuration and stay. */
+    def stripPipelineForExport(p: PipelineConfig): PipelineConfig = {
+        def clearRest(r: ai.datris.model.RestEndpoint) = if (r == null) null else r.copy(bearerToken = null, apiKey = null)
+        val transformation =
+            if (p.transformation == null || p.transformation.rowFunctions == null) p.transformation
+            else
+                p.transformation.copy(rowFunctions = new java.util.ArrayList(p.transformation.rowFunctions.asScala.map { rf =>
+                    if (rf == null || !isRestRowFunction(rf) || rf.parameters == null) rf
+                    else {
+                        val params = new java.util.ArrayList[String](rf.parameters)
+                        RowFunctionSecretIndexes.foreach(i => if (params.size() > i) params.set(i, ""))
+                        rf.copy(parameters = params)
+                    }
+                }.asJava))
+        p.copy(
+            createdByKeyLabel = null,
+            version = 1,
+            preprocessor = clearRest(p.preprocessor),
+            destination = if (p.destination == null) null else p.destination.copy(restEndpoint = clearRest(p.destination.restEndpoint)),
+            transformation = transformation
+        )
+    }
+
+    /** `restEndpoint` row-function parameters holding credentials:
+      * 3 = bearer token, 4 = API key (Transformation.runRestEndpointFunction). */
+    private val RowFunctionSecretIndexes = Seq(3, 4)
+
+    private def isRestRowFunction(rf: ai.datris.model.RowFunction): Boolean =
+        rf.function != null && rf.function.equalsIgnoreCase("restEndpoint")
+
+    /** One line per inline credential [[stripPipelineForExport]] removes:
+      * "<pipeline>: <field> was removed from the archive; re-enter it after restore". */
+    def redactionWarnings(p: PipelineConfig): Seq[String] = {
+        if (p == null) return Nil
+        val fields = mutable.ArrayBuffer.empty[String]
+        def rest(prefix: String, r: ai.datris.model.RestEndpoint): Unit =
+            if (r != null) {
+                if (nonBlank(r.bearerToken).isDefined) fields += (prefix + ".bearerToken")
+                if (nonBlank(r.apiKey).isDefined) fields += (prefix + ".apiKey")
+            }
+        rest("preprocessor", p.preprocessor)
+        if (p.destination != null) rest("destination.restEndpoint", p.destination.restEndpoint)
+        if (p.transformation != null && p.transformation.rowFunctions != null)
+            p.transformation.rowFunctions.asScala.zipWithIndex.foreach { case (rf, i) =>
+                if (rf != null && isRestRowFunction(rf) && rf.parameters != null)
+                    RowFunctionSecretIndexes.foreach { j =>
+                        if (rf.parameters.size() > j && nonBlank(rf.parameters.get(j)).isDefined)
+                            fields += ("transformation.rowFunctions[" + i + "].parameters[" + j + "]")
+                    }
+            }
+        fields.toSeq.map(f => p.name + ": " + f + " was removed from the archive; re-enter it after restore")
+    }
+
+    /** Marker shared by every [[redactionWarnings]] line. */
+    val RedactionMarker = "was removed from the archive"
 
     // ------------------------------------------------------------ secrets
 
@@ -413,6 +468,16 @@ object CatalogArchive {
         }
         RepoScriptPlan(clashes.toSeq, reuse.toSet, write.toSet)
     }
+
+    /** Capability checks a restore runs for one archived item before writing
+      * it, as (action, scope context) pairs for `CapabilityCheck.assertScope`:
+      * always `create` in the target catalog as the caller; for an item that
+      * already exists (overwrite of a target member) also `update` against
+      * its live catalog and owner, as rename checks it, so an owner-scoped key
+      * cannot replace another key's item. `live` is (catalog, createdByKeyLabel). */
+    def restoreScopeChecks(target: String, caller: String, live: Option[(String, String)]): Seq[(String, Map[String, String])] =
+        ("create" -> CatalogOps.scopeContext(target, caller)) +:
+            live.toSeq.map { case (catalog, owner) => "update" -> CatalogOps.scopeContext(catalog, owner) }
 
     /** Tap states the restore writes (tap -> state JSON): none when
       * `restoreState` is false, and never for a tap that existed before. */

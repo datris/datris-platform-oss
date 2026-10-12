@@ -270,6 +270,42 @@ class CatalogArchiveSpec extends AnyFunSuite {
         assert(names == Set("tap_api", "shared_sec", "qdrant_sec", "uc_sec"))
     }
 
+    // Reviewer finding 1: inline credentials in a pipeline never reach the archive.
+    test("stripPipelineForExport removes inline REST credentials and the archive bytes do not contain them") {
+        val p = PipelineConfig(
+            name = "rest_p",
+            catalog = "sales",
+            preprocessor = RestEndpoint(endpoint = "https://pre.example.com", bearerToken = "PRE-TOKEN-123", apiKey = "PRE-KEY-456"),
+            transformation = Transformation(rowFunctions =
+                java.util.Arrays.asList(
+                    RowFunction("restEndpoint", java.util.Arrays.asList("https://fn.example.com", "row", "30000", "FN-TOKEN-789", "FN-KEY-012"))
+                )
+            ),
+            destination =
+                Destination(restEndpoint = RestEndpoint(endpoint = "https://dest.example.com", bearerToken = "DEST-TOKEN-345", apiKey = "DEST-KEY-678"))
+        )
+        val secrets = Seq("PRE-TOKEN-123", "PRE-KEY-456", "FN-TOKEN-789", "FN-KEY-012", "DEST-TOKEN-345", "DEST-KEY-678")
+        val bytes = pack(archiveEntries(manifest(pipelines = Seq("rest_p")), Nil, Seq(stripPipelineForExport(p))))
+        val all = unpack(bytes).fold(e => fail(e), identity).values.map(str).mkString("\n")
+        secrets.foreach(s => assert(!all.contains(s), s + " leaked into the archive"))
+        val s = stripPipelineForExport(p)
+        assert(s.preprocessor.endpoint == "https://pre.example.com")
+        assert(s.transformation.rowFunctions.get(0).parameters.get(0) == "https://fn.example.com")
+        val w = redactionWarnings(p)
+        assert(w.size == 6, w)
+        assert(w.forall(x => x.startsWith("rest_p: ") && x.contains("was removed from the archive; re-enter it after restore")), w)
+        assert(w.exists(_.contains("preprocessor.bearerToken")) && w.exists(_.contains("destination.restEndpoint.apiKey")), w)
+        assert(redactionWarnings(pipeline("bare")).isEmpty)
+    }
+
+    // Reviewer finding 2: overwriting an existing item is checked against its live owner.
+    test("restoreScopeChecks checks create as the caller, plus update against the live owner of an existing item") {
+        assert(restoreScopeChecks("sales", "keyA", None) == Seq("create" -> Map("catalog" -> "sales", "owner" -> "keyA")))
+        val existing = restoreScopeChecks("sales", "keyA", Some(("sales", "keyB")))
+        assert(existing.contains("update" -> Map("catalog" -> "sales", "owner" -> "keyB")), existing)
+        assert(existing.contains("create" -> Map("catalog" -> "sales", "owner" -> "keyA")), existing)
+    }
+
     // ------------------------------------------------------ Acceptance bullet 3
 
     test("unpack rejects an entry that climbs out with ..") {

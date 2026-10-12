@@ -445,17 +445,33 @@ class CatalogAPIController {
                 val preexistingTaps = taps.map(_.name).toSet.intersect(manifest.taps.toSet)
                 val actor = VersionActor.resolve(request)
                 val note = "restored from catalog archive " + Option(manifest.catalog).getOrElse("?") + " by " + actor
-                val ownerCtx = CatalogOps.scopeContext(name, ResolvedKeyAccess.keyLabel(request).orNull)
+                val caller = ResolvedKeyAccess.keyLabel(request).orNull
                 val warnings = mutable.ArrayBuffer.empty[String]
                 val skipped = mutable.ArrayBuffer.empty[String]
 
+                // 0. Scope-check every member before anything is written: a
+                //    refused member lands in `failed` and nothing of it (not
+                //    even its validation schema) is written.
+                def denial(resource: String, live: Option[(String, String)]): Option[String] =
+                    CatalogArchive.restoreScopeChecks(name, caller, live).view.flatMap { case (action, ctx) =>
+                        try { CapabilityCheck.assertScope(request, resource, action, ctx); None }
+                        catch { case e: CapabilityDeniedException => Some(Option(e.getMessage).getOrElse("capability denied")) }
+                    }.headOption
+                val pipelineDenied = contents.pipelines.flatMap { p =>
+                    denial("pipeline", pipelines.find(_.name == p.name).map(l => (l.catalog, l.createdByKeyLabel))).map(p.name -> _)
+                }
+                val tapDenied = contents.taps.flatMap { t =>
+                    denial("tap", taps.find(_.name == t.name).map(l => (l.catalog, l.createdByKeyLabel))).map(t.name -> _)
+                }
+                val allowedPipelines = contents.pipelines.filterNot(p => pipelineDenied.exists(_._1 == p.name))
+                val allowedTaps = contents.taps.filterNot(t => tapDenied.exists(_._1 == t.name))
+
                 // 1. Validation-schema objects (an existing different object is kept).
-                writeValidationSchemas(contents, warnings, skipped)
+                writeValidationSchemas(contents.copy(pipelines = allowedPipelines), warnings, skipped)
 
                 // 2. Pipelines, through the same save path as POST /pipeline.
                 val pipelineController = new PipelineAPIController
-                val pipelineResult = CatalogOps.execute(contents.pipelines.map(_.name)) { n =>
-                    CapabilityCheck.assertScope(request, "pipeline", "create", ownerCtx)
+                val pipelineResult = CatalogOps.execute(allowedPipelines.map(_.name)) { n =>
                     val archived = contents.pipelines.find(_.name == n).get
                     val toSave = CatalogArchive.stripPipelineForExport(archived).copy(catalog = name)
                     pipelineController.savePipelineInternal(toSave, note, request) match {
@@ -463,13 +479,15 @@ class CatalogAPIController {
                         case Right(_) =>
                     }
                 }
-                contents.pipelines.filter(p => pipelineResult.ok.contains(p.name)).foreach(p => warnings ++= CatalogArchive.installWarnings(p))
+                contents.pipelines.filter(p => pipelineResult.ok.contains(p.name)).foreach { p =>
+                    warnings ++= CatalogArchive.installWarnings(p)
+                    warnings ++= manifest.warnings.filter(w => w.startsWith(p.name + ": ") && w.contains(CatalogArchive.RedactionMarker))
+                }
 
                 // 3. Taps: script first (tenant default store), then the config,
                 //    disabled, with run status cleared.
                 val tapController = new TapAPIController
-                val tapResult = CatalogOps.execute(contents.taps.map(_.name)) { n =>
-                    CapabilityCheck.assertScope(request, "tap", "create", ownerCtx)
+                val tapResult = CatalogOps.execute(allowedTaps.map(_.name)) { n =>
                     val archived = contents.taps.find(_.name == n).get
                     val base = CatalogArchive.stripTapForExport(archived).copy(enabled = false, catalog = name)
                     val toSave =
@@ -520,7 +538,9 @@ class CatalogAPIController {
 
                 // 5. An empty archive still creates the (empty) catalog.
                 val failed = Seq.newBuilder[(String, String)]
+                failed ++= pipelineDenied
                 failed ++= pipelineResult.failed
+                failed ++= tapDenied
                 failed ++= tapResult.failed
                 failed ++= stateFailures
                 if (manifest.taps.isEmpty && manifest.pipelines.isEmpty && CatalogOps.Placeholder.of(taps, name).isEmpty) {
@@ -636,6 +656,7 @@ class CatalogAPIController {
         }.toMap
 
         pipelines.foreach(p => warnings ++= CatalogArchive.installWarnings(p))
+        pipelines.foreach(p => warnings ++= CatalogArchive.redactionWarnings(p))
 
         val required = CatalogArchive.requiredSecrets(taps, pipelines).map { r =>
             val storedType =
