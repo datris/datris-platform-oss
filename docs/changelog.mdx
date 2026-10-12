@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.47.2" description="October 12, 2026">
+  **See which AI model is answering.**
+
+  - **The Assistant names its model.** The top of the Assistant conversation shows the chat provider and model in use (for example "Anthropic · claude-fable-5-1 · extended thinking on"), and the line stays visible after the first message. Administrators get a link to change it on Configuration → AI Providers; the line updates as soon as the configuration is saved.
+  - **Generated tap scripts say who wrote them.** When the Assistant or an agent generates a tap script, the result reports which CodeGen provider and model produced it. The tap generation status carries the provider and model from the first poll.
+  - **Consistent provider names.** The Assistant, tap generation and the Configuration tab use the same display names for AI providers.
+
+  **Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. No configuration changes are required; the additions are new fields only.
+</Update>
+
 <Update label="v1.47.1" description="October 11, 2026">
   **Server framework update.**
 

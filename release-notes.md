@@ -1,16 +1,14 @@
 # Release Notes
 
-## Unreleased
+## v1.47.2 — October 12, 2026
 
-- **See which model is answering.** The Assistant now shows the chat provider and model at the top of the conversation, and when it generates a tap script it can tell you which CodeGen provider and model wrote it. Change either on Configuration → AI Providers.
+**See which AI model is answering.**
 
-## v1.47.1 — October 11, 2026
-
-**Server framework update.**
-
-- **Current, supported server framework.** The server now runs on Spring Boot 4, Spring Framework 7 and Tomcat 11, a line that still receives security fixes. This closes two open vulnerability reports against the web framework; neither affected path is used by Datris. The API, responses, sign-in sessions, Assistant streaming, metrics and audit log behave exactly as before.
+- **The Assistant names its model.** The top of the Assistant conversation now shows the chat provider and model in use (for example "Anthropic · claude-fable-5-1 · extended thinking on"), and the line stays visible after the first message. Administrators get a link to change it on Configuration → AI Providers; the line updates as soon as the configuration is saved.
+- **Generated tap scripts say who wrote them.** When the Assistant or an agent generates a tap script, the result reports which CodeGen provider and model produced it, so you always know which model's output you are reviewing. The tap generation status also carries the provider and model from the first poll.
+- **Consistent provider names.** The Assistant, tap generation and the Configuration tab now use the same display names for AI providers.
 
 **Upgrading**
 
-- The server image changed: run `docker compose pull && docker compose up -d`.
-- No configuration changes are required.
+- The server, UI and MCP server images changed: run `docker compose pull && docker compose up -d`.
+- No configuration changes are required. The additions are new fields only; existing clients and agents are unaffected.
