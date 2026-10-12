@@ -6,6 +6,7 @@ import { TapService } from '../tap.service';
 import { ApprovalsService, PolicyToolOutcome } from '../approvals.service';
 import { httpErrorText } from '../shared/http-error';
 import { providerDisplayName } from '../shared/provider-label';
+import { AuthService } from '../auth.service';
 
 interface StarterPrompt {
   label: string;
@@ -52,7 +53,8 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     private tapService: TapService,
     private route: ActivatedRoute,
     private router: Router,
-    private zone: NgZone
+    private zone: NgZone,
+    private auth: AuthService
   ) { }
 
   ngOnInit(): void {
@@ -251,6 +253,12 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     if (!info || !info.model) return '';
     return providerDisplayName(info.provider) + ' · ' + info.model +
       (info.extendedThinking ? ' · extended thinking on' : '');
+  }
+
+  /** Whether the current user can navigate to /configuration (mirrors the
+   *  top-nav gate) so the model line never offers a link that bounces. */
+  get canSeeConfig(): boolean {
+    return !this.auth.userAuthEnabled || this.auth.current()?.role === 'admin';
   }
 
   get reasoningLabel(): string {
