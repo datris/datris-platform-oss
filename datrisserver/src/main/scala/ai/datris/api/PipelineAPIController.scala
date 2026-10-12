@@ -213,108 +213,10 @@ class PipelineAPIController {
             logger.info("API endpoint POST /pipeline with pipeline name: " + config.name)
             APIKeyValidator.validate(apiKey)
 
-            val withDefaults = PipelineValidatorUtil.applyDefaults(config)
-            PipelineValidatorUtil.validate(withDefaults)
-
-            // Postgres is install-time optional (POSTGRES_ENABLED=0 skips the
-            // bundled container), so a postgres destination can be selected in a
-            // deployment where no Postgres is reachable. Probe now — same probe
-            // as /health and /destinations/available — and reject the save with
-            // an actionable 400 instead of letting the first run die in the
-            // loader. Postgres only: mongodb/minio are required core services,
-            // and Snowflake/Databricks already fail with actionable
-            // CredentialResolver errors when their credentials are missing.
-            if (
-                withDefaults.destination != null && withDefaults.destination.database != null &&
-                withDefaults.destination.database.usePostgres
-            ) {
-                val probeFailure = PostgresQueryUtil.probeError()
-                if (probeFailure.isDefined) {
-                    logger.warn("POST /pipeline rejected: postgres destination selected but Postgres is unreachable: " + probeFailure.get)
-                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
-                        "{\"error\": \"Postgres is not installed/reachable in this deployment. Enable it in .env (POSTGRES_ENABLED=1) or point POSTGRES_JDBC_URL at an external Postgres, then re-run 'docker compose up -d' — or choose another destination.\"}"
-                    )
-                }
+            savePipelineWithBody(config, changeNote, request) match {
+                case Left(refused) => refused
+                case Right((_, out)) => ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out)
             }
-
-            val modifiedConfig = PipelineValidatorUtil.modify(withDefaults)
-
-            // Stamp the issuing key's label so `owner=self` capabilities can
-            // match resources this key created. Null when no key is present
-            // (auth disabled or public endpoint) — that resource will not
-            // match `owner=self` for anyone, which is intended.
-            val tagged = ResolvedKeyAccess.keyLabel(request) match {
-                case Some(label) => modifiedConfig.copy(createdByKeyLabel = label)
-                case None => modifiedConfig
-            }
-
-            // Definition-edit write → mints a new immutable version snapshot.
-            val existing = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tagged.name)
-            // Tags/provenance preservation: clients rebuild the body from
-            // scratch, so a body that omits these entirely must not wipe them
-            // on an unrelated edit. An explicit empty list / stamp=false in the
-            // body still clears/disables.
-            val preserved = if (existing != null)
-                tagged.copy(
-                    tags = if (tagged.tags == null) existing.tags else tagged.tags,
-                    provenance = if (tagged.provenance == null) existing.provenance else tagged.provenance,
-                    // Authority declarations follow the same rule: omitted ⇒ keep.
-                    authoritative = if (tagged.authoritative == null) existing.authoritative else tagged.authoritative,
-                    destination =
-                        if (tagged.destination != null && tagged.destination.authoritative == null && existing.destination != null)
-                            tagged.destination.copy(authoritative = existing.destination.authoritative)
-                        else tagged.destination
-                )
-            else tagged
-            // Source-of-authority rules are validated against every other
-            // pipeline: a declared kind must exist, and one dataset has at most
-            // one authoritative writer.
-            val others =
-                try PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
-                catch { case _: Exception => Nil }
-            LineageService.authorityConflict(preserved, others).foreach { problem =>
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"" + problem.replace("\"", "'") + "\"}")
-            }
-            val note = if (changeNote != null && changeNote.nonEmpty) changeNote
-            else if (existing != null) "updated" else "created"
-            // A new pipeline must not inherit Unity Catalog sync state left by
-            // an earlier pipeline of the same name (deleted out of band).
-            if (existing == null) UnityCatalogStaleState.clearOnCreate(preserved)
-            PipelineConfigIO.writeVersioned(preserved, note, VersionActor.resolve(request))
-
-            // If the source is a database, initialize the pipeline pull table
-            if (modifiedConfig.source.databaseAttributes != null)
-                PipelinePullTableUtil.initialize(modifiedConfig.name, modifiedConfig.source.databaseAttributes.cronExpression)
-
-            // Advisory only: the pipeline is saved either way. Unity Catalog on
-            // Databricks cannot serve register/rest modes for an object-store
-            // Iceberg table; say so now rather than at the first run.
-            // The hint names the secret's workspace host, so it is only built
-            // for a secret this caller may read (same predicate as
-            // list_platform_secrets); otherwise it would be an existence and
-            // host oracle for secrets behind a narrower read scope.
-            val canReadSecret: String => Boolean = s =>
-                scala.util.Try(
-                    SecretsUtil.getSecretMap(DatrisEnvironment.current.environment + "/" + s)
-                        .exists(f => UnityCatalogAPIController.canRead(request, f))
-                ).getOrElse(false)
-            val warnings = UnityCatalogSaveHints.forConfig(
-                preserved,
-                PipelineAPIController.hintHostOf(canReadSecret, UnityCatalogSaveHints.resolveHost)
-            )
-            warnings.foreach(w => logger.warn("POST /pipeline " + preserved.name + ": " + w))
-            // CodeGen scripts: generate (or keep) the AI rule / AI
-            // transformation script now. Never fails the save: a script that
-            // could not be generated is pending and the first run generates it.
-            val outcomes =
-                try PipelineScripts.onSave(existing, preserved, ResolvedKeyAccess.keyLabel(request).orNull)
-                catch {
-                    case e: Exception =>
-                        logger.warn("POST /pipeline " + preserved.name + ": CodeGen script save hook failed: " + e.getMessage)
-                        Nil
-                }
-            val out = PipelineAPIController.saveResponseBody(warnings.toList, outcomes)
-            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
             case v: ValidationException =>
                 // An invalid config is the caller's to fix: 400, same body
@@ -325,6 +227,131 @@ class PipelineAPIController {
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
+    }
+
+    /** Body of `POST /pipeline` after key validation: defaults, validation,
+      * the Postgres probe, ownership stamp, tag/provenance/authority
+      * preservation and authority check, versioned write, pull-table init and
+      * the CodeGen save hook. Shared with the catalog restore
+      * (`CatalogAPIController`) so a restored pipeline is saved exactly as a
+      * UI save would be. Left is the refusal response (400); a
+      * `ValidationException` or any other failure is thrown. */
+    def savePipelineInternal(
+        config: PipelineConfig,
+        changeNote: String,
+        request: HttpServletRequest
+    ): Either[ResponseEntity[String], PipelineConfig] =
+        savePipelineWithBody(config, changeNote, request).right.map(_._1)
+
+    /** [[savePipelineInternal]] plus the `POST /pipeline` 200 body (save
+      * warnings and CodeGen outcomes). */
+    private[api] def savePipelineWithBody(
+        config: PipelineConfig,
+        changeNote: String,
+        request: HttpServletRequest
+    ): Either[ResponseEntity[String], (PipelineConfig, String)] = {
+        val withDefaults = PipelineValidatorUtil.applyDefaults(config)
+        PipelineValidatorUtil.validate(withDefaults)
+
+        // Postgres is install-time optional (POSTGRES_ENABLED=0 skips the
+        // bundled container), so a postgres destination can be selected in a
+        // deployment where no Postgres is reachable. Probe now — same probe
+        // as /health and /destinations/available — and reject the save with
+        // an actionable 400 instead of letting the first run die in the
+        // loader. Postgres only: mongodb/minio are required core services,
+        // and Snowflake/Databricks already fail with actionable
+        // CredentialResolver errors when their credentials are missing.
+        if (
+            withDefaults.destination != null && withDefaults.destination.database != null &&
+            withDefaults.destination.database.usePostgres
+        ) {
+            val probeFailure = PostgresQueryUtil.probeError()
+            if (probeFailure.isDefined) {
+                logger.warn("POST /pipeline rejected: postgres destination selected but Postgres is unreachable: " + probeFailure.get)
+                return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                    "{\"error\": \"Postgres is not installed/reachable in this deployment. Enable it in .env (POSTGRES_ENABLED=1) or point POSTGRES_JDBC_URL at an external Postgres, then re-run 'docker compose up -d' — or choose another destination.\"}"
+                ))
+            }
+        }
+
+        val modifiedConfig = PipelineValidatorUtil.modify(withDefaults)
+
+        // Stamp the issuing key's label so `owner=self` capabilities can
+        // match resources this key created. Null when no key is present
+        // (auth disabled or public endpoint) — that resource will not
+        // match `owner=self` for anyone, which is intended.
+        val tagged = ResolvedKeyAccess.keyLabel(request) match {
+            case Some(label) => modifiedConfig.copy(createdByKeyLabel = label)
+            case None => modifiedConfig
+        }
+
+        // Definition-edit write → mints a new immutable version snapshot.
+        val existing = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tagged.name)
+        // Tags/provenance preservation: clients rebuild the body from
+        // scratch, so a body that omits these entirely must not wipe them
+        // on an unrelated edit. An explicit empty list / stamp=false in the
+        // body still clears/disables.
+        val preserved = if (existing != null)
+            tagged.copy(
+                tags = if (tagged.tags == null) existing.tags else tagged.tags,
+                provenance = if (tagged.provenance == null) existing.provenance else tagged.provenance,
+                // Authority declarations follow the same rule: omitted ⇒ keep.
+                authoritative = if (tagged.authoritative == null) existing.authoritative else tagged.authoritative,
+                destination =
+                    if (tagged.destination != null && tagged.destination.authoritative == null && existing.destination != null)
+                        tagged.destination.copy(authoritative = existing.destination.authoritative)
+                    else tagged.destination
+            )
+        else tagged
+        // Source-of-authority rules are validated against every other
+        // pipeline: a declared kind must exist, and one dataset has at most
+        // one authoritative writer.
+        val others =
+            try PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+            catch { case _: Exception => Nil }
+        LineageService.authorityConflict(preserved, others).foreach { problem =>
+            return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"" + problem.replace("\"", "'") + "\"}"))
+        }
+        val note = if (changeNote != null && changeNote.nonEmpty) changeNote
+        else if (existing != null) "updated" else "created"
+        // A new pipeline must not inherit Unity Catalog sync state left by
+        // an earlier pipeline of the same name (deleted out of band).
+        if (existing == null) UnityCatalogStaleState.clearOnCreate(preserved)
+        val saved = PipelineConfigIO.writeVersioned(preserved, note, VersionActor.resolve(request))
+
+        // If the source is a database, initialize the pipeline pull table
+        if (modifiedConfig.source.databaseAttributes != null)
+            PipelinePullTableUtil.initialize(modifiedConfig.name, modifiedConfig.source.databaseAttributes.cronExpression)
+
+        // Advisory only: the pipeline is saved either way. Unity Catalog on
+        // Databricks cannot serve register/rest modes for an object-store
+        // Iceberg table; say so now rather than at the first run.
+        // The hint names the secret's workspace host, so it is only built
+        // for a secret this caller may read (same predicate as
+        // list_platform_secrets); otherwise it would be an existence and
+        // host oracle for secrets behind a narrower read scope.
+        val canReadSecret: String => Boolean = s =>
+            scala.util.Try(
+                SecretsUtil.getSecretMap(DatrisEnvironment.current.environment + "/" + s)
+                    .exists(f => UnityCatalogAPIController.canRead(request, f))
+            ).getOrElse(false)
+        val warnings = UnityCatalogSaveHints.forConfig(
+            preserved,
+            PipelineAPIController.hintHostOf(canReadSecret, UnityCatalogSaveHints.resolveHost)
+        )
+        warnings.foreach(w => logger.warn("POST /pipeline " + preserved.name + ": " + w))
+        // CodeGen scripts: generate (or keep) the AI rule / AI
+        // transformation script now. Never fails the save: a script that
+        // could not be generated is pending and the first run generates it.
+        val outcomes =
+            try PipelineScripts.onSave(existing, preserved, ResolvedKeyAccess.keyLabel(request).orNull)
+            catch {
+                case e: Exception =>
+                    logger.warn("POST /pipeline " + preserved.name + ": CodeGen script save hook failed: " + e.getMessage)
+                    Nil
+            }
+        val out = PipelineAPIController.saveResponseBody(warnings.toList, outcomes)
+        Right((saved, out.toString))
     }
 
     /** The pipeline's stored CodeGen scripts (AI rule, AI transformation):

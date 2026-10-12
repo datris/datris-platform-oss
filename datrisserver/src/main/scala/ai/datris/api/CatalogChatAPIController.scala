@@ -208,6 +208,8 @@ class CatalogChatAPIController {
             "set_catalog",
             "rename_catalog",
             "delete_catalog",
+            "export_catalog",
+            "restore_catalog",
             "list_taps",
             "list_pipelines",
             "get_tap",
@@ -320,6 +322,9 @@ class CatalogChatAPIController {
         )
         sb.append(
             "- **Renaming a catalog.** To rename catalog A to B call `rename_catalog`; it refuses Uncataloged and a `new_name` that already exists; never mass-`set_catalog` to emulate a rename. A rename never merges catalogs: to combine two, move the items with `set_catalog` when the user asks for that. Report any `failed` items and any `affectedKeys` (API keys scoped to the old name) it returns. `delete_catalog` moves a catalog's items to Uncataloged and removes the catalog; it never deletes items or data. Call either only when the user has explicitly asked for that catalog operation.\n"
+        )
+        sb.append(
+            "- **Backup and restore.** `export_catalog` is read-only and returns a zip backup of a catalog (its manifest first); `restore_catalog` restores such an archive, so call it only when the user asks to restore and names the archive to use.\n"
         )
         sb.append(
             "- **Be brief.** This is a side-panel chat with limited width. Short paragraphs. When proposing a grouping, a compact bulleted plan beats prose.\n\n"

@@ -100,6 +100,11 @@ object CapabilityRoutes {
         // row per method; members are owner-scope checked in the controller.
         Route("PUT", "/api/v1/catalog/**", "pipeline", "update"),
         Route("DELETE", "/api/v1/catalog/**", "pipeline", "delete"),
+        // Catalog backup (zip export) and restore. Members are additionally
+        // scope-checked in the controller as tap/pipeline read (export) or
+        // create (restore).
+        Route("GET", "/api/v1/catalog/*/export", "pipeline", "read"),
+        Route("POST", "/api/v1/catalog/*/restore", "pipeline", "create"),
 
         // Taps
         Route("GET", "/api/v1/tap", "tap", "read"),

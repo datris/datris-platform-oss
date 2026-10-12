@@ -333,224 +333,252 @@ class TapAPIController {
             logger.info("API endpoint POST /tap called with name: " + tapConfig.name)
             APIKeyValidator.validate(apiKey)
 
-            if (tapConfig.name == null || tapConfig.name.isEmpty)
-                throw new DatrisException("Tap name is required")
-
-            // A tap may never reference a server-managed secret (field-protection
-            // keys, API-key stores): its fields would be injected into the script.
-            // Field protection 8: and only a tap-typed secret unless
-            // DATRIS_TAP_SECRET_SCOPE=any.
-            TapAPIController.tapSecretSaveProblem(tapConfig, TapAPIController.liveSecretType, SecretNames.tapScopeEnforced) match {
-                case Some(msg) =>
-                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
-                        .body[String]("{\"error\": " + new Gson().toJson(msg) + "}")
-                case None =>
+            saveTapInternal(tapConfig, changeNote, request) match {
+                case Left(refused) => refused
+                case Right(saved) => new ResponseEntity[String](new Gson().toJson(saved), HttpStatus.OK)
             }
-
-            // Tap-kind validation. null/"python" is the script lane; "http" is a
-            // user-hosted endpoint speaking the tap HTTP contract. Anything else is
-            // a typo we reject rather than silently treating as a script tap.
-            val isHttpTap = tapConfig.isHttp
-            if (
-                tapConfig.scriptKind != null && tapConfig.scriptKind.nonEmpty &&
-                !isHttpTap && !tapConfig.scriptKind.equalsIgnoreCase("python")
-            )
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
-                    "{\"error\": \"Unknown scriptKind '" + tapConfig.scriptKind + "'. Valid values: python (default), http.\"}"
-                )
-            if (isHttpTap) {
-                val urlProblem: Option[String] =
-                    if (tapConfig.endpointUrl == null || tapConfig.endpointUrl.trim.isEmpty)
-                        Some("endpointUrl is required for HTTP taps")
-                    else
-                        try {
-                            val u = new java.net.URI(tapConfig.endpointUrl.trim)
-                            if (!u.isAbsolute || u.getHost == null) Some("endpointUrl must be an absolute http:// or https:// URL")
-                            else if (u.getScheme != "http" && u.getScheme != "https")
-                                Some("endpointUrl scheme must be http or https (got: " + u.getScheme + ")")
-                            else {
-                                // Plain http to a non-local host sends the bearer token in
-                                // the clear. Operator-configured on a self-hosted instance,
-                                // so warn rather than fail.
-                                if (u.getScheme == "http" && u.getHost != "localhost" && u.getHost != "127.0.0.1" && u.getHost != "host.docker.internal")
-                                    logger.warn("HTTP tap '" + tapConfig.name + "' uses plain http:// to a non-local host — " +
-                                        "the endpoint token (if any) is sent unencrypted: " + tapConfig.endpointUrl)
-                                None
-                            }
-                        } catch {
-                            case _: Exception => Some("endpointUrl is not a valid URL: " + tapConfig.endpointUrl)
-                        }
-                urlProblem match {
-                    case Some(p) =>
-                        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
-                            "{\"error\": \"" + p.replace("\"", "'") + "\"}"
-                        )
-                    case None => // valid
-                }
-                // Script-lane fields have no meaning for an HTTP tap. Reject rather
-                // than silently ignore, naming the conflict so the client can fix it.
-                val conflicting = Seq(
-                    "scriptPath" -> tapConfig.scriptPath,
-                    "scriptStorage" -> tapConfig.scriptStorage,
-                    "scriptRepoPath" -> tapConfig.scriptRepoPath,
-                    "scriptCommitSha" -> tapConfig.scriptCommitSha
-                ).collect {
-                    case (n, v) if v != null && v.nonEmpty => n
-                } ++
-                    (if (tapConfig.packages != null && !tapConfig.packages.isEmpty) Seq("packages") else Nil)
-                if (conflicting.nonEmpty)
-                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
-                        "{\"error\": \"HTTP taps run no code on the platform, so these field(s) do not apply: " +
-                            conflicting.mkString(", ") + ". Remove them, or set scriptKind to python.\"}"
-                    )
-            } else if (tapConfig.endpointUrl != null && tapConfig.endpointUrl.nonEmpty) {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
-                    "{\"error\": \"endpointUrl is only valid when scriptKind is 'http'.\"}"
-                )
-            }
-
-            // Document-tap pipeline compatibility guard: document taps push raw bytes,
-            // so the target pipeline must be unstructured + vector-store or the bytes
-            // will crash the destination loader (e.g. PDF into MongoDBLoader).
-            if (tapConfig.tapType == "document" && tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty) {
-                val pipeline = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tapConfig.targetPipeline)
-                DocumentTapValidator.incompatibilityReason(pipeline) match {
-                    case Some(reason) =>
-                        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
-                            "{\"error\": \"Document tap '" + tapConfig.name + "' cannot target pipeline '" +
-                                tapConfig.targetPipeline + "': " + reason.replace("\"", "'") + "\"}"
-                        )
-                    case None => // compatible
-                }
-            }
-
-            // Script-existence guard: a tap save with a script reference that points
-            // at a missing file (MinIO object or repo path) would silently succeed
-            // here and then fail at run_tap with "scriptMissing". Reject the save
-            // with a clear error so the UI can prompt the user to push the script
-            // before retrying.
-            val hasScriptRef =
-                (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
-                    (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
-            if (hasScriptRef) {
-                val exists =
-                    try {
-                        TapCodeStore.forTap(tapConfig).scriptExists(tapConfig)
-                    } catch {
-                        case e: Exception =>
-                            logger.warn("Tap script existence check failed for tap '" + tapConfig.name + "'", e)
-                            false
-                    }
-                if (!exists) {
-                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
-                        "{\"error\": \"Tap script not found in its storage backend. " +
-                            "The script must be uploaded (via the tap wizard's script-store endpoints) before saving the tap config.\"}"
-                    )
-                }
-            }
-
-            // Script-reference preservation: clients (UI save, MCP create_tap)
-            // rebuild the config body from scratch and may omit the script
-            // fields entirely. If the body carries NO script reference but the
-            // stored tap has one, carry it over — otherwise an unrelated edit
-            // (description, cron) would silently orphan the script.
-            val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
-            val bodyHasScriptRef =
-                (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
-                    (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
-            // Kind preservation, mirroring script-reference preservation below: a
-            // partial update that omits scriptKind must not silently convert an HTTP
-            // tap into a script tap with no script. Sending a script reference (or an
-            // explicit scriptKind) is the deliberate way to convert back to python.
-            val tapConfigWithKind =
-                if (
-                    (tapConfig.scriptKind == null || tapConfig.scriptKind.isEmpty) &&
-                    existing != null && existing.isHttp && !bodyHasScriptRef
-                )
-                    tapConfig.copy(
-                        scriptKind = existing.scriptKind,
-                        endpointUrl =
-                            if (tapConfig.endpointUrl != null && tapConfig.endpointUrl.nonEmpty) tapConfig.endpointUrl
-                            else existing.endpointUrl
-                    )
-                else tapConfig
-            // Script-reference preservation is a script-lane concern: an HTTP tap save
-            // (including a python→http conversion) must NOT re-attach the old script.
-            val tapConfigWithScript =
-                if (!bodyHasScriptRef && existing != null && !tapConfigWithKind.isHttp)
-                    tapConfigWithKind.copy(
-                        scriptStorage = existing.scriptStorage,
-                        scriptPath = existing.scriptPath,
-                        scriptRepoPath = existing.scriptRepoPath,
-                        scriptCommitSha = existing.scriptCommitSha
-                    )
-                else tapConfigWithKind
-
-            // Set timestamps and stamp the issuing key's label on first create.
-            // On update we preserve the original `createdByKeyLabel` — ownership
-            // is a property of creation, not the last edit (otherwise an editor
-            // key would silently claim ownership and `owner=self` would drift).
-            val sdf2 = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
-            sdf2.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
-            val now = sdf2.format(new java.util.Date())
-            // A blank cron means unscheduled: stored as null, never "".
-            val configToSave = TapCronGate.normalizeCron(if (existing != null)
-                tapConfigWithScript.copy(
-                    createdAt = existing.createdAt,
-                    updatedAt = now,
-                    createdByKeyLabel = existing.createdByKeyLabel,
-                    // Tags preservation: a body that omits tags entirely must not
-                    // wipe them on an unrelated edit; an explicit empty list clears.
-                    tags = if (tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags,
-                    // Same rule for the declared source: omitted ⇒ keep; "" ⇒ clear.
-                    source = if (tapConfigWithScript.source == null) existing.source else tapConfigWithScript.source,
-                    // Test outcome + script stamp are server-owned (written only by
-                    // the run endpoint in mode=test). Clients echo stale copies in the
-                    // save body; never let a body promote a tap to "tested".
-                    lastTestRunStatus = existing.lastTestRunStatus,
-                    lastTestRunScriptId = existing.lastTestRunScriptId
-                )
-            else
-                tapConfigWithScript.copy(
-                    createdAt = now,
-                    updatedAt = now,
-                    createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull,
-                    lastTestRunStatus = null,
-                    lastTestRunScriptId = null
-                ))
-
-            // Cron validation: a schedule the scheduler cannot parse is refused
-            // here (400) rather than stored to log an error on every tick. Runs
-            // after blank normalisation (blank = unscheduled, never validated)
-            // and before the test-before-cron gate, whose 409 text is unchanged.
-            TapCronValidation.check(configToSave.name, configToSave.cronExpression) match {
-                case Some(msg) =>
-                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](TapCronValidation.errorBody(msg))
-                case None =>
-            }
-
-            // Test-before-cron gate: a schedule may only be set on a script (or
-            // endpoint) that has passed a mode=test run. Reads test state from
-            // the STORED tap only. Refused saves persist nothing and mint no version.
-            TapCronGate.check(existing, configToSave) match {
-                case Some(msg) =>
-                    return ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")
-                case None =>
-            }
-
-            // Definition-edit write → mints a new immutable version snapshot.
-            // (Status churn from TapRunner stays on plain TapConfigIO.write.)
-            val note = if (changeNote != null && changeNote.nonEmpty) changeNote
-            else if (existing != null) "updated" else "created"
-            val saved = TapConfigIO.writeVersioned(configToSave, note, VersionActor.resolve(request))
-
-            val gson = new Gson
-            new ResponseEntity[String](gson.toJson(saved), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ApiErrors.internal(e)
         }
+    }
+
+    /** Body of `POST /tap` after key validation: secret-scope check
+      * (`tapSecretSaveProblem`), HTTP-tap validation, document-tap
+      * compatibility, script-existence guard, kind/script/tag preservation,
+      * ownership stamp, cron validation, test-before-cron gate and the
+      * versioned write. Shared with the catalog restore (`CatalogAPIController`).
+      * Left is the refusal response (400/409); other failures are thrown.
+      *
+      * `restored = true` is only for a catalog restore of a tap that did not
+      * exist before: the archived `lastTestRunScriptId` is kept (it names the
+      * same bytes on built-in storage) and the test-before-cron gate is not
+      * applied, because the restore writes the tap with `enabled = false` and
+      * the gate applies again on the save that re-enables it. */
+    def saveTapInternal(
+        tapConfig: TapConfig,
+        changeNote: String,
+        request: HttpServletRequest,
+        restored: Boolean = false
+    ): Either[ResponseEntity[String], TapConfig] = {
+        if (tapConfig.name == null || tapConfig.name.isEmpty)
+            throw new DatrisException("Tap name is required")
+
+        // A tap may never reference a server-managed secret (field-protection
+        // keys, API-key stores): its fields would be injected into the script.
+        // Field protection 8: and only a tap-typed secret unless
+        // DATRIS_TAP_SECRET_SCOPE=any.
+        TapAPIController.tapSecretSaveProblem(tapConfig, TapAPIController.liveSecretType, SecretNames.tapScopeEnforced) match {
+            case Some(msg) =>
+                return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                    .body[String]("{\"error\": " + new Gson().toJson(msg) + "}"))
+            case None =>
+        }
+
+        // Tap-kind validation. null/"python" is the script lane; "http" is a
+        // user-hosted endpoint speaking the tap HTTP contract. Anything else is
+        // a typo we reject rather than silently treating as a script tap.
+        val isHttpTap = tapConfig.isHttp
+        if (
+            tapConfig.scriptKind != null && tapConfig.scriptKind.nonEmpty &&
+            !isHttpTap && !tapConfig.scriptKind.equalsIgnoreCase("python")
+        )
+            return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                "{\"error\": \"Unknown scriptKind '" + tapConfig.scriptKind + "'. Valid values: python (default), http.\"}"
+            ))
+        if (isHttpTap) {
+            val urlProblem: Option[String] =
+                if (tapConfig.endpointUrl == null || tapConfig.endpointUrl.trim.isEmpty)
+                    Some("endpointUrl is required for HTTP taps")
+                else
+                    try {
+                        val u = new java.net.URI(tapConfig.endpointUrl.trim)
+                        if (!u.isAbsolute || u.getHost == null) Some("endpointUrl must be an absolute http:// or https:// URL")
+                        else if (u.getScheme != "http" && u.getScheme != "https")
+                            Some("endpointUrl scheme must be http or https (got: " + u.getScheme + ")")
+                        else {
+                            // Plain http to a non-local host sends the bearer token in
+                            // the clear. Operator-configured on a self-hosted instance,
+                            // so warn rather than fail.
+                            if (u.getScheme == "http" && u.getHost != "localhost" && u.getHost != "127.0.0.1" && u.getHost != "host.docker.internal")
+                                logger.warn("HTTP tap '" + tapConfig.name + "' uses plain http:// to a non-local host — " +
+                                    "the endpoint token (if any) is sent unencrypted: " + tapConfig.endpointUrl)
+                            None
+                        }
+                    } catch {
+                        case _: Exception => Some("endpointUrl is not a valid URL: " + tapConfig.endpointUrl)
+                    }
+            urlProblem match {
+                case Some(p) =>
+                    return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                        "{\"error\": \"" + p.replace("\"", "'") + "\"}"
+                    ))
+                case None => // valid
+            }
+            // Script-lane fields have no meaning for an HTTP tap. Reject rather
+            // than silently ignore, naming the conflict so the client can fix it.
+            val conflicting = Seq(
+                "scriptPath" -> tapConfig.scriptPath,
+                "scriptStorage" -> tapConfig.scriptStorage,
+                "scriptRepoPath" -> tapConfig.scriptRepoPath,
+                "scriptCommitSha" -> tapConfig.scriptCommitSha
+            ).collect {
+                case (n, v) if v != null && v.nonEmpty => n
+            } ++
+                (if (tapConfig.packages != null && !tapConfig.packages.isEmpty) Seq("packages") else Nil)
+            if (conflicting.nonEmpty)
+                return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                    "{\"error\": \"HTTP taps run no code on the platform, so these field(s) do not apply: " +
+                        conflicting.mkString(", ") + ". Remove them, or set scriptKind to python.\"}"
+                ))
+        } else if (tapConfig.endpointUrl != null && tapConfig.endpointUrl.nonEmpty) {
+            return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                "{\"error\": \"endpointUrl is only valid when scriptKind is 'http'.\"}"
+            ))
+        }
+
+        // Document-tap pipeline compatibility guard: document taps push raw bytes,
+        // so the target pipeline must be unstructured + vector-store or the bytes
+        // will crash the destination loader (e.g. PDF into MongoDBLoader).
+        if (tapConfig.tapType == "document" && tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty) {
+            val pipeline = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tapConfig.targetPipeline)
+            DocumentTapValidator.incompatibilityReason(pipeline) match {
+                case Some(reason) =>
+                    return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                        "{\"error\": \"Document tap '" + tapConfig.name + "' cannot target pipeline '" +
+                            tapConfig.targetPipeline + "': " + reason.replace("\"", "'") + "\"}"
+                    ))
+                case None => // compatible
+            }
+        }
+
+        // Script-existence guard: a tap save with a script reference that points
+        // at a missing file (MinIO object or repo path) would silently succeed
+        // here and then fail at run_tap with "scriptMissing". Reject the save
+        // with a clear error so the UI can prompt the user to push the script
+        // before retrying.
+        val hasScriptRef =
+            (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
+                (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
+        if (hasScriptRef) {
+            val exists =
+                try {
+                    TapCodeStore.forTap(tapConfig).scriptExists(tapConfig)
+                } catch {
+                    case e: Exception =>
+                        logger.warn("Tap script existence check failed for tap '" + tapConfig.name + "'", e)
+                        false
+                }
+            if (!exists) {
+                return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                    "{\"error\": \"Tap script not found in its storage backend. " +
+                        "The script must be uploaded (via the tap wizard's script-store endpoints) before saving the tap config.\"}"
+                ))
+            }
+        }
+
+        // Script-reference preservation: clients (UI save, MCP create_tap)
+        // rebuild the config body from scratch and may omit the script
+        // fields entirely. If the body carries NO script reference but the
+        // stored tap has one, carry it over — otherwise an unrelated edit
+        // (description, cron) would silently orphan the script.
+        val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
+        val bodyHasScriptRef =
+            (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
+                (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
+        // Kind preservation, mirroring script-reference preservation below: a
+        // partial update that omits scriptKind must not silently convert an HTTP
+        // tap into a script tap with no script. Sending a script reference (or an
+        // explicit scriptKind) is the deliberate way to convert back to python.
+        val tapConfigWithKind =
+            if (
+                (tapConfig.scriptKind == null || tapConfig.scriptKind.isEmpty) &&
+                existing != null && existing.isHttp && !bodyHasScriptRef
+            )
+                tapConfig.copy(
+                    scriptKind = existing.scriptKind,
+                    endpointUrl =
+                        if (tapConfig.endpointUrl != null && tapConfig.endpointUrl.nonEmpty) tapConfig.endpointUrl
+                        else existing.endpointUrl
+                )
+            else tapConfig
+        // Script-reference preservation is a script-lane concern: an HTTP tap save
+        // (including a python→http conversion) must NOT re-attach the old script.
+        val tapConfigWithScript =
+            if (!bodyHasScriptRef && existing != null && !tapConfigWithKind.isHttp)
+                tapConfigWithKind.copy(
+                    scriptStorage = existing.scriptStorage,
+                    scriptPath = existing.scriptPath,
+                    scriptRepoPath = existing.scriptRepoPath,
+                    scriptCommitSha = existing.scriptCommitSha
+                )
+            else tapConfigWithKind
+
+        // Set timestamps and stamp the issuing key's label on first create.
+        // On update we preserve the original `createdByKeyLabel` — ownership
+        // is a property of creation, not the last edit (otherwise an editor
+        // key would silently claim ownership and `owner=self` would drift).
+        val sdf2 = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+        sdf2.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+        val now = sdf2.format(new java.util.Date())
+        // A blank cron means unscheduled: stored as null, never "".
+        val configToSave = TapCronGate.normalizeCron(if (existing != null)
+            tapConfigWithScript.copy(
+                createdAt = existing.createdAt,
+                updatedAt = now,
+                createdByKeyLabel = existing.createdByKeyLabel,
+                // Tags preservation: a body that omits tags entirely must not
+                // wipe them on an unrelated edit; an explicit empty list clears.
+                tags = if (tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags,
+                // Same rule for the declared source: omitted ⇒ keep; "" ⇒ clear.
+                source = if (tapConfigWithScript.source == null) existing.source else tapConfigWithScript.source,
+                // Test outcome + script stamp are server-owned (written only by
+                // the run endpoint in mode=test). Clients echo stale copies in the
+                // save body; never let a body promote a tap to "tested".
+                lastTestRunStatus = existing.lastTestRunStatus,
+                lastTestRunScriptId = existing.lastTestRunScriptId
+            )
+        else
+            tapConfigWithScript.copy(
+                createdAt = now,
+                updatedAt = now,
+                createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull,
+                lastTestRunStatus = null,
+                // A restored tap keeps its archived stamp (bytes-identical on
+                // built-in storage, null otherwise); the status stays null so
+                // the gate still wants a fresh test before a schedule runs.
+                lastTestRunScriptId = if (restored) tapConfigWithScript.lastTestRunScriptId else null
+            ))
+
+        // Cron validation: a schedule the scheduler cannot parse is refused
+        // here (400) rather than stored to log an error on every tick. Runs
+        // after blank normalisation (blank = unscheduled, never validated)
+        // and before the test-before-cron gate, whose 409 text is unchanged.
+        TapCronValidation.check(configToSave.name, configToSave.cronExpression) match {
+            case Some(msg) =>
+                return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](TapCronValidation.errorBody(msg)))
+            case None =>
+        }
+
+        // Test-before-cron gate: a schedule may only be set on a script (or
+        // endpoint) that has passed a mode=test run. Reads test state from
+        // the STORED tap only. Refused saves persist nothing and mint no version.
+        // A catalog restore writes the tap disabled, so nothing can fire; the
+        // gate applies on the save that enables it.
+        val gate = if (restored && !configToSave.enabled) None else TapCronGate.check(existing, configToSave)
+        gate match {
+            case Some(msg) =>
+                return Left(ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}"))
+            case None =>
+        }
+
+        // Definition-edit write → mints a new immutable version snapshot.
+        // (Status churn from TapRunner stays on plain TapConfigIO.write.)
+        val note = if (changeNote != null && changeNote.nonEmpty) changeNote
+        else if (existing != null) "updated" else "created"
+        val saved = TapConfigIO.writeVersioned(configToSave, note, VersionActor.resolve(request))
+        Right(saved)
     }
 
     @DeleteMapping(path = Array("/tap"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
