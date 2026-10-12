@@ -18,7 +18,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 
 import { AssistantComponent } from './assistant.component';
 import { AssistantStateService } from './assistant-state.service';
@@ -31,10 +31,12 @@ describe('AssistantComponent — model line', () => {
   let fixture: ComponentFixture<AssistantComponent>;
   let el: HTMLElement;
 
-  function setup(init: any): void {
+  function setup(init: any, ...later: any[]): void {
     sessionStorage.removeItem('assistant.chat.transcript');
     const api = {
-      init: jasmine.createSpy('init').and.returnValue(of(init))
+      init: later.length
+        ? jasmine.createSpy('init').and.returnValues(of(init), ...later)
+        : jasmine.createSpy('init').and.returnValue(of(init))
     };
     TestBed.configureTestingModule({
       declarations: [AssistantComponent],
@@ -114,6 +116,38 @@ describe('AssistantComponent — model line', () => {
     expect(fixture.componentInstance.modelLine).toBe('Grok (xAI) · grok-4.7');
     st.initInfo = { ...INIT, provider: 'bedrock', model: 'anthropic.claude-opus-5-5', extendedThinking: false };
     expect(fixture.componentInstance.modelLine).toBe('Amazon Bedrock · anthropic.claude-opus-5-5');
+  });
+
+  it('re-mounting after a Configuration change refetches /init and shows the new model, never the old one', () => {
+    setup(INIT, of({ ...INIT, model: 'claude-sonnet-5', extendedThinking: false }));
+    expect(text('.empty-state')).toContain('Anthropic · claude-fable-5-1');
+    // Simulate returning to the Assistant tab (the component calls ensureInit on mount).
+    TestBed.inject(AssistantStateService).ensureInit();
+    fixture.detectChanges();
+    const t = text('.empty-state');
+    expect(t).toContain('Anthropic · claude-sonnet-5');
+    expect(t).not.toContain('claude-fable-5-1');
+    expect(el.querySelector('.assistant-loading')).toBeNull();
+  });
+
+  it('a failed background refresh keeps the previous model line', () => {
+    setup(INIT, throwError(() => new Error('network down')));
+    spyOn(console, 'warn');
+    const st = TestBed.inject(AssistantStateService);
+    st.ensureInit();
+    fixture.detectChanges();
+    expect(st.initError).toBe('');
+    expect(text('.empty-state')).toContain('Anthropic · claude-fable-5-1 · extended thinking on');
+    expect(el.querySelector('.assistant-init-error')).toBeNull();
+  });
+
+  it('New chat refreshes /init so the topbar line reflects the current config', () => {
+    setup(INIT, of({ ...INIT, model: 'claude-sonnet-5', extendedThinking: false }));
+    const st = TestBed.inject(AssistantStateService);
+    st.newChat();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.modelLine).toBe('Anthropic · claude-sonnet-5');
+    expect(text('.empty-state')).not.toContain('claude-fable-5-1');
   });
 
   it('an empty model yields an empty line and the empty state still renders', () => {

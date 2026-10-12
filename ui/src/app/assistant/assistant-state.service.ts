@@ -99,12 +99,14 @@ export type Turn = UserTurn | AssistantTurn;
  *  properties work fine and the template stays readable. */
 @Injectable({ providedIn: 'root' })
 export class AssistantStateService {
-  // /init payload — fetched once per browser session, then cached.
+  // /init payload — fetched on first mount, refreshed in the background on
+  // later mounts and on New chat (the chat model can change on Configuration).
   loadingInit = false;
   initError = '';
   initInfo: AssistantInit | null = null;
   toolNamesSet = new Set<string>();
   private initLoaded = false;
+  private refreshingInit = false;
 
   // Conversation state.
   turns: Turn[] = [];
@@ -142,10 +144,12 @@ export class AssistantStateService {
     saveChatState(AssistantStateService.STORAGE_KEY, this.turns, this.draft);
   }
 
-  /** Idempotent: fetches /init the first time, no-ops thereafter. Component
-   *  calls this on mount; subsequent mounts see the cached payload. */
+  /** Fetches /init the first time (with the loading state). Later calls —
+   *  every re-mount of the tab — refresh it in the background so the model
+   *  line follows a Configuration → AI Providers change. */
   ensureInit(): void {
-    if (this.initLoaded || this.loadingInit) return;
+    if (this.initLoaded) { this.refreshInit(); return; }
+    if (this.loadingInit) return;
     this.loadingInit = true;
     this.initError = '';
     this.api.init().subscribe({
@@ -158,6 +162,25 @@ export class AssistantStateService {
       error: (err) => {
         this.initError = 'Could not initialize assistant: ' + (err?.error?.error || err?.message || 'unknown');
         this.loadingInit = false;
+      }
+    });
+  }
+
+  /** Background re-fetch of /init once the first load succeeded: never
+   *  touches loadingInit/initError (no "Connecting…" flash); on error keeps
+   *  the previous payload. One request at a time. */
+  refreshInit(): void {
+    if (!this.initLoaded || this.refreshingInit) return;
+    this.refreshingInit = true;
+    this.api.init().subscribe({
+      next: (info) => {
+        this.initInfo = info;
+        this.toolNamesSet = new Set(info.toolNames || []);
+        this.refreshingInit = false;
+      },
+      error: (err) => {
+        console.warn('Assistant: could not refresh /init; keeping the previous model info', err);
+        this.refreshingInit = false;
       }
     });
   }
@@ -290,6 +313,8 @@ export class AssistantStateService {
     this.draft = '';
     this.clearAttachments();
     clearChatState(AssistantStateService.STORAGE_KEY);
+    // Reflect the current chat model (it may have changed on Configuration).
+    this.refreshInit();
   }
 
   private handleEvent(evt: AssistantEvent, turn: AssistantTurn): void {
