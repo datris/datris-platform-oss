@@ -1,6 +1,6 @@
 /**
- * Display name for an AI provider id, shared by Configuration, the Assistant
- * model line and the tap wizard's generation line. Unknown ids pass through.
+ * Display name for an AI provider id, shared by Configuration and the
+ * Assistant model line. Unknown ids pass through.
  */
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   anthropic: 'Anthropic',
