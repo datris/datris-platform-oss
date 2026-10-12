@@ -305,8 +305,8 @@ export class AssistantStateService {
     this.persist();
   }
 
-  /** Clear the conversation. Used by an explicit "New chat" affordance if we
-   *  add one later — not wired into the UI today. */
+  /** Clear the conversation. Called by the New chat button and the catalog
+   *  deep-link; also refreshes /init. */
   newChat(): void {
     this.stop();
     this.turns = [];
