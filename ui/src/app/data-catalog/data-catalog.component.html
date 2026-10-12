@@ -172,9 +172,10 @@
           <span class="material-icons">{{ renamingCatalog === cat.name ? 'hourglass_empty' : 'edit' }}</span>
         </button>
         <button class="download-catalog-btn"
-                *ngIf="auth.canWrite() && cat.name !== 'Uncataloged' && renameTarget !== cat.name && deleteTarget !== cat.name"
+                *ngIf="cat.name !== 'Uncataloged' && renameTarget !== cat.name && deleteTarget !== cat.name"
                 (click)="downloadCatalog(cat, $event)"
                 [disabled]="exportingCatalog === cat.name"
+                aria-label="Download catalog"
                 title="Download catalog as a zip (taps, pipelines and scripts; no secrets)">
           <span class="material-icons">{{ exportingCatalog === cat.name ? 'hourglass_empty' : 'download' }}</span>
         </button>

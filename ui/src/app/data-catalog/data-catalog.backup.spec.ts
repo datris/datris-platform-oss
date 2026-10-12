@@ -5,7 +5,7 @@
  *
  * Contract pinned here (names the story left open are chosen here; keep
  * them or update this spec):
- *  Card header (named catalogs, write role): `button.download-catalog-btn`;
+ *  Card header (named catalogs, any role; export is read-gated): `button.download-catalog-btn`;
  *    click -> `PipelineService.exportCatalog(name)`. Uncataloged: none.
  *  Page header (next to + Create Catalog): `button.import-catalog-btn` opens
  *    `.import-panel` containing
