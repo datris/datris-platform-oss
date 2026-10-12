@@ -9,6 +9,7 @@ import { AuthService } from '../auth.service';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
 import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, tapCatalogName } from '../shared/sanitize';
 import { httpErrorText } from '../shared/http-error';
+import { providerDisplayName } from '../shared/provider-label';
 
 @Component({
     selector: 'app-tap-create',
@@ -451,10 +452,20 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   // instead of a static "may take a minute" line.
   genProgress: any = null;
   private genPollHandle?: ReturnType<typeof setInterval>;
+  // CodeGen provider/model reported by the status poll (what is generating
+  // the script right now); empty against an older server.
+  genProvider = '';
+  genModel = '';
+  // CodeGen provider/model that wrote the current script (from the generate
+  // result); cleared when the user switches to their own code.
+  generatedProvider = '';
+  generatedModel = '';
 
   generateScript(): void {
     this.generating = true;
     this.error = '';
+    this.genProvider = '';
+    this.genModel = '';
     this.startGenPolling();
     this.activeSub = this.tapService.generateScript(this.description, this.tapName.trim(), this.scriptPath, this.secretName, this.tapType).subscribe({
       next: (result) => {
@@ -462,6 +473,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.scriptPath = result.scriptPath || '';
         this.packages = result.packages || [];
         if (Array.isArray(result.injectedPrompts)) this.injectedPrompts = result.injectedPrompts;
+        this.generatedProvider = result.provider || '';
+        this.generatedModel = result.model || '';
         this.generating = false;
         this.stopGenPolling();
         this.scriptDirty = true;
@@ -481,7 +494,13 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.genPollHandle = setInterval(() => {
       if (!this.generating) { this.stopGenPolling(); return; }
       this.tapService.generateStatus(tap).subscribe({
-        next: (s) => { this.genProgress = s && s.active ? s : null; },
+        next: (s) => {
+          this.genProgress = s && s.active ? s : null;
+          if (this.genProgress) {
+            if (s.provider) this.genProvider = s.provider;
+            if (s.model) this.genModel = s.model;
+          }
+        },
         error: () => { /* progress is best-effort; the generate call itself reports the outcome */ }
       });
     }, 3000);
@@ -500,14 +519,31 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     const mins = Math.floor((p.elapsedSeconds || 0) / 60);
     const secs = (p.elapsedSeconds || 0) % 60;
     const elapsed = mins > 0 ? mins + 'm ' + String(secs).padStart(2, '0') + 's' : secs + 's';
+    const who = this.modelLabel(this.genProvider, this.genModel);
     switch (p.phase) {
       case 'retrying-format':
-        return 'Model output needed reformatting — running a second attempt (' + elapsed + ' total)...';
+        return who
+          ? who + ' output needed reformatting — running a second attempt (' + elapsed + ' total)...'
+          : 'Model output needed reformatting — running a second attempt (' + elapsed + ' total)...';
       case 'storing':
         return 'Storing the generated script...';
       default:
-        return 'Generating script with AI — ' + elapsed + ' so far (typically 1–3 minutes)...';
+        return 'Generating script with ' + (who || 'AI') + ' — ' + elapsed + ' so far (typically 1–3 minutes)...';
     }
+  }
+
+  /** "Generated with Anthropic claude-opus-5-5" for the finished script; empty
+   *  when the server did not report the model (older server) or after BYO. */
+  generatedWithLine(): string {
+    const who = this.modelLabel(this.generatedProvider, this.generatedModel);
+    return who ? 'Generated with ' + who : '';
+  }
+
+  /** "<provider display name> <model id>", or '' when the model is unknown. */
+  private modelLabel(provider: string, model: string): string {
+    if (!model) return '';
+    const name = providerDisplayName(provider);
+    return name ? name + ' ' + model : model;
   }
 
   regenerateScript(): void {
@@ -522,6 +558,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   selectMode(mode: 'structured' | 'document' | 'custom' | 'http'): void {
     if (mode === 'custom') {
       this.bringYourOwnCode = true;
+      this.generatedProvider = '';
+      this.generatedModel = '';
       this.scriptKind = '';
       // Leave tapType as-is so the backend still knows whether this tap feeds a
       // structured pipeline or a document one. Default to structured when nothing
@@ -560,6 +598,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.activeSub = this.tapService.storeScript(this.tapName.trim(), this.userScript, this.scriptPath, this.storageParam(), this.scriptCommitSha).subscribe({
       next: (result) => {
         this.script = this.userScript;
+        this.generatedProvider = '';
+        this.generatedModel = '';
         this.applyStoredScript(result);
         this.packages = [];
         this.scriptDirty = true;

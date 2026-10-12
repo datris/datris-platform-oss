@@ -82,7 +82,7 @@ You can stop chatting at any time and edit the Instruction box directly, or skip
 
 **Credentials (Optional)** — Select an existing tap secret, edit one, or create a new one. Secret keys are injected as environment variables at runtime — the AI generates code that reads them via `os.environ.get('KEY_NAME')`. **Never hardcode credentials in scripts.**
 
-**Generate Script** — Click to have the AI produce a Python script with a `fetch()` function. The result appears below in a scrollable preview, along with any extra pip packages it needs.
+**Generate Script** — Click to have the AI produce a Python script with a `fetch()` function. The result appears below in a scrollable preview, along with any extra pip packages it needs. While it runs, the progress line names the CodeGen provider and model doing the work (the primary model when no CodeGen model is set), and the finished script shows *Generated with &lt;provider&gt; &lt;model&gt;*. The `create_tap` MCP tool returns the same information as `generatedWith`.
 
 The generated script can use these pre-installed packages:
 - `requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`

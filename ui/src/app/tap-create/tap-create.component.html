@@ -318,6 +318,11 @@
         <pre>{{ script }}</pre>
       </div>
 
+      <p class="generated-with" *ngIf="script && !bringYourOwnCode && !isHttpTap && !generating && generatedWithLine()">
+        {{ generatedWithLine() }}
+        <a *ngIf="canSeeConfig" routerLink="/configuration" [queryParams]="{ tab: 'ai-providers' }">Change on Configuration → AI Providers</a>
+      </p>
+
       <div class="packages-info" *ngIf="packages.length > 0 && !bringYourOwnCode && !isHttpTap">
         <span class="packages-label">Required packages:</span>
         <span class="package-chip" *ngFor="let pkg of packages">{{ pkg }}</span>
@@ -355,6 +360,7 @@
       <div class="form-group" *ngIf="!isHttpTap">
         <div class="script-label-row">
           <label class="form-label">Python Script</label>
+          <span class="generated-with generated-with-inline" *ngIf="!bringYourOwnCode && generatedWithLine()">{{ generatedWithLine() }}</span>
           <button class="copy-script-btn" (click)="copyScript()" [title]="scriptCopied ? 'Copied!' : 'Copy script to clipboard'">
             <span class="material-icons">{{ scriptCopied ? 'check' : 'content_copy' }}</span>
             <span class="copy-script-label">{{ scriptCopied ? 'Copied' : 'Copy' }}</span>

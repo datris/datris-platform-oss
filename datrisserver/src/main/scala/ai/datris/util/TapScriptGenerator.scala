@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException}
+import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException}
 import com.google.gson.Gson
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -16,7 +16,9 @@ case class TapGenerateResult(
     script: String,
     packages: java.util.List[String],
     scriptPath: String,
-    injectedPrompts: java.util.List[String] = new java.util.ArrayList[String]()
+    injectedPrompts: java.util.List[String] = new java.util.ArrayList[String](),
+    provider: String = "",
+    model: String = ""
 )
 
 object TapScriptGenerator {
@@ -258,9 +260,12 @@ object TapScriptGenerator {
         if (!DatrisEnvironment.current.aiEnabled)
             throw new DatrisException("AI is not enabled. Set 'ai.enabled: true' in application.yaml")
 
-        TapGenerationProgress.start(tapName)
+        // Resolve the CodeGen config once (falls back to the primary when no CodeGen
+        // slot is set) so the status poll can name the model from the first tick.
+        val codegenCfg = DatrisEnvironment.aiConfigForCodegen
+        TapGenerationProgress.start(tapName, codegenCfg.provider, codegenCfg.model)
         try {
-            generateInternal(description, tapName, oldScriptPath, secretName, tapType)
+            generateInternal(description, tapName, oldScriptPath, secretName, tapType, codegenCfg)
         } finally {
             TapGenerationProgress.finish(tapName)
         }
@@ -271,7 +276,8 @@ object TapScriptGenerator {
         tapName: String,
         oldScriptPath: String,
         secretName: String,
-        tapType: String
+        tapType: String,
+        codegenCfg: AIConfig
     ): TapGenerateResult = {
 
         // Build user prompt with available secret keys if configured
@@ -298,7 +304,6 @@ object TapScriptGenerator {
         // typically targets common APIs the model already knows. Web search is reserved for the
         // recovery paths (/tap/diagnose and /tap/fix) where the model has demonstrably gotten
         // something wrong and current docs add real value.
-        val codegenCfg = DatrisEnvironment.aiConfigForCodegen
         logger.info("TapScriptGenerator: generating with provider '" + codegenCfg.provider +
             "', model '" + codegenCfg.model + "' for tap: " + tapName)
         val baseSystemPrompt = if (tapType == "document") DOCUMENT_SYSTEM_PROMPT else SYSTEM_PROMPT
@@ -428,7 +433,14 @@ object TapScriptGenerator {
         val scriptPath = storeScript(tapName, script, oldScriptPath)
 
         logger.info("TapScriptGenerator: script stored at: " + scriptPath + ", packages: " + packages)
-        TapGenerateResult(script, packages, scriptPath, TapPromptInjector.matchKeys(description))
+        TapGenerateResult(
+            script,
+            packages,
+            scriptPath,
+            TapPromptInjector.matchKeys(description),
+            provider = codegenCfg.provider,
+            model = codegenCfg.model
+        )
     }
 
     /**

@@ -4329,6 +4329,7 @@ def _dispatch(name: str, args: dict) -> str:
         script_storage = None
         script_repo_path = None
         script_commit_sha = None
+        generated_with = None  # {provider, model} of the CodeGen config that wrote the script
         packages = caller_packages
 
         # Mode 1: User-provided script — store directly. The server resolves the
@@ -4363,6 +4364,10 @@ def _dispatch(name: str, args: dict) -> str:
                 script_path = gen_data.get("scriptPath")
                 if caller_packages is None:
                     packages = gen_data.get("packages")
+                # Newer servers report the CodeGen provider/model that wrote the
+                # script; older servers omit them, so carry nothing then.
+                if gen_data.get("provider") and gen_data.get("model"):
+                    generated_with = {"provider": gen_data["provider"], "model": gen_data["model"]}
             except (json.JSONDecodeError, TypeError):
                 return json.dumps({"error": f"Script generation failed: {gen_result[:200]}"})
 
@@ -4428,7 +4433,10 @@ def _dispatch(name: str, args: dict) -> str:
             saved = json.loads(save_result)
             if "error" in saved:
                 return save_result
-            return json.dumps({"message": f"Tap '{tap_name}' created successfully", "tap": saved})
+            created = {"message": f"Tap '{tap_name}' created successfully", "tap": saved}
+            if generated_with:
+                created["generatedWith"] = generated_with
+            return json.dumps(created)
         except (json.JSONDecodeError, TypeError):
             return json.dumps({"message": f"Tap '{tap_name}' created"})
 

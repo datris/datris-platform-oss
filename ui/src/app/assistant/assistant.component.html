@@ -12,6 +12,12 @@
   <ng-container *ngIf="!state.loadingInit && !state.initError">
     <!-- Sticky top bar: only shown once there's a conversation to clear. -->
     <div class="assistant-topbar" *ngIf="state.turns.length > 0">
+      <div class="topbar-model">
+        <ng-container *ngIf="modelLine">
+          <span class="topbar-model-text">{{ modelLine }}</span>
+          <a class="model-config-link" routerLink="/configuration" [queryParams]="{ tab: 'ai-providers' }">Change on Configuration → AI Providers</a>
+        </ng-container>
+      </div>
       <button class="topbar-btn" (click)="newChat()" [disabled]="state.streaming" title="Clear conversation and start fresh">
         <mat-icon class="topbar-btn-icon">add</mat-icon>
         <span>New chat</span>
@@ -27,14 +33,18 @@
             I'll find a source, build the tap, and create a pipeline — using the
             tools on the Datris MCP server.
           </p>
+          <p class="empty-model-line" *ngIf="modelLine">
+            <span class="empty-model-text">{{ modelLine }}</span>
+            <a class="model-config-link" routerLink="/configuration" [queryParams]="{ tab: 'ai-providers' }">Change on Configuration → AI Providers</a>
+          </p>
+          <div class="empty-provider-hint" *ngIf="state.initInfo?.provider === 'ollama'">
+            Reasoning visibility requires Anthropic or OpenAI — your tenant is configured for Ollama,
+            so you'll see streaming text and tool calls but no chain-of-thought block.
+          </div>
           <div class="starter-chips">
             <button class="starter-chip" *ngFor="let p of starterPrompts" (click)="fillFromStarter(p)">
               {{ p.label }}
             </button>
-          </div>
-          <div class="empty-provider-hint" *ngIf="state.initInfo?.provider === 'ollama'">
-            Reasoning visibility requires Anthropic or OpenAI — your tenant is configured for Ollama,
-            so you'll see streaming text and tool calls but no chain-of-thought block.
           </div>
         </div>
 

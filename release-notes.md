@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+- **See which model is answering.** The Assistant now shows the chat provider and model at the top of the conversation, and tap script generation shows the CodeGen provider and model while it runs and on the finished script. Change either on Configuration → AI Providers.
+
 ## v1.47.1 — October 11, 2026
 
 **Server framework update.**
