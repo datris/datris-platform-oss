@@ -425,6 +425,62 @@ datris tap delete <name>
 
 ---
 
+### `datris catalog export`
+
+Download a catalog as a zip archive: every tap and pipeline in it, each tap's script and incremental state, and the validation schemas its pipelines reference. Secret values, destination data, run history and version history are never included. The command prints how many taps and pipelines the archive holds and which secrets the catalog needs.
+
+```bash
+datris catalog export <NAME> [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--out` | Archive file to write (default: `<NAME>.zip`) |
+| `--json` | Print the raw tool result (includes the archive as base64) |
+
+**Example:**
+
+```bash
+datris catalog export sales --out sales-backup.zip
+```
+
+Uncataloged is not a catalog and cannot be exported. On an error nothing is written and the command exits 1.
+
+---
+
+### `datris catalog restore`
+
+Restore an archive made by `datris catalog export`, under the same name or a new one. A restore never merges into an existing catalog: it is refused when the catalog already exists or when any archived tap or pipeline name already exists anywhere on this install, and each clash is printed. Restored taps start disabled; test each one and then enable it. Secrets are never written: the command names any secret the restored items need that does not exist yet.
+
+```bash
+datris catalog restore <FILE> [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--as` | Catalog name to restore into (default: the name stored in the archive). Letters, digits, `_` and `-` only |
+| `--overwrite` | Replace the items already in the target catalog instead of creating a new one. Asks you to type the catalog name to confirm |
+| `--yes` | Skip the `--overwrite` confirmation prompt (for scripts) |
+| `--no-state` | Skip each tap's incremental state, so a clone starts from scratch instead of from the source's cursor |
+| `--json` | Print the raw tool result |
+
+**Examples:**
+
+```bash
+# Restore under a new name
+datris catalog restore sales-backup.zip --as sales_restored
+
+# Clone without the source taps' incremental state
+datris catalog restore sales-backup.zip --as sales_copy --no-state
+
+# Replace the contents of an existing catalog
+datris catalog restore sales-backup.zip --as sales --overwrite
+```
+
+Tap and pipeline names are unique across the install, so restoring onto the same install under a new name is refused while the source catalog still exists: delete or rename the source first. The command exits 1 on an error, on a refusal, and when some items could not be restored (each is printed with its reason).
+
+---
+
 ### `datris version`
 
 Get the server version.

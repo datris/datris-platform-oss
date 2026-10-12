@@ -6,7 +6,54 @@
       <a class="lineage-btn" routerLink="/catalog/lineage" title="Interactive lineage graph: Source → Tap → Pipeline → Dataset → Catalog">
         <span class="material-icons">account_tree</span> Lineage
       </a>
+      <button class="import-catalog-btn" (click)="openImport()" *ngIf="!showImportPanel && auth.canWrite()"
+              title="Restore a catalog from a zip made with the download icon">
+        <span class="material-icons">upload_file</span> Import catalog
+      </button>
       <button class="create-btn" (click)="showCreateModal = true" *ngIf="!showCreateModal && auth.canWrite()">+ Create Catalog</button>
+    </div>
+  </div>
+
+  <div class="import-panel" *ngIf="showImportPanel && auth.canWrite()">
+    <div class="import-row">
+      <label class="import-label" for="import-file">Archive</label>
+      <input id="import-file" type="file" accept=".zip,application/zip" (change)="onImportFile($event)">
+      <span class="import-file-info" *ngIf="importFile">{{ importFile.name }} &middot; {{ formatSize(importFile.size) }}</span>
+    </div>
+    <div class="import-row">
+      <label class="import-label" for="import-name">Restore as</label>
+      <input id="import-name" class="form-input import-name-input" type="text"
+             [(ngModel)]="importName" (blur)="sanitizeImportName()"
+             placeholder="Catalog name" aria-label="Catalog name to restore into">
+      <span class="rename-rule">Letters, digits, _ and - only</span>
+    </div>
+    <div class="import-row">
+      <label class="del-mode">
+        <input type="radio" name="import-mode" value="new" [(ngModel)]="importMode">
+        Create new catalog (refuse if it exists)
+      </label>
+      <label class="del-mode">
+        <input type="radio" name="import-mode" value="overwrite" [(ngModel)]="importMode">
+        Overwrite catalog <code>{{ importName || 'name' }}</code>
+      </label>
+      <input *ngIf="importMode === 'overwrite'" type="text" class="form-input del-confirm-input import-confirm-input"
+             [(ngModel)]="importConfirm" [placeholder]="'Type ' + (importName || 'the catalog name') + ' to confirm'"
+             aria-label="Type the catalog name to confirm">
+    </div>
+    <div class="import-row">
+      <label class="del-mode">
+        <input type="checkbox" class="import-skip-state" [(ngModel)]="importSkipState">
+        Skip incremental tap state (for a clone)
+      </label>
+    </div>
+    <div class="import-hint">
+      Secrets are not in the archive and restored taps start disabled. A restore never merges into an existing catalog.
+    </div>
+    <div class="import-row import-actions">
+      <button class="del-opt import-restore-btn" (click)="commitImport()" [disabled]="!canRestore()">
+        <span class="material-icons">{{ importing ? 'hourglass_empty' : 'restore' }}</span> {{ importing ? 'Restoring...' : 'Restore' }}
+      </button>
+      <button class="del-opt del-cancel" (click)="cancelImport()" [disabled]="importing">Cancel</button>
     </div>
   </div>
 
@@ -23,10 +70,35 @@
 
   <div class="move-error-banner" *ngIf="moveError">
     <span class="material-icons">error</span>
-    <span>{{ moveError }}</span>
-    <button class="move-error-close" (click)="moveError = ''" title="Dismiss">
+    <span class="move-error-text">
+      {{ moveError }}
+      <ul class="move-error-list" *ngIf="moveErrorItems.length > 0">
+        <li *ngFor="let c of moveErrorItems">{{ c }}</li>
+      </ul>
+    </span>
+    <button class="move-error-close" (click)="dismissMoveError()" title="Dismiss">
       <span class="material-icons">close</span>
     </button>
+  </div>
+
+  <div class="op-failures-banner warn import-result-banner" *ngIf="importResult">
+    <div class="op-failures-head">
+      <span class="material-icons">restore</span>
+      <span>
+        Restored {{ importResult.taps }} tap{{ importResult.taps !== 1 ? 's' : '' }}{{ importResult.tapsDisabled ? ' (disabled)' : '' }}
+        and {{ importResult.pipelines }} pipeline{{ importResult.pipelines !== 1 ? 's' : '' }} into '{{ importResult.catalog }}'<span
+          *ngIf="importResult.missingSecrets.length > 0">; missing secrets: {{ importResult.missingSecrets.join(', ') }}</span>.
+        <span *ngIf="importResult.tapsDisabled && importResult.taps > 0">Test each tap, then enable it.</span>
+        <span *ngIf="importResult.stateRestored === false && importResult.taps > 0">Taps start without incremental state.</span>
+      </span>
+      <button class="move-error-close" (click)="dismissImportResult()" title="Dismiss">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <ul class="op-failures-list" *ngIf="importResult.warnings.length > 0 || importResult.skipped.length > 0">
+      <li *ngFor="let w of importResult.warnings">{{ w }}</li>
+      <li *ngFor="let k of importResult.skipped">Skipped: {{ k }}</li>
+    </ul>
   </div>
 
   <div class="affected-keys-banner" *ngIf="affectedKeys.length > 0">
@@ -98,6 +170,13 @@
                 [disabled]="renamingCatalog === cat.name || movingCatalog === cat.name"
                 title="Rename catalog">
           <span class="material-icons">{{ renamingCatalog === cat.name ? 'hourglass_empty' : 'edit' }}</span>
+        </button>
+        <button class="download-catalog-btn"
+                *ngIf="auth.canWrite() && cat.name !== 'Uncataloged' && renameTarget !== cat.name && deleteTarget !== cat.name"
+                (click)="downloadCatalog(cat, $event)"
+                [disabled]="exportingCatalog === cat.name"
+                title="Download catalog as a zip (taps, pipelines and scripts; no secrets)">
+          <span class="material-icons">{{ exportingCatalog === cat.name ? 'hourglass_empty' : 'download' }}</span>
         </button>
         <div class="catalog-counts">
           <span class="catalog-count">{{ cat.tapCount }} tap{{ cat.tapCount !== 1 ? 's' : '' }}</span>

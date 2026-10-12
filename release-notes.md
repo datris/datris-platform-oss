@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+- A catalog can be downloaded as a zip (its taps, pipelines and scripts) and restored later under the same or a new name; secrets stay out of the archive and restored taps start disabled.
+
 ## v1.47.2 — October 12, 2026
 
 **See which AI model is answering.**
