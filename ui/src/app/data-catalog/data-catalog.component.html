@@ -89,7 +89,7 @@
         and {{ importResult.pipelines }} pipeline{{ importResult.pipelines !== 1 ? 's' : '' }} into '{{ importResult.catalog }}'<span
           *ngIf="importResult.missingSecrets.length > 0">; missing secrets: {{ importResult.missingSecrets.join(', ') }}</span>.
         <span *ngIf="importResult.tapsDisabled && importResult.taps > 0">Test each tap, then enable it.</span>
-        <span *ngIf="importResult.stateRestored === false && importResult.taps > 0">Taps start without incremental state.</span>
+        <span *ngIf="importResult.stateSkipped && importResult.taps > 0">Taps start without incremental state.</span>
       </span>
       <button class="move-error-close" (click)="dismissImportResult()" title="Dismiss">
         <span class="material-icons">close</span>

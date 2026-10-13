@@ -366,4 +366,42 @@ describe('DataCatalogComponent — catalog download and import', () => {
     const c = card('e2e_r');
     expect(c?.querySelector('.catalog-card-body')).withContext('restored card expanded').not.toBeNull();
   }));
+
+  // ── E2E follow-up: the no-state sentence only when skip-state was ticked ─
+
+  function overwriteResult(): void {
+    pipeSvc.restoreCatalog.and.returnValue(of(new HttpResponse({
+      status: 200,
+      body: {
+        restored: { taps: ['t_a'], pipelines: ['p_a'] }, skipped: [], failed: [],
+        missingSecrets: [], warnings: [], tapsDisabled: true, stateRestored: false
+      }
+    })));
+  }
+
+  it('overwrite with stateRestored=false and skip-state unticked says nothing about state', fa(() => {
+    overwriteResult();
+    const panel = prepareImport('e2e_a');
+    if (!panel) return;
+    (panel.querySelector('input[type=radio][value=overwrite]') as HTMLInputElement).click();
+    settle();
+    typeInto(panel.querySelector('input.import-confirm-input') as HTMLInputElement, 'e2e_a');
+    restoreBtn(panel).click();
+    settle();
+    const text = (el.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toMatch(/Restored 1 taps? \(disabled\) and 1 pipelines?/);
+    expect(text).not.toContain('without incremental state');
+  }));
+
+  it('skip-state ticked says the taps start without incremental state', fa(() => {
+    overwriteResult();
+    const panel = prepareImport('e2e_clone');
+    if (!panel) return;
+    (panel.querySelector('input[type=checkbox].import-skip-state') as HTMLInputElement).click();
+    settle();
+    restoreBtn(panel).click();
+    settle();
+    const text = (el.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('Taps start without incremental state.');
+  }));
 });

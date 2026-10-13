@@ -58,6 +58,10 @@ interface ImportResult {
   skipped: string[];
   warnings: string[];
   stateRestored: boolean | null;
+  /** The user ticked "Skip incremental tap state". Only then does the banner
+   *  say the taps start without state: on overwrite the server keeps an
+   *  existing tap's state and still reports stateRestored=false. */
+  stateSkipped: boolean;
 }
 
 @Component({
@@ -626,6 +630,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     if (!this.canRestore() || !this.importFile) return;
     const name = this.importName.trim();
     const mode = this.importMode;
+    const skipState = this.importSkipState;
     this.clearMoveError();
     this.clearOpBanners();
     this.importResult = null;
@@ -633,7 +638,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.pipelineService.restoreCatalog(
       name, this.importFile, mode,
       mode === 'overwrite' ? this.importConfirm : undefined,
-      !this.importSkipState
+      !skipState
     ).subscribe({
       next: (res: any) => {
         this.importing = false;
@@ -651,7 +656,8 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
           missingSecrets: missing,
           skipped: names(body && body.skipped),
           warnings: names(body && body.warnings),
-          stateRestored: body && typeof body.stateRestored === 'boolean' ? body.stateRestored : null
+          stateRestored: body && typeof body.stateRestored === 'boolean' ? body.stateRestored : null,
+          stateSkipped: skipState
         };
         this.showOpFailures(`Restoring catalog '${name}'`, body && body.failed);
         this.cancelImport();

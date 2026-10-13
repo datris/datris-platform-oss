@@ -97,6 +97,8 @@
                     [title]="'Script in repository: ' + (tap.scriptRepoPath || '') + (tap.scriptCommitSha ? ' @ ' + tap.scriptCommitSha.substring(0, 9) : '')">GitHub</span>
               <span class="storage-badge" *ngIf="tap.scriptKind === 'http'"
                     [title]="'User-hosted HTTP endpoint: ' + (tap.endpointUrl || '')">HTTP</span>
+              <span class="storage-badge disabled-badge" *ngIf="tap.enabled === false"
+                    title="Disabled: the schedule does not run this tap. Test it, then enable it in the editor.">Disabled</span>
               <button class="embed-name-edit-btn" *ngIf="auth.canWrite()" (click)="startEditName($event, tap)" title="Rename">
                 <span class="material-icons">edit</span>
               </button>
