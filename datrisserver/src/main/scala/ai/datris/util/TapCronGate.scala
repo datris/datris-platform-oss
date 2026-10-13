@@ -57,10 +57,10 @@ object TapCronGate {
 
         if (stamp != null) {
             // Stamped tap: the stamp names the exact bytes that passed the test.
-            val identityMatches = incomingId.contains(stamp)
+            val identityMatches = stampMatches(stamp, incomingId)
             if (identityMatches && testedGreen) None
             else if (!identityMatches)
-                Some(refusal(name, "its script changed since it last passed a test run"))
+                Some(refusal(name, ScriptChangedReason))
             else Some(refusal(name, "its script has never passed a test run"))
         } else {
             // Legacy / unstamped tap (pre-upgrade or never tested).
@@ -72,16 +72,34 @@ object TapCronGate {
             val sameUnreadableRef = incomingId.isEmpty && existingId.isEmpty && sameScriptRef(existing, incoming)
             if (!cronChanged && (scriptUnchanged || sameUnreadableRef)) None
             else if (!cronChanged)
-                Some(refusal(name, "its script changed since it last passed a test run"))
+                Some(refusal(name, ScriptChangedReason))
             else {
                 val ranGreen = "success".equalsIgnoreCase(existing.lastRunStatus)
                 if (scriptUnchanged && (testedGreen || ranGreen)) None
                 else if (!scriptUnchanged)
-                    Some(refusal(name, "its script changed since it last passed a test run"))
+                    Some(refusal(name, ScriptChangedReason))
                 else Some(refusal(name, "its script has never passed a test run"))
             }
         }
     }
+
+    /** The refusal reason when the stamp no longer names the script; the
+      * ordered catalog enable keys on it to test once and retry. */
+    val ScriptChangedReason = "its script changed since it last passed a test run"
+
+    /** Does `tap` (the STORED tap) carry a passing test that this gate would
+      * honour for its current script? Stamped taps: last test green AND the
+      * stamp equals `currentId` (the same comparison `check` makes). Legacy
+      * unstamped taps: last test green (`check` then only needs the stored
+      * script unchanged, which holds when scheduling the stored tap as is).
+      * `currentId` is evaluated only for a green, stamped tap. */
+    def hasPassingTestFor(tap: TapConfig, currentId: => Option[String]): Boolean =
+        tap != null && "success".equalsIgnoreCase(tap.lastTestRunStatus) && {
+            val stamp = blankToNull(tap.lastTestRunScriptId)
+            stamp == null || stampMatches(stamp, currentId)
+        }
+
+    private def stampMatches(stamp: String, id: Option[String]): Boolean = id.contains(stamp)
 
     /** Up-front gate for `POST /tap/script`: may `script` replace the stored
       * bytes of `existing`? Evaluated BEFORE anything is written, so a refused
@@ -121,7 +139,7 @@ object TapCronGate {
       * keys on it), store-lane remedy. Also used by the AI script endpoints
       * when they decline to repoint a scheduled tap. */
     def storeRefusal(name: String): String =
-        "Tap '" + name + "' cannot be scheduled: its script changed since it last passed a test run. Remedy: " + StoreRemedy + "."
+        "Tap '" + name + "' cannot be scheduled: " + ScriptChangedReason + ". Remedy: " + StoreRemedy + "."
 
     private def sameScriptRef(a: TapConfig, b: TapConfig): Boolean =
         a.isHttp == b.isHttp &&

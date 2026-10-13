@@ -233,4 +233,30 @@ class TapDependenciesSpec extends AnyFunSuite {
         assert(!r.lastRealRunLanded)
         assert(!r.ready)
     }
+
+    test("hasPassingTest requires the test stamp to match the current script (same rule as TapCronGate)") {
+        val gh = tap("p", lastTestRunStatus = "success")
+            .copy(scriptStorage = "github", scriptRepoPath = "taps/p.py", scriptCommitSha = "da9b9576", cronExpression = "0 0 * * * ?")
+        val current = gh.copy(lastTestRunScriptId = "gh:da9b9576")
+        assert(readiness(TapDependencies.order(Seq(current)), "p").hasPassingTest)
+        assert(TapCronGate.check(current, current.copy(enabled = true)).isEmpty)
+
+        // Overwrite restore: the script was committed again, the stamp kept.
+        val stale = gh.copy(lastTestRunScriptId = "gh:3cbf6fe9")
+        val r = readiness(TapDependencies.order(Seq(stale)), "p")
+        assert(!r.hasPassingTest, "a stamp for an older script is no passing test")
+        assert(!r.ready)
+        assert(TapCronGate.check(stale, stale.copy(enabled = true)).isDefined, "the gate refuses the same tap")
+
+        // A failed last test never counts, stamp or not.
+        assert(!readiness(TapDependencies.order(Seq(current.copy(lastTestRunStatus = "failed"))), "p").hasPassingTest)
+
+        // MinIO taps: the injected identity is compared with the stamp.
+        val minio = tap("m", lastTestRunStatus = "success").copy(scriptPath = "s3://b/m.py", lastTestRunScriptId = "abc")
+        assert(readiness(TapDependencies.order(Seq(minio), _ => Some("abc")), "m").hasPassingTest)
+        assert(!readiness(TapDependencies.order(Seq(minio), _ => Some("def")), "m").hasPassingTest)
+        assert(!readiness(TapDependencies.order(Seq(minio), _ => None), "m").hasPassingTest, "unreadable script: no match")
+        // Unstamped legacy taps keep the old meaning (green last test).
+        assert(readiness(TapDependencies.order(Seq(minio.copy(lastTestRunScriptId = null)), _ => None), "m").hasPassingTest)
+    }
 }

@@ -270,42 +270,26 @@ object CatalogEnableJob {
             return
         }
 
-        // (b) test when there is no passing test.
-        if (!r.hasPassingTest) {
-            set(job, name, "testing")()
-            val stored = deps.read(name)
-            if (stored == null) { set(job, name, "failed", "tap no longer exists")(); return }
-            val res = deps.test(stored)
-            if (res.error != null) {
-                set(job, name, "failed", "test failed: " + clip(res.error))()
-                return
-            }
-            if (cancelled(job, name, "enabling")) return
-        }
+        // (b) test when there is no passing test the gate would accept.
+        if (!r.hasPassingTest && !testOnce(job, name, deps)) return
+        if (!r.hasPassingTest && cancelled(job, name, "enabling")) return
 
-        // (c) enable through the test-before-cron gate.
+        // (c) enable through the test-before-cron gate. A "script changed"
+        // refusal despite (b) (the script was saved between the plan and now)
+        // gets one test and one retry, so a race cannot strand the catalog.
         set(job, name, "enabling")()
-        val existing = deps.read(name)
-        if (existing == null) { set(job, name, "failed", "tap no longer exists")(); return }
-        if (existing.catalog != job.catalog) {
-            set(job, name, "failed", "tap moved out of catalog '" + job.catalog + "'")()
-            return
+        var gated = gate(job, name, deps)
+        if (gated.swap.exists(_.contains(TapCronGate.ScriptChangedReason))) {
+            if (!testOnce(job, name, deps)) return
+            if (cancelled(job, name, "enabling")) return
+            set(job, name, "enabling")()
+            gated = gate(job, name, deps)
         }
-        val normalized = TapCronGate.normalizeCron(existing)
-        // Same checks as a tap save: an unparsable (legacy) cron would make
-        // the scheduler fail on every tick once the tap is enabled.
-        TapCronValidation.check(existing.name, normalized.cronExpression) match {
-            case Some(invalid) =>
-                set(job, name, "failed", invalid)()
+        val (existing, normalized, toEnable) = gated match {
+            case Left(reason) =>
+                set(job, name, "failed", reason)()
                 return
-            case None =>
-        }
-        val toEnable = normalized.copy(enabled = true)
-        TapCronGate.check(existing, toEnable) match {
-            case Some(refusal) =>
-                set(job, name, "failed", refusal)()
-                return
-            case None =>
+            case Right(ok) => ok
         }
         if (!existing.enabled || (normalized ne existing)) deps.enable(toEnable, EnableNote, job.startedBy)
         if (job.cancel.get()) {
@@ -334,6 +318,40 @@ object CatalogEnableJob {
         }
         set(job, name, "waiting")(_.copy(recordCount = res.recordCount, publisherToken = res.publisherToken))
         waitForLoad(job, name, res.publisherToken, deps)
+    }
+
+    /** Test the stored tap; false (outcome already set to failed) when the
+      * tap is gone or the test failed. */
+    private def testOnce(job: Job, name: String, deps: Deps): Boolean = {
+        set(job, name, "testing")()
+        val stored = deps.read(name)
+        if (stored == null) { set(job, name, "failed", "tap no longer exists")(); return false }
+        val res = deps.test(stored)
+        if (res.error != null) {
+            set(job, name, "failed", "test failed: " + clip(res.error))()
+            return false
+        }
+        true
+    }
+
+    /** Re-read the stored tap and run every save-time check on enabling it.
+      * Left = the failure reason; Right = (stored, cron-normalized, to enable). */
+    private def gate(job: Job, name: String, deps: Deps): Either[String, (TapConfig, TapConfig, TapConfig)] = {
+        val existing = deps.read(name)
+        if (existing == null) return Left("tap no longer exists")
+        if (existing.catalog != job.catalog) return Left("tap moved out of catalog '" + job.catalog + "'")
+        val normalized = TapCronGate.normalizeCron(existing)
+        // Same checks as a tap save: an unparsable (legacy) cron would make
+        // the scheduler fail on every tick once the tap is enabled.
+        TapCronValidation.check(existing.name, normalized.cronExpression) match {
+            case Some(invalid) => return Left(invalid)
+            case None =>
+        }
+        val toEnable = normalized.copy(enabled = true)
+        TapCronGate.check(existing, toEnable) match {
+            case Some(refusal) => Left(refusal)
+            case None => Right((existing, normalized, toEnable))
+        }
     }
 
     private def waitForLoad(job: Job, name: String, token: String, deps: Deps): Unit = {

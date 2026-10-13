@@ -176,7 +176,12 @@ object TapDependencies {
       * Cycle members go under `cycles`; a tap that depends on a cycle is
       * levelled as if those edges were absent (it still lists them in
       * `blockedBy` until they land data). */
-    def order(taps: Seq[TapConfig]): Plan = {
+    def order(taps: Seq[TapConfig]): Plan = order(taps, (t: TapConfig) => TapScriptIdentity.of(t))
+
+    /** `scriptId` names a tap's current script (TapScriptIdentity.of in
+      * production); it is consulted only for taps with a green, stamped test,
+      * so `hasPassingTest` means exactly what TapCronGate would accept. */
+    def order(taps: Seq[TapConfig], scriptId: TapConfig => Option[String]): Plan = {
         val present = taps.filter(_ != null)
         val byName = present.map(t => t.name -> t).toMap
         val g = graph(present)
@@ -191,7 +196,9 @@ object TapDependencies {
         def readiness(t: TapConfig): Readiness = {
             val eff = effective(t)
             val blocked = eff.filter(d => byName.contains(d) && !landed(d))
-            val tested = t.lastTestRunStatus == "success"
+            // Same rule as the test-before-cron gate: a green test whose stamp
+            // names an older script (e.g. after an overwrite restore) is no test.
+            val tested = TapCronGate.hasPassingTestFor(t, scriptId(t))
             Readiness(
                 name = t.name,
                 enabled = t.enabled,

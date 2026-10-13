@@ -221,7 +221,10 @@ class CatalogEnableJobSpec extends AnyFunSuite with BeforeAndAfterAll {
         val a = tap("a", cat, tested = true).copy(cronExpression = "0 0 * * * ?", lastTestRunScriptId = "http:https://source.example/old")
         val refusal = TapCronGate.check(a, a.copy(enabled = true))
         assert(refusal.isDefined, "fixture must be refused by the gate")
+        // The test passes but never re-stamps (as if the script kept moving), so
+        // the gate keeps refusing after the plan's test and the one retry test.
         val deps = new CatalogEnableJobSpec.FakeDeps(Seq(a))
+        deps.keepStampOnTest += "a"
         startOk(cat, deps)
         val j = awaitFinished(cat)
         val o = outcome(j, "a")
@@ -229,6 +232,45 @@ class CatalogEnableJobSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(Option(o.reason).exists(_.contains(refusal.get)), s"reason ${o.reason} should carry ${refusal.get}")
         assert(deps.enabled.isEmpty, deps.enabled)
         assert(!deps.events.exists(_.startsWith("run:")), deps.events)
+        assert(deps.events.count(_ == "test:a") == 2, "tested by (b), then once more for the retry: " + deps.events)
+    }
+
+    test("a green test whose stamp names an older script is tested first, then enabled and landed (overwrite restore)") {
+        val cat = "cej-stale-stamp"
+        // As after an overwrite restore: last test green, stamp from the old script.
+        val a = tap("a", cat, tested = true).copy(cronExpression = "0 0 * * * ?", lastTestRunScriptId = "http:https://source.example/old")
+        val b = tap("b", cat, dependsOn = jl("a"), tested = true, target = null)
+        assert(TapCronGate.check(a, a.copy(enabled = true)).isDefined, "fixture must be refused by the gate as stored")
+        val plan = TapDependencies.order(Seq(a, b))
+        assert(!plan.levels.flatten.find(_.name == "a").get.hasPassingTest, "readiness agrees with the gate")
+        val deps = new CatalogEnableJobSpec.FakeDeps(Seq(a, b))
+        startOk(cat, deps)
+        val j = awaitFinished(cat)
+        assert(outcome(j, "a").phase == "landed", j.taps)
+        assert(outcome(j, "b").phase == "landed", j.taps)
+        val ev = deps.events.toList
+        assert(ev.count(_ == "test:a") == 1, ev)
+        assert(ev.indexOf("test:a") < ev.indexOf("enable:a"), ev)
+        assert(!ev.contains("test:b"), "b's stamp matches: not tested: " + ev)
+    }
+
+    test("a script saved after the plan (gate says script changed) is tested once and the enable retried") {
+        val cat = "cej-race"
+        val planned = tap("a", cat, tested = true).copy(cronExpression = "0 0 * * * ?")
+        val plan = TapDependencies.order(Seq(planned))
+        assert(plan.levels.flatten.head.hasPassingTest, "the plan saw a matching stamp")
+        // Between the plan and the enable, the endpoint moved; the stamp did not.
+        val deps = new CatalogEnableJobSpec.FakeDeps(Seq(planned.copy(endpointUrl = "https://source.example/a-v2")))
+        CatalogEnableJob.start(cat, "spec-actor", plan, deps) match {
+            case Right(_) =>
+            case Left(err) => fail("start refused: " + err)
+        }
+        val j = awaitFinished(cat)
+        assert(outcome(j, "a").phase == "landed", j.taps)
+        val ev = deps.events.toList
+        assert(ev.count(_ == "test:a") == 1, ev)
+        assert(ev.indexOf("test:a") < ev.indexOf("enable:a"), ev)
+        assert(deps.stored.get("a").enabled, "enabled after the retry")
     }
 
     test("an unparsable stored cron fails the tap with the cron validation text, and the tap is not enabled") {
@@ -383,6 +425,9 @@ object CatalogEnableJobSpec {
         val testError = new ConcurrentHashMap[String, String]().asScala
         val rollupFor = new ConcurrentHashMap[String, () => PipelineStatusRollup]().asScala
 
+        /** Taps whose (passing) fake test leaves `lastTestRunScriptId` as is. */
+        val keepStampOnTest: mutable.Set[String] = java.util.concurrent.ConcurrentHashMap.newKeySet[String]().asScala
+
         override def read(name: String): TapConfig = stored.get(name)
 
         override def test(tap: TapConfig): TapScriptResult = {
@@ -394,7 +439,9 @@ object CatalogEnableJobSpec {
                 case None =>
                     stored.computeIfPresent(
                         tap.name,
-                        (_, t) => t.copy(lastTestRunStatus = "success", lastTestRunScriptId = TapScriptIdentity.of(t, _ => None).orNull)
+                        (_, t) =>
+                            if (keepStampOnTest.contains(t.name)) t.copy(lastTestRunStatus = "success")
+                            else t.copy(lastTestRunStatus = "success", lastTestRunScriptId = TapScriptIdentity.of(t, _ => None).orNull)
                     )
                     result(1, null)
             }
