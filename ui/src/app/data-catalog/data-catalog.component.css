@@ -897,3 +897,26 @@
   margin: 4px 0 0 0;
   padding-left: 18px;
 }
+
+.info-icon {
+  font-size: 18px;
+  color: var(--text-muted);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: color 0.2s;
+}
+
+.info-icon:hover,
+.info-icon:focus-visible {
+  color: var(--accent-cyan);
+}
+
+.import-info {
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary, var(--text-muted));
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}

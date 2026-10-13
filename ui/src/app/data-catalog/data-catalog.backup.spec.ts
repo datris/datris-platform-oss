@@ -404,4 +404,38 @@ describe('DataCatalogComponent — catalog download and import', () => {
     const text = (el.textContent || '').replace(/\s+/g, ' ');
     expect(text).toContain('Taps start without incremental state.');
   }));
+
+  // ── Info icons in the import panel ────────────────────────────────────
+
+  for (const [label, iconSel, infoSel, phrase] of [
+    ['overwrite', '.overwrite-info-icon', '.overwrite-info', 'Nothing is merged'],
+    ['skip-state', '.skip-state-info-icon', '.skip-state-info', 'sync position']
+  ]) {
+    it(`the ${label} info icon toggles its explanation`, fa(() => {
+      settle();
+      const panel = openImport();
+      if (!panel) return;
+      const icon = panel.querySelector(iconSel) as HTMLElement | null;
+      expect(icon).withContext(label + ' info icon').not.toBeNull();
+      if (!icon) return;
+      expect(icon.getAttribute('role')).toBe('button');
+      expect(icon.getAttribute('aria-label')).withContext('aria-label').toBeTruthy();
+      expect(panel.querySelector(infoSel)).withContext('hidden by default').toBeNull();
+      expect(panel.textContent || '').not.toContain(phrase);
+      icon.click();
+      settle();
+      expect(panel.querySelector(infoSel)).withContext('shown after click').not.toBeNull();
+      expect(panel.textContent || '').toContain(phrase);
+      icon.click();
+      settle();
+      expect(panel.querySelector(infoSel)).withContext('hidden after second click').toBeNull();
+      expect(panel.textContent || '').not.toContain(phrase);
+      icon.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+      settle();
+      expect(panel.querySelector(infoSel)).withContext('Enter opens it').not.toBeNull();
+      icon.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+      settle();
+      expect(panel.querySelector(infoSel)).withContext('Space closes it').toBeNull();
+    }));
+  }
 });

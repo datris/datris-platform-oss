@@ -120,6 +120,9 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   importSkipState = false;
   importing = false;
   importResult: ImportResult | null = null;
+  /** Inline explanations in the import panel, toggled by their info icons. */
+  showOverwriteInfo = false;
+  showSkipStateInfo = false;
   // Catalog-level bulk move (move all taps + pipelines in one catalog into
   // another). Tracks which catalog's move menu is open and which is mid-move.
   moveCatalogMenuOpen = '';

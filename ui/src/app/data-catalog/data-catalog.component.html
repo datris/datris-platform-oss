@@ -36,15 +36,33 @@
         <input type="radio" name="import-mode" value="overwrite" [(ngModel)]="importMode">
         Overwrite catalog <code>{{ importName || 'name' }}</code>
       </label>
+      <span class="info-icon material-icons overwrite-info-icon" role="button" tabindex="0"
+            aria-label="What does overwrite do?" title="What does overwrite do?"
+            [attr.aria-expanded]="showOverwriteInfo"
+            (click)="showOverwriteInfo = !showOverwriteInfo"
+            (keydown.enter)="$event.preventDefault(); showOverwriteInfo = !showOverwriteInfo"
+            (keydown.space)="$event.preventDefault(); showOverwriteInfo = !showOverwriteInfo">info</span>
       <input *ngIf="importMode === 'overwrite'" type="text" class="form-input del-confirm-input import-confirm-input"
              [(ngModel)]="importConfirm" [placeholder]="'Type ' + (importName || 'the catalog name') + ' to confirm'"
              aria-label="Type the catalog name to confirm">
+    </div>
+    <div class="import-info overwrite-info" *ngIf="showOverwriteInfo">
+      Replaces the taps and pipelines already in this catalog with the ones in the archive. Nothing is merged: items in the archive that already exist in a different catalog are refused, and items in this catalog that are not in the archive are left alone. Existing taps keep their incremental state. Type the catalog name to confirm.
     </div>
     <div class="import-row">
       <label class="del-mode">
         <input type="checkbox" class="import-skip-state" [(ngModel)]="importSkipState">
         Skip incremental tap state (for a clone)
       </label>
+      <span class="info-icon material-icons skip-state-info-icon" role="button" tabindex="0"
+            aria-label="What is incremental tap state?" title="What is incremental tap state?"
+            [attr.aria-expanded]="showSkipStateInfo"
+            (click)="showSkipStateInfo = !showSkipStateInfo"
+            (keydown.enter)="$event.preventDefault(); showSkipStateInfo = !showSkipStateInfo"
+            (keydown.space)="$event.preventDefault(); showSkipStateInfo = !showSkipStateInfo">info</span>
+    </div>
+    <div class="import-info skip-state-info" *ngIf="showSkipStateInfo">
+      Each tap keeps a sync position such as a cursor or last-seen timestamp. By default the archive's position is restored so the tap continues where the original left off, which is what you want when this restore replaces the original. Tick this for a clone or test copy, so the tap starts from the beginning instead of skipping data the original already fetched. It only affects taps being created; existing taps keep their state either way.
     </div>
     <div class="import-hint">
       Secrets are not in the archive and restored taps start disabled. A restore never merges into an existing catalog.
