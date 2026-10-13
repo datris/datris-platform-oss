@@ -39,6 +39,105 @@ export class TapsComponent implements OnInit, OnDestroy {
   @HostListener('document:click')
   onDocumentClick(): void {
     if (this.moveMenuOpen) this.moveMenuOpen = '';
+    if (this.enableMenuOpen && !this.enableBusy) this.closeEnableMenu();
+  }
+
+  @HostListener('document:keydown.escape')
+  onEscape(): void {
+    if (this.enableMenuOpen && !this.enableBusy) this.closeEnableMenu();
+  }
+
+  // ── Enable menu on the "Disabled" badge (embedded table) ──────────────
+  /** Tap whose Enable menu is open, '' for none. One at a time. */
+  enableMenuOpen = '';
+  /** Action in flight in the open menu; the menu stays open until it ends. */
+  enableBusy: '' | 'enable' | 'test' = '';
+  /** Error from the last menu action, shown inside the menu. */
+  enableError = '';
+
+  toggleEnableMenu(tap: any, event: Event): void {
+    event.stopPropagation();
+    if (event.type === 'keydown') event.preventDefault();
+    if (!this.auth.canWrite() || this.enableBusy) return;
+    if (this.enableMenuOpen === tap.name) {
+      this.closeEnableMenu();
+      return;
+    }
+    this.moveMenuOpen = '';
+    this.enableMenuOpen = tap.name;
+    this.enableError = '';
+  }
+
+  closeEnableMenu(): void {
+    this.enableMenuOpen = '';
+    this.enableBusy = '';
+    this.enableError = '';
+  }
+
+  /** A scheduled tap with no passing test on record. Mirrors the server's
+   *  test-before-cron gate (TapCronGate) as far as the list fields allow:
+   *  a cron and lastTestRunStatus other than success. The server still
+   *  decides; a refusal comes back as a 409 shown in the menu. */
+  needsTestBeforeEnable(tap: any): boolean {
+    return !!(tap && tap.cronExpression) &&
+      String((tap && tap.lastTestRunStatus) || '').toLowerCase() !== 'success';
+  }
+
+  enableTap(tap: any, event?: Event): void {
+    if (event) event.stopPropagation();
+    if (this.enableBusy) return;
+    this.enableBusy = 'enable';
+    this.enableError = '';
+    this.saveEnabled(tap.name, 'Could not enable: ');
+  }
+
+  /** Run a test (mode=test, synchronous) and enable the tap only when it
+   *  passes. A failed test leaves the tap disabled and shows the error. */
+  testThenEnable(tap: any, event?: Event): void {
+    if (event) event.stopPropagation();
+    if (this.enableBusy) return;
+    this.enableBusy = 'test';
+    this.enableError = '';
+    this.tapService.runTap(tap.name, 'test').subscribe({
+      next: (res: any) => {
+        const passed = res && !res.error && String(res.status || 'success').toLowerCase() === 'success';
+        if (!passed) {
+          this.enableBusy = '';
+          this.enableError = 'Test failed: ' + String((res && res.error) || 'unknown error').substring(0, 300);
+          this.loadTaps();
+          return;
+        }
+        this.saveEnabled(tap.name, 'Test passed, but the tap could not be enabled: ');
+      },
+      error: (err: any) => {
+        this.enableBusy = '';
+        this.enableError = 'Test failed: ' + httpErrorText(err, 'unknown error').substring(0, 300);
+      }
+    });
+  }
+
+  /** Save enabled=true on the full stored tap (fetched fresh so no field is
+   *  dropped and a just-written test stamp is kept). */
+  private saveEnabled(name: string, errorPrefix: string): void {
+    const fail = (err: any) => {
+      this.enableBusy = '';
+      this.enableError = errorPrefix + httpErrorText(err, 'unknown error');
+    };
+    this.tapService.getTap(name).subscribe({
+      next: (stored: any) => {
+        const updated = { ...(stored || {}), name, enabled: true };
+        // GET /tap adds the script text; POST /tap does not take it.
+        delete (updated as any).script;
+        this.tapService.createOrUpdateTap(updated).subscribe({
+          next: () => {
+            this.closeEnableMenu();
+            this.loadTaps();
+          },
+          error: fail
+        });
+      },
+      error: fail
+    });
   }
 
   /** A refused save (400 malformed cron, 409 test-before-cron gate) comes back
@@ -91,7 +190,7 @@ export class TapsComponent implements OnInit, OnDestroy {
       // destroy: inline edits, an open move-to-catalog menu, a pending delete
       // confirmation, or an in-flight column-resize drag.
       if (!this.editingName && !this.editingPipeline && !this.editingCronTap &&
-          !this.moveMenuOpen && !this.deleteTarget && !this.deleteCatalogTarget && !isColumnDragActive()) this.loadTaps();
+          !this.moveMenuOpen && !this.enableMenuOpen && !this.deleteTarget && !this.deleteCatalogTarget && !isColumnDragActive()) this.loadTaps();
     }, 5000);
   }
 
