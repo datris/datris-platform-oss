@@ -70,6 +70,20 @@ class TapDependencySaveSpec extends AnyFunSuite {
         assert(cyc == Set("a", "b"), cyc)
     }
 
+    test("a declared cycle is refused even when another cycle sorts first") {
+        // a <-> b is an existing (inferred) cycle; y infers z; saving z with
+        // dependsOn [y] closes a second cycle that must still be refused.
+        val catalog = Seq(
+            tap("a").copy(inferredDependsOn = jl("b")),
+            tap("b").copy(inferredDependsOn = jl("a")),
+            tap("y").copy(inferredDependsOn = jl("z"))
+        )
+        val r = TapAPIController.dependencySaveProblem(tap("z", dependsOn = jl("y")), catalog)
+        assert(r.map(_.getStatusCode.value()).contains(409), r)
+        val cyc = JsonParser.parseString(r.get.getBody).getAsJsonObject.getAsJsonArray("cycle").asScala.map(_.getAsString).toSet
+        assert(cyc == Set("y", "z"), cyc)
+    }
+
     test("valid or absent dependsOn passes") {
         assert(TapAPIController.dependencySaveProblem(tap("c", dependsOn = jl("a", "b")), stored).isEmpty)
         assert(TapAPIController.dependencySaveProblem(tap("c"), stored).isEmpty)

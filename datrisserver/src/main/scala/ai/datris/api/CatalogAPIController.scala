@@ -596,6 +596,9 @@ class CatalogAPIController {
                 //     every restored tap is in (no new version, like status
                 //     writes), then count the taps that read another
                 //     restored tap's tables.
+                //     Read-modify-write without a version compare: an edit made
+                //     between loadAll() and the write is overwritten (small window,
+                //     same convention as run-status writes).
                 val dependentTaps =
                     try {
                         val (tapsNow, pipelinesNow) = loadAll()

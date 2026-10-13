@@ -157,6 +157,18 @@ class TapDependenciesSpec extends AnyFunSuite {
         assert(TapDependencies.cycle(Seq(c, tap("d", dependsOn = jl("c")))).isEmpty)
     }
 
+    test("cycles lists every cycle, not only the first") {
+        val all = Seq(
+            tap("a", dependsOn = jl("b")),
+            tap("b", dependsOn = jl("a")),
+            tap("y", dependsOn = jl("z")),
+            tap("z", dependsOn = jl("y")),
+            tap("c")
+        )
+        assert(TapDependencies.cycles(all) == List(List("a", "b"), List("y", "z")))
+        assert(TapDependencies.order(all).cycles.map(_.toSet).toSet == Set(Set("a", "b"), Set("y", "z")))
+    }
+
     // ----------------------------------------------------- order, readiness
 
     private def names(plan: TapDependencies.Plan): List[List[String]] = plan.levels.map(_.map(_.name).sorted)

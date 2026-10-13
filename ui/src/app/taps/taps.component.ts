@@ -312,7 +312,8 @@ export class TapsComponent implements OnInit, OnDestroy {
         this.filterTaps();
       },
       error: (err) => console.error('Failed to load taps', err)
-    });    if (this.isEmbedded) this.loadEnableOrder();
+    });
+    if (this.isEmbedded) this.loadEnableOrder();
   }
 
   filterTaps(): void {

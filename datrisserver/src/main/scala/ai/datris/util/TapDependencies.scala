@@ -156,6 +156,9 @@ object TapDependencies {
     /** The first dependency cycle among `taps` (its members, sorted), if any. */
     def cycle(taps: Seq[TapConfig]): Option[List[String]] = cyclesOf(graph(taps)).headOption
 
+    /** Every dependency cycle among `taps` (members sorted), in name order. */
+    def cycles(taps: Seq[TapConfig]): List[List[String]] = cyclesOf(graph(taps))
+
     /** Kahn over `effective`: level 1 (index 0) = taps with no dependencies.
       * Cycle members go under `cycles`; a tap that depends on a cycle is
       * levelled as if those edges were absent (it still lists them in

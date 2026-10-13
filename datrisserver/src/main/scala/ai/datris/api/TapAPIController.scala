@@ -61,7 +61,7 @@ object TapAPIController {
                 return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](o.toString))
             case Right(_) =>
         }
-        TapDependencies.cycle(others :+ tap).filter(_.contains(tap.name)).map { cyc =>
+        TapDependencies.cycles(others :+ tap).find(_.contains(tap.name)).map { cyc =>
             val o = new com.google.gson.JsonObject
             o.addProperty(
                 "error",
@@ -612,6 +612,9 @@ class TapAPIController {
             val catalogTaps = allTaps.filter(t => t.catalog == configToSave.catalog && !CatalogOps.Placeholder.is(t.name))
             TapAPIController.dependencySaveProblem(configToSave, catalogTaps).foreach(r => return Left(r))
         }
+        // A failed read (e.g. the code repository briefly unreachable) keeps
+        // the stored stamp rather than clearing it.
+        val readFailed = new java.util.concurrent.atomic.AtomicBoolean(false)
         val script: Option[String] =
             if (configToSave.isHttp) None
             else if (
@@ -623,14 +626,18 @@ class TapAPIController {
                 catch {
                     case e: Exception =>
                         logger.warn("Tap '" + configToSave.name + "': script unreadable for dependency inference: " + e.getMessage)
+                        readFailed.set(true)
                         None
                 }
-        val stamped = TapAPIController.stampInferredDependsOn(
-            configToSave,
-            script,
-            allPipelines,
-            allTaps.filter(_.name != configToSave.name) :+ configToSave
-        )
+        val stamped =
+            if (readFailed.get) configToSave.copy(inferredDependsOn = if (existing != null) existing.inferredDependsOn else null)
+            else
+                TapAPIController.stampInferredDependsOn(
+                    configToSave,
+                    script,
+                    allPipelines,
+                    allTaps.filter(_.name != configToSave.name) :+ configToSave
+                )
 
         // Cron validation: a schedule the scheduler cannot parse is refused
         // here (400) rather than stored to log an error on every tick. Runs
