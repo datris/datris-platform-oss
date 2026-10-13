@@ -1948,7 +1948,7 @@ def _base_tools():
                 "Read-only. The order to enable a catalog's taps in: taps grouped into levels, level 1 first (taps that read no "
                 "other tap's tables), then the taps that read tables produced by level 1, and so on. A tap's dependencies are its "
                 "declared `dependsOn` or, when it declares none, the taps the platform inferred from the tables its script queries. "
-                "Per tap: `hasPassingTest` (last test run succeeded), `lastRealRunLanded` (last real run landed records), "
+                "Per tap: `hasPassingTest` (last test run succeeded on the tap's current script; a test of an older script does not count), `lastRealRunLanded` (last real run landed records), "
                 "`blockedBy` (dependencies that have not landed data yet) and `ready`. A tap whose sources have not landed data "
                 "fails its test, so run the sources first. Taps on a dependency cycle are listed under `cycles`. Use it to answer "
                 "\"what order do I enable these in\", e.g. after restore_catalog, where every tap is disabled with no data landed."

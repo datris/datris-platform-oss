@@ -25,7 +25,9 @@ import scala.collection.mutable
 object TapDependencies {
 
     /** Per-tap readiness in an enable order. `hasPassingTest` = the last
-      * mode=test run succeeded; `lastRealRunLanded` = the last real run
+      * mode=test run succeeded on the tap's current script (a stamp for an
+      * older script does not count; legacy unstamped taps: a green last
+      * test), i.e. what TapCronGate would accept; `lastRealRunLanded` = the last real run
       * succeeded with at least one record; `blockedBy` = dependencies that
       * have not landed data yet; `ready` = tested and not blocked. */
     case class Readiness(

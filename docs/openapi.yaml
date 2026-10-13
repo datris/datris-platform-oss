@@ -1461,7 +1461,7 @@ paths:
       tags: [Pipelines]
       summary: Enable order of a catalog's taps
       description: |
-        Groups the catalog's taps into dependency levels: level 1 holds taps that read no other tap's tables, level 2 the taps that read level 1, and so on. A tap's dependencies are its `dependsOn` when set (even `[]`), else its stored `inferredDependsOn`. Per tap: `hasPassingTest` (`lastTestRunStatus` is `success`), `lastRealRunLanded` (`lastRunStatus` is `success` with `lastRunRecordCount` > 0), `blockedBy` (dependencies that have not landed data) and `ready` (tested and not blocked). Taps on a dependency cycle are listed under `cycles`, not in a level. Read-only and not audited. Requires `tap:read`; taps the key may not read (owner or catalog scope) are omitted and named in `warnings`.
+        Groups the catalog's taps into dependency levels: level 1 holds taps that read no other tap's tables, level 2 the taps that read level 1, and so on. A tap's dependencies are its `dependsOn` when set (even `[]`), else its stored `inferredDependsOn`. Per tap: `hasPassingTest` (the last test run succeeded on the tap's current script; a test stamped for an older script, e.g. after an overwrite restore, does not count), `lastRealRunLanded` (`lastRunStatus` is `success` with `lastRunRecordCount` > 0), `blockedBy` (dependencies that have not landed data) and `ready` (tested and not blocked). Taps on a dependency cycle are listed under `cycles`, not in a level. Read-only and not audited. Requires `tap:read`; taps the key may not read (owner or catalog scope) are omitted and named in `warnings`.
       parameters:
         - name: name
           in: path
