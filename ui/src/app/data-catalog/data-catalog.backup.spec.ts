@@ -732,4 +732,37 @@ describe('DataCatalogComponent — catalog download and import', () => {
     tick(10000);
     expect(pipeSvc.enableOrderedStatus).not.toHaveBeenCalled();
   }));
+
+  it('a job already running on page load (started elsewhere) shows its progress and Cancel, not the button, and polls', fa(() => {
+    withEnableTaps();
+    enableOrderBody = Object.assign({}, enableOrderBody, { job: runningStatus() });
+    jobStatus = runningStatus();
+    settle();
+    expect(pipeSvc.enableOrder).toHaveBeenCalledWith('e2e_a');
+    expect(pipeSvc.enableOrder).not.toHaveBeenCalledWith('e2e_on');
+    expect(pipeSvc.enableOrder).not.toHaveBeenCalledWith('Uncataloged');
+    expect(pipeSvc.enableOrdered).withContext('the probe starts nothing').not.toHaveBeenCalled();
+    expect(card('e2e_a').querySelector('button.enable-ordered-btn')).withContext('no Start button while a job runs').toBeNull();
+    const rows = Array.from(el.querySelectorAll('.enable-ordered-row')) as HTMLElement[];
+    expect(rows.length).toBe(2);
+    const cancel = el.querySelector('button.enable-ordered-cancel') as HTMLButtonElement | null;
+    expect(cancel).withContext('Cancel offered for a job started elsewhere').not.toBeNull();
+    tick(5000);
+    fixture.detectChanges();
+    expect(pipeSvc.enableOrderedStatus).toHaveBeenCalledWith('e2e_a');
+    cancel?.click();
+    settle();
+    expect(pipeSvc.cancelEnableOrdered).toHaveBeenCalledWith('e2e_a');
+  }));
+
+  it('the page-load probe seeds nothing when no job is running', fa(() => {
+    withEnableTaps();
+    settle();
+    expect(pipeSvc.enableOrder).toHaveBeenCalledWith('e2e_a');
+    expect(el.querySelector('.enable-ordered-progress')).toBeNull();
+    expect(card('e2e_a').querySelector('button.enable-ordered-btn')).not.toBeNull();
+    tick(10000);
+    expect(pipeSvc.enableOrderedStatus).not.toHaveBeenCalled();
+    expect(pipeSvc.enableOrdered).not.toHaveBeenCalled();
+  }));
 });

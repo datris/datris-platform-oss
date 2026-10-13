@@ -174,6 +174,9 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   enableConfirm: EnableOrderedConfirm | null = null;
   enableJobs: { [catalog: string]: EnableOrderedJob } = {};
   private enablePollers: { [catalog: string]: any } = {};
+  /** The one-time check for ordered enables started elsewhere (another tab,
+   *  an agent) has run. */
+  private enableProbeDone = false;
 
   constructor(
     private tapService: TapService,
@@ -343,6 +346,10 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
         }
       }
       this.pendingAutoExpand = '';
+      if (isFirstLoad && !this.enableProbeDone) {
+        this.enableProbeDone = true;
+        this.probeEnableJobs();
+      }
       this.loading = false;
       // Persist current expansion to sessionStorage on every refresh so the
       // state survives tab refresh / unexpected component teardown — ngOnDestroy
@@ -483,6 +490,33 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       level: typeof l?.level === 'number' ? l.level : i + 1,
       taps: (Array.isArray(l?.taps) ? l.taps : []).map((t: any) => typeof t === 'string' ? t : t?.name).filter((n: any) => !!n)
     }));
+  }
+
+  /** Once, on the first load: a job started from another tab or by an agent
+   *  is shown (with Cancel) instead of an Enable in order button that would
+   *  only get a 409. Reads the `job` block of the enable-order GET, one call
+   *  per named catalog with a disabled tap; nothing is started. */
+  private probeEnableJobs(): void {
+    for (const cat of this.catalogs) {
+      if (cat.name === 'Uncataloged') continue;
+      if (!cat.taps.some(t => !(t.name || '').startsWith('__catalog__') && t.enabled === false)) continue;
+      const name = cat.name;
+      this.pipelineService.enableOrder(name).subscribe({
+        next: (body) => this.seedEnableJob(name, body?.job),
+        error: () => {}
+      });
+    }
+  }
+
+  private seedEnableJob(catalogName: string, job: any): void {
+    if (!job || job.active !== true || this.enableJobs[catalogName]) return;
+    const rows: EnableOrderedRow[] = (Array.isArray(job.taps) ? job.taps : []).map((t: any) => ({
+      name: t.name, level: t.level, phase: t.phase, reason: t.reason == null ? null : t.reason
+    }));
+    this.enableJobs[catalogName] = {
+      catalog: catalogName, jobId: job.jobId || '', active: true, cancelRequested: !!job.cancelRequested, rows
+    };
+    this.startEnablePolling(catalogName);
   }
 
   private startEnablePolling(catalogName: string): void {

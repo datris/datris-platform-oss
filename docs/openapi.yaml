@@ -1581,7 +1581,7 @@ paths:
       tags: [Pipelines]
       summary: Progress of a catalog's ordered enable
       description: |
-        Exactly `{"active": false}` when the catalog has no job. A finished job stays readable for one hour with `active` false and `finishedAt` set. The same body is the `job` block of `GET .../enable-order`. Requires `tap:read`; not audited.
+        Exactly `{"active": false}` when the catalog has no job. A finished job stays readable for one hour with `active` false and `finishedAt` set. The same body is the `job` block of `GET .../enable-order`. Requires `tap:read`, checked against the key's catalog scope (the catalog) and owner scope (who started the job); 403 otherwise. Not audited.
       parameters:
         - name: name
           in: path
@@ -1601,7 +1601,7 @@ paths:
       tags: [Pipelines]
       summary: Cancel a catalog's ordered enable
       description: |
-        The test, run or load wait in progress finishes (a running tap script is not killed); every tap not yet started is marked `cancelled`. Requires `tap:run`.
+        The test, run or load wait in progress finishes (a running tap script is not killed); every tap not yet started is marked `cancelled` (a tap already enabled whose run had not started reads `enabled; run cancelled`). Requires `tap:run`, checked against the key's catalog scope and the job starter as owner; 403 otherwise.
       parameters:
         - name: name
           in: path

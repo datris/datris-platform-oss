@@ -36,6 +36,9 @@ class PolicyRoutesSpec extends AnyFunSuite {
         assert(PolicyRoutes.isKnownActionKey("tap:run:enable-ordered"))
         assert(PolicyRoutes.isGateable("tap:run:enable-ordered"))
         assert(PolicyRoutes.catalog.contains("tap:run:enable-ordered"))
+        // The path name is a catalog: a queued approval records no tap version for it.
+        assert(PolicyRoutes.targetsCatalog("tap:run:enable-ordered"))
+        assert(!PolicyRoutes.targetsCatalog("tap:run"))
         // The catalog rename/delete rows next to it are untouched.
         assert(CapabilityRoutes.lookup("DELETE", "/api/v1/catalog/x") == RouteCheck.Require("pipeline", "delete"))
         assert(CapabilityRoutes.lookup("PUT", "/api/v1/catalog/x") == RouteCheck.Require("pipeline", "update"))

@@ -130,4 +130,45 @@ class CatalogEnableOrderedApiSpec extends AnyFunSuite with BeforeAndAfterAll {
             release.set(true)
         }
     }
+
+    test("GET and DELETE enable-ordered apply the key's catalog scope (review finding 1)") {
+        val cat = "ceo-scope"
+        val release = new AtomicBoolean(false)
+        val deps = new CatalogEnableJobSpec.FakeDeps(Seq(tap("a", cat)))
+        deps.runResult("a") = CatalogEnableJobSpec.result(recordCount = 1, token = "tok-scope")
+        deps.rollupFor("tok-scope") = () =>
+            PipelineStatusRollup(allDone = release.get(), status = if (release.get()) "success" else "processing", jobs = new java.util.ArrayList())
+        val plan = TapDependencies.order(Seq(tap("a", cat).copy(lastTestRunStatus = "success")))
+        CatalogEnableJob.start(cat, "spec-actor", plan, deps) match {
+            case Left(err) => fail("start refused: " + err)
+            case Right(_) =>
+        }
+        val path = "/api/v1/catalog/" + cat + "/enable-ordered"
+        val controller = new CatalogAPIController()
+        try {
+            val otherRead = controller.enableOrderedStatus(null, cat, req(Some(key("tap:read:catalog=ceo-other")), "GET", path))
+            assert(otherRead.getStatusCode.value() == 403, otherRead.getBody)
+            assert(!otherRead.getBody.contains("tok-scope"), "no job detail leaks: " + otherRead.getBody)
+            val otherCancel = controller.cancelEnableOrdered(null, cat, req(Some(key("tap:run:catalog=ceo-other")), "DELETE", path))
+            assert(otherCancel.getStatusCode.value() == 403, otherCancel.getBody)
+            assert(CatalogEnableJob.activeFor(cat), "a refused cancel leaves the job running")
+
+            val ownRead = controller.enableOrderedStatus(null, cat, req(Some(key("tap:read:catalog=" + cat)), "GET", path))
+            assert(ownRead.getStatusCode.value() == 200, ownRead.getBody)
+            assert(JsonParser.parseString(ownRead.getBody).getAsJsonObject.get("active").getAsBoolean)
+            val ownCancel = controller.cancelEnableOrdered(null, cat, req(Some(key("tap:run:catalog=" + cat)), "DELETE", path))
+            assert(ownCancel.getStatusCode.value() == 200, ownCancel.getBody)
+            assert(CatalogEnableJob.status(cat).exists(_.cancel.get()))
+        } finally {
+            CatalogEnableJob.cancel(cat)
+            release.set(true)
+        }
+    }
+
+    test("GET enable-ordered with no job is {active:false} for any key") {
+        val r = new CatalogAPIController()
+            .enableOrderedStatus(null, "ceo-none", req(Some(key("tap:read:catalog=ceo-other")), "GET", "/api/v1/catalog/ceo-none/enable-ordered"))
+        assert(r.getStatusCode.value() == 200)
+        assert(r.getBody == """{"active":false}""", r.getBody)
+    }
 }

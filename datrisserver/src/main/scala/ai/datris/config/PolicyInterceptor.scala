@@ -153,7 +153,9 @@ class PolicyInterceptor extends HandlerInterceptor {
                     action = actionKey,
                     resourceType = Some(resourceType),
                     resourceName = resourceName,
-                    resourceVersion = resourceName.flatMap(n => PolicyGate.currentVersion(resourceType, n)),
+                    resourceVersion =
+                        if (PolicyRoutes.targetsCatalog(actionKey)) None
+                        else resourceName.flatMap(n => PolicyGate.currentVersion(resourceType, n)),
                     actor = actor,
                     reason = reasonOf(request),
                     agentSession = Option(request.getHeader(AuditActor.HeaderAgentSession)).map(_.trim).filter(_.nonEmpty).map(_.take(64)),

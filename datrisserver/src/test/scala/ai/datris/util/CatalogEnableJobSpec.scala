@@ -231,6 +231,39 @@ class CatalogEnableJobSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(!deps.events.exists(_.startsWith("run:")), deps.events)
     }
 
+    test("an unparsable stored cron fails the tap with the cron validation text, and the tap is not enabled") {
+        val cat = "cej-badcron"
+        val a = tap("a", cat, tested = true).copy(cronExpression = "0 * * * *")
+        val invalid = TapCronValidation.check("a", "0 * * * *")
+        assert(invalid.isDefined, "fixture must be an invalid Quartz cron")
+        val deps = new CatalogEnableJobSpec.FakeDeps(Seq(a))
+        startOk(cat, deps)
+        val j = awaitFinished(cat)
+        val o = outcome(j, "a")
+        assert(o.phase == "failed", j.taps)
+        assert(o.reason == invalid.get, o.reason)
+        assert(deps.enabled.isEmpty, deps.enabled)
+        assert(!deps.events.exists(_.startsWith("run:")), deps.events)
+    }
+
+    test("a cancel seen after the enable write reports the tap as enabled with its run cancelled") {
+        val cat = "cej-cancel-after-enable"
+        val deps = new CatalogEnableJobSpec.FakeDeps(pair(cat, aTested = true)) {
+            override def enable(tap: TapConfig, note: String, actor: String): Unit = {
+                super.enable(tap, note, actor)
+                CatalogEnableJob.cancel(cat)
+            }
+        }
+        startOk(cat, deps)
+        val j = awaitFinished(cat)
+        val a = outcome(j, "a")
+        assert(a.phase == "cancelled", j.taps)
+        assert(a.reason == "enabled; run cancelled", a.reason)
+        assert(deps.stored.get("a").enabled, "the enable write stands")
+        assert(!deps.events.exists(_.startsWith("run:")), deps.events)
+        assert(outcome(j, "b").phase == "cancelled", j.taps)
+    }
+
     // ── Bullet 3 ────────────────────────────────────────────────────────
 
     test("cancel during a's wait: a finishes its phase, b is cancelled, finishedAt is set") {

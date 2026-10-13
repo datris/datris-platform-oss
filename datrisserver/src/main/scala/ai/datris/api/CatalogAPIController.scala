@@ -415,7 +415,11 @@ class CatalogAPIController {
             out.addProperty("catalog", name)
             out.add("warnings", toArray(warnings.toList))
             // Progress of an ordered enable of this catalog ({active:false} when none).
-            out.add("job", CatalogEnableJob.statusBody(name))
+            out.add(
+                "job",
+                if (CatalogAPIController.enableJobScopeDenial(request, "read", name).isEmpty) CatalogEnableJob.statusBody(name)
+                else { val inactive = new JsonObject; inactive.addProperty("active", false); inactive }
+            )
             new ResponseEntity[String](new Gson().toJson(out), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -506,6 +510,10 @@ class CatalogAPIController {
     ): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
+            // No job: nothing to read (and no owner to scope against).
+            if (CatalogEnableJob.status(name).isEmpty)
+                return new ResponseEntity[String](CatalogEnableJob.statusBody(name).toString, HttpStatus.OK)
+            CatalogAPIController.enableJobScopeDenial(request, "read", name).foreach(r => return r)
             new ResponseEntity[String](CatalogEnableJob.statusBody(name).toString, HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -526,6 +534,7 @@ class CatalogAPIController {
         try {
             logger.info("API endpoint DELETE /catalog/" + name + "/enable-ordered called")
             APIKeyValidator.validate(apiKey)
+            CatalogAPIController.enableJobScopeDenial(request, "run", name).foreach(r => return r)
             val o = new JsonObject
             if (CatalogEnableJob.cancel(name)) {
                 o.addProperty("cancelled", true)
@@ -1232,6 +1241,26 @@ object CatalogAPIController {
             }
         }
         None
+    }
+
+    /** 403 when the caller's key may not `tap:<action>` the catalog's
+      * ordered-enable job: catalog scope = the catalog, owner scope = whoever
+      * started the job (absent when there is none). Route capability alone
+      * would let a `catalog=A` key read or cancel catalog B's job. */
+    def enableJobScopeDenial(request: HttpServletRequest, action: String, catalog: String): Option[ResponseEntity[String]] = {
+        val owner = CatalogEnableJob.status(catalog).map(_.startedBy).orNull
+        try {
+            CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(catalog, owner))
+            None
+        } catch {
+            case e: CapabilityDeniedException =>
+                Some(
+                    ResponseEntity
+                        .status(HttpStatus.FORBIDDEN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body[String](CatalogOps.capabilityDeniedBody(e.getMessage))
+                )
+        }
     }
 
     /** `{levels: [{level, taps: [readiness]}], cycles}`; levels are 1-based. */

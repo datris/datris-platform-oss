@@ -292,6 +292,14 @@ object CatalogEnableJob {
             return
         }
         val normalized = TapCronGate.normalizeCron(existing)
+        // Same checks as a tap save: an unparsable (legacy) cron would make
+        // the scheduler fail on every tick once the tap is enabled.
+        TapCronValidation.check(existing.name, normalized.cronExpression) match {
+            case Some(invalid) =>
+                set(job, name, "failed", invalid)()
+                return
+            case None =>
+        }
         val toEnable = normalized.copy(enabled = true)
         TapCronGate.check(existing, toEnable) match {
             case Some(refusal) =>
@@ -300,7 +308,11 @@ object CatalogEnableJob {
             case None =>
         }
         if (!existing.enabled || (normalized ne existing)) deps.enable(toEnable, EnableNote, job.startedBy)
-        if (cancelled(job, name, "its run")) return
+        if (job.cancel.get()) {
+            // The tap stays enabled (the write is done); only its run is skipped.
+            set(job, name, "cancelled", "enabled; run cancelled")()
+            return
+        }
 
         // (d) a real run, then wait for the pipeline load.
         set(job, name, "running")()
