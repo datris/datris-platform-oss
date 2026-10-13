@@ -398,6 +398,28 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'export_catalog',
+      description: 'Back up a catalog as one zip archive: every tap and pipeline definition in it, tap scripts and incremental state, and referenced validation schemas. Read-only. Secret values are never included; the manifest lists the secret names the catalog needs. Returns the manifest, the archive as base64 and its size.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'catalog', type: 'string', description: 'Catalog name to export.', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'restore_catalog',
+      description: 'Restore an export_catalog archive as a catalog with the same or a new name. Never merges: refused when the catalog or any archived name already exists (mode=overwrite replaces items already in the catalog and needs confirm). Never writes secrets (missing ones are listed). Restored taps are left disabled. ONLY call when the user has explicitly asked.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'catalog', type: 'string', description: 'Catalog name to restore into.', required: true, inputType: 'text' },
+        { name: 'archive_base64', type: 'string', description: 'The archive as base64 (archiveBase64 from export_catalog).', required: true, inputType: 'textarea' },
+        { name: 'mode', type: 'string', description: 'new (default) or overwrite.', required: false, inputType: 'text' },
+        { name: 'confirm', type: 'string', description: 'Required for mode=overwrite: the catalog name, repeated.', required: false, inputType: 'text' },
+        { name: 'restore_state', type: 'boolean', description: 'Optional, default true. false skips each tap\'s incremental state.', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'delete_pipeline',
       description: 'DESTRUCTIVE. Deletes BOTH the pipeline config AND the destination data (rows, collection contents, vector store entries). Also wipes document-tap ledgers and staged files for any tap targeting this pipeline. Config-only delete (orphaning the data) is not supported — the platform forces data delete to come along to prevent ghost state. Pass keep_config=true to reset: wipes data, keeps config.',
       category: 'Pipeline Management',

@@ -56,6 +56,8 @@ object MCPToolRoutes {
         "set_catalog" -> Mapped("POST", "/api/v1/pipeline"),
         "rename_catalog" -> Mapped("PUT", "/api/v1/catalog/example"),
         "delete_catalog" -> Mapped("DELETE", "/api/v1/catalog/example"),
+        "export_catalog" -> Mapped("GET", "/api/v1/catalog/example/export"),
+        "restore_catalog" -> Mapped("POST", "/api/v1/catalog/example/restore"),
         "delete_pipeline" -> Mapped("DELETE", "/api/v1/pipeline"),
         "upload_data" -> Mapped("POST", "/api/v1/pipeline/upload"),
         "get_job_status" -> Mapped("GET", "/api/v1/pipeline/status"),

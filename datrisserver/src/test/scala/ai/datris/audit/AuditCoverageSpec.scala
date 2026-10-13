@@ -88,4 +88,13 @@ class AuditCoverageSpec extends AnyFunSuite {
         assert(!AuditClassifier.isDeliberatelySkipped("PUT", "/api/v1/catalog/sample"))
         assert(!AuditClassifier.isDeliberatelySkipped("DELETE", "/api/v1/catalog/sample"))
     }
+
+    // Story: plans/stories/catalog-backup-restore.md — the restore route is a
+    // live controller route and is audit-classified (export is a GET: not audited).
+    test("catalog restore route exists and is audit-classified") {
+        val live = routes().map(r => (r.method, r.path))
+        assert(live.contains(("POST", "/api/v1/catalog/{name}/restore")), "POST /api/v1/catalog/{name}/restore route missing")
+        assert(AuditClassifier.isKnown("POST", "/api/v1/catalog/sample/restore"))
+        assert(!AuditClassifier.isDeliberatelySkipped("POST", "/api/v1/catalog/sample/restore"))
+    }
 }

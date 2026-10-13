@@ -1596,7 +1596,7 @@ async def list_tools():
 # never drifts from the catalog by accident: a new mutating tool that is not
 # listed here simply lacks the optional argument.
 _MUTATING_TOOLS = {
-    "create_pipeline", "set_catalog", "rename_catalog", "delete_catalog", "delete_pipeline", "upload_data", "kill_job",
+    "create_pipeline", "set_catalog", "rename_catalog", "delete_catalog", "restore_catalog", "delete_pipeline", "upload_data", "kill_job",
     "apply_dest_types", "upload_config", "update_secret", "create_tap_secret",
     "delete_tap_secret", "create_tap", "run_tap", "delete_tap", "set_tap_state",
     "test_tap", "update_tap", "restore_tap_version", "restore_pipeline_version",
@@ -1910,6 +1910,65 @@ def _base_tools():
                     },
                 },
                 "required": ["catalog"]
+            }
+        ),
+        Tool(
+            name="export_catalog",
+            description=(
+                "Back up a catalog: returns one zip archive of every tap and pipeline in it (definitions, each tap's script and "
+                "incremental state, referenced validation schemas). Read-only. Secret values are never included; the manifest lists "
+                "the secret names the catalog needs. Returns `manifest` (catalog, taps, pipelines, requiredSecrets, warnings) first, "
+                "then `archiveBase64` and `sizeBytes`. Answer questions about the archive from `manifest`; pass `archiveBase64` "
+                "unchanged to restore_catalog. Uncataloged cannot be exported."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "catalog": {
+                        "type": "string",
+                        "description": "Catalog name to export."
+                    },
+                },
+                "required": ["catalog"]
+            }
+        ),
+        Tool(
+            name="restore_catalog",
+            description=(
+                "Restore a catalog archive produced by export_catalog as catalog `catalog` (the same or a new name). "
+                "Call this ONLY when the user has explicitly asked to restore and named the archive to use. "
+                "A restore never merges: it is refused (with the clashing names) when the catalog already exists or any archived "
+                "tap or pipeline name exists anywhere on this install. mode=overwrite replaces only items already in `catalog` and "
+                "needs `confirm` equal to the catalog name. It never writes secrets: missing ones come back under `missingSecrets` "
+                "for the user to create. Restored taps are left disabled; tell the user to test and enable them. "
+                "Items that could not be restored come back under `failed`; report them."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "catalog": {
+                        "type": "string",
+                        "description": "Catalog name to restore into (letters, digits, '_' and '-')."
+                    },
+                    "archive_base64": {
+                        "type": "string",
+                        "description": "The archive as base64 (the `archiveBase64` value export_catalog returned)."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["new", "overwrite"],
+                        "description": "new (default): the catalog and every archived name must not exist yet. overwrite: replace items already in this catalog; needs confirm."
+                    },
+                    "confirm": {
+                        "type": "string",
+                        "description": "Required for mode=overwrite: the catalog name, repeated."
+                    },
+                    "restore_state": {
+                        "type": "boolean",
+                        "description": "Optional, default true. false skips each tap's incremental state (for a copy that should start from scratch)."
+                    },
+                },
+                "required": ["catalog", "archive_base64"]
             }
         ),
         Tool(
@@ -4612,6 +4671,58 @@ def _dispatch(name: str, args: dict) -> str:
         # mode/confirm an agent passes is ignored.
         catalog = urllib.parse.quote(str(args.get("catalog") or ""), safe="")
         return _call("delete", f"/api/v1/catalog/{catalog}", params={"mode": "detach"})
+
+    elif name == "export_catalog":
+        # The zip is binary: fetched directly (not via _call, which decodes
+        # text) and returned base64 with its manifest first.
+        catalog = urllib.parse.quote(str(args.get("catalog") or ""), safe="")
+        try:
+            resp = requests.get(f"{DATRIS_API_URL}/api/v1/catalog/{catalog}/export", headers=_identity_headers(), timeout=300)
+        except requests.RequestException as e:
+            return json.dumps({"error": str(e)})
+        if resp.status_code != 200:
+            return resp.text
+        data = resp.content
+        import base64
+        import io
+        import zipfile
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                manifest = json.loads(z.read("manifest.json").decode("utf-8"))
+        except (zipfile.BadZipFile, KeyError, ValueError) as e:
+            return json.dumps({"error": f"export did not return a valid catalog archive: {e}"})
+        return json.dumps({
+            "manifest": manifest,
+            "archiveBase64": base64.b64encode(data).decode("ascii"),
+            "sizeBytes": len(data),
+        })
+
+    elif name == "restore_catalog":
+        # Multipart upload; the server body (including 207 partial failures,
+        # 409 clashes) is returned verbatim.
+        raw_catalog = str(args.get("catalog") or "")
+        mode = str(args.get("mode") or "new").strip().lower()
+        confirm = args.get("confirm")
+        if mode == "overwrite" and not confirm:
+            return json.dumps({
+                "error": "mode=overwrite replaces items in the catalog and needs confirm=<catalog name>. "
+                         "Ask the user to confirm, then call again with confirm set."
+            })
+        data = {"mode": mode}
+        if mode == "overwrite":
+            data["confirm"] = str(confirm)
+        if args.get("restore_state") is False:
+            data["restoreState"] = "false"
+        catalog = urllib.parse.quote(raw_catalog, safe="")
+        try:
+            return _upload_content(
+                f"/api/v1/catalog/{catalog}/restore",
+                str(args.get("archive_base64") or ""),
+                f"{raw_catalog or 'catalog'}.zip".replace("/", "_"),
+                data=data,
+            )
+        except requests.RequestException as e:
+            return json.dumps({"error": str(e)})
 
     elif name == "update_tap":
         # Fetch existing config

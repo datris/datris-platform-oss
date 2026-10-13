@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpResponse } from '@angular/common/http';
 import { Observable } from 'rxjs';
 
 @Injectable({
@@ -44,6 +44,31 @@ export class PipelineService {
     let url = '/api/v1/catalog/' + encodeURIComponent(name) + '?mode=' + encodeURIComponent(mode);
     if (mode === 'cascade' && confirm != null) url += '&confirm=' + encodeURIComponent(confirm);
     return this.http.delete<any>(url);
+  }
+
+  /** Download a catalog as a zip archive. Resolves the full response so the
+   *  caller can take the file name from Content-Disposition; the body is the
+   *  zip Blob. Errors arrive with a Blob body (responseType 'blob'). */
+  exportCatalog(name: string): Observable<HttpResponse<Blob>> {
+    return this.http.get('/api/v1/catalog/' + encodeURIComponent(name) + '/export',
+      { responseType: 'blob', observe: 'response' });
+  }
+
+  /** Restore a catalog archive as catalog `name`. observe:'response' so a 207
+   *  (per-item failures in `failed`) resolves through `next` like a 200; a 409
+   *  comes through `error` with the server's JSON body (`clashes`). A restore
+   *  never merges: mode 'overwrite' replaces items already in `name` and needs
+   *  `confirm` equal to the name. `restoreState=false` skips each tap's
+   *  incremental state (for a clone). */
+  restoreCatalog(name: string, file: File, mode: 'new' | 'overwrite', confirm?: string,
+                 restoreState = true): Observable<HttpResponse<any>> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('mode', mode);
+    if (mode === 'overwrite' && confirm != null) formData.append('confirm', confirm);
+    if (restoreState === false) formData.append('restoreState', 'false');
+    return this.http.post<any>('/api/v1/catalog/' + encodeURIComponent(name) + '/restore', formData,
+      { observe: 'response' });
   }
 
   deletePipelineData(name: string): Observable<any> {

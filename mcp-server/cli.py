@@ -1015,6 +1015,134 @@ def tap_update(name, enabled, cron, pipeline, description, endpoint_url, json_ou
         click.echo(f"  {result}")
 
 
+@cli.group()
+def catalog():
+    """Back up and restore catalogs (export, restore)."""
+    pass
+
+
+def _secret_names(entries):
+    names = []
+    for s in entries or []:
+        if isinstance(s, dict):
+            n = s.get("name")
+            used = s.get("usedBy") or []
+            names.append(f"{n} (used by {', '.join(used)})" if used else str(n))
+        else:
+            names.append(str(s))
+    return names
+
+
+def _archive_manifest(path):
+    """The archive's manifest.json, or None when it cannot be read locally."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            return json.loads(z.read("manifest.json").decode("utf-8"))
+    except (zipfile.BadZipFile, KeyError, ValueError, OSError):
+        return None
+
+
+@catalog.command("export")
+@click.argument("name")
+@click.option("--out", "out_path", default=None, help="Archive file to write (default: <name>.zip)")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Print the raw tool result")
+def catalog_export(name, out_path, json_output):
+    """Download catalog NAME (its taps, pipelines and scripts) as a zip archive."""
+    result = mcp("export_catalog", {"catalog": name})
+    if not isinstance(result, dict) or result.get("error") or not result.get("archiveBase64"):
+        if json_output:
+            click.echo(json.dumps(result, indent=2))
+        msg = result.get("error") if isinstance(result, dict) else None
+        if not msg:
+            msg = (result.get("text") if isinstance(result, dict) else None) or "export returned no archive"
+        click.echo(f"  Error: {str(msg)[:300]}")
+        sys.exit(1)
+    data = base64.b64decode(result["archiveBase64"])
+    out_path = out_path or f"{name}.zip"
+    with open(out_path, "wb") as f:
+        f.write(data)
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
+    manifest = result.get("manifest") or {}
+    taps_n = len(manifest.get("taps") or [])
+    pipes_n = len(manifest.get("pipelines") or [])
+    secrets = _secret_names(manifest.get("requiredSecrets"))
+    click.echo(f"  ✓ Catalog '{name}' written to {out_path} ({len(data)} bytes)")
+    click.echo(f"    {taps_n} taps, {pipes_n} pipelines, secrets needed: {', '.join(secrets) if secrets else 'none'}")
+    for w in manifest.get("warnings") or []:
+        click.echo(f"    Warning: {w}")
+
+
+@catalog.command("restore")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--as", "target", default=None, help="Catalog name to restore into (default: the name in the archive)")
+@click.option("--overwrite", is_flag=True, default=False, help="Replace items already in the target catalog (asks for confirmation)")
+@click.option("--yes", is_flag=True, default=False, help="Skip the --overwrite confirmation prompt")
+@click.option("--no-state", "no_state", is_flag=True, default=False, help="Skip each tap's incremental state (for a clone)")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Print the raw tool result")
+def catalog_restore(file, target, overwrite, yes, no_state, json_output):
+    """Restore a catalog archive FILE made by `datris catalog export`."""
+    if not target:
+        manifest = _archive_manifest(file) or {}
+        target = manifest.get("catalog") or os.path.splitext(os.path.basename(file))[0]
+    mode = "overwrite" if overwrite else "new"
+    args = {"catalog": target, "archive_base64": b64_file(file), "mode": mode}
+    if overwrite:
+        if not yes:
+            typed = click.prompt("  Type the catalog name to confirm", default="", show_default=False)
+            if typed.strip() != target:
+                click.echo(f"  Aborted: '{typed.strip()}' does not match '{target}'. Nothing was restored.")
+                sys.exit(1)
+        args["confirm"] = target
+    if no_state:
+        args["restore_state"] = False
+
+    result = mcp("restore_catalog", args)
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+    if not isinstance(result, dict):
+        if not json_output:
+            click.echo(f"  {result}")
+        sys.exit(1)
+    if result.get("error"):
+        if not json_output:
+            click.echo(f"  Error: {str(result['error'])[:300]}")
+            for c in result.get("clashes") or []:
+                click.echo(f"    - {c}")
+        sys.exit(1)
+    if "restored" not in result:
+        if not json_output:
+            click.echo(f"  Error: {str(result.get('text') or result)[:300]}")
+        sys.exit(1)
+    failed = result.get("failed") or []
+    if json_output:
+        sys.exit(1 if failed else 0)
+
+    restored = result.get("restored") or {}
+    taps_n = len(restored.get("taps") or [])
+    pipes_n = len(restored.get("pipelines") or [])
+    click.echo(f"  {'✓' if not failed else '!'} Restored {taps_n} taps and {pipes_n} pipelines into catalog '{target}'")
+    if result.get("tapsDisabled") and taps_n:
+        click.echo("    Restored taps are disabled. Test each one, then enable it.")
+    missing = _secret_names(result.get("missingSecrets"))
+    if missing:
+        click.echo(f"    Create these secrets before running the taps and pipelines: {', '.join(missing)}.")
+    for s in result.get("skipped") or []:
+        click.echo(f"    Skipped: {s}")
+    for w in result.get("warnings") or []:
+        click.echo(f"    Warning: {w}")
+    if failed:
+        click.echo(f"  {len(failed)} items could not be restored:")
+        for f in failed:
+            if isinstance(f, dict):
+                click.echo(f"    - {f.get('name')}: {f.get('error')}")
+            else:
+                click.echo(f"    - {f}")
+        sys.exit(1)
+
+
 @cli.command()
 @click.option("--pre-upgrade", is_flag=True, default=False,
               help="Host checks only (plus the AI slot secrets via the vault container); safe to run with the server stopped. Prints the upgrade command on success.")

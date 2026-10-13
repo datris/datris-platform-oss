@@ -41,6 +41,29 @@ const CONCURRENT_MOVE_PHRASE = 'no longer in catalog';
 const CATALOG_NOT_FOUND_MESSAGE =
   'Catalog not found. It may have been renamed or deleted elsewhere; the list has been refreshed.';
 
+/** A 404 from the catalog export or restore endpoint: the catalog is gone, or
+ *  the server predates catalog backup (no older-server fallback). */
+const BACKUP_NOT_FOUND_MESSAGE = 'Catalog not found or the server is older than the UI.';
+
+/** Same rule as the server's CatalogOps.LabelRule. */
+const CATALOG_LABEL_RULE = /^[A-Za-z0-9_-]+$/;
+
+/** Summary of the last catalog restore, shown until dismissed. */
+interface ImportResult {
+  catalog: string;
+  taps: number;
+  pipelines: number;
+  tapsDisabled: boolean;
+  missingSecrets: string[];
+  skipped: string[];
+  warnings: string[];
+  stateRestored: boolean | null;
+  /** The user ticked "Skip incremental tap state". Only then does the banner
+   *  say the taps start without state: on overwrite the server keeps an
+   *  existing tap's state and still reports stateRestored=false. */
+  stateSkipped: boolean;
+}
+
 @Component({
     selector: 'app-data-catalog',
     templateUrl: './data-catalog.component.html',
@@ -84,7 +107,26 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   moveMenuOpenKey = '';
   movingItem = '';
   moveError = '';
+  /** Per-item lines under `moveError` (a restore's 409 `clashes`). */
+  moveErrorItems: string[] = [];
   private moveErrorTimeout: any;
+  // Catalog backup: the card whose export is in flight, and the import panel.
+  exportingCatalog = '';
+  showImportPanel = false;
+  importFile: File | null = null;
+  importName = '';
+  importMode: 'new' | 'overwrite' = 'new';
+  importConfirm = '';
+  importSkipState = false;
+  importing = false;
+  importResult: ImportResult | null = null;
+  /** Inline explanations in the import panel, toggled by their info icons. */
+  showOverwriteInfo = false;
+  showSkipStateInfo = false;
+  /** Popover placement, set when one opens: to the left of the icon near
+   *  the right edge, above it when there is no room below. */
+  infoOpenLeft = false;
+  infoOpenAbove = false;
   // Catalog-level bulk move (move all taps + pipelines in one catalog into
   // another). Tracks which catalog's move menu is open and which is mid-move.
   moveCatalogMenuOpen = '';
@@ -479,6 +521,175 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     });
   }
 
+  // ── Catalog backup (download / import) ────────────────────────────────
+
+  /** Download a named catalog as a zip. The file name comes from the
+   *  server's Content-Disposition, falling back to `<name>.zip`. */
+  downloadCatalog(catalog: CatalogInfo, event?: MouseEvent): void {
+    if (event) event.stopPropagation();
+    if (catalog.name === 'Uncataloged' || this.exportingCatalog === catalog.name) return;
+    const name = catalog.name;
+    this.clearMoveError();
+    this.exportingCatalog = name;
+    this.pipelineService.exportCatalog(name).subscribe({
+      next: (res: any) => {
+        if (this.exportingCatalog === name) this.exportingCatalog = '';
+        const blob: Blob | null = res instanceof Blob ? res : (res && res.body) || null;
+        if (!blob) {
+          this.showMoveError(`Exporting catalog '${name}' returned no archive.`);
+          return;
+        }
+        const header = res && res.headers && typeof res.headers.get === 'function'
+          ? res.headers.get('Content-Disposition') : null;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = DataCatalogComponent.fileNameFrom(header) || name + '.zip';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      },
+      error: (err) => {
+        if (this.exportingCatalog === name) this.exportingCatalog = '';
+        if (err && err.status === 404) {
+          this.showMoveError(BACKUP_NOT_FOUND_MESSAGE);
+          return;
+        }
+        // responseType 'blob': the JSON error body arrives as a Blob.
+        const body = err && err.error;
+        if (body instanceof Blob && typeof body.text === 'function') {
+          body.text().then(
+            text => this.showMoveError(httpErrorText({ ...err, error: text }, 'Export failed')),
+            () => this.showMoveError(this.errText(err))
+          );
+        } else {
+          this.showMoveError(this.errText(err));
+        }
+      }
+    });
+  }
+
+  /** File name from a Content-Disposition header, or '' when there is none. */
+  private static fileNameFrom(header: string | null): string {
+    if (!header) return '';
+    const star = /filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i.exec(header);
+    if (star) {
+      try { return decodeURIComponent(star[1].trim().replace(/^"|"$/g, '')); } catch { /* fall through */ }
+    }
+    const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(header);
+    return plain ? plain[1].trim() : '';
+  }
+
+  openImport(): void {
+    this.clearMoveError();
+    this.showImportPanel = true;
+    this.importFile = null;
+    this.importName = '';
+    this.importMode = 'new';
+    this.importConfirm = '';
+    this.importSkipState = false;
+  }
+
+  cancelImport(): void {
+    this.showImportPanel = false;
+    this.importFile = null;
+    this.importName = '';
+    this.importMode = 'new';
+    this.importConfirm = '';
+    this.importSkipState = false;
+  }
+
+  /** A picked archive. There is no client-side unzip, so the target name
+   *  defaults to the file stem (an export's `-yyyyMMdd-HHmm` stamp removed);
+   *  the server's restore response carries the manifest summary. */
+  onImportFile(event: Event): void {
+    const input = event.target as HTMLInputElement | null;
+    const file = input && input.files && input.files.length > 0 ? input.files[0] : null;
+    this.importFile = file;
+    if (file && !this.importName) {
+      const stem = file.name.replace(/\.zip$/i, '').replace(/-\d{8}-\d{4}$/, '');
+      this.importName = sanitizeCatalogName(stem);
+    }
+  }
+
+  /** Blur applies the label rule so the user sees the name that will be sent. */
+  sanitizeImportName(): void {
+    this.importName = sanitizeCatalogName(this.importName || '');
+  }
+
+  formatSize(bytes: number): string {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  /** Restore is enabled once a file and a valid name are set, no rename or
+   *  move is running on that name, and (overwrite) the name is typed again. */
+  canRestore(): boolean {
+    const name = (this.importName || '').trim();
+    if (this.importing || !this.importFile) return false;
+    if (!name || !CATALOG_LABEL_RULE.test(name) || name === 'Uncataloged') return false;
+    if (this.renamingCatalog === name || this.movingCatalog === name) return false;
+    if (this.importMode === 'overwrite' && this.importConfirm !== name) return false;
+    return true;
+  }
+
+  commitImport(): void {
+    if (!this.canRestore() || !this.importFile) return;
+    const name = this.importName.trim();
+    const mode = this.importMode;
+    const skipState = this.importSkipState;
+    this.clearMoveError();
+    this.clearOpBanners();
+    this.importResult = null;
+    this.importing = true;
+    this.pipelineService.restoreCatalog(
+      name, this.importFile, mode,
+      mode === 'overwrite' ? this.importConfirm : undefined,
+      !skipState
+    ).subscribe({
+      next: (res: any) => {
+        this.importing = false;
+        const body = res && res.body !== undefined ? res.body : res;
+        const restored = (body && body.restored) || {};
+        const names = (v: any): string[] => Array.isArray(v) ? v.map((x: any) => String(x)) : [];
+        const missing = Array.isArray(body && body.missingSecrets)
+          ? body.missingSecrets.map((m: any) => (m && typeof m === 'object') ? String(m.name || '') : String(m)).filter((m: string) => m)
+          : [];
+        this.importResult = {
+          catalog: name,
+          taps: names(restored.taps).length,
+          pipelines: names(restored.pipelines).length,
+          tapsDisabled: !(body && body.tapsDisabled === false),
+          missingSecrets: missing,
+          skipped: names(body && body.skipped),
+          warnings: names(body && body.warnings),
+          stateRestored: body && typeof body.stateRestored === 'boolean' ? body.stateRestored : null,
+          stateSkipped: skipState
+        };
+        this.showOpFailures(`Restoring catalog '${name}'`, body && body.failed);
+        this.cancelImport();
+        this.pendingAutoExpand = name;
+        this.loadCatalogs();
+      },
+      error: (err) => {
+        this.importing = false;
+        if (err && err.status === 404) {
+          this.showMoveError(BACKUP_NOT_FOUND_MESSAGE);
+          return;
+        }
+        // 409: the catalog or archived names already exist. A restore never
+        // merges, so nothing was written; list each clash and keep the panel.
+        const clashes = err && err.error && Array.isArray(err.error.clashes)
+          ? err.error.clashes.map((c: any) => String(c)) : [];
+        this.showMoveError(this.errText(err), clashes);
+      }
+    });
+  }
+
+  dismissImportResult(): void {
+    this.importResult = null;
+  }
+
   private clearOpBanners(): void {
     this.opFailures = [];
     this.opFailuresLabel = '';
@@ -552,6 +763,37 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.menuOpenKey = '';
     this.moveMenuOpenKey = '';
     this.moveCatalogMenuOpen = '';
+    this.closeInfo();
+  }
+
+  /** Open or close an import-panel info popover. Only one is open at a time;
+   *  the click is stopped so the document listener does not close it again. */
+  toggleInfo(which: 'overwrite' | 'skip-state', event?: Event): void {
+    if (event) event.stopPropagation();
+    const wasOpen = which === 'overwrite' ? this.showOverwriteInfo : this.showSkipStateInfo;
+    this.closeInfo();
+    if (wasOpen) return;
+    this.placeInfo(event);
+    if (which === 'overwrite') this.showOverwriteInfo = true;
+    else this.showSkipStateInfo = true;
+  }
+
+  @HostListener('document:keydown.escape')
+  closeInfo(): void {
+    this.showOverwriteInfo = false;
+    this.showSkipStateInfo = false;
+  }
+
+  private placeInfo(event?: Event): void {
+    const icon = event && event.currentTarget instanceof Element ? event.currentTarget : null;
+    this.infoOpenLeft = false;
+    this.infoOpenAbove = false;
+    if (!icon || typeof window === 'undefined') return;
+    const r = icon.getBoundingClientRect();
+    const width = Math.min(360, window.innerWidth - 32);
+    this.infoOpenLeft = r.left + width > window.innerWidth - 16;
+    // Room for a typical popover (about 200px) below the icon, else above.
+    this.infoOpenAbove = r.bottom + 220 > window.innerHeight && r.top > 220;
   }
 
   /** ngFor trackBy so the 10s catalog refresh reuses each card's DOM
@@ -654,16 +896,27 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
    *  is not left on screen. The affected-keys banner is separate and stays. */
   private clearMoveError(): void {
     this.moveError = '';
+    this.moveErrorItems = [];
     if (this.moveErrorTimeout) {
       clearTimeout(this.moveErrorTimeout);
       this.moveErrorTimeout = null;
     }
   }
 
-  private showMoveError(msg: string): void {
+  /** Show the error banner. A plain message clears itself after 6s; one
+   *  with per-item lines (restore clashes) stays until dismissed. */
+  private showMoveError(msg: string, items: string[] = []): void {
     this.moveError = msg;
+    this.moveErrorItems = items;
     if (this.moveErrorTimeout) clearTimeout(this.moveErrorTimeout);
-    this.moveErrorTimeout = setTimeout(() => { this.moveError = ''; }, 6000);
+    this.moveErrorTimeout = null;
+    if (items.length === 0) {
+      this.moveErrorTimeout = setTimeout(() => { this.moveError = ''; this.moveErrorItems = []; }, 6000);
+    }
+  }
+
+  dismissMoveError(): void {
+    this.clearMoveError();
   }
 
   moveTapToCatalog(tap: any, targetCatalog: string, event: MouseEvent): void {

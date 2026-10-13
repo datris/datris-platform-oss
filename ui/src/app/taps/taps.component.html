@@ -118,9 +118,40 @@
             <span class="embed-tag" *ngFor="let t of (tap.tags || [])" [title]="t">{{ t }}</span>
             <span class="embed-muted" *ngIf="!tap.tags || tap.tags.length === 0">—</span>
           </td>
-          <td>
-            <span class="embed-cron" *ngIf="tap.cronExpression" [title]="tap.cronExpression">{{ tap.cronExpression }}</span>
-            <span class="embed-muted" *ngIf="!tap.cronExpression">—</span>
+          <td class="embed-schedule-cell" [class.menu-open]="enableMenuOpen === tap.name">
+            <!-- A disabled tap never runs on its schedule, so the badge takes the
+                 cron's place (the cron stays in the tooltip). Kept out of the
+                 name cell, where the ellipsis clipped it. -->
+            <span class="enable-wrap" *ngIf="tap.enabled === false">
+              <span class="storage-badge disabled-badge" [class.clickable]="auth.canWrite()"
+                    [attr.role]="auth.canWrite() ? 'button' : null"
+                    [attr.tabindex]="auth.canWrite() ? 0 : null"
+                    [attr.aria-haspopup]="auth.canWrite() ? 'menu' : null"
+                    [attr.aria-expanded]="auth.canWrite() ? enableMenuOpen === tap.name : null"
+                    (click)="toggleEnableMenu(tap, $event)"
+                    (keydown.enter)="toggleEnableMenu(tap, $event)"
+                    (keydown.space)="toggleEnableMenu(tap, $event)"
+                    [title]="(auth.canWrite() ? 'Disabled: click to enable. ' : 'Disabled: the schedule does not run this tap. ') + (tap.cronExpression ? 'Schedule: ' + tap.cronExpression : '')">Disabled</span>
+              <div class="embed-move-menu enable-menu" role="menu" [attr.aria-label]="'Enable ' + tap.name"
+                   *ngIf="enableMenuOpen === tap.name" (click)="$event.stopPropagation()">
+                <button type="button" class="embed-move-item enable-tap-item" role="menuitem"
+                        [disabled]="!!enableBusy" (click)="enableTap(tap, $event)">
+                  <span class="material-icons">{{ enableBusy === 'enable' ? 'hourglass_empty' : 'toggle_on' }}</span>
+                  {{ enableBusy === 'enable' ? 'Enabling...' : 'Enable tap' }}
+                </button>
+                <button type="button" class="embed-move-item test-enable-item" role="menuitem" *ngIf="needsTestBeforeEnable(tap)"
+                        [disabled]="!!enableBusy" (click)="testThenEnable(tap, $event)">
+                  <span class="material-icons">{{ enableBusy === 'test' ? 'hourglass_empty' : 'play_arrow' }}</span>
+                  {{ enableBusy === 'test' ? 'Testing...' : 'Test, then enable' }}
+                </button>
+                <div class="enable-menu-note" *ngIf="tap.cronExpression">Scheduled taps need a passing test before they can be enabled.</div>
+                <div class="enable-menu-error" *ngIf="enableError" role="alert">{{ enableError }}</div>
+              </div>
+            </span>
+            <ng-container *ngIf="tap.enabled !== false">
+              <span class="embed-cron" *ngIf="tap.cronExpression" [title]="tap.cronExpression">{{ tap.cronExpression }}</span>
+              <span class="embed-muted" *ngIf="!tap.cronExpression">—</span>
+            </ng-container>
           </td>
           <td>
             <span class="embed-last-run-time" *ngIf="tap.lastRunTime">{{ formatTime(tap.lastRunTime) }}</span>

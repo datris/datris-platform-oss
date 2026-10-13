@@ -42,7 +42,14 @@ The **Catalog** tab in the UI shows one card per catalog plus an **Uncataloged**
 - **+ Create Catalog** — make a new empty catalog. The name is sanitized to letters, digits, `_` and `-` (spaces become `_`); capitalisation is kept. A name that differs from an existing catalog only by capitalisation is refused, here and in the new-catalog field of the tap and pipeline forms; typing an existing name exactly in those forms selects that catalog.
 - **Delete catalog, keep items** — the delete icon on a named catalog's card opens a confirm with two choices. **Keep items (move to Uncataloged)** is the default: the catalog is removed and every tap and pipeline in it moves to Uncataloged. Nothing is deleted.
 - **Delete catalog, delete items and their data** — the second choice deletes the catalog **plus every tap and pipeline inside it, including the data already written to their destinations**. This is destructive and not reversible, so **Delete** stays disabled until you type the catalog name exactly (case-sensitive). If some items could not be deleted, the page lists each one with the reason.
-- **Uncataloged is not a catalog** — its card has no rename or delete control. Delete uncataloged items one at a time (below).
+- **Download catalog** — the download icon on a named catalog's card saves the catalog as a zip archive (see [What an archive contains](#what-an-archive-contains)). The archive holds no secret values and no data, so it is safe to keep alongside other configuration backups.
+- **Import catalog** — the **Import catalog** button next to **+ Create Catalog** restores an archive. Pick the zip (the panel shows its name and size), enter the catalog name to restore into (it defaults to the file name), and choose:
+  - **Create new catalog (refuse if it exists)** — the default. The restore is refused when the catalog already exists or any archived tap or pipeline name already exists on this install; the page lists each clash and nothing changes. A restore never merges into an existing catalog.
+  - **Overwrite catalog** — replaces the items already in that catalog. **Restore** stays disabled until you type the catalog name exactly.
+  - **Skip incremental tap state (for a clone)** — restores the taps without the source's incremental cursor, so a copy starts from scratch.
+
+  After the restore the page shows how many taps and pipelines came back, names any secrets they need that do not exist yet, lists items that could not be restored with the reason, and expands the restored catalog. Restored taps are disabled: test each one, then enable it.
+- **Uncataloged is not a catalog** — its card has no rename, delete or download control. Delete uncataloged items one at a time (below).
 - **Delete individual tap or pipeline** — expand any catalog (including Uncataloged) and use the trash icon on a specific row to delete just that item. Clicking the trash icon swaps the row's action icons for an inline confirm: **Delete** / **×** for a tap; **Config & Data** / **Data Only** / **×** for a pipeline (Data Only wipes the rows but keeps the pipeline config so the next ingest fills it again).
 - **Row actions menu (Uncataloged)** — each item in the Uncataloged group has a ⋮ kebab menu after the trash icon with three actions:
   - **Edit** — opens the tap or pipeline editor.
@@ -78,7 +85,27 @@ From an MCP agent:
 - `rename_catalog` renames a whole catalog in one call, with the same rules and affected-keys behaviour as the Catalog tab: the new name must not already exist.
 - `delete_catalog` removes a catalog and moves its items to Uncataloged. It never deletes items or data; deleting a catalog together with its items is available from the UI or the API only.
 
+- `export_catalog` returns a catalog as a zip archive (base64) with its manifest; `restore_catalog` restores one under the same or a new name, with the same rules as **Import catalog**. From a terminal, `datris catalog export` and `datris catalog restore` do the same (see [CLI](/cli)).
+
 For browsing, list taps or pipelines and group client-side by `catalog`.
+
+## What an archive contains
+
+A catalog archive holds:
+
+- the definition of every tap and pipeline in the catalog,
+- each tap's script,
+- each tap's incremental state (its cursor),
+- the validation schemas the pipelines reference.
+
+It never holds secret values, destination data, run history or version history. The archive lists the names of the secrets the catalog needs; create any that are missing on the target install. Restored taps are disabled until you enable them.
+
+Things to know when restoring:
+
+- A restore never merges. Tap and pipeline names are unique across the install, so restoring onto the same install under a new name is refused while the source catalog still exists. Delete or rename the source catalog first.
+- Inline REST bearer tokens and API keys on a pipeline are removed from the archive. Re-enter them after the restore; the result names each field that needs it.
+- An API key without unscoped secret read access gets a "not checked" warning for each required secret instead of a list of missing secrets.
+- To make a clone that starts from scratch, skip the incremental tap state (the checkbox in the import panel, or `--no-state` on the CLI).
 
 ## What catalogs don't do
 
