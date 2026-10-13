@@ -68,6 +68,86 @@ export class TapsComponent implements OnInit, OnDestroy {
     this.enableError = '';
   }
 
+  // ── Dependency hints and Run now (embedded table) ────────────────────
+  /** Per tap of the embedded catalog: its enable-order level (1 = reads no
+   *  other tap's tables) and the sources that have not landed data yet. */
+  depInfo: { [name: string]: { level: number, blockedBy: string[] } } = {};
+  /** Tap whose Run now is in flight, '' for none. */
+  runNowBusy = '';
+  /** Outcome line of the last Run now, per tap. */
+  runNowResult: { [name: string]: { text: string, error: boolean } } = {};
+
+  /** Load the catalog's enable order (once per loadTaps). Hints only: a
+   *  failure leaves the rows as they were. */
+  private loadEnableOrder(): void {
+    const catalog = this.embedCatalog;
+    if (!catalog || catalog === 'Uncataloged') return;
+    try {
+      this.pipelineService.enableOrder(catalog).subscribe({
+        next: (order: any) => {
+          const info: { [name: string]: { level: number, blockedBy: string[] } } = {};
+          for (const lvl of (order && order.levels) || []) {
+            for (const t of (lvl && lvl.taps) || []) {
+              if (t && t.name) info[t.name] = { level: Number(lvl.level), blockedBy: Array.isArray(t.blockedBy) ? t.blockedBy : [] };
+            }
+          }
+          this.depInfo = info;
+        },
+        error: () => { this.depInfo = {}; }
+      });
+    } catch {
+      this.depInfo = {};
+    }
+  }
+
+  /** "needs: x, y" while sources have not landed data, else "Level N". */
+  depHint(tap: any): string {
+    const d = tap && this.depInfo[tap.name];
+    if (!d) return '';
+    if (d.blockedBy.length > 0) return 'needs: ' + d.blockedBy.join(', ');
+    return isFinite(d.level) ? 'Level ' + d.level : '';
+  }
+
+  depBlockedBy(tap: any): string[] {
+    const d = tap && this.depInfo[tap.name];
+    return d ? d.blockedBy : [];
+  }
+
+  /** A real run makes sense once the current script has passed a test and
+   *  the tap feeds a pipeline. */
+  canRunNow(tap: any): boolean {
+    return !!tap && tap.lastTestRunStatus === 'success' && !!tap.targetPipeline;
+  }
+
+  /** One real run (mode=run) without enabling the tap or touching its
+   *  schedule: lands the tap's data so the taps that read it can test. */
+  runNow(tap: any, event?: Event): void {
+    if (event) event.stopPropagation();
+    if (this.runNowBusy || !tap) return;
+    const name = tap.name;
+    this.runNowBusy = name;
+    delete this.runNowResult[name];
+    this.tapService.runTap(name, 'run').subscribe({
+      next: (res: any) => {
+        this.runNowBusy = '';
+        const status = String((res && res.status) || (res && res.error ? 'error' : 'success'));
+        const parts = ['Run now: ' + status];
+        if (res && res.recordCount != null) parts.push(res.recordCount + ' records');
+        if (res && res.persistedReason) parts.push(String(res.persistedReason));
+        if (res && res.error) parts.push(String(res.error).substring(0, 300));
+        this.runNowResult[name] = { text: parts.join(', '), error: !!(res && res.error) || status === 'error' };
+        if (this.enableMenuOpen === name) this.closeEnableMenu();
+        this.loadTaps();
+      },
+      error: (err: any) => {
+        this.runNowBusy = '';
+        this.runNowResult[name] = { text: 'Run now failed: ' + httpErrorText(err, 'unknown error').substring(0, 300), error: true };
+        if (this.enableMenuOpen === name) this.closeEnableMenu();
+        this.loadTaps();
+      }
+    });
+  }
+
   closeEnableMenu(): void {
     this.enableMenuOpen = '';
     this.enableBusy = '';
@@ -232,7 +312,7 @@ export class TapsComponent implements OnInit, OnDestroy {
         this.filterTaps();
       },
       error: (err) => console.error('Failed to load taps', err)
-    });
+    });    if (this.isEmbedded) this.loadEnableOrder();
   }
 
   filterTaps(): void {

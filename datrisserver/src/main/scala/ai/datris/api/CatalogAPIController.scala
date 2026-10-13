@@ -26,6 +26,7 @@ import ai.datris.util.{
     StoredScript,
     TapCodeStore,
     TapConfigIO,
+    TapDependencies,
     TapState,
     TapStateIO
 }
@@ -56,6 +57,8 @@ import scala.collection.mutable
   *   - `GET /api/v1/catalog/{name}/export` downloads a zip backup of the
   *     catalog (configs, tap scripts and states, validation schemas, CodeGen
   *     reference copies; secret names only, never values). See CatalogArchive.
+  *   - `GET /api/v1/catalog/{name}/enable-order` lists the catalog's taps in
+  *     dependency levels (producers first) with per-tap readiness. Read only.
   *   - `POST /api/v1/catalog/{name}/restore` (multipart `file`) restores an
   *     archive as catalog `name`; refused with 409 when the catalog or any
   *     archived name already exists (`mode=overwrite&confirm=<name>` may
@@ -365,6 +368,78 @@ class CatalogAPIController {
         }
     }
 
+    /** Enable order of a catalog's taps: `{catalog, levels: [{level, taps:
+      * [readiness]}], cycles, warnings}`. Levels are 1-based (1 = taps with no
+      * dependencies). Uses each tap's stored `dependsOn` / `inferredDependsOn`
+      * (no script reads). Members the caller may not read are omitted and
+      * named in `warnings`, as export does. */
+    @GetMapping(path = Array("/catalog/{name}/enable-order"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def enableOrder(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable("name") name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /catalog/" + name + "/enable-order called")
+            APIKeyValidator.validate(apiKey)
+
+            if (CatalogOps.isReserved(name))
+                return badRequest("Catalog '" + Option(name).getOrElse("") + "' has no enable order: Uncataloged and blank names are reserved")
+            val (taps, pipelines) = loadAll()
+            val members = CatalogOps.members(taps, pipelines, name)
+            if (members.isEmpty && CatalogOps.Placeholder.of(taps, name).isEmpty)
+                return notFound(name)
+            val warnings = mutable.ArrayBuffer.empty[String]
+            val readable = members.taps.filter { t =>
+                try {
+                    CapabilityCheck.assertScope(request, "tap", "read", CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel))
+                    true
+                } catch {
+                    case _: CapabilityDeniedException =>
+                        warnings += (t.name + ": omitted, this API key may not read this tap")
+                        false
+                }
+            }
+            val plan = TapDependencies.order(readable)
+            val out = new JsonObject
+            out.addProperty("catalog", name)
+            val levels = new JsonArray
+            plan.levels.zipWithIndex.foreach { case (lvl, i) =>
+                val o = new JsonObject
+                o.addProperty("level", i + 1)
+                val arr = new JsonArray
+                lvl.foreach(r => arr.add(readinessJson(r)))
+                o.add("taps", arr)
+                levels.add(o)
+            }
+            out.add("levels", levels)
+            val cycles = new JsonArray
+            plan.cycles.foreach(c => cycles.add(toArray(c)))
+            out.add("cycles", cycles)
+            out.add("warnings", toArray(warnings.toList))
+            new ResponseEntity[String](new Gson().toJson(out), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    private def readinessJson(r: TapDependencies.Readiness): JsonObject = {
+        val o = new JsonObject
+        o.addProperty("name", r.name)
+        o.addProperty("enabled", r.enabled)
+        o.addProperty("cronExpression", r.cronExpression)
+        if (r.dependsOn != null) o.add("dependsOn", toArray(r.dependsOn))
+        if (r.inferredDependsOn != null) o.add("inferredDependsOn", toArray(r.inferredDependsOn))
+        o.addProperty("explicit", r.explicit)
+        o.addProperty("hasPassingTest", r.hasPassingTest)
+        o.addProperty("lastRealRunLanded", r.lastRealRunLanded)
+        o.add("blockedBy", toArray(r.blockedBy))
+        o.addProperty("ready", r.ready)
+        o
+    }
+
     @PostMapping(
         path = Array("/catalog/{name}/restore"),
         consumes = Array(MediaType.MULTIPART_FORM_DATA_VALUE),
@@ -516,6 +591,31 @@ class CatalogAPIController {
                     }
                 }
 
+                // 3b. Dependencies: each tap was saved before all of its
+                //     producers existed, so re-derive the inference now that
+                //     every restored tap is in (no new version, like status
+                //     writes), then count the taps that read another
+                //     restored tap's tables.
+                val dependentTaps =
+                    try {
+                        val (tapsNow, pipelinesNow) = loadAll()
+                        val restoredNames = tapResult.ok.toSet
+                        tapsNow.filter(t => restoredNames.contains(t.name)).count { t =>
+                            val restamped = scripts.get(t.name) match {
+                                case Some(script) if !t.isHttp =>
+                                    val s = TapAPIController.stampInferredDependsOn(t, Some(script), pipelinesNow, tapsNow)
+                                    if (s.inferredDependsOn != t.inferredDependsOn) TapConfigIO.write(s)
+                                    s
+                                case _ => t
+                            }
+                            TapDependencies.effective(restamped).exists(d => d != t.name && restoredNames.contains(d))
+                        }
+                    } catch {
+                        case e: Exception =>
+                            logger.warn("Catalog restore '" + name + "': dependency inference failed: " + e.getMessage)
+                            0
+                    }
+
                 // 4. Incremental state, only for restored taps that are new here.
                 val states = CatalogArchive
                     .statesToRestore(entries, restoreState, preexistingTaps)
@@ -578,6 +678,7 @@ class CatalogAPIController {
                 out.add("warnings", toArray(warnings.distinct.toList))
                 out.addProperty("tapsDisabled", true)
                 out.addProperty("stateRestored", states.nonEmpty && stateFailures.isEmpty)
+                out.addProperty("dependentTaps", dependentTaps)
                 logger.info(
                     "Catalog archive restored as '" + name + "' (mode " + m + "): " + tapResult.ok.size + " taps, " +
                         pipelineResult.ok.size + " pipelines, " + failures.size + " failed"

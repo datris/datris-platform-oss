@@ -62,6 +62,9 @@ interface ImportResult {
    *  say the taps start without state: on overwrite the server keeps an
    *  existing tap's state and still reports stateRestored=false. */
   stateSkipped: boolean;
+  /** Restored taps that read tables produced by other restored taps
+   *  (server-computed); 0 when absent. */
+  dependentTaps: number;
 }
 
 @Component({
@@ -664,7 +667,8 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
           skipped: names(body && body.skipped),
           warnings: names(body && body.warnings),
           stateRestored: body && typeof body.stateRestored === 'boolean' ? body.stateRestored : null,
-          stateSkipped: skipState
+          stateSkipped: skipState,
+          dependentTaps: body && typeof body.dependentTaps === 'number' && body.dependentTaps > 0 ? body.dependentTaps : 0
         };
         this.showOpFailures(`Restoring catalog '${name}'`, body && body.failed);
         this.cancelImport();

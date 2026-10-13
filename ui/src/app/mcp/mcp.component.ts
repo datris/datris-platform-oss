@@ -151,7 +151,8 @@ export class McpComponent implements OnInit {
         { name: 'tap_type', type: 'string', description: 'structured (default) or document (for PDFs/Word/HTML into vector-store pipelines)', required: false, inputType: 'text' },
         { name: 'packages', type: 'array', description: 'Optional list of pip packages the tap script imports beyond the base set. Auto-detected from the script when omitted.', required: false, inputType: 'text' }
       ,
-        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' }
+        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' },
+        { name: 'depends_on', type: 'array', description: 'Optional: other taps in the same catalog whose tables this tap reads. Inferred from the script when omitted; an empty list declares none.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: false
     },
@@ -223,7 +224,8 @@ export class McpComponent implements OnInit {
         { name: 'target_pipeline', type: 'string', description: 'New target pipeline', required: false, inputType: 'text' },
         { name: 'description', type: 'string', description: 'New description', required: false, inputType: 'text' }
       ,
-        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' }
+        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' },
+        { name: 'depends_on', type: 'array', description: 'Other taps in the same catalog whose tables this tap reads (comma-separated here). Replaces the declared list; overrides the inferred one.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -403,6 +405,15 @@ export class McpComponent implements OnInit {
       category: 'Pipeline Management',
       parameters: [
         { name: 'catalog', type: 'string', description: 'Catalog name to export.', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'catalog_enable_order',
+      description: 'The order to enable a catalog\'s taps in: levels, taps that read no other tap\'s tables first. Per tap: whether its last test passed, whether a real run has landed data, and which sources still block it. Read-only.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'catalog', type: 'string', description: 'Catalog name.', required: true, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

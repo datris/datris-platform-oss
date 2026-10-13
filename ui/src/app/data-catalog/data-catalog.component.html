@@ -122,6 +122,7 @@
           *ngIf="importResult.missingSecrets.length > 0">; missing secrets: {{ importResult.missingSecrets.join(', ') }}</span>.
         <span *ngIf="importResult.tapsDisabled && importResult.taps > 0">Test each tap, then enable it.</span>
         <span *ngIf="importResult.stateSkipped && importResult.taps > 0">Taps start without incremental state.</span>
+        <span *ngIf="importResult.dependentTaps > 0">{{ importResult.dependentTaps }} taps read tables produced by other taps in this catalog; run their sources first (see enable order).</span>
       </span>
       <button class="move-error-close" (click)="dismissImportResult()" title="Dismiss">
         <span class="material-icons">close</span>

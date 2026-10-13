@@ -105,6 +105,9 @@ object CapabilityRoutes {
         // create (restore).
         Route("GET", "/api/v1/catalog/*/export", "pipeline", "read"),
         Route("POST", "/api/v1/catalog/*/restore", "pipeline", "create"),
+        // Enable order of a catalog's taps (dependency levels + readiness).
+        // A tap read; each member is scope-checked in the controller.
+        Route("GET", "/api/v1/catalog/*/enable-order", "tap", "read"),
 
         // Taps
         Route("GET", "/api/v1/tap", "tap", "read"),

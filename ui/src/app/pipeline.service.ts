@@ -46,6 +46,13 @@ export class PipelineService {
     return this.http.delete<any>(url);
   }
 
+  /** Enable order of a catalog's taps: `{catalog, levels: [{level, taps:
+   *  [{name, blockedBy, hasPassingTest, lastRealRunLanded, ready, ...}]}],
+   *  cycles, warnings}`; level 1 = taps that read no other tap's tables. */
+  enableOrder(name: string): Observable<any> {
+    return this.http.get<any>('/api/v1/catalog/' + encodeURIComponent(name) + '/enable-order');
+  }
+
   /** Download a catalog as a zip archive. Resolves the full response so the
    *  caller can take the file name from Content-Disposition; the body is the
    *  zip Blob. Errors arrive with a Blob body (responseType 'blob'). */

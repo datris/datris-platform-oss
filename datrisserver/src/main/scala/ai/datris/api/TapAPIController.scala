@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder, JsonElement, JsonNull, JsonParser}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
-import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion}
+import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion, PipelineConfig}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -44,6 +44,50 @@ object TapAPIController {
       * throws (the save fails closed) rather than passing as "absent". */
     private[datris] def liveSecretType(name: String): Option[Option[String]] =
         SecretsUtil.tryGetSecretMap(DatrisEnvironment.current.environment + "/" + name).get.map(m => Option(m.get("_type")))
+
+    /** The refusal `POST /tap` returns for the tap's `dependsOn`, or None.
+      * `catalogTaps` = the stored taps of the tap's catalog; a stored copy of
+      * the incoming tap is replaced by it before the cycle check. 400 for a
+      * name that is not a tap of the catalog (or the tap itself); 409 with
+      * `cycle` when the declared list closes a dependency cycle. An absent or
+      * empty `dependsOn` always passes. */
+    def dependencySaveProblem(tap: TapConfig, catalogTaps: Seq[TapConfig]): Option[ResponseEntity[String]] = {
+        if (tap.dependsOn == null || tap.dependsOn.isEmpty) return None
+        val others = catalogTaps.filter(t => t != null && t.name != tap.name)
+        TapDependencies.validate(tap, others) match {
+            case Left(msg) =>
+                val o = new com.google.gson.JsonObject
+                o.addProperty("error", msg)
+                return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](o.toString))
+            case Right(_) =>
+        }
+        TapDependencies.cycle(others :+ tap).filter(_.contains(tap.name)).map { cyc =>
+            val o = new com.google.gson.JsonObject
+            o.addProperty(
+                "error",
+                "dependsOn of tap '" + tap.name + "' closes a dependency cycle: " + cyc.mkString(", ") +
+                    ". Remove one of these dependencies (an explicit dependsOn of [] overrides the inferred list)."
+            )
+            val arr = new com.google.gson.JsonArray
+            cyc.foreach(n => arr.add(n))
+            o.add("cycle", arr)
+            ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON).body[String](o.toString)
+        }
+    }
+
+    /** The tap as stored: any incoming `inferredDependsOn` is discarded and
+      * replaced by `TapDependencies.infer` over `script` (None, e.g. an HTTP
+      * tap or no script yet -> null; nothing inferred -> null). The explicit
+      * `dependsOn` is left as sent. */
+    def stampInferredDependsOn(
+        tap: TapConfig,
+        script: Option[String],
+        pipelines: Seq[PipelineConfig],
+        taps: Seq[TapConfig]
+    ): TapConfig = {
+        val inferred = script.map(s => TapDependencies.infer(s, pipelines, taps, tap)).getOrElse(Nil)
+        tap.copy(inferredDependsOn = if (inferred.isEmpty) null else new java.util.ArrayList[String](inferred.asJava))
+    }
 
     // mode=test response caps `records` to this many rows. The UI's preview already
     // slices to 20 (tap-run.component.ts), so this matches without losing display
@@ -536,6 +580,9 @@ class TapAPIController {
                 tags = if (tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags,
                 // Same rule for the declared source: omitted ⇒ keep; "" ⇒ clear.
                 source = if (tapConfigWithScript.source == null) existing.source else tapConfigWithScript.source,
+                // Same rule for declared dependencies: omitted ⇒ keep; [] is an
+                // explicit "none" (it overrides inference).
+                dependsOn = if (tapConfigWithScript.dependsOn == null) existing.dependsOn else tapConfigWithScript.dependsOn,
                 // Test outcome + script stamp are server-owned (written only by
                 // the run endpoint in mode=test). Clients echo stale copies in the
                 // save body; never let a body promote a tap to "tested".
@@ -553,6 +600,37 @@ class TapAPIController {
                 // the gate still wants a fresh test before a schedule runs.
                 lastTestRunScriptId = if (restored) tapConfigWithScript.lastTestRunScriptId else null
             ))
+
+        // Tap dependencies: a changed explicit dependsOn must name taps of the
+        // same catalog and must not close a cycle (400 / 409). A catalog
+        // restore skips this (its producers may not be written yet) and
+        // re-stamps after every tap is in. `inferredDependsOn` is always
+        // re-derived from the stored script, whatever the body said.
+        val (allTaps, allPipelines) = loadAllForDependencies()
+        val dependsOnChanged = existing == null || existing.dependsOn != configToSave.dependsOn
+        if (!restored && dependsOnChanged) {
+            val catalogTaps = allTaps.filter(t => t.catalog == configToSave.catalog && !CatalogOps.Placeholder.is(t.name))
+            TapAPIController.dependencySaveProblem(configToSave, catalogTaps).foreach(r => return Left(r))
+        }
+        val script: Option[String] =
+            if (configToSave.isHttp) None
+            else if (
+                (configToSave.scriptPath == null || configToSave.scriptPath.isEmpty) &&
+                (configToSave.scriptRepoPath == null || configToSave.scriptRepoPath.isEmpty)
+            ) None
+            else
+                try TapCodeStore.forTap(configToSave).readScript(configToSave)
+                catch {
+                    case e: Exception =>
+                        logger.warn("Tap '" + configToSave.name + "': script unreadable for dependency inference: " + e.getMessage)
+                        None
+                }
+        val stamped = TapAPIController.stampInferredDependsOn(
+            configToSave,
+            script,
+            allPipelines,
+            allTaps.filter(_.name != configToSave.name) :+ configToSave
+        )
 
         // Cron validation: a schedule the scheduler cannot parse is refused
         // here (400) rather than stored to log an error on every tick. Runs
@@ -580,7 +658,7 @@ class TapAPIController {
         // (Status churn from TapRunner stays on plain TapConfigIO.write.)
         val note = if (changeNote != null && changeNote.nonEmpty) changeNote
         else if (existing != null) "updated" else "created"
-        val saved = TapConfigIO.writeVersioned(configToSave, note, VersionActor.resolve(request))
+        val saved = TapConfigIO.writeVersioned(stamped, note, VersionActor.resolve(request))
         Right(saved)
     }
 
@@ -749,7 +827,18 @@ class TapAPIController {
                 // before the gated save ever runs). The new reference is still
                 // returned so the caller can test against it.
                 TapCronGate.check(existing, repointed) match {
-                    case None => TapConfigIO.write(repointed)
+                    case None =>
+                        // Re-derive the dependency stamp from the new bytes.
+                        val stamped =
+                            try {
+                                val (taps, pipelines) = loadAllForDependencies()
+                                TapAPIController.stampInferredDependsOn(repointed, Some(script), pipelines, taps)
+                            } catch {
+                                case e: Exception =>
+                                    logger.warn("POST /tap/script: dependency inference failed for '" + tapName + "': " + e.getMessage)
+                                    repointed
+                            }
+                        TapConfigIO.write(stamped)
                     case Some(msg) =>
                         logger.info("POST /tap/script: not repointing scheduled tap '" + tapName + "' at untested script: " + msg)
                 }
@@ -769,6 +858,22 @@ class TapAPIController {
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ApiErrors.internal(e)
         }
+    }
+
+    /** Every tap and pipeline for dependency validation and inference,
+      * skipping any document that fails to parse so one bad config cannot
+      * block a tap save. */
+    private def loadAllForDependencies(): (Seq[TapConfig], Seq[PipelineConfig]) = {
+        val env = DatrisEnvironment.current
+        val taps = NoSQLDbUtil.getItemsKeysByKeyName(env.tapTableName, "name").flatMap { n =>
+            try Option(TapConfigIO.read(env.tapTableName, n))
+            catch { case e: Exception => logger.warn("Dependency check: skipping unreadable tap '" + n + "': " + e.getMessage); None }
+        }
+        val pipelines = NoSQLDbUtil.getItemsKeysByKeyName(env.pipelineTableName, "name").flatMap { n =>
+            try Option(PipelineConfigIO.read(env.pipelineTableName, n))
+            catch { case e: Exception => logger.warn("Dependency check: skipping unreadable pipeline '" + n + "': " + e.getMessage); None }
+        }
+        (taps, pipelines)
     }
 
     private def actorLabel(request: HttpServletRequest): String =

@@ -1216,3 +1216,24 @@ tbody tr:last-child td {
   border: 1px solid rgba(239, 68, 68, 0.3);
   border-radius: 4px;
 }
+
+/* Enable-order hint under the Disabled badge, and the Run now outcome. */
+.dep-hint {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-now-result {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: normal;
+}
+
+.run-now-result.run-now-error {
+  color: #f87171;
+}

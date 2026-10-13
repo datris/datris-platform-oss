@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+- **Enable a restored catalog in the right order.** Taps that read tables produced by other taps in the same catalog are now recognised from their scripts (or declared by you), and each catalog can show the order to enable its taps in, with what still blocks each one. Disabled taps on the Catalog tab show their level or which sources they need, a new **Run now** action lands a tested tap's data without enabling it, and the restore result says how many restored taps depend on others. Agents get the same enable order through a new read-only MCP tool.
+
 ## v1.48.0 — October 13, 2026
 
 **Back up a catalog as one file and restore it anywhere.**

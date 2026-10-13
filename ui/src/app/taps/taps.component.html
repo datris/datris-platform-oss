@@ -144,14 +144,24 @@
                   <span class="material-icons">{{ enableBusy === 'test' ? 'hourglass_empty' : 'play_arrow' }}</span>
                   {{ enableBusy === 'test' ? 'Testing...' : 'Test, then enable' }}
                 </button>
+                <button type="button" class="embed-move-item run-now-item" role="menuitem" *ngIf="canRunNow(tap)"
+                        [disabled]="!!enableBusy || runNowBusy === tap.name" (click)="runNow(tap, $event)"
+                        title="One real run that lands data, without enabling the tap">
+                  <span class="material-icons">{{ runNowBusy === tap.name ? 'hourglass_empty' : 'publish' }}</span>
+                  {{ runNowBusy === tap.name ? 'Running...' : 'Run now' }}
+                </button>
+                <div class="enable-menu-note dep-note" *ngIf="depBlockedBy(tap).length > 0">Reads tables produced by {{ depBlockedBy(tap).join(', ') }}. Run them first.</div>
                 <div class="enable-menu-note" *ngIf="tap.cronExpression">Scheduled taps need a passing test before they can be enabled.</div>
                 <div class="enable-menu-error" *ngIf="enableError" role="alert">{{ enableError }}</div>
               </div>
             </span>
+            <div class="dep-hint" *ngIf="tap.enabled === false && depHint(tap)"
+                 title="Enable order: taps that read no other tap's tables are level 1; run the sources a tap needs first">{{ depHint(tap) }}</div>
             <ng-container *ngIf="tap.enabled !== false">
               <span class="embed-cron" *ngIf="tap.cronExpression" [title]="tap.cronExpression">{{ tap.cronExpression }}</span>
               <span class="embed-muted" *ngIf="!tap.cronExpression">—</span>
             </ng-container>
+            <div class="run-now-result" *ngIf="runNowResult[tap.name] as r" [class.run-now-error]="r.error" role="status">{{ r.text }}</div>
           </td>
           <td>
             <span class="embed-last-run-time" *ngIf="tap.lastRunTime">{{ formatTime(tap.lastRunTime) }}</span>
@@ -172,6 +182,11 @@
                       (click)="viewState($event, tap.name)" title="Sync state (incremental bookmark)"><span class="material-icons">bookmark</span></button>
               <button class="embed-action-btn" (click)="editTap($event, tap.name)" title="Edit" *ngIf="auth.canWrite()"><span class="material-icons">edit</span></button>
               <button class="embed-action-btn" (click)="runTap($event, tap.name)" title="Test run" *ngIf="auth.canWrite()"><span class="material-icons">play_arrow</span></button>
+              <button class="embed-action-btn run-now-btn" *ngIf="auth.canWrite() && tap.enabled !== false && canRunNow(tap)"
+                      [disabled]="runNowBusy === tap.name" (click)="runNow(tap, $event)"
+                      title="Run now: one real run that lands data">
+                <span class="material-icons">{{ runNowBusy === tap.name ? 'hourglass_empty' : 'publish' }}</span>
+              </button>
               <span class="embed-move-wrap" *ngIf="auth.canWrite() && moveTargets().length > 0">
                 <button class="embed-action-btn" (click)="toggleMoveMenu(tap.name, $event)" title="Move to catalog">
                   <span class="material-icons">drive_file_move</span>
