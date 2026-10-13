@@ -3,6 +3,18 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.48.0" description="October 13, 2026">
+  **Back up a catalog as one file and restore it anywhere.**
+
+  - **Download a catalog.** The download icon on a catalog's card in the Catalog tab saves the whole catalog as a zip archive: every tap and pipeline definition, each tap's script and incremental state, and the validation schemas its pipelines reference. Secret values, destination data, run history and version history are never included.
+  - **Import a catalog.** The **Import catalog** button restores an archive on the same install or another one, under the original name or a new one. A restore never merges into an existing catalog: clashes are refused and listed with nothing changed. Choose **Overwrite catalog** and type its name to replace an existing catalog's contents, or skip the incremental tap state to make a clone that starts from scratch.
+  - **Secrets stay yours.** The archive lists the secret names the catalog needs, and the restore result names any missing on the target. Inline REST bearer tokens and API keys on a pipeline are removed on export; re-enter them after the restore.
+  - **Restored taps start disabled.** Taps come back with a **Disabled** badge in place of their schedule; click it to enable the tap or to test it first.
+  - **CLI and agents.** `datris catalog export` and `datris catalog restore`, plus the `export_catalog` and `restore_catalog` MCP tools, with the same refuse-on-clash and confirm-to-overwrite rules.
+
+  **Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. No configuration changes are required; the new endpoints and tools are additive.
+</Update>
+
 <Update label="v1.47.2" description="October 12, 2026">
   **See which AI model is answering.**
 
