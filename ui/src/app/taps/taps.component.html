@@ -97,8 +97,6 @@
                     [title]="'Script in repository: ' + (tap.scriptRepoPath || '') + (tap.scriptCommitSha ? ' @ ' + tap.scriptCommitSha.substring(0, 9) : '')">GitHub</span>
               <span class="storage-badge" *ngIf="tap.scriptKind === 'http'"
                     [title]="'User-hosted HTTP endpoint: ' + (tap.endpointUrl || '')">HTTP</span>
-              <span class="storage-badge disabled-badge" *ngIf="tap.enabled === false"
-                    title="Disabled: the schedule does not run this tap. Test it, then enable it in the editor.">Disabled</span>
               <button class="embed-name-edit-btn" *ngIf="auth.canWrite()" (click)="startEditName($event, tap)" title="Rename">
                 <span class="material-icons">edit</span>
               </button>
@@ -121,8 +119,15 @@
             <span class="embed-muted" *ngIf="!tap.tags || tap.tags.length === 0">—</span>
           </td>
           <td>
-            <span class="embed-cron" *ngIf="tap.cronExpression" [title]="tap.cronExpression">{{ tap.cronExpression }}</span>
-            <span class="embed-muted" *ngIf="!tap.cronExpression">—</span>
+            <!-- A disabled tap never runs on its schedule, so the badge takes the
+                 cron's place (the cron stays in the tooltip). Kept out of the
+                 name cell, where the ellipsis clipped it. -->
+            <span class="storage-badge disabled-badge" *ngIf="tap.enabled === false"
+                  [title]="'Disabled: the schedule does not run this tap. Test it, then enable it in the editor.' + (tap.cronExpression ? ' Schedule: ' + tap.cronExpression : '')">Disabled</span>
+            <ng-container *ngIf="tap.enabled !== false">
+              <span class="embed-cron" *ngIf="tap.cronExpression" [title]="tap.cronExpression">{{ tap.cronExpression }}</span>
+              <span class="embed-muted" *ngIf="!tap.cronExpression">—</span>
+            </ng-container>
           </td>
           <td>
             <span class="embed-last-run-time" *ngIf="tap.lastRunTime">{{ formatTime(tap.lastRunTime) }}</span>

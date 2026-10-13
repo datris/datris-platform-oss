@@ -5,7 +5,9 @@
  *
  * The embedded taps table (inside a Catalog-tab card) shows a `.disabled-badge`
  * ("Disabled") on every tap row whose `enabled` is false, and none on rows
- * that are enabled or carry no `enabled` field.
+ * that are enabled or carry no `enabled` field. The badge sits in the
+ * Schedule cell in place of the cron (the name cell's ellipsis clipped it
+ * there), and never in the name cell.
  */
 import { ComponentFixture, TestBed, fakeAsync, tick, flush, discardPeriodicTasks } from '@angular/core/testing';
 import { CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA } from '@angular/core';
@@ -28,7 +30,8 @@ describe('TapsComponent — disabled badge in the embedded table', () => {
       getTaps: () => of([
         { name: '__catalog__grp', catalog: 'grp', enabled: false },
         { name: 'tap_off', catalog: 'grp', enabled: false },
-        { name: 'tap_on', catalog: 'grp', enabled: true },
+        { name: 'tap_off_cron', catalog: 'grp', enabled: false, cronExpression: '0 0 6 * * ?' },
+        { name: 'tap_on', catalog: 'grp', enabled: true, cronExpression: '0 0 7 * * ?' },
         { name: 'tap_unset', catalog: 'grp' }
       ]),
       getPipelines: () => of([])
@@ -66,7 +69,33 @@ describe('TapsComponent — disabled badge in the embedded table', () => {
     expect((off?.textContent || '').trim()).toBe('Disabled');
     expect(row('tap_on').querySelector('.disabled-badge')).withContext('no badge on an enabled tap').toBeNull();
     expect(row('tap_unset').querySelector('.disabled-badge')).withContext('no badge without an enabled field').toBeNull();
-    expect(el.querySelectorAll('.disabled-badge').length).withContext('placeholder is not listed').toBe(1);
+    expect(el.querySelectorAll('.disabled-badge').length).withContext('placeholder is not listed').toBe(2);
+  }));
+
+  function cellUnder(r: HTMLElement, heading: string): HTMLElement {
+    const heads = Array.from(el.querySelectorAll('thead th')).map(th => (th.textContent || '').trim().toLowerCase());
+    const i = heads.indexOf(heading.toLowerCase());
+    expect(i).withContext('column ' + heading).toBeGreaterThanOrEqual(0);
+    return r.querySelectorAll('td')[i] as HTMLElement;
+  }
+
+  it('shows the badge in the Schedule cell in place of the cron, not in the name cell', fakeAsync(() => {
+    fixture.detectChanges();
+    tick();
+    fixture.detectChanges();
+    for (const name of ['tap_off', 'tap_off_cron']) {
+      const r = row(name);
+      expect(cellUnder(r, 'Name').querySelector('.disabled-badge')).withContext(name + ': not in the name cell').toBeNull();
+      const sched = cellUnder(r, 'Schedule');
+      expect(sched.querySelector('span.storage-badge.disabled-badge')).withContext(name + ': badge in Schedule').not.toBeNull();
+      expect(sched.querySelector('.embed-cron')).withContext(name + ': cron replaced by the badge').toBeNull();
+    }
+    expect(cellUnder(row('tap_off_cron'), 'Schedule').querySelector('.disabled-badge')!.getAttribute('title') || '')
+      .toContain('0 0 6 * * ?');
+    expect((cellUnder(row('tap_on'), 'Schedule').querySelector('.embed-cron')?.textContent || '').trim()).toBe('0 0 7 * * ?');
+    fixture.destroy();
+    discardPeriodicTasks();
+    flush();
     fixture.destroy();
     discardPeriodicTasks();
     flush();

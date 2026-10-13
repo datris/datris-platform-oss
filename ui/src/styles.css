@@ -216,6 +216,7 @@ tr:hover .embed-name-edit-btn { opacity: 1; }
 }
 
 .storage-badge.disabled-badge {
+  margin-left: 0;
   background: rgba(148, 163, 184, 0.15);
   color: #94a3b8;
 }
