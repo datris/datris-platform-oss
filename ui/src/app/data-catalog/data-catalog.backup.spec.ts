@@ -405,13 +405,13 @@ describe('DataCatalogComponent — catalog download and import', () => {
     expect(text).toContain('Taps start without incremental state.');
   }));
 
-  // ── Info icons in the import panel ────────────────────────────────────
+  // ── Info icons in the import panel (popovers) ─────────────────────────
 
   for (const [label, iconSel, infoSel, phrase] of [
     ['overwrite', '.overwrite-info-icon', '.overwrite-info', 'Nothing is merged'],
     ['skip-state', '.skip-state-info-icon', '.skip-state-info', 'sync position']
   ]) {
-    it(`the ${label} info icon toggles its explanation`, fa(() => {
+    it(`the ${label} info icon toggles its popover`, fa(() => {
       settle();
       const panel = openImport();
       if (!panel) return;
@@ -420,15 +420,25 @@ describe('DataCatalogComponent — catalog download and import', () => {
       if (!icon) return;
       expect(icon.getAttribute('role')).toBe('button');
       expect(icon.getAttribute('aria-label')).withContext('aria-label').toBeTruthy();
-      expect(panel.querySelector(infoSel)).withContext('hidden by default').toBeNull();
+      expect(icon.getAttribute('aria-haspopup')).toBe('dialog');
+      expect(panel.querySelector(infoSel)).withContext('absent by default').toBeNull();
       expect(panel.textContent || '').not.toContain(phrase);
       icon.click();
       settle();
-      expect(panel.querySelector(infoSel)).withContext('shown after click').not.toBeNull();
+      const pop = panel.querySelector(infoSel) as HTMLElement | null;
+      expect(pop).withContext('present after click').not.toBeNull();
+      expect(pop?.classList.contains('info-popover')).withContext('rendered as a popover').toBeTrue();
+      expect(pop?.getAttribute('role')).toBe('dialog');
+      expect(pop?.getAttribute('aria-label')).withContext('popover aria-label').toBeTruthy();
       expect(panel.textContent || '').toContain(phrase);
+      expect(icon.getAttribute('aria-expanded')).toBe('true');
+      // A click inside the popover keeps it open.
+      pop!.click();
+      settle();
+      expect(panel.querySelector(infoSel)).withContext('click inside keeps it open').not.toBeNull();
       icon.click();
       settle();
-      expect(panel.querySelector(infoSel)).withContext('hidden after second click').toBeNull();
+      expect(panel.querySelector(infoSel)).withContext('absent after second click').toBeNull();
       expect(panel.textContent || '').not.toContain(phrase);
       icon.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
       settle();
@@ -437,5 +447,54 @@ describe('DataCatalogComponent — catalog download and import', () => {
       settle();
       expect(panel.querySelector(infoSel)).withContext('Space closes it').toBeNull();
     }));
+
+    it(`the ${label} popover closes on Escape`, fa(() => {
+      settle();
+      const panel = openImport();
+      if (!panel) return;
+      (panel.querySelector(iconSel) as HTMLElement).click();
+      settle();
+      expect(panel.querySelector(infoSel)).not.toBeNull();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      settle();
+      expect(panel.querySelector(infoSel)).withContext('Escape closes it').toBeNull();
+    }));
+
+    it(`the ${label} popover closes on a click outside`, fa(() => {
+      settle();
+      const panel = openImport();
+      if (!panel) return;
+      (panel.querySelector(iconSel) as HTMLElement).click();
+      settle();
+      expect(panel.querySelector(infoSel)).not.toBeNull();
+      document.body.click();
+      settle();
+      expect(panel.querySelector(infoSel)).withContext('outside click closes it').toBeNull();
+    }));
+
+    it(`the ${label} popover closes with its close button`, fa(() => {
+      settle();
+      const panel = openImport();
+      if (!panel) return;
+      (panel.querySelector(iconSel) as HTMLElement).click();
+      settle();
+      (panel.querySelector(infoSel + ' .info-popover-close') as HTMLElement).click();
+      settle();
+      expect(panel.querySelector(infoSel)).withContext('close button closes it').toBeNull();
+    }));
   }
+
+  it('opening one info popover closes the other', fa(() => {
+    settle();
+    const panel = openImport();
+    if (!panel) return;
+    (panel.querySelector('.overwrite-info-icon') as HTMLElement).click();
+    settle();
+    expect(panel.querySelector('.overwrite-info')).not.toBeNull();
+    (panel.querySelector('.skip-state-info-icon') as HTMLElement).click();
+    settle();
+    expect(panel.querySelector('.skip-state-info')).withContext('second open').not.toBeNull();
+    expect(panel.querySelector('.overwrite-info')).withContext('first closed').toBeNull();
+    expect(panel.querySelectorAll('.info-popover').length).toBe(1);
+  }));
 });

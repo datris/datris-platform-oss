@@ -123,6 +123,10 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   /** Inline explanations in the import panel, toggled by their info icons. */
   showOverwriteInfo = false;
   showSkipStateInfo = false;
+  /** Popover placement, set when one opens: to the left of the icon near
+   *  the right edge, above it when there is no room below. */
+  infoOpenLeft = false;
+  infoOpenAbove = false;
   // Catalog-level bulk move (move all taps + pipelines in one catalog into
   // another). Tracks which catalog's move menu is open and which is mid-move.
   moveCatalogMenuOpen = '';
@@ -759,6 +763,37 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.menuOpenKey = '';
     this.moveMenuOpenKey = '';
     this.moveCatalogMenuOpen = '';
+    this.closeInfo();
+  }
+
+  /** Open or close an import-panel info popover. Only one is open at a time;
+   *  the click is stopped so the document listener does not close it again. */
+  toggleInfo(which: 'overwrite' | 'skip-state', event?: Event): void {
+    if (event) event.stopPropagation();
+    const wasOpen = which === 'overwrite' ? this.showOverwriteInfo : this.showSkipStateInfo;
+    this.closeInfo();
+    if (wasOpen) return;
+    this.placeInfo(event);
+    if (which === 'overwrite') this.showOverwriteInfo = true;
+    else this.showSkipStateInfo = true;
+  }
+
+  @HostListener('document:keydown.escape')
+  closeInfo(): void {
+    this.showOverwriteInfo = false;
+    this.showSkipStateInfo = false;
+  }
+
+  private placeInfo(event?: Event): void {
+    const icon = event && event.currentTarget instanceof Element ? event.currentTarget : null;
+    this.infoOpenLeft = false;
+    this.infoOpenAbove = false;
+    if (!icon || typeof window === 'undefined') return;
+    const r = icon.getBoundingClientRect();
+    const width = Math.min(360, window.innerWidth - 32);
+    this.infoOpenLeft = r.left + width > window.innerWidth - 16;
+    // Room for a typical popover (about 200px) below the icon, else above.
+    this.infoOpenAbove = r.bottom + 220 > window.innerHeight && r.top > 220;
   }
 
   /** ngFor trackBy so the 10s catalog refresh reuses each card's DOM
