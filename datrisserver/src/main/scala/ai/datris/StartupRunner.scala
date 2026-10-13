@@ -271,6 +271,11 @@ class StartupRunner extends ApplicationRunner {
     @Value("${doctor.intervalMinutes:0}")
     var doctorIntervalMinutes: Int = _
 
+    // Ordered catalog enable: how long one tap's pipeline load may take
+    // before the job marks it failed and moves on (ms; default 30 minutes).
+    @Value("${datris.catalog.enableWaitMs:1800000}")
+    var catalogEnableWaitMsRaw: String = _
+
     @Override
     def run(args: ApplicationArguments): Unit = {
         ai.datris.util.TapScriptRunner.assertIsolationConfig()
@@ -281,6 +286,10 @@ class StartupRunner extends ApplicationRunner {
             ai.datris.util.CodeGenRunner.warnInProcess("startup")
         initDatrisEnvironment()
         ai.datris.policy.PolicyReplay.port = serverPort
+        val enableWaitMs = scala.util.Try(Option(catalogEnableWaitMsRaw).getOrElse("").trim.toLong).toOption.filter(_ > 0)
+        if (enableWaitMs.isEmpty && Option(catalogEnableWaitMsRaw).exists(_.trim.nonEmpty))
+            logger.warn("datris.catalog.enableWaitMs='" + catalogEnableWaitMsRaw.trim + "' is not a positive number of ms; using 1800000")
+        enableWaitMs.foreach(ms => ai.datris.util.CatalogEnableJob.defaultWaitTimeoutMs = ms)
         if (recoveryAgentEnabled) {
             if (!useAgentPolicy)
                 logger.warn(

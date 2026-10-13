@@ -276,6 +276,55 @@ components:
         placeholder:
           type: string
           enum: [created, skipped, failed]
+    CatalogEnableJobStatus:
+      type: object
+      description: An ordered enable job. Only `active` is present when there is no job.
+      properties:
+        active:
+          type: boolean
+        jobId:
+          type: string
+        catalog:
+          type: string
+        startedBy:
+          type: string
+        startedAt:
+          type: integer
+          format: int64
+        finishedAt:
+          type: integer
+          format: int64
+        cancelRequested:
+          type: boolean
+        taps:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              level:
+                type: integer
+              phase:
+                type: string
+                enum: [pending, testing, enabling, running, waiting, landed, failed, skipped, cancelled]
+              reason:
+                type: string
+                nullable: true
+              recordCount:
+                type: integer
+              publisherToken:
+                type: string
+              rollupStatus:
+                type: string
+              updatedAt:
+                type: integer
+                format: int64
+        summary:
+          type: object
+          description: Count of taps per phase.
+          additionalProperties:
+            type: integer
     CatalogDeleteResult:
       type: object
       description: Carries `detached` (mode=detach) or `deleted` (mode=cascade), plus `failed`.
@@ -1280,7 +1329,7 @@ paths:
       tags: [Pipelines]
       summary: Rename a catalog
       description: |
-        Relabels every tap and pipeline whose `catalog` equals `name` to `newName`, each through a versioned write (one new definition version per member, with a change note naming the rename and the actor). Every hidden placeholder of the catalog (a `__catalog__*` tap whose `catalog` field is `name`, or whose name suffix is `name` when that field is empty) is removed, and `__catalog__<newName>` is created with `catalog=newName`. A member already moved out of `name` by a concurrent change is listed under `failed` ("no longer in catalog"), and placeholders are left untouched when no member moved. A rename never merges: if `newName` already exists (any tap or pipeline carries it, or it has a placeholder; matched case-sensitively) the request is refused with 409 and nothing changes. To combine catalogs, move their items. Not transactional: members that fail are listed under `failed` and the rest still move (207). API keys whose capabilities are scoped `catalog=<name>` are listed under `affectedKeys`; their scopes are not rewritten. Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:update`; each member is also checked against the key's owner and catalog scopes. If any member is refused by scope, placeholders are left untouched (`placeholder: skipped`); for a catalog with only a placeholder, the placeholder is scope-checked (403 on denial).
+        Relabels every tap and pipeline whose `catalog` equals `name` to `newName`, each through a versioned write (one new definition version per member, with a change note naming the rename and the actor). Every hidden placeholder of the catalog (a `__catalog__*` tap whose `catalog` field is `name`, or whose name suffix is `name` when that field is empty) is removed, and `__catalog__<newName>` is created with `catalog=newName`. A member already moved out of `name` by a concurrent change is listed under `failed` ("no longer in catalog"), and placeholders are left untouched when no member moved. A rename never merges: if `newName` already exists (any tap or pipeline carries it, or it has a placeholder; matched case-sensitively) the request is refused with 409 and nothing changes. To combine catalogs, move their items. Not transactional: members that fail are listed under `failed` and the rest still move (207). API keys whose capabilities are scoped `catalog=<name>` are listed under `affectedKeys`; their scopes are not rewritten. Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:update`; each member is also checked against the key's owner and catalog scopes. If any member is refused by scope, placeholders are left untouched (`placeholder: skipped`); for a catalog with only a placeholder, the placeholder is scope-checked (403 on denial). Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -1336,7 +1385,7 @@ paths:
       tags: [Pipelines]
       summary: Delete a catalog (detach or cascade)
       description: |
-        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop; warnings never change the status code.
+        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop; warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -1481,10 +1530,89 @@ paths:
                     type: array
                     items:
                       type: string
+                  job:
+                    $ref: '#/components/schemas/CatalogEnableJobStatus'
         '400':
           description: Reserved or blank catalog name
         '404':
           description: No tap, pipeline or placeholder carries this catalog
+        '500':
+          description: Error
+
+  /api/v1/catalog/{name}/enable-ordered:
+    post:
+      tags: [Pipelines]
+      summary: Enable a catalog's taps in dependency order
+      description: |
+        Starts one server-side job that walks the catalog's enable order (see `GET /api/v1/catalog/{name}/enable-order`) level by level, one tap at a time. Per tap: if any of its dependencies failed, was skipped or cancelled, or has not landed data, the tap is `skipped` with the reason; otherwise it is tested when it has no passing test (a failed test marks it `failed`), enabled (the test-before-cron gate applies; a refusal marks it `failed` with that text), given one real run (an error or zero records marks it `failed`) and the job waits until the run's pipeline loads have finished (`success`/`warning` = `landed`, `error` = `failed`, no finish within `datris.catalog.enableWaitMs`, default 30 minutes = `failed`). A tap that was already enabled with landed data is not re-run. No request body. Requires `tap:run`; the key must also hold `tap:update` and `tap:run` for every member tap (owner and catalog scope), otherwise 403 and nothing starts. Agent policy action `tap:run:enable-ordered` (inherits `tap:run`): an approval covers the whole job.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Catalog name. `Uncataloged` (any case) is refused.
+      responses:
+        '202':
+          description: The job started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId:
+                    type: string
+                  catalog:
+                    type: string
+                  plan:
+                    type: object
+                    description: The enable order the job walks (`levels` and `cycles`, as in `GET .../enable-order`).
+        '400':
+          description: Reserved or blank catalog name, or the catalog has no taps
+        '403':
+          description: 'The key may not update or run one of the member taps. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+        '404':
+          description: No tap, pipeline or placeholder carries this catalog
+        '409':
+          description: 'A job for this catalog is already running, or the taps have a dependency cycle (`{"error": ..., "cycles": [[...]]}`)'
+        '500':
+          description: Error
+    get:
+      tags: [Pipelines]
+      summary: Progress of a catalog's ordered enable
+      description: |
+        Exactly `{"active": false}` when the catalog has no job. A finished job stays readable for one hour with `active` false and `finishedAt` set. The same body is the `job` block of `GET .../enable-order`. Requires `tap:read`; not audited.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogEnableJobStatus'
+        '500':
+          description: Error
+    delete:
+      tags: [Pipelines]
+      summary: Cancel a catalog's ordered enable
+      description: |
+        The test, run or load wait in progress finishes (a running tap script is not killed); every tap not yet started is marked `cancelled`. Requires `tap:run`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'Cancel requested: `{"cancelled": true, "jobId": ...}`'
+        '404':
+          description: No job is running for this catalog
         '500':
           description: Error
 
@@ -1493,7 +1621,7 @@ paths:
       tags: [Pipelines]
       summary: Restore a catalog from a zip backup
       description: |
-        Restores an archive produced by `GET /api/v1/catalog/{name}/export` as catalog `name` (the same or a new name, on the same or another install). A restore never merges: with `mode=new` (default) it is refused with 409 when catalog `name` already exists or any archived tap or pipeline name exists anywhere on the install (any catalog, either type), and nothing is written. With `mode=overwrite` (requires `confirm` equal to `name`) items already in `name` may be replaced; a name in another catalog is still a 409. When tap scripts are stored in a code repository, a script file already at branch head with different content is also a clash; identical content is reused without a new commit. Pipelines are saved exactly as `POST /api/v1/pipeline` saves them; tap scripts go to the install's default script storage; taps are saved with `enabled=false` and their run status cleared, so nothing runs until a user tests and enables them. Secrets are never written: `missingSecrets` lists the secrets the archived items reference that are absent on this install. Secrets are only checked where the key may read them: a key without secret read access gets a `<name>: not checked, this key may not read secrets` warning instead, whether or not the secret exists. Each tap's incremental state is restored for taps that did not exist before, unless `restoreState=false`. An archive with no members creates the empty catalog. Not transactional: failed members are listed under `failed` (207). Requires `pipeline:create`. Every member is scope-checked before anything is written: `tap:create` / `pipeline:create` in the target catalog as the caller, and for an item that already exists (overwrite) also `tap:update` / `pipeline:update` against its current catalog and owner. A refused member is listed under `failed` and nothing of it, including its validation schema, is written. Inline credentials (preprocessor and REST destination `bearerToken`/`apiKey`, `restEndpoint` row-function token parameters) are removed at export; the restore response's `warnings` names each one to re-enter.
+        Restores an archive produced by `GET /api/v1/catalog/{name}/export` as catalog `name` (the same or a new name, on the same or another install). A restore never merges: with `mode=new` (default) it is refused with 409 when catalog `name` already exists or any archived tap or pipeline name exists anywhere on the install (any catalog, either type), and nothing is written. With `mode=overwrite` (requires `confirm` equal to `name`) items already in `name` may be replaced; a name in another catalog is still a 409. When tap scripts are stored in a code repository, a script file already at branch head with different content is also a clash; identical content is reused without a new commit. Pipelines are saved exactly as `POST /api/v1/pipeline` saves them; tap scripts go to the install's default script storage; taps are saved with `enabled=false` and their run status cleared, so nothing runs until a user tests and enables them. Secrets are never written: `missingSecrets` lists the secrets the archived items reference that are absent on this install. Secrets are only checked where the key may read them: a key without secret read access gets a `<name>: not checked, this key may not read secrets` warning instead, whether or not the secret exists. Each tap's incremental state is restored for taps that did not exist before, unless `restoreState=false`. An archive with no members creates the empty catalog. Not transactional: failed members are listed under `failed` (207). Requires `pipeline:create`. Every member is scope-checked before anything is written: `tap:create` / `pipeline:create` in the target catalog as the caller, and for an item that already exists (overwrite) also `tap:update` / `pipeline:update` against its current catalog and owner. A refused member is listed under `failed` and nothing of it, including its validation schema, is written. Inline credentials (preprocessor and REST destination `bearerToken`/`apiKey`, `restEndpoint` row-function token parameters) are removed at export; the restore response's `warnings` names each one to re-enter. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path

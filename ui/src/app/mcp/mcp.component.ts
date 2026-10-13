@@ -431,6 +431,15 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'enable_catalog_ordered',
+      description: 'Start one job that enables a catalog\'s taps in their enable order: each tap is tested if needed, enabled, run once, and its data must land before the next level starts. Taps whose sources did not land are skipped with the reason. Returns the job id and plan; progress is in catalog_enable_order. Do not run the catalog\'s taps by hand while it runs. ONLY call when the user has explicitly asked.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'catalog', type: 'string', description: 'Catalog name.', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'delete_pipeline',
       description: 'DESTRUCTIVE. Deletes BOTH the pipeline config AND the destination data (rows, collection contents, vector store entries). Also wipes document-tap ledgers and staged files for any tap targeting this pipeline. Config-only delete (orphaning the data) is not supported — the platform forces data delete to come along to prevent ghost state. Pass keep_config=true to reset: wipes data, keeps config.',
       category: 'Pipeline Management',

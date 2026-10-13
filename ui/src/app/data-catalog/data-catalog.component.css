@@ -968,3 +968,155 @@
 .info-popover-close .material-icons {
   font-size: 16px;
 }
+
+/* --- Enable in order ------------------------------------------------- */
+
+.enable-ordered-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  opacity: 0.5;
+  transition: all 0.2s;
+}
+
+.enable-ordered-btn:hover:not(:disabled) {
+  color: var(--accent-cyan, #00b4ff);
+  opacity: 1;
+}
+
+.enable-ordered-btn .material-icons {
+  font-size: 18px;
+}
+
+.enable-ordered-confirm,
+.enable-ordered-progress {
+  margin: 0 16px 12px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-hover);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.enable-ordered-title {
+  font-weight: 600;
+}
+
+.enable-ordered-hint {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.enable-ordered-levels {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.enable-ordered-level {
+  color: var(--text-muted);
+}
+
+.enable-ordered-cycles {
+  color: #f87171;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.enable-ordered-actions,
+.enable-ordered-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.enable-ordered-head .enable-ordered-title {
+  flex: 1;
+}
+
+.enable-ordered-head .material-icons {
+  font-size: 18px;
+  color: var(--accent-cyan, #00b4ff);
+}
+
+.enable-ordered-confirm .del-opt,
+.enable-ordered-progress .del-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.enable-ordered-confirm .enable-ordered-start {
+  background: rgba(0, 180, 255, 0.15);
+  color: var(--accent-cyan, #00b4ff);
+}
+
+.enable-ordered-confirm .del-opt:disabled,
+.enable-ordered-progress .del-opt:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.enable-ordered-confirm .del-opt .material-icons {
+  font-size: 16px;
+}
+
+.enable-ordered-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.enable-ordered-table td {
+  padding: 3px 8px 3px 0;
+  vertical-align: top;
+}
+
+.enable-ordered-table .eo-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.enable-ordered-table .eo-level,
+.enable-ordered-table .eo-phase {
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.enable-ordered-table .eo-reason {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.enable-ordered-row.phase-landed .eo-phase {
+  color: #4ade80;
+}
+
+.enable-ordered-row.phase-failed .eo-phase,
+.enable-ordered-row.phase-skipped .eo-phase {
+  color: #f87171;
+}
+
+.import-enable-ordered-link {
+  margin-left: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-cyan, #00b4ff);
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: underline;
+}

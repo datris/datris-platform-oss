@@ -96,6 +96,14 @@ object CapabilityRoutes {
         // granted it explicitly pass.
         Route("POST", "/api/v1/protect/reveal", "protect", "reveal"),
         Route("POST", "/api/v1/protect/keys/rotate", "protect", "admin"),
+        // Ordered enable of a catalog's taps (one server-side job): start and
+        // cancel are tap:run, status a tap read. Listed BEFORE the catalog
+        // `/**` rows so DELETE .../enable-ordered (cancel) is not a catalog
+        // delete. The controller also scope-checks tap:update and tap:run
+        // on every member before a job starts.
+        Route("POST", "/api/v1/catalog/*/enable-ordered", "tap", "run"),
+        Route("GET", "/api/v1/catalog/*/enable-ordered", "tap", "read"),
+        Route("DELETE", "/api/v1/catalog/*/enable-ordered", "tap", "run"),
         // Catalog operations (rename / detach-or-cascade delete). One route
         // row per method; members are owner-scope checked in the controller.
         Route("PUT", "/api/v1/catalog/**", "pipeline", "update"),

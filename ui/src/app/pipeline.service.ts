@@ -53,6 +53,25 @@ export class PipelineService {
     return this.http.get<any>('/api/v1/catalog/' + encodeURIComponent(name) + '/enable-order');
   }
 
+  /** Start the server-side job that tests, enables and runs the catalog's
+   *  taps in their enable order. No body. 202 `{jobId, catalog, plan}`;
+   *  403/409 (cycle, job already running) come through `error`. */
+  enableOrdered(name: string): Observable<any> {
+    return this.http.post<any>('/api/v1/catalog/' + encodeURIComponent(name) + '/enable-ordered', null);
+  }
+
+  /** Progress of the catalog's ordered enable: `{active: false}` when there is
+   *  none; otherwise `{active, jobId, finishedAt?, taps: [{name, level,
+   *  phase, reason, ...}]}`. A finished job reads `active: false`. */
+  enableOrderedStatus(name: string): Observable<any> {
+    return this.http.get<any>('/api/v1/catalog/' + encodeURIComponent(name) + '/enable-ordered');
+  }
+
+  /** Cancel the catalog's ordered enable; the in-flight tap finishes. */
+  cancelEnableOrdered(name: string): Observable<any> {
+    return this.http.delete<any>('/api/v1/catalog/' + encodeURIComponent(name) + '/enable-ordered');
+  }
+
   /** Download a catalog as a zip archive. Resolves the full response so the
    *  caller can take the file name from Content-Disposition; the body is the
    *  zip Blob. Errors arrive with a Blob body (responseType 'blob'). */

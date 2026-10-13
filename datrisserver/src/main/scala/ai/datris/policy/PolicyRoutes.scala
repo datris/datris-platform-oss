@@ -24,7 +24,10 @@ object PolicyRoutes {
     /** (method, path pattern, action key). The parent `resource:action`
       * must still be what CapabilityRoutes returns for the same route. */
     private val subActions: Seq[(String, String, String)] = Seq(
-        ("POST", "/api/v1/pipeline/dest-types", "pipeline:update:dest-types")
+        ("POST", "/api/v1/pipeline/dest-types", "pipeline:update:dest-types"),
+        // Ordered enable of a whole catalog (tests, enables and runs every
+        // tap in dependency order): one approval for the job, not one per tap.
+        ("POST", "/api/v1/catalog/*/enable-ordered", "tap:run:enable-ordered")
     )
 
     /** Every key a policy may name. */

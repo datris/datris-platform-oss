@@ -26,6 +26,36 @@ interface CatalogInfo {
   deleting?: boolean;
 }
 
+/** One tap's row in an ordered-enable progress list. */
+interface EnableOrderedRow {
+  name: string;
+  level: number;
+  phase: string;
+  reason: string | null;
+}
+
+/** Ordered enable of one catalog: the job's rows while it runs and after it
+ *  finishes (until dismissed). */
+interface EnableOrderedJob {
+  catalog: string;
+  jobId: string;
+  active: boolean;
+  cancelRequested: boolean;
+  rows: EnableOrderedRow[];
+}
+
+/** Plan shown in the confirm panel before an ordered enable starts. */
+interface EnableOrderedConfirm {
+  catalog: string;
+  loading: boolean;
+  starting: boolean;
+  levels: { level: number; taps: string[] }[];
+  cycles: string[][];
+}
+
+/** How often a running ordered enable is polled. */
+const ENABLE_ORDERED_POLL_MS = 5000;
+
 interface CatalogOpFailure {
   name: string;
   error: string;
@@ -139,6 +169,11 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   private pendingAutoExpand = '';
   private refreshInterval: any;
   private changedSub?: Subscription;
+  /** "Enable in order": the confirm panel (one at a time) and the jobs this
+   *  page started, keyed by catalog name, with their poll timers. */
+  enableConfirm: EnableOrderedConfirm | null = null;
+  enableJobs: { [catalog: string]: EnableOrderedJob } = {};
+  private enablePollers: { [catalog: string]: any } = {};
 
   constructor(
     private tapService: TapService,
@@ -165,6 +200,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     if (this.refreshInterval) clearInterval(this.refreshInterval);
+    Object.keys(this.enablePollers).forEach(c => this.stopEnablePolling(c));
     this.changedSub?.unsubscribe();
     // Save expansion state so the catalog page restores its open sections when
     // the user navigates back (e.g. from an Edit Pipeline wizard).
@@ -364,6 +400,123 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
         this.showCreateModal = false;
         this.newCatalogName = '';
       }
+    });
+  }
+
+  // --- Enable in order ---------------------------------------------------
+
+  /** Write users, named catalogs with at least one disabled tap, and no
+   *  ordered enable of the catalog running from this page. */
+  canEnableOrdered(cat: CatalogInfo): boolean {
+    if (!this.auth.canWrite() || cat.name === 'Uncataloged') return false;
+    const job = this.enableJobs[cat.name];
+    if (job && job.active) return false;
+    return cat.taps.some(t => !(t.name || '').startsWith('__catalog__') && t.enabled === false);
+  }
+
+  /** Load the catalog's enable order into the confirm panel. Nothing starts
+   *  until Start is clicked. */
+  openEnableOrdered(catalogName: string, event?: MouseEvent): void {
+    event?.stopPropagation();
+    this.clearMoveError();
+    const confirm: EnableOrderedConfirm = { catalog: catalogName, loading: true, starting: false, levels: [], cycles: [] };
+    this.enableConfirm = confirm;
+    this.pipelineService.enableOrder(catalogName).subscribe({
+      next: (body) => {
+        if (this.enableConfirm !== confirm) return;
+        confirm.loading = false;
+        confirm.levels = this.planLevels(body);
+        confirm.cycles = Array.isArray(body?.cycles) ? body.cycles : [];
+      },
+      error: (err) => {
+        if (this.enableConfirm === confirm) this.enableConfirm = null;
+        this.showMoveError(this.errText(err));
+      }
+    });
+  }
+
+  cancelEnableConfirm(): void {
+    this.enableConfirm = null;
+  }
+
+  /** Start the ordered enable; on 202 show every tap as pending and poll. */
+  startEnableOrdered(): void {
+    const confirm = this.enableConfirm;
+    if (!confirm || confirm.starting) return;
+    const name = confirm.catalog;
+    confirm.starting = true;
+    this.pipelineService.enableOrdered(name).subscribe({
+      next: (body) => {
+        this.enableConfirm = null;
+        const rows: EnableOrderedRow[] = [];
+        this.planLevels(body?.plan).forEach(l => l.taps.forEach(t => rows.push({ name: t, level: l.level, phase: 'pending', reason: null })));
+        this.enableJobs[name] = { catalog: name, jobId: body?.jobId || '', active: true, cancelRequested: false, rows };
+        this.startEnablePolling(name);
+      },
+      error: (err) => {
+        this.enableConfirm = null;
+        this.showMoveError(this.errText(err));
+      }
+    });
+  }
+
+  cancelEnableOrdered(catalogName: string): void {
+    const job = this.enableJobs[catalogName];
+    this.pipelineService.cancelEnableOrdered(catalogName).subscribe({
+      next: () => { if (job) job.cancelRequested = true; },
+      error: (err) => this.showMoveError(this.errText(err))
+    });
+  }
+
+  dismissEnableOrdered(catalogName: string): void {
+    this.stopEnablePolling(catalogName);
+    delete this.enableJobs[catalogName];
+  }
+
+  enableJobFor(catalogName: string): EnableOrderedJob | null {
+    return this.enableJobs[catalogName] || null;
+  }
+
+  private planLevels(plan: any): { level: number; taps: string[] }[] {
+    const levels = Array.isArray(plan?.levels) ? plan.levels : [];
+    return levels.map((l: any, i: number) => ({
+      level: typeof l?.level === 'number' ? l.level : i + 1,
+      taps: (Array.isArray(l?.taps) ? l.taps : []).map((t: any) => typeof t === 'string' ? t : t?.name).filter((n: any) => !!n)
+    }));
+  }
+
+  private startEnablePolling(catalogName: string): void {
+    this.stopEnablePolling(catalogName);
+    this.enablePollers[catalogName] = setInterval(() => this.pollEnableOrdered(catalogName), ENABLE_ORDERED_POLL_MS);
+  }
+
+  private stopEnablePolling(catalogName: string): void {
+    const t = this.enablePollers[catalogName];
+    if (t) clearInterval(t);
+    delete this.enablePollers[catalogName];
+  }
+
+  private pollEnableOrdered(catalogName: string): void {
+    this.pipelineService.enableOrderedStatus(catalogName).subscribe({
+      next: (status) => {
+        const job = this.enableJobs[catalogName];
+        if (!job) { this.stopEnablePolling(catalogName); return; }
+        if (Array.isArray(status?.taps) && status.taps.length > 0) {
+          job.rows = status.taps.map((t: any) => ({
+            name: t.name, level: t.level, phase: t.phase, reason: t.reason == null ? null : t.reason
+          }));
+        }
+        if (status?.cancelRequested) job.cancelRequested = true;
+        if (!status || status.active !== true) {
+          // Finished (or no longer known to the server): stop polling, keep
+          // the final rows until dismissed, and show the enabled taps.
+          job.active = false;
+          this.stopEnablePolling(catalogName);
+          this.loadCatalogs();
+        }
+      },
+      // A transient failure keeps polling; the next tick tries again.
+      error: () => {}
     });
   }
 

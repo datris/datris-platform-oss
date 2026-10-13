@@ -188,6 +188,34 @@ object TapAPIController {
         response
     }
 
+    /** The current time in the configured date format and timezone (the
+      * format every `last*RunTime` field is stored in). */
+    private[datris] def nowStamp(): String = {
+        val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+        sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+        sdf.format(new java.util.Date())
+    }
+
+    /** `tap` with the outcome of a `mode=test` run stamped on its
+      * `lastTestRun*` fields. Shared by `POST /tap/run` and the ordered
+      * catalog enable so a tap tested by either is indistinguishable. */
+    private[datris] def stampTestResult(tap: TapConfig, result: TapScriptResult, now: String): TapConfig = {
+        val passed = result.error == null
+        tap.copy(
+            lastTestRunStatus = if (passed) "success" else "failure",
+            lastTestRunTime = now,
+            lastTestRunRecordCount = result.recordCount,
+            lastTestRunError = result.error,
+            lastTestRunDataType = result.dataType,
+            lastTestRunColumns = result.columns,
+            // Stamp the identity of the exact script/endpoint that just
+            // passed, so TapCronGate can tie a later cron to these bytes.
+            // A failed test clears the stamp: the previous green no longer
+            // vouches for what is stored now.
+            lastTestRunScriptId = if (passed) TapScriptIdentity.of(tap).orNull else null
+        )
+    }
+
     /** Effective `testLimit` for a `/tap/run` request.
       *
       *  `bodyTestLimit` is `body.get("testLimit")` straight off the Jackson-parsed
@@ -199,7 +227,7 @@ object TapAPIController {
       *  the default preview size (`testRecordSampleSize`); an explicit 0 or negative
       *  value is the deliberate unlimited opt-out.
       */
-    private[api] def resolveTestLimit(mode: String, bodyTestLimit: Any): Int = {
+    private[datris] def resolveTestLimit(mode: String, bodyTestLimit: Any): Int = {
         if (mode == null || mode.toLowerCase != "test") return 0
 
         val requested: Option[Int] = bodyTestLimit match {
@@ -1404,25 +1432,8 @@ class TapAPIController {
 
                 // Save test run status when not pushing to pipeline
                 if (mode != "run") {
-                    val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
-                    sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
-                    val now = sdf.format(new java.util.Date())
-                    val passed = result.error == null
-                    val updated = tapConfig.copy(
-                        lastTestRunStatus = if (passed) "success" else "failure",
-                        lastTestRunTime = now,
-                        lastTestRunRecordCount = result.recordCount,
-                        lastTestRunError = result.error,
-                        lastTestRunDataType = result.dataType,
-                        lastTestRunColumns = result.columns,
-                        // Stamp the identity of the exact script/endpoint that just
-                        // passed, so TapCronGate can tie a later cron to these bytes.
-                        // A failed test clears the stamp: the previous green no longer
-                        // vouches for what is stored now.
-                        lastTestRunScriptId = if (passed) TapScriptIdentity.of(tapConfig).orNull else null
-                    )
                     // Status churn: plain write, no version minted.
-                    TapConfigIO.write(updated)
+                    TapConfigIO.write(TapAPIController.stampTestResult(tapConfig, result, TapAPIController.nowStamp()))
                 }
 
                 val gson = new Gson

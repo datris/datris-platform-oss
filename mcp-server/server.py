@@ -1596,7 +1596,8 @@ async def list_tools():
 # never drifts from the catalog by accident: a new mutating tool that is not
 # listed here simply lacks the optional argument.
 _MUTATING_TOOLS = {
-    "create_pipeline", "set_catalog", "rename_catalog", "delete_catalog", "restore_catalog", "delete_pipeline", "upload_data", "kill_job",
+    "create_pipeline", "set_catalog", "rename_catalog", "delete_catalog", "restore_catalog", "enable_catalog_ordered",
+    "delete_pipeline", "upload_data", "kill_job",
     "apply_dest_types", "upload_config", "update_secret", "create_tap_secret",
     "delete_tap_secret", "create_tap", "run_tap", "delete_tap", "set_tap_state",
     "test_tap", "update_tap", "restore_tap_version", "restore_pipeline_version",
@@ -2000,6 +2001,30 @@ def _base_tools():
                     },
                 },
                 "required": ["catalog", "archive_base64"]
+            }
+        ),
+        Tool(
+            name="enable_catalog_ordered",
+            description=(
+                "Start one server-side job that enables a catalog's taps in their enable order (see catalog_enable_order): "
+                "level by level, each tap is tested if it has no passing test, enabled, given one real run, and the job waits "
+                "until that run's data has landed before moving on. A tap whose source did not land data is skipped with the "
+                "reason; every tap's outcome is reported. Call this ONLY when the user has asked to enable the catalog's taps. "
+                "It returns at once with the job id and the plan; follow progress with catalog_enable_order (its `job` block), "
+                "pausing with `wait_seconds` between polls, until `job.active` is false, then report each tap's phase and reason. "
+                "While the job runs, do not call run_tap, test_tap or update_tap on that catalog's taps: the job is already "
+                "running them. Refused while another enable job for the catalog is running, or when its taps have a dependency "
+                "cycle (the `cycles` are returned). Cancelling is done by the user in Datris."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "catalog": {
+                        "type": "string",
+                        "description": "Catalog name."
+                    },
+                },
+                "required": ["catalog"]
             }
         ),
         Tool(
@@ -4772,6 +4797,12 @@ def _dispatch(name: str, args: dict) -> str:
             )
         except requests.RequestException as e:
             return json.dumps({"error": str(e)})
+
+    elif name == "enable_catalog_ordered":
+        # No body: the empty POST is what the agent policy queues and replays
+        # for approval. The 202 (or refusal) body is returned verbatim.
+        catalog = urllib.parse.quote(str(args.get("catalog") or ""), safe="")
+        return _call("post", f"/api/v1/catalog/{catalog}/enable-ordered")
 
     elif name == "update_tap":
         # Fetch existing config

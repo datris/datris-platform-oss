@@ -123,6 +123,9 @@
         <span *ngIf="importResult.tapsDisabled && importResult.taps > 0">Test each tap, then enable it.</span>
         <span *ngIf="importResult.stateSkipped && importResult.taps > 0">Taps start without incremental state.</span>
         <span *ngIf="importResult.dependentTaps > 0">&ngsp;{{ importResult.dependentTaps }} tap{{ importResult.dependentTaps !== 1 ? 's' : '' }} read{{ importResult.dependentTaps === 1 ? 's' : '' }} tables produced by other taps in this catalog; run their sources first (see enable order).</span>
+        <button type="button" class="link-btn import-enable-ordered-link"
+                *ngIf="importResult.dependentTaps > 0 && auth.canWrite()"
+                (click)="openEnableOrdered(importResult.catalog, $event)">Enable in order</button>
       </span>
       <button class="move-error-close" (click)="dismissImportResult()" title="Dismiss">
         <span class="material-icons">close</span>
@@ -233,6 +236,13 @@
             </button>
           </div>
         </span>
+        <button class="enable-ordered-btn"
+                *ngIf="canEnableOrdered(cat) && deleteTarget !== cat.name && renameTarget !== cat.name"
+                (click)="openEnableOrdered(cat.name, $event)"
+                aria-label="Enable in order"
+                title="Enable in order: test, enable and run each tap, sources first">
+          <span class="material-icons">playlist_play</span>
+        </button>
         <button class="delete-catalog-btn"
                 *ngIf="auth.canWrite() && cat.name !== 'Uncataloged' && deleteTarget !== cat.name && renameTarget !== cat.name"
                 (click)="openDelete(cat.name, $event)"
@@ -258,6 +268,55 @@
             <span class="material-icons">close</span>
           </button>
         </div>
+      </div>
+
+      <div class="enable-ordered-confirm" *ngIf="enableConfirm?.catalog === cat.name" (click)="$event.stopPropagation()">
+        <div class="enable-ordered-title">Enable in order</div>
+        <div class="enable-ordered-hint" *ngIf="enableConfirm?.loading">Loading the enable order...</div>
+        <ng-container *ngIf="!enableConfirm?.loading">
+          <div class="enable-ordered-hint">
+            Each tap is tested if needed, enabled and run once; the next level starts after its sources' data has landed.
+            A tap whose source did not land is skipped.
+          </div>
+          <ol class="enable-ordered-levels">
+            <li *ngFor="let l of enableConfirm?.levels">
+              <span class="enable-ordered-level">Level {{ l.level }}:</span> {{ l.taps.join(', ') }}
+            </li>
+          </ol>
+          <div class="enable-ordered-cycles" *ngIf="(enableConfirm?.cycles?.length || 0) > 0">
+            Dependency cycle: <span *ngFor="let c of enableConfirm?.cycles; let last = last">{{ c.join(', ') }}{{ last ? '' : '; ' }}</span>.
+            Remove one dependency in each cycle first.
+          </div>
+        </ng-container>
+        <div class="enable-ordered-actions">
+          <button class="del-opt enable-ordered-start" (click)="startEnableOrdered()"
+                  [disabled]="enableConfirm?.loading || enableConfirm?.starting || (enableConfirm?.cycles?.length || 0) > 0">
+            <span class="material-icons">{{ enableConfirm?.starting ? 'hourglass_empty' : 'play_arrow' }}</span> Start
+          </button>
+          <button class="del-opt del-cancel" (click)="cancelEnableConfirm()">Cancel</button>
+        </div>
+      </div>
+
+      <div class="enable-ordered-progress" *ngIf="enableJobFor(cat.name) as job" (click)="$event.stopPropagation()">
+        <div class="enable-ordered-head">
+          <span class="material-icons">{{ job.active ? 'sync' : 'done_all' }}</span>
+          <span class="enable-ordered-title">
+            {{ job.active ? (job.cancelRequested ? 'Cancelling enable in order (the current tap finishes)...' : 'Enabling in order...') : 'Enable in order finished' }}
+          </span>
+          <button class="del-opt enable-ordered-cancel" *ngIf="job.active" (click)="cancelEnableOrdered(cat.name)"
+                  [disabled]="job.cancelRequested">Cancel</button>
+          <button class="move-error-close" *ngIf="!job.active" (click)="dismissEnableOrdered(cat.name)" title="Dismiss">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
+        <table class="enable-ordered-table">
+          <tr class="enable-ordered-row" *ngFor="let r of job.rows" [ngClass]="'phase-' + r.phase">
+            <td class="eo-name">{{ r.name }}</td>
+            <td class="eo-level">level {{ r.level }}</td>
+            <td class="eo-phase">{{ r.phase }}</td>
+            <td class="eo-reason">{{ r.reason || '' }}</td>
+          </tr>
+        </table>
       </div>
 
       <div class="catalog-card-body" *ngIf="cat.expanded">

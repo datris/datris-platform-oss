@@ -9,10 +9,11 @@ import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, VersionActor}
 import ai.datris.build.sbt.BuildInfo
-import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineConfig, TapConfig}
+import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineConfig, PipelineStatusRollup, TapConfig}
 import ai.datris.util.{
     APIKeyValidator,
     CatalogArchive,
+    CatalogEnableJob,
     CatalogOps,
     CodeRepoConfigIO,
     GithubClient,
@@ -22,11 +23,14 @@ import ai.datris.util.{
     ObjectStoreUtil,
     PipelineConfigIO,
     PipelineScripts,
+    PipelineStatusUtil,
     SecretsUtil,
     StoredScript,
     TapCodeStore,
     TapConfigIO,
     TapDependencies,
+    TapRunner,
+    TapScriptResult,
     TapState,
     TapStateIO
 }
@@ -99,6 +103,10 @@ class CatalogAPIController {
                 )
             if (newName == name)
                 return badRequest("New name is the same as the current name")
+            // Registry check only (no Mongo read): a running ordered enable
+            // reads and writes this catalog's taps by name.
+            if (CatalogEnableJob.activeFor(name))
+                return enableJobConflict(name, "renamed")
 
             // Serialized with every other catalog operation: the member
             // snapshot through the placeholder step must not interleave with a
@@ -224,6 +232,8 @@ class CatalogAPIController {
                     "Cascade delete removes every tap and pipeline in '" + name +
                         "' and their data; pass confirm=<catalog name> to proceed"
                 )
+            if (CatalogEnableJob.activeFor(name))
+                return enableJobConflict(name, "deleted")
 
             // Serialized with every other catalog operation: the member
             // snapshot through the placeholder step must not interleave with a
@@ -400,32 +410,12 @@ class CatalogAPIController {
                         false
                 }
             }
-            // Lazy backfill: taps saved before dependencies existed are
-            // analysed once from their stored script (capped per request; an
-            // unreadable script is logged and retried on a later call).
-            val pending = readable.filter(TapDependencies.needsBackfill)
-            val analysed = pending.take(BackfillCap).map { t =>
-                t.name -> TapAPIController.backfillInferred(t, TapAPIController.readScriptForBackfill(t), taps, pipelines)
-            }.toMap
-            if (pending.size > BackfillCap)
-                warnings += ((pending.size - BackfillCap) + " taps not yet analysed for dependencies; call again to finish")
-            val plan = TapDependencies.order(readable.map(t => analysed.getOrElse(t.name, t)))
-            val out = new JsonObject
+            val plan = TapDependencies.order(withBackfill(readable, taps, pipelines, warnings))
+            val out = CatalogAPIController.planJson(plan)
             out.addProperty("catalog", name)
-            val levels = new JsonArray
-            plan.levels.zipWithIndex.foreach { case (lvl, i) =>
-                val o = new JsonObject
-                o.addProperty("level", i + 1)
-                val arr = new JsonArray
-                lvl.foreach(r => arr.add(readinessJson(r)))
-                o.add("taps", arr)
-                levels.add(o)
-            }
-            out.add("levels", levels)
-            val cycles = new JsonArray
-            plan.cycles.foreach(c => cycles.add(toArray(c)))
-            out.add("cycles", cycles)
             out.add("warnings", toArray(warnings.toList))
+            // Progress of an ordered enable of this catalog ({active:false} when none).
+            out.add("job", CatalogEnableJob.statusBody(name))
             new ResponseEntity[String](new Gson().toJson(out), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -437,19 +427,130 @@ class CatalogAPIController {
     /** Most unstamped taps one enable-order call analyses. */
     private val BackfillCap = 100
 
-    private def readinessJson(r: TapDependencies.Readiness): JsonObject = {
+    /** Lazy backfill: taps saved before dependencies existed are analysed
+      * once from their stored script (capped per request; an unreadable
+      * script is logged and retried on a later call). */
+    private def withBackfill(
+        members: Seq[TapConfig],
+        taps: Seq[TapConfig],
+        pipelines: Seq[PipelineConfig],
+        warnings: mutable.ArrayBuffer[String]
+    ): Seq[TapConfig] = {
+        val pending = members.filter(TapDependencies.needsBackfill)
+        val analysed = pending.take(BackfillCap).map { t =>
+            t.name -> TapAPIController.backfillInferred(t, TapAPIController.readScriptForBackfill(t), taps, pipelines)
+        }.toMap
+        if (pending.size > BackfillCap)
+            warnings += ((pending.size - BackfillCap) + " taps not yet analysed for dependencies; call again to finish")
+        members.map(t => analysed.getOrElse(t.name, t))
+    }
+
+    /** Start one server-side job that walks the catalog's enable order (see
+      * CatalogEnableJob). No body. 202 `{jobId, catalog, plan}`; 409 on a
+      * dependency cycle or when a job for the catalog is already running;
+      * 403 (nothing started) when the caller may not update AND run every
+      * member tap. Progress: `GET .../enable-ordered` or the `job` block of
+      * `GET .../enable-order`. */
+    @PostMapping(path = Array("/catalog/{name}/enable-ordered"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def startEnableOrdered(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable("name") name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /catalog/" + name + "/enable-ordered called")
+            APIKeyValidator.validate(apiKey)
+
+            if (CatalogOps.isReserved(name))
+                return badRequest("Catalog '" + Option(name).getOrElse("") + "' cannot be enabled in order: Uncataloged and blank names are reserved")
+            if (CatalogEnableJob.activeFor(name))
+                return enableJobConflict(name, "started again")
+            val (taps, pipelines) = loadAll()
+            val members = CatalogOps.members(taps, pipelines, name)
+            if (members.isEmpty && CatalogOps.Placeholder.of(taps, name).isEmpty)
+                return notFound(name)
+            if (members.taps.isEmpty)
+                return badRequest("Catalog '" + name + "' has no taps to enable")
+            val warnings = mutable.ArrayBuffer.empty[String]
+            val catalogTaps = withBackfill(members.taps, taps, pipelines, warnings)
+            CatalogAPIController.enableOrderedRefusal(request, catalogTaps).foreach(r => return r)
+            val plan = TapDependencies.order(catalogTaps)
+            val actor = VersionActor.resolve(request)
+            CatalogEnableJob.start(name, actor, plan, CatalogAPIController.EnableDeps) match {
+                case Left(err) =>
+                    val o = new JsonObject
+                    o.addProperty("error", err)
+                    ResponseEntity.status(HttpStatus.CONFLICT).body[String](o.toString)
+                case Right(job) =>
+                    val out = new JsonObject
+                    out.addProperty("jobId", job.id)
+                    out.addProperty("catalog", name)
+                    out.add("plan", CatalogAPIController.planJson(plan))
+                    if (warnings.nonEmpty) out.add("warnings", toArray(warnings.toList))
+                    ResponseEntity.status(HttpStatus.ACCEPTED).body[String](new Gson().toJson(out))
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    /** Status of the catalog's ordered enable: exactly `{active:false}` when
+      * there is none; a finished job stays readable for an hour. */
+    @GetMapping(path = Array("/catalog/{name}/enable-ordered"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def enableOrderedStatus(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable("name") name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        try {
+            APIKeyValidator.validate(apiKey)
+            new ResponseEntity[String](CatalogEnableJob.statusBody(name).toString, HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    /** Cancel the catalog's ordered enable. The in-flight test, run or load
+      * wait finishes; taps not yet started are `cancelled`. 404 when no job
+      * is running. */
+    @DeleteMapping(path = Array("/catalog/{name}/enable-ordered"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def cancelEnableOrdered(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable("name") name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint DELETE /catalog/" + name + "/enable-ordered called")
+            APIKeyValidator.validate(apiKey)
+            val o = new JsonObject
+            if (CatalogEnableJob.cancel(name)) {
+                o.addProperty("cancelled", true)
+                CatalogEnableJob.status(name).foreach(j => o.addProperty("jobId", j.id))
+                new ResponseEntity[String](o.toString, HttpStatus.OK)
+            } else {
+                o.addProperty("error", "No enable job is running for catalog '" + name + "'")
+                ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](o.toString)
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    private def enableJobConflict(name: String, verb: String): ResponseEntity[String] = {
         val o = new JsonObject
-        o.addProperty("name", r.name)
-        o.addProperty("enabled", r.enabled)
-        o.addProperty("cronExpression", r.cronExpression)
-        if (r.dependsOn != null) o.add("dependsOn", toArray(r.dependsOn))
-        if (r.inferredDependsOn != null) o.add("inferredDependsOn", toArray(r.inferredDependsOn))
-        o.addProperty("explicit", r.explicit)
-        o.addProperty("hasPassingTest", r.hasPassingTest)
-        o.addProperty("lastRealRunLanded", r.lastRealRunLanded)
-        o.add("blockedBy", toArray(r.blockedBy))
-        o.addProperty("ready", r.ready)
-        o
+        o.addProperty(
+            "error",
+            "Catalog '" + name + "' cannot be " + verb + ": an enable job in progress is walking its taps. " +
+                "Wait for it to finish (or cancel it), then try again."
+        )
+        CatalogEnableJob.status(name).foreach(j => o.addProperty("jobId", j.id))
+        ResponseEntity.status(HttpStatus.CONFLICT).body[String](o.toString)
     }
 
     @PostMapping(
@@ -483,6 +584,8 @@ class CatalogAPIController {
                 )
             if (file == null || file.isEmpty)
                 return badRequest("Request must include the archive as multipart field 'file'")
+            if (CatalogEnableJob.activeFor(name))
+                return enableJobConflict(name, "restored")
 
             val entries = CatalogArchive.unpack(file.getBytes) match {
                 case Left(err) => return badRequest(err)
@@ -1087,5 +1190,120 @@ class CatalogAPIController {
         val o = new JsonObject
         o.addProperty("error", "Catalog '" + name + "' not found")
         ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](o.toString)
+    }
+}
+
+object CatalogAPIController {
+    private val logger: Logger = LoggerFactory.getLogger(classOf[CatalogAPIController])
+
+    /** The refusal `POST /catalog/{name}/enable-ordered` returns before a job
+      * starts, or None. `taps` = the catalog's member taps (no placeholders).
+      *  - 409 {"error", "cycles"} when TapDependencies.order has cycles;
+      *  - 403 when the caller's key fails CapabilityCheck.assertScope for
+      *    `tap:update` or `tap:run` on any member (scope = catalog + owner). */
+    def enableOrderedRefusal(request: HttpServletRequest, taps: Seq[TapConfig]): Option[ResponseEntity[String]] = {
+        val plan = TapDependencies.order(taps)
+        if (plan.cycles.nonEmpty) {
+            val o = new JsonObject
+            o.addProperty(
+                "error",
+                "The taps of this catalog have a dependency cycle (" + plan.cycles.map(_.mkString(", ")).mkString("; ") +
+                    "), so there is no enable order. Remove one dependency in each cycle (an explicit dependsOn of [] overrides the inferred list)."
+            )
+            val cycles = new JsonArray
+            plan.cycles.foreach { c =>
+                val a = new JsonArray
+                c.foreach(a.add)
+                cycles.add(a)
+            }
+            o.add("cycles", cycles)
+            return Some(ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON).body[String](o.toString))
+        }
+        for (t <- taps; action <- Seq("update", "run")) {
+            try CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel))
+            catch {
+                case e: CapabilityDeniedException =>
+                    return Some(
+                        ResponseEntity
+                            .status(HttpStatus.FORBIDDEN)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body[String](CatalogOps.capabilityDeniedBody(e.getMessage + " (tap '" + t.name + "')"))
+                    )
+            }
+        }
+        None
+    }
+
+    /** `{levels: [{level, taps: [readiness]}], cycles}`; levels are 1-based. */
+    def planJson(plan: TapDependencies.Plan): JsonObject = {
+        val out = new JsonObject
+        val levels = new JsonArray
+        plan.levels.zipWithIndex.foreach { case (lvl, i) =>
+            val o = new JsonObject
+            o.addProperty("level", i + 1)
+            val arr = new JsonArray
+            lvl.foreach(r => arr.add(readinessJson(r)))
+            o.add("taps", arr)
+            levels.add(o)
+        }
+        out.add("levels", levels)
+        val cycles = new JsonArray
+        plan.cycles.foreach { c =>
+            val a = new JsonArray
+            c.foreach(a.add)
+            cycles.add(a)
+        }
+        out.add("cycles", cycles)
+        out
+    }
+
+    private def strings(xs: Seq[String]): JsonArray = {
+        val a = new JsonArray
+        xs.foreach(a.add)
+        a
+    }
+
+    private def readinessJson(r: TapDependencies.Readiness): JsonObject = {
+        val o = new JsonObject
+        o.addProperty("name", r.name)
+        o.addProperty("enabled", r.enabled)
+        o.addProperty("cronExpression", r.cronExpression)
+        if (r.dependsOn != null) o.add("dependsOn", strings(r.dependsOn))
+        if (r.inferredDependsOn != null) o.add("inferredDependsOn", strings(r.inferredDependsOn))
+        o.addProperty("explicit", r.explicit)
+        o.addProperty("hasPassingTest", r.hasPassingTest)
+        o.addProperty("lastRealRunLanded", r.lastRealRunLanded)
+        o.add("blockedBy", strings(r.blockedBy))
+        o.addProperty("ready", r.ready)
+        o
+    }
+
+    /** Production side effects of an ordered enable (see CatalogEnableJob.Deps). */
+    object EnableDeps extends CatalogEnableJob.Deps {
+        override def read(name: String): TapConfig = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
+
+        override def test(tap: TapConfig): TapScriptResult = {
+            val result = TapRunner.run(tap, mode = "test", testLimit = TapAPIController.resolveTestLimit("test", null))
+            try {
+                // Status churn: plain write, no version minted (as POST /tap/run).
+                TapConfigIO.write(TapAPIController.stampTestResult(tap, result, TapAPIController.nowStamp()))
+            } finally {
+                try TapRunner.release(result)
+                catch { case e: Exception => logger.warn("Could not release test staging of tap '" + tap.name + "': " + e.getMessage) }
+            }
+            result
+        }
+
+        override def enable(tap: TapConfig, note: String, actor: String): Unit =
+            CatalogOps.withCatalogLock { TapConfigIO.writeVersioned(tap, note, actor) }
+
+        override def run(tap: TapConfig): TapScriptResult = TapRunner.run(tap, mode = "run", trigger = "manual")
+
+        override def rollup(publisherToken: String): PipelineStatusRollup =
+            PipelineStatusUtil.getPipelineStatusByPublisherWithRollup(publisherToken).rollup
+
+        override def pollIntervalMs: Long = 5000L
+
+        override def waitTimeoutMs: Long = CatalogEnableJob.defaultWaitTimeoutMs
     }
 }
