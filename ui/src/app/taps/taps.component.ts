@@ -79,9 +79,20 @@ export class TapsComponent implements OnInit, OnDestroy {
 
   /** Load the catalog's enable order (once per loadTaps). Hints only: a
    *  failure leaves the rows as they were. */
+  private enableOrderInFlight = false;
+  private enableOrderAgain = false;
+
   private loadEnableOrder(): void {
     const catalog = this.embedCatalog;
     if (!catalog || catalog === 'Uncataloged') return;
+    // Bursts of reloads (e.g. right after a restore) share one request; a
+    // reload during it triggers exactly one follow-up.
+    if (this.enableOrderInFlight) { this.enableOrderAgain = true; return; }
+    this.enableOrderInFlight = true;
+    const settle = () => {
+      this.enableOrderInFlight = false;
+      if (this.enableOrderAgain) { this.enableOrderAgain = false; this.loadEnableOrder(); }
+    };
     try {
       this.pipelineService.enableOrder(catalog).subscribe({
         next: (order: any) => {
@@ -92,11 +103,13 @@ export class TapsComponent implements OnInit, OnDestroy {
             }
           }
           this.depInfo = info;
+          settle();
         },
-        error: () => { this.depInfo = {}; }
+        error: () => { this.depInfo = {}; settle(); }
       });
     } catch {
       this.depInfo = {};
+      settle();
     }
   }
 

@@ -758,7 +758,7 @@ components:
           description: |
             Taps of the same catalog whose destination tables this tap reads, declared by the user.
             When set (even `[]`, meaning "none") it replaces `inferredDependsOn`. Omitted on an update:
-            the stored list is kept. Each name must be another tap of the same catalog (400 otherwise)
+            the stored list is kept. Blank names are refused (400); repeated names are stored once. Each name must be another tap of the same catalog (400 otherwise)
             and the list may not close a dependency cycle (409 with `cycle`). Orders and explains the
             catalog's enable order only; never enforced on save, test, run or schedule.
         inferredDependsOn:
@@ -770,6 +770,9 @@ components:
           description: |
             Server-stamped from the stored script: same-catalog taps whose pipelines' Postgres or Mongo
             tables the script reads through the query or metadata endpoints. Ignored in request bodies.
+            `[]` when the script was analysed and reads no other tap; null when not analysed yet (no
+            script, or a tap saved before dependency tracking: `GET /api/v1/tap` and the catalog
+            enable order analyse such a tap once and store the result).
         createdAt:
           type: string
         updatedAt:

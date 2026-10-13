@@ -529,6 +529,12 @@ describe('DataCatalogComponent — catalog download and import', () => {
     expect(text).toContain('3 ' + depSentence);
   }));
 
+  it('the dependency sentence is separated from the sentence before it by a space', fa(() => {
+    const text = restoreWith({ dependentTaps: 2 });
+    expect(text).toMatch(/\. 2 taps read tables produced/);
+    expect(text).not.toMatch(/\.2 taps/);
+  }));
+
   it('dependentTaps: 1 uses the singular', fa(() => {
     const text = restoreWith({ dependentTaps: 1 });
     expect(text).toContain('1 tap reads tables produced by other taps in this catalog; run their sources first (see enable order).');

@@ -155,8 +155,7 @@
                 <div class="enable-menu-error" *ngIf="enableError" role="alert">{{ enableError }}</div>
               </div>
             </span>
-            <div class="dep-hint" *ngIf="tap.enabled === false && depHint(tap)"
-                 title="Enable order: taps that read no other tap's tables are level 1; run the sources a tap needs first">{{ depHint(tap) }}</div>
+            <div class="dep-hint" *ngIf="tap.enabled === false && depHint(tap)" [title]="depHint(tap)">{{ depHint(tap) }}</div>
             <ng-container *ngIf="tap.enabled !== false">
               <span class="embed-cron" *ngIf="tap.cronExpression" [title]="tap.cronExpression">{{ tap.cronExpression }}</span>
               <span class="embed-muted" *ngIf="!tap.cronExpression">—</span>

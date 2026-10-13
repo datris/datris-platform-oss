@@ -400,7 +400,16 @@ class CatalogAPIController {
                         false
                 }
             }
-            val plan = TapDependencies.order(readable)
+            // Lazy backfill: taps saved before dependencies existed are
+            // analysed once from their stored script (capped per request; an
+            // unreadable script is logged and retried on a later call).
+            val pending = readable.filter(TapDependencies.needsBackfill)
+            val analysed = pending.take(BackfillCap).map { t =>
+                t.name -> TapAPIController.backfillInferred(t, TapAPIController.readScriptForBackfill(t), taps, pipelines)
+            }.toMap
+            if (pending.size > BackfillCap)
+                warnings += ((pending.size - BackfillCap) + " taps not yet analysed for dependencies; call again to finish")
+            val plan = TapDependencies.order(readable.map(t => analysed.getOrElse(t.name, t)))
             val out = new JsonObject
             out.addProperty("catalog", name)
             val levels = new JsonArray
@@ -424,6 +433,9 @@ class CatalogAPIController {
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
+
+    /** Most unstamped taps one enable-order call analyses. */
+    private val BackfillCap = 100
 
     private def readinessJson(r: TapDependencies.Readiness): JsonObject = {
         val o = new JsonObject

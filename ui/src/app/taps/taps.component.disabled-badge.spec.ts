@@ -413,6 +413,28 @@ describe('TapsComponent — dependency hints and Run now in the embedded table',
     done();
   }));
 
+  it('the needs hint carries the full source list in its title', fakeAsync(() => {
+    settle();
+    const h = row('cons_blocked').querySelector('.dep-hint') as HTMLElement;
+    expect(h.getAttribute('title')).toBe('needs: prod, prod2');
+    expect(getComputedStyle(h).textOverflow).not.toBe('ellipsis');
+    done();
+  }));
+
+  it('a burst of reloads while the enable order is loading makes one follow-up request', fakeAsync(() => {
+    const pending = new Subject<any>();
+    pipeSvc.enableOrder.and.callFake(() => pending.asObservable());
+    settle();
+    const comp = fixture.componentInstance;
+    comp.loadTaps(); comp.loadTaps(); comp.loadTaps();
+    expect(pipeSvc.enableOrder).toHaveBeenCalledTimes(1);
+    pipeSvc.enableOrder.and.callFake(() => of(order));
+    pending.next(order); pending.complete();
+    settle();
+    expect(pipeSvc.enableOrder).toHaveBeenCalledTimes(2);
+    done();
+  }));
+
   it('the menu of a blocked tap says which sources to run first', fakeAsync(() => {
     settle();
     const note = openMenu('cons_blocked').querySelector('.dep-note');

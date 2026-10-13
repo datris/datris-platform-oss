@@ -96,6 +96,19 @@ object TapDependencies {
             .toList
     }
 
+    /** True for a script tap that has never been analysed (taps saved
+      * before dependencies existed): no `inferredDependsOn` stamp yet and a
+      * script reference to read. HTTP taps, taps without a script and
+      * placeholders never need it. */
+    def needsBackfill(t: TapConfig): Boolean =
+        t != null && t.inferredDependsOn == null && !t.isHttp && !CatalogOps.Placeholder.is(t.name) &&
+            ((t.scriptPath != null && t.scriptPath.nonEmpty) || (t.scriptRepoPath != null && t.scriptRepoPath.nonEmpty))
+
+    /** `dependsOn` trimmed and de-duplicated, first occurrence kept (null stays null). */
+    def dedupeDependsOn(t: TapConfig): TapConfig =
+        if (t == null || t.dependsOn == null) t
+        else t.copy(dependsOn = new java.util.ArrayList[String](t.dependsOn.asScala.filter(_ != null).map(_.trim).distinct.asJava))
+
     /** `dependsOn` when non-null (even empty), else `inferredDependsOn`, else Nil. */
     def effective(t: TapConfig): List[String] =
         if (t == null) Nil

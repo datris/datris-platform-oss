@@ -1221,10 +1221,11 @@ tbody tr:last-child td {
 .dep-hint {
   margin-top: 2px;
   font-size: 11px;
+  line-height: 1.3;
   color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wrap so every source name stays visible in the narrow Schedule cell. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .run-now-result {

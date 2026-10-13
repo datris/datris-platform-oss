@@ -53,6 +53,11 @@ object TapAPIController {
       * empty `dependsOn` always passes. */
     def dependencySaveProblem(tap: TapConfig, catalogTaps: Seq[TapConfig]): Option[ResponseEntity[String]] = {
         if (tap.dependsOn == null || tap.dependsOn.isEmpty) return None
+        if (tap.dependsOn.asScala.exists(n => n == null || n.trim.isEmpty)) {
+            val o = new com.google.gson.JsonObject
+            o.addProperty("error", "dependsOn may not contain blank tap names; send [] to declare that the tap reads no other tap")
+            return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](o.toString))
+        }
         val others = catalogTaps.filter(t => t != null && t.name != tap.name)
         TapDependencies.validate(tap, others) match {
             case Left(msg) =>
@@ -85,9 +90,68 @@ object TapAPIController {
         pipelines: Seq[PipelineConfig],
         taps: Seq[TapConfig]
     ): TapConfig = {
-        val inferred = script.map(s => TapDependencies.infer(s, pipelines, taps, tap)).getOrElse(Nil)
-        tap.copy(inferredDependsOn = if (inferred.isEmpty) null else new java.util.ArrayList[String](inferred.asJava))
+        val inferred = script.map(s => TapDependencies.infer(s, pipelines, taps, tap))
+        // A script that was read but reads no other tap stamps [] (analysed,
+        // nothing found), so it is not re-analysed by the lazy backfill.
+        tap.copy(inferredDependsOn = inferred.map(l => new java.util.ArrayList[String](l.asJava): java.util.List[String]).orNull)
     }
+
+    private val depLogger: Logger = LoggerFactory.getLogger("ai.datris.api.TapDependencies")
+
+    /** Every tap and pipeline for dependency validation and inference,
+      * skipping any document that fails to parse so one bad config cannot
+      * block a tap save. */
+    private[datris] def loadAllForDependencies(): (Seq[TapConfig], Seq[PipelineConfig]) = {
+        val env = DatrisEnvironment.current
+        val taps = NoSQLDbUtil.getItemsKeysByKeyName(env.tapTableName, "name").flatMap { n =>
+            try Option(TapConfigIO.read(env.tapTableName, n))
+            catch { case e: Exception => depLogger.warn("Dependency check: skipping unreadable tap '" + n + "': " + e.getMessage); None }
+        }
+        val pipelines = NoSQLDbUtil.getItemsKeysByKeyName(env.pipelineTableName, "name").flatMap { n =>
+            try Option(PipelineConfigIO.read(env.pipelineTableName, n))
+            catch { case e: Exception => depLogger.warn("Dependency check: skipping unreadable pipeline '" + n + "': " + e.getMessage); None }
+        }
+        (taps, pipelines)
+    }
+
+    /** Lazy backfill for taps saved before dependencies existed: when
+      * `TapDependencies.needsBackfill(t)`, infer from `script` (read by the
+      * caller; None = unreadable, left unstamped and retried next time) and
+      * persist only `inferredDependsOn` on a fresh read of the tap. Returns
+      * the tap as it should be shown. Never throws. */
+    private[datris] def backfillInferred(
+        t: TapConfig,
+        script: Option[String],
+        taps: Seq[TapConfig],
+        pipelines: Seq[PipelineConfig]
+    ): TapConfig = {
+        if (!TapDependencies.needsBackfill(t) || script.isEmpty) return t
+        try {
+            val stamped = stampInferredDependsOn(t, script, pipelines, taps)
+            // Read-modify-write without a version bump (like run-status
+            // writes): only the stamp is copied onto a fresh read, and only
+            // while the script reference is the one that was analysed.
+            val fresh = TapConfigIO.read(DatrisEnvironment.current.tapTableName, t.name)
+            if (
+                fresh != null && fresh.inferredDependsOn == null && fresh.scriptPath == t.scriptPath &&
+                fresh.scriptRepoPath == t.scriptRepoPath && fresh.scriptCommitSha == t.scriptCommitSha
+            ) TapConfigIO.write(fresh.copy(inferredDependsOn = stamped.inferredDependsOn))
+            stamped
+        } catch {
+            case e: Exception =>
+                depLogger.warn("Dependency backfill failed for tap '" + t.name + "': " + e.getMessage)
+                t
+        }
+    }
+
+    /** Script text for the backfill; None (logged) when it cannot be read. */
+    private[datris] def readScriptForBackfill(t: TapConfig): Option[String] =
+        try TapCodeStore.forTap(t).readScript(t)
+        catch {
+            case e: Exception =>
+                depLogger.warn("Dependency backfill: script of tap '" + t.name + "' unreadable: " + e.getMessage)
+                None
+        }
 
     // mode=test response caps `records` to this many rows. The UI's preview already
     // slices to 20 (tap-run.component.ts), so this matches without losing display
@@ -239,7 +303,13 @@ class TapAPIController {
                         null
                 }
             } else null
-            val response = gson.fromJson(gson.toJson(config), classOf[java.util.Map[String, Any]])
+            // Taps saved before dependencies existed are analysed once, here.
+            val shown =
+                if (scriptContent != null && TapDependencies.needsBackfill(config)) {
+                    val (taps, pipelines) = TapAPIController.loadAllForDependencies()
+                    TapAPIController.backfillInferred(config, Some(scriptContent), taps, pipelines)
+                } else config
+            val response = gson.fromJson(gson.toJson(shown), classOf[java.util.Map[String, Any]])
             response.put("script", scriptContent)
             if (scriptMissing) response.put("scriptMissing", java.lang.Boolean.TRUE)
             // Incremental-sync state, when the tap has committed any — lets agents see
@@ -606,7 +676,7 @@ class TapAPIController {
         // restore skips this (its producers may not be written yet) and
         // re-stamps after every tap is in. `inferredDependsOn` is always
         // re-derived from the stored script, whatever the body said.
-        val (allTaps, allPipelines) = loadAllForDependencies()
+        val (allTaps, allPipelines) = TapAPIController.loadAllForDependencies()
         val dependsOnChanged = existing == null || existing.dependsOn != configToSave.dependsOn
         if (!restored && dependsOnChanged) {
             val catalogTaps = allTaps.filter(t => t.catalog == configToSave.catalog && !CatalogOps.Placeholder.is(t.name))
@@ -614,6 +684,7 @@ class TapAPIController {
         }
         // A failed read (e.g. the code repository briefly unreachable) keeps
         // the stored stamp rather than clearing it.
+        val deduped = TapDependencies.dedupeDependsOn(configToSave)
         val readFailed = new java.util.concurrent.atomic.AtomicBoolean(false)
         val script: Option[String] =
             if (configToSave.isHttp) None
@@ -630,10 +701,10 @@ class TapAPIController {
                         None
                 }
         val stamped =
-            if (readFailed.get) configToSave.copy(inferredDependsOn = if (existing != null) existing.inferredDependsOn else null)
+            if (readFailed.get) deduped.copy(inferredDependsOn = if (existing != null) existing.inferredDependsOn else null)
             else
                 TapAPIController.stampInferredDependsOn(
-                    configToSave,
+                    deduped,
                     script,
                     allPipelines,
                     allTaps.filter(_.name != configToSave.name) :+ configToSave
@@ -838,7 +909,7 @@ class TapAPIController {
                         // Re-derive the dependency stamp from the new bytes.
                         val stamped =
                             try {
-                                val (taps, pipelines) = loadAllForDependencies()
+                                val (taps, pipelines) = TapAPIController.loadAllForDependencies()
                                 TapAPIController.stampInferredDependsOn(repointed, Some(script), pipelines, taps)
                             } catch {
                                 case e: Exception =>
@@ -865,22 +936,6 @@ class TapAPIController {
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ApiErrors.internal(e)
         }
-    }
-
-    /** Every tap and pipeline for dependency validation and inference,
-      * skipping any document that fails to parse so one bad config cannot
-      * block a tap save. */
-    private def loadAllForDependencies(): (Seq[TapConfig], Seq[PipelineConfig]) = {
-        val env = DatrisEnvironment.current
-        val taps = NoSQLDbUtil.getItemsKeysByKeyName(env.tapTableName, "name").flatMap { n =>
-            try Option(TapConfigIO.read(env.tapTableName, n))
-            catch { case e: Exception => logger.warn("Dependency check: skipping unreadable tap '" + n + "': " + e.getMessage); None }
-        }
-        val pipelines = NoSQLDbUtil.getItemsKeysByKeyName(env.pipelineTableName, "name").flatMap { n =>
-            try Option(PipelineConfigIO.read(env.pipelineTableName, n))
-            catch { case e: Exception => logger.warn("Dependency check: skipping unreadable pipeline '" + n + "': " + e.getMessage); None }
-        }
-        (taps, pipelines)
     }
 
     private def actorLabel(request: HttpServletRequest): String =

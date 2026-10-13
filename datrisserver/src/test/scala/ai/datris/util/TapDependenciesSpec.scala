@@ -169,6 +169,25 @@ class TapDependenciesSpec extends AnyFunSuite {
         assert(TapDependencies.order(all).cycles.map(_.toSet).toSet == Set(Set("a", "b"), Set("y", "z")))
     }
 
+    test("needsBackfill: only an unstamped script tap needs analysing") {
+        val scripted = tap("s").copy(scriptPath = "s3://b/k.py")
+        assert(TapDependencies.needsBackfill(scripted), "pre-dependency tap with a script")
+        assert(TapDependencies.needsBackfill(tap("r").copy(scriptStorage = "github", scriptRepoPath = "taps/r.py")))
+        assert(!TapDependencies.needsBackfill(scripted.copy(inferredDependsOn = jl())), "stamped [] = analysed, nothing found")
+        assert(!TapDependencies.needsBackfill(scripted.copy(inferredDependsOn = jl("p"))))
+        assert(!TapDependencies.needsBackfill(tap("n")), "no script: stays unstamped")
+        assert(!TapDependencies.needsBackfill(tap("h").copy(scriptKind = "http", endpointUrl = "https://x.example/tap")))
+        assert(!TapDependencies.needsBackfill(tap("__catalog__Canslim").copy(scriptPath = "s3://b/k.py")))
+        assert(!TapDependencies.needsBackfill(null))
+    }
+
+    test("dedupeDependsOn trims and keeps the first occurrence of each name") {
+        val t = tap("c", dependsOn = jl("b", "a", " b ", "a"))
+        assert(TapDependencies.dedupeDependsOn(t).dependsOn == jl("b", "a"))
+        assert(TapDependencies.dedupeDependsOn(tap("c")).dependsOn == null)
+        assert(TapDependencies.dedupeDependsOn(tap("c", dependsOn = jl())).dependsOn == jl())
+    }
+
     // ----------------------------------------------------- order, readiness
 
     private def names(plan: TapDependencies.Plan): List[List[String]] = plan.levels.map(_.map(_.name).sorted)

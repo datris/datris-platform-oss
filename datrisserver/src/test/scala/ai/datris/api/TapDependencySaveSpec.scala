@@ -53,6 +53,14 @@ class TapDependencySaveSpec extends AnyFunSuite {
         assert(r.get.getBody.contains("nope"), r.get.getBody)
     }
 
+    test("dependsOn with a blank or whitespace-only name is refused with 400") {
+        for (bad <- Seq(jl(""), jl("a", "  "))) {
+            val r = TapAPIController.dependencySaveProblem(tap("c", dependsOn = bad), stored)
+            assert(r.map(_.getStatusCode.value()).contains(400), (bad, r))
+            assert(r.get.getBody.contains("blank"), r.get.getBody)
+        }
+    }
+
     test("dependsOn naming the tap itself is refused with 400") {
         val r = TapAPIController.dependencySaveProblem(tap("c", dependsOn = jl("c")), stored)
         assert(r.map(_.getStatusCode.value()).contains(400), r)
@@ -105,6 +113,12 @@ class TapDependencySaveSpec extends AnyFunSuite {
         val script = "requests.post(base + '/api/v1/query/postgres', json={'sql': 'SELECT * FROM public.orders'})"
         val saved = TapAPIController.stampInferredDependsOn(incoming, Some(script), pipelines, all)
         assert(saved.inferredDependsOn == jl("a"), saved.inferredDependsOn)
+    }
+
+    test("a script that reads no other tap stamps [] (analysed), not null") {
+        val saved = TapAPIController.stampInferredDependsOn(tap("c", target = "pc"), Some("print('hello')"), pipelines, all)
+        assert(saved.inferredDependsOn != null && saved.inferredDependsOn.isEmpty, saved.inferredDependsOn)
+        assert(!ai.datris.util.TapDependencies.needsBackfill(saved.copy(scriptPath = "s3://b/c.py")))
     }
 
     test("no script (HTTP tap) stamps null, whatever the body said") {

@@ -120,4 +120,14 @@ class AuditCoverageSpec extends AnyFunSuite {
         assert(ai.datris.auth.CapabilityRoutes.lookup("GET", "/api/v1/catalog/sample/enable-order") ==
             ai.datris.auth.RouteCheck.Require("tap", "read"))
     }
+
+    // Story: plans/stories/tap-dependency-order.md, lazy backfill. GET /tap
+    // and GET enable-order may write the dependency stamp, but they remain
+    // reads: neither is audited (with logReads off), and both stay tap:read.
+    test("dependency backfill reads stay unaudited GETs") {
+        for (path <- Seq("/api/v1/tap", "/api/v1/catalog/sample/enable-order")) {
+            assert(AuditClassifier.classify("GET", path, logReads = false).isEmpty, path)
+            assert(ai.datris.auth.CapabilityRoutes.lookup("GET", path) == ai.datris.auth.RouteCheck.Require("tap", "read"), path)
+        }
+    }
 }
