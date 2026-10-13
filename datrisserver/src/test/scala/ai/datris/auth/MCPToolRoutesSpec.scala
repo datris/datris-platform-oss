@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 82)
+        assert(MCPToolRoutes.allToolNames.size == 83)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 
@@ -69,6 +69,24 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(MCPToolRoutes.allowedTools(legacyKey).contains("catalog_enable_order"))
         // The export route next to it is untouched.
         assert(CapabilityRoutes.lookup("GET", "/api/v1/catalog/sales/export") == RouteCheck.Require("pipeline", "read"))
+    }
+
+    // Story: Enable a catalog's taps in dependency order
+    // (plans/stories/tap-dependency-order-enable.md). One mutating tool that
+    // starts the job (tap:run); progress is read through catalog_enable_order;
+    // there is no MCP cancel tool (cancel is REST + UI only).
+    test("enable_catalog_ordered is a tap:run tool mapped to POST /api/v1/catalog/{name}/enable-ordered") {
+        assert(
+            MCPToolRoutes.tools.toMap.get("enable_catalog_ordered") ==
+                Some(MCPToolRoutes.Mapped("POST", "/api/v1/catalog/example/enable-ordered"))
+        )
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/catalog/sales/enable-ordered") == RouteCheck.Require("tap", "run"))
+        assert(MCPToolRoutes.allowedTools(key("tap:run")).contains("enable_catalog_ordered"))
+        assert(MCPToolRoutes.allowedTools(key("tap:run:owner=self")).contains("enable_catalog_ordered"))
+        assert(!MCPToolRoutes.allowedTools(key("tap:read")).contains("enable_catalog_ordered"))
+        assert(!MCPToolRoutes.allowedTools(key("pipeline:create")).contains("enable_catalog_ordered"))
+        assert(MCPToolRoutes.allowedTools(legacyKey).contains("enable_catalog_ordered"))
+        assert(!MCPToolRoutes.tools.exists { case (_, m) => m == MCPToolRoutes.Mapped("DELETE", "/api/v1/catalog/example/enable-ordered") })
     }
 
     test("discovery + provenance routes are capability-mapped as metadata reads") {

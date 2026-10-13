@@ -130,4 +130,24 @@ class AuditCoverageSpec extends AnyFunSuite {
             assert(ai.datris.auth.CapabilityRoutes.lookup("GET", path) == ai.datris.auth.RouteCheck.Require("tap", "read"), path)
         }
     }
+
+    // Story: plans/stories/tap-dependency-order-enable.md — the ordered enable
+    // start (POST) and cancel (DELETE) are live routes classified as tap:run
+    // (one audit entry each); the status GET is a plain unaudited tap read,
+    // not a deliberately-skipped route.
+    test("catalog enable-ordered POST and DELETE exist and are audit-classified; GET is an unaudited read") {
+        val live = routes().map(r => (r.method, r.path))
+        assert(live.contains(("POST", "/api/v1/catalog/{name}/enable-ordered")), "POST /api/v1/catalog/{name}/enable-ordered route missing")
+        assert(live.contains(("DELETE", "/api/v1/catalog/{name}/enable-ordered")), "DELETE /api/v1/catalog/{name}/enable-ordered route missing")
+        for (m <- Seq("POST", "DELETE")) {
+            assert(AuditClassifier.isKnown(m, "/api/v1/catalog/sample/enable-ordered"), m)
+            assert(!AuditClassifier.isDeliberatelySkipped(m, "/api/v1/catalog/sample/enable-ordered"), m)
+            val c = AuditClassifier.classify(m, "/api/v1/catalog/sample/enable-ordered", logReads = false)
+            assert(c.map(r => (r.category, r.action)).contains(("tap", "run")), m + " -> " + c)
+        }
+        assert(!AuditClassifier.isDeliberatelySkipped("GET", "/api/v1/catalog/sample/enable-ordered"))
+        assert(AuditClassifier.classify("GET", "/api/v1/catalog/sample/enable-ordered", logReads = false).isEmpty)
+        assert(ai.datris.auth.CapabilityRoutes.lookup("GET", "/api/v1/catalog/sample/enable-ordered") ==
+            ai.datris.auth.RouteCheck.Require("tap", "read"))
+    }
 }

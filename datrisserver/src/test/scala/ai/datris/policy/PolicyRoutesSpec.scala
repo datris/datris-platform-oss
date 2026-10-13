@@ -22,6 +22,34 @@ class PolicyRoutesSpec extends AnyFunSuite {
         assert(PolicyRoutes.actionKey("GET", "/api/v1/pipeline/dest-types").contains("pipeline:read"))
     }
 
+    // Story: Enable a catalog's taps in dependency order
+    // (plans/stories/tap-dependency-order-enable.md). The bulk enable is its
+    // own sub-action under tap:run, so a policy can require approval for it
+    // alone; GET (status) is a tap read and DELETE (cancel) plain tap:run.
+    test("ordered catalog enable is the tap:run:enable-ordered sub-action; its parent matches the capability route") {
+        assert(PolicyRoutes.actionKey("POST", "/api/v1/catalog/x/enable-ordered") == Some("tap:run:enable-ordered"))
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/catalog/x/enable-ordered") == RouteCheck.Require("tap", "run"))
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/catalog/x/enable-ordered") == RouteCheck.Require("tap", "read"))
+        assert(CapabilityRoutes.lookup("DELETE", "/api/v1/catalog/x/enable-ordered") == RouteCheck.Require("tap", "run"))
+        assert(PolicyRoutes.actionKey("GET", "/api/v1/catalog/x/enable-ordered").contains("tap:read"))
+        assert(PolicyRoutes.actionKey("DELETE", "/api/v1/catalog/x/enable-ordered").contains("tap:run"))
+        assert(PolicyRoutes.isKnownActionKey("tap:run:enable-ordered"))
+        assert(PolicyRoutes.isGateable("tap:run:enable-ordered"))
+        assert(PolicyRoutes.catalog.contains("tap:run:enable-ordered"))
+        // The catalog rename/delete rows next to it are untouched.
+        assert(CapabilityRoutes.lookup("DELETE", "/api/v1/catalog/x") == RouteCheck.Require("pipeline", "delete"))
+        assert(CapabilityRoutes.lookup("PUT", "/api/v1/catalog/x") == RouteCheck.Require("pipeline", "update"))
+    }
+
+    test("a policy can require approval for the ordered enable alone, and it inherits tap:run otherwise") {
+        val only = AgentPolicy.fromJson("""{"actions":{"tap:run:enable-ordered":"approve"}}""")
+        assert(only.isRight, only)
+        assert(only.toOption.get.decide("tap:run:enable-ordered", Some("tap"), Some("sales")) == PolicyMode.Approve)
+        assert(only.toOption.get.decide("tap:run", Some("tap"), Some("prices")) == PolicyMode.Auto)
+        val parent = AgentPolicy.fromJson("""{"actions":{"tap:run":"approve"}}""").toOption.get
+        assert(parent.decide("tap:run:enable-ordered", Some("tap"), Some("sales")) == PolicyMode.Approve)
+    }
+
     test("skip-class and unmapped routes have no action key") {
         assert(PolicyRoutes.actionKey("POST", "/api/v1/auth/login").isEmpty)
         assert(PolicyRoutes.actionKey("GET", "/api/v1/version").isEmpty)
