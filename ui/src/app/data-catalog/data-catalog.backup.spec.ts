@@ -20,6 +20,11 @@
  *    else changes; 207 -> each `failed[]` name and error on the page;
  *    200 -> "Restored N taps (disabled) and M pipelines" plus the missing
  *    secret names, list reloaded, restored card shown expanded.
+ *
+ * Story: Tap dependencies (plans/stories/tap-dependency-order.md), Acceptance
+ * bullet 8: the restore response's `dependentTaps: N` (N > 0) appends to the
+ * `.import-result-banner` "N taps read tables produced by other taps in this
+ * catalog; run their sources first (see enable order)." `0` or absent: nothing.
  */
 import { ComponentFixture, TestBed, fakeAsync, tick, flush, discardPeriodicTasks } from '@angular/core/testing';
 import { CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA } from '@angular/core';
@@ -496,5 +501,43 @@ describe('DataCatalogComponent — catalog download and import', () => {
     expect(panel.querySelector('.skip-state-info')).withContext('second open').not.toBeNull();
     expect(panel.querySelector('.overwrite-info')).withContext('first closed').toBeNull();
     expect(panel.querySelectorAll('.info-popover').length).toBe(1);
+  }));
+
+  // ── Tap dependencies: dependentTaps sentence in the restore banner ─────
+
+  const depSentence = 'taps read tables produced by other taps in this catalog; run their sources first (see enable order).';
+
+  function restoreWith(extra: any): string {
+    pipeSvc.restoreCatalog.and.returnValue(of(new HttpResponse({
+      status: 200,
+      body: Object.assign({
+        restored: { taps: ['t1', 't2', 't3', 't4'], pipelines: ['p1'] }, skipped: [], failed: [],
+        missingSecrets: [], warnings: [], tapsDisabled: true, stateRestored: true
+      }, extra)
+    })));
+    const panel = prepareImport('e2e_dep');
+    if (!panel) return '';
+    restoreBtn(panel).click();
+    settle();
+    const banner = el.querySelector('.import-result-banner') as HTMLElement | null;
+    expect(banner).withContext('.import-result-banner after restore').not.toBeNull();
+    return (banner?.textContent || '').replace(/\s+/g, ' ');
+  }
+
+  it('dependentTaps: 3 appends the dependency sentence to the restore banner', fa(() => {
+    const text = restoreWith({ dependentTaps: 3 });
+    expect(text).toContain('3 ' + depSentence);
+  }));
+
+  it('dependentTaps: 0 renders no dependency sentence', fa(() => {
+    const text = restoreWith({ dependentTaps: 0 });
+    expect(text).toMatch(/Restored 4 taps \(disabled\)/);
+    expect(text).not.toContain('read tables produced by other taps');
+  }));
+
+  it('a restore body without dependentTaps renders no dependency sentence', fa(() => {
+    const text = restoreWith({});
+    expect(text).toMatch(/Restored 4 taps \(disabled\)/);
+    expect(text).not.toContain('read tables produced by other taps');
   }));
 });

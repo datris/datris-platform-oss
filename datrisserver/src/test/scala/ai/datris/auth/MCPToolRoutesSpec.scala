@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 81)
+        assert(MCPToolRoutes.allToolNames.size == 82)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 
@@ -52,6 +52,23 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(!MCPToolRoutes.allowedTools(key("job:read")).contains("export_catalog"))
         assert(MCPToolRoutes.allowedTools(legacyKey).contains("export_catalog"))
         assert(MCPToolRoutes.allowedTools(legacyKey).contains("restore_catalog"))
+    }
+
+    // Story: Tap dependencies (plans/stories/tap-dependency-order.md). The
+    // enable order is a read-only tap read: visible to scoped keys only with
+    // tap:read, mapped to GET /api/v1/catalog/{name}/enable-order.
+    test("catalog_enable_order is a tap:read tool mapped to GET /api/v1/catalog/{name}/enable-order") {
+        assert(
+            MCPToolRoutes.tools.toMap.get("catalog_enable_order") ==
+                Some(MCPToolRoutes.Mapped("GET", "/api/v1/catalog/example/enable-order"))
+        )
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/catalog/sales/enable-order") == RouteCheck.Require("tap", "read"))
+        assert(MCPToolRoutes.allowedTools(key("tap:read")).contains("catalog_enable_order"))
+        assert(!MCPToolRoutes.allowedTools(key("pipeline:read")).contains("catalog_enable_order"))
+        assert(!MCPToolRoutes.allowedTools(key("job:read")).contains("catalog_enable_order"))
+        assert(MCPToolRoutes.allowedTools(legacyKey).contains("catalog_enable_order"))
+        // The export route next to it is untouched.
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/catalog/sales/export") == RouteCheck.Require("pipeline", "read"))
     }
 
     test("discovery + provenance routes are capability-mapped as metadata reads") {

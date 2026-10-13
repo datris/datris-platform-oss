@@ -17,6 +17,22 @@
  * success the same save). Errors (e.g. the 409 test-before-cron refusal)
  * show in `.enable-menu-error` and the tap stays disabled. Escape and an
  * outside click close the menu. Read-only users get a plain badge.
+ *
+ * Story: Tap dependencies (plans/stories/tap-dependency-order.md), Acceptance
+ * bullet 7 (second describe block below). Contract pinned here (names the
+ * story left open are chosen here; keep them or update this spec):
+ *  - Embedded, the component calls `PipelineService.enableOrder(embedCatalog)`
+ *    once per load. Body: `{catalog, levels: [{level, taps: [{name, blockedBy,
+ *    hasPassingTest, lastRealRunLanded, ready, ...}]}], cycles, warnings}`;
+ *    `level` is shown as given (1 = leaf producers).
+ *  - A disabled row shows `.dep-hint` in the Schedule cell, under the badge:
+ *    `needs: x, y` when blockedBy is non-empty, else `Level N`.
+ *  - In `.enable-menu`, a blocked tap shows `.dep-note`
+ *    "Reads tables produced by x, y. Run them first."
+ *  - `.run-now-item` ("Run now") shows only when lastTestRunStatus ===
+ *    'success' (and the tap has a targetPipeline); click ->
+ *    `TapService.runTap(name, 'run')` -> `.run-now-result` with status and
+ *    recordCount (and persistedReason when present) -> `loadTaps()`.
  */
 import { ComponentFixture, TestBed, fakeAsync, tick, flush, discardPeriodicTasks } from '@angular/core/testing';
 import { CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA } from '@angular/core';
@@ -295,6 +311,140 @@ describe('TapsComponent — disabled badge in the embedded table', () => {
     document.body.click();
     settle();
     expect(menu('tap_off')).withContext('outside click closes').toBeNull();
+    done();
+  }));
+});
+
+describe('TapsComponent — dependency hints and Run now in the embedded table', () => {
+  let fixture: ComponentFixture<TapsComponent>;
+  let el: HTMLElement;
+  let tapSvc: any;
+  let pipeSvc: any;
+
+  const order = {
+    catalog: 'grp',
+    levels: [
+      { level: 1, taps: [
+        { name: 'prod', blockedBy: [], hasPassingTest: true, lastRealRunLanded: false, ready: true },
+        { name: 'prod2', blockedBy: [], hasPassingTest: false, lastRealRunLanded: false, ready: false }
+      ] },
+      { level: 2, taps: [
+        { name: 'cons_blocked', blockedBy: ['prod', 'prod2'], hasPassingTest: false, lastRealRunLanded: false, ready: false },
+        { name: 'cons_ready', blockedBy: [], hasPassingTest: false, lastRealRunLanded: false, ready: false }
+      ] }
+    ],
+    cycles: [],
+    warnings: []
+  };
+
+  beforeEach(async () => {
+    tapSvc = {
+      getTaps: jasmine.createSpy('getTaps').and.callFake(() => of([
+        { name: '__catalog__grp', catalog: 'grp', enabled: false },
+        { name: 'prod', catalog: 'grp', enabled: false, targetPipeline: 'p_prod', lastTestRunStatus: 'success' },
+        { name: 'prod2', catalog: 'grp', enabled: false, targetPipeline: 'p_prod2' },
+        { name: 'cons_blocked', catalog: 'grp', enabled: false, targetPipeline: 'p_cons', lastTestRunStatus: 'error' },
+        { name: 'cons_ready', catalog: 'grp', enabled: false, targetPipeline: 'p_ready' }
+      ])),
+      getPipelines: () => of([]),
+      getTap: jasmine.createSpy('getTap').and.callFake((name: string) => of({ name, catalog: 'grp', enabled: false })),
+      createOrUpdateTap: jasmine.createSpy('createOrUpdateTap').and.returnValue(of({})),
+      runTap: jasmine.createSpy('runTap').and.returnValue(of({ status: 'success', error: null, recordCount: 4242 }))
+    };
+    pipeSvc = {
+      getPipelines: () => of([]),
+      enableOrder: jasmine.createSpy('enableOrder').and.callFake(() => of(order))
+    };
+    await TestBed.configureTestingModule({
+      declarations: [TapsComponent],
+      imports: [FormsModule],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA],
+      providers: [
+        provideRouter([]),
+        { provide: TapService, useValue: tapSvc },
+        { provide: PipelineService, useValue: pipeSvc },
+        { provide: AuthService, useValue: { canWrite: () => true } },
+        { provide: CodeRepoService, useValue: { get: () => of({ enabled: false }) } }
+      ]
+    }).compileComponents();
+    fixture = TestBed.createComponent(TapsComponent);
+    fixture.componentInstance.embedCatalog = 'grp';
+    el = fixture.nativeElement as HTMLElement;
+  });
+
+  function settle(): void { fixture.detectChanges(); tick(); fixture.detectChanges(); }
+  function done(): void { fixture.destroy(); discardPeriodicTasks(); flush(); }
+  function norm(s: string | null | undefined): string { return (s || '').replace(/\s+/g, ' ').trim(); }
+  function row(name: string): HTMLElement {
+    const r = (Array.from(el.querySelectorAll('tr')) as HTMLElement[])
+      .find(x => (x.querySelector('.embed-name-link')?.textContent || '').trim() === name);
+    expect(r).withContext('row for ' + name).toBeDefined();
+    return r!;
+  }
+  function hint(name: string): string {
+    const h = row(name).querySelector('.dep-hint');
+    expect(h).withContext('.dep-hint on ' + name).not.toBeNull();
+    return norm(h?.textContent);
+  }
+  function openMenu(name: string): HTMLElement {
+    (row(name).querySelector('span.storage-badge.disabled-badge') as HTMLElement).click();
+    settle();
+    const m = row(name).querySelector('.enable-menu') as HTMLElement | null;
+    expect(m).withContext('menu for ' + name).not.toBeNull();
+    return m!;
+  }
+
+  it('loads the enable order for the embedded catalog', fakeAsync(() => {
+    settle();
+    expect(pipeSvc.enableOrder).toHaveBeenCalledWith('grp');
+    done();
+  }));
+
+  it('a disabled tap blocked by x shows "needs: x"', fakeAsync(() => {
+    settle();
+    expect(hint('cons_blocked')).toBe('needs: prod, prod2');
+    done();
+  }));
+
+  it('a disabled tap at level 2 with nothing blocking shows "Level 2"; a producer shows "Level 1"', fakeAsync(() => {
+    settle();
+    expect(hint('cons_ready')).toBe('Level 2');
+    expect(hint('prod')).toBe('Level 1');
+    done();
+  }));
+
+  it('the menu of a blocked tap says which sources to run first', fakeAsync(() => {
+    settle();
+    const note = openMenu('cons_blocked').querySelector('.dep-note');
+    expect(note).withContext('.dep-note').not.toBeNull();
+    expect(norm(note?.textContent)).toContain('Reads tables produced by prod, prod2. Run them first.');
+    done();
+  }));
+
+  it('Run now appears only when the last test passed', fakeAsync(() => {
+    settle();
+    for (const [name, expected] of [['prod', true], ['prod2', false], ['cons_blocked', false], ['cons_ready', false]] as [string, boolean][]) {
+      const m = openMenu(name);
+      expect(!!m.querySelector('.run-now-item')).withContext(name + ' run-now').toBe(expected);
+    }
+    done();
+  }));
+
+  it('Run now calls runTap(name, "run"), shows the record count and reloads', fakeAsync(() => {
+    settle();
+    const loads = tapSvc.getTaps.calls.count();
+    const item = openMenu('prod').querySelector('.run-now-item') as HTMLElement | null;
+    expect(item).withContext('.run-now-item').not.toBeNull();
+    if (!item) { done(); return; }
+    item.click();
+    settle();
+    expect(tapSvc.runTap).toHaveBeenCalledOnceWith('prod', 'run');
+    expect(tapSvc.createOrUpdateTap).withContext('Run now does not enable').not.toHaveBeenCalled();
+    const out = el.querySelector('.run-now-result');
+    expect(out).withContext('.run-now-result').not.toBeNull();
+    expect(norm(out?.textContent)).toContain('4242');
+    expect(norm(out?.textContent)).toContain('success');
+    expect(tapSvc.getTaps.calls.count()).withContext('reloaded').toBeGreaterThan(loads);
     done();
   }));
 });
