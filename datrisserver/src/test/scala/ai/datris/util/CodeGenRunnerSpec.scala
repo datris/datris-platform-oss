@@ -326,6 +326,65 @@ class CodeGenRunnerSpec extends AnyFunSuite with BeforeAndAfterAll {
             Files.deleteIfExists(output)
         }
     }
+
+    // ---------------------------------------------------------------- runner overload protection
+    //
+    // Story: plans/stories/runner-overload-protection.md. A busy runner answers
+    // 503 BEFORE reading the upload and resets the socket. Depending on timing the
+    // client either reads the 503 or its upload dies with a broken pipe / reset and
+    // the 503 is lost (the IOException path); then it asks GET /health, which now
+    // carries `active` and `maxConcurrent`. Both mean busy: wait and retry until a
+    // slot frees or the queue timeout passes, then fail with
+    // "busy for N s (CODEGEN_RUNNER_MAX_CONCURRENT=M); raise it or run fewer AI rules at once".
+    //
+    // Pinned seam: Settings gains the queue timeout (TAP_RUNNER_QUEUE_TIMEOUT_SECONDS,
+    // default 600, in fromEnv) as a defaulted field, so existing three-argument
+    // constructions keep compiling:
+    //   case class Settings(enabled: Boolean, url: String, token: String, queueTimeoutSec: Int = 600)
+
+    test("a 503 before the upload is read, with /health at active == maxConcurrent, is retried and succeeds once a slot frees") {
+        val busy = new BusyRunner(busyForMs = 1500)
+        try {
+            val input = bigInput("busy-in.csv", 32L * 1024 * 1024)
+            val script = write("busy.py", "print('[]')\n")
+            val s = CodeGenRunner.Settings(enabled = true, url = busy.url, token = TOKEN)
+            val r = CodeGenRunner.run(script, input, None, 30, s)
+            assert(r.exitCode == 0, r.stderr)
+            assert(r.stdout.trim == "[]", r.stdout)
+            assert(busy.rejected.get() >= 1, "the first upload must have hit the busy runner")
+            assert(busy.received.get() == Files.size(input), "the retried upload carries the whole input: " + busy.received.get())
+            Files.deleteIfExists(input)
+        } finally busy.close()
+    }
+
+    test("a permanently busy runner fails with the busy-for message naming CODEGEN_RUNNER_MAX_CONCURRENT, not a broken-pipe trace") {
+        val busy = new BusyRunner(busyForMs = Long.MaxValue)
+        try {
+            val input = bigInput("busy-forever-in.csv", 32L * 1024 * 1024)
+            val script = write("busy-forever.py", "print('[]')\n")
+            val s = CodeGenRunner.Settings(enabled = true, url = busy.url, token = TOKEN, queueTimeoutSec = 3)
+            val start = System.currentTimeMillis()
+            val e = intercept[DatrisException](CodeGenRunner.run(script, input, None, 30, s))
+            val elapsed = System.currentTimeMillis() - start
+            val msg = e.getMessage
+            assert(mentionsRunner(msg), msg)
+            assert(msg.contains("busy for"), msg)
+            assert(msg.contains("CODEGEN_RUNNER_MAX_CONCURRENT=2"), msg)
+            assert(!msg.contains("Broken pipe") && !msg.contains("Connection reset") && !msg.contains("SocketException"), msg)
+            assert(busy.received.get() == -1L, "a busy runner never ran the script")
+            assert(elapsed < 60000, "bounded by the 3 s queue timeout, gave up after " + elapsed + " ms")
+            Files.deleteIfExists(input)
+        } finally busy.close()
+    }
+
+    private def bigInput(name: String, size: Long): Path = {
+        val p = root.resolve(name)
+        val chunk = Array.fill[Byte](1 << 20)('z'.toByte)
+        val os = Files.newOutputStream(p)
+        try { var left = size; while (left > 0) { val n = math.min(left, chunk.length.toLong).toInt; os.write(chunk, 0, n); left -= n } }
+        finally os.close()
+        p
+    }
 }
 
 object CodeGenRunnerSpec {
@@ -364,6 +423,103 @@ object CodeGenRunnerSpec {
             while (left > 0) { val k = math.min(left, buf.length.toLong).toInt; out.write(buf, 0, k); left -= k }
             out.close()
             ex.close()
+        }
+    }
+}
+
+/** A raw-socket runner (com.sun's HttpServer drains request bodies, so it cannot
+  * answer before the upload is read). While busy: POST /execute-file gets a 503
+  * written right after the request headers, then the socket is reset without
+  * reading the body; GET /health reports active == maxConcurrent (2). Afterwards
+  * POST reads the whole upload and answers a `[]` result; /health reports 0 of 2. */
+class BusyRunner(busyForMs: Long) {
+    private val server = new java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+    private val busyUntil: Long = if (busyForMs == Long.MaxValue) Long.MaxValue else System.currentTimeMillis() + busyForMs
+    val rejected = new AtomicInteger(0)
+    val healthBusy = new AtomicInteger(0)
+    val received = new AtomicReference[java.lang.Long](-1L)
+    def url: String = "http://127.0.0.1:" + server.getLocalPort
+    private def busy: Boolean = System.currentTimeMillis() < busyUntil
+
+    private val acceptor = new Thread(new Runnable {
+        override def run(): Unit =
+            while (!server.isClosed) {
+                val sock = scala.util.Try(server.accept()).toOption
+                sock.foreach { s =>
+                    val t = new Thread(new Runnable { override def run(): Unit = scala.util.Try(handle(s)) })
+                    t.setDaemon(true)
+                    t.start()
+                }
+            }
+    })
+    acceptor.setDaemon(true)
+    acceptor.start()
+
+    def close(): Unit = scala.util.Try(server.close())
+
+    private def readHead(in: InputStream): String = {
+        val buf = new ByteArrayOutputStream()
+        var last4 = 0
+        var b = in.read()
+        while (b != -1) {
+            buf.write(b)
+            last4 = (last4 << 8) | b
+            if (last4 == 0x0d0a0d0a) return new String(buf.toByteArray, StandardCharsets.ISO_8859_1)
+            b = in.read()
+        }
+        new String(buf.toByteArray, StandardCharsets.ISO_8859_1)
+    }
+
+    private def respond(s: java.net.Socket, status: String, body: String, extra: String = ""): Unit = {
+        val bytes = body.getBytes(StandardCharsets.UTF_8)
+        val head = "HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: " + bytes.length +
+            "\r\nConnection: close\r\n" + extra + "\r\n"
+        val out = s.getOutputStream
+        out.write(head.getBytes(StandardCharsets.ISO_8859_1))
+        out.write(bytes)
+        out.flush()
+    }
+
+    private def handle(s: java.net.Socket): Unit = {
+        val in = new java.io.BufferedInputStream(s.getInputStream)
+        val head = readHead(in)
+        val requestLine = head.takeWhile(_ != '\r')
+        val length = "(?im)^content-length:\\s*(\\d+)".r.findFirstMatchIn(head).map(_.group(1).toLong).getOrElse(0L)
+        if (requestLine.startsWith("GET /health")) {
+            val active = if (busy) { healthBusy.incrementAndGet(); 2 }
+            else 0
+            respond(s, "200 OK", "{\"ok\": true, \"active\": " + active + ", \"maxConcurrent\": 2}")
+            s.close()
+        } else if (busy) {
+            rejected.incrementAndGet()
+            respond(
+                s,
+                "503 Service Unavailable",
+                "{\"error\": \"runner busy\", \"retryAfterSec\": 1, \"active\": 2, \"maxConcurrent\": 2}",
+                "Retry-After: 1\r\n"
+            )
+            s.setSoLinger(true, 0) // reset: the client's upload breaks, the 503 is lost
+            s.close()
+        } else {
+            val meta = CodeGenRunnerSpec.readLine(in)
+            var left = length - meta.getBytes(StandardCharsets.UTF_8).length - 1
+            var total = 0L
+            val buf = new Array[Byte](64 * 1024)
+            while (left > 0) {
+                val n = in.read(buf, 0, math.min(left, buf.length.toLong).toInt)
+                if (n < 0) left = 0 else { left -= n; total += n }
+            }
+            received.set(total)
+            val line = "{\"stdout\": \"[]\", \"stderr\": \"\", \"exitCode\": 0, \"timedOut\": false, \"outputBytes\": 0}\n"
+            val bytes = line.getBytes(StandardCharsets.UTF_8)
+            val out = s.getOutputStream
+            out.write(
+                ("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: " + bytes.length + "\r\nConnection: close\r\n\r\n")
+                    .getBytes(StandardCharsets.ISO_8859_1)
+            )
+            out.write(bytes)
+            out.flush()
+            s.close()
         }
     }
 }

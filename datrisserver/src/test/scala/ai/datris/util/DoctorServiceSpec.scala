@@ -57,8 +57,17 @@ class DoctorServiceSpec extends AnyFunSuite {
         // CodeGen script isolation (plans/stories/codegen-script-isolation.md):
         // USE_CODEGEN_RUNNER, and CodeGenRunner.health() when it is on.
         var codegenEnabled: Boolean = true,
-        var codegenHealth: Either[String, Unit] = Right(())
+        var codegenHealth: Either[String, Unit] = Right(()),
+        // Runner overload protection (plans/stories/runner-overload-protection.md):
+        // USE_TAP_RUNNER, GET TAP_RUNNER_URL/health as (active, maxConcurrent), and
+        // (waited, rejected, maxQueuedMs) over the last `hours` of TapRunLog rows.
+        var tapRunnerOn: Boolean = true,
+        var tapHealth: Either[String, (Int, Int)] = Right((0, 4)),
+        var runnerWaits: (Int, Int, Long) = (0, 0, 0L)
     ) extends Probes {
+        override def tapRunnerEnabled(): Boolean = tapRunnerOn
+        override def tapRunnerHealth(): Either[String, (Int, Int)] = tapHealth
+        override def recentRunnerWaits(hours: Int): (Int, Int, Long) = runnerWaits
         override def codegenRunnerEnabled(): Boolean = codegenEnabled
         override def codegenRunnerHealth(): Either[String, Unit] = codegenHealth
         override def anyPipelineProtects(): Boolean = protects
@@ -484,6 +493,7 @@ class DoctorServiceSpec extends AnyFunSuite {
             "tap.secret_scope",
             "ai.sample_values",
             "codegen.isolation",
+            "runner.concurrency",
             "audit.strict",
             "provenance.strict"
         )) == Seq(
@@ -941,5 +951,62 @@ class DoctorServiceSpec extends AnyFunSuite {
         // Strict off: ok whatever the pipelines are (the XML exemption only matters under strict).
         val offWithXml = new FakeProbes() { override def xmlStampingPipelines(): List[String] = List("xml-orders") }
         assert(strictCheck("provenance.strict", offWithXml).run().status == "ok")
+    }
+
+    // runner.concurrency (plans/stories/runner-overload-protection.md)
+    //
+    // Pinned seam:
+    //   trait Probes {
+    //       def tapRunnerEnabled(): Boolean                              // TapScriptRunner.useTapRunner (USE_TAP_RUNNER)
+    //       def tapRunnerHealth(): Either[String, (Int, Int)]            // GET TAP_RUNNER_URL/health -> (active, maxConcurrent)
+    //       def recentRunnerWaits(hours: Int = 24): (Int, Int, Long)     // (waited, rejected, maxQueuedMs) from TapRunLog
+    //   }
+    //   class RunnerConcurrencyCheck(probes: Probes) extends Check      // id "runner.concurrency", startupSafe = false
+    // Registered right after CodeGenIsolationCheck. Neither probe runs when the tap runner is off.
+
+    test("runner.concurrency: skip when the tap runner is off, without probing") {
+        var probed = false
+        val p = new FakeProbes(tapRunnerOn = false) {
+            override def tapRunnerHealth(): Either[String, (Int, Int)] = { probed = true; Left("should not be probed") }
+            override def recentRunnerWaits(hours: Int): (Int, Int, Long) = { probed = true; (0, 0, 0L) }
+        }
+        val c = new RunnerConcurrencyCheck(p)
+        assert(c.id == "runner.concurrency")
+        assert(!c.startupSafe, "runner.concurrency must not run at boot")
+        val r = c.run()
+        assert(r.status == "skip", r)
+        assert(!probed, "no runner probe when USE_TAP_RUNNER is off")
+    }
+
+    test("runner.concurrency: ok names the setting and slot use when no run waited") {
+        val r = new RunnerConcurrencyCheck(new FakeProbes(tapHealth = Right((0, 4)), runnerWaits = (0, 0, 0L))).run()
+        assert(r.status == "ok", r)
+        assert(r.detail.contains("TAP_RUNNER_MAX_CONCURRENT=4"), r.detail)
+        assert(r.detail.contains("0 of 4"), r.detail)
+        assert(r.detail.contains("24 h"), r.detail)
+    }
+
+    test("runner.concurrency: warn names the waits and the longest one") {
+        val r = new RunnerConcurrencyCheck(new FakeProbes(tapHealth = Right((1, 4)), runnerWaits = (3, 0, 42000L))).run()
+        assert(r.status == "warn", r)
+        assert(r.detail.contains("3 runs waited (longest 42 s)"), r.detail)
+        assert(r.remediation.contains("TAP_RUNNER_MAX_CONCURRENT"), r.remediation)
+    }
+
+    test("runner.concurrency: error when a run was turned away") {
+        val r = new RunnerConcurrencyCheck(new FakeProbes(tapHealth = Right((4, 4)), runnerWaits = (3, 1, 42000L))).run()
+        assert(r.status == "error", r)
+        assert(r.remediation.contains("TAP_RUNNER_MAX_CONCURRENT"), r.remediation)
+    }
+
+    test("runner.concurrency: in the full report after codegen.isolation, not in the startup-safe set") {
+        val p = new FakeProbes()
+        val fullIds = DoctorService.run("full", Set.empty, Map.empty, p, slots, "1.49.0").checks.map(_.id)
+        assert(fullIds.contains("runner.concurrency"), fullIds.toString)
+        assert(fullIds.indexOf("runner.concurrency") == fullIds.indexOf("codegen.isolation") + 1, "registered after codegen.isolation: " + fullIds)
+        val quickIds = DoctorService.run("quick", Set.empty, Map.empty, p, slots, "1.49.0").checks.map(_.id)
+        assert(!quickIds.contains("runner.concurrency"), "not startup-safe: " + quickIds)
+        val startupIds = DoctorService.runStartup(p, slots, "1.49.0").map(_.id)
+        assert(!startupIds.contains("runner.concurrency"), "boot log has no DOCTOR runner.concurrency line: " + startupIds)
     }
 }
