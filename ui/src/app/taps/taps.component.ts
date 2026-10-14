@@ -70,8 +70,10 @@ export class TapsComponent implements OnInit, OnDestroy {
 
   // ── Dependency hints and Run now (embedded table) ────────────────────
   /** Per tap of the embedded catalog: its enable-order level (1 = reads no
-   *  other tap's tables) and the sources that have not landed data yet. */
-  depInfo: { [name: string]: { level: number, blockedBy: string[] } } = {};
+   *  other tap's tables), the sources that have not landed data yet, and
+   *  the server's readiness: hasPassingTest is true only when the last test
+   *  passed on the tap's current script (absent when the server left it out). */
+  depInfo: { [name: string]: { level: number, blockedBy: string[], hasPassingTest?: boolean } } = {};
   /** Tap whose Run now is in flight, '' for none. */
   runNowBusy = '';
   /** Outcome line of the last Run now, per tap. */
@@ -96,10 +98,13 @@ export class TapsComponent implements OnInit, OnDestroy {
     try {
       this.pipelineService.enableOrder(catalog).subscribe({
         next: (order: any) => {
-          const info: { [name: string]: { level: number, blockedBy: string[] } } = {};
+          const info: { [name: string]: { level: number, blockedBy: string[], hasPassingTest?: boolean } } = {};
           for (const lvl of (order && order.levels) || []) {
             for (const t of (lvl && lvl.taps) || []) {
-              if (t && t.name) info[t.name] = { level: Number(lvl.level), blockedBy: Array.isArray(t.blockedBy) ? t.blockedBy : [] };
+              if (t && t.name) {
+                info[t.name] = { level: Number(lvl.level), blockedBy: Array.isArray(t.blockedBy) ? t.blockedBy : [] };
+                if (typeof t.hasPassingTest === 'boolean') info[t.name].hasPassingTest = t.hasPassingTest;
+              }
             }
           }
           this.depInfo = info;
@@ -126,10 +131,23 @@ export class TapsComponent implements OnInit, OnDestroy {
     return d ? d.blockedBy : [];
   }
 
+  /** Whether the tap's current script has a passing test. Uses the server's
+   *  enable-order readiness (hasPassingTest: a green test stamped for the
+   *  current script, so a stale green test after a script edit or an
+   *  overwrite restore does not count) when it is loaded for this tap; falls
+   *  back to lastTestRunStatus === 'success' otherwise (Uncataloged taps, or
+   *  before the enable-order call returns). */
+  hasPassingTest(tap: any): boolean {
+    if (!tap) return false;
+    const d = this.depInfo[tap.name];
+    if (d && typeof d.hasPassingTest === 'boolean') return d.hasPassingTest;
+    return String(tap.lastTestRunStatus || '').toLowerCase() === 'success';
+  }
+
   /** A real run makes sense once the current script has passed a test and
    *  the tap feeds a pipeline. */
   canRunNow(tap: any): boolean {
-    return !!tap && tap.lastTestRunStatus === 'success' && !!tap.targetPipeline;
+    return !!tap && this.hasPassingTest(tap) && !!tap.targetPipeline;
   }
 
   /** One real run (mode=run) without enabling the tap or touching its
@@ -167,13 +185,13 @@ export class TapsComponent implements OnInit, OnDestroy {
     this.enableError = '';
   }
 
-  /** A scheduled tap with no passing test on record. Mirrors the server's
-   *  test-before-cron gate (TapCronGate) as far as the list fields allow:
-   *  a cron and lastTestRunStatus other than success. The server still
-   *  decides; a refusal comes back as a 409 shown in the menu. */
+  /** A scheduled tap with no passing test for its current script. Mirrors
+   *  the server's test-before-cron gate (TapCronGate): a cron and no
+   *  hasPassingTest (enable-order readiness when loaded, else
+   *  lastTestRunStatus). The server still decides; a refusal comes back as
+   *  a 409 shown in the menu. */
   needsTestBeforeEnable(tap: any): boolean {
-    return !!(tap && tap.cronExpression) &&
-      String((tap && tap.lastTestRunStatus) || '').toLowerCase() !== 'success';
+    return !!(tap && tap.cronExpression) && !this.hasPassingTest(tap);
   }
 
   enableTap(tap: any, event?: Event): void {
