@@ -852,6 +852,12 @@ components:
         durationMs:
           type: integer
           format: int64
+          description: Wall-clock run time in milliseconds, including any time spent waiting for a runner slot (queuedMs)
+        queuedMs:
+          type: integer
+          format: int64
+          default: 0
+          description: Milliseconds the run waited for a free tap-runner slot because the runner was busy. 0 (or absent on older entries) when it never waited
         scriptCommitSha:
           type: string
           description: Repo-backed taps only — the commit the run's script was read at

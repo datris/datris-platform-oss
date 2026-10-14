@@ -22,6 +22,10 @@ import pytest
 
 os.environ["TAP_RUNNER_TOKEN"] = ""
 os.environ["TAP_RUNNER_TOKEN_FILE"] = "/nonexistent/tap-runner-token"
+# RLIMIT_NPROC counts every process of the uid. On a dev box or CI host the test user
+# already owns far more than the container's default of 64, so the stray-child test could
+# not fork. The container runs as a dedicated uid; here the process cap is left off.
+os.environ["TAP_RUNNER_SCRIPT_MAX_PROCS"] = "0"
 APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, APP_DIR)
 

@@ -53,16 +53,28 @@ object CodeGenRunner {
     private val ErrorBodyLimit = 4096
     private val NoSpace = "No space left on device"
 
-    case class Settings(enabled: Boolean, url: String, token: String)
+    /** `queueTimeoutSec`: how long a script waits for a free runner slot when the
+      * runner answers busy (TAP_RUNNER_QUEUE_TIMEOUT_SECONDS, default 600). */
+    case class Settings(enabled: Boolean, url: String, token: String, queueTimeoutSec: Int = 600)
 
     object Settings {
         def fromEnv: Settings =
             Settings(
                 enabled = sys.env.getOrElse("USE_CODEGEN_RUNNER", "false").trim.equalsIgnoreCase("true"),
                 url = sys.env.get("CODEGEN_RUNNER_URL").map(_.trim).filter(_.nonEmpty).getOrElse(DefaultUrl),
-                token = Option(TapScriptRunner.resolvedTapRunnerToken).getOrElse("")
+                token = Option(TapScriptRunner.resolvedTapRunnerToken).getOrElse(""),
+                queueTimeoutSec = TapScriptRunner.tapRunnerQueueTimeoutSeconds
             )
     }
+
+    /** Longest a health probe waits for a slot on a busy runner. */
+    private val ProbeQueueTimeoutSec = 30
+
+    /** Wait assumed when a busy answer was lost with the broken upload (the runner's default). */
+    private val LostBusyRetryAfterSec = 5
+
+    /** What the runner said (or /health showed) when it had no free slot. */
+    private case class Busy(retryAfterSec: Int, maxConcurrent: Option[Int])
 
     def enabled: Boolean = Settings.fromEnv.enabled
     def url: String = Settings.fromEnv.url
@@ -86,6 +98,27 @@ object CodeGenRunner {
 
     def health(): Either[String, Unit] = health(Settings.fromEnv)
 
+    /** GET /health's slot counters as (active, maxConcurrent); None when the runner is
+      * unreachable or too old to report them. */
+    private def slotUse(settings: Settings): Option[(Int, Int)] = {
+        val base = settings.url.stripSuffix("/")
+        try {
+            val config = RequestConfig.custom().setConnectTimeout(3000).setConnectionRequestTimeout(3000).setSocketTimeout(5000).build()
+            val client = HttpClients.custom().setDefaultRequestConfig(config).build()
+            try {
+                val res = client.execute(new HttpGet(base + "/health"))
+                try {
+                    if (res.getStatusLine.getStatusCode != 200 || res.getEntity == null) None
+                    else {
+                        val o = JsonParser.parseString(readLimited(res.getEntity.getContent, ErrorBodyLimit)).getAsJsonObject
+                        if (o.has("active") && o.has("maxConcurrent")) Some((o.get("active").getAsInt, o.get("maxConcurrent").getAsInt))
+                        else None
+                    }
+                } finally res.close()
+            } finally client.close()
+        } catch { case _: Exception => None }
+    }
+
     /** GET /health, then a token-checked `/execute-file` with a one-line script
       * and a few input bytes, which proves the image is new enough, the token
       * is accepted and the scratch volume is writable. Left = why it failed. */
@@ -108,7 +141,8 @@ object CodeGenRunner {
         try {
             val script = Files.write(dir.resolve("probe.py"), "import sys\nprint(open(sys.argv[1]).read().strip())\n".getBytes(StandardCharsets.UTF_8))
             val input = Files.write(dir.resolve("probe.txt"), "ok\n".getBytes(StandardCharsets.UTF_8))
-            val r = viaRunner(script, input, None, 20, settings, quiet = true)
+            val probeSettings = settings.copy(queueTimeoutSec = math.min(settings.queueTimeoutSec, ProbeQueueTimeoutSec))
+            val r = viaRunner(script, input, None, 20, probeSettings, quiet = true)
             if (r.exitCode == 0 && r.stdout.trim == "ok") Right(())
             else Left("probe script exited " + r.exitCode + ": " + r.stderr.take(300))
         } catch {
@@ -197,6 +231,9 @@ object CodeGenRunner {
         new String(buf, 0, math.max(total, 0), StandardCharsets.UTF_8)
     }
 
+    /** Push the script to the runner. When every runner slot is taken (503 "runner
+      * busy", or an upload broken by that answer while /health shows no free slot),
+      * wait and send it again until `settings.queueTimeoutSec` has passed. */
     private def viaRunner(
         script: Path,
         input: Path,
@@ -205,6 +242,45 @@ object CodeGenRunner {
         settings: Settings,
         quiet: Boolean = false
     ): SandboxedPython.Result = {
+        val queueStart = System.currentTimeMillis()
+        val queueTimeoutMs = math.max(0, settings.queueTimeoutSec) * 1000L
+        var attempt = 0
+        while (true) {
+            val queuedMs = if (attempt == 0) 0L else System.currentTimeMillis() - queueStart
+            sendOnce(script, input, output, timeoutSec, settings, quiet, queuedMs) match {
+                case Right(result) => return result
+                case Left(busy) =>
+                    val waited = System.currentTimeMillis() - queueStart
+                    if (waited >= queueTimeoutMs)
+                        throw transportFailure(
+                            settings,
+                            "busy for " + (waited / 1000L) + " s (CODEGEN_RUNNER_MAX_CONCURRENT" + busy.maxConcurrent.map("=" + _).getOrElse("") +
+                                "); raise it or run fewer AI rules at once"
+                        )
+                    val sleepMs = math.max(1L, math.min(TapScriptRunner.busyWait(attempt, busy.retryAfterSec), queueTimeoutMs - waited))
+                    if (!quiet) logger.info("CodeGen runner busy (no free slot); retrying in " + sleepMs + " ms")
+                    try Thread.sleep(sleepMs)
+                    catch {
+                        case _: InterruptedException =>
+                            Thread.currentThread().interrupt()
+                            throw transportFailure(settings, "wait for a free slot was interrupted")
+                    }
+                    attempt += 1
+            }
+        }
+        throw new IllegalStateException("unreachable")
+    }
+
+    /** One upload. Left = the runner had no free slot (nothing ran). */
+    private def sendOnce(
+        script: Path,
+        input: Path,
+        output: Option[Path],
+        timeoutSec: Int,
+        settings: Settings,
+        quiet: Boolean,
+        queuedMs: Long
+    ): Either[Busy, SandboxedPython.Result] = {
         val base = settings.url.stripSuffix("/")
         val meta = new JsonObject()
         meta.addProperty("script", new String(Files.readAllBytes(script), StandardCharsets.UTF_8)) // the script, not the payload
@@ -242,10 +318,20 @@ object CodeGenRunner {
                                 settings,
                                 "did not answer within " + (timeoutSec + 30) + " s (script timeout " + timeoutSec + " s plus 30 s): " + cause
                             )
+                        // A busy runner answers 503 before reading the upload and closes, so the
+                        // upload can break and the 503 be lost. /health tells: no free slot = busy.
+                        val slots = if (e.isInstanceOf[java.net.ConnectException]) None else slotUse(settings)
+                        slots match {
+                            case Some((active, max)) if active >= max => return Left(Busy(LostBusyRetryAfterSec, Some(max)))
+                            case _ => ()
+                        }
                         val diagnosis = if (quiet || e.isInstanceOf[java.net.ConnectException]) None else health(settings).left.toOption
                         throw diagnosis match {
                             case Some(msg) if msg.contains("CodeGen runner") => new CodeGenRunnerUnavailable(msg)
                             case Some(msg) => transportFailure(settings, "is unreachable: " + cause + " (" + msg + ")")
+                            // A runner that reports slot use (current image) and passes its probe:
+                            // the break was a busy answer whose slot freed meanwhile. Send again.
+                            case None if !quiet && slots.isDefined => return Left(Busy(LostBusyRetryAfterSec, slots.map(_._2)))
                             case None => transportFailure(settings, "is unreachable: " + cause)
                         }
                 }
@@ -253,6 +339,17 @@ object CodeGenRunner {
             try {
                 val status = response.getStatusLine.getStatusCode
                 val entity = response.getEntity
+                if (status == 503) {
+                    val raw =
+                        try readLimited(if (entity == null) null else entity.getContent, ErrorBodyLimit)
+                        catch { case _: Exception => "" }
+                    val obj = scala.util.Try(JsonParser.parseString(raw).getAsJsonObject).toOption
+                    def intField(k: String): Option[Int] =
+                        obj.flatMap(o => Option(o.get(k))).filter(_.isJsonPrimitive).flatMap(e => scala.util.Try(e.getAsInt).toOption)
+                    val header = Option(response.getFirstHeader("Retry-After")).flatMap(h => scala.util.Try(h.getValue.trim.toInt).toOption)
+                    val retryAfter = intField("retryAfterSec").orElse(header).filter(_ > 0).getOrElse(LostBusyRetryAfterSec)
+                    return Left(Busy(retryAfter, intField("maxConcurrent")))
+                }
                 if (status != 200) {
                     val raw =
                         try readLimited(if (entity == null) null else entity.getContent, ErrorBodyLimit)
@@ -315,7 +412,8 @@ object CodeGenRunner {
                     val uploadDone = if (body.doneAt > 0) body.doneAt else headersAt
                     if (!quiet)
                         logger.info(
-                            "CodeGen runner: sent " + inputSize + " input bytes in " + (uploadDone - start) + " ms, script ran in " +
+                            "CodeGen runner: " + (if (queuedMs > 0) "queued " + queuedMs + " ms for a free slot, " else "") +
+                                "sent " + inputSize + " input bytes in " + (uploadDone - start) + " ms, script ran in " +
                                 (headersAt - uploadDone) + " ms, received " + received + " output bytes in " + (doneAt - headersAt) +
                                 " ms (total " + (doneAt - start) + " ms)"
                         )
@@ -325,7 +423,7 @@ object CodeGenRunner {
                         if (stderr.contains(NoSpace))
                             stderr + "\n(" + ServiceName + ": the " + ScratchVolume + " volume is full. Free disk on the Docker host and retry.)"
                         else stderr
-                    SandboxedPython.Result(exitCode, str("stdout").trim, stderrOut)
+                    Right(SandboxedPython.Result(exitCode, str("stdout").trim, stderrOut))
                 } finally {
                     try in.close()
                     catch { case _: Exception => () }

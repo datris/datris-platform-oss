@@ -47,6 +47,36 @@ def _token():
 
 TOKEN = _token()
 
+
+def _int_env(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+# Runner overload protection: at most MAX_CONCURRENT scripts run at once across
+# /execute and /execute-file. A request over the cap gets 503 + Retry-After at once,
+# before its body is read, and nothing is spawned for it.
+MAX_CONCURRENT = max(1, _int_env("TAP_RUNNER_MAX_CONCURRENT", 4))
+RETRY_AFTER_SEC = max(1, _int_env("TAP_RUNNER_RETRY_AFTER_SEC", 5))
+_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT)
+
+# Every script starts through this launcher, which lowers RLIMIT_AS / RLIMIT_NPROC in
+# the child and then execs the real command (no preexec_fn in the threaded server).
+RLIMIT_SHIM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rlimit_exec.py")
+SHIM_ENV_KEYS = ("TAP_RUNNER_SCRIPT_MEMORY_MB", "TAP_RUNNER_SCRIPT_MAX_PROCS")
+
+
+def _limited(argv, env):
+    """(argv, env) that run `argv` through the rlimit shim. The child env is allowlist-only,
+    so the two limit knobs are copied from the runner's own env explicitly."""
+    env = dict(env)
+    for k in SHIM_ENV_KEYS:
+        if k in os.environ:
+            env[k] = os.environ[k]
+    return [sys.executable, RLIMIT_SHIM] + list(argv), env
+
 # Benign system env vars the Python runtime / TLS may need. Mirror of the server's
 # NonSecretEnvVars. The tap subprocess gets exactly these (from the runner's own env)
 # plus the per-run vars handed in the request — nothing else.
@@ -151,8 +181,9 @@ def _run_streaming(python, wrapper_path, script_path, run_env, scratch, timeout,
     out_chunks, err_chunks = [], []
     timed_out = False
     try:
-        proc = subprocess.Popen([python, wrapper_path, script_path], stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, env=run_env, cwd=scratch)
+        argv, env = _limited([python, wrapper_path, script_path], run_env)
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=env, cwd=scratch)
         t_out = threading.Thread(target=_drain, args=(proc.stdout, out_chunks), daemon=True)
         t_err = threading.Thread(target=_drain, args=(proc.stderr, err_chunks), daemon=True)
         t_out.start()
@@ -221,9 +252,9 @@ def execute(body, stream=None):
             return _run_streaming(python, wrapper_path, script_path, run_env, scratch, timeout, stream)
 
         try:
-            proc = subprocess.run([python, wrapper_path, script_path],
-                                  capture_output=True, text=True, timeout=timeout,
-                                  env=run_env, cwd=scratch)
+            argv, env = _limited([python, wrapper_path, script_path], run_env)
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                                  env=env, cwd=scratch)
             return {"stdout": proc.stdout, "stderr": proc.stderr,
                     "exitCode": proc.returncode, "timedOut": False}
         except subprocess.TimeoutExpired as e:
@@ -267,6 +298,29 @@ def _safe_name(name, default):
 # so a wipe can never see a new run dir before it is registered.
 _ACTIVE_RUNS = set()
 _ACTIVE_LOCK = threading.Lock()
+# Scripts currently holding a concurrency slot (reported by /health). Guarded by _ACTIVE_LOCK.
+_ACTIVE = 0
+
+
+def _try_acquire_slot():
+    global _ACTIVE
+    if not _SLOTS.acquire(blocking=False):
+        return False
+    with _ACTIVE_LOCK:
+        _ACTIVE += 1
+    return True
+
+
+def _release_slot():
+    global _ACTIVE
+    with _ACTIVE_LOCK:
+        _ACTIVE -= 1
+    _SLOTS.release()
+
+
+def _active_count():
+    with _ACTIVE_LOCK:
+        return _ACTIVE
 
 
 def _scratch_dedicated():
@@ -486,9 +540,10 @@ def _kill_group(proc):
 
 
 def _run_codegen(script_path, in_path, out_path, scratch, timeout):
-    argv = ["python3", script_path, in_path] + ([out_path] if out_path else [])
+    argv, env = _limited(["python3", script_path, in_path] + ([out_path] if out_path else []),
+                         _base_env(scratch))
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env=_base_env(scratch), cwd=scratch, start_new_session=True)
+                            env=env, cwd=scratch, start_new_session=True)
     try:
         out, err = proc.communicate(timeout=timeout)
         timed_out = False
@@ -666,7 +721,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send(200, {"ok": True})
+            self._send(200, {"ok": True, "active": _active_count(), "maxConcurrent": MAX_CONCURRENT})
         else:
             self._send(404, {"error": "not found"})
 
@@ -722,9 +777,54 @@ class Handler(BaseHTTPRequestHandler):
         if TOKEN and self.headers.get("Authorization", "") != "Bearer " + TOKEN:
             self._send(401, {"error": "unauthorized"})
             return
-        if self.path == "/execute-file":
-            self._execute_file()
+        # Admission: decided before any body byte is read, so a busy runner answers at
+        # once and spawns nothing.
+        if not _try_acquire_slot():
+            self._send_busy()
             return
+        try:
+            if self.path == "/execute-file":
+                self._execute_file()
+            else:
+                self._execute()
+        finally:
+            _release_slot()
+
+    def _send_busy(self):
+        data = json.dumps({"error": "runner busy", "retryAfterSec": RETRY_AFTER_SEC,
+                           "active": _active_count(), "maxConcurrent": MAX_CONCURRENT}).encode("utf-8")
+        try:
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Retry-After", str(RETRY_AFTER_SEC))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+            pass
+        self.close_connection = True
+        # Closing with unread request bytes makes the kernel send a reset, which can
+        # destroy the answer before the client reads it. Half-close, then discard
+        # what already arrived for a short, bounded while.
+        try:
+            self.connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        try:
+            self.connection.settimeout(0.2)
+            budget = 4 * 1024 * 1024
+            deadline = time.monotonic() + 1.0
+            while budget > 0 and time.monotonic() < deadline:
+                chunk = self.connection.recv(min(CODEGEN_CHUNK, budget))
+                if not chunk:
+                    break
+                budget -= len(chunk)
+        except OSError:
+            pass
+
+    def _execute(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length > 0 else b"{}"

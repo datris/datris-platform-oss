@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+- **Busy hosts stay up.** Tap scripts and AI rule scripts now run a bounded number at a time, inside CPU, memory and process limits. When the runner is full, a run waits its turn instead of piling on; its run history shows how long it queued, and `datris doctor` warns when runs had to wait. All limits are adjustable in `.env`.
+
 ## v1.49.0 — October 14, 2026
 
 **Bring a restored catalog back to life in one click, and let assistants read whole scripts.**

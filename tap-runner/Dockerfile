@@ -34,6 +34,7 @@ ENV CODEGEN_SCRATCH_DEDICATED=1 CODEGEN_TMP_DIR=/tmp
 
 WORKDIR /app
 COPY app.py /app/app.py
+COPY rlimit_exec.py /app/rlimit_exec.py
 USER runner
 EXPOSE 8090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
