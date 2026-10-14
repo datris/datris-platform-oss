@@ -382,7 +382,9 @@ def test_shim_default_address_space_is_1024_mb(tmp_path):
     assert p.returncode == 0, p.stderr
     got = json.loads(p.stdout.strip().splitlines()[-1])
     assert got["as"] == 1024 * MB, got
-    assert got["nproc"] == 64, got
+    # RLIMIT_NPROC is per uid, not per script, so it is off by default (review
+    # finding): the child keeps the limit it inherited.
+    assert got["nproc"] == resource.getrlimit(resource.RLIMIT_NPROC)[0], got
 
 
 @pytest.fixture
@@ -494,3 +496,42 @@ def test_queue_timeout_is_forwarded_to_the_server(compose):
     with open(os.path.join(ROOT, compose)) as f:
         block = _service_block(f.read(), "datris")
     assert "TAP_RUNNER_QUEUE_TIMEOUT_SECONDS" in block, "datris must receive TAP_RUNNER_QUEUE_TIMEOUT_SECONDS"
+
+
+# ------------------------- review finding: BLAS pools must not scale with host CPUs
+
+BLAS_PROBE = (
+    "import json, os\n"
+    "print(json.dumps({k: os.environ.get(k) for k in "
+    "('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS')}))\n"
+)
+
+
+def test_every_lane_caps_native_thread_pools_by_default(runner2):
+    tap = {"script": "def fetch():\n    return []\n", "wrapper": BLAS_PROBE, "timeoutSec": 30}
+    want = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
+
+    status, _, data = runner2.execute(tap)
+    assert status == 200, data[:300]
+    assert json.loads(json.loads(data)["stdout"].strip().splitlines()[-1]) == want
+
+    status, _, data = runner2.execute(dict(tap, recordsStream=True))
+    assert json.loads(_stream_trailer(data)["stdout"].strip().splitlines()[-1]) == want
+
+    status, _, data = runner2.execute_file(BLAS_PROBE)
+    res = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+    assert json.loads(res["stdout"].strip().splitlines()[-1]) == want
+
+
+def test_a_run_can_set_its_own_thread_count_and_zero_leaves_it_unset(tmp_path):
+    r = _start_runner(tmp_path, TAP_RUNNER_SCRIPT_THREADS=0)
+    try:
+        tap = {"script": "def fetch():\n    return []\n", "wrapper": BLAS_PROBE, "timeoutSec": 30}
+        _, _, data = r.execute(tap)
+        got = json.loads(json.loads(data)["stdout"].strip().splitlines()[-1])
+        assert got == {"OPENBLAS_NUM_THREADS": None, "OMP_NUM_THREADS": None, "MKL_NUM_THREADS": None}
+        _, _, data = r.execute(dict(tap, env={"OMP_NUM_THREADS": "3"}))
+        assert json.loads(json.loads(data)["stdout"].strip().splitlines()[-1])["OMP_NUM_THREADS"] == "3"
+    finally:
+        r.proc.kill()
+        r.proc.wait()

@@ -73,8 +73,14 @@ object CodeGenRunner {
     /** Wait assumed when a busy answer was lost with the broken upload (the runner's default). */
     private val LostBusyRetryAfterSec = 5
 
-    /** What the runner said (or /health showed) when it had no free slot. */
-    private case class Busy(retryAfterSec: Int, maxConcurrent: Option[Int])
+    /** Upload breaks retried while /health showed a free slot (a busy answer whose slot
+      * freed meanwhile). Bounded: a break that is not about slots (a 400 lost to the
+      * reset, say) must fail at once, not retry for the whole queue timeout. */
+    private val MaxFreeSlotRetries = 2
+
+    /** What the runner said (or /health showed) when it had no free slot. `freeSlot`:
+      * the upload broke while /health showed a slot free. */
+    private case class Busy(retryAfterSec: Int, maxConcurrent: Option[Int], freeSlot: Boolean = false)
 
     def enabled: Boolean = Settings.fromEnv.enabled
     def url: String = Settings.fromEnv.url
@@ -245,11 +251,13 @@ object CodeGenRunner {
         val queueStart = System.currentTimeMillis()
         val queueTimeoutMs = math.max(0, settings.queueTimeoutSec) * 1000L
         var attempt = 0
+        var freeSlotRetries = 0
         while (true) {
             val queuedMs = if (attempt == 0) 0L else System.currentTimeMillis() - queueStart
-            sendOnce(script, input, output, timeoutSec, settings, quiet, queuedMs) match {
+            sendOnce(script, input, output, timeoutSec, settings, quiet, queuedMs, freeSlotRetries < MaxFreeSlotRetries) match {
                 case Right(result) => return result
                 case Left(busy) =>
+                    if (busy.freeSlot) freeSlotRetries += 1
                     val waited = System.currentTimeMillis() - queueStart
                     if (waited >= queueTimeoutMs)
                         throw transportFailure(
@@ -258,7 +266,11 @@ object CodeGenRunner {
                                 "); raise it or run fewer AI rules at once"
                         )
                     val sleepMs = math.max(1L, math.min(TapScriptRunner.busyWait(attempt, busy.retryAfterSec), queueTimeoutMs - waited))
-                    if (!quiet) logger.info("CodeGen runner busy (no free slot); retrying in " + sleepMs + " ms")
+                    if (!quiet)
+                        logger.info(
+                            (if (busy.freeSlot) "CodeGen runner upload broke while a slot was free"
+                             else "CodeGen runner busy (no free slot)") + "; retrying in " + sleepMs + " ms"
+                        )
                     try Thread.sleep(sleepMs)
                     catch {
                         case _: InterruptedException =>
@@ -279,7 +291,8 @@ object CodeGenRunner {
         timeoutSec: Int,
         settings: Settings,
         quiet: Boolean,
-        queuedMs: Long
+        queuedMs: Long,
+        allowFreeSlotRetry: Boolean
     ): Either[Busy, SandboxedPython.Result] = {
         val base = settings.url.stripSuffix("/")
         val meta = new JsonObject()
@@ -331,7 +344,9 @@ object CodeGenRunner {
                             case Some(msg) => transportFailure(settings, "is unreachable: " + cause + " (" + msg + ")")
                             // A runner that reports slot use (current image) and passes its probe:
                             // the break was a busy answer whose slot freed meanwhile. Send again.
-                            case None if !quiet && slots.isDefined => return Left(Busy(LostBusyRetryAfterSec, slots.map(_._2)))
+                            // Bounded by MaxFreeSlotRetries; after that the break is reported as is.
+                            case None if !quiet && allowFreeSlotRetry && slots.isDefined =>
+                                return Left(Busy(LostBusyRetryAfterSec, slots.map(_._2), freeSlot = true))
                             case None => transportFailure(settings, "is unreachable: " + cause)
                         }
                 }

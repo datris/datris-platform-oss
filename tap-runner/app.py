@@ -67,6 +67,17 @@ _SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT)
 RLIMIT_SHIM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rlimit_exec.py")
 SHIM_ENV_KEYS = ("TAP_RUNNER_SCRIPT_MEMORY_MB", "TAP_RUNNER_SCRIPT_MAX_PROCS")
 
+# numpy's bundled OpenBLAS (and OpenMP / MKL) start one thread per CPU the kernel shows,
+# which is the whole host: a container `cpus:` limit does not change it. Several
+# pandas scripts at once would then multiply host-core-count threads against the
+# container's pids_limit. Each script gets TAP_RUNNER_SCRIPT_THREADS (default 1;
+# 0 = leave unset) unless the runner env or the run's own env already sets the var.
+BLAS_THREAD_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
+
+
+def _script_threads():
+    return max(0, _int_env("TAP_RUNNER_SCRIPT_THREADS", 1))
+
 
 def _limited(argv, env):
     """(argv, env) that run `argv` through the rlimit shim. The child env is allowlist-only,
@@ -75,6 +86,10 @@ def _limited(argv, env):
     for k in SHIM_ENV_KEYS:
         if k in os.environ:
             env[k] = os.environ[k]
+    threads = _script_threads()
+    if threads > 0:
+        for k in BLAS_THREAD_VARS:
+            env.setdefault(k, str(threads))
     return [sys.executable, RLIMIT_SHIM] + list(argv), env
 
 # Benign system env vars the Python runtime / TLS may need. Mirror of the server's
@@ -85,6 +100,8 @@ ALLOWLIST = {
     "TZ", "TMPDIR", "TMP", "TEMP", "HOSTNAME", "PYTHONPATH", "PYTHONHOME",
     "PYTHONUNBUFFERED", "VIRTUAL_ENV", "LD_LIBRARY_PATH", "SSL_CERT_FILE",
     "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    # Native thread-pool sizes (see _limited): benign, and set per script.
+    "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
 }
 
 

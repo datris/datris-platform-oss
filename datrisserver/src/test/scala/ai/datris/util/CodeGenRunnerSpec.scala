@@ -377,6 +377,23 @@ class CodeGenRunnerSpec extends AnyFunSuite with BeforeAndAfterAll {
         } finally busy.close()
     }
 
+    test("an upload broken by a non-busy answer while /health shows free slots fails promptly, not after the queue timeout") {
+        val broken = new RejectingRunner()
+        try {
+            val input = bigInput("rejected-in.csv", 32L * 1024 * 1024)
+            val script = write("rejected.py", "print('[]')\n")
+            val s = CodeGenRunner.Settings(enabled = true, url = broken.url, token = TOKEN, queueTimeoutSec = 600)
+            val start = System.currentTimeMillis()
+            val e = intercept[DatrisException](CodeGenRunner.run(script, input, None, 30, s))
+            val elapsed = System.currentTimeMillis() - start
+            assert(mentionsRunner(e.getMessage), e.getMessage)
+            assert(!e.getMessage.contains("busy for"), "a free runner is not busy: " + e.getMessage)
+            assert(broken.posts.get() <= 3, "free-slot retries are bounded: " + broken.posts.get() + " uploads")
+            assert(elapsed < 120000, "failed after " + elapsed + " ms, not the 600 s queue timeout")
+            Files.deleteIfExists(input)
+        } finally broken.close()
+    }
+
     private def bigInput(name: String, size: Long): Path = {
         val p = root.resolve(name)
         val chunk = Array.fill[Byte](1 << 20)('z'.toByte)
@@ -519,6 +536,61 @@ class BusyRunner(busyForMs: Long) {
             )
             out.write(bytes)
             out.flush()
+            s.close()
+        }
+    }
+}
+
+/** A raw-socket runner that answers every POST with 400 before reading the upload
+  * and resets the socket (the 400 is usually lost), while GET /health reports free
+  * slots (0 of 2) and the token-checked probe would pass. Counts POSTs. */
+class RejectingRunner {
+    private val server = new java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+    val posts = new AtomicInteger(0)
+    def url: String = "http://127.0.0.1:" + server.getLocalPort
+
+    private val acceptor = new Thread(new Runnable {
+        override def run(): Unit =
+            while (!server.isClosed) {
+                scala.util.Try(server.accept()).toOption.foreach { s =>
+                    val t = new Thread(new Runnable { override def run(): Unit = scala.util.Try(handle(s)) })
+                    t.setDaemon(true)
+                    t.start()
+                }
+            }
+    })
+    acceptor.setDaemon(true)
+    acceptor.start()
+
+    def close(): Unit = scala.util.Try(server.close())
+
+    private def handle(s: java.net.Socket): Unit = {
+        val in = new java.io.BufferedInputStream(s.getInputStream)
+        val buf = new ByteArrayOutputStream()
+        var last4 = 0
+        var b = in.read()
+        while (b != -1 && last4 != 0x0d0a0d0a) {
+            buf.write(b); last4 = (last4 << 8) | b
+            if (last4 != 0x0d0a0d0a) b = in.read()
+        }
+        val head = new String(buf.toByteArray, StandardCharsets.ISO_8859_1)
+        val out = s.getOutputStream
+        def respond(status: String, body: String): Unit = {
+            val bytes = body.getBytes(StandardCharsets.UTF_8)
+            out.write(
+                ("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: " + bytes.length + "\r\nConnection: close\r\n\r\n")
+                    .getBytes(StandardCharsets.ISO_8859_1)
+            )
+            out.write(bytes)
+            out.flush()
+        }
+        if (head.startsWith("GET /health")) {
+            respond("200 OK", "{\"ok\": true, \"active\": 0, \"maxConcurrent\": 2}")
+            s.close()
+        } else {
+            posts.incrementAndGet()
+            respond("400 Bad Request", "{\"error\": \"metadata line missing or too long\"}")
+            s.setSoLinger(true, 0)
             s.close()
         }
     }

@@ -104,12 +104,17 @@ scheduled taps or AI rules cannot take the Docker host down:
   with one sentence naming `TAP_RUNNER_MAX_CONCURRENT`: raise it, or stagger tap schedules.
 - **Container ceilings.** `datris-tap-runner` is limited to 2 CPUs, 2 GB of memory (its 512 MB
   `/tmp` scratch counts toward it) and 256 processes; `datris-codegen-runner` to 1 CPU, 1 GB and
-  128 processes. These are ceilings, not reservations: an idle runner uses no more than before.
+  128 processes (threads count toward the process ceiling). These are ceilings, not
+  reservations: an idle runner uses no more than before.
 - **Per-script limits.** Each script gets a 1024 MB address-space limit
-  (`TAP_RUNNER_SCRIPT_MEMORY_MB`, `0` = none) and a process limit (`TAP_RUNNER_SCRIPT_MAX_PROCS`,
-  default 64). A script that allocates past the limit fails with `MemoryError` instead of pushing
-  the runner out of memory. The address-space limit is not enforced on macOS when you run the
-  runner outside Docker.
+  (`TAP_RUNNER_SCRIPT_MEMORY_MB`, `0` = none). A script that allocates past the limit fails with
+  `MemoryError` instead of pushing the runner out of memory. The address-space limit is not
+  enforced on macOS when you run the runner outside Docker.
+- **Native thread pools sized to the runner.** Libraries such as numpy (OpenBLAS), OpenMP and MKL
+  start one thread per CPU of the *host*, whatever the container's CPU limit. Each script gets
+  `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `MKL_NUM_THREADS` set to
+  `TAP_RUNNER_SCRIPT_THREADS` (default 1), so several pandas taps at once stay well inside the
+  process ceiling. A tap can set its own value through its environment.
 
 [`datris doctor`](/doctor) reports the concurrency setting and slot use as `runner.concurrency`,
 and warns when runs waited for a slot in the last 24 hours (error when a run was turned away).
@@ -136,7 +141,8 @@ The runner containers take these (set them in `.env`; compose passes them to the
 | `CODEGEN_RUNNER_MAX_CONCURRENT` | `4` | Most generated scripts `datris-codegen-runner` runs at once. |
 | `CODEGEN_RUNNER_SCRIPT_MEMORY_MB` | `1024` | Address-space limit per generated script, in MB. `0` = no limit. |
 | `CODEGEN_RUNNER_CPUS` / `CODEGEN_RUNNER_MEMORY` / `CODEGEN_RUNNER_PIDS` | `1` / `1g` / `128` | CPU, memory and process ceilings of the `datris-codegen-runner` container. |
-| `TAP_RUNNER_SCRIPT_MAX_PROCS` | `64` | Process limit per script (image default; set it on the runner service to change it). |
+| `TAP_RUNNER_SCRIPT_THREADS` | `1` | `OPENBLAS_NUM_THREADS` / `OMP_NUM_THREADS` / `MKL_NUM_THREADS` given to each script unless it sets its own. `0` = leave them unset (image default; set it on the runner service to change it). |
+| `TAP_RUNNER_SCRIPT_MAX_PROCS` | `0` (off) | Optional `RLIMIT_NPROC` per script (image default). Off by default because the kernel counts it per user across both runners and every thread, not per script; the container process ceiling bounds runaway forks instead. |
 | `TAP_RUNNER_RETRY_AFTER_SEC` | `5` | Seconds a busy runner tells the server to wait before trying again (image default). |
 
 The runner is defined as the `datris-tap-runner` service in `docker-compose.yml`; a normal

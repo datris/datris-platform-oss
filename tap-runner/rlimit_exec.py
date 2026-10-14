@@ -5,9 +5,13 @@ rlimit_exec.py: per-script resource limits for datris-tap-runner (runner overloa
 Usage: python3 rlimit_exec.py <program> [args...]
 
 Lowers RLIMIT_AS to TAP_RUNNER_SCRIPT_MEMORY_MB megabytes (default 1024; 0 = no limit)
-and RLIMIT_NPROC to TAP_RUNNER_SCRIPT_MAX_PROCS (default 64; 0 = no limit), then
+and RLIMIT_NPROC to TAP_RUNNER_SCRIPT_MAX_PROCS (default 0 = no limit), then
 replaces itself with <program>. It runs in the child, so the threaded runner never
-needs a preexec_fn. Lowering a limit is allowed unprivileged. On macOS RLIMIT_AS
+needs a preexec_fn. Lowering a limit is allowed unprivileged.
+
+RLIMIT_NPROC is off by default: the kernel counts it per uid across every process and
+thread (both runner containers share uid 10001), so a small value starves ordinary
+multi-threaded scripts. The container's pids_limit is the fork-bomb bound. On macOS RLIMIT_AS
 cannot be lowered (setrlimit raises); that is tolerated and the script runs without it.
 """
 import os
@@ -43,7 +47,7 @@ def main(argv):
         print("usage: rlimit_exec.py <program> [args...]", file=sys.stderr)
         return 2
     mem_mb = _int_env("TAP_RUNNER_SCRIPT_MEMORY_MB", 1024)
-    procs = _int_env("TAP_RUNNER_SCRIPT_MAX_PROCS", 64)
+    procs = _int_env("TAP_RUNNER_SCRIPT_MAX_PROCS", 0)
     _lower(resource.RLIMIT_AS, mem_mb * 1024 * 1024)
     _lower(resource.RLIMIT_NPROC, procs)
     # The runner hands these two in only for this launcher; the script never sees them.
