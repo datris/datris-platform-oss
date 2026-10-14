@@ -219,7 +219,7 @@ class EntityVersionAPIController {
         o.addProperty("changeNote", v.changeNote)
         o.addProperty("scriptPath", v.scriptPath)
         o.add("config", JsonParser.parseString(if (v.config == null) "{}" else v.config))
-        if (withScript) o.addProperty("script", resolveScript(v.scriptPath))
+        if (withScript) o.addProperty("script", resolveScript(v))
         o.toString
     }
 
@@ -246,8 +246,8 @@ class EntityVersionAPIController {
         out.add("config", fieldArr)
 
         if (withScript) {
-            val beforeScript = resolveScript(from.get.scriptPath)
-            val afterScript = resolveScript(to.get.scriptPath)
+            val beforeScript = resolveScript(from.get)
+            val afterScript = resolveScript(to.get)
             val lineArr = new JsonArray()
             VersionDiff.scriptDiff(beforeScript, afterScript).foreach { dl =>
                 val o = new JsonObject()
@@ -262,6 +262,23 @@ class EntityVersionAPIController {
             out.add("script", scriptObj)
         }
         ok(out.toString)
+    }
+
+    /** A tap snapshot's script text; null if absent. A built-in-store tap
+      * pins `scriptPath`; a repository-backed tap's snapshot has no
+      * `scriptPath` but its config carries `scriptRepoPath` + `scriptCommitSha`,
+      * so read the file at that commit (read-only, cached per sha). */
+    private def resolveScript(v: EntityVersion): String = {
+        if (v.scriptPath != null && v.scriptPath.nonEmpty) return resolveScript(v.scriptPath)
+        try {
+            val snap = if (v.config == null) null else gson.fromJson(v.config, classOf[TapConfig])
+            if (snap == null || snap.scriptStorage != "github" || snap.scriptRepoPath == null || snap.scriptRepoPath.isEmpty) null
+            else TapCodeStore.forTap(snap).readScript(snap).orNull
+        } catch {
+            case e: Exception =>
+                logger.warn("Failed to read tap script for '" + v.entityName + "' v" + v.version + " from the code repository", e)
+                null
+        }
     }
 
     /** Read a pinned tap script's content from object storage; null if absent. */
