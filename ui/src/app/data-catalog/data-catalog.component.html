@@ -17,8 +17,13 @@
   <div class="import-panel" *ngIf="showImportPanel && auth.canWrite()">
     <div class="import-row">
       <label class="import-label" for="import-file">Archive</label>
-      <input id="import-file" type="file" accept=".zip,application/zip" (change)="onImportFile($event)">
+      <input id="import-file" class="import-file-input" type="file" accept=".zip,application/zip" (change)="onImportFile($event)">
+      <label for="import-file" class="import-file-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        {{ importFile ? 'Change file' : 'Choose archive' }}
+      </label>
       <span class="import-file-info" *ngIf="importFile">{{ importFile.name }} &middot; {{ formatSize(importFile.size) }}</span>
+      <span class="import-file-info import-file-none" *ngIf="!importFile">No archive selected (.zip)</span>
     </div>
     <div class="import-row">
       <label class="import-label" for="import-name">Restore as</label>
