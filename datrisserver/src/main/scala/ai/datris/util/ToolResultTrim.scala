@@ -9,7 +9,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * gets the full result over SSE; only the round-tripped copy is capped, so a
   * runaway result can't be re-sent as input on every iteration.
   *
-  * Code-bearing tools (`get_tap`, `get_tap_version`, any `*_script`) get a
+  * Code-bearing tools (`get_tap`, `get_tap_version`, `diff_tap_versions`, any
+  * `*_script`) get a
   * higher ceiling so the model can read a whole script. StartupRunner sets
   * both caps from `datris.agent.toolResultMaxChars` and
   * `datris.agent.toolResultMaxCharsScript`. */
@@ -20,7 +21,7 @@ object ToolResultTrim {
     @volatile private[datris] var maxChars: Int = DefaultMaxChars
     @volatile private[datris] var scriptMaxChars: Int = DefaultScriptMaxChars
 
-    private val ScriptTools: Set[String] = Set("get_tap", "get_tap_version", "get_tap_script")
+    private val ScriptTools: Set[String] = Set("get_tap", "get_tap_version", "diff_tap_versions", "get_tap_script")
 
     private[util] def isScriptTool(toolName: String): Boolean =
         toolName != null && (ScriptTools.contains(toolName) || toolName.endsWith("_script"))

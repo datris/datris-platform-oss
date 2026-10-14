@@ -47,6 +47,7 @@ class AgentLoopToolResultSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(ToolResultTrim.trim("get_tap", s) eq s)
         assert(ToolResultTrim.trim("get_tap_version", s) eq s)
         assert(ToolResultTrim.trim("get_tap_script", s) eq s)
+        assert(ToolResultTrim.trim("diff_tap_versions", s) eq s)
         assert(ToolResultTrim.trim("read_pipeline_script", s) eq s)
         // A non-code tool of the same size is capped.
         assert(ToolResultTrim.trim("get_tap_logs", s).startsWith(chars(32000) + "\n\n…[truncated"))
@@ -58,6 +59,7 @@ class AgentLoopToolResultSpec extends AnyFunSuite with BeforeAndAfterEach {
         val trailer = ToolResultTrim.trailer(200 * 1024 - 131072, 200 * 1024)
         assert(out == chars(131072) + trailer)
         assert(out.length == 131072 + trailer.length)
+        assert(ToolResultTrim.trim("diff_tap_versions", s) == out)
     }
 
     test("null result becomes empty") {
