@@ -187,6 +187,41 @@ class CatalogEnableJobSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(!deps.events.exists(e => e.endsWith(":b")), deps.events)
     }
 
+    test("zero records with nothing depending on the tap lands it, keeps it enabled and waits for nothing") {
+        val cat = "cej-zero-leaf"
+        // a and c both at level 1; nothing depends on c.
+        val deps = new CatalogEnableJobSpec.FakeDeps(Seq(tap("a", cat), tap("c", cat)))
+        deps.runResult("a") = CatalogEnableJobSpec.result(recordCount = 2, token = null)
+        deps.runResult("c") = CatalogEnableJobSpec.result(recordCount = 0, token = "tok-c")
+        val plan = startOk(cat, deps).plan
+        assert(plan.levels.map(_.map(_.name)) == List(List("a", "c")), plan)
+        val j = awaitFinished(cat)
+        val c = outcome(j, "c")
+        assert(c.phase == "landed", j.taps)
+        assert(c.reason == "no records returned; nothing depends on this tap", c.reason)
+        assert(c.recordCount == 0, c)
+        assert(outcome(j, "a").phase == "landed", j.taps)
+        assert(deps.events.contains("enable:c"), deps.events)
+        assert(deps.stored.get("c").enabled, "c stays enabled")
+        assert(!deps.events.exists(_.startsWith("rollup:")), "no load wait: " + deps.events)
+    }
+
+    test("zero records still fails a tap whose dependent already landed before the job (declared, not run)") {
+        val cat = "cej-zero-declared"
+        val d = tap("d", cat, dependsOn = jl("c"), tested = true, target = null)
+            .copy(enabled = true, lastRunStatus = "success", lastRunRecordCount = 4)
+        val deps = new CatalogEnableJobSpec.FakeDeps(Seq(tap("c", cat), d))
+        deps.runResult("c") = CatalogEnableJobSpec.result(recordCount = 0, token = "tok-c")
+        val plan = startOk(cat, deps).plan
+        assert(plan.levels.map(_.map(_.name)) == List(List("c"), List("d")), plan)
+        val j = awaitFinished(cat)
+        assert(outcome(j, "c").phase == "failed", j.taps)
+        assert(Option(outcome(j, "c").reason).exists(_.contains("no_records")), outcome(j, "c").reason)
+        assert(outcome(j, "d").phase == "landed", j.taps)
+        assert(Option(outcome(j, "d").reason).exists(_.contains("not re-run")), outcome(j, "d").reason)
+        assert(!deps.events.exists(e => e.endsWith(":d")), "d is not re-run: " + deps.events)
+    }
+
     // ── Bullet 2 ────────────────────────────────────────────────────────
 
     test("a tap with hasPassingTest=true is never tested") {

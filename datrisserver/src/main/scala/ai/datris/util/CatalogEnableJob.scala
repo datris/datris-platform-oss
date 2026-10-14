@@ -306,10 +306,19 @@ object CatalogEnableJob {
             set(job, name, "failed", "run failed: " + clip(res.error))(_.copy(recordCount = res.recordCount))
             return
         }
+        // Zero records fails the tap only when another tap in the plan reads
+        // from it (its dependents would find no data and are skipped). A tap
+        // nothing depends on (e.g. one fed through run params) stays enabled
+        // and lands with nothing to wait for.
         if (res.recordCount == 0) {
-            set(job, name, "failed", "no_records: the run returned no records, so dependent taps would find no data")(
-                _.copy(recordCount = 0, publisherToken = res.publisherToken)
-            )
+            if (hasDependents(job, name))
+                set(job, name, "failed", "no_records: the run returned no records, so dependent taps would find no data")(
+                    _.copy(recordCount = 0, publisherToken = res.publisherToken)
+                )
+            else
+                set(job, name, "landed", "no records returned; nothing depends on this tap")(
+                    _.copy(recordCount = 0, publisherToken = res.publisherToken)
+                )
             return
         }
         if (res.publisherToken == null) {
@@ -319,6 +328,17 @@ object CatalogEnableJob {
         set(job, name, "waiting")(_.copy(recordCount = res.recordCount, publisherToken = res.publisherToken))
         waitForLoad(job, name, res.publisherToken, deps)
     }
+
+    /** True when another tap in the job's plan lists `name` among its
+      * effective dependencies (`dependsOn` when set, else `inferredDependsOn`),
+      * whether or not that tap runs in this job. */
+    private def hasDependents(job: Job, name: String): Boolean =
+        job.plan.levels.flatten.exists { o =>
+            o.name != name && {
+                val eff = if (o.dependsOn != null) o.dependsOn else Option(o.inferredDependsOn).getOrElse(Nil)
+                eff.contains(name)
+            }
+        }
 
     /** Test the stored tap; false (outcome already set to failed) when the
       * tap is gone or the test failed. */
