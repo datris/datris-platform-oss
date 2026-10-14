@@ -466,7 +466,7 @@ def _service_block(text, name):
 
 LIMITS = {
     "datris-tap-runner": [
-        r'cpus:\s*"\$\{TAP_RUNNER_CPUS:-2\}"',
+        r'cpus:\s*"\$\{TAP_RUNNER_CPUS:-1\}"',
         r'mem_limit:\s*"\$\{TAP_RUNNER_MEMORY:-2g\}"',
         r"pids_limit:\s*\$\{TAP_RUNNER_PIDS:-256\}",
         r'TAP_RUNNER_MAX_CONCURRENT:\s*"\$\{TAP_RUNNER_MAX_CONCURRENT:-4\}"',

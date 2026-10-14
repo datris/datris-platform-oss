@@ -1184,8 +1184,10 @@ object DoctorService {
                         } catch { case _: Exception => None }
                     }
                 catch { case e: Exception => logger.debug("runner wait scan for doctor failed: " + e.getMessage); Nil }
-            val waited = logs.filter(_.queuedMs > 0)
-            val rejected = logs.count(l => l.error != null && l.error.startsWith("Tap runner busy"))
+            def turnedAway(l: TapRunLog) = l.error != null && l.error.startsWith("Tap runner busy")
+            // Disjoint: a turned-away run also has queuedMs > 0 but counts only as rejected.
+            val waited = logs.filter(l => l.queuedMs > 0 && !turnedAway(l))
+            val rejected = logs.count(turnedAway)
             (waited.size, rejected, if (waited.isEmpty) 0L else waited.map(_.queuedMs).max)
         }
 

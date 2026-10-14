@@ -513,8 +513,10 @@ services:
     # take the Docker host down. The /tmp tmpfs below is charged to this memory
     # limit, hence 2g. At most TAP_RUNNER_MAX_CONCURRENT scripts run at once;
     # the rest get "busy" and the server waits its turn. Each script is capped
-    # at TAP_RUNNER_SCRIPT_MEMORY_MB of address space.
-    cpus: "${TAP_RUNNER_CPUS:-2}"
+    # at TAP_RUNNER_SCRIPT_MEMORY_MB of address space. cpus defaults to 1 so a
+    # 1-vCPU host can still create the container (Docker rejects a value above
+    # the host's CPU count); raise TAP_RUNNER_CPUS to 2+ on larger hosts.
+    cpus: "${TAP_RUNNER_CPUS:-1}"
     mem_limit: "${TAP_RUNNER_MEMORY:-2g}"
     pids_limit: ${TAP_RUNNER_PIDS:-256}
     environment:

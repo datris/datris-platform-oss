@@ -102,7 +102,7 @@ scheduled taps or AI rules cannot take the Docker host down:
   run that waited shows the time in its run history, for example `queued 12.3s` next to the
   duration (the duration includes the wait). A run that still has no slot after the timeout fails
   with one sentence naming `TAP_RUNNER_MAX_CONCURRENT`: raise it, or stagger tap schedules.
-- **Container ceilings.** `datris-tap-runner` is limited to 2 CPUs, 2 GB of memory (its 512 MB
+- **Container ceilings.** `datris-tap-runner` is limited to 1 CPU, 2 GB of memory (its 512 MB
   `/tmp` scratch counts toward it) and 256 processes; `datris-codegen-runner` to 1 CPU, 1 GB and
   128 processes (threads count toward the process ceiling). These are ceilings, not
   reservations: an idle runner uses no more than before.
@@ -137,7 +137,7 @@ The runner containers take these (set them in `.env`; compose passes them to the
 |---|---|---|
 | `TAP_RUNNER_MAX_CONCURRENT` | `4` | Most tap scripts `datris-tap-runner` runs at once. Further runs get "busy" and wait. |
 | `TAP_RUNNER_SCRIPT_MEMORY_MB` | `1024` | Address-space limit per tap script, in MB. `0` = no limit. |
-| `TAP_RUNNER_CPUS` / `TAP_RUNNER_MEMORY` / `TAP_RUNNER_PIDS` | `2` / `2g` / `256` | CPU, memory and process ceilings of the `datris-tap-runner` container. Raise the memory with `TAP_RUNNER_MAX_CONCURRENT`. |
+| `TAP_RUNNER_CPUS` / `TAP_RUNNER_MEMORY` / `TAP_RUNNER_PIDS` | `1` / `2g` / `256` | CPU, memory and process ceilings of the `datris-tap-runner` container. Raise the memory with `TAP_RUNNER_MAX_CONCURRENT`; set `TAP_RUNNER_CPUS=2` (or more) on hosts with the cores. Docker refuses a CPU value above the host's CPU count. |
 | `CODEGEN_RUNNER_MAX_CONCURRENT` | `4` | Most generated scripts `datris-codegen-runner` runs at once. |
 | `CODEGEN_RUNNER_SCRIPT_MEMORY_MB` | `1024` | Address-space limit per generated script, in MB. `0` = no limit. |
 | `CODEGEN_RUNNER_CPUS` / `CODEGEN_RUNNER_MEMORY` / `CODEGEN_RUNNER_PIDS` | `1` / `1g` / `128` | CPU, memory and process ceilings of the `datris-codegen-runner` container. |
