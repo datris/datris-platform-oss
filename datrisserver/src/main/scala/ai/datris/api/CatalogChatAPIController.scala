@@ -210,6 +210,8 @@ class CatalogChatAPIController {
             "delete_catalog",
             "export_catalog",
             "restore_catalog",
+            "catalog_enable_order",
+            "enable_catalog_ordered",
             "list_taps",
             "list_pipelines",
             "get_tap",
@@ -325,6 +327,9 @@ class CatalogChatAPIController {
         )
         sb.append(
             "- **Backup and restore.** `export_catalog` is read-only and returns a zip backup of a catalog (its manifest first); `restore_catalog` restores such an archive, so call it only when the user asks to restore and names the archive to use.\n"
+        )
+        sb.append(
+            "- **Enable order.** `catalog_enable_order` is read-only: call it to answer \"what order do I enable these in\". It groups the catalog's taps into levels (taps with no dependencies first) and, per tap, says whether its last test passed, whether a real run has landed data and which sources still block it. A tap whose sources have not landed data will fail its test, so run the sources first. `enable_catalog_ordered` starts one job that tests, enables and runs every tap in that order; call it only when the user asks to enable the catalog's taps, then follow progress with `catalog_enable_order` (its `job` block) instead of running taps yourself.\n"
         )
         sb.append(
             "- **Be brief.** This is a side-panel chat with limited width. Short paragraphs. When proposing a grouping, a compact bulleted plan beats prose.\n\n"

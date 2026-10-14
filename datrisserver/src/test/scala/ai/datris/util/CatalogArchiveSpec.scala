@@ -518,4 +518,21 @@ class CatalogArchiveSpec extends AnyFunSuite {
         assert(on.keySet == Set("a"), "state is only written for taps that did not exist before: " + on)
         assert(JsonParser.parseString(on("a")).getAsJsonObject.get("cursor").getAsInt == 1)
     }
+
+    // Story: Tap dependencies (plans/stories/tap-dependency-order.md), Acceptance
+    // bullet 4. The user-declared `dependsOn` travels in taps/<name>.json; the
+    // server-stamped `inferredDependsOn` does not (the restore re-stamps it).
+    test("stripTapForExport keeps dependsOn and clears inferredDependsOn") {
+        val t = fullTap("minio").copy(
+            dependsOn = java.util.Arrays.asList("prices", "universe"),
+            inferredDependsOn = java.util.Arrays.asList("prices")
+        )
+        val s = stripTapForExport(t)
+        assert(s.dependsOn == java.util.Arrays.asList("prices", "universe"))
+        assert(s.inferredDependsOn == null)
+        // An explicit "none" survives too: [] is not the same as absent.
+        val none = stripTapForExport(t.copy(dependsOn = new java.util.ArrayList[String]()))
+        assert(none.dependsOn != null && none.dependsOn.isEmpty)
+        assert(stripTapForExport(fullTap("minio")).dependsOn == null)
+    }
 }

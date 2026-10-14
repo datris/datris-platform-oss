@@ -74,7 +74,8 @@ object CatalogArchive {
     /** Tap definition as exported: run status, ownership, timestamps, version
       * and script references cleared (the script travels as its own entry).
       * `lastTestRunScriptId` survives only for built-in storage, where it is a
-      * hash of the script bytes and so still names the same bytes on restore. */
+      * hash of the script bytes and so still names the same bytes on restore.
+      * `dependsOn` is kept; the server-stamped `inferredDependsOn` is cleared. */
     def stripTapForExport(t: TapConfig): TapConfig = {
         val builtIn = t.scriptStorage == null || t.scriptStorage.isEmpty || t.scriptStorage == "minio"
         t.copy(
@@ -101,7 +102,10 @@ object CatalogArchive {
             scriptRepoPath = null,
             scriptCommitSha = null,
             scriptStorage = null,
-            lastTestRunScriptId = if (builtIn) t.lastTestRunScriptId else null
+            lastTestRunScriptId = if (builtIn) t.lastTestRunScriptId else null,
+            // The declared dependsOn travels (an explicit [] too); the stamp
+            // is re-derived from the script on restore.
+            inferredDependsOn = null
         )
     }
 

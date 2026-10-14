@@ -68,19 +68,130 @@ export class TapsComponent implements OnInit, OnDestroy {
     this.enableError = '';
   }
 
+  // ── Dependency hints and Run now (embedded table) ────────────────────
+  /** Per tap of the embedded catalog: its enable-order level (1 = reads no
+   *  other tap's tables), the sources that have not landed data yet, and
+   *  the server's readiness: hasPassingTest is true only when the last test
+   *  passed on the tap's current script (absent when the server left it out). */
+  depInfo: { [name: string]: { level: number, blockedBy: string[], hasPassingTest?: boolean } } = {};
+  /** Tap whose Run now is in flight, '' for none. */
+  runNowBusy = '';
+  /** Outcome line of the last Run now, per tap. */
+  runNowResult: { [name: string]: { text: string, error: boolean } } = {};
+
+  /** Load the catalog's enable order (once per loadTaps). Hints only: a
+   *  failure leaves the rows as they were. */
+  private enableOrderInFlight = false;
+  private enableOrderAgain = false;
+
+  private loadEnableOrder(): void {
+    const catalog = this.embedCatalog;
+    if (!catalog || catalog === 'Uncataloged') return;
+    // Bursts of reloads (e.g. right after a restore) share one request; a
+    // reload during it triggers exactly one follow-up.
+    if (this.enableOrderInFlight) { this.enableOrderAgain = true; return; }
+    this.enableOrderInFlight = true;
+    const settle = () => {
+      this.enableOrderInFlight = false;
+      if (this.enableOrderAgain) { this.enableOrderAgain = false; this.loadEnableOrder(); }
+    };
+    try {
+      this.pipelineService.enableOrder(catalog).subscribe({
+        next: (order: any) => {
+          const info: { [name: string]: { level: number, blockedBy: string[], hasPassingTest?: boolean } } = {};
+          for (const lvl of (order && order.levels) || []) {
+            for (const t of (lvl && lvl.taps) || []) {
+              if (t && t.name) {
+                info[t.name] = { level: Number(lvl.level), blockedBy: Array.isArray(t.blockedBy) ? t.blockedBy : [] };
+                if (typeof t.hasPassingTest === 'boolean') info[t.name].hasPassingTest = t.hasPassingTest;
+              }
+            }
+          }
+          this.depInfo = info;
+          settle();
+        },
+        error: () => { this.depInfo = {}; settle(); }
+      });
+    } catch {
+      this.depInfo = {};
+      settle();
+    }
+  }
+
+  /** "needs: x, y" while sources have not landed data, else "Level N". */
+  depHint(tap: any): string {
+    const d = tap && this.depInfo[tap.name];
+    if (!d) return '';
+    if (d.blockedBy.length > 0) return 'needs: ' + d.blockedBy.join(', ');
+    return isFinite(d.level) ? 'Level ' + d.level : '';
+  }
+
+  depBlockedBy(tap: any): string[] {
+    const d = tap && this.depInfo[tap.name];
+    return d ? d.blockedBy : [];
+  }
+
+  /** Whether the tap's current script has a passing test. Uses the server's
+   *  enable-order readiness (hasPassingTest: a green test stamped for the
+   *  current script, so a stale green test after a script edit or an
+   *  overwrite restore does not count) when it is loaded for this tap; falls
+   *  back to lastTestRunStatus === 'success' otherwise (Uncataloged taps, or
+   *  before the enable-order call returns). */
+  hasPassingTest(tap: any): boolean {
+    if (!tap) return false;
+    const d = this.depInfo[tap.name];
+    if (d && typeof d.hasPassingTest === 'boolean') return d.hasPassingTest;
+    return String(tap.lastTestRunStatus || '').toLowerCase() === 'success';
+  }
+
+  /** A real run makes sense once the current script has passed a test and
+   *  the tap feeds a pipeline. */
+  canRunNow(tap: any): boolean {
+    return !!tap && this.hasPassingTest(tap) && !!tap.targetPipeline;
+  }
+
+  /** One real run (mode=run) without enabling the tap or touching its
+   *  schedule: lands the tap's data so the taps that read it can test. */
+  runNow(tap: any, event?: Event): void {
+    if (event) event.stopPropagation();
+    if (this.runNowBusy || !tap) return;
+    const name = tap.name;
+    this.runNowBusy = name;
+    delete this.runNowResult[name];
+    this.tapService.runTap(name, 'run').subscribe({
+      next: (res: any) => {
+        this.runNowBusy = '';
+        const status = String((res && res.status) || (res && res.error ? 'error' : 'success'));
+        const parts = ['Run now: ' + status];
+        if (res && res.recordCount != null) parts.push(res.recordCount + ' records');
+        if (res && res.persistedReason) parts.push(String(res.persistedReason));
+        if (res && res.error) parts.push(String(res.error).substring(0, 300));
+        this.runNowResult[name] = { text: parts.join(', '), error: !!(res && res.error) || status === 'error' };
+        if (this.enableMenuOpen === name) this.closeEnableMenu();
+        this.loadTaps();
+      },
+      error: (err: any) => {
+        this.runNowBusy = '';
+        this.runNowResult[name] = { text: 'Run now failed: ' + httpErrorText(err, 'unknown error').substring(0, 300), error: true };
+        if (this.enableMenuOpen === name) this.closeEnableMenu();
+        this.loadTaps();
+      }
+    });
+  }
+
   closeEnableMenu(): void {
     this.enableMenuOpen = '';
     this.enableBusy = '';
     this.enableError = '';
   }
 
-  /** A scheduled tap with no passing test on record. Mirrors the server's
-   *  test-before-cron gate (TapCronGate) as far as the list fields allow:
-   *  a cron and lastTestRunStatus other than success. The server still
-   *  decides; a refusal comes back as a 409 shown in the menu. */
+  /** A scheduled tap with no passing test for its current script. Mirrors
+   *  the server's test-before-cron gate (TapCronGate): a cron and no
+   *  hasPassingTest (enable-order readiness when loaded, else
+   *  lastTestRunStatus). The server still decides; a refusal comes back as
+   *  a 409 shown in the menu. */
   needsTestBeforeEnable(tap: any): boolean {
-    return !!(tap && tap.cronExpression) &&
-      String((tap && tap.lastTestRunStatus) || '').toLowerCase() !== 'success';
+    return !!(tap && tap.cronExpression) && !this.hasPassingTest(tap);
   }
 
   enableTap(tap: any, event?: Event): void {
@@ -233,6 +344,7 @@ export class TapsComponent implements OnInit, OnDestroy {
       },
       error: (err) => console.error('Failed to load taps', err)
     });
+    if (this.isEmbedded) this.loadEnableOrder();
   }
 
   filterTaps(): void {

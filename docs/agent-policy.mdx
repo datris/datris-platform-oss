@@ -49,7 +49,7 @@ The policy applies within a few seconds of saving; no restart.
 
 ## Actions
 
-The actions you can set are exactly the ones the [capability model](/api-keys) already recognizes — `pipeline:create`, `tap:delete`, `job:kill`, `secret:write`, and so on — plus one refinement: `pipeline:update:dest-types`, the destination column-type migration, which shares a capability with an ordinary pipeline save but rewrites a landed table. A sub-action inherits its parent's mode unless set; `resource:*` sets every action on a resource.
+The actions you can set are exactly the ones the [capability model](/api-keys) already recognizes — `pipeline:create`, `tap:delete`, `job:kill`, `secret:write`, and so on — plus two refinements: `pipeline:update:dest-types`, the destination column-type migration, which shares a capability with an ordinary pipeline save but rewrites a landed table, and `tap:run:enable-ordered`, which enables and runs every tap of a catalog in dependency order as one job (one approval for the whole job). A sub-action inherits its parent's mode unless set; `resource:*` sets every action on a resource.
 
 Reads, queries, searches and metadata lookups are never gated. What a key may read is governed by its [capabilities](/api-keys).
 

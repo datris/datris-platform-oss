@@ -78,7 +78,16 @@ case class TapConfig(
     // it against the incoming save so a cron can only be set on tested bytes.
     // Gson gives absent → null on pre-upgrade docs, which means "unstamped /
     // legacy" and is grandfathered by TapCronGate.
-    lastTestRunScriptId: String = null
+    lastTestRunScriptId: String = null,
+    // Taps of the same catalog this tap reads from (their destination tables),
+    // set by the user. Non-null wins over inference; [] means "none, ignore
+    // inference". Absent → null (Gson), like `tags`. Orders and explains the
+    // enable order only; never enforced on save, test, run or cron.
+    dependsOn: java.util.List[String] = null,
+    // Server-stamped from the stored script (TapDependencies.infer): the
+    // same-catalog taps whose pipelines' tables the script queries. Incoming
+    // bodies are ignored, like `lastTestRun*`.
+    inferredDependsOn: java.util.List[String] = null
 ) {
 
     /** True when this tap is a user-hosted HTTP endpoint rather than a

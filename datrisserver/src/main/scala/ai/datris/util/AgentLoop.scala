@@ -96,12 +96,6 @@ object AgentLoop {
         if (filtered.isEmpty) List(AIContentBlock.TextBlock("…")) else filtered
     }
 
-    /** Tool-result truncation cap. Anthropic charges by input tokens, and a
-      * runaway 100KB result fed back as input for every subsequent iteration
-      * blows out cost fast. The UI shows the full result via the SSE event;
-      * only the version round-tripped back to the model is capped. */
-    private val ToolResultMaxChars: Int = 4000
-
     /** Run the agent loop until completion. Blocks until done; emits events to
       * `sink` along the way. */
     def run(
@@ -241,14 +235,14 @@ object AgentLoop {
                                     case None =>
                                         if (execute != null) confirmRequestOf(t.id, t.name, raw).foreach(sink)
                                         sink(LoopEvent.ToolResult(t.id, t.name, raw, isError = false))
-                                        AIContentBlock.ToolResultBlock(t.id, truncate(raw), isError = false)
+                                        AIContentBlock.ToolResultBlock(t.id, ToolResultTrim.trim(t.name, raw), isError = false)
                                 }
                             } catch {
                                 case e: Exception =>
                                     val msg = "Tool '" + t.name + "' failed: " + e.getMessage
                                     logger.warn("AgentLoop tool failure: " + msg)
                                     sink(LoopEvent.ToolResult(t.id, t.name, msg, isError = true))
-                                    AIContentBlock.ToolResultBlock(t.id, truncate(msg), isError = true)
+                                    AIContentBlock.ToolResultBlock(t.id, ToolResultTrim.trim(t.name, msg), isError = true)
                             }
                         }
                     }
@@ -407,13 +401,6 @@ object AgentLoop {
         }
         None
     }
-
-    /** Trim a tool result before feeding it back to the model. The UI shows the
-      * full version via the SSE event; only the round-tripped copy is capped. */
-    private def truncate(s: String): String =
-        if (s == null) ""
-        else if (s.length <= ToolResultMaxChars) s
-        else s.substring(0, ToolResultMaxChars) + "\n\n…[truncated " + (s.length - ToolResultMaxChars) + " chars; full result was shown to the user]"
 
     /** Map an MCP tool definition to Anthropic's tool shape.
       * MCP uses `inputSchema`; Anthropic uses `input_schema`. Everything else

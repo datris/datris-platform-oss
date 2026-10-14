@@ -1596,7 +1596,8 @@ async def list_tools():
 # never drifts from the catalog by accident: a new mutating tool that is not
 # listed here simply lacks the optional argument.
 _MUTATING_TOOLS = {
-    "create_pipeline", "set_catalog", "rename_catalog", "delete_catalog", "restore_catalog", "delete_pipeline", "upload_data", "kill_job",
+    "create_pipeline", "set_catalog", "rename_catalog", "delete_catalog", "restore_catalog", "enable_catalog_ordered",
+    "delete_pipeline", "upload_data", "kill_job",
     "apply_dest_types", "upload_config", "update_secret", "create_tap_secret",
     "delete_tap_secret", "create_tap", "run_tap", "delete_tap", "set_tap_state",
     "test_tap", "update_tap", "restore_tap_version", "restore_pipeline_version",
@@ -1607,6 +1608,15 @@ _APPROVAL_NOTE = (
     "it returns status `pending_approval` with an `approvalId`. Tell the user it is waiting for approval in Datris, "
     "then poll `get_approval` with that id (pause with `wait_seconds` between polls) — do not re-issue the action."
 )
+
+
+def _depends_on_list(value):
+    """`depends_on` as a list of tap names. A list is sent as given (an empty
+    list is an explicit "none"); a comma-separated string (the UI playground
+    sends text) is split."""
+    if isinstance(value, str):
+        return [p.strip() for p in value.split(",") if p.strip()]
+    return [str(d).strip() for d in value if str(d).strip()]
 
 
 def _all_tools():
@@ -1933,6 +1943,28 @@ def _base_tools():
             }
         ),
         Tool(
+            name="catalog_enable_order",
+            description=(
+                "Read-only. The order to enable a catalog's taps in: taps grouped into levels, level 1 first (taps that read no "
+                "other tap's tables), then the taps that read tables produced by level 1, and so on. A tap's dependencies are its "
+                "declared `dependsOn` or, when it declares none, the taps the platform inferred from the tables its script queries. "
+                "Per tap: `hasPassingTest` (last test run succeeded on the tap's current script; a test of an older script does not count), `lastRealRunLanded` (last real run landed records), "
+                "`blockedBy` (dependencies that have not landed data yet) and `ready`. A tap whose sources have not landed data "
+                "fails its test, so run the sources first. Taps on a dependency cycle are listed under `cycles`. Use it to answer "
+                "\"what order do I enable these in\", e.g. after restore_catalog, where every tap is disabled with no data landed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "catalog": {
+                        "type": "string",
+                        "description": "Catalog name."
+                    },
+                },
+                "required": ["catalog"]
+            }
+        ),
+        Tool(
             name="restore_catalog",
             description=(
                 "Restore a catalog archive produced by export_catalog as catalog `catalog` (the same or a new name). "
@@ -1969,6 +2001,30 @@ def _base_tools():
                     },
                 },
                 "required": ["catalog", "archive_base64"]
+            }
+        ),
+        Tool(
+            name="enable_catalog_ordered",
+            description=(
+                "Start one server-side job that enables a catalog's taps in their enable order (see catalog_enable_order): "
+                "level by level, each tap is tested if it has no passing test, enabled, given one real run, and the job waits "
+                "until that run's data has landed before moving on. A tap whose source did not land data is skipped with the "
+                "reason; every tap's outcome is reported. Call this ONLY when the user has asked to enable the catalog's taps. "
+                "It returns at once with the job id and the plan; follow progress with catalog_enable_order (its `job` block), "
+                "pausing with `wait_seconds` between polls, until `job.active` is false, then report each tap's phase and reason. "
+                "While the job runs, do not call run_tap, test_tap or update_tap on that catalog's taps: the job is already "
+                "running them. Refused while another enable job for the catalog is running, or when its taps have a dependency "
+                "cycle (the `cycles` are returned). Cancelling is done by the user in Datris."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "catalog": {
+                        "type": "string",
+                        "description": "Catalog name."
+                    },
+                },
+                "required": ["catalog"]
             }
         ),
         Tool(
@@ -2746,6 +2802,11 @@ def _base_tools():
                         "type": "string",
                         "description": "Where the data really comes from, as a short provider name or host, for lineage and provenance. Optional: when omitted it is derived from the endpoint host or the host the script references most. Never put credentials here."
                     },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: names of other taps in the same catalog whose destination tables this tap reads. Omit to let the platform infer them from the script's queries; pass an empty list to declare that it has none. Used only to order and explain the catalog's enable order (catalog_enable_order); never enforced."
+                    },
                 },
                 "required": ["name"]
             }
@@ -3059,11 +3120,16 @@ def _base_tools():
                         "type": "string",
                         "description": "For HTTP taps only: new endpoint URL Datris POSTs the run context to. Rejected on Python taps."
                     },
-                },
                     "source": {
                         "type": "string",
                         "description": "Declared source identity for lineage/provenance (provider name or host). Pass an empty string to clear it and fall back to derivation."
                     },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Names of other taps in the same catalog whose destination tables this tap reads. Replaces the declared list; pass an empty list to declare that it has none (overrides the platform's inference from the script). Omit to leave it unchanged. Orders and explains catalog_enable_order only; never enforced."
+                    },
+                },
                 "required": ["name"]
             }
         ),
@@ -4359,6 +4425,8 @@ def _dispatch(name: str, args: dict) -> str:
                 tap_config["secretName"] = secret_name
             if args.get("source"):
                 tap_config["source"] = str(args["source"]).strip()
+            if args.get("depends_on") is not None:
+                tap_config["dependsOn"] = _depends_on_list(args["depends_on"])
             save_result = _call("post", "/api/v1/tap", json=tap_config)
             try:
                 saved = json.loads(save_result)
@@ -4486,6 +4554,8 @@ def _dispatch(name: str, args: dict) -> str:
             tap_config["secretName"] = secret_name
         if args.get("source"):
             tap_config["source"] = str(args["source"]).strip()
+        if args.get("depends_on") is not None:
+            tap_config["dependsOn"] = _depends_on_list(args["depends_on"])
 
         save_result = _call("post", "/api/v1/tap", json=tap_config)
         try:
@@ -4672,6 +4742,10 @@ def _dispatch(name: str, args: dict) -> str:
         catalog = urllib.parse.quote(str(args.get("catalog") or ""), safe="")
         return _call("delete", f"/api/v1/catalog/{catalog}", params={"mode": "detach"})
 
+    elif name == "catalog_enable_order":
+        catalog = urllib.parse.quote(str(args.get("catalog") or ""), safe="")
+        return _call("get", f"/api/v1/catalog/{catalog}/enable-order")
+
     elif name == "export_catalog":
         # The zip is binary: fetched directly (not via _call, which decodes
         # text) and returned base64 with its manifest first.
@@ -4724,6 +4798,12 @@ def _dispatch(name: str, args: dict) -> str:
         except requests.RequestException as e:
             return json.dumps({"error": str(e)})
 
+    elif name == "enable_catalog_ordered":
+        # No body: the empty POST is what the agent policy queues and replays
+        # for approval. The 202 (or refusal) body is returned verbatim.
+        catalog = urllib.parse.quote(str(args.get("catalog") or ""), safe="")
+        return _call("post", f"/api/v1/catalog/{catalog}/enable-ordered")
+
     elif name == "update_tap":
         # Fetch existing config
         tap_result = _call("get", f"/api/v1/tap?name={args['name']}")
@@ -4745,6 +4825,8 @@ def _dispatch(name: str, args: dict) -> str:
             tap_config["targetPipeline"] = args["target_pipeline"]
         if "description" in args:
             tap_config["description"] = args["description"]
+        if args.get("depends_on") is not None:
+            tap_config["dependsOn"] = _depends_on_list(args["depends_on"])
         if "endpoint_url" in args and args["endpoint_url"]:
             if (tap_config.get("scriptKind") or "").lower() != "http":
                 return json.dumps({"error": (

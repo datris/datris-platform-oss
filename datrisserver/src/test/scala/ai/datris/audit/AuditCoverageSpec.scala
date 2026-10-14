@@ -97,4 +97,57 @@ class AuditCoverageSpec extends AnyFunSuite {
         assert(AuditClassifier.isKnown("POST", "/api/v1/catalog/sample/restore"))
         assert(!AuditClassifier.isDeliberatelySkipped("POST", "/api/v1/catalog/sample/restore"))
     }
+
+    // Story: plans/stories/tap-dependency-order.md, Step 3 — the enable-order
+    // endpoint is a live GET controller route and is not audited (a read).
+    test("catalog enable-order route exists as a GET and is not audited") {
+        val gets = {
+            val scanner = new ClassPathScanningCandidateComponentProvider(false)
+            scanner.addIncludeFilter(new AnnotationTypeFilter(classOf[RestController]))
+            scanner.findCandidateComponents("ai.datris").asScala.toSeq.flatMap { bd =>
+                val cls = Class.forName(bd.getBeanClassName)
+                val base = Option(cls.getAnnotation(classOf[RequestMapping])).flatMap(_.value().headOption).getOrElse("")
+                cls.getMethods.toSeq.flatMap { m =>
+                    Option(m.getAnnotation(classOf[GetMapping])).toSeq.flatMap { a =>
+                        val paths = if (a.path().nonEmpty) a.path() else a.value()
+                        (if (paths.isEmpty) Array("") else paths).map(base + _)
+                    }
+                }
+            }
+        }
+        assert(gets.contains("/api/v1/catalog/{name}/enable-order"), "GET /api/v1/catalog/{name}/enable-order route missing")
+        assert(AuditClassifier.classify("GET", "/api/v1/catalog/sample/enable-order", logReads = false).isEmpty)
+        assert(ai.datris.auth.CapabilityRoutes.lookup("GET", "/api/v1/catalog/sample/enable-order") ==
+            ai.datris.auth.RouteCheck.Require("tap", "read"))
+    }
+
+    // Story: plans/stories/tap-dependency-order.md, lazy backfill. GET /tap
+    // and GET enable-order may write the dependency stamp, but they remain
+    // reads: neither is audited (with logReads off), and both stay tap:read.
+    test("dependency backfill reads stay unaudited GETs") {
+        for (path <- Seq("/api/v1/tap", "/api/v1/catalog/sample/enable-order")) {
+            assert(AuditClassifier.classify("GET", path, logReads = false).isEmpty, path)
+            assert(ai.datris.auth.CapabilityRoutes.lookup("GET", path) == ai.datris.auth.RouteCheck.Require("tap", "read"), path)
+        }
+    }
+
+    // Story: plans/stories/tap-dependency-order-enable.md — the ordered enable
+    // start (POST) and cancel (DELETE) are live routes classified as tap:run
+    // (one audit entry each); the status GET is a plain unaudited tap read,
+    // not a deliberately-skipped route.
+    test("catalog enable-ordered POST and DELETE exist and are audit-classified; GET is an unaudited read") {
+        val live = routes().map(r => (r.method, r.path))
+        assert(live.contains(("POST", "/api/v1/catalog/{name}/enable-ordered")), "POST /api/v1/catalog/{name}/enable-ordered route missing")
+        assert(live.contains(("DELETE", "/api/v1/catalog/{name}/enable-ordered")), "DELETE /api/v1/catalog/{name}/enable-ordered route missing")
+        for (m <- Seq("POST", "DELETE")) {
+            assert(AuditClassifier.isKnown(m, "/api/v1/catalog/sample/enable-ordered"), m)
+            assert(!AuditClassifier.isDeliberatelySkipped(m, "/api/v1/catalog/sample/enable-ordered"), m)
+            val c = AuditClassifier.classify(m, "/api/v1/catalog/sample/enable-ordered", logReads = false)
+            assert(c.map(r => (r.category, r.action)).contains(("tap", "run")), m + " -> " + c)
+        }
+        assert(!AuditClassifier.isDeliberatelySkipped("GET", "/api/v1/catalog/sample/enable-ordered"))
+        assert(AuditClassifier.classify("GET", "/api/v1/catalog/sample/enable-ordered", logReads = false).isEmpty)
+        assert(ai.datris.auth.CapabilityRoutes.lookup("GET", "/api/v1/catalog/sample/enable-ordered") ==
+            ai.datris.auth.RouteCheck.Require("tap", "read"))
+    }
 }

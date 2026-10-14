@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder, JsonElement, JsonNull, JsonParser}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
-import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion}
+import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion, PipelineConfig}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -45,6 +45,114 @@ object TapAPIController {
     private[datris] def liveSecretType(name: String): Option[Option[String]] =
         SecretsUtil.tryGetSecretMap(DatrisEnvironment.current.environment + "/" + name).get.map(m => Option(m.get("_type")))
 
+    /** The refusal `POST /tap` returns for the tap's `dependsOn`, or None.
+      * `catalogTaps` = the stored taps of the tap's catalog; a stored copy of
+      * the incoming tap is replaced by it before the cycle check. 400 for a
+      * name that is not a tap of the catalog (or the tap itself); 409 with
+      * `cycle` when the declared list closes a dependency cycle. An absent or
+      * empty `dependsOn` always passes. */
+    def dependencySaveProblem(tap: TapConfig, catalogTaps: Seq[TapConfig]): Option[ResponseEntity[String]] = {
+        if (tap.dependsOn == null || tap.dependsOn.isEmpty) return None
+        if (tap.dependsOn.asScala.exists(n => n == null || n.trim.isEmpty)) {
+            val o = new com.google.gson.JsonObject
+            o.addProperty("error", "dependsOn may not contain blank tap names; send [] to declare that the tap reads no other tap")
+            return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](o.toString))
+        }
+        val others = catalogTaps.filter(t => t != null && t.name != tap.name)
+        TapDependencies.validate(tap, others) match {
+            case Left(msg) =>
+                val o = new com.google.gson.JsonObject
+                o.addProperty("error", msg)
+                return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](o.toString))
+            case Right(_) =>
+        }
+        TapDependencies.cycles(others :+ tap).find(_.contains(tap.name)).map { cyc =>
+            val o = new com.google.gson.JsonObject
+            o.addProperty(
+                "error",
+                "dependsOn of tap '" + tap.name + "' closes a dependency cycle: " + cyc.mkString(", ") +
+                    ". Remove one of these dependencies (an explicit dependsOn of [] overrides the inferred list)."
+            )
+            val arr = new com.google.gson.JsonArray
+            cyc.foreach(n => arr.add(n))
+            o.add("cycle", arr)
+            ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON).body[String](o.toString)
+        }
+    }
+
+    /** The tap as stored: any incoming `inferredDependsOn` is discarded and
+      * replaced by `TapDependencies.infer` over `script` (None, e.g. an HTTP
+      * tap or no script yet -> null; nothing inferred -> null). The explicit
+      * `dependsOn` is left as sent. */
+    def stampInferredDependsOn(
+        tap: TapConfig,
+        script: Option[String],
+        pipelines: Seq[PipelineConfig],
+        taps: Seq[TapConfig]
+    ): TapConfig = {
+        val inferred = script.map(s => TapDependencies.infer(s, pipelines, taps, tap))
+        // A script that was read but reads no other tap stamps [] (analysed,
+        // nothing found), so it is not re-analysed by the lazy backfill.
+        tap.copy(inferredDependsOn = inferred.map(l => new java.util.ArrayList[String](l.asJava): java.util.List[String]).orNull)
+    }
+
+    private val depLogger: Logger = LoggerFactory.getLogger("ai.datris.api.TapDependencies")
+
+    /** Every tap and pipeline for dependency validation and inference,
+      * skipping any document that fails to parse so one bad config cannot
+      * block a tap save. */
+    private[datris] def loadAllForDependencies(): (Seq[TapConfig], Seq[PipelineConfig]) = {
+        val env = DatrisEnvironment.current
+        val taps = NoSQLDbUtil.getItemsKeysByKeyName(env.tapTableName, "name").flatMap { n =>
+            try Option(TapConfigIO.read(env.tapTableName, n))
+            catch { case e: Exception => depLogger.warn("Dependency check: skipping unreadable tap '" + n + "': " + e.getMessage); None }
+        }
+        val pipelines = NoSQLDbUtil.getItemsKeysByKeyName(env.pipelineTableName, "name").flatMap { n =>
+            try Option(PipelineConfigIO.read(env.pipelineTableName, n))
+            catch { case e: Exception => depLogger.warn("Dependency check: skipping unreadable pipeline '" + n + "': " + e.getMessage); None }
+        }
+        (taps, pipelines)
+    }
+
+    /** Lazy backfill for taps saved before dependencies existed: when
+      * `TapDependencies.needsBackfill(t)`, infer from `script` (read by the
+      * caller; None = unreadable, left unstamped and retried next time) and
+      * persist only `inferredDependsOn` on a fresh read of the tap. Returns
+      * the tap as it should be shown. Never throws. */
+    private[datris] def backfillInferred(
+        t: TapConfig,
+        script: Option[String],
+        taps: Seq[TapConfig],
+        pipelines: Seq[PipelineConfig]
+    ): TapConfig = {
+        if (!TapDependencies.needsBackfill(t) || script.isEmpty) return t
+        try {
+            val stamped = stampInferredDependsOn(t, script, pipelines, taps)
+            // Read-modify-write without a version bump (like run-status
+            // writes): only the stamp is copied onto a fresh read, and only
+            // while the script reference is the one that was analysed.
+            val fresh = TapConfigIO.read(DatrisEnvironment.current.tapTableName, t.name)
+            if (
+                fresh != null && fresh.inferredDependsOn == null && fresh.scriptPath == t.scriptPath &&
+                fresh.scriptRepoPath == t.scriptRepoPath && fresh.scriptCommitSha == t.scriptCommitSha
+            ) TapConfigIO.write(fresh.copy(inferredDependsOn = stamped.inferredDependsOn))
+            stamped
+        } catch {
+            case e: Exception =>
+                depLogger.warn("Dependency backfill failed for tap '" + t.name + "': " + e.getMessage)
+                t
+        }
+    }
+
+    /** Script text for the backfill; None (logged) when it cannot be read. */
+    private[datris] def readScriptForBackfill(t: TapConfig): Option[String] =
+        try TapCodeStore.forTap(t).readScript(t)
+        catch {
+            case e: Exception =>
+                depLogger.warn("Dependency backfill: script of tap '" + t.name + "' unreadable: " + e.getMessage)
+                None
+        }
+
     // mode=test response caps `records` to this many rows. The UI's preview already
     // slices to 20 (tap-run.component.ts), so this matches without losing display
     // fidelity, and prevents large taps from bloating agent context.
@@ -80,6 +188,34 @@ object TapAPIController {
         response
     }
 
+    /** The current time in the configured date format and timezone (the
+      * format every `last*RunTime` field is stored in). */
+    private[datris] def nowStamp(): String = {
+        val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+        sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+        sdf.format(new java.util.Date())
+    }
+
+    /** `tap` with the outcome of a `mode=test` run stamped on its
+      * `lastTestRun*` fields. Shared by `POST /tap/run` and the ordered
+      * catalog enable so a tap tested by either is indistinguishable. */
+    private[datris] def stampTestResult(tap: TapConfig, result: TapScriptResult, now: String): TapConfig = {
+        val passed = result.error == null
+        tap.copy(
+            lastTestRunStatus = if (passed) "success" else "failure",
+            lastTestRunTime = now,
+            lastTestRunRecordCount = result.recordCount,
+            lastTestRunError = result.error,
+            lastTestRunDataType = result.dataType,
+            lastTestRunColumns = result.columns,
+            // Stamp the identity of the exact script/endpoint that just
+            // passed, so TapCronGate can tie a later cron to these bytes.
+            // A failed test clears the stamp: the previous green no longer
+            // vouches for what is stored now.
+            lastTestRunScriptId = if (passed) TapScriptIdentity.of(tap).orNull else null
+        )
+    }
+
     /** Effective `testLimit` for a `/tap/run` request.
       *
       *  `bodyTestLimit` is `body.get("testLimit")` straight off the Jackson-parsed
@@ -91,7 +227,7 @@ object TapAPIController {
       *  the default preview size (`testRecordSampleSize`); an explicit 0 or negative
       *  value is the deliberate unlimited opt-out.
       */
-    private[api] def resolveTestLimit(mode: String, bodyTestLimit: Any): Int = {
+    private[datris] def resolveTestLimit(mode: String, bodyTestLimit: Any): Int = {
         if (mode == null || mode.toLowerCase != "test") return 0
 
         val requested: Option[Int] = bodyTestLimit match {
@@ -195,7 +331,13 @@ class TapAPIController {
                         null
                 }
             } else null
-            val response = gson.fromJson(gson.toJson(config), classOf[java.util.Map[String, Any]])
+            // Taps saved before dependencies existed are analysed once, here.
+            val shown =
+                if (scriptContent != null && TapDependencies.needsBackfill(config)) {
+                    val (taps, pipelines) = TapAPIController.loadAllForDependencies()
+                    TapAPIController.backfillInferred(config, Some(scriptContent), taps, pipelines)
+                } else config
+            val response = gson.fromJson(gson.toJson(shown), classOf[java.util.Map[String, Any]])
             response.put("script", scriptContent)
             if (scriptMissing) response.put("scriptMissing", java.lang.Boolean.TRUE)
             // Incremental-sync state, when the tap has committed any — lets agents see
@@ -536,6 +678,9 @@ class TapAPIController {
                 tags = if (tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags,
                 // Same rule for the declared source: omitted ⇒ keep; "" ⇒ clear.
                 source = if (tapConfigWithScript.source == null) existing.source else tapConfigWithScript.source,
+                // Same rule for declared dependencies: omitted ⇒ keep; [] is an
+                // explicit "none" (it overrides inference).
+                dependsOn = if (tapConfigWithScript.dependsOn == null) existing.dependsOn else tapConfigWithScript.dependsOn,
                 // Test outcome + script stamp are server-owned (written only by
                 // the run endpoint in mode=test). Clients echo stale copies in the
                 // save body; never let a body promote a tap to "tested".
@@ -553,6 +698,45 @@ class TapAPIController {
                 // the gate still wants a fresh test before a schedule runs.
                 lastTestRunScriptId = if (restored) tapConfigWithScript.lastTestRunScriptId else null
             ))
+
+        // Tap dependencies: a changed explicit dependsOn must name taps of the
+        // same catalog and must not close a cycle (400 / 409). A catalog
+        // restore skips this (its producers may not be written yet) and
+        // re-stamps after every tap is in. `inferredDependsOn` is always
+        // re-derived from the stored script, whatever the body said.
+        val (allTaps, allPipelines) = TapAPIController.loadAllForDependencies()
+        val dependsOnChanged = existing == null || existing.dependsOn != configToSave.dependsOn
+        if (!restored && dependsOnChanged) {
+            val catalogTaps = allTaps.filter(t => t.catalog == configToSave.catalog && !CatalogOps.Placeholder.is(t.name))
+            TapAPIController.dependencySaveProblem(configToSave, catalogTaps).foreach(r => return Left(r))
+        }
+        // A failed read (e.g. the code repository briefly unreachable) keeps
+        // the stored stamp rather than clearing it.
+        val deduped = TapDependencies.dedupeDependsOn(configToSave)
+        val readFailed = new java.util.concurrent.atomic.AtomicBoolean(false)
+        val script: Option[String] =
+            if (configToSave.isHttp) None
+            else if (
+                (configToSave.scriptPath == null || configToSave.scriptPath.isEmpty) &&
+                (configToSave.scriptRepoPath == null || configToSave.scriptRepoPath.isEmpty)
+            ) None
+            else
+                try TapCodeStore.forTap(configToSave).readScript(configToSave)
+                catch {
+                    case e: Exception =>
+                        logger.warn("Tap '" + configToSave.name + "': script unreadable for dependency inference: " + e.getMessage)
+                        readFailed.set(true)
+                        None
+                }
+        val stamped =
+            if (readFailed.get) deduped.copy(inferredDependsOn = if (existing != null) existing.inferredDependsOn else null)
+            else
+                TapAPIController.stampInferredDependsOn(
+                    deduped,
+                    script,
+                    allPipelines,
+                    allTaps.filter(_.name != configToSave.name) :+ configToSave
+                )
 
         // Cron validation: a schedule the scheduler cannot parse is refused
         // here (400) rather than stored to log an error on every tick. Runs
@@ -580,7 +764,7 @@ class TapAPIController {
         // (Status churn from TapRunner stays on plain TapConfigIO.write.)
         val note = if (changeNote != null && changeNote.nonEmpty) changeNote
         else if (existing != null) "updated" else "created"
-        val saved = TapConfigIO.writeVersioned(configToSave, note, VersionActor.resolve(request))
+        val saved = TapConfigIO.writeVersioned(stamped, note, VersionActor.resolve(request))
         Right(saved)
     }
 
@@ -749,7 +933,18 @@ class TapAPIController {
                 // before the gated save ever runs). The new reference is still
                 // returned so the caller can test against it.
                 TapCronGate.check(existing, repointed) match {
-                    case None => TapConfigIO.write(repointed)
+                    case None =>
+                        // Re-derive the dependency stamp from the new bytes.
+                        val stamped =
+                            try {
+                                val (taps, pipelines) = TapAPIController.loadAllForDependencies()
+                                TapAPIController.stampInferredDependsOn(repointed, Some(script), pipelines, taps)
+                            } catch {
+                                case e: Exception =>
+                                    logger.warn("POST /tap/script: dependency inference failed for '" + tapName + "': " + e.getMessage)
+                                    repointed
+                            }
+                        TapConfigIO.write(stamped)
                     case Some(msg) =>
                         logger.info("POST /tap/script: not repointing scheduled tap '" + tapName + "' at untested script: " + msg)
                 }
@@ -1237,25 +1432,8 @@ class TapAPIController {
 
                 // Save test run status when not pushing to pipeline
                 if (mode != "run") {
-                    val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
-                    sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
-                    val now = sdf.format(new java.util.Date())
-                    val passed = result.error == null
-                    val updated = tapConfig.copy(
-                        lastTestRunStatus = if (passed) "success" else "failure",
-                        lastTestRunTime = now,
-                        lastTestRunRecordCount = result.recordCount,
-                        lastTestRunError = result.error,
-                        lastTestRunDataType = result.dataType,
-                        lastTestRunColumns = result.columns,
-                        // Stamp the identity of the exact script/endpoint that just
-                        // passed, so TapCronGate can tie a later cron to these bytes.
-                        // A failed test clears the stamp: the previous green no longer
-                        // vouches for what is stored now.
-                        lastTestRunScriptId = if (passed) TapScriptIdentity.of(tapConfig).orNull else null
-                    )
                     // Status churn: plain write, no version minted.
-                    TapConfigIO.write(updated)
+                    TapConfigIO.write(TapAPIController.stampTestResult(tapConfig, result, TapAPIController.nowStamp()))
                 }
 
                 val gson = new Gson

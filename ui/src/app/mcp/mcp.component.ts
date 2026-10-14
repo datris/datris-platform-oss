@@ -151,7 +151,8 @@ export class McpComponent implements OnInit {
         { name: 'tap_type', type: 'string', description: 'structured (default) or document (for PDFs/Word/HTML into vector-store pipelines)', required: false, inputType: 'text' },
         { name: 'packages', type: 'array', description: 'Optional list of pip packages the tap script imports beyond the base set. Auto-detected from the script when omitted.', required: false, inputType: 'text' }
       ,
-        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' }
+        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' },
+        { name: 'depends_on', type: 'array', description: 'Optional: other taps in the same catalog whose tables this tap reads. Inferred from the script when omitted; an empty list declares none.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: false
     },
@@ -223,7 +224,8 @@ export class McpComponent implements OnInit {
         { name: 'target_pipeline', type: 'string', description: 'New target pipeline', required: false, inputType: 'text' },
         { name: 'description', type: 'string', description: 'New description', required: false, inputType: 'text' }
       ,
-        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' }
+        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' },
+        { name: 'depends_on', type: 'array', description: 'Other taps in the same catalog whose tables this tap reads (comma-separated here). Replaces the declared list; overrides the inferred one.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -407,6 +409,15 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'catalog_enable_order',
+      description: 'The order to enable a catalog\'s taps in: levels, taps that read no other tap\'s tables first. Per tap: whether its last test passed, whether a real run has landed data, and which sources still block it. Read-only.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'catalog', type: 'string', description: 'Catalog name.', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'restore_catalog',
       description: 'Restore an export_catalog archive as a catalog with the same or a new name. Never merges: refused when the catalog or any archived name already exists (mode=overwrite replaces items already in the catalog and needs confirm). Never writes secrets (missing ones are listed). Restored taps are left disabled. ONLY call when the user has explicitly asked.',
       category: 'Pipeline Management',
@@ -416,6 +427,15 @@ export class McpComponent implements OnInit {
         { name: 'mode', type: 'string', description: 'new (default) or overwrite.', required: false, inputType: 'text' },
         { name: 'confirm', type: 'string', description: 'Required for mode=overwrite: the catalog name, repeated.', required: false, inputType: 'text' },
         { name: 'restore_state', type: 'boolean', description: 'Optional, default true. false skips each tap\'s incremental state.', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'enable_catalog_ordered',
+      description: 'Start one job that enables a catalog\'s taps in their enable order: each tap is tested if needed, enabled, run once, and its data must land before the next level starts. Taps whose sources did not land are skipped with the reason. Returns the job id and plan; progress is in catalog_enable_order. Do not run the catalog\'s taps by hand while it runs. ONLY call when the user has explicitly asked.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'catalog', type: 'string', description: 'Catalog name.', required: true, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

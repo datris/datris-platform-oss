@@ -1216,3 +1216,25 @@ tbody tr:last-child td {
   border: 1px solid rgba(239, 68, 68, 0.3);
   border-radius: 4px;
 }
+
+/* Enable-order hint under the Disabled badge, and the Run now outcome. */
+.dep-hint {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-muted);
+  /* Wrap so every source name stays visible in the narrow Schedule cell. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.run-now-result {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: normal;
+}
+
+.run-now-result.run-now-error {
+  color: #f87171;
+}

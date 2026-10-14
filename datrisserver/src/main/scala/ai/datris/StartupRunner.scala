@@ -271,6 +271,34 @@ class StartupRunner extends ApplicationRunner {
     @Value("${doctor.intervalMinutes:0}")
     var doctorIntervalMinutes: Int = _
 
+    // Ordered catalog enable: how long one tap's pipeline load may take
+    // before the job marks it failed and moves on (ms; default 30 minutes).
+    @Value("${datris.catalog.enableWaitMs:1800000}")
+    var catalogEnableWaitMsRaw: String = _
+
+    // In-platform agents: max chars of one tool result fed back to the model
+    // (the UI always gets the full result). Code-bearing tools (get_tap,
+    // get_tap_version, *_script) use the larger script ceiling.
+    @Value("${datris.agent.toolResultMaxChars:32000}")
+    var agentToolResultMaxCharsRaw: String = _
+
+    @Value("${datris.agent.toolResultMaxCharsScript:131072}")
+    var agentToolResultMaxCharsScriptRaw: String = _
+
+    private def configureAgentToolResultCaps(): Unit = {
+        import ai.datris.util.ToolResultTrim
+        def cap(key: String, raw: String, default: Int): Option[Int] = {
+            val parsed = ToolResultTrim.parseCap(raw)
+            if (parsed.isEmpty && Option(raw).exists(_.trim.nonEmpty))
+                logger.warn(key + "='" + raw.trim + "' is not a positive number of chars; using " + default)
+            parsed
+        }
+        cap("datris.agent.toolResultMaxChars", agentToolResultMaxCharsRaw, ToolResultTrim.DefaultMaxChars)
+            .foreach(n => ToolResultTrim.maxChars = n)
+        cap("datris.agent.toolResultMaxCharsScript", agentToolResultMaxCharsScriptRaw, ToolResultTrim.DefaultScriptMaxChars)
+            .foreach(n => ToolResultTrim.scriptMaxChars = n)
+    }
+
     @Override
     def run(args: ApplicationArguments): Unit = {
         ai.datris.util.TapScriptRunner.assertIsolationConfig()
@@ -281,6 +309,11 @@ class StartupRunner extends ApplicationRunner {
             ai.datris.util.CodeGenRunner.warnInProcess("startup")
         initDatrisEnvironment()
         ai.datris.policy.PolicyReplay.port = serverPort
+        val enableWaitMs = scala.util.Try(Option(catalogEnableWaitMsRaw).getOrElse("").trim.toLong).toOption.filter(_ > 0)
+        if (enableWaitMs.isEmpty && Option(catalogEnableWaitMsRaw).exists(_.trim.nonEmpty))
+            logger.warn("datris.catalog.enableWaitMs='" + catalogEnableWaitMsRaw.trim + "' is not a positive number of ms; using 1800000")
+        enableWaitMs.foreach(ms => ai.datris.util.CatalogEnableJob.defaultWaitTimeoutMs = ms)
+        configureAgentToolResultCaps()
         if (recoveryAgentEnabled) {
             if (!useAgentPolicy)
                 logger.warn(

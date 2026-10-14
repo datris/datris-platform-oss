@@ -20,6 +20,29 @@
  *    else changes; 207 -> each `failed[]` name and error on the page;
  *    200 -> "Restored N taps (disabled) and M pipelines" plus the missing
  *    secret names, list reloaded, restored card shown expanded.
+ *
+ * Story: Tap dependencies (plans/stories/tap-dependency-order.md), Acceptance
+ * bullet 8: the restore response's `dependentTaps: N` (N > 0) appends to the
+ * `.import-result-banner` "N taps read tables produced by other taps in this
+ * catalog; run their sources first (see enable order)." `0` or absent: nothing.
+ *
+ * Story: Enable a catalog's taps in dependency order
+ * (plans/stories/tap-dependency-order-enable.md), Acceptance bullet 7.
+ * Contract pinned here (names the story left open are chosen here):
+ *  Card header: `button.enable-ordered-btn` ("Enable in order") for write
+ *    users on named catalogs with at least one disabled (`enabled === false`)
+ *    non-placeholder tap; never on Uncataloged; absent when every tap is enabled.
+ *  Click -> `PipelineService.enableOrder(name)`, then `.enable-ordered-confirm`
+ *    (copy of the delete-confirm block) lists each level's tap names and has
+ *    `button.enable-ordered-start` -> `PipelineService.enableOrdered(name)`.
+ *  On the 202 body `{jobId, catalog, plan}`: poll
+ *    `PipelineService.enableOrderedStatus(name)` every 5 s; each status
+ *    `taps[]` entry `{name, level, phase, reason}` renders one
+ *    `.enable-ordered-row` (tap name, level, phase, reason) inside
+ *    `.enable-ordered-progress`, with `button.enable-ordered-cancel` ->
+ *    `PipelineService.cancelEnableOrdered(name)`.
+ *  A status with `active: false` (finished: `finishedAt` set) stops polling
+ *    and calls loadCatalogs(). 403/409 from enableOrdered -> `.move-error-banner`.
  */
 import { ComponentFixture, TestBed, fakeAsync, tick, flush, discardPeriodicTasks } from '@angular/core/testing';
 import { CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA } from '@angular/core';
@@ -46,9 +69,21 @@ describe('DataCatalogComponent — catalog download and import', () => {
   let pipelinesData: any[];
   let tapSvc: any;
   let pipeSvc: any;
+  let enableOrderBody: any;
+  let jobStarted: any;
+  let jobStatus: any;
 
   beforeEach(async () => {
     sessionStorage.removeItem('catalog.expanded');
+    enableOrderBody = {
+      catalog: 'e2e_a', cycles: [], warnings: [],
+      levels: [
+        { level: 1, taps: [{ name: 't_a', enabled: false, blockedBy: [], hasPassingTest: false, ready: false }] },
+        { level: 2, taps: [{ name: 't_b', enabled: false, blockedBy: ['t_a'], hasPassingTest: false, ready: false }] }
+      ]
+    };
+    jobStarted = { jobId: 'job-1', catalog: 'e2e_a', plan: { levels: enableOrderBody.levels, cycles: [] } };
+    jobStatus = { active: false };
     tapsData = [
       { name: '__catalog__e2e_a', catalog: 'e2e_a', description: 'Catalog placeholder' },
       { name: 't_a', catalog: 'e2e_a' },
@@ -71,6 +106,10 @@ describe('DataCatalogComponent — catalog download and import', () => {
       deleteCatalog: jasmine.createSpy('deleteCatalog').and.returnValue(of({ detached: [], failed: [] })),
       // Never emits: the test only checks the call and the in-flight state.
       exportCatalog: jasmine.createSpy('exportCatalog').and.callFake(() => new Subject<any>()),
+      enableOrder: jasmine.createSpy('enableOrder').and.callFake(() => of(enableOrderBody)),
+      enableOrdered: jasmine.createSpy('enableOrdered').and.callFake(() => of(jobStarted)),
+      enableOrderedStatus: jasmine.createSpy('enableOrderedStatus').and.callFake(() => of(jobStatus)),
+      cancelEnableOrdered: jasmine.createSpy('cancelEnableOrdered').and.returnValue(of({ cancelled: true })),
       restoreCatalog: jasmine.createSpy('restoreCatalog').and.returnValue(of(new HttpResponse({
         status: 200,
         body: { restored: { taps: [], pipelines: [] }, skipped: [], failed: [], missingSecrets: [], warnings: [], tapsDisabled: true }
@@ -496,5 +535,234 @@ describe('DataCatalogComponent — catalog download and import', () => {
     expect(panel.querySelector('.skip-state-info')).withContext('second open').not.toBeNull();
     expect(panel.querySelector('.overwrite-info')).withContext('first closed').toBeNull();
     expect(panel.querySelectorAll('.info-popover').length).toBe(1);
+  }));
+
+  // ── Tap dependencies: dependentTaps sentence in the restore banner ─────
+
+  const depSentence = 'taps read tables produced by other taps in this catalog; run their sources first (see enable order).';
+
+  function restoreWith(extra: any): string {
+    pipeSvc.restoreCatalog.and.returnValue(of(new HttpResponse({
+      status: 200,
+      body: Object.assign({
+        restored: { taps: ['t1', 't2', 't3', 't4'], pipelines: ['p1'] }, skipped: [], failed: [],
+        missingSecrets: [], warnings: [], tapsDisabled: true, stateRestored: true
+      }, extra)
+    })));
+    const panel = prepareImport('e2e_dep');
+    if (!panel) return '';
+    restoreBtn(panel).click();
+    settle();
+    const banner = el.querySelector('.import-result-banner') as HTMLElement | null;
+    expect(banner).withContext('.import-result-banner after restore').not.toBeNull();
+    return (banner?.textContent || '').replace(/\s+/g, ' ');
+  }
+
+  it('dependentTaps: 3 appends the dependency sentence to the restore banner', fa(() => {
+    const text = restoreWith({ dependentTaps: 3 });
+    expect(text).toContain('3 ' + depSentence);
+  }));
+
+  it('the dependency sentence is separated from the sentence before it by a space', fa(() => {
+    const text = restoreWith({ dependentTaps: 2 });
+    expect(text).toMatch(/\. 2 taps read tables produced/);
+    expect(text).not.toMatch(/\.2 taps/);
+  }));
+
+  it('dependentTaps: 1 uses the singular', fa(() => {
+    const text = restoreWith({ dependentTaps: 1 });
+    expect(text).toContain('1 tap reads tables produced by other taps in this catalog; run their sources first (see enable order).');
+  }));
+
+  it('dependentTaps: 0 renders no dependency sentence', fa(() => {
+    const text = restoreWith({ dependentTaps: 0 });
+    expect(text).toMatch(/Restored 4 taps \(disabled\)/);
+    expect(text).not.toContain('read tables produced by other taps');
+  }));
+
+  it('a restore body without dependentTaps renders no dependency sentence', fa(() => {
+    const text = restoreWith({});
+    expect(text).toMatch(/Restored 4 taps \(disabled\)/);
+    expect(text).not.toContain('read tables produced by other taps');
+  }));
+
+  // ── Enable in order (tap-dependency-order-enable.md, bullet 7) ────────
+
+  function withEnableTaps(): void {
+    tapsData = [
+      { name: '__catalog__e2e_a', catalog: 'e2e_a', description: 'Catalog placeholder' },
+      { name: 't_a', catalog: 'e2e_a', enabled: false },
+      { name: 't_b', catalog: 'e2e_a', enabled: false },
+      { name: '__catalog__e2e_on', catalog: 'e2e_on', description: 'Catalog placeholder' },
+      { name: 't_on', catalog: 'e2e_on', enabled: true },
+      { name: 't_u', enabled: false }
+    ];
+  }
+
+  function runningStatus(): any {
+    return {
+      active: true, jobId: 'job-1', catalog: 'e2e_a',
+      taps: [
+        { name: 't_a', level: 1, phase: 'landed', reason: null },
+        { name: 't_b', level: 2, phase: 'running', reason: null }
+      ]
+    };
+  }
+
+  /** Clicks Enable in order on e2e_a, then Start in the confirm panel. */
+  function startJob(): boolean {
+    const btn = card('e2e_a').querySelector('button.enable-ordered-btn') as HTMLButtonElement | null;
+    expect(btn).withContext('Enable in order button on e2e_a').not.toBeNull();
+    if (!btn) return false;
+    btn.click();
+    settle();
+    expect(pipeSvc.enableOrder).toHaveBeenCalledWith('e2e_a');
+    const panel = el.querySelector('.enable-ordered-confirm') as HTMLElement | null;
+    expect(panel).withContext('.enable-ordered-confirm plan panel').not.toBeNull();
+    if (!panel) return false;
+    const start = panel.querySelector('button.enable-ordered-start') as HTMLButtonElement | null;
+    expect(start).withContext('button.enable-ordered-start').not.toBeNull();
+    if (!start) return false;
+    start.click();
+    settle();
+    return true;
+  }
+
+  it('the Enable in order button shows on a catalog with a disabled tap, not when every tap is enabled, not on Uncataloged', fa(() => {
+    withEnableTaps();
+    settle();
+    expect(card('e2e_a').querySelector('button.enable-ordered-btn')).withContext('catalog with disabled taps').not.toBeNull();
+    expect(card('e2e_on').querySelector('button.enable-ordered-btn')).withContext('every tap enabled').toBeNull();
+    expect(card('Uncataloged').querySelector('button.enable-ordered-btn')).withContext('Uncataloged').toBeNull();
+  }));
+
+  it('the confirm panel lists the plan levels and starts nothing until Start is clicked', fa(() => {
+    withEnableTaps();
+    settle();
+    const btn = card('e2e_a').querySelector('button.enable-ordered-btn') as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    if (!btn) return;
+    btn.click();
+    settle();
+    const panel = el.querySelector('.enable-ordered-confirm') as HTMLElement | null;
+    expect(panel).withContext('.enable-ordered-confirm').not.toBeNull();
+    const text = (panel?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('t_a');
+    expect(text).toContain('t_b');
+    expect(text.indexOf('t_a')).withContext('level 1 before level 2').toBeLessThan(text.indexOf('t_b'));
+    expect(pipeSvc.enableOrdered).not.toHaveBeenCalled();
+    expect(mutatingCalls()).toBe(0);
+  }));
+
+  it('a 202 starts polling every 5 s and renders one row per tap with its phase', fa(() => {
+    withEnableTaps();
+    jobStatus = runningStatus();
+    settle();
+    tick(3000);
+    if (!startJob()) return;
+    expect(pipeSvc.enableOrdered).toHaveBeenCalledWith('e2e_a');
+    tick(5000);
+    fixture.detectChanges();
+    expect(pipeSvc.enableOrderedStatus).toHaveBeenCalledWith('e2e_a');
+    const before = pipeSvc.enableOrderedStatus.calls.count();
+    tick(5000);
+    fixture.detectChanges();
+    expect(pipeSvc.enableOrderedStatus.calls.count()).withContext('polled again after 5 s').toBeGreaterThan(before);
+    const progress = el.querySelector('.enable-ordered-progress') as HTMLElement | null;
+    expect(progress).withContext('.enable-ordered-progress').not.toBeNull();
+    const rows = Array.from(el.querySelectorAll('.enable-ordered-row')) as HTMLElement[];
+    expect(rows.length).withContext('one row per tap').toBe(2);
+    const rowA = rows.find(r => (r.textContent || '').includes('t_a'));
+    const rowB = rows.find(r => (r.textContent || '').includes('t_b'));
+    expect(rowA?.textContent || '').toContain('landed');
+    expect(rowB?.textContent || '').toContain('running');
+  }));
+
+  it('Cancel calls cancelEnableOrdered with the catalog name', fa(() => {
+    withEnableTaps();
+    jobStatus = runningStatus();
+    settle();
+    if (!startJob()) return;
+    tick(5000);
+    fixture.detectChanges();
+    const cancel = el.querySelector('button.enable-ordered-cancel') as HTMLButtonElement | null;
+    expect(cancel).withContext('button.enable-ordered-cancel while the job runs').not.toBeNull();
+    if (!cancel) return;
+    cancel.click();
+    settle();
+    expect(pipeSvc.cancelEnableOrdered).toHaveBeenCalledWith('e2e_a');
+  }));
+
+  it('a finished job stops polling and reloads catalogs', fa(() => {
+    withEnableTaps();
+    jobStatus = runningStatus();
+    settle();
+    tick(3000);
+    if (!startJob()) return;
+    tick(5000);              // t = 8 s: a running poll
+    fixture.detectChanges();
+    tick(3000);              // t = 11 s: past the page's own 10 s refresh
+    fixture.detectChanges();
+    expect(pipeSvc.enableOrderedStatus).toHaveBeenCalled();
+    jobStatus = Object.assign(runningStatus(), {
+      active: false, finishedAt: 1760000000000,
+      taps: [
+        { name: 't_a', level: 1, phase: 'landed', reason: null },
+        { name: 't_b', level: 2, phase: 'skipped', reason: 'source t_a did not land data' }
+      ]
+    });
+    const loads = tapSvc.getTaps.calls.count();
+    tick(5000);              // t = 16 s: the finished poll (before the 20 s refresh)
+    fixture.detectChanges();
+    expect(tapSvc.getTaps.calls.count()).withContext('catalogs reloaded on finish').toBeGreaterThan(loads);
+    const polls = pipeSvc.enableOrderedStatus.calls.count();
+    tick(30000);
+    fixture.detectChanges();
+    expect(pipeSvc.enableOrderedStatus.calls.count()).withContext('no polling after finish').toBe(polls);
+  }));
+
+  it('a 409 from enableOrdered shows in the error banner', fa(() => {
+    withEnableTaps();
+    pipeSvc.enableOrdered.and.returnValue(httpError(409, { error: "An enable job for catalog 'e2e_a' is already running" }));
+    settle();
+    if (!startJob()) return;
+    const banner = el.querySelector('.move-error-banner') as HTMLElement | null;
+    expect(banner).withContext('.move-error-banner on 409').not.toBeNull();
+    expect(banner?.textContent || '').toContain('already running');
+    tick(10000);
+    expect(pipeSvc.enableOrderedStatus).not.toHaveBeenCalled();
+  }));
+
+  it('a job already running on page load (started elsewhere) shows its progress and Cancel, not the button, and polls', fa(() => {
+    withEnableTaps();
+    enableOrderBody = Object.assign({}, enableOrderBody, { job: runningStatus() });
+    jobStatus = runningStatus();
+    settle();
+    expect(pipeSvc.enableOrder).toHaveBeenCalledWith('e2e_a');
+    expect(pipeSvc.enableOrder).not.toHaveBeenCalledWith('e2e_on');
+    expect(pipeSvc.enableOrder).not.toHaveBeenCalledWith('Uncataloged');
+    expect(pipeSvc.enableOrdered).withContext('the probe starts nothing').not.toHaveBeenCalled();
+    expect(card('e2e_a').querySelector('button.enable-ordered-btn')).withContext('no Start button while a job runs').toBeNull();
+    const rows = Array.from(el.querySelectorAll('.enable-ordered-row')) as HTMLElement[];
+    expect(rows.length).toBe(2);
+    const cancel = el.querySelector('button.enable-ordered-cancel') as HTMLButtonElement | null;
+    expect(cancel).withContext('Cancel offered for a job started elsewhere').not.toBeNull();
+    tick(5000);
+    fixture.detectChanges();
+    expect(pipeSvc.enableOrderedStatus).toHaveBeenCalledWith('e2e_a');
+    cancel?.click();
+    settle();
+    expect(pipeSvc.cancelEnableOrdered).toHaveBeenCalledWith('e2e_a');
+  }));
+
+  it('the page-load probe seeds nothing when no job is running', fa(() => {
+    withEnableTaps();
+    settle();
+    expect(pipeSvc.enableOrder).toHaveBeenCalledWith('e2e_a');
+    expect(el.querySelector('.enable-ordered-progress')).toBeNull();
+    expect(card('e2e_a').querySelector('button.enable-ordered-btn')).not.toBeNull();
+    tick(10000);
+    expect(pipeSvc.enableOrderedStatus).not.toHaveBeenCalled();
+    expect(pipeSvc.enableOrdered).not.toHaveBeenCalled();
   }));
 });

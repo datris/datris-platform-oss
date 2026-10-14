@@ -83,6 +83,8 @@ Do **not** use `docker compose restart` to apply an `.env` change. `restart` reu
 | `tapMaxOutputMB` | unset | **Deprecated** alias of `pipelineMaxPayloadMB`, honoured for one release only when `pipelineMaxPayloadMB` is unset; a warning is logged at boot when it is set. |
 | `scratchInlineRows` | `200` | For Live Read pipelines (the `scratch` destination): how many result rows ride inline on the run status (`resultPreview`), and the hard maximum page size for `GET /api/v1/pipeline/result`. Override per deployment with the `SCRATCH_INLINE_ROWS` env var. |
 | `scratchRetentionHours` | `24` | How long a Live Read result object is kept before the hourly sweep deletes it; reads after expiry return 410 and the caller runs the pipeline again. A Live Read result holds whatever the source returned, so retention is the mitigation — keep it short. `0` expires results immediately. Override per deployment with the `SCRATCH_RETENTION_HOURS` env var. |
+| `datris.agent.toolResultMaxChars` | `32000` | In-app assistants (Assistant, Ops, Catalog, Configuration and Search chats, recovery agent): the most characters of one tool result passed back to the model. The chat always shows the full result; past the cap the model sees a note saying how much was cut. |
+| `datris.agent.toolResultMaxCharsScript` | `131072` | The same cap for tools that return code (`get_tap`, `get_tap_version`, `diff_tap_versions`, and any tool whose name ends in `_script`), so an assistant can read a whole tap script. Never lower than `datris.agent.toolResultMaxChars`. |
 
 ### Authentication
 

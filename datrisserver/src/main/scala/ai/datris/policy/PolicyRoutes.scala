@@ -24,7 +24,10 @@ object PolicyRoutes {
     /** (method, path pattern, action key). The parent `resource:action`
       * must still be what CapabilityRoutes returns for the same route. */
     private val subActions: Seq[(String, String, String)] = Seq(
-        ("POST", "/api/v1/pipeline/dest-types", "pipeline:update:dest-types")
+        ("POST", "/api/v1/pipeline/dest-types", "pipeline:update:dest-types"),
+        // Ordered enable of a whole catalog (tests, enables and runs every
+        // tap in dependency order): one approval for the job, not one per tap.
+        ("POST", "/api/v1/catalog/*/enable-ordered", "tap:run:enable-ordered")
     )
 
     /** Every key a policy may name. */
@@ -50,6 +53,14 @@ object PolicyRoutes {
     }
 
     def resourceType(actionKey: String): String = actionKey.split(":")(0)
+
+    /** Actions whose path name is a catalog, not a tap or pipeline: they
+      * have no definition version, so a queued approval records none (looking
+      * the catalog name up as a tap would make an unrelated tap of the same
+      * name's edits mark the approval stale). */
+    private val catalogActions: Set[String] = Set("tap:run:enable-ordered")
+
+    def targetsCatalog(actionKey: String): Boolean = catalogActions.contains(actionKey)
 
     private val ReadActions = Set("read")
     private val ReadResources = Set("query", "search", "metadata", "mcp")
