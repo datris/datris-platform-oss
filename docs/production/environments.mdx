@@ -29,7 +29,7 @@ prod  datris.internal        installer, DATRIS_GOVERNED=1, DATRIS_ENV=production
 
 - Each install has its own MongoDB, MinIO, Vault, Postgres, users, agent policy and audit log. The installs share nothing, so the isolation needs no configuration.
 - Compose publishes fixed ports (8080, 4200, 3000, 9000 and others), so running two stacks on one host is not a supported layout.
-- The internal environment prefix (`oss`, as in `oss-data` and `oss/postgres`) is the same on every install. Secret paths and bucket names in a pipeline therefore carry over from one install to another.
+- The internal environment prefix (as in `oss-data` and `oss/postgres`) is `oss` by default. Leave it at the default on every install so that secret paths and bucket names in a pipeline carry over from one install to another.
 - Give qa the same instance size as prod so that QA runs are representative. Dev can be smaller and can use the bundled Postgres and MongoDB as destinations.
 
 <Note>
@@ -98,7 +98,7 @@ When you restore, the target compares each archived tap script with the file at 
 | Same bytes as the archive | Pins the tap to the existing commit and makes no commit. This is the normal case after the pull request is merged. |
 | Missing | Commits the archived script on the branch. |
 | Different, and the tap is not yet in the target catalog | Refuses the whole restore with 409, names the file, and writes nothing. |
-| Different, and the tap is already in the target catalog (`--overwrite`) | Commits the archived script over it. If the file was changed in the repository since that tap's recorded commit, the tap is not restored and the result lists it with the reason. |
+| Different, and the tap is already in the target catalog (`--overwrite`) | Commits the archived script over it. If the tap on the target is GitHub-backed and the file was changed in the repository since that tap's recorded commit, the tap is not restored and the result lists it with the reason. |
 
 Merge the pull request before you restore. Then the archive matches the branch and the restore leaves the repository unchanged. This comparison covers tap scripts only: AI data-quality and transformation scripts are regenerated on the target, as described under [Limits today](#limits-today).
 
