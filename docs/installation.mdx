@@ -334,6 +334,17 @@ docker info --format '{{.MemTotal}}' | awk '{printf "%.1f GB\n", $1/1024/1024/10
 
 If the VM is capped below what you need, raise it in Docker Desktop → Settings → Resources → Memory. The JVM `-Xmx` must be smaller than the Docker VM's allocation, otherwise the kernel inside the VM will OOM-kill containers under load.
 
+**Runner limits.** The two script runners carry their own ceilings so a burst of taps or AI rules cannot exhaust the host: `datris-tap-runner` at 1 CPU / 2 GB / 256 processes and `datris-codegen-runner` at 1 CPU / 1 GB / 128 processes, each running at most 4 scripts at once (further runs wait their turn). These are limits, not reservations, so the memory figures above do not grow. On a larger host that runs many taps on overlapping schedules, raise them together in `.env`:
+
+| Variable | Default | Raise when |
+|---|---|---|
+| `TAP_RUNNER_MAX_CONCURRENT` | `4` | Tap runs show `queued` in their history, or `datris doctor` warns on `runner.concurrency` |
+| `TAP_RUNNER_CPUS` | `1` | The host has 2 or more CPUs to spare: `2` is a good value for most hosts. Never set it above the host's CPU count; Docker then refuses to create the container |
+| `TAP_RUNNER_MEMORY` | `2g` | You raise `TAP_RUNNER_MAX_CONCURRENT` (about 512 MB per extra concurrent script) |
+| `CODEGEN_RUNNER_MAX_CONCURRENT` / `CODEGEN_RUNNER_MEMORY` | `4` / `1g` | Many pipelines run AI rules or transformations at the same time |
+
+See [Overload protection](/tap-execution-isolation#overload-protection) for every setting.
+
 ## Building from Source
 
 For development or contributing:

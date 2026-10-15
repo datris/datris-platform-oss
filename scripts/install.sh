@@ -38,7 +38,7 @@
 #                       Optionally with AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
 #                       AWS_REGION (leave the keys unset to use the host's IAM
 #                       role / default credential chain) and BEDROCK_MODEL
-#                       (default: anthropic.claude-fable-5-1)
+#                       (default: anthropic.claude-opus-5-5)
 #   A fresh install with no AI provider stops before pulling anything (the
 #   stack cannot start without one), except under DATRIS_NO_START=1.
 #   DATRIS_POSTGRES     bundled|external|none        (default: bundled)

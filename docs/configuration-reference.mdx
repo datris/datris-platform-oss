@@ -269,7 +269,7 @@ AI configuration is split into four independent slots (three seeded at first boo
 | Property | Default | Description |
 |----------|---------|-------------|
 | `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
-| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the recommended chat model — Anthropic gets `claude-fable-5-1`, OpenAI gets `gpt-5.6-sol`. |
+| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the recommended chat model — Anthropic gets `claude-opus-5-5`, OpenAI gets `gpt-5.6-sol`. |
 | `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest code-generation model — Anthropic gets `claude-opus-5-5`, OpenAI gets `gpt-5.6-sol`. |
 | `ai.embedding.secretName` | `oss/embedding` | Vault secret for the embedding model used by vector destinations (Chroma, Qdrant, Milvus, Weaviate, pgvector) and search. For Anthropic-only deployments this is seeded to point at the bundled TEI sidecar serving `BAAI/bge-m3` (1024-dim), so vector destinations work out of the box without an OpenAI key. |
 | `ai.webSearch.secretName` | `oss/web-search` | Vault secret for the optional live web-search provider used during tap script generation and diagnosis. Not seeded at first boot — configure it from the Configuration tab. |
@@ -281,7 +281,7 @@ Each Vault secret is self-describing and looks like:
 vault kv put secret/oss/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-fable-5-1" \
+  model="claude-opus-5-5" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
@@ -293,14 +293,14 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AI_PROVIDER` | auto | Explicit provider pick (`anthropic`, `openai`, `azure`, `bedrock`, or `grok`) for the `ai-primary` and `codegen` slots. When unset, whichever API key is present wins (OpenAI wins ties; azure and grok are auto-picked only when they hold the sole key; bedrock is never auto-picked). |
-| `ANTHROPIC_MODEL` | `claude-fable-5-1` | Model seeded into `oss/ai-primary` on the Anthropic path. |
+| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Model seeded into `oss/ai-primary` on the Anthropic path. |
 | `OPENAI_MODEL` | `gpt-5.6-sol` | Model seeded into `oss/ai-primary` on the OpenAI path. Any OpenAI chat model id is accepted, including `gpt-6-astra`. |
 | `AZURE_OPENAI_ENDPOINT` | — | Azure resource base URL (`https://YOUR-RESOURCE.openai.azure.com`). Required on the Azure path. |
 | `AZURE_OPENAI_MODEL` | — | Chat deployment name seeded into `oss/ai-primary` on the Azure path. Required on the Azure path. |
 | `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | — | Entra ID service principal for keyless Azure OpenAI auth (no API key stored anywhere). Single-tenant only; the Configuration tab's Azure credentials section is the equivalent UI path. On Azure compute, leave all auth unset to use the server's managed identity. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | — | AWS credentials for the Bedrock path (`AI_PROVIDER=bedrock`). Optional — leave unset to use the server's IAM role / default credential chain. Never selects Bedrock by itself. |
 | `AWS_REGION` | — | AWS region for the Bedrock path (e.g. `us-east-1`). |
-| `BEDROCK_MODEL` | `anthropic.claude-fable-5-1` | Invokable Bedrock model id seeded into `oss/ai-primary` on the Bedrock path. |
+| `BEDROCK_MODEL` | `anthropic.claude-opus-5-5` | Invokable Bedrock model id seeded into `oss/ai-primary` on the Bedrock path. |
 | `XAI_API_KEY` | — | Grok (xAI) API key from console.x.ai, for the Grok path (`AI_PROVIDER=grok`, or auto-picked when it's the sole key). |
 | `GROK_MODEL` | `grok-4.7` | Grok model seeded into `oss/ai-primary` on the Grok path. |
 | `CODEGEN_MODEL` | `claude-opus-5-5` or `gpt-5.6-sol` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`; the Bedrock path defaults to `anthropic.claude-opus-5-5`; the Grok path defaults to `grok-4.7`). |
@@ -424,6 +424,11 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `TAP_MAX_OUTPUT_MB` | unset | **Deprecated** alias of `PIPELINE_MAX_PAYLOAD_MB`, honoured for one release when `PIPELINE_MAX_PAYLOAD_MB` is unset; the server logs a deprecation warning at boot while the alias is set. |
 | `TAP_SCRIPT_TIMEOUT_SECONDS` | `300` | Override `tapScriptTimeoutSeconds`: how long a tap **test** may run before it is killed, in seconds. Keep it short so a broken script fails in seconds. A timed-out test names this variable in its error. Compose forwards it without a default, so leaving it out of `.env` lets the server apply 300 and report `tapScriptTimeoutSecondsSource` as `default` on `GET /api/v1/version`. |
 | `TAP_RUN_TIMEOUT_SECONDS` | `3600` (or `tapScriptTimeoutSeconds` when higher) | Override `tapRunTimeoutSeconds`: how long a real or scheduled tap **run** may take, in seconds. Raise it when a large streaming source needs more than an hour to land in one run; a timed-out run names this variable in its error. Compose forwards it without a default, so leaving it out of `.env` resolves to `max(3600, tapScriptTimeoutSeconds)` rather than a flat 3600. |
+| `TAP_RUNNER_QUEUE_TIMEOUT_SECONDS` | `600` | How long a tap run or generated script waits for a free runner slot when the runner is busy, in seconds. A tap run that waited shows `queued N s` in its run history; one that still has no slot after this fails naming `TAP_RUNNER_MAX_CONCURRENT`. See [Overload protection](/tap-execution-isolation#overload-protection). |
+| `TAP_RUNNER_MAX_CONCURRENT` / `CODEGEN_RUNNER_MAX_CONCURRENT` | `4` / `4` | Passed to the `datris-tap-runner` / `datris-codegen-runner` containers (not to `datris`): the most scripts each runs at once. |
+| `TAP_RUNNER_SCRIPT_MEMORY_MB` / `CODEGEN_RUNNER_SCRIPT_MEMORY_MB` | `1024` / `1024` | Passed to the runner containers: address-space limit per script, in MB (`0` = no limit). |
+| `TAP_RUNNER_CPUS`, `TAP_RUNNER_MEMORY`, `TAP_RUNNER_PIDS` | `1`, `2g`, `256` | CPU, memory and process ceilings of the `datris-tap-runner` container. Set `TAP_RUNNER_CPUS=2` or more on hosts with the cores; Docker refuses a value above the host's CPU count. |
+| `CODEGEN_RUNNER_CPUS`, `CODEGEN_RUNNER_MEMORY`, `CODEGEN_RUNNER_PIDS` | `1`, `1g`, `128` | CPU, memory and process ceilings of the `datris-codegen-runner` container. |
 | `DATRIS_MAX_UPLOAD_MB` | `1024` | Largest single file `POST /api/v1/pipeline/upload` accepts, in MB (`spring.servlet.multipart.max-file-size` / `max-request-size`). Deliberately separate from `PIPELINE_MAX_PAYLOAD_MB`: the upload is received before the API key is checked, so this ceiling bounds pre-auth disk exposure and stays small. Raise it to accept multi-GB uploads; the run itself is then bounded by `PIPELINE_MAX_PAYLOAD_MB`. |
 | `DATRIS_TEMP_DIR` | `/tmp/datris-staging` | Local directory where a pipeline run's payload is staged on disk (one sub-directory per run, removed when the run ends; stale runs are swept at boot). Backed by the named `datris-staging` volume in the default compose file. |
 | `PIPELINE_MATERIALIZE_MAX_MB` | `256` | Largest staged payload (MB) a pipeline feature that still reads the whole payload into memory may materialize: deduplication, JavaScript row functions, JSON/XML schema validation, and a REST preprocessor or `restEndpoint` row function in batch mode with no batch size (one call carrying every row). Above it the run fails with an error naming the feature and this variable — `<feature> reads the whole payload into memory (N bytes) and PIPELINE_MATERIALIZE_MAX_MB is 256 MB. Raise it for this install, or use a CodeGen rule/transformation, which streams.` — instead of exhausting the JVM heap. Loaders, provenance stamping, CodeGen rules/transformations and batched REST calls stream the staged file and are never subject to it. Raise together with `JAVA_OPTS` on larger hosts. |

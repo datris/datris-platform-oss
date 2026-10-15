@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{AIConfig, DatrisEnvironment}
+import ai.datris.model.{AIConfig, DatrisEnvironment, TapRunLog}
 import com.google.gson.{Gson, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -187,6 +187,17 @@ object DoctorService {
         /** [[CodeGenRunner.health]]: Left = why the runner cannot run a script
           * (unreachable, older image, token rejected, scratch not writable). */
         def codegenRunnerHealth(): Either[String, Unit]
+
+        /** USE_TAP_RUNNER: taps run in the datris-tap-runner sidecar. */
+        def tapRunnerEnabled(): Boolean
+
+        /** GET TAP_RUNNER_URL/health as (active, maxConcurrent). Left = why the
+          * counters could not be read (unreachable, or an older runner image). */
+        def tapRunnerHealth(): Either[String, (Int, Int)]
+
+        /** Tap runs in the last `hours` that waited for a runner slot, runs turned
+          * away after the queue timeout, and the longest wait in ms. */
+        def recentRunnerWaits(hours: Int = 24): (Int, Int, Long)
     }
 
     private val Day = 86400L
@@ -632,6 +643,48 @@ object DoctorService {
                 }
     }
 
+    /** Runner overload protection (plans/stories/runner-overload-protection.md).
+      * skip: taps run in-process; ok: the concurrency setting and slot use, no run
+      * waited in the last 24 h; warn: runs waited for a slot (or slot use could
+      * not be read); error: a run was turned away after the queue timeout. Not
+      * startup-safe: it reads the tap run log. */
+    class RunnerConcurrencyCheck(probes: Probes) extends Check {
+        val id = "runner.concurrency"
+        val startupSafe = false
+        private val Hours = 24
+        private val Remediation =
+            "Raise TAP_RUNNER_MAX_CONCURRENT in .env (if the host has room; the runner's TAP_RUNNER_CPUS / TAP_RUNNER_MEMORY " +
+                "may need raising with it) or stagger tap schedules, then `docker compose up -d datris-tap-runner`. " +
+                "TAP_RUNNER_QUEUE_TIMEOUT_SECONDS sets how long a run waits for a slot."
+        def run(): CheckResult = {
+            if (!probes.tapRunnerEnabled()) return skip("taps run in-process (USE_TAP_RUNNER is not true)")
+            val slotUse = probes.tapRunnerHealth() match {
+                case Right((active, max)) => Right("TAP_RUNNER_MAX_CONCURRENT=" + max + ", " + active + " of " + max + " slots in use")
+                case Left(why) => Left("slot use unknown (" + why + ")")
+            }
+            val (waited, rejected, maxQueuedMs) = probes.recentRunnerWaits(Hours)
+            val prefix = slotUse.merge
+            def runs(n: Int) = n + (if (n == 1) " run" else " runs")
+            val waitText = runs(waited) + " waited (longest " + ((maxQueuedMs + 500L) / 1000L) + " s)"
+            if (rejected > 0)
+                error(
+                    prefix + "; " + runs(rejected) + " turned away after waiting for a slot and " + waitText + " in the last " + Hours + " h",
+                    Remediation
+                )
+            else if (waited > 0) warn(prefix + "; " + waitText + " in the last " + Hours + " h", Remediation)
+            else
+                slotUse match {
+                    case Right(text) => ok(text + ", no run waited in the last " + Hours + " h")
+                    case Left(text) =>
+                        warn(
+                            text + ", no run waited in the last " + Hours + " h",
+                            "Check `docker compose logs datris-tap-runner`; an image without slot counters is older than this server: " +
+                                "`docker compose pull datris-tap-runner && docker compose up -d datris-tap-runner`."
+                        )
+                }
+        }
+    }
+
     object CodeGenIsolationCheck {
         private[util] def notUpYet(why: String): Boolean =
             why != null && (why.contains("Connection refused") || why.contains("Unknown host"))
@@ -851,6 +904,7 @@ object DoctorService {
             new StagingOrphansCheck(probes),
             new TapSecretScopeCheck(probes),
             new CodeGenIsolationCheck(probes, startup),
+            new RunnerConcurrencyCheck(probes),
             new AiSampleValuesCheck(probes),
             new GovernanceControlsCheck(probes),
             new AuditStrictCheck(probes),
@@ -1100,6 +1154,42 @@ object DoctorService {
         def codegenRunnerEnabled(): Boolean = CodeGenRunner.enabled
 
         def codegenRunnerHealth(): Either[String, Unit] = CodeGenRunner.health()
+
+        def tapRunnerEnabled(): Boolean = TapScriptRunner.useTapRunner
+
+        def tapRunnerHealth(): Either[String, (Int, Int)] = {
+            val url = TapScriptRunner.tapRunnerUrl.stripSuffix("/") + "/health"
+            try {
+                val (status, body) = httpGet(url, 3000)
+                if (status != 200) Left("GET " + url + " answered " + status)
+                else {
+                    val o = com.google.gson.JsonParser.parseString(body).getAsJsonObject
+                    if (o.has("active") && o.has("maxConcurrent")) Right((o.get("active").getAsInt, o.get("maxConcurrent").getAsInt))
+                    else Left("datris-tap-runner does not report slot use: its image is older than this server")
+                }
+            } catch {
+                case e: Exception => Left(e.getClass.getSimpleName + Option(e.getMessage).map(": " + _).getOrElse("") + " (" + url + ")")
+            }
+        }
+
+        def recentRunnerWaits(hours: Int): (Int, Int, Long) = {
+            val env = DatrisEnvironment.current
+            val since = System.currentTimeMillis() - hours * 3600L * 1000L
+            val gson = new Gson()
+            val logs: List[TapRunLog] =
+                try NoSQLDbUtil.getItemsSinceAsJSON(env.tapLogTableName, "created_at", since, 10000).flatMap { json =>
+                        try {
+                            val row = com.google.gson.JsonParser.parseString(json).getAsJsonObject
+                            if (row.has("value")) Some(gson.fromJson(row.get("value"), classOf[TapRunLog])) else None
+                        } catch { case _: Exception => None }
+                    }
+                catch { case e: Exception => logger.debug("runner wait scan for doctor failed: " + e.getMessage); Nil }
+            def turnedAway(l: TapRunLog) = l.error != null && l.error.startsWith("Tap runner busy")
+            // Disjoint: a turned-away run also has queuedMs > 0 but counts only as rejected.
+            val waited = logs.filter(l => l.queuedMs > 0 && !turnedAway(l))
+            val rejected = logs.count(turnedAway)
+            (waited.size, rejected, if (waited.isEmpty) 0L else waited.map(_.queuedMs).max)
+        }
 
         def probeEmbedding(provider: String, endpoint: String, model: String, apiKey: String, timeoutMs: Int): (Int, String) = {
             val env = DatrisEnvironment.values

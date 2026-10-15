@@ -468,6 +468,10 @@ services:
       TAP_RUNNER_URL: "http://datris-tap-runner:8090"
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
       TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
+      # How long (seconds) a tap run or generated script waits for a free
+      # runner slot when the runner answers busy, before failing with a message
+      # naming TAP_RUNNER_MAX_CONCURRENT. Default 600.
+      TAP_RUNNER_QUEUE_TIMEOUT_SECONDS: "${TAP_RUNNER_QUEUE_TIMEOUT_SECONDS:-600}"
       # Generated DQ / transformation script isolation. Compose default ON: the
       # scripts run in the datris-codegen-runner sidecar (no secrets, no server
       # files, no internet) and fail loudly if it is unreachable. Set
@@ -505,9 +509,21 @@ services:
     container_name: datris-tap-runner
     # tini as PID 1 reaps orphaned grandchildren of tap processes (app.py does not).
     init: true
+    # Overload protection: ceilings (not reservations) so a burst of taps cannot
+    # take the Docker host down. The /tmp tmpfs below is charged to this memory
+    # limit, hence 2g. At most TAP_RUNNER_MAX_CONCURRENT scripts run at once;
+    # the rest get "busy" and the server waits its turn. Each script is capped
+    # at TAP_RUNNER_SCRIPT_MEMORY_MB of address space. cpus defaults to 1 so a
+    # 1-vCPU host can still create the container (Docker rejects a value above
+    # the host's CPU count); raise TAP_RUNNER_CPUS to 2+ on larger hosts.
+    cpus: "${TAP_RUNNER_CPUS:-1}"
+    mem_limit: "${TAP_RUNNER_MEMORY:-2g}"
+    pids_limit: ${TAP_RUNNER_PIDS:-256}
     environment:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
       TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
+      TAP_RUNNER_MAX_CONCURRENT: "${TAP_RUNNER_MAX_CONCURRENT:-4}"
+      TAP_RUNNER_SCRIPT_MEMORY_MB: "${TAP_RUNNER_SCRIPT_MEMORY_MB:-1024}"
     volumes:
       - tap-runner-token:/tap-runner-token:ro
     depends_on:
@@ -540,9 +556,16 @@ services:
     container_name: datris-codegen-runner
     # tini as PID 1 reaps orphaned grandchildren of scripts (app.py does not).
     init: true
+    # Overload protection: same idea as datris-tap-runner, sized for generated
+    # DQ / transformation scripts. The knobs are CODEGEN_RUNNER_* in .env.
+    cpus: "${CODEGEN_RUNNER_CPUS:-1}"
+    mem_limit: "${CODEGEN_RUNNER_MEMORY:-1g}"
+    pids_limit: ${CODEGEN_RUNNER_PIDS:-128}
     environment:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
       TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
+      TAP_RUNNER_MAX_CONCURRENT: "${CODEGEN_RUNNER_MAX_CONCURRENT:-4}"
+      TAP_RUNNER_SCRIPT_MEMORY_MB: "${CODEGEN_RUNNER_SCRIPT_MEMORY_MB:-1024}"
       CODEGEN_SCRATCH_DIR: /scratch
     volumes:
       - tap-runner-token:/tap-runner-token:ro

@@ -38,7 +38,10 @@ case class TapScriptResult(
     missingSecretFields: Seq[String] = Nil,
     // Incremental-sync state the script emitted (raw JSON), or null. Committed by
     // TapRunner only after a successful real run — never on failure or test mode.
-    newState: String = null
+    newState: String = null,
+    // Milliseconds this run waited for a free datris-tap-runner slot (the runner
+    // answered busy). 0 when it never waited, and always 0 in-process.
+    queuedMs: Long = 0
 )
 
 object TapScriptRunner {
@@ -1019,6 +1022,10 @@ object TapScriptRunner {
         // the run also produced no records (see TapRunner).
         var detectedMissingSecretFields: Seq[String] = Nil
 
+        // Time spent waiting for a free sidecar slot (runner answered busy). Set by
+        // executeViaRunner, carried on success and failure results alike.
+        var queuedMs: Long = 0L
+
         // Where the wrapper writes its records (DATRIS_TAP_OUTPUT): a file in the
         // tap run's staging directory. The sidecar streams into it; in-process the
         // wrapper writes it directly.
@@ -1127,7 +1134,7 @@ object TapScriptRunner {
             secretValuesForMasking = secretValues
             val (rawOutput, rawLogs) =
                 if (useTapRunner) {
-                    executeViaRunner(scriptContent, allEnvVars, tapConfig.packages, timeout, secretValues, outputPath)
+                    executeViaRunner(scriptContent, allEnvVars, tapConfig.packages, timeout, secretValues, outputPath, ms => queuedMs = ms)
                 } else {
                     warnInProcess("tap " + tapConfig.name)
                     // In-process path: materialize the script/wrapper, install any extra
@@ -1225,7 +1232,8 @@ object TapScriptRunner {
                 dataType,
                 columns,
                 missingSecretFields = detectedMissingSecretFields,
-                newState = newStateJson
+                newState = newStateJson,
+                queuedMs = queuedMs
             )
         } catch {
             case e: TapTimeoutException =>
@@ -1238,7 +1246,13 @@ object TapScriptRunner {
                 val maskedLogs = if (secretValuesForMasking.nonEmpty) maskSecrets(e.logs, secretValuesForMasking) else e.logs
                 logger.error("TapScriptRunner failed: " + masked)
                 if (maskedLogs != null && maskedLogs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + maskedLogs)
-                TapScriptResult(null, e.partialRecords.toInt, masked, if (maskedLogs != null && maskedLogs.nonEmpty) maskedLogs else null)
+                TapScriptResult(
+                    null,
+                    e.partialRecords.toInt,
+                    masked,
+                    if (maskedLogs != null && maskedLogs.nonEmpty) maskedLogs else null,
+                    queuedMs = queuedMs
+                )
             case e: DatrisException =>
                 // DatrisException messages constructed inside this method are already
                 // masked at throw time (executeWithTimeout). Re-mask defensively in case a
@@ -1246,11 +1260,11 @@ object TapScriptRunner {
                 // secret substrings.
                 val masked = if (secretValuesForMasking.nonEmpty) maskSecrets(e.getMessage, secretValuesForMasking) else e.getMessage
                 logger.error("TapScriptRunner failed: " + masked)
-                TapScriptResult(null, 0, masked)
+                TapScriptResult(null, 0, masked, queuedMs = queuedMs)
             case e: Exception =>
                 logger.error("TapScriptRunner failed", e)
                 val masked = if (secretValuesForMasking.nonEmpty) maskSecrets(e.getMessage, secretValuesForMasking) else e.getMessage
-                TapScriptResult(null, 0, masked)
+                TapScriptResult(null, 0, masked, queuedMs = queuedMs)
         } finally {
             ai.datris.auth.TapRunTokens.revoke(platformToken)
             Files.deleteIfExists(scriptFile)
@@ -1880,7 +1894,7 @@ object TapScriptRunner {
 
     private[datris] def useTapRunner: Boolean =
         sys.env.getOrElse("USE_TAP_RUNNER", "false").equalsIgnoreCase("true")
-    private def tapRunnerUrl: String =
+    private[datris] def tapRunnerUrl: String =
         sys.env.getOrElse("TAP_RUNNER_URL", "http://datris-tap-runner:8090")
     private def envTapRunnerToken: String = sys.env.getOrElse("TAP_RUNNER_TOKEN", "")
     private[util] def isWeakTapRunnerToken(t: String): Boolean =
@@ -1941,7 +1955,8 @@ object TapScriptRunner {
         packages: java.util.List[String],
         timeout: TapTimeout,
         secretValues: Seq[String],
-        outputPath: Path
+        outputPath: Path,
+        onQueued: Long => Unit = _ => ()
     ): (String, String) = {
         val timeoutSec = timeout.seconds
         val payload = new JsonObject()
@@ -1965,12 +1980,48 @@ object TapScriptRunner {
             .build()
         val httpClient = HttpClients.custom().setDefaultRequestConfig(requestConfig).build()
         try {
-            val post = new HttpPost(tapRunnerUrl + "/execute")
-            post.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
-            if (tapRunnerToken.nonEmpty) post.addHeader("Authorization", "Bearer " + tapRunnerToken)
-            post.setEntity(new StringEntity(payload.toString, StandardCharsets.UTF_8))
-
-            val response = httpClient.execute(post)
+            def newPost(): HttpPost = {
+                val p = new HttpPost(tapRunnerUrl + "/execute")
+                p.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
+                if (tapRunnerToken.nonEmpty) p.addHeader("Authorization", "Bearer " + tapRunnerToken)
+                p.setEntity(new StringEntity(payload.toString, StandardCharsets.UTF_8))
+                p
+            }
+            // Overload protection: the runner answers 503 "runner busy" when all of its
+            // TAP_RUNNER_MAX_CONCURRENT slots are taken, before spawning anything. Wait our
+            // turn (bounded by TAP_RUNNER_QUEUE_TIMEOUT_SECONDS), then send the run again.
+            val queueStart = System.currentTimeMillis()
+            val queueTimeoutMs = tapRunnerQueueTimeoutSeconds * 1000L
+            var attempt = 0
+            var post = newPost()
+            var response = httpClient.execute(post)
+            while (response.getStatusLine.getStatusCode == 503) {
+                val busy =
+                    try parseBusy(response)
+                    finally response.close()
+                val waited = System.currentTimeMillis() - queueStart
+                onQueued(waited)
+                if (waited >= queueTimeoutMs) throw new TapRunnerBusyException(tapRunnerBusyMessage(waited, busy.maxConcurrent))
+                val sleepMs = math.max(1L, math.min(busyWait(attempt, busy.retryAfterSec), queueTimeoutMs - waited))
+                logger.info(
+                    "TapScriptRunner: tap runner busy (" + busy.active.getOrElse("?") + "/" + busy.maxConcurrent.getOrElse("?") +
+                        " slots in use); retrying in " + sleepMs + " ms"
+                )
+                try Thread.sleep(sleepMs)
+                catch {
+                    case _: InterruptedException =>
+                        Thread.currentThread().interrupt()
+                        throw new DatrisException("Tap run was interrupted while waiting for a free tap runner slot")
+                }
+                attempt += 1
+                post = newPost()
+                response = httpClient.execute(post)
+            }
+            if (attempt > 0) {
+                val queued = System.currentTimeMillis() - queueStart
+                onQueued(queued)
+                logger.info("TapScriptRunner: got a tap runner slot after waiting " + queued + " ms")
+            }
             try {
                 val status = response.getStatusLine.getStatusCode
                 val contentType = Option(response.getEntity).flatMap(e => Option(e.getContentType)).map(_.getValue.toLowerCase).getOrElse("")
@@ -2035,6 +2086,56 @@ object TapScriptRunner {
         } finally {
             httpClient.close()
         }
+    }
+
+    /** A run that could not get a datris-tap-runner slot within
+      * TAP_RUNNER_QUEUE_TIMEOUT_SECONDS. The message is one sentence naming the knob. */
+    class TapRunnerBusyException(message: String) extends DatrisException(message)
+
+    /** What a 503 "runner busy" answer said. Every field is optional: a proxy's 503
+      * carries none of them. */
+    private[util] case class RunnerBusy(retryAfterSec: Int, active: Option[Int], maxConcurrent: Option[Int])
+
+    /** Default wait when the busy answer names none (neither body nor Retry-After). */
+    private val DefaultRetryAfterSec = 5
+
+    /** Longest single wait between attempts. */
+    private val MaxBusyWaitMs = 30000L
+
+    private[util] def tapRunnerQueueTimeoutSeconds: Int =
+        sys.env.get("TAP_RUNNER_QUEUE_TIMEOUT_SECONDS").flatMap(v => scala.util.Try(v.trim.toInt).toOption).filter(_ >= 0).getOrElse(600)
+
+    /** Milliseconds to sleep before retry `attempt` (0-based) after a busy answer:
+      * the runner's retryAfterSec, growing linearly with each attempt, plus up to
+      * 10% jitter so runs waiting together do not retry in lockstep. Always above 0,
+      * never above 30 s. */
+    private[util] def busyWait(attempt: Int, retryAfterSec: Int): Long = {
+        val baseMs = math.max(1, retryAfterSec).toLong * 1000L
+        val grown = math.min(MaxBusyWaitMs, baseMs * (1L + math.max(0, math.min(attempt, 30))))
+        val jitter = (grown * 0.1 * scala.util.Random.nextDouble()).toLong
+        math.max(1L, math.min(MaxBusyWaitMs, grown + jitter))
+    }
+
+    private[util] def tapRunnerBusyMessage(waitedMs: Long, maxConcurrent: Option[Int]): String =
+        "Tap runner busy for " + math.max(0L, waitedMs / 1000L) + " s (TAP_RUNNER_MAX_CONCURRENT" +
+            maxConcurrent.map("=" + _).getOrElse("") +
+            " on datris-tap-runner); raise TAP_RUNNER_MAX_CONCURRENT or stagger schedules"
+
+    /** Read a 503 answer: retryAfterSec from the JSON body, else the Retry-After header, else 5 s. */
+    private def parseBusy(response: org.apache.http.client.methods.CloseableHttpResponse): RunnerBusy = {
+        val raw =
+            try Option(response.getEntity).map(e => EntityUtils.toString(e, StandardCharsets.UTF_8)).getOrElse("")
+            catch { case _: Exception => "" }
+        val body: Option[JsonObject] =
+            scala.util.Try(JsonParser.parseString(raw)).toOption.filter(_.isJsonObject).map(_.getAsJsonObject)
+        def intField(k: String): Option[Int] =
+            body.flatMap(o => Option(o.get(k))).filter(_.isJsonPrimitive).flatMap(e => scala.util.Try(e.getAsInt).toOption)
+        val header = Option(response.getFirstHeader("Retry-After")).flatMap(h => scala.util.Try(h.getValue.trim.toInt).toOption)
+        RunnerBusy(
+            intField("retryAfterSec").orElse(header).filter(_ > 0).getOrElse(DefaultRetryAfterSec),
+            intField("active"),
+            intField("maxConcurrent")
+        )
     }
 
     /** Copy the streamed sidecar response: bytes before the first 0x1E go to

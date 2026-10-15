@@ -114,7 +114,8 @@ object TapRunner {
                     result.error,
                     mode,
                     durationMs,
-                    scriptCommitSha = tapConfig.scriptCommitSha
+                    scriptCommitSha = tapConfig.scriptCommitSha,
+                    queuedMs = result.queuedMs
                 )
                 return result
             }
@@ -155,7 +156,8 @@ object TapRunner {
                         missingMsg,
                         mode,
                         durationMs,
-                        scriptCommitSha = tapConfig.scriptCommitSha
+                        scriptCommitSha = tapConfig.scriptCommitSha,
+                        queuedMs = result.queuedMs
                     )
                     return result.copy(error = missingMsg)
                 }
@@ -193,7 +195,8 @@ object TapRunner {
                     null,
                     mode,
                     durationMs,
-                    scriptCommitSha = tapConfig.scriptCommitSha
+                    scriptCommitSha = tapConfig.scriptCommitSha,
+                    queuedMs = result.queuedMs
                 )
                 return result
             }
@@ -241,7 +244,8 @@ object TapRunner {
                 mode,
                 durationMs,
                 pubOut,
-                scriptCommitSha = tapConfig.scriptCommitSha
+                scriptCommitSha = tapConfig.scriptCommitSha,
+                queuedMs = result.queuedMs
             )
             result.copy(publisherToken = pubOut, pipelineTokens = tokensOut)
         } catch {
@@ -262,7 +266,19 @@ object TapRunner {
                     )
                     TapConfigIO.write(failedConfig)
                 }
-                writeRunLog(tapConfig.name, now, "failure", 0, null, null, e.getMessage, mode, durationMs, scriptCommitSha = tapConfig.scriptCommitSha)
+                writeRunLog(
+                    tapConfig.name,
+                    now,
+                    "failure",
+                    0,
+                    null,
+                    null,
+                    e.getMessage,
+                    mode,
+                    durationMs,
+                    scriptCommitSha = tapConfig.scriptCommitSha,
+                    queuedMs = Option(scriptResult).map(_.queuedMs).getOrElse(0L)
+                )
                 TapScriptResult(null, 0, e.getMessage)
         } finally {
             // Real runs: every StreamNotifier hand-off has adopted (moved) what it
@@ -332,11 +348,25 @@ object TapRunner {
         mode: String,
         durationMs: Long,
         publisherToken: String = null,
-        scriptCommitSha: String = null
+        scriptCommitSha: String = null,
+        queuedMs: Long = 0L
     ): Unit = {
         try {
             val log =
-                TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, mode, durationMs, publisherToken, scriptCommitSha = scriptCommitSha)
+                TapRunLog(
+                    tapName,
+                    runTime,
+                    status,
+                    recordCount,
+                    dataType,
+                    logs,
+                    error,
+                    mode,
+                    durationMs,
+                    publisherToken,
+                    scriptCommitSha = scriptCommitSha,
+                    queuedMs = queuedMs
+                )
             val gson = new Gson
             val key = tapName + "|" + runTime
             // Stamp top-level created_at so the Ops activity dashboard can do an

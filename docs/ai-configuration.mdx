@@ -160,12 +160,12 @@ AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 # Optional model override (default shown):
-# BEDROCK_MODEL=anthropic.claude-fable-5-1
+# BEDROCK_MODEL=anthropic.claude-opus-5-5
 ```
 
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
-| `oss/ai-primary` | bedrock | *(blank — derived from region)* | `BEDROCK_MODEL` or `anthropic.claude-fable-5-1` |
+| `oss/ai-primary` | bedrock | *(blank — derived from region)* | `BEDROCK_MODEL` or `anthropic.claude-opus-5-5` |
 | `oss/codegen` | bedrock | *(blank — derived from region)* | `CODEGEN_MODEL` or `anthropic.claude-opus-5-5` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
@@ -209,7 +209,7 @@ When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic
 
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
-| `oss/ai-primary` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-fable-5-1` |
+| `oss/ai-primary` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-5-5` |
 | `oss/codegen` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-5-5` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
@@ -236,7 +236,7 @@ The Configuration UI makes this easy — select **Ollama (if optional service en
 Override the seeded models by setting these in `.env`:
 
 ```bash
-ANTHROPIC_MODEL=claude-fable-5-1
+ANTHROPIC_MODEL=claude-opus-5-5
 OPENAI_MODEL=gpt-5.6-sol
 GROK_MODEL=grok-4.7
 CODEGEN_MODEL=claude-opus-5-5   # or gpt-5.6-sol if using OpenAI, grok-4.7 for Grok
@@ -309,7 +309,7 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 \
   vault kv put secret/oss/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-fable-5-1" \
+  model="claude-opus-5-5" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
@@ -377,7 +377,7 @@ OpenAI web search requires the **Responses API**. When the configured endpoint i
 **Highly recommended: a provider's strongest coding model for CodeGen.** Tap script generation, AI data quality rules, AI transformations, and NL→SQL all depend heavily on the model's coding ability — the top coding models from Anthropic and OpenAI produce dramatically better results than smaller or cheaper models. The same recommendation appears in `.env.example`.
 </Tip>
 
-CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot so they can run a different model than the general default. On a fresh install the slot seeds the strongest code-generation model — `gpt-5.6-sol` with OpenAI, `claude-opus-5-5` with Anthropic — so code generation is at full quality out of the box, while `aiPrimary` seeds the recommended chat model (`claude-fable-5-1` / `gpt-5.6-sol`). The separate slot is your cost-tuning lever: point `aiPrimary` at a cheaper model (e.g. `claude-sonnet-5`) for the chatty paths and keep the stronger model only on the calls that benefit from it.
+CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot so they can run a different model than the general default. On a fresh install the slot seeds the strongest code-generation model — `gpt-5.6-sol` with OpenAI, `claude-opus-5-5` with Anthropic — so code generation is at full quality out of the box, while `aiPrimary` seeds the recommended chat model (`claude-opus-5-5` / `gpt-5.6-sol`). The separate slot is your cost-tuning lever: point `aiPrimary` at a cheaper model (e.g. `claude-sonnet-5`) for the chatty paths and keep the stronger model only on the calls that benefit from it.
 
 | Feature | Uses codegen slot? |
 |---|---|
@@ -439,7 +439,7 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 \
   vault kv put secret/acme/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-fable-5-1" \
+  model="claude-opus-5-5" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```

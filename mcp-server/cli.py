@@ -969,7 +969,9 @@ def tap_logs(name, json_output):
             mode = entry.get("mode") or ("run" if entry.get("pushToPipeline", True) else "test")
             icon = "✓" if status == "success" else "✗"
             mode_label = " (test)" if mode != "run" else ""
-            click.echo(f"  {icon} {time} — {status}{mode_label}, {records} records, {duration}ms")
+            queued = entry.get("queuedMs") or 0
+            queued_label = f", queued {queued}ms" if queued > 0 else ""
+            click.echo(f"  {icon} {time} — {status}{mode_label}, {records} records, {duration}ms{queued_label}")
             if entry.get("error"):
                 click.echo(f"    Error: {entry['error'][:150]}")
     else:

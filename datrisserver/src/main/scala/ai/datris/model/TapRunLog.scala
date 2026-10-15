@@ -24,5 +24,9 @@ case class TapRunLog(
     aiSuggestion: String = null,
     // Repo-backed taps only: the commit sha the run's script was read at, so
     // a run is reproducible against repo history. Null for MinIO taps.
-    scriptCommitSha: String = null
+    scriptCommitSha: String = null,
+    // Milliseconds the run waited for a free runner slot (the runner answered
+    // busy). Included in durationMs. 0 when it never waited; absent in rows
+    // written before this field existed (Gson reads that back as 0).
+    queuedMs: Long = 0
 )
