@@ -49,9 +49,9 @@ const FALLBACK: ModelCatalog = {
     // when AWS credentials are saved, the UI swaps this for live discovery
     // (only models the account/region can actually invoke).
     bedrock: [
-      { value: 'anthropic.claude-fable-5-1', label: 'Claude Fable 5.1 (recommended)', recommended: true },
+      { value: 'anthropic.claude-opus-5-5', label: 'Claude Opus 5.5 (recommended)', recommended: true },
+      { value: 'anthropic.claude-fable-5-1', label: 'Claude Fable 5.1' },
       { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5' },
-      { value: 'anthropic.claude-opus-5-5', label: 'Claude Opus 5.5' },
       { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5' },
       { value: 'anthropic.claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'anthropic.claude-opus-4-8', label: 'Claude Opus 4.8' },

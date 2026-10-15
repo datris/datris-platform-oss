@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Claude Opus 5.5 is the default chat model for Anthropic.** New installs on the Anthropic path seed Claude Opus 5.5 for the Assistant and other chat features (it was already the code-generation default). Existing installs keep the model they have; change it any time on Configuration → AI Providers.
+- **Claude Opus 5.5 is the default chat model for Anthropic.** New installs on the Anthropic and Bedrock paths seed Claude Opus 5.5 for the Assistant and other chat features (it was already the code-generation default). Existing installs keep the model they have; change it any time on Configuration → AI Providers.
 - **Busy hosts stay up.** Tap scripts and AI rule scripts now run a bounded number at a time, inside CPU, memory and process limits. When the runner is full, a run waits its turn instead of piling on; its run history shows how long it queued, and `datris doctor` warns when runs had to wait. All limits are adjustable in `.env`.
 
 ## v1.49.0 — October 14, 2026

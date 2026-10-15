@@ -160,12 +160,12 @@ AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 # Optional model override (default shown):
-# BEDROCK_MODEL=anthropic.claude-fable-5-1
+# BEDROCK_MODEL=anthropic.claude-opus-5-5
 ```
 
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
-| `oss/ai-primary` | bedrock | *(blank — derived from region)* | `BEDROCK_MODEL` or `anthropic.claude-fable-5-1` |
+| `oss/ai-primary` | bedrock | *(blank — derived from region)* | `BEDROCK_MODEL` or `anthropic.claude-opus-5-5` |
 | `oss/codegen` | bedrock | *(blank — derived from region)* | `CODEGEN_MODEL` or `anthropic.claude-opus-5-5` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 

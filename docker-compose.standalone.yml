@@ -1143,7 +1143,7 @@ configs:
           seed_if_absent secret/oss/ai-primary \
             provider="bedrock" \
             endpoint="" \
-            model="$${BEDROCK_MODEL:-anthropic.claude-fable-5-1}" \
+            model="$${BEDROCK_MODEL:-anthropic.claude-opus-5-5}" \
             apiKey=""
           seed_if_absent secret/oss/codegen \
             provider="bedrock" \
