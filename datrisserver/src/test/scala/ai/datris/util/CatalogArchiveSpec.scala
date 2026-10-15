@@ -597,5 +597,6 @@ class CatalogArchiveSpec extends AnyFunSuite {
         assert(sourceOnly.exists(_.contains("dev")), sourceOnly)
 
         assert(environmentWarning(None, None).isEmpty)
+        assert(environmentWarning(Some("dev"), Some("dev")).isEmpty, "a same-environment restore is not a warning")
     }
 }

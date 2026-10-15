@@ -336,14 +336,18 @@ object CatalogArchive {
         }
 
     /** Informational restore warning naming the environment an archive was
-      * exported from and the one it is restored into; None when neither is
-      * known. A cross-environment restore is a promotion, never refused. */
+      * exported from and the one it is restored into; None when they match
+      * (case-insensitive, including both unset). A cross-environment restore
+      * is a promotion, never refused. */
     def environmentWarning(source: Option[String], target: Option[String]): Option[String] =
-        if (source.isEmpty && target.isEmpty) None
+        if (source.map(_.toLowerCase) == target.map(_.toLowerCase)) None
         else
-            Some(
-                "archive was exported from `" + source.getOrElse("unset") + "`; this install is `" + target.getOrElse("unset") + "`"
-            )
+            (source, target) match {
+                case (Some(s), Some(t)) => Some("archive was exported from `" + s + "`; this install is `" + t + "`")
+                case (None, Some(t)) => Some("archive records no environment; this install is `" + t + "`")
+                case (Some(s), None) => Some("archive was exported from `" + s + "`; this install has no environment label")
+                case (None, None) => None
+            }
 
     // ------------------------------------------------------------ entries
 

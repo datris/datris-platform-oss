@@ -161,7 +161,7 @@ These steps promote the `sales` catalog from dev to qa. Repeat them from qa to p
    datris catalog restore sales.zip --overwrite --no-state
    ```
 
-   The archive records the source install's `DATRIS_ENV` label. When the source or the target has one, the restore result reports both and adds a warning that names both (archive was exported from `dev`; this install is `qa`). It is information only and never stops a restore.
+   The archive records the source install's `DATRIS_ENV` label. The restore result reports the source and target labels, and when they differ it adds a warning that names both (archive was exported from `dev`; this install is `qa`). It is information only and never stops a restore.
 
    A restore never merges. Overwrite replaces the catalog's taps and pipelines that are in the archive, and never touches another catalog. Items in the target catalog that are not in the archive are kept. If the restore names missing secrets, create them on the target with that environment's values before you test the taps.
 4. Restored taps start disabled, so a restore never starts a schedule on its own. Test each tap (`datris tap test <name>`), then enable it (`datris tap update <name> --enabled`). When restored taps read each other's tables, use **Enable in order** on the catalog card, or have an agent call `enable_catalog_ordered`. Either one tests, enables and runs the taps in [dependency order](/taps#dependencies-between-taps).
