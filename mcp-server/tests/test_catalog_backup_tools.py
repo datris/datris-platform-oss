@@ -247,3 +247,39 @@ def test_tool_catalog_surfaces_list_both_tools_and_drift_check_passes():
         assert {"export_catalog", "restore_catalog"} <= surface
     r = subprocess.run([sys.executable, str(ROOT / "scripts" / "check-mcp-tool-catalog.py")], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ------------------------------------- environment echo (multi-env story 2b) ---
+# plans/stories/multi-env-2b-environment-label-mcp.md: restore_catalog is a
+# mutating tool whose JSON response names the environment it changed.
+
+def _call_tool_with(monkeypatch, name, body, label):
+    import asyncio
+    monkeypatch.setattr(server, "_environment_label", lambda: label, raising=True)
+    monkeypatch.setattr(server, "_dispatch", lambda n, a: body)
+    monkeypatch.setattr(server, "_activity_record", lambda *a, **k: None)
+    archive = base64.b64encode(_zip_bytes()).decode("ascii")
+    return asyncio.run(server.call_tool(name, {"catalog": "sales_copy", "archive_base64": archive}))
+
+
+def test_restore_catalog_response_echoes_environment(monkeypatch):
+    payload = {"restored": {"taps": ["t"], "pipelines": []},
+               "sourceEnvironment": "dev", "targetEnvironment": "qa",
+               "warnings": ["archive was exported from `dev`; this install is `qa`"]}
+    res = _call_tool_with(monkeypatch, "restore_catalog", json.dumps(payload), "qa")
+    assert res.isError is False
+    assert json.loads(res.content[0].text) == dict(payload, environment="qa")
+    # Unset label: response unchanged.
+    body = json.dumps(payload)
+    res = _call_tool_with(monkeypatch, "restore_catalog", body, None)
+    assert res.content[0].text == body
+    # Tool description names the environment fields from story 2a.
+    desc = _tool("restore_catalog").description
+    assert "sourceEnvironment" in desc and "targetEnvironment" in desc
+
+
+def test_restore_catalog_409_body_is_not_decorated(monkeypatch):
+    body = json.dumps({"error": "catalog sales_copy already exists", "clashes": ["t"]})
+    res = _call_tool_with(monkeypatch, "restore_catalog", body, "qa")
+    assert res.isError is True
+    assert res.content[0].text == body
