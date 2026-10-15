@@ -166,4 +166,48 @@ class VersionAPIControllerSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(off.get("oidcEnabled").contains("false"), off)
         assert(off.get("useUserAuth").contains("false"), off)
     }
+
+    // Story: Environment label everywhere, part 1
+    // (plans/stories/multi-env-2a-environment-label-server-ui.md), Acceptance
+    // bullet 1. `DATRIS_ENV` (or its system-property twin `datris.env`, which
+    // `EnvironmentLabel.current` reads first) adds one string field,
+    // `environmentLabel`, trimmed; unset or blank adds nothing. The existing
+    // `environment` key keeps the internal prefix ("test" here).
+    private def withDatrisEnv[A](value: Option[String])(body: => A): A = {
+        val key = "datris.env"
+        val previous = sys.props.get(key)
+        value match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    test("environmentLabel is present only when DATRIS_ENV is set") {
+        withDatrisEnv(Some("qa")) {
+            val json = body(env())
+            assert(json.get("environmentLabel").contains("qa"), json)
+            assert(json.get("environment").contains("test"), "environment stays the internal prefix: " + json)
+        }
+        withDatrisEnv(Some("  production  ")) {
+            val json = body(env())
+            assert(json.get("environmentLabel").contains("production"), "the label is trimmed: " + json)
+        }
+        withDatrisEnv(None) {
+            assume(sys.env.get("DATRIS_ENV").forall(_.trim.isEmpty), "DATRIS_ENV is set in this JVM's environment")
+            val json = body(env())
+            assert(!json.contains("environmentLabel"), "unset adds no field: " + json)
+            assert(json.get("environment").contains("test"), json)
+            assert(json.get("version").exists(_.nonEmpty))
+        }
+        withDatrisEnv(Some("   ")) {
+            assume(sys.env.get("DATRIS_ENV").forall(_.trim.isEmpty), "DATRIS_ENV is set in this JVM's environment")
+            val json = body(env())
+            assert(!json.contains("environmentLabel"), "a blank value is unset: " + json)
+        }
+    }
 }
