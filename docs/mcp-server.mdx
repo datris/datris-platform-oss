@@ -221,6 +221,10 @@ Each agent should connect with its own labeled key (e.g. `claude-desktop`, `curs
 
 The platform's [capability framework](/api-keys#the-capability-model) enforces what each key is allowed to do — a `read-only` agent can't `create_tap` even if its system prompt tells it to try. See [API Keys](/api-keys#issuing-keys-for-cli-mcp-and-other-clients) for the full per-client pattern.
 
+## Environment label
+
+When the Datris server has an environment label (`DATRIS_ENV`, for example `dev`, `qa` or `production`), the connect-time instructions open with "You are connected to the **qa** environment", `get_version` returns it as `environmentLabel`, and the JSON responses of the tools that change or remove things (`update_tap`, `update_secret`, `restore_tap_version`, `restore_pipeline_version`, `restore_catalog`, `delete_tap`, `delete_tap_secret`, `delete_pipeline`, `delete_catalog`) carry an `"environment"` key naming the install they just changed. With `production`, the instructions also ask the agent to confirm with you before a change. If you keep one MCP entry per environment, a call against the wrong one shows up in the tool output. Without a label (or against an older server) the instructions and responses are unchanged.
+
 ## Example Agent Workflows
 
 <Note>

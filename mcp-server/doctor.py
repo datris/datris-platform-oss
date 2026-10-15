@@ -726,7 +726,8 @@ def fetch_server(datris_url, api_key, cli_version, probes="", timeout=60):
         return None, version_info, "server returned a non-JSON doctor response"
 
 
-def merge_report(server_report, host_checks, cli_version, mode="full", server_error=None, datris_url=""):
+def merge_report(server_report, host_checks, cli_version, mode="full", server_error=None, datris_url="",
+                 version_info=None):
     checks = []
     surface = {"cli": cli_version}
     if server_report:
@@ -739,6 +740,11 @@ def merge_report(server_report, host_checks, cli_version, mode="full", server_er
             "docker compose ps datris   # then `docker compose logs datris`; set DATRIS_URL if the server is elsewhere",
             surface="cli",
         ))
+    # The operator's environment label (DATRIS_ENV) from GET /api/v1/version;
+    # absent on an unlabelled install or a server older than the field.
+    label = version_info.get("environmentLabel") if isinstance(version_info, dict) else None
+    if isinstance(label, str) and label.strip():
+        surface["env"] = label.strip()
     checks.extend(host_checks)
     summary = {s: sum(1 for c in checks if c.get("status") == s) for s in ("ok", "warn", "error", "skip")}
     return {

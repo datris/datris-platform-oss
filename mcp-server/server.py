@@ -338,6 +338,59 @@ def _available_structured_destinations() -> list[str]:
     return names
 
 
+_env_label_cache: dict[str, Any] = {"label": None, "fetched_at": None}
+_env_label_cache_lock = threading.Lock()
+
+
+def _environment_label() -> str | None:
+    """The operator's environment label (DATRIS_ENV on the server), per the
+    `environmentLabel` field of GET /api/v1/version. Cached in-process for
+    DESTINATIONS_CACHE_TTL_SECS, like the destinations cache. Never raises:
+    a missing key (older server), an HTTP error, a connection failure or a
+    non-JSON body all yield None, so a /version problem never blocks a
+    session or a tool call."""
+    now = time.time()
+    with _env_label_cache_lock:
+        fetched_at = _env_label_cache["fetched_at"]
+        if fetched_at is not None and (now - fetched_at) < DESTINATIONS_CACHE_TTL_SECS:
+            return _env_label_cache["label"]
+
+    label = None
+    try:
+        resp = requests.get(
+            f"{DATRIS_API_URL}/api/v1/version",
+            headers=_headers(),
+            timeout=DESTINATIONS_FETCH_TIMEOUT_SECS,
+        )
+        if resp.status_code == 200:
+            parsed = json.loads(resp.text)
+            if isinstance(parsed, dict):
+                value = parsed.get("environmentLabel")
+                if isinstance(value, str) and value.strip():
+                    label = value.strip()
+    except Exception:
+        label = None
+
+    with _env_label_cache_lock:
+        _env_label_cache["label"] = label
+        _env_label_cache["fetched_at"] = time.time()
+    return label
+
+
+def _environment_prefix(label: str | None) -> str:
+    """The opening instructions paragraph naming the environment, or "" when
+    no label is set. Generic wording only: no domains, no proper nouns."""
+    if not label:
+        return ""
+    text = f"You are connected to the **{label}** environment. Name it when you report a change."
+    if label.lower() == "production":
+        text += (
+            " Every create, update, delete, run or restore here changes production;"
+            " confirm with the user before calling a mutating tool."
+        )
+    return text + "\n\n"
+
+
 def _structured_db_destinations_text(names: list[str]) -> str:
     """Comma-joined database-category subset, e.g. 'postgres, mongodb'.
     Falls back to the full subset rather than rendering an empty list."""
@@ -378,7 +431,37 @@ def _render_destination_templates(text: str, names: list[str] | None = None) -> 
 
 
 def _render_instructions() -> str:
-    return _render_destination_templates(_INSTRUCTIONS_TEMPLATE)
+    return _environment_prefix(_environment_label()) + _render_destination_templates(_INSTRUCTIONS_TEMPLATE)
+
+
+# Mutating / restoring tools whose JSON-object responses name the environment
+# they just changed (multi-env story 2b). Read tools and run_* are left alone.
+_ECHO_ENVIRONMENT_TOOLS = frozenset({
+    "restore_catalog",
+    "delete_catalog",
+    "delete_pipeline",
+    "delete_tap",
+    "delete_tap_secret",
+    "update_tap",
+    "update_secret",
+    "restore_tap_version",
+    "restore_pipeline_version",
+})
+
+
+def _echo_environment(result_text: str, label: str | None) -> str:
+    """Add "environment": label to a JSON-object, non-error result. Anything
+    else (no label, non-JSON, non-object, an error body) is returned verbatim."""
+    if not label:
+        return result_text
+    try:
+        parsed = json.loads(result_text)
+    except (TypeError, ValueError):
+        return result_text
+    if not isinstance(parsed, dict) or "error" in parsed:
+        return result_text
+    parsed["environment"] = label
+    return json.dumps(parsed)
 
 
 _INSTRUCTIONS_TEMPLATE = """\
@@ -1973,7 +2056,9 @@ def _base_tools():
                 "tap or pipeline name exists anywhere on this install. mode=overwrite replaces only items already in `catalog` and "
                 "needs `confirm` equal to the catalog name. It never writes secrets: missing ones come back under `missingSecrets` "
                 "for the user to create. Restored taps are left disabled; tell the user to test and enable them. "
-                "Items that could not be restored come back under `failed`; report them."
+                "Items that could not be restored come back under `failed`; report them. "
+                "The response carries `sourceEnvironment` (where the archive was exported) and `targetEnvironment` (this install), "
+                "plus a warning when they differ; tell the user."
             ),
             inputSchema={
                 "type": "object",
@@ -2231,7 +2316,7 @@ def _base_tools():
                 "`tapScriptTimeoutSeconds` and `tapRunTimeoutSeconds`, each with a `...Source` field (`env`, `deprecated-alias`, `derived` "
                 "or `default`). Cheap to call: call it before sizing a large source and compare the estimates with these values, not with "
                 "the documented defaults (the budget fields are absent on a server older than this feature; then the documented defaults "
-                "apply)."
+                "apply). It also returns `environmentLabel` when the operator set `DATRIS_ENV` on the server (absent otherwise)."
             ),
             inputSchema={
                 "type": "object",
@@ -3573,7 +3658,9 @@ def _is_error_payload(text):
 
     The platform answers failures with ``{"error": ...}`` (plus ``errorKind``
     and friends for capability denials). Results that carry data AND an
-    ``error`` field (partial results) are not errors."""
+    ``error`` field (partial results) are not errors. A refusal body may
+    carry detail alongside ``error``: ``errorKind`` (capability denials) or
+    ``clashes`` (the catalog restore 409 naming the items in the way)."""
     if not text or text[0] != "{":
         return False
     try:
@@ -3582,7 +3669,7 @@ def _is_error_payload(text):
         return False
     if not isinstance(obj, dict) or "error" not in obj:
         return False
-    return len(obj) == 1 or "errorKind" in obj
+    return len(obj) == 1 or "errorKind" in obj or "clashes" in obj
 
 
 @server.call_tool()
@@ -3609,6 +3696,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             result_text = await asyncio.to_thread(_dispatch, name, dispatch_args)
         finally:
             _call_reason.reset(reason_token)
+        if name in _ECHO_ENVIRONMENT_TOOLS and not _is_error_payload(result_text):
+            try:
+                label = await asyncio.to_thread(_environment_label)
+            except Exception:
+                label = None
+            result_text = _echo_environment(result_text, label)
         # A REST error body is a failed call: flag it so MCP clients see
         # isError instead of a successful-looking text result.
         is_error = _is_error_payload(result_text)

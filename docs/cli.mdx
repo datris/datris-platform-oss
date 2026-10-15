@@ -483,10 +483,16 @@ Tap and pipeline names are unique across the install, so restoring onto the same
 
 ### `datris version`
 
-Get the server version.
+Get the server version. When the server has an environment label (`DATRIS_ENV`), it is printed too.
 
 ```bash
 datris version
+```
+
+```
+  Server: {'version': '1.50.0', ..., 'environmentLabel': 'qa', 'mcpServerVersion': '1.50.0'}
+  CLI: 1.50.0
+  Environment: qa
 ```
 
 ---
