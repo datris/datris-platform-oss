@@ -104,6 +104,8 @@ A catalog archive holds:
 
 It never holds secret values, destination data, run history or version history. The archive lists the names of the secrets the catalog needs; create any that are missing on the target install. Restored taps are disabled until you enable them.
 
+To promote a catalog from one install to another, for example from dev to QA to production, see [Dev, QA and production](/production/environments).
+
 Things to know when restoring:
 
 - A restore never merges. Tap and pipeline names are unique across the install, so restoring onto the same install under a new name is refused while the source catalog still exists. Delete or rename the source catalog first.

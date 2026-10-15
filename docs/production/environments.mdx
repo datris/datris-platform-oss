@@ -1,0 +1,259 @@
+---
+title: "Dev, QA and production"
+description: "Run Datris as three installs, promote a catalog from dev to QA to production with a catalog archive and one GitHub repository, and configure, upgrade and target each environment"
+---
+
+This page describes how to run separate development, QA and production environments with the current release. Developers build taps and pipelines in dev, a QA team checks them in qa, and prod runs them on a schedule against real destinations. Code lives in GitHub. Everything here works without code changes. Steps that still need a person are listed under [Limits today](#limits-today).
+
+In short:
+
+| Decision | Recommendation |
+|---|---|
+| Topology | One Datris install per environment, each on its own host or VM |
+| Promotion unit | The catalog: `datris catalog export` on the source, `datris catalog restore` on the target |
+| Secrets | The same secret names in every environment, with different values |
+| Code | One GitHub repository, one branch per environment (`dev`, `qa`, `main`), the same path prefix on every install |
+| Governance | dev open; qa and prod governed, with qa configured the same as prod |
+| Agents and CLI | One MCP server entry and one scoped key per environment |
+| Upgrades | The same release on all three, rolled out dev, then qa, then prod |
+
+## Why three installs
+
+Install Datris three times, once per environment, each in its own `DATRIS_DIR` on its own host:
+
+```
+dev   datris-dev.internal    installer, DATRIS_GOVERNED unset (or 0)
+qa    datris-qa.internal     installer, DATRIS_GOVERNED=1
+prod  datris.internal        installer, DATRIS_GOVERNED=1, DATRIS_ENV=production, TLS reverse proxy
+```
+
+- Each install has its own MongoDB, MinIO, Vault, Postgres, users, agent policy and audit log. The installs share nothing, so the isolation needs no configuration.
+- Compose publishes fixed ports (8080, 4200, 3000, 9000 and others), so running two stacks on one host is not a supported layout.
+- The internal environment prefix (as in `oss-data` and `oss/postgres`) is `oss` by default. Leave it at the default on every install so that secret paths and bucket names in a pipeline carry over from one install to another.
+- Give qa the same instance size as prod so that QA runs are representative. Dev can be smaller and can use the bundled Postgres and MongoDB as destinations.
+
+<Note>
+**Why not three catalogs on one install?** Catalogs such as `dev_sales`, `qa_sales` and `prod_sales` on one server do not work as environments:
+- Tap and pipeline names are unique across an install, so the same pipeline cannot exist in two catalogs. Promoting would mean renaming, and renaming breaks every reference to the item.
+- Secrets belong to the install, not to a catalog. Dev taps could read production credentials.
+- One install has one agent policy, one audit log, one user list and one upgrade. An experiment in dev can take production down.
+
+Multi-tenant mode (`MULTI_TENANT=true`) isolates the stores per tenant, but it is meant for separate customers. Its tenants share one server process and one release, and the installer does not set it up.
+</Note>
+
+## Make definitions portable
+
+A [catalog archive](/data-catalog#what-an-archive-contains) restores cleanly on the next environment only if the definitions in dev were written for it. Follow these rules in dev.
+
+**Keep everything that differs per environment in a secret.** Pipelines and taps refer to secrets by name only. Create the same names on qa and prod and give them each environment's values in Configuration → Secrets. An archive never carries secret values.
+
+| What differs per environment | Put it in | Referenced as (see [Pipeline Configuration](/pipeline-configuration)) |
+|---|---|---|
+| Source database host, port, user, password | Platform secret | `postgresSecretsName`, `mysqlSecretsName`, `mssqlSecretsName` |
+| Snowflake account, Databricks workspace | Platform secret | `destination.database.credentialsSecret` |
+| S3 keys and region | Platform secret | `destination.objectStore.credentialsSecret` |
+| Vector store connection | Platform secret | `qdrantSecretName`, `weaviateSecretName`, `milvusSecretName`, `chromaSecretName`, `postgresSecretName` (pgvector) |
+| Source API tokens for taps | Tap secret (`_type=tap`) | the tap's `secretName` |
+
+The archive lists the secret names the catalog needs. The restore result and `datris catalog restore` name any of them that do not exist on the target yet.
+
+**Avoid the four fields that do not carry over.** These fields are specific to an environment and cannot come from a secret. If a pipeline sets one of them, the archive and the restore result carry a warning that the value `may not be valid on another install`:
+
+- `destination.objectStore.endpoint`
+- `destination.objectStore.destinationBucketOverride`
+- `destination.database.warehouse` (Snowflake warehouse name or Databricks SQL warehouse id)
+- `dataQuality.validationSchema` when it is an absolute `s3://` path
+
+In dev, use the default bucket and a relative validation schema path, and use a warehouse name that exists under the same name in every environment. If a pipeline has to set one of these fields, edit it on the target after each restore.
+
+**Use one catalog per team or data domain.** Do not use one catalog per environment. A catalog such as `sales` has the same name on all three installs and is promoted as a whole. Two teams that release on different schedules need two catalogs. **Uncataloged** cannot be exported, so create anything meant for production in a catalog. Keys scoped with `pipeline:create:catalog=<name>` enforce this for agents. See [Data Catalog](/data-catalog).
+
+## GitHub layout
+
+Use one repository with one branch per environment:
+
+```
+github.com/<org>/datris-taps
+  branches: dev, qa, main
+  taps/<tap>.py
+  taps/pipelines/<pipeline>/data-quality.py
+  taps/pipelines/<pipeline>/transformation.py
+  catalogs/<catalog>/<catalog>-<yyyyMMdd-HHmm>.zip     (optional: archives committed by CI)
+```
+
+On each install, set Configuration → Code Repository to the same repository and the same path prefix (`taps/`), and to that environment's branch: `dev`, `qa` or `main`. Give each install a fine-grained token scoped to that one repository with **Contents: Read and write**. Setup is described in [Tap and pipeline scripts in GitHub](/tap-github-storage).
+
+Scripts move from one environment to the next through a pull request:
+
+1. A developer saves a tap in dev. Datris commits `taps/<tap>.py` on `dev` and pins the tap to that commit.
+2. Open a pull request from `dev` to `qa`. Reviewers see the script diff in GitHub. Merge it.
+3. Export the catalog from dev and restore it on qa (see [Promote a catalog](#promote-a-catalog)).
+4. Test, enable and run the taps on qa.
+5. Repeat with a pull request from `qa` to `main` and a restore on prod.
+
+When you restore, the target compares each archived tap script with the file at the head of its branch:
+
+| File at the branch head | What the restore does |
+|---|---|
+| Same bytes as the archive | Pins the tap to the existing commit and makes no commit. This is the normal case after the pull request is merged. |
+| Missing | Commits the archived script on the branch. |
+| Different, and the tap is not yet in the target catalog | Refuses the whole restore with 409, names the file, and writes nothing. |
+| Different, and the tap is already in the target catalog (`--overwrite`) | Commits the archived script over it. If the tap on the target is GitHub-backed and the file was changed in the repository since that tap's recorded commit, the tap is not restored and the result lists it with the reason. |
+
+Merge the pull request before you restore. Then the archive matches the branch and the restore leaves the repository unchanged. This comparison covers tap scripts only: AI data-quality and transformation scripts are regenerated on the target, as described under [Limits today](#limits-today).
+
+**Branch protection on `main`.** Saving a tap or an AI script on a GitHub-backed install commits directly to its branch. You can set this up in one of two ways:
+
+- **Prod is GitHub-backed.** The prod token must be allowed to push to `main`, so branch protection on `main` cannot block that token. Prod reads its scripts from the branch, so the restore comparison above applies to prod as well.
+- **Prod uses built-in storage** (the default, MinIO). `main` can be fully protected and only dev and qa use GitHub storage. Prod keeps its scripts in its own object store, and a restore on prod does not compare against `main`.
+
+Tap and pipeline definitions (schedules, parameters, destinations, rules), validation schemas and tap prompts are not stored in GitHub. They move inside the catalog archive. Committing the archive under `catalogs/` gives them a coarse history.
+
+## Configure each environment
+
+Set these in each install's `.env` (see [Configuration Reference](/configuration-reference)):
+
+| Setting | dev | qa | prod |
+|---|---|---|---|
+| `DATRIS_GOVERNED` (install time) | 0 | 1 | 1 |
+| `USE_USER_AUTH` / `USE_API_KEYS` / `USE_AUDIT_LOG` / `USE_AGENT_POLICY` | optional | all true | all true |
+| `OIDC_ENABLED` | off | on, same identity provider app or a separate one | on |
+| `DATRIS_ENV` | unset | unset (or `production` if external Postgres has TLS) | `production` |
+| `DATRIS_TAP_SECRET_SCOPE` | `tap` (default) | `tap` | `tap` |
+| `DATRIS_ALLOW_PRIVATE_EGRESS` | as needed | same as prod | `false` unless the endpoints are internal |
+| `DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST` | unset | set | set |
+| `CAPABILITY_ENFORCEMENT` | `enforce` | `enforce` | `enforce` (`log-only` only to try out a new key scope) |
+| `AUDIT_LOG_RETENTION_DAYS` | short | default | long, and shipped to your log aggregator |
+| Reverse proxy with TLS, 8080 not exposed | optional | yes | yes |
+| AI provider keys | team key, cheaper models allowed for chat | same models as prod | prod key |
+| CodeGen model | **same as prod** | same as prod | reference |
+
+Configure qa the same way as prod. Permission and policy problems then show up in QA, before the prod restore. `DATRIS_ENV` changes behaviour only when it is set to `production`: loads to external Postgres then require TLS.
+
+The CodeGen model must be the same on all three installs. A restore regenerates AI data-quality and transformation scripts on the target. The script prod runs can only match the one QA tested if both were generated by the same provider and model. Set `ai.codegen.*` to the same values on every install.
+
+Use these roles and keys (see [API Keys](/api-keys), [Agent Policy](/agent-policy) and [Single sign-on (OIDC)](/user-auth#single-sign-on-oidc)):
+
+| Actor | dev | qa | prod |
+|---|---|---|---|
+| Developers (UI, SSO) | editor | viewer (or editor for QA engineers) | viewer |
+| Release or platform team | admin | admin | admin |
+| Developer agents (Claude Code, Cursor) | `rag-builder`-style key scoped to their catalog | none, or read-only | none |
+| Ops agent | read and run | read and run | read-only key; runs and updates go to Approve under the agent policy |
+| CI promotion job | export only (`pipeline:read` and `tap:read` on the catalog) | export and restore | restore (see [Promote a catalog](#promote-a-catalog)) |
+
+Create keys from templates and rotate them on a schedule. Issue one key per agent per environment so that the audit log attributes every action to the right agent. On prod, start the agent policy from **Use recommended** and set every mutating action a prod agent can reach to **Approve**.
+
+## Promote a catalog
+
+These steps promote the `sales` catalog from dev to qa. Repeat them from qa to prod.
+
+1. Merge the pull request from `dev` to `qa` (see [GitHub layout](#github-layout)).
+2. Export from the source environment:
+
+   ```bash
+   datris catalog export sales --out sales.zip
+   ```
+
+3. Restore on the target environment. Use `--overwrite` every time; it also works the first time, when the catalog does not exist on the target yet. Use `--no-state`, because a tap's incremental cursor records where dev got to, not where qa should start:
+
+   ```bash
+   datris catalog restore sales.zip --overwrite --no-state
+   ```
+
+   A restore never merges. Overwrite replaces the catalog's taps and pipelines that are in the archive, and never touches another catalog. Items in the target catalog that are not in the archive are kept. If the restore names missing secrets, create them on the target with that environment's values before you test the taps.
+4. Restored taps start disabled, so a restore never starts a schedule on its own. Test each tap (`datris tap test <name>`), then enable it (`datris tap update <name> --enabled`). When restored taps read each other's tables, use **Enable in order** on the catalog card, or have an agent call `enable_catalog_ordered`. Either one tests, enables and runs the taps in [dependency order](/taps#dependencies-between-taps).
+5. Run the pipelines against the target's destinations.
+
+Restore refuses the whole archive if any tap or pipeline name in it already exists on the target in a different catalog. The full rules are in [Data Catalog](/data-catalog) and in the [CLI](/cli) reference.
+
+**A CI promotion job.** A GitHub Actions workflow can run steps 2 and 3:
+
+```yaml
+name: promote-catalog
+on:
+  workflow_dispatch:
+    inputs:
+      catalog:
+        required: true
+      to:
+        type: choice
+        options: [qa, prod]
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.to }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install datris-mcp-server
+      - name: export from the source environment
+        env:
+          MCP_SERVER_URL: ${{ inputs.to == 'qa' && secrets.DEV_MCP_URL || secrets.QA_MCP_URL }}
+          DATRIS_API_KEY: ${{ inputs.to == 'qa' && secrets.DEV_EXPORT_KEY || secrets.QA_EXPORT_KEY }}
+        run: datris catalog export ${{ inputs.catalog }} --out archive.zip
+      - name: restore into the target environment
+        env:
+          MCP_SERVER_URL: ${{ inputs.to == 'qa' && secrets.QA_MCP_URL || secrets.PROD_MCP_URL }}
+          DATRIS_API_KEY: ${{ inputs.to == 'qa' && secrets.QA_RESTORE_KEY || secrets.PROD_RESTORE_KEY }}
+        run: datris catalog restore archive.zip --overwrite --yes --no-state
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.catalog }}-${{ github.run_id }}
+          path: archive.zip
+```
+
+- The runner must be able to reach each environment's MCP server. Use a self-hosted runner, or put the MCP port behind the TLS reverse proxy with `REQUIRE_API_KEY=true`.
+- `datris catalog restore` exits 1 on a refusal or when an item could not be restored, so the job fails visibly.
+- The job cannot finish the promotion: the restored taps are disabled, and a person tests and enables them (step 4).
+- Keep every archive, either as a build artifact (as above) or committed under `catalogs/`, so that every prod state can be reproduced.
+
+**The approval gate for prod.** Under the agent policy, a CI key counts as an agent ([What counts as an agent](/agent-policy#what-counts-as-an-agent)). A restore is checked as `pipeline:create`. If that action is on **Approve** in prod, the CI job's restore waits as a pending approval that nobody polls. [Per-resource overrides](/agent-policy#per-resource-overrides) can only tighten the policy, so you cannot exempt the CI key. Choose one of these:
+
+- **A person restores on prod with their own key.** CI promotes to qa only. The prod policy stays strict.
+- **The GitHub environment is the gate.** Put the prod job behind a GitHub environment with required reviewers, and leave `pipeline:create` on **Auto** in the prod policy. Agents on prod can then also create pipelines without approval, so keep the prod agent keys read-only.
+
+## Upgrade order
+
+Run the same release on all three installs. Upgrade dev and let it run for a while, then upgrade qa and run one promotion end to end, then upgrade prod. Run `datris doctor --pre-upgrade` on each install before you upgrade it (see [Doctor](/doctor#before-an-upgrade) and the [upgrade procedure](/production/upgrades#upgrade-procedure)).
+
+Never restore an archive from a newer Datris into an older one. An install refuses an archive whose format is newer than it supports. The archive records the source release but the restore does not check it, so keep the target on a release at least as new as the source.
+
+## Point agents and the CLI at an environment
+
+Give each environment its own MCP client entry and its own key. With `mcp-remote` (see [Configuring Claude](/configuring-claude)):
+
+```json
+{
+    "mcpServers": {
+        "datris-dev": {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "https://mcp.datris-dev.internal/sse", "--transport", "sse-only", "--header", "x-api-key:<dev key>"]
+        },
+        "datris-qa": {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "https://mcp.datris-qa.internal/sse", "--transport", "sse-only", "--header", "x-api-key:<qa key>"]
+        },
+        "datris-prod": {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "https://mcp.datris.internal/sse", "--transport", "sse-only", "--header", "x-api-key:<prod read-only key>"]
+        }
+    }
+}
+```
+
+The CLI chooses the install from `MCP_SERVER_URL` and `DATRIS_API_KEY` alone (see [CLI](/cli) and [MCP Server](/mcp-server)). Set both per shell, for example with `direnv` or one shell function per environment:
+
+```bash
+datris-qa() { MCP_SERVER_URL=https://mcp.datris-qa.internal/sse DATRIS_API_KEY="$DATRIS_QA_KEY" datris "$@"; }
+```
+
+There is no CLI profile file. The three UIs and the three MCP servers look and respond the same, and nothing shows which environment you are connected to. Name the entries and functions clearly, and give prod keys the fewest capabilities.
+
+## Limits today
+
+- AI data-quality and transformation scripts regenerate on restore with the target's CodeGen model, and the archived `codegen/*.py` files are reference copies only, so pin the same CodeGen model on all environments.
+- There is no dry run: restore is all-or-nothing, with no preview of what `--overwrite` would change.
+- Restored taps start disabled and there is no catalog-level CLI command to test and enable them, so a CI promotion ends with a person (UI **Enable in order**) or an agent calling `enable_catalog_ordered`.
+- The agent policy cannot exempt one key: a CI key under Approve queues `restore_catalog`, so prod CI uses GitHub environment reviewers as its gate.
