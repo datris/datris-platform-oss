@@ -9,7 +9,7 @@ description: "Release history for Datris"
   - **Busy hosts stay up.** Tap scripts and AI rule scripts now run a bounded number at a time, inside CPU, memory and process limits. When the runner is full, a run waits its turn instead of piling on; its run history shows how long it queued, and `datris doctor` warns when runs had to wait or were turned away. All limits are adjustable in `.env`.
   - **Claude Opus 5.5 is the default chat model for Anthropic.** New installs on the Anthropic and Bedrock paths seed Claude Opus 5.5 for the Assistant and other chat features (it was already the code-generation default), and the model picker recommends it. Existing installs keep the model they have; change it any time on Configuration → AI Providers.
 
-  **Upgrading:** `docker compose pull && docker compose up -d`; the server, UI, MCP server and script runner images changed. The new compose file gives both script runners CPU, memory and process ceilings and each script a 1 GB memory limit (ceilings, not reservations). Raise them in `.env` for scripts that need more; see Tap Execution Isolation. No other configuration changes are required.
+  **Upgrading:** `docker compose pull && docker compose up -d`; the server, UI, MCP server and script runner images changed. The new compose file gives both script runners CPU, memory and process ceilings and each script a 1 GB memory limit (ceilings, not reservations). Raise them in `.env` for scripts that need more; see [Tap Execution & Isolation](/tap-execution-isolation#configuration). No other configuration changes are required.
 </Update>
 
 <Update label="v1.49.0" description="October 14, 2026">

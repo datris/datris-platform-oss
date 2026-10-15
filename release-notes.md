@@ -10,5 +10,5 @@
 **Upgrading**
 
 - The server, UI, MCP server and script runner images changed: run `docker compose pull && docker compose up -d`.
-- The new compose file gives both script runners CPU, memory and process ceilings and each script a 1 GB memory limit. These are ceilings, not reservations, so an idle install uses no more memory than before. Tap scripts that need more than 1 GB, more than one CPU, or multi-threaded numeric libraries can raise the limits in `.env`; the Tap Execution Isolation docs list each setting.
+- The new compose file gives both script runners CPU, memory and process ceilings and each script a 1 GB memory limit. These are ceilings, not reservations, so an idle install uses no more memory than before. Tap scripts that need more than 1 GB, more than one CPU, or multi-threaded numeric libraries can raise the limits in `.env`; the [Tap Execution & Isolation](https://docs.datris.ai/tap-execution-isolation#configuration) docs list each setting.
 - No other configuration changes are required.
