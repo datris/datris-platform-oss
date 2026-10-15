@@ -26,9 +26,9 @@ const FETCH_TIMEOUT_MS = 5000;
 const FALLBACK: ModelCatalog = {
   aiPrimary: {
     anthropic: [
-      { value: 'claude-fable-5-1', label: 'Claude Fable 5.1 (recommended)', recommended: true },
+      { value: 'claude-opus-5-5', label: 'Claude Opus 5.5 (recommended)', recommended: true },
+      { value: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
       { value: 'claude-fable-5', label: 'Claude Fable 5' },
-      { value: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
       { value: 'claude-opus-5', label: 'Claude Opus 5' },
       { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },

@@ -229,7 +229,7 @@ else
     seed_if_absent secret/oss/ai-primary \
       provider="anthropic" \
       endpoint="https://api.anthropic.com/v1/messages" \
-      model="${ANTHROPIC_MODEL:-claude-fable-5-1}" \
+      model="${ANTHROPIC_MODEL:-claude-opus-5-5}" \
       apiKey="${ANTHROPIC_API_KEY}" \
       version="2023-06-01"
     seed_if_absent secret/oss/codegen \

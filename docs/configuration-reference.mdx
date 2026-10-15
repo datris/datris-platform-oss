@@ -269,7 +269,7 @@ AI configuration is split into four independent slots (three seeded at first boo
 | Property | Default | Description |
 |----------|---------|-------------|
 | `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
-| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the recommended chat model — Anthropic gets `claude-fable-5-1`, OpenAI gets `gpt-5.6-sol`. |
+| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the recommended chat model — Anthropic gets `claude-opus-5-5`, OpenAI gets `gpt-5.6-sol`. |
 | `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest code-generation model — Anthropic gets `claude-opus-5-5`, OpenAI gets `gpt-5.6-sol`. |
 | `ai.embedding.secretName` | `oss/embedding` | Vault secret for the embedding model used by vector destinations (Chroma, Qdrant, Milvus, Weaviate, pgvector) and search. For Anthropic-only deployments this is seeded to point at the bundled TEI sidecar serving `BAAI/bge-m3` (1024-dim), so vector destinations work out of the box without an OpenAI key. |
 | `ai.webSearch.secretName` | `oss/web-search` | Vault secret for the optional live web-search provider used during tap script generation and diagnosis. Not seeded at first boot — configure it from the Configuration tab. |
@@ -281,7 +281,7 @@ Each Vault secret is self-describing and looks like:
 vault kv put secret/oss/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-fable-5-1" \
+  model="claude-opus-5-5" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
@@ -293,7 +293,7 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AI_PROVIDER` | auto | Explicit provider pick (`anthropic`, `openai`, `azure`, `bedrock`, or `grok`) for the `ai-primary` and `codegen` slots. When unset, whichever API key is present wins (OpenAI wins ties; azure and grok are auto-picked only when they hold the sole key; bedrock is never auto-picked). |
-| `ANTHROPIC_MODEL` | `claude-fable-5-1` | Model seeded into `oss/ai-primary` on the Anthropic path. |
+| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Model seeded into `oss/ai-primary` on the Anthropic path. |
 | `OPENAI_MODEL` | `gpt-5.6-sol` | Model seeded into `oss/ai-primary` on the OpenAI path. Any OpenAI chat model id is accepted, including `gpt-6-astra`. |
 | `AZURE_OPENAI_ENDPOINT` | — | Azure resource base URL (`https://YOUR-RESOURCE.openai.azure.com`). Required on the Azure path. |
 | `AZURE_OPENAI_MODEL` | — | Chat deployment name seeded into `oss/ai-primary` on the Azure path. Required on the Azure path. |
