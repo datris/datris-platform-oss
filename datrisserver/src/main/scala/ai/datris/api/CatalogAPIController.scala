@@ -16,6 +16,7 @@ import ai.datris.util.{
     CatalogEnableJob,
     CatalogOps,
     CodeRepoConfigIO,
+    EnvironmentLabel,
     GithubClient,
     GithubCodeStore,
     MinioCodeStore,
@@ -802,6 +803,12 @@ class CatalogAPIController {
                 // manifest list, and only reported where the caller may read
                 // secrets, so a restore is no secret-existence oracle.
                 out.add("missingSecrets", missingSecretsArray(CatalogArchive.requiredSecrets(contents.taps, contents.pipelines), warnings, request))
+                // Environment labels (DATRIS_ENV): informational only — a
+                // cross-environment restore is a promotion and is never refused.
+                val targetEnvironment = EnvironmentLabel.current
+                manifest.sourceEnvironment.foreach(e => out.addProperty("sourceEnvironment", e))
+                targetEnvironment.foreach(e => out.addProperty("targetEnvironment", e))
+                warnings ++= CatalogArchive.environmentWarning(manifest.sourceEnvironment, targetEnvironment)
                 out.add("warnings", toArray(warnings.distinct.toList))
                 out.addProperty("tapsDisabled", true)
                 out.addProperty("stateRestored", states.nonEmpty && stateFailures.isEmpty)
@@ -908,7 +915,8 @@ class CatalogAPIController {
             taps = taps.map(_.name),
             pipelines = pipelines.map(_.name),
             requiredSecrets = required,
-            warnings = warnings.toList
+            warnings = warnings.toList,
+            sourceEnvironment = EnvironmentLabel.current
         )
         val entries = CatalogArchive.archiveEntries(
             manifest,

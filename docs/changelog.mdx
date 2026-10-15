@@ -3,6 +3,14 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="Unreleased" description="Not yet released">
+  **See which environment you are on.**
+
+  - **Environment label.** Set `DATRIS_ENV` to `dev`, `qa`, `production` or any other word and the UI header shows it (red for `production`, amber for anything else), `GET /api/v1/version` reports it, `datris doctor` prints it, and catalog archives record where they were exported from. Restoring an archive into an install with a different label adds a warning naming both; the restore still goes ahead. Only `production` changes behaviour, exactly as before.
+
+  **Upgrading:** No configuration changes are required. Installs without `DATRIS_ENV` look and behave as before; archives exported earlier restore as before.
+</Update>
+
 <Update label="v1.50.0" description="October 15, 2026">
   **Busy hosts stay up, and Claude Opus 5.5 becomes the default chat model.**
 

@@ -575,7 +575,8 @@ class CatalogArchiveSpec extends AnyFunSuite {
         assert(parsed.right.get.sourceEnvironment.isEmpty, parsed)
         assert(parsed.right.get.catalog == "sales")
 
-        val explicitNull = utf8("""{"formatVersion":1,"catalog":"sales","taps":[],"pipelines":[],"requiredSecrets":[],"warnings":[],"sourceEnvironment":null}""")
+        val explicitNull =
+            utf8("""{"formatVersion":1,"catalog":"sales","taps":[],"pipelines":[],"requiredSecrets":[],"warnings":[],"sourceEnvironment":null}""")
         val p2 = parseManifest(explicitNull)
         assert(p2.isRight && p2.right.get.sourceEnvironment.isEmpty, p2)
     }

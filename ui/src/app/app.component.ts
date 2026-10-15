@@ -18,8 +18,15 @@ export class AppComponent implements OnInit {
   requiresApiKey = false;
   isTrial = false;
   environment = '';
+  // Operator label from DATRIS_ENV (dev, qa, production, ...); '' when unset.
+  environmentLabel = '';
   version = '';
   helpMenuOpen = false;
+
+  /** Red for production, amber for every other label. */
+  get environmentBandClass(): string {
+    return this.environmentLabel.toLowerCase() === 'production' ? 'env-band env-band-production' : 'env-band env-band-other';
+  }
 
   // user-auth
   useUserAuth = false;
@@ -87,6 +94,7 @@ export class AppComponent implements OnInit {
       next: (data) => {
         this.environment = data.environment || '';
         this.version = data.version || '';
+        this.environmentLabel = data.environmentLabel || '';
         this.isTrial = data.multiTenant === 'true';
         this.useUserAuth = data.useUserAuth === 'true';
         this.auth.userAuthEnabled = this.useUserAuth;
@@ -189,6 +197,7 @@ export class AppComponent implements OnInit {
         this.isTrial = data.multiTenant === 'true';
         this.environment = data.environment || '';
         this.version = data.version || '';
+        this.environmentLabel = data.environmentLabel || '';
       }
     });
   }

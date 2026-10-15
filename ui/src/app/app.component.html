@@ -41,6 +41,7 @@
         </button>
       </div>
     </div>
+    <span [class]="environmentBandClass" *ngIf="environmentLabel" title="Environment (DATRIS_ENV)">{{ environmentLabel }}</span>
     <span class="env-label">{{ environment }}</span>
     <span class="env-version">v{{ version }}</span>
   </div>

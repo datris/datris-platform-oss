@@ -62,7 +62,10 @@ object CatalogArchive {
         taps: Seq[String],
         pipelines: Seq[String],
         requiredSecrets: Seq[RequiredSecret],
-        warnings: Seq[String]
+        warnings: Seq[String],
+        // DATRIS_ENV label of the exporting install; absent on archives
+        // exported before environment labels existed or with it unset.
+        sourceEnvironment: Option[String] = None
     )
 
     case class Entry(path: String, bytes: Array[Byte])
@@ -284,6 +287,7 @@ object CatalogArchive {
         }
         o.add("requiredSecrets", secrets)
         o.add("warnings", strArray(m.warnings))
+        m.sourceEnvironment.foreach(e => o.addProperty("sourceEnvironment", e))
         new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(o)
     }
 
@@ -323,12 +327,23 @@ object CatalogArchive {
                     arr(o, "taps"),
                     arr(o, "pipelines"),
                     secrets,
-                    arr(o, "warnings")
+                    arr(o, "warnings"),
+                    Option(str("sourceEnvironment")).map(_.trim).filter(_.nonEmpty)
                 )
             )
         } catch {
             case e: Exception => Left("manifest.json is not valid: " + Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
         }
+
+    /** Informational restore warning naming the environment an archive was
+      * exported from and the one it is restored into; None when neither is
+      * known. A cross-environment restore is a promotion, never refused. */
+    def environmentWarning(source: Option[String], target: Option[String]): Option[String] =
+        if (source.isEmpty && target.isEmpty) None
+        else
+            Some(
+                "archive was exported from `" + source.getOrElse("unset") + "`; this install is `" + target.getOrElse("unset") + "`"
+            )
 
     // ------------------------------------------------------------ entries
 

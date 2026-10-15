@@ -394,9 +394,11 @@ services:
       # "Timeout waiting for connection from pool".
       AI_HTTP_MAX_PER_ROUTE: "${AI_HTTP_MAX_PER_ROUTE:-}"
       AI_HTTP_MAX_TOTAL: "${AI_HTTP_MAX_TOTAL:-}"
-      # Hardening switches (see docs → Configuration Reference). DATRIS_ENV=production
-      # requires TLS on external Postgres destinations; DATRIS_ALLOW_PLAINTEXT_DB
-      # is the opt-out. DATRIS_ALLOW_PRIVATE_EGRESS lets HTTP taps / REST
+      # Hardening switches (see docs → Configuration Reference). DATRIS_ENV is the
+      # environment label (dev, qa, production or any word) shown in the UI
+      # header, on /api/v1/version, in catalog archives and by doctor; only
+      # DATRIS_ENV=production hardens: it requires TLS on external Postgres
+      # destinations, and DATRIS_ALLOW_PLAINTEXT_DB is the opt-out. DATRIS_ALLOW_PRIVATE_EGRESS lets HTTP taps / REST
       # endpoints reach private or loopback addresses (off by default).
       DATRIS_ENV: "${DATRIS_ENV:-}"
       DATRIS_ALLOW_PLAINTEXT_DB: "${DATRIS_ALLOW_PLAINTEXT_DB:-false}"
