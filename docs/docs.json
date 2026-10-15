@@ -145,6 +145,7 @@
               "production/security-architecture",
               "production/data-flows",
               "production/upgrades",
+              "production/environments",
               "production/vulnerability-disclosure",
               "production/licensing-support"
             ]

@@ -126,3 +126,5 @@ Stated so you can plan around it rather than discover it:
 7. Set `DATRIS_ENV=production`, `sslmode=require` on external Postgres, and `cors.allowedOrigins`.
 8. Enable encryption at rest on the stores; rotate API keys periodically.
 9. Run the [doctor](/doctor) self-check before every upgrade.
+
+If you run separate dev, QA and production installs, give QA the same governance settings as production (`DATRIS_GOVERNED=1`, SSO, the agent policy and the audit log), so that permission and policy problems show up in QA before a catalog reaches production. See [Dev, QA and production](/production/environments).
