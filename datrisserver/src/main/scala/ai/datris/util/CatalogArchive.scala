@@ -563,6 +563,9 @@ object CatalogArchive {
         val aiScripts = for {
             (pipeline, kinds) <- Option(codegenScripts).getOrElse(Map.empty).toSeq
             (kind, text) <- Option(kinds).getOrElse(Map.empty).toSeq
+            // Only the CodeGen kinds a restore imports (as importCodegenScripts);
+            // any other .py under codegen/ is ignored, never looked up.
+            if PipelineScripts.Kinds.contains(kind)
         } yield (pipeline, kind, text)
         aiScripts.sortBy { case (p, k, _) => (p, k) }.foreach { case (pipeline, kind, text) =>
             val key = pipeline + "/" + kind

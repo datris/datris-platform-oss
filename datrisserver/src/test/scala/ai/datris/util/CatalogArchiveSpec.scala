@@ -62,11 +62,18 @@ import scala.collection.mutable
   *
   *   /** GitHub-backed restore target: compare each archived tap script with the
   *     * file at branch head (`fileAt(cfg, GithubCodeStore.scriptRepoPath(tap, cfg), cfg.branch)`,
-  *     * the same seam GithubScriptStore takes for GithubClient.getFile). */
-  *   case class RepoScriptPlan(clashes: Seq[String], reuse: Set[String], write: Set[String])
+  *     * the same seam GithubScriptStore takes for GithubClient.getFile), and each
+  *     * archived AI script (pipeline -> kind -> text, dataQuality / transformation
+  *     * only) with the file at
+  *     * `GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline(p, kind), cfg)`.
+  *     * codegenReuse / codegenWrite are keyed "<p>/<kind>". */
+  *   case class RepoScriptPlan(clashes: Seq[String], reuse: Set[String], write: Set[String],
+  *                             codegenReuse: Set[String], codegenWrite: Set[String])
   *   def planRepoScripts(scripts: Map[String, String], cfg: CodeRepoConfig, mode: String,
   *                       targetMembers: Set[String],
-  *                       fileAt: (CodeRepoConfig, String, String) => Option[RepoFile]): RepoScriptPlan
+  *                       fileAt: (CodeRepoConfig, String, String) => Option[RepoFile],
+  *                       codegenScripts: Map[String, Map[String, String]],
+  *                       targetPipelineMembers: Set[String]): RepoScriptPlan
   *
   *   /** Which archived tap states the restore writes (tap -> state JSON):
   *     * none when restoreState is false; never a tap that existed before. */
@@ -590,6 +597,23 @@ class CatalogArchiveSpec extends AnyFunSuite {
         assert(plan.clashes.isEmpty, plan)
         assert(plan.codegenWrite.contains("orders/dataQuality"), plan)
         assert(!plan.codegenReuse.contains("orders/dataQuality"), plan)
+    }
+
+    test("planRepoScripts: a .py under codegen that is not a CodeGen kind is ignored (no clash, no lookup)") {
+        val repo = new StubRepo(Map(aiPath -> "print('same dq')"))
+        val plan = planRepoScripts(
+            Map.empty,
+            repoCfg,
+            "new",
+            Set.empty,
+            repo.fileAt,
+            codegenScripts = Map("orders" -> Map("helper" -> "print('helper')")),
+            targetPipelineMembers = Set.empty
+        )
+        assert(plan.clashes.isEmpty, plan)
+        assert(plan.codegenReuse.isEmpty && plan.codegenWrite.isEmpty, plan)
+        assert(plan.reuse.isEmpty && plan.write.isEmpty, plan)
+        assert(repo.calls.isEmpty, "an unknown kind is never looked up: " + repo.calls)
     }
 
     // ------------------------------------------------------ Acceptance bullet 7
