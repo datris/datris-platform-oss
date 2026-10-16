@@ -940,4 +940,124 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         catch { case e: Throwable => fail("deleteAll must not throw: " + e) }
         assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty)
     }
+
+    // =====================================================================
+    // Story: Restore honours archived CodeGen scripts
+    // (plans/stories/multi-env-3-restore-import-codegen-scripts.md),
+    // Acceptance bullets 2-4. Pinned seam:
+    // {{{
+    // class PipelineScripts(...) {
+    //     /** Make an archived script the live one, with the archive's
+    //       * fingerprint, model, generatedAt, generatedAgainst and
+    //       * contractVersion, status ready, origin "restore". Left when the
+    //       * archived fingerprint is not fingerprint(instructionOf(config, kind),
+    //       * schemaSignature(config)) (message mentions "instruction or source
+    //       * schema") or its contractVersion is not contractVersion(kind).
+    //       * Repository backend: branch head equal to `text` (normalised) pins
+    //       * the head sha with no commit; a different file at head is
+    //       * Left(conflictWarning(...)) (contains ConflictMarker), no commit. */
+    //     def importScript(config: PipelineConfig, kind: String, text: String,
+    //                      archived: CodeGenScript, actor: String): Either[String, CodeGenScript]
+    // }
+    // }}}
+    // =====================================================================
+
+    private val archivedAt = "2026-10-01T12:00:00Z"
+
+    /** The archive's sidecar for `cfg`'s rule, written by "model-a" on another install. */
+    private def archivedRecord(cfg: PipelineConfig, kind: String = Dq): CodeGenScript = {
+        val instr = PipelineScripts.instructionOf(cfg, kind).get
+        CodeGenScript(
+            pipeline = cfg.name,
+            kind = kind,
+            instruction = instr,
+            script = null,
+            generatedAt = archivedAt,
+            fingerprint = PipelineScripts.fingerprint(instr, PipelineScripts.schemaSignature(cfg)),
+            generatedAgainst = java.util.Arrays.asList("full_name", "age", "email"),
+            model = "model-a",
+            status = "ready",
+            origin = "save",
+            contractVersion = PipelineScripts.contractVersion(kind)
+        )
+    }
+
+    test("importScript then onSave with a different current model makes no model call") {
+        val cfg = csvCfg()
+        model = "model-b"
+        val archived = archivedRecord(cfg)
+        val r = scripts.importScript(cfg, Dq, "print('archived')", archived, "todd")
+        assert(r.isRight, r)
+        scripts.onSave(null, cfg, "todd")
+        assert(calls.isEmpty, s"no model call after an import: ${calls.size}")
+        val rec = scripts.record("orders", Dq).getOrElse(fail("no record written by importScript"))
+        assert(rec.model == "model-a", s"the archived model, not the current setting: $rec")
+        assert(rec.origin == "restore", s"$rec")
+        assert(rec.fingerprint == archived.fingerprint, s"$rec")
+        assert(rec.generatedAt == archivedAt, s"$rec")
+        assert(rec.status == "ready", s"$rec")
+        assert(rec.contractVersion == PipelineScripts.contractVersion(Dq), s"$rec")
+        assert(scripts.readText("orders", Dq).contains("print('archived')"), "the archived bytes are the live script")
+        // Runs execute it as well, still without a model call.
+        val gen = new RunGen
+        val run = scripts.forRun(cfg, Dq, header, gen.fn)
+        assert(run.action == "stored" && run.script == "print('archived')" && gen.count == 0 && calls.isEmpty, s"$run")
+    }
+
+    test("importScript with a fingerprint that does not match the archived config is Left, and onSave then regenerates once") {
+        val cfg = csvCfg()
+        val stale = archivedRecord(cfg).copy(fingerprint = PipelineScripts.fingerprint("a different rule", PipelineScripts.schemaSignature(cfg)))
+        val r = scripts.importScript(cfg, Dq, "print('archived')", stale, "todd")
+        assert(r.isLeft, r)
+        assert(r.left.get.contains("instruction or source schema"), r.left.get)
+        assert(records.read("orders", Dq).isEmpty, "nothing imported")
+        scripts.onSave(null, cfg, "todd")
+        assert(calls.size == 1, s"the regenerate path: exactly one model call, got ${calls.size}")
+        assert(records.read("orders", Dq).exists(_.origin == "save"))
+    }
+
+    test("importScript with a different contractVersion is Left, and onSave then regenerates once") {
+        val cfg = csvCfg()
+        val old = archivedRecord(cfg).copy(contractVersion = PipelineScripts.contractVersion(Dq) + 1)
+        val r = scripts.importScript(cfg, Dq, "print('archived')", old, "todd")
+        assert(r.isLeft, r)
+        assert(records.read("orders", Dq).isEmpty, "nothing imported")
+        scripts.onSave(null, cfg, "todd")
+        assert(calls.size == 1, s"the regenerate path: exactly one model call, got ${calls.size}")
+    }
+
+    test("importScript on a repository script: the identical file at branch head is pinned with no commit") {
+        val s = withRepo()
+        val cfg = csvCfg()
+        s.onSave(null, cfg, "todd") // the target already has a repository-backed script
+        val path = repo.pathOf(Dq)
+        // The same bytes reach branch head from elsewhere (another install sharing the repository).
+        val headSha = repo.hubEdit(path, "print('archived')")
+        val commitsBefore = repo.commits.size
+        val callsBefore = calls.size
+        val r = s.importScript(cfg, Dq, "print('archived')\n", archivedRecord(cfg), "todd")
+        assert(r.isRight, r)
+        assert(repo.commits.size == commitsBefore, s"no commit for identical bytes: ${repo.commits}")
+        val rec = records.read("orders", Dq).get
+        assert(rec.storage == "github" && rec.scriptRepoPath == path, s"$rec")
+        assert(rec.scriptCommitSha == headSha, s"pinned to branch head: $rec")
+        assert(rec.origin == "restore" && rec.model == "model-a" && rec.generatedAt == archivedAt, s"$rec")
+        s.onSave(null, cfg, "todd")
+        assert(calls.size == callsBefore, "no model call after the import")
+    }
+
+    test("importScript on a repository script: a different file at branch head is Left with the conflict marker and no commit") {
+        val s = withRepo()
+        val cfg = csvCfg()
+        s.onSave(null, cfg, "todd")
+        val pinned = records.read("orders", Dq).get.scriptCommitSha
+        repo.hubEdit(repo.pathOf(Dq), "print('hand edit')")
+        val commitsBefore = repo.commits.size
+        val r = s.importScript(cfg, Dq, "print('archived')", archivedRecord(cfg), "todd")
+        assert(r.isLeft, r)
+        assert(r.left.get.contains(PipelineScripts.ConflictMarker), r.left.get)
+        assert(repo.commits.size == commitsBefore, s"a hand edit is never overwritten: ${repo.commits}")
+        assert(repo.head(repo.pathOf(Dq)).contains("print('hand edit')"))
+        assert(records.read("orders", Dq).get.scriptCommitSha == pinned, "the record keeps its pin")
+    }
 }

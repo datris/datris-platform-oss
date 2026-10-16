@@ -283,3 +283,58 @@ def test_restore_catalog_409_body_is_not_decorated(monkeypatch):
     res = _call_tool_with(monkeypatch, "restore_catalog", body, "qa")
     assert res.isError is True
     assert res.content[0].text == body
+
+
+# ------------------- archived AI scripts (multi-env story 3: restore import) ---
+# plans/stories/multi-env-3-restore-import-codegen-scripts.md: restore imports
+# the archived AI scripts by default; `regenerate_scripts` asks the server to
+# regenerate them instead and is sent only when true.
+
+def _param(path, kwargs, key):
+    """A request parameter, as a query param, in the URL, or a multipart form field."""
+    out = []
+    for src in (kwargs.get("params") or {}, kwargs.get("data") or {}):
+        if isinstance(src, dict) and key in src:
+            out.append(str(src[key]))
+    out.extend(parse_qs(urlparse(path).query).get(key, []))
+    return out
+
+
+def test_restore_catalog_schema_lists_regenerate_scripts():
+    t = _tool("restore_catalog")
+    props = _props(t)
+    assert "regenerate_scripts" in props
+    assert props["regenerate_scripts"]["type"] == "boolean"
+    assert "regenerate_scripts" not in t.inputSchema.get("required", [])
+    assert "regenerate_scripts" in t.description, "the description says when archived AI scripts are regenerated"
+
+
+def test_restore_catalog_omits_regenerate_scripts_by_default(capture):
+    archive = base64.b64encode(_zip_bytes()).decode("ascii")
+    for extra in ({}, {"regenerate_scripts": False}):
+        c = capture(body=json.dumps({"ok": True}))
+        server._dispatch("restore_catalog", dict({"catalog": "sales_copy", "archive_base64": archive}, **extra))
+        posts = _restore_posts(c.calls)
+        assert len(posts) == 1, c.calls
+        _m, path, kwargs = posts[0]
+        assert _param(path, kwargs, "regenerateScripts") == [], f"{extra}: {path} {kwargs}"
+
+
+def test_restore_catalog_sends_regenerate_scripts_true_when_set(capture):
+    c = capture(body=json.dumps({"ok": True}))
+    archive = base64.b64encode(_zip_bytes()).decode("ascii")
+    server._dispatch("restore_catalog", {"catalog": "sales_copy", "archive_base64": archive, "regenerate_scripts": True})
+    posts = _restore_posts(c.calls)
+    assert len(posts) == 1, c.calls
+    _m, path, kwargs = posts[0]
+    assert _param(path, kwargs, "regenerateScripts") == ["true"], f"{path} {kwargs}"
+    assert _modes(path, kwargs) == ["new"]
+
+
+def test_ui_restore_catalog_entry_lists_regenerate_scripts_and_drift_check_passes():
+    ui = (ROOT / "ui" / "src" / "app" / "mcp" / "mcp.component.ts").read_text()
+    start = ui.index("name: 'restore_catalog'")
+    end = ui.index("playgroundEnabled", start)
+    assert "name: 'regenerate_scripts'" in ui[start:end], "UI tool-catalog entry lists regenerate_scripts"
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "check-mcp-tool-catalog.py")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
