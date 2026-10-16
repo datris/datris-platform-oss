@@ -91,6 +91,23 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         override def scriptExists(ref: ScriptRef): Boolean = readScript(ref).isDefined
     }
 
+    /** In-memory `<env>-codegen-script-version` (story self-healing-5a). */
+    private class MemVersions extends CodeGenScriptVersions {
+        val rows = mutable.ListBuffer[CodeGenScriptVersion]()
+        val pruneCalls = mutable.ListBuffer[(String, String, Int)]()
+        override def listVersions(pipeline: String, kind: String): List[CodeGenScriptVersion] =
+            rows.filter(v => v.pipeline == pipeline && v.kind == kind).sortBy(_.version).toList
+        override def latestVersion(pipeline: String, kind: String): Int = (0 :: listVersions(pipeline, kind).map(_.version)).max
+        override def get(pipeline: String, kind: String, version: Int): Option[CodeGenScriptVersion] =
+            listVersions(pipeline, kind).find(_.version == version)
+        override def append(v: CodeGenScriptVersion): Unit = rows += v
+        override def prune(pipeline: String, kind: String, keep: Int): Unit = {
+            pruneCalls += ((pipeline, kind, keep))
+            if (keep > 0) rows --= listVersions(pipeline, kind).dropRight(keep)
+        }
+        override def deleteAllForPipeline(pipeline: String): Unit = rows --= rows.filter(_.pipeline == pipeline).toList
+    }
+
     private val calls = mutable.ListBuffer[(String, String)]()
     private var failWith: String = null
     private var model = "model-a"
@@ -107,12 +124,14 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
     private var records: MemRecords = _
     private var store: MemStore = _
     private var scripts: PipelineScripts = _
+    private var history: MemVersions = _
 
     override def beforeEach(): Unit = {
         calls.clear(); failWith = null; model = "model-a"; counter = 0
         records = new MemRecords
         store = new MemStore
-        scripts = new PipelineScripts(records, _ => store, fakeAi, () => model)
+        history = new MemVersions
+        scripts = new PipelineScripts(records, _ => store, fakeAi, () => model, versions = history)
         TenantContext.set(testEnv)
     }
 
@@ -347,7 +366,7 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
             scala.util.Try(new ProcessBuilder("python3", "--version").start().waitFor() == 0).getOrElse(false),
             "python3 not available"
         )
-        val failing = new PipelineScripts(records, _ => store, (_, _) => "import sys\nsys.stderr.write('boom')\nsys.exit(3)\n", () => model)
+        val failing = new PipelineScripts(records, _ => store, (_, _) => "import sys\nsys.stderr.write('boom')\nsys.exit(3)\n", () => model, versions = history)
         val cfg = csvCfg()
         failing.onSave(null, cfg, "todd")
         val generatedAt = records.read("orders", Dq).get.generatedAt
@@ -562,7 +581,8 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
             fakeAi,
             () => model,
             repoStoreFor = _ => repo,
-            defaultStorage = () => if (repoEnabled) "github" else "minio"
+            defaultStorage = () => if (repoEnabled) "github" else "minio",
+            versions = history
         )
     }
 
@@ -1295,5 +1315,376 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         val r = PipelineScripts.withRehearsal(true)(scripts.forRun(cfg, Dq, header, gen.fn))
         assert(r.action == PipelineScripts.Stored && gen.count == 0)
         assert(records.writes == writesBefore)
+    }
+
+    // =====================================================================
+    // Story: Version history for stored CodeGen scripts
+    // (plans/stories/self-healing-5a-script-versions.md), Acceptance bullet 1.
+    //
+    // Pinned seam:
+    // {{{
+    // // ai.datris.model
+    // case class CodeGenScriptVersion(key: String /* pipeline|kind|version */, entityName: String /* pipeline|kind */,
+    //     pipeline: String, kind: String, version: Int, script: String, storage: String, scriptRepoPath: String,
+    //     scriptCommitSha: String, fingerprint: String, model: String, origin: String, changeNote: String,
+    //     createdAt: String, createdBy: String, generatedAt: String, contractVersion: Int,
+    //     generatedAgainst: java.util.List[String])
+    // // CodeGenScript gains `scriptVersion: Int = 0` (the live record's version number).
+    //
+    // // ai.datris.util
+    // trait CodeGenScriptVersions {          // object CodeGenScriptVersionIO implements it
+    //     def listVersions(pipeline: String, kind: String): List[CodeGenScriptVersion]   // ascending
+    //     def latestVersion(pipeline: String, kind: String): Int                         // 0 when none
+    //     def get(pipeline: String, kind: String, version: Int): Option[CodeGenScriptVersion]
+    //     def append(v: CodeGenScriptVersion): Unit
+    //     def prune(pipeline: String, kind: String, keep: Int): Unit
+    //     def deleteAllForPipeline(pipeline: String): Unit
+    // }
+    // class PipelineScripts(..., versions: CodeGenScriptVersions = CodeGenScriptVersionIO) {
+    //     /** Ascending; seeds v1 "(seeded from pre-versioning state)" from a
+    //       * ready, readable live record when the kind has no rows yet. */
+    //     def scriptVersions(pipeline: String, kind: String): List[CodeGenScriptVersion]
+    //     def scriptVersion(pipeline: String, kind: String, version: Int): Option[CodeGenScriptVersion]
+    //     def restoreVersion(config: PipelineConfig, kind: String, version: Int, actor: String): Either[String, CodeGenScript]
+    // }
+    // }}}
+    // Origins: "save", "regenerate", "run", "restore-version", "restore"
+    // (catalog import, note "imported from catalog archive"), "repository"
+    // (pull, note "adopted repository commit <sha7>").
+    // =====================================================================
+
+    private val SeedNote = "(seeded from pre-versioning state)"
+
+    private def fpOf(cfg: PipelineConfig, kind: String = Dq): String =
+        PipelineScripts.fingerprint(PipelineScripts.instructionOf(cfg, kind).get, PipelineScripts.schemaSignature(cfg))
+
+    private def ver(n: Int, kind: String = Dq): CodeGenScriptVersion =
+        history.get("orders", kind, n).getOrElse(fail(s"no version $n of $kind: ${history.rows}"))
+
+    private def nums(kind: String = Dq): List[Int] = history.listVersions("orders", kind).map(_.version)
+
+    /** Make the stored script look written under an older script contract, so
+      * the next run generates and stores (the run-time store path). */
+    private def ageContract(kind: String = Dq): Unit =
+        records.write(records.read("orders", kind).get.copy(contractVersion = 0))
+
+    test("script versions: save, regenerate and a run-time store each append one numbered version holding the text") {
+        val cfg = csvCfg()
+        scripts.onSave(null, cfg, "todd")
+        val live1 = records.read("orders", Dq).get
+        val v1 = history.get("orders", Dq, 1).getOrElse(fail(s"save wrote no version: ${history.rows}"))
+        assert(v1.origin == "save", s"$v1")
+        assert(v1.script == "print('generated 1')", s"the version holds the script text itself: $v1")
+        assert(v1.pipeline == "orders" && v1.kind == Dq, s"$v1")
+        assert(v1.entityName == "orders|dataQuality", s"$v1")
+        assert(v1.key == "orders|dataQuality|1", s"$v1")
+        assert(v1.fingerprint == live1.fingerprint && v1.model == "model-a" && v1.storage == "minio", s"$v1")
+        assert(v1.createdBy == "todd", s"$v1")
+        assert(v1.createdAt != null && v1.generatedAt == live1.generatedAt, s"$v1")
+        assert(v1.contractVersion == PipelineScripts.contractVersion(Dq), s"$v1")
+        assert(live1.scriptVersion == 1, s"the live record carries its version number: $live1")
+
+        model = "model-b"
+        assert(scripts.regenerate(cfg, Dq, "todd").isRight)
+        val v2 = history.get("orders", Dq, 2).getOrElse(fail(s"regenerate wrote no version: ${history.rows}"))
+        assert(v2.origin == "regenerate" && v2.script == "print('generated 2')" && v2.script != v1.script, s"$v2")
+        assert(v2.model == "model-b", s"$v2")
+        assert(records.read("orders", Dq).get.scriptVersion == 2)
+
+        ageContract()
+        val gen = new RunGen
+        val run = scripts.forRun(cfg, Dq, header, gen.fn)
+        assert(run.action == PipelineScripts.GenerateAndStore, s"$run")
+        val v3 = history.get("orders", Dq, 3).getOrElse(fail(s"a run-time store wrote no version: ${history.rows}"))
+        assert(v3.origin == "run" && v3.script == "print('run 1')", s"$v3")
+
+        assert(history.latestVersion("orders", Dq) == 3)
+        assert(nums() == List(1, 2, 3), s"${history.rows}")
+        assert(scripts.scriptVersions("orders", Dq).map(_.version) == List(1, 2, 3))
+        assert(scripts.scriptVersion("orders", Dq, 2).map(_.script).contains("print('generated 2')"))
+        assert(records.read("orders", Dq).get.scriptVersion == 3)
+    }
+
+    test("script versions: a re-save with the same fingerprint, a stored run and a run-only script append nothing") {
+        val cfg = csvCfg()
+        scripts.onSave(null, cfg, "todd")
+        scripts.onSave(cfg, cfg.copy(version = 2), "todd")
+        scripts.onSave(null, cfg, "todd")
+        val gen = new RunGen
+        assert(scripts.forRun(cfg, Dq, header, gen.fn).action == PipelineScripts.Stored)
+        // A run whose header differs generates for that run only: never stored, never versioned.
+        val once = scripts.forRun(cfg, Dq, List("a", "b", "c"), gen.fn)
+        assert(once.action == PipelineScripts.GenerateOnce, s"$once")
+        assert(nums() == List(1), s"${history.rows}")
+    }
+
+    test("script versions: a pending write appends nothing and the last version keeps its text") {
+        val cfg = csvCfg()
+        scripts.onSave(null, cfg, "todd")
+        ageContract()
+        scripts.forRun(cfg, Dq, header, new RunGen().fn) // v2, origin run
+        assert(nums() == List(1, 2))
+        failWith = "model unreachable"
+        val out = scripts.onSave(cfg, csvCfg(dqRule = "age must be between 0 and 120"), "todd")
+        assert(out.exists(o => o.kind == Dq && o.status == "pending"), s"$out")
+        assert(nums() == List(1, 2), s"writePending appends nothing: ${history.rows}")
+        assert(history.get("orders", Dq, 2).map(_.script).contains("print('run 1')"), "the previous version keeps the last script")
+        // A JSON pipeline's regenerate is pending as well: still nothing appended.
+        val json = jsonCfg()
+        scripts.regenerate(json, Dq, "todd")
+        assert(history.listVersions("events", Dq).isEmpty, s"${history.rows}")
+    }
+
+    test("script versions: a pipeline without AI instructions never gets a row") {
+        scripts.onSave(null, csvCfg(dqRule = null), "todd")
+        assert(history.rows.isEmpty, s"${history.rows}")
+        assert(scripts.scriptVersions("orders", Dq).isEmpty)
+        assert(scripts.scriptVersions("orders", Tx).isEmpty)
+    }
+
+    /** A live record written before versioning: ready, text in the store, no history rows, scriptVersion 0. */
+    private def preUpgradeRecord(cfg: PipelineConfig, text: String = "print('legacy')", status: String = "ready"): CodeGenScript = {
+        val path = "pipeline-scripts/orders/legacy.py"
+        store.objects(path) = text
+        val rec = CodeGenScript(
+            "orders",
+            Dq,
+            PipelineScripts.instructionOf(cfg, Dq).get,
+            null,
+            generatedAt = "2026-09-01T00:00:00Z",
+            storage = "minio",
+            scriptPath = path,
+            fingerprint = fpOf(cfg),
+            model = "model-old",
+            status = status,
+            origin = "save",
+            contractVersion = PipelineScripts.contractVersion(Dq)
+        )
+        records.write(rec)
+        rec
+    }
+
+    test("script versions: a pre-existing live record with no rows seeds v1 before the regenerate appends v2") {
+        val cfg = csvCfg()
+        preUpgradeRecord(cfg)
+        assert(history.rows.isEmpty)
+        assert(scripts.regenerate(cfg, Dq, "todd").isRight)
+        val all = history.listVersions("orders", Dq)
+        assert(all.map(_.version) == List(1, 2), s"$all")
+        val seeded = all.head
+        assert(seeded.changeNote == SeedNote, s"$seeded")
+        assert(seeded.script == "print('legacy')", s"the seed holds the pre-upgrade text: $seeded")
+        assert(seeded.model == "model-old" && seeded.fingerprint == fpOf(cfg), s"$seeded")
+        assert(all(1).origin == "regenerate" && all(1).script == "print('generated 1')", s"${all(1)}")
+        assert(records.read("orders", Dq).get.scriptVersion == 2)
+    }
+
+    test("script versions: the first list seeds v1 lazily, once; a pending pre-existing record seeds nothing") {
+        val cfg = csvCfg()
+        preUpgradeRecord(cfg)
+        val listed = scripts.scriptVersions("orders", Dq)
+        assert(listed.map(v => (v.version, v.changeNote, v.script)) == List((1, SeedNote, "print('legacy')")), s"$listed")
+        assert(scripts.scriptVersions("orders", Dq).size == 1, "listing again does not seed again")
+        assert(history.rows.size == 1, s"${history.rows}")
+
+        beforeEach()
+        preUpgradeRecord(cfg, status = "pending")
+        assert(scripts.scriptVersions("orders", Dq).isEmpty, "no readable text: nothing to seed")
+        assert(history.rows.isEmpty)
+    }
+
+    test("restoreVersion(1) appends v4 with v1's text and model, origin restore-version, and deletes v3's built-in object") {
+        val cfg = csvCfg()
+        scripts.onSave(null, cfg, "todd") // v1, model-a
+        model = "model-b"
+        scripts.regenerate(cfg, Dq, "todd") // v2
+        ageContract()
+        scripts.forRun(cfg, Dq, header, new RunGen().fn) // v3
+        val v1 = ver(1, Dq)
+        val v3Path = records.read("orders", Dq).get.scriptPath
+        assert(store.objects.contains(v3Path))
+        val callsBefore = calls.size
+
+        val r = scripts.restoreVersion(cfg, Dq, 1, "ops")
+        assert(r.isRight, s"$r")
+        val rec = records.read("orders", Dq).get
+        assert(rec.origin == "restore-version", s"$rec")
+        assert(rec.model == "model-a", s"a restored script keeps the model that wrote it: $rec")
+        assert(rec.status == "ready" && rec.fingerprint == fpOf(cfg), s"$rec")
+        assert(rec.scriptVersion == 4, s"$rec")
+        assert(r.toOption.get.scriptVersion == 4)
+        assert(scripts.readText("orders", Dq).contains(v1.script), "the live script is v1's text")
+        assert(!store.objects.contains(v3Path), s"v3's object is replaced, as a regenerate does: ${store.objects}")
+        assert(calls.size == callsBefore, "a restore makes no model call")
+
+        val v4 = history.get("orders", Dq, 4).getOrElse(fail(s"restore wrote no version: ${history.rows}"))
+        assert(v4.script == v1.script && v4.origin == "restore-version" && v4.model == "model-a" && v4.createdBy == "ops", s"$v4")
+        assert(nums() == List(1, 2, 3, 4), "earlier versions are immutable and kept")
+        assert(ver(1, Dq) == v1)
+
+        // Runs execute the restored text, no generation.
+        val gen = new RunGen
+        val run = scripts.forRun(cfg, Dq, header, gen.fn)
+        assert(run.action == PipelineScripts.Stored && run.script == v1.script && gen.count == 0, s"$run")
+    }
+
+    test("restoreVersion of a version written for a different instruction or schema is Left and changes nothing") {
+        val cfgA = csvCfg()
+        val cfgB = csvCfg(dqRule = "age must be between 0 and 120")
+        scripts.onSave(null, cfgA, "todd") // v1 for cfgA
+        scripts.onSave(cfgA, cfgB, "todd") // v2 for cfgB
+        assert(nums() == List(1, 2))
+        val rowsBefore = records.rows.toMap
+        val objectsBefore = store.objects.toMap
+        val writesBefore = records.writes
+        val historyBefore = history.rows.toList
+        val callsBefore = calls.size
+
+        val r = scripts.restoreVersion(cfgB, Dq, 1, "ops")
+        assert(r.isLeft, s"$r")
+        val msg = r.left.get
+        assert(
+            msg == "script version 1 was generated for a different instruction or source schema than pipeline orders has now; nothing was changed",
+            msg
+        )
+        assert(records.rows.toMap == rowsBefore && records.writes == writesBefore, "records untouched")
+        assert(store.objects.toMap == objectsBefore, "store untouched")
+        assert(history.rows.toList == historyBefore, "no version appended")
+        assert(calls.size == callsBefore)
+    }
+
+    test("restoreVersion of an unknown version, an unknown kind or another contract version is Left") {
+        val cfg = csvCfg()
+        scripts.onSave(null, cfg, "todd")
+        val missing = scripts.restoreVersion(cfg, Dq, 9, "ops")
+        assert(missing == Left("no version 9 of the dataQuality script for pipeline orders"), s"$missing")
+        assert(scripts.restoreVersion(cfg, "bogus", 1, "ops") == Left(PipelineScripts.unknownKindMessage("bogus")))
+
+        val v1 = ver(1, Dq)
+        history.append(v1.copy(key = "orders|dataQuality|2", version = 2, contractVersion = PipelineScripts.contractVersion(Dq) + 1))
+        val old = scripts.restoreVersion(cfg, Dq, 2, "ops")
+        assert(old.isLeft && old.left.get.contains("contract version"), s"$old")
+        assert(nums() == List(1, 2), s"${history.rows}")
+    }
+
+    test("restoreVersion against a repository file edited since the recorded commit is Left with the conflict marker") {
+        val s = withRepo()
+        val cfg = csvCfg()
+        s.onSave(null, cfg, "todd") // v1 commit
+        assert(s.regenerate(cfg, Dq, "todd").isRight) // v2 commit
+        val path = repo.pathOf(Dq)
+        repo.hubEdit(path, "print('hand edit')")
+        val writesBefore = repo.writes.size
+
+        val r = s.restoreVersion(cfg, Dq, 1, "ops")
+        assert(r.isLeft, s"$r")
+        assert(r.left.get.contains(PipelineScripts.ConflictMarker), r.left.get)
+        assert(repo.writes.size == writesBefore, "no commit over the hand edit")
+        assert(repo.head(path).contains("print('hand edit')"))
+        assert(history.latestVersion("orders", Dq) == 2, s"${history.rows}")
+    }
+
+    test("restoreVersion of a repository-backed script commits v1's text forward and records the commit sha") {
+        val s = withRepo()
+        val cfg = csvCfg()
+        s.onSave(null, cfg, "todd")
+        s.regenerate(cfg, Dq, "todd")
+        val v1 = ver(1, Dq)
+        assert(v1.storage == "github" && v1.scriptRepoPath == repo.pathOf(Dq) && v1.scriptCommitSha != null, s"$v1")
+        val r = s.restoreVersion(cfg, Dq, 1, "ops")
+        assert(r.isRight, s"$r")
+        val rec = records.read("orders", Dq).get
+        assert(rec.scriptCommitSha == repo.headSha && rec.scriptCommitSha != v1.scriptCommitSha, "a new commit, not a re-pin")
+        assert(repo.head(repo.pathOf(Dq)).contains(v1.script))
+        val v3 = ver(3, Dq)
+        assert(v3.scriptCommitSha == rec.scriptCommitSha && v3.scriptRepoPath == rec.scriptRepoPath, s"$v3")
+    }
+
+    test("importScript appends one version with the imported text") {
+        val cfg = csvCfg()
+        assert(scripts.importScript(cfg, Dq, "print('archived')", archivedRecord(cfg), "todd").isRight)
+        val all = history.listVersions("orders", Dq)
+        assert(all.size == 1, s"$all")
+        val v = all.head
+        assert(v.version == 1 && v.script == "print('archived')" && v.origin == "restore", s"$v")
+        assert(v.changeNote == "imported from catalog archive", s"$v")
+        assert(v.model == "model-a", s"$v")
+        assert(records.read("orders", Dq).get.scriptVersion == 1)
+
+        // Over an existing script: one more version.
+        scripts.importScript(cfg, Dq, "print('archived again')", archivedRecord(cfg), "todd")
+        assert(nums() == List(1, 2) && ver(2, Dq).script == "print('archived again')", s"${history.rows}")
+    }
+
+    test("pull appends one version with the pulled text and the adopted commit") {
+        val s = withRepo()
+        val cfg = csvCfg(txInstruction = instruction)
+        s.onSave(null, cfg, "todd")
+        assert(nums(Tx) == List(1))
+        val editSha = repo.hubEdit(repo.pathOf(Tx), "print('hand edit')")
+        assert(s.pull("orders", Tx, "todd").isRight)
+        val all = history.listVersions("orders", Tx)
+        assert(all.map(_.version) == List(1, 2), s"$all")
+        val v2 = all(1)
+        assert(v2.script == "print('hand edit')" && v2.origin == "repository", s"$v2")
+        assert(v2.scriptCommitSha == editSha, s"$v2")
+        assert(v2.changeNote == "adopted repository commit " + editSha.take(7), s"$v2")
+        assert(v2.createdBy == "todd", s"$v2")
+        assert(records.read("orders", Tx).get.scriptVersion == 2)
+        assert(nums(Dq) == List(1), "the other kind is untouched")
+    }
+
+    test("script versions are pruned per pipeline|kind to versionCap, newest kept") {
+        TenantContext.set(testEnv.copy(versionCap = 3))
+        val cfg = csvCfg(txInstruction = instruction)
+        scripts.onSave(null, cfg, "todd")
+        (1 to 4).foreach(_ => assert(scripts.regenerate(cfg, Dq, "todd").isRight))
+        assert(nums(Dq) == List(3, 4, 5), s"${history.rows}")
+        assert(nums(Tx) == List(1), "the other kind keeps its own history")
+        assert(history.pruneCalls.exists { case (p, k, n) => p == "orders" && k == Dq && n == 3 }, s"${history.pruneCalls}")
+        assert(records.read("orders", Dq).get.scriptVersion == 5)
+        assert(history.get("orders", Dq, 5).map(_.script) == scripts.readText("orders", Dq))
+    }
+
+    test("deleteAll empties the pipeline's script history; dropping one instruction keeps that kind's history") {
+        val cfg = csvCfg(txInstruction = instruction)
+        scripts.onSave(null, cfg, "todd")
+        scripts.onSave(cfg, csvCfg(), "todd") // the transformation instruction is dropped
+        assert(records.read("orders", Tx).isEmpty)
+        assert(nums(Tx) == List(1), "removeKind keeps history (the instruction may come back)")
+
+        scripts.deleteAll("orders")
+        assert(history.rows.filter(_.pipeline == "orders").isEmpty, s"${history.rows}")
+    }
+
+    test("a scratch rehearsal run writes no script version") {
+        val cfg = csvCfg()
+        PipelineScripts.withRehearsal(true)(scripts.forRun(cfg, Dq, header, new RunGen().fn))
+        assert(history.rows.isEmpty, s"${history.rows}")
+        scripts.onSave(null, cfg, "todd")
+        ageContract()
+        PipelineScripts.withRehearsal(true)(scripts.forRun(cfg, Dq, header, new RunGen().fn))
+        assert(nums() == List(1), s"${history.rows}")
+    }
+
+    test("a failing history store never fails the save, run or regenerate") {
+        val broken = new CodeGenScriptVersions {
+            override def listVersions(pipeline: String, kind: String): List[CodeGenScriptVersion] = throw new RuntimeException("history down")
+            override def latestVersion(pipeline: String, kind: String): Int = throw new RuntimeException("history down")
+            override def get(pipeline: String, kind: String, version: Int): Option[CodeGenScriptVersion] = throw new RuntimeException("history down")
+            override def append(v: CodeGenScriptVersion): Unit = throw new RuntimeException("history down")
+            override def prune(pipeline: String, kind: String, keep: Int): Unit = throw new RuntimeException("history down")
+            override def deleteAllForPipeline(pipeline: String): Unit = throw new RuntimeException("history down")
+        }
+        val s = new PipelineScripts(records, _ => store, fakeAi, () => model, versions = broken)
+        val cfg = csvCfg()
+        val out =
+            try s.onSave(null, cfg, "todd")
+            catch { case e: Throwable => fail("a history failure must not fail the save: " + e) }
+        assert(out.map(o => (o.kind, o.status)) == List((Dq, "ready")), s"$out")
+        assert(s.readText("orders", Dq).contains("print('generated 1')"), "the live script is stored")
+        assert(s.regenerate(cfg, Dq, "todd").isRight)
+        try s.deleteAll("orders")
+        catch { case e: Throwable => fail("deleteAll never throws: " + e) }
     }
 }

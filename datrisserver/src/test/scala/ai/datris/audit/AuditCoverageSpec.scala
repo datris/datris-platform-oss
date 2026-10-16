@@ -166,4 +166,16 @@ class AuditCoverageSpec extends AnyFunSuite {
         assert(ai.datris.auth.CapabilityRoutes.lookup("POST", "/api/v1/incidents/sample/abandon") ==
             ai.datris.auth.RouteCheck.Require("incident", "abandon"))
     }
+
+    // Story: plans/stories/self-healing-5a-script-versions.md — the script
+    // version restore is a live POST route classified by its CapabilityRoutes row.
+    test("codegen script version restore route exists and is audit-classified") {
+        val live = routes().map(r => (r.method, r.path))
+        assert(
+            live.contains(("POST", "/api/v1/pipelines/{name}/codegen-scripts/{kind}/versions/{version}/restore")),
+            "POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions/{version}/restore route missing"
+        )
+        assert(AuditClassifier.isKnown("POST", "/api/v1/pipelines/sample/codegen-scripts/sample/versions/sample/restore"))
+        assert(!AuditClassifier.isDeliberatelySkipped("POST", "/api/v1/pipelines/sample/codegen-scripts/sample/versions/sample/restore"))
+    }
 }
