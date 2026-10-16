@@ -93,4 +93,4 @@ Grouped by purpose. Tool names are exact. Every tool that changes state accepts 
 
 | Tool | Notes |
 |---|---|
-| `list_incidents`, `get_incident` | Failures the platform's recovery agent is already working, with narrative and pending approvals. When the user asks about such a failure, explain the record rather than re-diagnosing. Read-only. |
+| `list_incidents`, `get_incident`, `get_incident_evidence` | Failures the platform's recovery agent is already working, with narrative, pending approvals, and platform-computed evidence (before/after profiles, diff, blast radius, thresholds, verdict). When the user asks about such a failure, explain the record rather than re-diagnosing. Read-only. |

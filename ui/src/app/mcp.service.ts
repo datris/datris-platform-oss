@@ -353,6 +353,8 @@ export class McpService {
       }
       case 'get_incident':
         return this.http.get<any>('/api/v1/incidents/' + encodeURIComponent(params['incident_id']));
+      case 'get_incident_evidence':
+        return this.http.get<any>('/api/v1/incidents/' + encodeURIComponent(params['incident_id']) + '/evidence');
 
       // Discovery & Provenance
       case 'find_data': {

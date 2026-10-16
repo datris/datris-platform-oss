@@ -488,6 +488,212 @@ components:
           type: string
         outcome:
           type: string
+        evidence:
+          $ref: '#/components/schemas/IncidentEvidence'
+        verdict:
+          type: string
+          enum: [pending, pass, fail, needs-human]
+          description: Copy of evidence.verdict; present only when the incident has evidence
+    RunProfile:
+      type: object
+      description: Deterministic profile of one run. Values from protected or sensitive-looking columns never appear (no topK, no value quantiles).
+      properties:
+        runId:
+          type: string
+        source:
+          type: string
+          enum: [landed-sample, scratch, snapshot, lineage-only]
+        recordCount:
+          type: integer
+          format: int64
+        columns:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              inferredType:
+                type: string
+                enum: [number, string, boolean, 'null', mixed]
+              nullRate:
+                type: number
+                description: Fraction 0.0-1.0
+              distinct:
+                type: integer
+                format: int64
+              quantiles:
+                $ref: '#/components/schemas/Quantiles'
+              lengthQuantiles:
+                $ref: '#/components/schemas/Quantiles'
+              topK:
+                type: array
+                description: Only for value-safe columns with at most 50 distinct values
+                items:
+                  type: object
+                  properties:
+                    value:
+                      type: string
+                    count:
+                      type: integer
+                      format: int64
+        dqFailures:
+          type: integer
+        dqPassRate:
+          type: number
+          description: Fraction 0.0-1.0
+        durationMs:
+          type: integer
+          format: int64
+        scriptSha:
+          type: string
+        tapVersion:
+          type: integer
+        pipelineVersion:
+          type: integer
+        sampledRows:
+          type: integer
+          format: int64
+        computedAt:
+          type: string
+    Quantiles:
+      type: object
+      properties:
+        p1:
+          type: number
+        p25:
+          type: number
+        p50:
+          type: number
+        p75:
+          type: number
+        p99:
+          type: number
+    IncidentEvidence:
+      type: object
+      description: Computed by platform code, never by a model. Record deltas are percentages; null rates and DQ pass rates are fractions.
+      properties:
+        baseline:
+          $ref: '#/components/schemas/RunProfile'
+        candidate:
+          $ref: '#/components/schemas/RunProfile'
+        real:
+          $ref: '#/components/schemas/RunProfile'
+        diff:
+          type: object
+          properties:
+            columnsAdded:
+              type: array
+              items:
+                type: string
+            columnsRemoved:
+              type: array
+              items:
+                type: string
+            typeChanges:
+              type: array
+              items:
+                type: object
+                properties:
+                  column:
+                    type: string
+                  from:
+                    type: string
+                  to:
+                    type: string
+            recordDeltaPct:
+              type: number
+            recordDeltaVsMeanOfLastN:
+              type: number
+            lastN:
+              type: integer
+            nullRateDeltas:
+              type: array
+              description: Five largest by magnitude, sign preserved
+              items:
+                type: object
+                properties:
+                  column:
+                    type: string
+                  delta:
+                    type: number
+            quantileShift:
+              type: array
+              description: Per numeric column, (p50 delta) / (baseline p75 - p25); 0 when the IQR is 0
+              items:
+                type: object
+                properties:
+                  column:
+                    type: string
+                  shift:
+                    type: number
+            dqPassRateDelta:
+              type: number
+        blastRadius:
+          type: object
+          properties:
+            downstreamPipelines:
+              type: array
+              items:
+                type: string
+            downstreamDatasets:
+              type: array
+              items:
+                type: object
+                properties:
+                  kind:
+                    type: string
+                  coords:
+                    type: string
+            ucTables:
+              type: array
+              items:
+                type: string
+            consumersFromContracts:
+              type: array
+              items:
+                type: string
+            lastDownstreamRunAt:
+              type: string
+            agentsThatQueriedLast7d:
+              type: array
+              description: Absent when unknown (reads are not audited)
+              items:
+                type: string
+            secretName:
+              type: string
+        thresholds:
+          type: object
+          properties:
+            maxRecordDeltaPct:
+              type: number
+            allowColumnRemoval:
+              type: boolean
+            allowTypeChange:
+              type: boolean
+            minDqPassRate:
+              type: number
+              description: Absent means baseline pass rate minus 0.01
+            maxNullRateIncrease:
+              type: number
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              passed:
+                type: boolean
+              observed:
+                type: string
+              limit:
+                type: string
+        verdict:
+          type: string
+          enum: [pending, pass, fail, needs-human]
+        computedAt:
+          type: string
     AgentPolicy:
       type: object
       properties:
@@ -564,6 +770,11 @@ components:
           type: integer
         resultBody:
           type: string
+        incidentId:
+          type: string
+          description: Set when a recovery-agent incident queued this action
+        incidentEvidence:
+          $ref: '#/components/schemas/IncidentEvidence'
     QueryResponse:
       type: object
       properties:
@@ -5318,6 +5529,29 @@ paths:
                 $ref: '#/components/schemas/Incident'
         '404':
           description: Unknown id, or the recovery agent is off
+  /api/v1/incidents/{id}/evidence:
+    get:
+      tags: [Recovery Agent]
+      summary: Read one incident's evidence
+      description: >-
+        The deterministic evidence the platform computed for the incident —
+        baseline and after-fix run profiles, their diff, blast radius,
+        thresholds in force, threshold checks and verdict.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The evidence
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentEvidence'
+        '404':
+          description: Unknown id, no evidence on the incident, or the recovery agent is off
   /api/v1/incidents/{id}/abandon:
     post:
       tags: [Recovery Agent]

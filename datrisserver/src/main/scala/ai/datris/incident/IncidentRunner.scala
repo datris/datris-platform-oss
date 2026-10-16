@@ -197,12 +197,18 @@ object IncidentRunner {
 
     def runIncident(id: String): Unit = {
         try {
-            val incident = IncidentIO.get(id).getOrElse(return
+            val opened = IncidentIO.get(id).getOrElse(return
             )
-            if (!incident.isOpen) return
+            if (!opened.isOpen) return
             if (!IncidentIO.transition(id, Set(Incident.Open), Incident.Diagnosing)) return
 
             val s = settings
+            // Deterministic evidence at open (blast radius + baseline, verdict
+            // pending), computed here on the runner pool rather than in open()
+            // so sampling a warehouse never blocks the signal path. Never
+            // throws; a failed step leaves its field empty.
+            if (opened.evidence.isEmpty) IncidentEvidenceBuilder.store(id, IncidentEvidenceBuilder.atOpen(opened, s))
+            val incident = IncidentIO.get(id).getOrElse(opened)
             var aiCalls = 0
             val onAiCall = () => { aiCalls += 1; IncidentIO.incrementCounters(id, aiCalls = 1) }
 
@@ -327,6 +333,7 @@ object IncidentRunner {
                 val publisherToken = extractString(text, "publisherToken")
                 val healthy = isTapHealthy(name)
                 val rollupOk = publisherToken.forall(t => pollRollup(id, t, incident))
+                recordRealRunEvidence(id)
                 if (healthy && rollupOk) {
                     step(
                         id,
@@ -362,6 +369,7 @@ object IncidentRunner {
                 val publisherToken = extractString(text, "publisherToken")
                 val healthy = isTapHealthy(name)
                 val rollupOk = publisherToken.forall(t => pollRollup(id, t, incident))
+                recordRealRunEvidence(id)
                 if (healthy && rollupOk) {
                     step(id, "verify", "verified: real run healthy" + publisherToken.map(_ => ", pipeline rollup complete").getOrElse(""))
                     close(id, Incident.Resolved, "recovered and verified")
@@ -488,6 +496,7 @@ object IncidentRunner {
         val incident = IncidentIO.get(id).getOrElse(return
         )
         val healthy = incident.resourceType != "tap" || isTapHealthy(incident.resourceName)
+        recordRealRunEvidence(id)
         if (healthy) {
             step(id, "verify", "verified after approved run: resource healthy")
             close(id, Incident.Resolved, "recovered and verified (via approved run)")
@@ -500,6 +509,19 @@ object IncidentRunner {
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    /** Profile the verifying real run into the incident's evidence (diff,
+      * checks, verdict). Informational only: verification decisions above do
+      * not read it. Never throws. */
+    private def recordRealRunEvidence(id: String): Unit =
+        try {
+            for {
+                i <- IncidentIO.get(id)
+                ev <- IncidentEvidenceBuilder.of(i)
+            } IncidentEvidenceBuilder.store(id, IncidentEvidenceBuilder.afterRealRun(i, ev))
+        } catch {
+            case e: Exception => logger.debug("incident " + id + ": real-run evidence skipped: " + e.getMessage)
+        }
 
     private def runtimeExceeded(incident: Incident): Boolean =
         incident.openedAt.plus(settings.maxRuntimeMinutes.toLong, ChronoUnit.MINUTES).isBefore(Instant.now())
@@ -807,7 +829,9 @@ object IncidentRunner {
             sb.append("(Automated incident — you are running headless as the platform's recovery agent; no operator is watching this conversation.)\n\n")
             sb.append("Incident ").append(incident.id).append(": ").append(incident.kind)
                 .append(" on ").append(incident.resourceType).append(" `").append(incident.resourceName).append("`.\n")
-            sb.append("Trigger: ").append(triggerForModel(incident).toString.take(2000)).append("\n\n")
+            sb.append("Trigger: ").append(triggerForModel(incident).toString.take(2000)).append("\n")
+            IncidentEvidenceBuilder.of(incident).foreach(e => sb.append(IncidentEvidenceBuilder.blastRadiusLine(incident, e.blastRadius)).append("\n"))
+            sb.append("\n")
             sb.append("Diagnose this incident using the read-only tools available, then END your reply with ONLY a JSON object (no prose after it):\n")
             sb.append(
                 """{"classification":"transient|structural-script|structural-schema|needs-human","summary":"<one line>","needsHuman":<bool>,"actions":[{"tool":"run_tap|test_tap|update_tap","args":{...},"purpose":"<one line>"}],"learnNote":"<optional source quirk worth remembering>"}"""

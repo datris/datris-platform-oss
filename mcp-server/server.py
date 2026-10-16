@@ -3430,7 +3430,7 @@ def _base_tools():
         # --- Recovery-agent incidents (read-only; the platform opens them) ---
         Tool(
             name="list_incidents",
-            description="List the platform's recovery-agent incidents, newest first. An incident is opened by the platform itself when a scheduled tap finally fails, a pipeline job errors, a tap goes stale, or a pipeline's volume swings; the recovery agent diagnoses it and — within the agent policy's recovery mode — repairs and verifies it. Each entry carries kind, resource, state (open | diagnosing | proposed | awaiting_approval | executing | verifying | resolved | failed | abandoned), classification, and a step-by-step narrative. Use state=open for what is being worked right now. Returns {enabled:false, incidents:[]} when the recovery agent is off.",
+            description="List the platform's recovery-agent incidents, newest first. An incident is opened by the platform itself when a scheduled tap finally fails, a pipeline job errors, a tap goes stale, or a pipeline's volume swings; the recovery agent diagnoses it and — within the agent policy's recovery mode — repairs and verifies it. Each entry carries kind, resource, state (open | diagnosing | proposed | awaiting_approval | executing | verifying | resolved | failed | abandoned), classification, a step-by-step narrative, and — when the platform computed evidence for it — a verdict (pending | pass | fail | needs-human). Use state=open for what is being worked right now. Returns {enabled:false, incidents:[]} when the recovery agent is off.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -3447,7 +3447,21 @@ def _base_tools():
         ),
         Tool(
             name="get_incident",
-            description="Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it is waiting on, and outcome. When the operator asks about a failure the platform is already working, explain THIS record instead of re-diagnosing from scratch.",
+            description="Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it is waiting on, outcome, and its evidence (before/after profile, diff, blast radius, thresholds, verdict). When the operator asks about a failure the platform is already working, explain THIS record instead of re-diagnosing from scratch.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "incident_id": {
+                        "type": "string",
+                        "description": "The incident id (inc_…).",
+                    },
+                },
+                "required": ["incident_id"],
+            }
+        ),
+        Tool(
+            name="get_incident_evidence",
+            description="Read the deterministic evidence the platform computed for one recovery-agent incident: the baseline profile of the last successful run before it broke, the profile of the real run after the fix, the diff between them (columns added or removed, type changes, record-count delta, null-rate deltas, distribution shift), the blast radius (downstream pipelines, datasets and catalog tables, and which agent identities queried them when reads are audited), the thresholds in force, each threshold check, and the verdict (pending | pass | fail | needs-human). Computed by platform code, never by a model; values from protected or sensitive-looking columns are never included. Returns an error when the incident has no evidence.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -5029,6 +5043,12 @@ def _dispatch(name: str, args: dict) -> str:
         if not incident_id:
             return json.dumps({"error": "incident_id is required"})
         return _call("get", f"/api/v1/incidents/{incident_id}")
+
+    elif name == "get_incident_evidence":
+        incident_id = str(args.get("incident_id", "")).strip()
+        if not incident_id:
+            return json.dumps({"error": "incident_id is required"})
+        return _call("get", f"/api/v1/incidents/{incident_id}/evidence")
 
     elif name == "find_data":
         query = str(args.get("query", "")).strip()

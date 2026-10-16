@@ -878,6 +878,15 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'get_incident_evidence',
+      description: "Read the platform-computed evidence for one incident — baseline and after-fix run profiles, their diff, blast radius, thresholds in force, threshold checks, and verdict. Never contains values from protected or sensitive-looking columns.",
+      category: 'Incidents',
+      parameters: [
+        { name: 'incident_id', type: 'string', description: 'The incident id (inc_…)', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'find_data',
       description: 'Find datasets by meaning: ranks the pipelines your key can read against a natural-language query and returns location, freshness, provenance handles, lineage, and a pre-filled howToQuery hint. Discovery only — the query call stays yours to make.',
       category: 'Discovery & Provenance',

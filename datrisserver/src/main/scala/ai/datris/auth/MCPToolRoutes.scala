@@ -151,6 +151,7 @@ object MCPToolRoutes {
         // Recovery-agent incidents (read-only; the platform opens them)
         "list_incidents" -> Mapped("GET", "/api/v1/incidents"),
         "get_incident" -> Mapped("GET", "/api/v1/incidents/example"),
+        "get_incident_evidence" -> Mapped("GET", "/api/v1/incidents/example/evidence"),
 
         // Discovery + provenance (read-only)
         "find_data" -> Mapped("GET", "/api/v1/catalog/find"),

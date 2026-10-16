@@ -36,8 +36,26 @@ case class RecoverySettings(
     maxActionsPerIncident: Int = 3,
     maxRuntimeMinutes: Int = 15,
     maxOpenIncidents: Int = 10,
-    cooldownHours: Int = 6
-)
+    cooldownHours: Int = 6,
+    // Verification thresholds (incident evidence). Record delta is a
+    // percentage; rates are fractions. minDqPassRate None = baseline - 0.01.
+    maxRecordDeltaPct: Int = 25,
+    allowColumnRemoval: Boolean = false,
+    allowTypeChange: Boolean = false,
+    minDqPassRate: Option[Double] = None,
+    maxNullRateIncrease: Double = 0.10
+) {
+
+    /** The thresholds the incident evidence is judged against. */
+    def thresholds: ai.datris.incident.Thresholds =
+        ai.datris.incident.Thresholds(
+            maxRecordDeltaPct = maxRecordDeltaPct.toDouble,
+            allowColumnRemoval = allowColumnRemoval,
+            allowTypeChange = allowTypeChange,
+            minDqPassRate = minDqPassRate,
+            maxNullRateIncrease = maxNullRateIncrease
+        )
+}
 
 object RecoverySettings {
     val Off = "off"
@@ -115,6 +133,11 @@ case class AgentPolicy(
         r.addProperty("maxRuntimeMinutes", recovery.maxRuntimeMinutes)
         r.addProperty("maxOpenIncidents", recovery.maxOpenIncidents)
         r.addProperty("cooldownHours", recovery.cooldownHours)
+        r.addProperty("maxRecordDeltaPct", recovery.maxRecordDeltaPct)
+        r.addProperty("allowColumnRemoval", recovery.allowColumnRemoval)
+        r.addProperty("allowTypeChange", recovery.allowTypeChange)
+        recovery.minDqPassRate.foreach(v => r.addProperty("minDqPassRate", v))
+        r.addProperty("maxNullRateIncrease", recovery.maxNullRateIncrease)
         o.add("recovery", r)
         updatedAt.foreach(o.addProperty("updatedAt", _))
         updatedBy.foreach(o.addProperty("updatedBy", _))
@@ -247,6 +270,23 @@ object AgentPolicy {
                     } catch {
                         case _: Exception => errors += "recovery." + name + " must be an integer"; default
                     }
+            def rBool(name: String, default: Boolean): Boolean =
+                if (!r.has(name) || r.get(name).isJsonNull) default
+                else {
+                    val e = r.get(name)
+                    if (e.isJsonPrimitive && e.getAsJsonPrimitive.isBoolean) e.getAsBoolean
+                    else { errors += "recovery." + name + " must be true or false"; default }
+                }
+            def rFraction(name: String): Option[Double] =
+                if (!r.has(name) || r.get(name).isJsonNull) None
+                else
+                    try {
+                        val v = r.get(name).getAsDouble
+                        if (v.isNaN || v < 0.0 || v > 1.0) { errors += "recovery." + name + " must be between 0.0 and 1.0"; None }
+                        else Some(v)
+                    } catch {
+                        case _: Exception => errors += "recovery." + name + " must be a number"; None
+                    }
             val mode =
                 if (!r.has("mode") || r.get("mode").isJsonNull) RecoverySettings.Off
                 else {
@@ -260,7 +300,12 @@ object AgentPolicy {
                 maxActionsPerIncident = rInt("maxActionsPerIncident", 3, 1, 20),
                 maxRuntimeMinutes = rInt("maxRuntimeMinutes", 15, 1, 240),
                 maxOpenIncidents = rInt("maxOpenIncidents", 10, 1, 100),
-                cooldownHours = rInt("cooldownHours", 6, 1, 24 * 14)
+                cooldownHours = rInt("cooldownHours", 6, 1, 24 * 14),
+                maxRecordDeltaPct = rInt("maxRecordDeltaPct", 25, 0, 100),
+                allowColumnRemoval = rBool("allowColumnRemoval", false),
+                allowTypeChange = rBool("allowTypeChange", false),
+                minDqPassRate = rFraction("minDqPassRate"),
+                maxNullRateIncrease = rFraction("maxNullRateIncrease").getOrElse(0.10)
             )
         }
 

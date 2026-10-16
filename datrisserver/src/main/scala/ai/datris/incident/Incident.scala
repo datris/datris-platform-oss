@@ -52,7 +52,8 @@ case class Incident(
     awaitingApprovalIds: List[String] = Nil,
     revertToVersion: Option[Int] = None, // resource version to restore if verification fails
     closedAt: Option[Instant] = None,
-    outcome: Option[String] = None
+    outcome: Option[String] = None,
+    evidence: Option[JsonObject] = None // IncidentEvidence JSON; absent on pre-upgrade incidents
 ) {
 
     def isOpen: Boolean = Incident.OpenStates.contains(state)
@@ -80,6 +81,10 @@ case class Incident(
         }
         closedAt.foreach(c => o.addProperty("closedAt", c.toString))
         outcome.foreach(o.addProperty("outcome", _))
+        evidence.foreach { e =>
+            o.add("evidence", e)
+            if (e.has("verdict") && e.get("verdict").isJsonPrimitive) o.addProperty("verdict", e.get("verdict").getAsString)
+        }
         o
     }
 
@@ -158,7 +163,8 @@ object Incident {
             awaitingApprovalIds = Option(d.get("awaitingApprovalIds", classOf[java.util.List[String]])).map(_.asScala.toList).getOrElse(Nil),
             revertToVersion = Option(d.getInteger("revertToVersion")).map(_.intValue()),
             closedAt = instant("closedAt"),
-            outcome = opt(d, "outcome")
+            outcome = opt(d, "outcome"),
+            evidence = Option(d.get("evidence", classOf[Document])).map(e => JsonParser.parseString(e.toJson).getAsJsonObject)
         )
     }
 }

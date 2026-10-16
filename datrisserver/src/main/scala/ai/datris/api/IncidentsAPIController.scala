@@ -69,6 +69,28 @@ class IncidentsAPIController {
         }
     }
 
+    /** The incident's deterministic evidence (baseline / real profiles,
+      * diff, blast radius, thresholds, verdict). 404 when the incident or its
+      * evidence is absent (incidents opened before evidence existed). */
+    @GetMapping(path = Array("/{id}/evidence"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def evidence(@PathVariable("id") id: String): ResponseEntity[String] = {
+        try {
+            if (!enabled) return disabled()
+            IncidentIO.get(id) match {
+                case Some(i) =>
+                    i.evidence match {
+                        case Some(e) => new ResponseEntity[String](gson.toJson(e), HttpStatus.OK)
+                        case None => ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](errorJson("incident " + id + " has no evidence"))
+                    }
+                case None => ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](errorJson("no incident " + id))
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("Error reading incident evidence: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](errorJson(e.getMessage))
+        }
+    }
+
     /** A person closing an incident by hand: "stop working this". */
     @PostMapping(path = Array("/{id}/abandon"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     @RequiresRole(Array("admin", "editor"))

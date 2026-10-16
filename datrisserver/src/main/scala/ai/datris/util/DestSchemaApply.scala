@@ -101,15 +101,16 @@ object DestSchemaApply {
     private def ineligible(pipelineName: String, reason: String, message: String): DestTypesProposal =
         DestTypesProposal(pipelineName, eligible = false, reason, message, fields = null, sampleRowCount = 0)
 
-    /** Up to [[sampleLimit]] landed rows, or None when nothing has landed yet
-      * (no table, or an empty one). */
-    private def sampleLanded(config: PipelineConfig, destKind: String): Option[Seq[Map[String, Any]]] = {
+    /** Up to `limit` (default [[sampleLimit]]) landed rows, or None when
+      * nothing has landed yet (no table, or an empty one). Also used by the
+      * incident evidence builder to profile what a run landed. */
+    private[datris] def sampleLanded(config: PipelineConfig, destKind: String, limit: Int = sampleLimit): Option[Seq[Map[String, Any]]] = {
         val rows: Seq[Map[String, Any]] = destKind match {
             case "postgres" =>
                 if (!postgresTableExists(config)) return None
                 val db = config.destination.database
                 val sql = "SELECT * FROM \"" + db.schema + "\".\"" + db.table + "\""
-                PostgresQueryUtil.query(sql, postgresDbName(config), sampleLimit).asScala.map(_.asScala.toMap).toSeq
+                PostgresQueryUtil.query(sql, postgresDbName(config), limit).asScala.map(_.asScala.toMap).toSeq
             case "snowflake" =>
                 val exists = SnowflakeConnectionUtil.withConnection(config.destination.database) { conn =>
                     val statement = conn.createStatement()
@@ -117,7 +118,7 @@ object DestSchemaApply {
                     finally Try(statement.close())
                 }
                 if (!exists) return None
-                SnowflakeQueryUtil.query(config.name, None, sampleLimit).results.asScala.map(_.asScala.toMap).toSeq
+                SnowflakeQueryUtil.query(config.name, None, limit).results.asScala.map(_.asScala.toMap).toSeq
             case "databricks" =>
                 val exists = DatabricksConnectionUtil.withConnection(config.destination.database, pipelineName = config.name) { conn =>
                     val statement = conn.createStatement()
@@ -125,7 +126,7 @@ object DestSchemaApply {
                     finally Try(statement.close())
                 }
                 if (!exists) return None
-                DatabricksQueryUtil.query(config.name, None, sampleLimit).results.asScala.map(_.asScala.toMap).toSeq
+                DatabricksQueryUtil.query(config.name, None, limit).results.asScala.map(_.asScala.toMap).toSeq
             case _ => return None
         }
         if (rows.isEmpty) None else Some(rows)

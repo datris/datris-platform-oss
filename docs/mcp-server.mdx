@@ -155,7 +155,8 @@ Every tool that changes platform state also accepts an optional `reason` — one
 | Tool | Description |
 |------|-------------|
 | `list_incidents` | The platform's [recovery-agent incidents](/incidents), newest first — kind, resource, state, classification and narrative. Read-only: only the platform opens incidents |
-| `get_incident` | One incident by id, with its full step-by-step story and any approvals it waits on. When the operator asks about a failure the platform is already working, explain this record instead of re-diagnosing |
+| `get_incident` | One incident by id, with its full step-by-step story, any approvals it waits on, and its evidence and verdict. When the operator asks about a failure the platform is already working, explain this record instead of re-diagnosing |
+| `get_incident_evidence` | The evidence the platform computed for one incident: before/after run profiles, their diff, blast radius, thresholds and verdict. Never includes values from protected or sensitive-looking columns |
 
 ### Discovery and provenance
 
