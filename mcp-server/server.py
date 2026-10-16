@@ -5042,13 +5042,13 @@ def _dispatch(name: str, args: dict) -> str:
         incident_id = str(args.get("incident_id", "")).strip()
         if not incident_id:
             return json.dumps({"error": "incident_id is required"})
-        return _call("get", f"/api/v1/incidents/{incident_id}")
+        return _call("get", f"/api/v1/incidents/{urllib.parse.quote(incident_id, safe='')}")
 
     elif name == "get_incident_evidence":
         incident_id = str(args.get("incident_id", "")).strip()
         if not incident_id:
             return json.dumps({"error": "incident_id is required"})
-        return _call("get", f"/api/v1/incidents/{incident_id}/evidence")
+        return _call("get", f"/api/v1/incidents/{urllib.parse.quote(incident_id, safe='')}/evidence")
 
     elif name == "find_data":
         query = str(args.get("query", "")).strip()

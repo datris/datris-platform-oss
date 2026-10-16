@@ -76,6 +76,17 @@ def test_get_incident_evidence_missing_id_errors_without_http(captured, args):
     assert captured.calls == []
 
 
+@pytest.mark.parametrize(
+    "tool,suffix",
+    [("get_incident_evidence", "/evidence"), ("get_incident", "")],
+)
+def test_incident_id_is_path_encoded(captured, tool, suffix):
+    server._dispatch(tool, {"incident_id": "inc_x?x=1/../../policy"})
+    assert [(m, p) for (m, p, _) in captured.calls] == [
+        ("get", "/api/v1/incidents/inc_x%3Fx%3D1%2F..%2F..%2Fpolicy" + suffix)
+    ]
+
+
 def test_get_incident_still_dispatches_the_incident_route(captured):
     server._dispatch("get_incident", {"incident_id": "inc_x"})
     assert [(m, p) for (m, p, _) in captured.calls] == [("get", "/api/v1/incidents/inc_x")]
