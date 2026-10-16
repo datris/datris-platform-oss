@@ -274,7 +274,8 @@ object IncidentRunner {
             val platform = if (isFailureKind(incident.kind)) doctorFirst(id) else None
             val diagnosed = platform match {
                 case Some(p) => Right(p)
-                case None => diagnoser.diagnose(incident, onAiCall)
+                // Re-read so the diagnosis sees any "doctor: …" step just recorded.
+                case None => diagnoser.diagnose(IncidentIO.get(id).getOrElse(incident), onAiCall)
             }
 
             diagnosed match {
@@ -381,9 +382,11 @@ object IncidentRunner {
             mode == RecoverySettings.Autopilot
         }
 
-    /** Doctor-first: run the quick self-check (no AI probes). Any `error`
-      * check that is not tap-specific makes this a platform incident; the
-      * proposal quotes the remediation and the model is never asked. */
+    /** Doctor-first: run the quick self-check (no AI probes). A run-breaking
+      * `error` check (Classifier.RunBreakingChecks) makes this a platform
+      * incident; the proposal quotes the remediation and the model is never
+      * asked. Any other non-tap `error` check is recorded as a "doctor: …"
+      * step, which the diagnosis message carries to the model. */
     private[incident] def doctorFirst(id: String): Option[Proposal] = {
         val args = new JsonObject()
         args.addProperty("mode", "quick")
@@ -394,7 +397,11 @@ object IncidentRunner {
                 step(id, "diagnose", "doctor check unavailable — continuing with diagnosis", Some(clip(other.toString)))
                 return None
         }
-        val errors = Classifier.platformErrors(text)
+        val all = Classifier.platformErrors(text)
+        val errors = all.filter { case (cid, detail, _) => Classifier.isRunBreaking(cid, detail) }
+        all.filterNot(errors.contains).foreach { case (cid, detail, remediation) =>
+            step(id, "diagnose", DoctorNotePrefix + cid + " — " + (if (remediation.nonEmpty) remediation else detail), Some(clip(detail)))
+        }
         if (errors.isEmpty) None
         else {
             step(id, "diagnose", "doctor reports " + errors.size + " platform error(s): " + errors.map(_._1).mkString(", "))
@@ -404,6 +411,9 @@ object IncidentRunner {
             Some(Proposal(Classifier.Platform, "Platform problem, not the tap: " + lines.mkString("; "), needsHuman = true, Nil, None))
         }
     }
+
+    /** Step-summary prefix of a doctor error that did not short-circuit. */
+    private[incident] val DoctorNotePrefix = "doctor: "
 
     /** The secret name to check when the failure is a credential failure
       * (Some("") when it is one but no secret is configured), else None.
@@ -1327,6 +1337,9 @@ object IncidentRunner {
             sb.append("Incident ").append(incident.id).append(": ").append(incident.kind)
                 .append(" on ").append(incident.resourceType).append(" `").append(incident.resourceName).append("`.\n")
             sb.append("Trigger: ").append(triggerForModel(incident).toString.take(2000)).append("\n")
+            // Doctor errors that did not make this a platform incident: real,
+            // possibly related — the model weighs them, the narrative keeps them.
+            incident.steps.filter(_.summary.startsWith(DoctorNotePrefix)).foreach(st => sb.append(st.summary.take(500)).append("\n"))
             IncidentEvidenceBuilder.of(incident).foreach(e => sb.append(IncidentEvidenceBuilder.blastRadiusLine(incident, e.blastRadius)).append("\n"))
             sb.append("\n")
             sb.append("Diagnose this incident using the read-only tools available, then END your reply with ONLY a JSON object (no prose after it):\n")

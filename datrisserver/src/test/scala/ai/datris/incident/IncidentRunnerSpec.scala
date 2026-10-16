@@ -836,4 +836,53 @@ class IncidentRunnerSpec extends AnyFunSuite {
             assert(c.incident.classification.contains("transient"), c.incident.classification)
         }
     }
+
+    // Review follow-up: only run-breaking doctor errors short-circuit; a bare
+    // 401/403 counts only next to HTTP / status / code / response.
+
+    private def doctorWith(id: String, detail: String, remediation: String): String =
+        s"""{"checks":[{"id":"$id","status":"error","severity":"high","detail":"$detail","remediation":"$remediation"}]}"""
+
+    test("doctor-first: an unrelated doctor error does not short-circuit; the diagnoser runs and sees it as a doctor note") {
+        scenario(doctorResponse = doctorWith("vault.token_ttl", "expires in 3 days", "Renew the Vault token."), proposal = transientRunProposal) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.diagnoseCalls == 1)
+            assert(c.incident.classification.contains("transient"), c.incident.classification)
+            assert(c.summaries.exists(s => s.startsWith("doctor: vault.token_ttl") && s.contains("Renew the Vault token.")), c.summaries)
+            assert(c.tools.filter(Mutations) == List("run_tap"), c.tools)
+        }
+    }
+
+    test("doctor-first: run-breaking checks short-circuit (staging.area, vault.ai_slots on ai-primary) but not vault.ai_slots on another slot") {
+        for (
+            (id, detail) <- Seq(
+                "staging.area" -> "staging area /tmp/datris is not writable",
+                "vault.ai_slots" -> "Vault secret `oss/ai-primary` (ai-primary) missing"
+            )
+        ) scenario(doctorResponse = doctorWith(id, detail, "Fix it."), proposal = transientRunProposal) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.diagnoseCalls == 0, id)
+            assert(c.incident.classification.contains("platform"), id + ": " + c.incident.classification)
+        }
+        scenario(doctorResponse = doctorWith("vault.ai_slots", "Vault secret `oss/codegen` (codegen) missing", "Fix it."), proposal = transientRunProposal) {
+            c =>
+                IncidentRunner.runIncident(c.id)
+                assert(c.diagnoseCalls == 1)
+                assert(!c.incident.classification.contains("platform"), c.incident.classification)
+        }
+        assert(Classifier.RunBreakingChecks.contains("disk.usage"))
+        assert(!Classifier.RunBreakingChecks.contains("vault.token_ttl"))
+        assert(!Classifier.RunBreakingChecks.contains("staging.orphans"))
+        assert(!Classifier.RunBreakingChecks.contains("jdbc.mssql_driver"))
+    }
+
+    test("Classifier.credential: a bare number in a run log is not a credential failure; HTTP/status forms are") {
+        assert(!Classifier.credential(null, "page 401 of 900"))
+        assert(!Classifier.credential(null, "batch 403 written"))
+        assert(!Classifier.credential("KeyError: account_id", "page 401 of 900\nbatch 403"))
+        assert(Classifier.credential("status code: 401", null))
+        assert(Classifier.credential(null, "HTTP/1.1 403"))
+        assert(Classifier.credential("response status_code=401", null))
+        assert(Classifier.credential("401 Client Error: Unauthorized for url", null))
+    }
 }
