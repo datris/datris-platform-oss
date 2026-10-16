@@ -801,6 +801,18 @@ object DoctorService {
         }
     }
 
+    /** The operator's environment label (`DATRIS_ENV`). Always ok — it is a
+      * label; only `production` hardens, and that is enforced elsewhere. */
+    class EnvLabelCheck extends Check {
+        val id = "env.label"
+        val startupSafe = true
+        def run(): CheckResult =
+            EnvironmentLabel.current match {
+                case Some(label) => ok("environment label: " + label + " (DATRIS_ENV)")
+                case None => ok("environment label: unset")
+            }
+    }
+
     /** Opt-in (`?probes=ai`): a minimal request through each configured chat
       * slot, and a one-input embed for hosted embedding providers. Costs a
       * few tokens; never at startup. */
@@ -911,6 +923,7 @@ object DoctorService {
             new ProvenanceStrictCheck(probes),
             new VersionSkewCheck(serverVersion, clients),
             new EnvSeenCheck(probes),
+            new EnvLabelCheck,
             new AiModelReachableCheck(probes, slots)
         )
 

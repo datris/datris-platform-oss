@@ -521,3 +521,18 @@ def test_full_mode_runs_version_update_with_dotenv(tmp_path, monkeypatch):
     assert "version.update" in ids
     assert ids.index("version.update") > ids.index("mcp.reachable")
     assert seen == [(vi, dotenv)]
+
+
+# multi-env story 2b: the (versions) suffix names the environment label.
+def test_render_human_shows_environment_label():
+    server = {"doctorVersion": 1, "surface": {"server": "1.50.0"},
+              "checks": [doc.result("env.label", "ok", "qa", surface="server")]}
+    labelled = doc.merge_report(server, [], "1.50.0",
+                                version_info={"version": "1.50.0", "environmentLabel": "qa"})
+    assert "qa" in labelled["surface"].values()
+    suffix = doc.render_human(labelled).splitlines()[-1]
+    assert "env qa" in suffix, suffix
+    # No label (or an older server): suffix and surface exactly as before.
+    plain = doc.merge_report(server, [], "1.50.0", version_info={"version": "1.50.0"})
+    assert plain["surface"] == {"cli": "1.50.0", "server": "1.50.0"}
+    assert "env " not in doc.render_human(plain).splitlines()[-1]

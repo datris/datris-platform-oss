@@ -535,4 +535,68 @@ class CatalogArchiveSpec extends AnyFunSuite {
         assert(none.dependsOn != null && none.dependsOn.isEmpty)
         assert(stripTapForExport(fullTap("minio")).dependsOn == null)
     }
+
+    // Story: Environment label everywhere, part 1
+    // (plans/stories/multi-env-2a-environment-label-server-ui.md), Acceptance
+    // bullet 2. Pinned: `Manifest` gains `sourceEnvironment: Option[String] = None`
+    // as its last parameter; `manifestJson` writes the key only when set;
+    // `parseManifest` reads it as optional; and the pure helper
+    // `environmentWarning(source: Option[String], target: Option[String]): Option[String]`.
+
+    test("manifest round-trips sourceEnvironment and omits it when unset") {
+        val withEnv = manifest(taps = Seq("orders")).copy(sourceEnvironment = Some("dev"))
+        val json = manifestJson(withEnv)
+        val obj = JsonParser.parseString(json).getAsJsonObject
+        assert(obj.has("sourceEnvironment"), json)
+        assert(obj.get("sourceEnvironment").getAsString == "dev", json)
+        val back = parseManifest(utf8(json)).fold(e => fail(e), identity)
+        assert(back.sourceEnvironment.contains("dev"), back)
+        assert(back == withEnv, back)
+
+        val without = manifest(taps = Seq("orders"))
+        assert(without.sourceEnvironment.isEmpty, "the default is None")
+        val json2 = manifestJson(without)
+        assert(!JsonParser.parseString(json2).getAsJsonObject.has("sourceEnvironment"), "unset writes no key: " + json2)
+        assert(!json2.contains("sourceEnvironment"), json2)
+        val back2 = parseManifest(utf8(json2)).fold(e => fail(e), identity)
+        assert(back2.sourceEnvironment.isEmpty, back2)
+        assert(back2 == without, back2)
+
+        // Through the archive itself, as export writes it.
+        val unpacked = unpack(pack(archiveEntries(withEnv, Seq(tap("orders", "sales")), Nil))).fold(e => fail(e), identity)
+        val fromZip = parseManifest(unpacked("manifest.json")).fold(e => fail(e), identity)
+        assert(fromZip.sourceEnvironment.contains("dev"), fromZip)
+    }
+
+    test("parseManifest accepts a manifest with no sourceEnvironment") {
+        // Every archive exported before this story looks like this.
+        val parsed = parseManifest(validManifestJson)
+        assert(parsed.isRight, parsed)
+        assert(parsed.right.get.sourceEnvironment.isEmpty, parsed)
+        assert(parsed.right.get.catalog == "sales")
+
+        val explicitNull =
+            utf8("""{"formatVersion":1,"catalog":"sales","taps":[],"pipelines":[],"requiredSecrets":[],"warnings":[],"sourceEnvironment":null}""")
+        val p2 = parseManifest(explicitNull)
+        assert(p2.isRight && p2.right.get.sourceEnvironment.isEmpty, p2)
+    }
+
+    test("environmentWarning names source and target and is None when both are unset") {
+        val both = environmentWarning(Some("dev"), Some("production"))
+        assert(both.isDefined, both)
+        val w = both.get
+        assert(w.contains("archive was exported from"), w)
+        assert(w.contains("this install is"), w)
+        assert(w.indexOf("dev") >= 0 && w.indexOf("dev") < w.indexOf("production"), "source then target: " + w)
+        assert(w.matches("archive was exported from `?dev`?; this install is `?production`?"), w)
+
+        val targetOnly = environmentWarning(None, Some("production"))
+        assert(targetOnly.exists(_.contains("production")), targetOnly)
+
+        val sourceOnly = environmentWarning(Some("dev"), None)
+        assert(sourceOnly.exists(_.contains("dev")), sourceOnly)
+
+        assert(environmentWarning(None, None).isEmpty)
+        assert(environmentWarning(Some("dev"), Some("dev")).isEmpty, "a same-environment restore is not a warning")
+    }
 }

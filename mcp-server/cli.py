@@ -1172,7 +1172,7 @@ def doctor(pre_upgrade, probes, json_output, compose_file, project_dir):
     host = doc.run_host_checks(runner, MCP_URL, version_info=version_info, pre_upgrade=pre_upgrade,
                                dotenv=dotenv, cli_version=CLI_VERSION)
     report = doc.merge_report(server_report, host, CLI_VERSION, mode="pre-upgrade" if pre_upgrade else "full",
-                              server_error=server_error, datris_url=datris_url)
+                              server_error=server_error, datris_url=datris_url, version_info=version_info)
     code = doc.exit_code(report, server_unreachable=(server_error is not None))
     if json_output:
         click.echo(json.dumps(report, indent=2))
@@ -1195,6 +1195,9 @@ def version(json_output):
         return
     click.echo(f"  Server: {result.get('text', result) if isinstance(result, dict) else result}")
     click.echo(f"  CLI: {CLI_VERSION}")
+    label = result.get("environmentLabel") if isinstance(result, dict) else None
+    if isinstance(label, str) and label.strip():
+        click.echo(f"  Environment: {label.strip()}")
 
 
 def main():

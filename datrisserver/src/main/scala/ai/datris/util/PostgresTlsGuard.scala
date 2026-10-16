@@ -39,9 +39,7 @@ object PostgresTlsGuard {
 
     // The system-property twins exist because env vars are fixed at process
     // start — tests exercise both gates through the properties.
-    private def productionMode: Boolean =
-        sys.props.get("datris.env").orElse(sys.env.get("DATRIS_ENV"))
-            .exists(_.equalsIgnoreCase("production"))
+    private def productionMode: Boolean = EnvironmentLabel.isProduction
 
     private def allowPlaintextDb: Boolean =
         sys.props.get("datris.allowPlaintextDb").orElse(sys.env.get("DATRIS_ALLOW_PLAINTEXT_DB"))

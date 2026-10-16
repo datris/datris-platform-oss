@@ -30,3 +30,17 @@ def test_server_version_is_datris_not_sdk():
     assert reported == server._mcp_server_version()
     assert reported == _pyproject_version()
     assert reported != importlib.metadata.version("mcp")
+
+
+# ----------------------------- multi-env story 2b: environmentLabel passthrough ---
+
+def test_get_version_passes_environment_label_through(monkeypatch):
+    import json
+    body = json.dumps({"version": "1.50.0", "environment": "local", "environmentLabel": "qa"})
+    monkeypatch.setattr(server, "_call", lambda method, path, timeout=300, **kw: body)
+    out = json.loads(server._dispatch("get_version", {}))
+    assert out["environmentLabel"] == "qa"
+    assert out["version"] == "1.50.0"
+    assert out["mcpServerVersion"] == server._mcp_server_version()
+    desc = next(t for t in server._all_tools() if t.name == "get_version").description
+    assert "environmentLabel" in desc and "DATRIS_ENV" in desc, desc

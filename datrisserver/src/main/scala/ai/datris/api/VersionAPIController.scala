@@ -40,6 +40,8 @@ class VersionAPIController {
             // additive string fields so an agent sizes a run against the values
             // this install runs with, not against the documented defaults.
             val budgets = ai.datris.util.TapBudgets.effective(DatrisEnvironment.current)
+            // `environmentLabel` (DATRIS_ENV) only when set; `environment` stays
+            // the internal prefix the UI uses for its env-label span and isTrial.
             val map = Map(
                 "version" -> BuildInfo.version,
                 // Which jar is running (doctor's build.stale_jar compares these to the checkout).
@@ -65,9 +67,9 @@ class VersionAPIController {
                 "tapScriptTimeoutSecondsSource" -> budgets.tapScriptTimeoutSecondsSource,
                 "tapRunTimeoutSeconds" -> budgets.tapRunTimeoutSeconds.toString,
                 "tapRunTimeoutSecondsSource" -> budgets.tapRunTimeoutSecondsSource
-            ).asJava
+            ) ++ ai.datris.util.EnvironmentLabel.current.map(label => "environmentLabel" -> label)
             val gson = new Gson
-            new ResponseEntity[String](gson.toJson(map), HttpStatus.OK)
+            new ResponseEntity[String](gson.toJson(map.asJava), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

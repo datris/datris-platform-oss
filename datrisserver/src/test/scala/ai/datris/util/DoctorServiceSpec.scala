@@ -495,7 +495,8 @@ class DoctorServiceSpec extends AnyFunSuite {
             "codegen.isolation",
             "runner.concurrency",
             "audit.strict",
-            "provenance.strict"
+            "provenance.strict",
+            "env.label"
         )) == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
@@ -1008,5 +1009,57 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(!quickIds.contains("runner.concurrency"), "not startup-safe: " + quickIds)
         val startupIds = DoctorService.runStartup(p, slots, "1.49.0").map(_.id)
         assert(!startupIds.contains("runner.concurrency"), "boot log has no DOCTOR runner.concurrency line: " + startupIds)
+    }
+
+    // env.label — plans/stories/multi-env-2a-environment-label-server-ui.md,
+    // Acceptance bullet 3. Pinned: id "env.label", startupSafe = true,
+    // registered next to env.seen, always ok; detail
+    // "environment label: <label> (DATRIS_ENV)" or "environment label: unset".
+    // The label is read through EnvironmentLabel.current, so the test sets its
+    // system-property twin `datris.env`.
+    private def withDatrisEnv[A](value: Option[String])(body: => A): A = {
+        val key = "datris.env"
+        val previous = sys.props.get(key)
+        value match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    private def envLabelRow(mode: String): CheckResult =
+        DoctorService.run(mode, Set.empty, Map.empty, new FakeProbes(), slots, "1.50.0").checks
+            .find(_.id == "env.label")
+            .getOrElse(fail("env.label is not registered in the " + mode + " report"))
+
+    test("env.label reports the label when set and unset otherwise") {
+        withDatrisEnv(Some("qa")) {
+            val r = envLabelRow("full")
+            assert(r.status == "ok", r)
+            assert(r.detail.contains("environment label: qa"), r.detail)
+            assert(r.detail.contains("DATRIS_ENV"), r.detail)
+            assert(envLabelRow("quick").status == "ok", "startup-safe, so it is in the quick report too")
+        }
+        withDatrisEnv(Some("production")) {
+            val r = envLabelRow("full")
+            assert(r.status == "ok", "always ok, even for production: " + r)
+            assert(r.detail.contains("environment label: production"), r.detail)
+        }
+        withDatrisEnv(None) {
+            assume(sys.env.get("DATRIS_ENV").forall(_.trim.isEmpty), "DATRIS_ENV is set in this JVM's environment")
+            val r = envLabelRow("full")
+            assert(r.status == "ok", r)
+            assert(r.detail == "environment label: unset", r.detail)
+        }
+        val p = new FakeProbes()
+        val c = DoctorService.checks(p, slots, "1.50.0", Map.empty).find(_.id == "env.label").getOrElse(fail("not registered"))
+        assert(c.startupSafe)
+        val ids = DoctorService.run("full", Set.empty, Map.empty, p, slots, "1.50.0").checks.map(_.id)
+        assert(math.abs(ids.indexOf("env.label") - ids.indexOf("env.seen")) == 1, "registered next to env.seen: " + ids)
+        assert(DoctorService.runStartup(p, slots, "1.50.0").map(_.id).contains("env.label"))
     }
 }

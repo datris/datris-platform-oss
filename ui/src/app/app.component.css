@@ -118,6 +118,31 @@
   font-weight: 600;
 }
 
+.env-band {
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-band-production {
+  color: #fff;
+  background: #c53030;
+  border: 1px solid #e53e3e;
+}
+
+.env-band-other {
+  color: #1a1300;
+  background: #f6ad55;
+  border: 1px solid #ed8936;
+}
+
 .env-version {
   color: var(--text-primary);
   opacity: 0.85;
