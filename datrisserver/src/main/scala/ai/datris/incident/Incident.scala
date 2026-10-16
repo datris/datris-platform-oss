@@ -79,6 +79,7 @@ case class Incident(
             awaitingApprovalIds.foreach(a.add)
             o.add("awaitingApprovalIds", a)
         }
+        revertToVersion.foreach(v => o.addProperty("revertToVersion", v))
         closedAt.foreach(c => o.addProperty("closedAt", c.toString))
         outcome.foreach(o.addProperty("outcome", _))
         evidence.foreach { e =>

@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable, of } from 'rxjs';
 import { catchError, map, shareReplay } from 'rxjs/operators';
+import { IncidentEvidence } from './incidents.service';
 
 /** Actor that made the gated request — same shape the audit log uses. */
 export interface ApprovalActor {
@@ -35,6 +36,10 @@ export interface Approval {
   executedAt?: string;
   resultStatus?: number;
   resultBody?: string;
+  /** Set when a recovery-agent incident queued this action. */
+  incidentId?: string;
+  /** That incident's evidence, embedded so the card can show it. */
+  incidentEvidence?: IncidentEvidence;
   /** Present on 409 conflict responses (stale resource / already decided). */
   error?: string;
   errorKind?: string;

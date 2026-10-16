@@ -101,6 +101,13 @@
           <pre class="approval-outcome-detail" *ngIf="o.detail">{{ o.detail }}</pre>
         </div>
 
+        <app-incident-evidence *ngIf="a.incidentEvidence"
+                               [evidence]="a.incidentEvidence"
+                               [compact]="true"
+                               [resourceType]="a.resourceType === 'pipeline' ? 'pipeline' : 'tap'"
+                               [resource]="a.resource || ''">
+        </app-incident-evidence>
+
         <div class="approval-actions" *ngIf="auth.canWrite()">
           <button class="action-btn approval-approve"
                   [disabled]="isDeciding(a)"
@@ -187,6 +194,14 @@
           </ng-container>
         </div>
 
+        <app-incident-evidence *ngIf="i.evidence"
+                               [evidence]="i.evidence"
+                               [resourceType]="i.resourceType"
+                               [resource]="i.resource"
+                               [revertToVersion]="i.revertToVersion"
+                               (compare)="openScriptDiff(i)">
+        </app-incident-evidence>
+
         <button class="approval-req-toggle" (click)="toggleTimeline(i)">
           {{ timelineOpen.has(i.id) ? '▾' : '▸' }} Timeline ({{ i.steps.length || 0 }} steps)
         </button>
@@ -244,13 +259,30 @@
           <tr><th>State</th><th>Kind</th><th>Resource</th><th>Outcome</th><th>Closed at</th></tr>
         </thead>
         <tbody>
-          <tr *ngFor="let i of closedIncidents; trackBy: trackByIncident">
-            <td><span class="incident-state" [class]="'incident-state ' + incidentStateClass(i.state)">{{ incidentStateLabel(i.state) }}</span></td>
-            <td>{{ incidentKindLabel(i) }}</td>
-            <td>{{ i.resourceType }} {{ i.resource }}</td>
-            <td class="incident-outcome-cell">{{ i.outcome || '—' }}</td>
-            <td>{{ formatTs(i.closedAt) }}</td>
-          </tr>
+          <ng-container *ngFor="let i of closedIncidents; trackBy: trackByIncident">
+            <tr>
+              <td><span class="incident-state" [class]="'incident-state ' + incidentStateClass(i.state)">{{ incidentStateLabel(i.state) }}</span></td>
+              <td>{{ incidentKindLabel(i) }}</td>
+              <td>
+                {{ i.resourceType }} {{ i.resource }}
+                <button class="incident-detail-toggle" *ngIf="i.evidence" (click)="toggleClosedEvidence(i)">
+                  {{ closedEvidenceOpen.has(i.id) ? '▾' : '▸' }} Evidence
+                </button>
+              </td>
+              <td class="incident-outcome-cell">{{ i.outcome || '—' }}</td>
+              <td>{{ formatTs(i.closedAt) }}</td>
+            </tr>
+            <tr class="incident-evidence-row" *ngIf="i.evidence && closedEvidenceOpen.has(i.id)">
+              <td colspan="5">
+                <app-incident-evidence [evidence]="i.evidence"
+                                       [resourceType]="i.resourceType"
+                                       [resource]="i.resource"
+                                       [revertToVersion]="i.revertToVersion"
+                                       (compare)="openScriptDiff(i)">
+                </app-incident-evidence>
+              </td>
+            </tr>
+          </ng-container>
         </tbody>
       </table>
     </div>
@@ -531,4 +563,14 @@
     </table>
     </div>
   </section>
+
+  <!-- Pre-incident vs current script, opened from an evidence card. -->
+  <app-version-history
+    *ngIf="historyTap"
+    entityType="tap"
+    [name]="historyTap"
+    [preselectVersion]="historyFrom"
+    [preselectAgainst]="historyTo"
+    (closed)="closeScriptDiff()">
+  </app-version-history>
 </div>

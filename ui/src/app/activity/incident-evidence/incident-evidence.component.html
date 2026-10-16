@@ -1,0 +1,61 @@
+<ng-container *ngIf="evidence">
+  <div class="ie-card" [class.ie-compact]="compact">
+    <div class="ie-head">
+      <span class="ie-title">Evidence</span>
+      <span class="ie-verdict" [ngClass]="'verdict-' + verdict">{{ verdictLabel(verdict) }}</span>
+      <span class="ie-blast" *ngIf="blastLine">{{ blastLine }}<ng-container *ngIf="readersLine">; {{ readersLine }}</ng-container></span>
+    </div>
+
+    <div class="ie-facts" *ngIf="hasDiff || rowsLine || dqLine">
+      <span class="ie-fact" *ngIf="hasDiff"
+            [title]="'Added: ' + (added.join(', ') || 'none') + ' · Removed: ' + (removed.join(', ') || 'none')">
+        <span class="ie-label">Columns</span> +{{ added.length }} −{{ removed.length }}
+      </span>
+      <span class="ie-fact" *ngIf="rowsLine">
+        <span class="ie-label">Rows</span> {{ rowsLine }}
+        <span class="ie-muted" *ngIf="rowsVsMean">{{ rowsVsMean }}</span>
+      </span>
+      <span class="ie-fact" *ngIf="dqLine">{{ dqLine }}</span>
+      <span class="ie-muted" *ngIf="afterLabel">baseline vs {{ afterLabel }}</span>
+    </div>
+
+    <ul class="ie-type-changes" *ngIf="typeChanges.length > 0">
+      <li *ngFor="let t of typeChanges"><code>{{ t.column }}</code> {{ t.from }} → {{ t.to }}</li>
+    </ul>
+
+    <div class="ie-detail-row" *ngIf="nullMovers.length > 0 || sparks.length > 0">
+      <table class="ie-null-movers" *ngIf="nullMovers.length > 0">
+        <thead><tr><th>Column</th><th>Null rate Δ</th></tr></thead>
+        <tbody>
+          <tr *ngFor="let n of nullMovers">
+            <td><code>{{ n.column }}</code></td>
+            <td [class.ie-up]="n.up">{{ n.delta }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="ie-sparks" *ngIf="sparks.length > 0">
+        <div class="ie-spark-row" *ngFor="let s of sparks" title="p1 · p25 · p50 · p75 · p99 — baseline (grey) vs after (blue)">
+          <code class="ie-spark-col">{{ s.column }}</code>
+          <svg class="ie-spark" width="80" height="24" viewBox="0 0 80 24" aria-hidden="true">
+            <polyline class="ie-spark-base" [attr.points]="s.baseline" fill="none"></polyline>
+            <polyline class="ie-spark-after" [attr.points]="s.after" fill="none"></polyline>
+          </svg>
+          <span class="ie-muted" *ngIf="s.shift !== undefined">{{ shiftText(s.shift) }}</span>
+        </div>
+      </div>
+    </div>
+
+    <ul class="ie-checks" *ngIf="checks.length > 0">
+      <li *ngFor="let c of checks" class="ie-check" [ngClass]="c.passed ? 'ie-check-pass' : 'ie-check-fail'">
+        <span class="ie-tick">{{ c.passed ? '✓' : '✗' }}</span>
+        <span class="ie-check-name">{{ checkLabel(c.name) }}</span>
+        <span class="ie-muted">{{ c.observed }} vs {{ c.limit }}</span>
+      </li>
+    </ul>
+
+    <button class="ie-compare" *ngIf="canCompare" type="button" (click)="compare.emit()">
+      Compare script versions
+    </button>
+  </div>
+</ng-container>

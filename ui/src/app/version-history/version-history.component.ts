@@ -13,6 +13,10 @@ import { httpErrorText } from '../shared/http-error';
 export class VersionHistoryComponent implements OnChanges {
   @Input() entityType: 'tap' | 'pipeline' = 'tap';
   @Input() name = '';
+  /** Open straight on the diff `preselectVersion` vs `preselectAgainst`
+   *  (e.g. pre-incident vs current script). Both must be set. */
+  @Input() preselectVersion?: number | null;
+  @Input() preselectAgainst?: number | null;
   @Output() closed = new EventEmitter<void>();
   @Output() restored = new EventEmitter<void>();
 
@@ -45,7 +49,18 @@ export class VersionHistoryComponent implements OnChanges {
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['name'] && this.name) {
       this.loadVersions();
+      this.applyPreselect();
     }
+  }
+
+  /** Select `preselectVersion` and diff it against `preselectAgainst` when
+   *  both are given; no-op otherwise (existing callers pass neither). */
+  private applyPreselect(): void {
+    const v = this.preselectVersion;
+    const against = this.preselectAgainst;
+    if (v === undefined || v === null || against === undefined || against === null || v === against) return;
+    this.selectVersion(v);
+    this.onDiffAgainstChange(String(against));
   }
 
   private listVersions(): Observable<any[]> {

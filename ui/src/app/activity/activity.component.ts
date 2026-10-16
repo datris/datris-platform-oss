@@ -152,6 +152,13 @@ export class ActivityComponent implements OnInit, OnDestroy {
   abandoning = new Set<string>();
   /** Per-incident error banner after a failed abandon from this page. */
   incidentActionError = new Map<string, string>();
+  /** Closed-incident ids whose evidence card is expanded. */
+  closedEvidenceOpen = new Set<string>();
+  /** Version-history modal opened from an evidence card ("Compare script
+   *  versions"): tap name and the pre-incident / current versions. */
+  historyTap = '';
+  historyFrom: number | null = null;
+  historyTo: number | null = null;
 
   // Latest server-side signals response (null until the first successful
   // fetch, or when the endpoint errors — client-computed values are the
@@ -562,6 +569,37 @@ export class ActivityComponent implements OnInit, OnDestroy {
     if (!i.steps || i.steps.length === 0) return null;
     const s = i.steps[i.steps.length - 1];
     return { summary: s.summary, ts: s.ts || null };
+  }
+
+  toggleClosedEvidence(i: Incident): void {
+    if (this.closedEvidenceOpen.has(i.id)) this.closedEvidenceOpen.delete(i.id);
+    else this.closedEvidenceOpen.add(i.id);
+  }
+
+  /** Open the tap's version history on the pre-incident (`revertToVersion`)
+   *  vs current version diff. Tap incidents only. */
+  openScriptDiff(i: Incident): void {
+    if (i.resourceType !== 'tap' || i.revertToVersion === undefined || i.revertToVersion === null) return;
+    const from = i.revertToVersion;
+    const name = i.resource;
+    this.tapService.getTapVersions(name).pipe(catchError(() => of([] as any[]))).subscribe(versions => {
+      const nums = (versions || []).map((v: any) => Number(v?.version)).filter((n: number) => isFinite(n));
+      const latest = nums.length > 0 ? Math.max(...nums) : null;
+      this.historyFrom = from;
+      this.historyTo = latest !== null && latest !== from ? latest : null;
+      this.historyTap = name;
+    });
+  }
+
+  closeScriptDiff(): void {
+    this.historyTap = '';
+    this.historyFrom = null;
+    this.historyTo = null;
+  }
+
+  /** Chip tone for an evidence verdict. */
+  verdictClass(v?: string): string {
+    return 'verdict-' + (v || 'pending');
   }
 
   toggleTimeline(i: Incident): void {

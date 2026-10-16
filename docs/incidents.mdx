@@ -70,6 +70,7 @@ Set under the agent policy's `recovery` section; enforced by the runner, not the
 ## Watching it
 
 - **Activity → Incidents**: every incident with its state, classification, step-by-step narrative, and any approvals it waits on; a person can abandon one at any time.
+- **Evidence card**: incidents with platform-computed evidence show it on the incident (and, compact, on its approval above Approve/Reject): what the resource feeds, column and row-count changes, DQ pass rate before and after, the biggest null-rate movers, a quantile sparkline per numeric column, each threshold check with a pass/fail tick, the verdict, and a **Compare script versions** button that opens the tap's version history on the pre-incident vs current diff. Column values are never shown.
 - **Ops chat**: incidents the platform is working appear in the assistant's context — ask "what happened to the prices tap?" and it explains the incident record instead of re-diagnosing.
 - **Agents**: `list_incidents` / `get_incident` MCP tools (read-only — only the platform opens incidents).
 - **Metrics**: `datris_incidents_total{kind,outcome}` and `datris_incident_duration_seconds` on the Prometheus endpoint.
