@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.incident.Thresholds
 import org.scalatest.funsuite.AnyFunSuite
 
 class RecoveryPolicySpec extends AnyFunSuite {
@@ -60,5 +61,53 @@ class RecoveryPolicySpec extends AnyFunSuite {
     test("a bad recovery override mode is rejected, naming the resource") {
         val r = AgentPolicy.fromJson("""{"overrides":{"tap:prices":{"recovery":"sometimes"}}}""")
         assert(r.isLeft && r.left.get.contains("tap:prices"))
+    }
+
+    // Story: Incident evidence model (plans/stories/self-healing-1-evidence-model.md),
+    // Acceptance bullet 5 — five verification thresholds on RecoverySettings.
+
+    test("verification thresholds default to 25 / false / false / None / 0.10") {
+        val r = policy("""{}""").recovery
+        assert(r.maxRecordDeltaPct == 25)
+        assert(!r.allowColumnRemoval)
+        assert(!r.allowTypeChange)
+        assert(r.minDqPassRate.isEmpty)
+        assert(r.maxNullRateIncrease == 0.10)
+        assert(r.thresholds == Thresholds(25.0, allowColumnRemoval = false, allowTypeChange = false, minDqPassRate = None, maxNullRateIncrease = 0.10))
+    }
+
+    test("an older recovery block without thresholds parses with the threshold defaults") {
+        val r = policy("""{"recovery":{"mode":"propose","maxAiCallsPerIncident":5}}""").recovery
+        assert(r.mode == RecoverySettings.Propose)
+        assert(r.maxRecordDeltaPct == 25 && !r.allowColumnRemoval && !r.allowTypeChange && r.minDqPassRate.isEmpty && r.maxNullRateIncrease == 0.10)
+    }
+
+    test("maxRecordDeltaPct = 101 is rejected naming the field") {
+        val r = AgentPolicy.fromJson("""{"recovery":{"maxRecordDeltaPct":101}}""")
+        assert(r.isLeft && r.left.get.contains("maxRecordDeltaPct"), r)
+    }
+
+    test("maxNullRateIncrease = 1.5 is rejected naming the field") {
+        val r = AgentPolicy.fromJson("""{"recovery":{"maxNullRateIncrease":1.5}}""")
+        assert(r.isLeft && r.left.get.contains("maxNullRateIncrease"), r)
+    }
+
+    test("verification thresholds round-trip through toJson") {
+        val p = policy(
+            """{"recovery":{"mode":"propose","maxRecordDeltaPct":40,"allowColumnRemoval":true,"allowTypeChange":true,"minDqPassRate":0.9,"maxNullRateIncrease":0.2}}"""
+        )
+        assert(p.recovery.maxRecordDeltaPct == 40)
+        assert(p.recovery.allowColumnRemoval && p.recovery.allowTypeChange)
+        assert(p.recovery.minDqPassRate == Some(0.9))
+        assert(p.recovery.maxNullRateIncrease == 0.2)
+        val back = policy(p.toJson.toString)
+        assert(back.recovery == p.recovery)
+        assert(back.recovery.thresholds == Thresholds(
+            40.0,
+            allowColumnRemoval = true,
+            allowTypeChange = true,
+            minDqPassRate = Some(0.9),
+            maxNullRateIncrease = 0.2
+        ))
     }
 }

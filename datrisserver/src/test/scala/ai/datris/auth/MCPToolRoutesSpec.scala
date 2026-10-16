@@ -33,8 +33,24 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 83)
+        assert(MCPToolRoutes.allToolNames.size == 84)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
+    }
+
+    // Story: Incident evidence model (plans/stories/self-healing-1-evidence-model.md),
+    // Acceptance bullet 6. A read-only incident tool: visible with incident:read,
+    // hidden from a tap:read-only key, mapped to GET /api/v1/incidents/{id}/evidence.
+    test("get_incident_evidence is an incident:read tool mapped to GET /api/v1/incidents/{id}/evidence") {
+        assert(
+            MCPToolRoutes.tools.toMap.get("get_incident_evidence") ==
+                Some(MCPToolRoutes.Mapped("GET", "/api/v1/incidents/example/evidence"))
+        )
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/incidents/inc_x/evidence") == RouteCheck.Require("incident", "read"))
+        assert(MCPToolRoutes.allowedTools(key("incident:read")).contains("get_incident_evidence"))
+        assert(!MCPToolRoutes.allowedTools(key("tap:read")).contains("get_incident_evidence"))
+        assert(MCPToolRoutes.allowedTools(legacyKey).contains("get_incident_evidence"))
+        // The neighbouring tool is untouched.
+        assert(MCPToolRoutes.tools.toMap.get("get_incident") == Some(MCPToolRoutes.Mapped("GET", "/api/v1/incidents/example")))
     }
 
     // Story: Catalog backup and restore (plans/stories/catalog-backup-restore.md).

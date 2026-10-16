@@ -194,6 +194,46 @@ class IncidentRunnerSpec extends AnyFunSuite {
         assert(back == i)
     }
 
+    // Story: Incident evidence model (plans/stories/self-healing-1-evidence-model.md),
+    // Acceptance bullet 4 — `Incident.evidence` is a nullable subdocument;
+    // pre-upgrade documents read unchanged; `verdict` surfaces only with evidence.
+
+    private val evidenceJson =
+        JsonParser.parseString(
+            """{"verdict":"pending","blastRadius":{"downstreamPipelines":["orders"],"ucTables":[]},"computedAt":"2026-10-16T10:00:00Z"}"""
+        ).getAsJsonObject
+
+    test("incident with evidence round-trips through toDocument / fromDocument") {
+        val i = incident(Incident.KindTapFailure).copy(
+            openedAt = Instant.parse("2026-10-16T10:00:00Z"),
+            evidence = Some(evidenceJson)
+        )
+        val back = Incident.fromDocument(i.toDocument)
+        assert(back.evidence == Some(evidenceJson))
+        assert(back == i)
+    }
+
+    test("a document without evidence (pre-upgrade) yields evidence = None") {
+        val i = incident(Incident.KindTapFailure).copy(openedAt = Instant.parse("2026-10-16T10:00:00Z"))
+        val d = i.toDocument
+        d.remove("evidence")
+        d.remove("verdict")
+        val back = Incident.fromDocument(d)
+        assert(back.evidence.isEmpty)
+        assert(back == i)
+    }
+
+    test("toPublicJson exposes evidence and a top-level verdict only when evidence exists") {
+        val without = incident(Incident.KindTapFailure).toPublicJson
+        assert(!without.has("verdict"), without)
+        assert(!without.has("evidence"), without)
+
+        val withEv = incident(Incident.KindTapFailure).copy(evidence = Some(evidenceJson)).toPublicJson
+        assert(withEv.has("verdict"), withEv)
+        assert(withEv.get("verdict").getAsString == "pending")
+        assert(withEv.getAsJsonObject("evidence") == evidenceJson)
+    }
+
     test("public JSON exposes the narrative but keeps state machinery consistent") {
         val i = incident(Incident.KindVolume)
         val json = i.toPublicJson.toString
