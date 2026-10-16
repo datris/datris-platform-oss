@@ -119,6 +119,48 @@ class CodeGenScriptsApiSpec extends AnyFunSuite {
         assert(json.has("codegenScripts") && json.getAsJsonArray("codegenScripts").size == 0)
     }
 
+    /** A repository store whose files were all hand-edited at head: a delete
+      * is always refused (story pipeline-delete-drift-warning-and-404.md, Part 2). */
+    private class EditedRepo extends CodeStore {
+        val files = mutable.LinkedHashMap[String, String]()
+        override def storage: String = "github"
+        override def readScript(ref: ScriptRef): Option[String] = Option(ref.scriptRepoPath).flatMap(files.get)
+        override def storeScript(name: String, script: String, prior: ScriptRef, actor: String): StoredScript = {
+            val path = "taps/pipelines/orders/" + name + ".py"
+            files(path) = script
+            StoredScript("github", scriptRepoPath = path, scriptCommitSha = "%040x".format(files.size + 0xabc001))
+        }
+        override def deleteScript(ref: ScriptRef): Unit = Option(ref.scriptRepoPath).foreach(files.remove)
+        override def scriptExists(ref: ScriptRef): Boolean = readScript(ref).isDefined
+        override def deleteIfUnchanged(ref: ScriptRef): DeleteOutcome = DeleteOutcome.KeptEdited("f00dfeed")
+    }
+
+    test("a removal warning is in warnings and not in codegenScripts") {
+        val repo = new EditedRepo
+        val scripts = new PipelineScripts(
+            new MemRecords,
+            { val s = new MemStore; _ => s },
+            (_, _) => "print('[]')",
+            () => "model-a",
+            repoStoreFor = _ => repo,
+            defaultStorage = () => "github"
+        )
+        withEnv(scripts.onSave(null, cfg, "todd"))
+        val withoutTx = cfg.copy(transformation = null)
+        val result: PipelineScripts.SaveResult = withEnv(scripts.onSaveResult(cfg, withoutTx, "todd"))
+        assert(result.warnings.size == 1, s"${result.warnings}")
+        val removalWarning = result.warnings.head
+        assert(removalWarning.contains("saved without"), removalWarning)
+
+        val json = JsonParser.parseString(PipelineAPIController.saveResponseBody(List(removalWarning), result.outcomes).toString).getAsJsonObject
+        val warnings = json.getAsJsonArray("warnings").asScala.map(_.getAsString).toList
+        assert(warnings.contains(removalWarning), s"$warnings")
+        val entries = json.getAsJsonArray("codegenScripts").asScala.map(_.getAsJsonObject).toList
+        assert(!entries.exists(_.get("status").getAsString == "removed"), s"no removed status: $entries")
+        assert(!entries.exists(_.get("kind").getAsString == "transformation"), s"no entry for the removed kind: $entries")
+        assert(!entries.exists(e => e.has("warning") && e.get("warning").getAsString == removalWarning), s"$entries")
+    }
+
     test("GET returns both kinds") {
         var model = "model-a"
         val (scripts, _) = savedScripts(() => model)

@@ -1043,6 +1043,60 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
     }
 
     // =====================================================================
+    // Story: pipeline-delete-drift-warning-and-404.md, Part 2. A save that
+    // drops an AI instruction removes that kind's record; a repository file
+    // edited at head since the recorded commit is kept and named in the save
+    // warnings. Pinned seam:
+    // {{{
+    // object PipelineScripts {
+    //     case class SaveResult(outcomes: List[Outcome], warnings: List[String])
+    //     def keptOnRemoveWarning(...): String      // "... saved without its <kind> instruction ..."
+    //     def uncheckedOnRemoveWarning(...): String
+    // }
+    // class PipelineScripts(...) {
+    //     /** onSave's body; onSave == onSaveResult(...).outcomes. Never throws. */
+    //     def onSaveResult(previous: PipelineConfig, saved: PipelineConfig, actor: String): PipelineScripts.SaveResult
+    // }
+    // }}}
+    // =====================================================================
+
+    test("saving without an instruction keeps a file edited at head and warns") {
+        val s = withRepo()
+        val saved = csvCfg()
+        s.onSave(null, saved, "todd")
+        val dqRec = records.read("orders", Dq).getOrElse(fail("no data-quality record"))
+        assert(dqRec.scriptRepoPath == DqPath, s"$dqRec")
+        repo.hubEdit(DqPath, "# edited")
+        val cfgWithoutDq = csvCfg(dqRule = null)
+        val result: PipelineScripts.SaveResult =
+            try s.onSaveResult(saved, cfgWithoutDq, "todd")
+            catch { case e: Throwable => fail("onSaveResult must not throw: " + e) }
+        assert(result.warnings.size == 1, s"${result.warnings}")
+        val w = result.warnings.head
+        assert(w.contains(DqPath), w)
+        assert(w.contains("kept in the code repository"), w)
+        assert(w.contains(dqRec.scriptCommitSha.take(7)), s"names the recorded sha prefix: $w")
+        assert(w.contains("saved without"), s"save wording, not delete wording: $w")
+        assert(repo.head(DqPath).isDefined, s"the hand edit stays at head: ${repo.commits}")
+        assert(records.read("orders", Dq).isEmpty, "the data-quality record is removed")
+        assert(!result.outcomes.exists(_.kind == Dq), s"no outcome for the removed kind: ${result.outcomes}")
+    }
+
+    test("saving without an instruction removes an unchanged file silently") {
+        val s = withRepo()
+        val saved = csvCfg()
+        s.onSave(null, saved, "todd")
+        assert(repo.head(DqPath).isDefined, s"${repo.commits}")
+        val result: PipelineScripts.SaveResult =
+            try s.onSaveResult(saved, csvCfg(dqRule = null), "todd")
+            catch { case e: Throwable => fail("onSaveResult must not throw: " + e) }
+        assert(result.warnings == Nil, s"${result.warnings}")
+        assert(repo.head(DqPath).isEmpty, "the unchanged file is deleted at head")
+        assert(records.read("orders", Dq).isEmpty, "the data-quality record is removed")
+        assert(!result.outcomes.exists(_.kind == Dq), s"${result.outcomes}")
+    }
+
+    // =====================================================================
     // Story: Restore honours archived CodeGen scripts
     // (plans/stories/multi-env-3-restore-import-codegen-scripts.md),
     // Acceptance bullets 2-4. Pinned seam:

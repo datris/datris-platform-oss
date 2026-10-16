@@ -48,4 +48,12 @@ class PipelineLookupApiSpec extends AnyFunSuite {
         assert(r.getStatusCode.value == 200, r.getBody)
         assert(r.getBody == new Gson().toJson(cfg), r.getBody)
     }
+
+    // Part 2: DELETE /api/v1/pipeline for a missing pipeline answers with
+    // object PipelineAPIController.pipelineNotFound(name): ResponseEntity[String].
+    test("pipelineNotFound is 404 with the NoSQL error body") {
+        val r: ResponseEntity[String] = PipelineAPIController.pipelineNotFound("nope")
+        assert(r.getStatusCode.value == 404, r.getBody)
+        assert(r.getBody == "{\"error\": \"Pipeline: nope is not configured in the NoSQL database\"}", r.getBody)
+    }
 }
