@@ -198,7 +198,8 @@ can remove it by hand if it is no longer wanted. When the repository cannot be r
 kept the same way, with a warning, and the delete still goes ahead. If the delete request itself fails
 (for example it times out), the warning says the delete could not be confirmed: check the repository
 and remove the file by hand if it is still there. Deleting a tap whose script is in
-the repository follows the same rule.
+the repository follows the same rule. Saving a pipeline without an AI instruction it had before
+removes that script the same way: an edited file is kept and named in the save response's `warnings`.
 
 ## Troubleshooting
 

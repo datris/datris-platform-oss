@@ -20,6 +20,14 @@ import scala.collection.JavaConverters._
 
 object TapAPIController {
 
+    /** 404 for a tap name with no config (GET and DELETE /tap), with the
+      * "Tap: <name> not found" error body. */
+    def tapNotFound(name: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody("Tap: " + name + " not found"))
+
     /** Some(message) when the tap's secretName names a server-managed secret
       * (SecretNames.ServerManaged); checked on save. TapScriptRunner refuses
       * the same at run time for taps saved before this check. */
@@ -306,7 +314,7 @@ class TapAPIController {
 
             val config = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
             if (config == null)
-                throw new DatrisException("Tap: " + name + " not found")
+                return TapAPIController.tapNotFound(name)
             val gson = new Gson
             // Include script content from MinIO. Track "missing" separately from
             // "never generated" so the UI can tell the user the script was deleted
@@ -778,7 +786,10 @@ class TapAPIController {
             logger.info("API endpoint DELETE /tap called with name: " + name)
             APIKeyValidator.validate(apiKey)
 
-            val warnings = deleteTapInternal(name, request)
+            val warnings = deleteTapInternal(name, request) match {
+                case None => return TapAPIController.tapNotFound(name)
+                case Some(w) => w
+            }
             val out = new com.google.gson.JsonObject
             out.addProperty("message", "Tap deleted: " + name)
             val arr = new com.google.gson.JsonArray
@@ -799,8 +810,11 @@ class TapAPIController {
       * is only for `__catalog__` placeholders, which are catalog bookkeeping
       * already authorised by the catalog route's capability gate. Returns
       * warnings for the caller: a repository script file kept because it was
-      * hand-edited since its recorded commit (or could not be checked). */
-    def deleteTapInternal(name: String, request: HttpServletRequest, checkScope: Boolean = true): Seq[String] = {
+      * hand-edited since its recorded commit (or could not be checked).
+      * None when no tap of that name exists (the leftover run log, versions
+      * and sync state are still cleaned up, as before); the route maps it to
+      * 404, the catalog callers tolerate it. */
+    def deleteTapInternal(name: String, request: HttpServletRequest, checkScope: Boolean = true): Option[Seq[String]] = {
         val warnings = Seq.newBuilder[String]
         // Delete script from MinIO if it exists
         val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
@@ -867,7 +881,7 @@ class TapAPIController {
         catch { case ex: Exception => logger.warn("Tap state cleanup failed for " + name + ": " + ex.getMessage) }
 
         TapConfigIO.delete(DatrisEnvironment.current.tapTableName, name)
-        warnings.result()
+        if (existing == null) None else Some(warnings.result())
     }
 
     /** Repoint an existing tap at freshly written MinIO bytes unless the

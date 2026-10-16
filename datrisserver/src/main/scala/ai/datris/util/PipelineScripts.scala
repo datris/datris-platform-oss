@@ -56,13 +56,24 @@ class PipelineScripts(
       * it pending with the reason. Kinds the config no longer has are removed.
       * `actor` is the saving key's label (the commit's `{user}`). Never
       * throws. */
-    def onSave(previous: PipelineConfig, saved: PipelineConfig, actor: String): List[Outcome] = {
-        if (saved == null || saved.name == null) return Nil
-        Kinds.flatMap { kind =>
+    def onSave(previous: PipelineConfig, saved: PipelineConfig, actor: String): List[Outcome] =
+        onSaveResult(previous, saved, actor).outcomes
+
+    /** [[onSave]] plus the warnings for kinds the config no longer has whose
+      * repository file was kept (hand-edited at head since the recorded
+      * commit, or the repository could not be checked). The record is removed
+      * either way. Never throws. */
+    def onSaveResult(previous: PipelineConfig, saved: PipelineConfig, actor: String): SaveResult = {
+        if (saved == null || saved.name == null) return SaveResult(Nil, Nil)
+        val warnings = scala.collection.mutable.ListBuffer[String]()
+        val outcomes = Kinds.flatMap { kind =>
             try {
                 instructionOf(saved, kind) match {
                     case None =>
-                        removeKind(saved.name, kind).foreach(w => logger.warn("Pipeline " + saved.name + "/" + kind + ": " + w))
+                        removeKind(saved.name, kind, removedBySave = true).foreach { w =>
+                            logger.warn("Pipeline " + saved.name + "/" + kind + ": " + w)
+                            warnings += w
+                        }
                         None
                     case Some(instruction) => Some(saveKind(saved, kind, instruction, actor))
                 }
@@ -72,6 +83,7 @@ class PipelineScripts(
                     if (instructionOf(saved, kind).isDefined) Some(Outcome(kind, Pending, messageOf(e))) else None
             }
         }
+        SaveResult(outcomes, warnings.toList)
     }
 
     private def saveKind(config: PipelineConfig, kind: String, instruction: String, actor: String): Outcome = {
@@ -239,10 +251,12 @@ class PipelineScripts(
     }
 
     /** Remove one kind's object (unless its repository file was hand-edited)
-      * and its record; the warning when the file was kept. */
-    private def removeKind(pipeline: String, kind: String): Option[String] =
+      * and its record; the warning when the file was kept. `removedBySave`
+      * picks the save wording (the instruction was dropped) over the delete
+      * wording (the pipeline was deleted). */
+    private def removeKind(pipeline: String, kind: String, removedBySave: Boolean = false): Option[String] =
         records.read(pipeline, kind).flatMap { old =>
-            val warning = deleteObject(old)
+            val warning = deleteObject(old, removedBySave)
             records.delete(pipeline, kind)
             warning
         }
@@ -683,8 +697,9 @@ class PipelineScripts(
     /** Delete the record's object unless it is a repository file edited at
       * branch head since the recorded commit (or that cannot be checked):
       * Some(warning) when a repository file was kept. A built-in object is
-      * deleted as before (failures logged). */
-    private def deleteObject(r: CodeGenScript): Option[String] =
+      * deleted as before (failures logged). `removedBySave` words the warning
+      * for a save that dropped the instruction rather than a delete. */
+    private def deleteObject(r: CodeGenScript, removedBySave: Boolean = false): Option[String] =
         if (r != null && hasRef(r)) {
             val ref = refOf(r)
             val path = Option(r.scriptRepoPath).getOrElse(r.scriptPath)
@@ -693,10 +708,16 @@ class PipelineScripts(
                     case DeleteOutcome.Deleted => None
                     case DeleteOutcome.KeptEdited(headSha) =>
                         logger.warn("Kept CodeGen script " + ref + ": the file changed at branch head " + headSha + " since the recorded commit")
-                        Some(PipelineScripts.keptOnDeleteWarning(r.pipeline, r.kind, path, r.scriptCommitSha))
+                        Some(
+                            if (removedBySave) PipelineScripts.keptOnRemoveWarning(r.pipeline, r.kind, path, r.scriptCommitSha)
+                            else PipelineScripts.keptOnDeleteWarning(r.pipeline, r.kind, path, r.scriptCommitSha)
+                        )
                     case DeleteOutcome.Unchecked(error) =>
                         logger.warn("Kept CodeGen script " + ref + ": the repository could not be checked: " + error)
-                        Some(PipelineScripts.uncheckedOnDeleteWarning(r.pipeline, r.kind, path, error))
+                        Some(
+                            if (removedBySave) PipelineScripts.uncheckedOnRemoveWarning(r.pipeline, r.kind, path, error)
+                            else PipelineScripts.uncheckedOnDeleteWarning(r.pipeline, r.kind, path, error)
+                        )
                     case DeleteOutcome.DeleteFailed(error) =>
                         logger.warn("Could not confirm the delete of CodeGen script " + ref + ": " + error)
                         Some(CodeStore.deleteUnconfirmedWarning(path, error))
@@ -764,6 +785,10 @@ object PipelineScripts
         warning: String = null
     )
 
+    /** A save's per-kind outcomes plus the warnings for repository files
+      * kept when the save dropped a kind's instruction. */
+    case class SaveResult(outcomes: List[Outcome], warnings: List[String])
+
     /** action: "stored" | "generate-and-store" | "generate-once". */
     case class Resolved(action: String, script: String, reason: String, record: CodeGenScript)
 
@@ -824,6 +849,23 @@ object PipelineScripts
         "'" + path + "' was kept in the code repository: whether it changed since the recorded commit could not be checked (" + error +
             "), and a hand edit is never overwritten. The pipeline " + pipeline + " and its " + kind +
             " script record were deleted; remove the file by hand if it is no longer wanted."
+
+    /** The warning for a repository script kept when a save dropped its
+      * instruction, because its file changed at branch head since the
+      * recorded commit `sha`. */
+    def keptOnRemoveWarning(pipeline: String, kind: String, path: String, sha: String): String =
+        "'" + path + "' was kept in the code repository: it changed since the recorded commit " + Option(sha).map(_.take(7)).orNull +
+            " and a hand edit is never overwritten. " + removedOnSaveTail(pipeline, kind)
+
+    /** The warning for a repository script kept when a save dropped its
+      * instruction, because the repository could not be checked. */
+    def uncheckedOnRemoveWarning(pipeline: String, kind: String, path: String, error: String): String =
+        "'" + path + "' was kept in the code repository: whether it changed since the recorded commit could not be checked (" + error +
+            "), and a hand edit is never overwritten. " + removedOnSaveTail(pipeline, kind)
+
+    private def removedOnSaveTail(pipeline: String, kind: String): String =
+        "The pipeline " + pipeline + " was saved without its " + kind +
+            " instruction and the script record was removed; remove the file by hand if it is no longer wanted."
 
     private[util] def backendOf(r: CodeGenScript): String =
         if (r != null && r.storage == Github) Github else Builtin

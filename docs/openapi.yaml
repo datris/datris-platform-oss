@@ -1276,7 +1276,7 @@ paths:
                   $ref: '#/components/schemas/UnityCatalogSync'
       responses:
         '200':
-          description: Pipeline created/updated. `warnings` is advisory; the pipeline is saved either way (empty array when there is nothing to say). It warns when an object-store Iceberg pipeline's Unity Catalog secret points at a Databricks workspace with catalogMode register or rest, which Databricks cannot serve (set catalogMode managed or use the databricks destination), and when a CodeGen script could not be generated at save. `codegenScripts` reports, per AI data-quality rule and AI transformation, whether the script generated at save is `ready` or `pending` (empty array when the pipeline has neither). Saving a pipeline with an AI instruction can wait for up to two model calls; re-saving with an unchanged instruction and source schema makes none.
+          description: Pipeline created/updated. `warnings` is advisory; the pipeline is saved either way (empty array when there is nothing to say). It warns when an object-store Iceberg pipeline's Unity Catalog secret points at a Databricks workspace with catalogMode register or rest, which Databricks cannot serve (set catalogMode managed or use the databricks destination), when a CodeGen script could not be generated at save, and when the save dropped an AI instruction whose script file was kept in the code repository (edited there since its recorded commit, or the repository could not be reached; the file is named so it can be removed by hand). `codegenScripts` reports, per AI data-quality rule and AI transformation, whether the script generated at save is `ready` or `pending` (empty array when the pipeline has neither). Saving a pipeline with an AI instruction can wait for up to two model calls; re-saving with an unchanged instruction and source schema makes none.
           content:
             application/json:
               schema:
@@ -1372,6 +1372,15 @@ paths:
                     type: array
                     items:
                       type: string
+        '404':
+          description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '500':
           description: Error
 
@@ -3636,7 +3645,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/TapDetail'
         '404':
-          description: Tap not found
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
     post:
       tags: [Taps]
       summary: Create or update a tap
@@ -3706,7 +3722,14 @@ paths:
                     items:
                       type: string
         '404':
-          description: Tap not found
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /api/v1/tap/logs:
     get:

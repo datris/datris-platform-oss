@@ -295,7 +295,7 @@ class CatalogAPIController {
                                     "delete",
                                     CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
                                 )
-                                tapController.deleteTapInternal(n, request, checkScope = false)
+                                tapController.deleteTapInternal(n, request, checkScope = false).getOrElse(Nil)
                             }
                         }
                         // A surviving tap must not be left pointing at a deleted
@@ -1197,7 +1197,7 @@ class CatalogAPIController {
         try {
             val live = TapConfigIO.read(DatrisEnvironment.current.tapTableName, placeholder)
             if (live != null && CatalogOps.Placeholder.belongsTo(live, catalog))
-                new TapAPIController().deleteTapInternal(placeholder, request, checkScope = false)
+                new TapAPIController().deleteTapInternal(placeholder, request, checkScope = false).getOrElse(Nil)
             None
         } catch {
             case e: Exception =>
