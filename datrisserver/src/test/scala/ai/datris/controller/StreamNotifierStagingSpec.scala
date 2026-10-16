@@ -992,4 +992,21 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         val e = intercept[DatrisException](new StreamNotifier().resolveConfig("orders", other))
         assert(e.getMessage.contains("not-orders") && e.getMessage.contains("orders"), e.getMessage)
     }
+
+    test("configOverride: a CSV override with an unseen header column evolves in memory and never writes the stored config") {
+        val scratchCsv = csvConfig.copy(destination = Destination(schemaProperties = csvConfig.destination.schemaProperties, scratch = ScratchConfig()))
+        // stageData(…, persistSchema = configOverride == null) hands evolveSchema
+        // this persister. This spec has no Mongo, so a PipelineConfigIO.write
+        // attempt throws.
+        val (resolved, schemaColumns, _, _) =
+            ai.datris.util.DataUtil.evolveSchema(List("id", "amount", "region"), scratchCsv, new LevelStatusUtil, StreamNotifier.schemaPersist(false))
+        assert(resolved.source.schemaProperties.fields.asScala.map(_.name).toList.contains("region"), "the new column is on the in-memory config")
+        assert(schemaColumns.contains("region"))
+        assert(resolved.destination.scratch != null, "still the scratch override")
+
+        // Control: the stored-config path does persist the evolution.
+        intercept[Throwable](
+            ai.datris.util.DataUtil.evolveSchema(List("id", "amount", "region"), scratchCsv, new LevelStatusUtil, StreamNotifier.schemaPersist(true))
+        )
+    }
 }

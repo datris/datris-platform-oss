@@ -110,4 +110,20 @@ class RunProfilerSpec extends AnyFunSuite {
         assert(stats.recordCount == 0L)
         assert(stats.columns.isEmpty)
     }
+
+    // Story: self-healing-3 review — a warehouse that folds unquoted
+    // identifiers (Snowflake → UPPER) must not read as every column removed.
+    test("diff matches column names case-insensitively and reports the baseline's spelling") {
+        def col(n: String, t: String = "number", nr: Double = 0.0) = ColumnStats(n, t, nr, 10L, None, None, None)
+        val landed = RunProfiler.Stats(100L, List(col("ID"), col("PRICE", nr = 0.0), col("REGION", "string")))
+        val scratch = RunProfiler.Stats(100L, List(col("id"), col("price", nr = 0.5), col("region", "string"), col("extra")))
+        val d = RunProfiler.diff(landed, scratch, Nil)
+        assert(d.columnsRemoved.isEmpty, d.columnsRemoved)
+        assert(d.columnsAdded == List("extra"), d.columnsAdded)
+        assert(d.typeChanges.isEmpty, d.typeChanges)
+        assert(d.nullRateDeltas.map(_._1) == List("PRICE"), "common pairs use the baseline's spelling: " + d.nullRateDeltas)
+
+        val gone = RunProfiler.diff(landed, RunProfiler.Stats(100L, List(col("id"), col("price"))), Nil)
+        assert(gone.columnsRemoved == List("REGION"))
+    }
 }

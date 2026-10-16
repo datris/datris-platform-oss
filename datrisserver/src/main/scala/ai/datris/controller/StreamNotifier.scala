@@ -43,7 +43,18 @@ class StreamNotifier {
         tapFeed: TapFeedInfo,
         configOverride: PipelineConfig
     ): JobContext =
-        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, config => stageData(source, sizeHint, config), configOverride)
+        // An override (the scratch lane) is a throwaway config: schema
+        // evolution applies to it in memory only and is never persisted over
+        // the stored pipeline — the next real run evolves the stored schema.
+        processWith(
+            sizeHint,
+            filename,
+            pipeline,
+            publisherToken,
+            tapFeed,
+            config => stageData(source, sizeHint, config, persistSchema = configOverride == null),
+            configOverride
+        )
 
     /** Hand an already-staged, already-counted payload (a tap run's NDJSON /
       * XML / text file, plans/stories/streaming-pipeline-phase4.md) to one
@@ -148,7 +159,12 @@ class StreamNotifier {
       * straight into a `Delimited` file. JSON: streamed to NDJSON (array →
       * one line per element, single object → one line). XML stages verbatim.
       * Unstructured stages verbatim and still fills `rawBytes`. */
-    private[controller] def stageData(source: InputStream, sizeHint: Long, originalConfig: PipelineConfig): (Data, PipelineConfig) = {
+    private[controller] def stageData(
+        source: InputStream,
+        sizeHint: Long,
+        originalConfig: PipelineConfig,
+        persistSchema: Boolean = true
+    ): (Data, PipelineConfig) = {
         var config = originalConfig
         val size = sizeHint
 
@@ -181,7 +197,12 @@ class StreamNotifier {
             }
 
             // Schema evolution: detect new/missing columns, update config
-            val (resolvedConfig, schemaColumns, presentColumns, missingColumns) = DataUtil.evolveSchema(sourceColumns, config, statusUtil)
+            val (resolvedConfig, schemaColumns, presentColumns, missingColumns) = DataUtil.evolveSchema(
+                sourceColumns,
+                config,
+                statusUtil,
+                persist = StreamNotifier.schemaPersist(persistSchema)
+            )
             config = resolvedConfig
 
             val format = StagedFormat.Delimited(delimiter)
@@ -296,4 +317,12 @@ class StreamNotifier {
                 throw new DatrisException("FileNotifier error: " + Throwables.getStackTraceAsString(e))
         }
     }
+}
+
+object StreamNotifier {
+
+    /** Where schema evolution writes: the stored config, or — for a config
+      * override (the scratch lane) — nowhere. */
+    private[controller] def schemaPersist(persistSchema: Boolean): PipelineConfig => Unit =
+        if (persistSchema) PipelineConfigIO.write else (_: PipelineConfig) => ()
 }

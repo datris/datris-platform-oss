@@ -614,4 +614,41 @@ class IncidentRunnerSpec extends AnyFunSuite {
             assert(b.exists(_.observed == "no successful run in the last 30 days"), b)
         }
     }
+
+    // ------------------------------------------------------------------
+    // Review fixes (self-healing-3): document taps, unfed scratch runs
+    // ------------------------------------------------------------------
+
+    test("document tap: the scratch lane is skipped with a verify step and the real run verifies (as verifyMode = real)") {
+        scenario() { c =>
+            c.tap = c.tap.copy(lastRunDataType = "document")
+            IncidentRunner.runIncident(c.id)
+            assert(c.scratchCalls.isEmpty, "no scratch rehearsal for a document tap: " + c.scratchCalls)
+            assert(c.summaries.exists(_.contains("scratch lane not available for document taps")), c.summaries)
+            assert(c.tools.filter(Mutations) == List("update_tap", "run_tap"), c.tools)
+            assert(c.incident.state == Incident.Resolved, c.incident.outcome + " / " + c.summaries)
+        }
+    }
+
+    test("a scratch run that fed nothing is profiled from the script's own record count and columns") {
+        val t = TapConfig(name = "prices", description = "d", targetPipeline = null, version = 3)
+        val r = ai.datris.util.TapScriptResult(null, 500, null, columns = java.util.Arrays.asList("id", "price"))
+        val p = IncidentRunner.unfedProfile(t, r, Some("abc"), 12L)
+        assert(p.recordCount == 500L)
+        assert(p.columns.map(_.name) == List("id", "price"))
+        assert(p.columns.forall(_.inferredType == "null"))
+        assert(p.source == "scratch" && p.scriptSha.contains("abc") && p.tapVersion.contains(3))
+        // Judged against a 500-record baseline it is not a record-delta failure.
+        val ev = IncidentEvidenceBuilder.withCandidate(
+            evidenceWith(Some(runProfile(
+                "run_base",
+                "lineage-only",
+                500L,
+                List(ColumnStats("id", "null", 0.0, 0L, None, None, None), ColumnStats("price", "null", 0.0, 0L, None, None, None))
+            ))),
+            p,
+            Thresholds.Default
+        )
+        assert(ev.verdict == Thresholds.Pass, ev.checks)
+    }
 }

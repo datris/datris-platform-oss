@@ -123,7 +123,10 @@ class TapRunnerScratchSpec extends AnyFunSuite with BeforeAndAfterAll {
             schemaProperties = SchemaProperties("db", new java.util.ArrayList[SchemaField]()),
             fileAttributes = FileAttributes(jsonAttributes = JsonAttributes())
         ),
-        destination = Destination(database = Database(dbName = "db", schema = "public", table = "orders"))
+        destination = Destination(
+            schemaProperties = SchemaProperties("db", new java.util.ArrayList[SchemaField](java.util.Arrays.asList(SchemaField("id", "int")))),
+            database = Database(dbName = "db", schema = "public", table = "orders")
+        )
     )
 
     private class FakeEffects extends TapRunner.Effects {
@@ -205,6 +208,7 @@ class TapRunnerScratchSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(d.objectStore == null && d.restEndpoint == null && d.kafka == null && d.activeMQ == null)
         assert(d.qdrant == null && d.weaviate == null && d.pgvector == null && d.milvus == null && d.chroma == null)
         assert(d.authoritative == null)
+        assert(d.schemaProperties eq storedPipeline.destination.schemaProperties, "the destination schema is kept (row functions read it)")
         // Returned like a real run so the caller can poll the rollup.
         assert(publisherToken != null && result.publisherToken == publisherToken)
         assert(result.pipelineTokens != null && result.pipelineTokens.contains("pt-1"))
@@ -231,5 +235,24 @@ class TapRunnerScratchSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(fx.commits.size == 1)
         assert(fx.submits.size == 1 && fx.submits.head._2 == null, "a real run feeds the stored config")
         assert(fx.runLogs.head.mode == "run")
+    }
+
+    test("scratch mode with a document result feeds nothing and does not fail the run") {
+        val fx = new FakeEffects
+        val savedEffects = TapRunner.effects
+        val savedExec = TapScriptRunner.executeOverride
+        TapRunner.effects = fx
+        TapScriptRunner.executeOverride = (_: TapConfig, _: String, _: String) => stagedResult().copy(dataType = "document")
+        try {
+            val result = TapRunner.run(tap, mode = "scratch", scriptOverride = CandidateScript)
+            assert(result.error == null, "the rehearsal itself succeeded: " + result.error)
+            assert(result.dataType == "document")
+            assert(fx.submits.isEmpty, "a document rehearsal submits no job")
+            assert(result.publisherToken == null)
+            assert(fx.tapWrites.isEmpty && fx.commits.isEmpty)
+        } finally {
+            TapRunner.effects = savedEffects
+            TapScriptRunner.executeOverride = savedExec
+        }
     }
 }

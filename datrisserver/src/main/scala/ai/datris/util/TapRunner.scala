@@ -284,8 +284,13 @@ object TapRunner {
                 ) {
                     feedStarted = true
                     val feed = TapFeedInfo(tapConfig.name, now, tapConfig.scriptCommitSha, declaredSource(tapConfig))
-                    if (scratch) feedScratch(tapConfig, result, publisherToken, feed)
-                    else feedPipeline(tapConfig, result, publisherToken, feed)
+                    if (scratch) {
+                        // The scratch destination holds records, not documents:
+                        // a document tap's rehearsal feeds nothing and returns
+                        // no tokens (the caller verifies it with the real run).
+                        if (result.dataType == "document") (result.recordCount, new java.util.ArrayList[String]())
+                        else feedScratch(tapConfig, result, publisherToken, feed)
+                    } else feedPipeline(tapConfig, result, publisherToken, feed)
                 } else (result.recordCount, new java.util.ArrayList[String]())
 
             if (push) {
@@ -466,7 +471,10 @@ object TapRunner {
         val stored = effects.readPipeline(tapConfig.targetPipeline)
         if (stored == null)
             throw new DatrisException("Pipeline: " + tapConfig.targetPipeline + " is not configured in the NoSQL database")
-        val scratchConfig = stored.copy(destination = Destination(scratch = ScratchConfig()))
+        // Keep the destination schema (transformations / row functions read
+        // it); every destination kind is replaced by scratch.
+        val storedSchema = Option(stored.destination).map(_.schemaProperties).orNull
+        val scratchConfig = stored.copy(destination = Destination(schemaProperties = storedSchema, scratch = ScratchConfig()))
         feedPipeline(tapConfig, result, publisherToken, tapFeed, scratchConfig)
     }
 

@@ -200,11 +200,15 @@ object RunProfiler {
       * left to the caller (Stats carries no DQ). Record deltas are
       * percentages; null-rate deltas are fractions. */
     def diff(baseline: Stats, candidate: Stats, lastNCounts: Seq[Long]): ProfileDiff = {
-        val bCols = baseline.columns.map(c => c.name -> c).toMap
-        val cCols = candidate.columns.map(c => c.name -> c).toMap
-        val added = candidate.columns.map(_.name).filterNot(bCols.contains)
-        val removed = baseline.columns.map(_.name).filterNot(cCols.contains)
-        val common = baseline.columns.filter(c => cCols.contains(c.name)).map(b => (b, cCols(b.name)))
+        // Column names match case-insensitively: a warehouse that folds
+        // unquoted identifiers (Snowflake → UPPER) must not read as every
+        // column removed and re-added. The baseline's spelling is reported.
+        def key(n: String): String = if (n == null) null else n.toLowerCase(java.util.Locale.ROOT)
+        val bCols = baseline.columns.reverse.map(c => key(c.name) -> c).toMap
+        val cCols = candidate.columns.reverse.map(c => key(c.name) -> c).toMap
+        val added = candidate.columns.map(_.name).filterNot(n => bCols.contains(key(n)))
+        val removed = baseline.columns.map(_.name).filterNot(n => cCols.contains(key(n)))
+        val common = baseline.columns.filter(c => cCols.contains(key(c.name))).map(b => (b, cCols(key(b.name))))
 
         val typeChanges = common.collect {
             case (b, c) if b.inferredType != c.inferredType && b.inferredType != "null" && c.inferredType != "null" =>

@@ -99,8 +99,13 @@ object IncidentRunner {
     @volatile var runAsync: Boolean = true
 
     /** What the scratch lane produced. `candidate` None with `error` Some =
-      * the scratch run itself failed. */
-    case class ScratchOutcome(candidate: Option[RunProfile], error: Option[String] = None)
+      * the scratch run itself failed. `unavailable` Some = the scratch lane
+      * cannot rehearse this tap (document taps); the reason is recorded and
+      * the incident is verified with the real run, as `verifyMode = real`. */
+    case class ScratchOutcome(candidate: Option[RunProfile], error: Option[String] = None, unavailable: Option[String] = None)
+
+    /** scratchVerify's verdict when the lane is not available for the tap. */
+    private[incident] val ScratchUnavailable = "unavailable"
 
     /** The scratch lane: (stored tap, candidate script — None = the stored
       * script) => outcome. Production = TapRunner.run(mode = "scratch",
@@ -286,7 +291,7 @@ object IncidentRunner {
                                 .map(_.getAsString)
                             val (verdict, summary) = scratchVerify(id, incident, candidateScript)
                             verdict match {
-                                case Thresholds.Pass => executeFrom(id, 0)
+                                case Thresholds.Pass | ScratchUnavailable => executeFrom(id, 0)
                                 case Thresholds.NeedsHuman =>
                                     IncidentIO.transition(
                                         id,
@@ -651,12 +656,28 @@ object IncidentRunner {
                         (Thresholds.Fail, msg)
                     case Some(tap) =>
                         val outcome =
-                            try {
-                                scratchIncident.set(id)
-                                scratch(tap, candidateScript)
-                            } catch {
-                                case e: Exception => ScratchOutcome(None, Some(Option(e.getMessage).getOrElse(e.getClass.getSimpleName)))
-                            } finally scratchIncident.remove()
+                            documentTapReason(tap) match {
+                                case Some(reason) => ScratchOutcome(None, None, Some(reason))
+                                case None =>
+                                    try {
+                                        scratchIncident.set(id)
+                                        scratch(tap, candidateScript)
+                                    } catch {
+                                        case e: Exception => ScratchOutcome(None, Some(Option(e.getMessage).getOrElse(e.getClass.getSimpleName)))
+                                    } finally scratchIncident.remove()
+                            }
+                        if (outcome.unavailable.isDefined) {
+                            val msg = "scratch lane not available for " + outcome.unavailable.get + " — verifying with the real run"
+                            step(id, "verify", msg)
+                            AuditLog.system(
+                                "incident",
+                                "scratch-verify",
+                                "tap",
+                                incident.resourceName,
+                                metadata = md("incidentId" -> id, "verdict" -> ScratchUnavailable)
+                            )
+                            return (ScratchUnavailable, msg)
+                        }
                         outcome.candidate match {
                             case None =>
                                 val msg = "the scratch run failed: " + clip(outcome.error.getOrElse("no result"))
@@ -677,6 +698,40 @@ object IncidentRunner {
         step(id, "verify", "scratch verification: " + summary)
         AuditLog.system("incident", "scratch-verify", "tap", incident.resourceName, metadata = md("incidentId" -> id, "verdict" -> verdict))
         (verdict, summary)
+    }
+
+    /** Some(reason) when the scratch lane cannot rehearse `tap`: it emits
+      * documents (by its last run) or feeds an unstructured pipeline. */
+    private def documentTapReason(tap: TapConfig): Option[String] = {
+        val docTap = Option(tap.lastRunDataType).contains("document")
+        def unstructuredTarget: Boolean =
+            try {
+                Option(tap.targetPipeline).filter(_.nonEmpty).flatMap(p => Option(PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, p)))
+                    .exists(c => c.source != null && c.source.fileAttributes != null && c.source.fileAttributes.unstructuredAttributes != null)
+            } catch { case _: Exception => false }
+        if (docTap || unstructuredTarget) Some("document taps") else None
+    }
+
+    /** The candidate profile of a scratch run that fed no pipeline (0 records,
+      * or a tap with no target pipeline): the script's own record count and
+      * column names, no row-level statistics. */
+    private[incident] def unfedProfile(tap: TapConfig, result: TapScriptResult, scriptSha: Option[String], durationMs: Long): RunProfile = {
+        import scala.collection.JavaConverters._
+        val names = Option(result.columns).map(_.asScala.toList).getOrElse(Nil).filter(_ != null)
+        RunProfile(
+            runId = "scratch:" + tap.name + "@" + Instant.now().toString,
+            source = "scratch",
+            recordCount = result.recordCount.toLong,
+            columns = names.map(n => ai.datris.util.RunProfiler.ColumnStats(n, "null", 0.0, 0L, None, None, None)),
+            dqFailures = 0,
+            dqPassRate = 1.0,
+            durationMs = durationMs,
+            scriptSha = scriptSha,
+            tapVersion = Some(tap.version),
+            pipelineVersion = None,
+            sampledRows = 0L,
+            computedAt = Instant.now()
+        )
     }
 
     private def emptyEvidence(s: RecoverySettings): IncidentEvidence = IncidentEvidence(
@@ -710,23 +765,10 @@ object IncidentRunner {
         val result = TapRunner.run(tap, mode = TapRunner.ScratchMode, scriptOverride = candidateScript.orNull)
         if (result.error != null) return ScratchOutcome(None, Some(result.error))
         val sha = candidateScript.map(sha256)
-        if (result.publisherToken == null) {
-            // Nothing was fed (0 records): the candidate's output is empty.
-            return ScratchOutcome(Some(RunProfile(
-                runId = "scratch:" + tap.name + "@" + Instant.now().toString,
-                source = "scratch",
-                recordCount = 0L,
-                columns = Nil,
-                dqFailures = 0,
-                dqPassRate = 1.0,
-                durationMs = System.currentTimeMillis() - started,
-                scriptSha = sha,
-                tapVersion = Some(tap.version),
-                pipelineVersion = None,
-                sampledRows = 0L,
-                computedAt = Instant.now()
-            )))
-        }
+        if (result.dataType == "document") return ScratchOutcome(None, None, Some("document taps"))
+        // Nothing was fed (0 records, or no target pipeline): judge the
+        // script's own output.
+        if (result.publisherToken == null) return ScratchOutcome(Some(unfedProfile(tap, result, sha, System.currentTimeMillis() - started)))
         val incident = Option(id).flatMap(IncidentIO.get)
         if (incident.isDefined && !pollRollup(id, result.publisherToken, incident.get))
             return ScratchOutcome(None, Some("the scratch pipeline run did not complete cleanly"))
