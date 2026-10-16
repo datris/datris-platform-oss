@@ -599,4 +599,142 @@ class CatalogArchiveSpec extends AnyFunSuite {
         assert(environmentWarning(None, None).isEmpty)
         assert(environmentWarning(Some("dev"), Some("dev")).isEmpty, "a same-environment restore is not a warning")
     }
+
+    // =====================================================================
+    // Story: Restore honours archived CodeGen scripts
+    // (plans/stories/multi-env-3-restore-import-codegen-scripts.md),
+    // Acceptance bullet 1. Pinned seam:
+    // {{{
+    // object CatalogArchive {
+    //   /** pipelines/<p>/codegen/<kind>.json */
+    //   def codegenRecordPath(pipeline: String, kind: String): String
+    //   /** Clears script, storage, scriptPath, scriptRepoPath, scriptCommitSha,
+    //     * pendingReason, conflictFingerprint, conflictReason; keeps fingerprint,
+    //     * model, generatedAt, generatedAgainst, origin, contractVersion, instruction. */
+    //   def stripCodeGenRecordForExport(r: CodeGenScript): CodeGenScript
+    //   def archiveEntries(..., codegen: Map[String, Map[String, String]] = Map.empty,
+    //                      codegenRecords: Map[String, Map[String, CodeGenScript]] = Map.empty): Seq[Entry]
+    //   case class Contents(..., codegenScripts: Map[String, Map[String, String]],      // pipeline -> kind -> text
+    //                            codegenRecords: Map[String, Map[String, CodeGenScript]]) // pipeline -> kind -> sidecar
+    // }
+    // }}}
+    // =====================================================================
+
+    private val archivedRule = "age must be a positive whole number"
+    private val archivedScript = "def check(r):\n    return True\n"
+
+    /** A live Ready record as the export reads it: every field set. */
+    private def liveRecord(): CodeGenScript = CodeGenScript(
+        pipeline = "orders",
+        kind = "dataQuality",
+        instruction = archivedRule,
+        script = "legacy inline text",
+        generatedAt = "2026-10-01T12:00:00Z",
+        storage = "github",
+        scriptPath = "pipeline-scripts/orders/dataQuality_1.py",
+        scriptRepoPath = "taps/pipelines/orders/data-quality.py",
+        scriptCommitSha = "0123456789abcdef0123456789abcdef01234567",
+        fingerprint = "fp-archived",
+        generatedAgainst = java.util.Arrays.asList("full_name", "age"),
+        model = "model-a",
+        status = "ready",
+        pendingReason = "stale reason",
+        origin = "save",
+        contractVersion = 1,
+        conflictFingerprint = "fp-conflict",
+        conflictReason = "stale conflict"
+    )
+
+    private def codegenArchive(withRecord: Boolean): Seq[Entry] =
+        archiveEntries(
+            manifest(pipelines = Seq("orders")),
+            Nil,
+            Seq(stripPipelineForExport(pipeline("orders", "sales"))),
+            codegen = Map("orders" -> Map("dataQuality" -> archivedScript)),
+            codegenRecords =
+                if (withRecord) Map("orders" -> Map("dataQuality" -> stripCodeGenRecordForExport(liveRecord())))
+                else Map.empty
+        )
+
+    private def contentsOf(entries: Map[String, Array[Byte]]): Contents = {
+        val mf = parseManifest(entries(ManifestPath)).fold(e => fail(e), identity)
+        readContents(mf, entries).fold(e => fail(e), identity)
+    }
+
+    test("codegenRecordPath is the .json sidecar next to the codegen script") {
+        assert(codegenRecordPath("orders", "dataQuality") == "pipelines/orders/codegen/dataQuality.json")
+        assert(codegenPath("orders", "dataQuality") == "pipelines/orders/codegen/dataQuality.py")
+    }
+
+    test("stripCodeGenRecordForExport clears install-specific fields and keeps fingerprint, model, generatedAt and contract") {
+        val s = stripCodeGenRecordForExport(liveRecord())
+        assert(s.script == null)
+        assert(s.storage == null)
+        assert(s.scriptPath == null)
+        assert(s.scriptRepoPath == null)
+        assert(s.scriptCommitSha == null)
+        assert(s.pendingReason == null)
+        assert(s.conflictFingerprint == null)
+        assert(s.conflictReason == null)
+
+        assert(s.fingerprint == "fp-archived")
+        assert(s.model == "model-a")
+        assert(s.generatedAt == "2026-10-01T12:00:00Z")
+        assert(s.generatedAgainst.asScala == Seq("full_name", "age"))
+        assert(s.origin == "save")
+        assert(s.contractVersion == 1)
+        assert(s.instruction == archivedRule)
+        assert(s.pipeline == "orders" && s.kind == "dataQuality")
+    }
+
+    test("archiveEntries with one Ready record emits the codegen .py and its .json sidecar") {
+        val entries = codegenArchive(withRecord = true)
+        val paths = entries.map(_.path)
+        assert(paths.contains("pipelines/orders/codegen/dataQuality.py"), paths)
+        assert(paths.contains("pipelines/orders/codegen/dataQuality.json"), paths)
+
+        val sidecar = JsonParser.parseString(str(entries.find(_.path == "pipelines/orders/codegen/dataQuality.json").get.bytes)).getAsJsonObject
+        assert(sidecar.get("fingerprint").getAsString == "fp-archived", sidecar.toString)
+        assert(sidecar.get("model").getAsString == "model-a", sidecar.toString)
+        assert(sidecar.get("generatedAt").getAsString == "2026-10-01T12:00:00Z", sidecar.toString)
+        Seq("scriptPath", "scriptRepoPath", "scriptCommitSha", "storage", "script").foreach { k =>
+            assert(!sidecar.has(k) || sidecar.get(k).isJsonNull, s"$k must not travel in the sidecar: $sidecar")
+        }
+        val raw = str(entries.find(_.path == "pipelines/orders/codegen/dataQuality.json").get.bytes)
+        assert(!raw.contains("0123456789abcdef"), "no commit sha in the archive")
+        assert(!raw.contains("data-quality.py"), "no repository path in the archive")
+    }
+
+    test("readContents returns the codegen scripts and records, and the record is the stripped one") {
+        val c = contentsOf(codegenArchive(withRecord = true).map(e => e.path -> e.bytes).toMap)
+        assert(c.codegenScripts.get("orders").flatMap(_.get("dataQuality")).contains(archivedScript), c.codegenScripts)
+        val rec = c.codegenRecords.get("orders").flatMap(_.get("dataQuality")).getOrElse(fail("no codegen record read: " + c.codegenRecords))
+        assert(rec.fingerprint == "fp-archived")
+        assert(rec.model == "model-a")
+        assert(rec.generatedAt == "2026-10-01T12:00:00Z")
+        assert(rec.contractVersion == 1)
+        assert(rec.scriptPath == null)
+        assert(rec.scriptRepoPath == null)
+        assert(rec.scriptCommitSha == null)
+        assert(rec.storage == null)
+        assert(rec.script == null)
+    }
+
+    test("a codegen .py with no .json sidecar yields the script and an empty codegenRecords entry") {
+        val entries = codegenArchive(withRecord = false)
+        assert(!entries.map(_.path).contains("pipelines/orders/codegen/dataQuality.json"))
+        val c = contentsOf(entries.map(e => e.path -> e.bytes).toMap)
+        assert(c.codegenScripts.get("orders").flatMap(_.get("dataQuality")).contains(archivedScript), c.codegenScripts)
+        assert(c.codegenRecords.getOrElse("orders", Map.empty[String, CodeGenScript]).isEmpty, c.codegenRecords)
+    }
+
+    test("pack then unpack round-trips the codegen sidecar") {
+        val entries = codegenArchive(withRecord = true)
+        val back = unpack(pack(entries)).fold(e => fail("unpack failed: " + e), identity)
+        val path = "pipelines/orders/codegen/dataQuality.json"
+        assert(back.contains(path), back.keySet)
+        assert(back(path).sameElements(entries.find(_.path == path).get.bytes))
+        val rec = contentsOf(back).codegenRecords("orders")("dataQuality")
+        assert(rec == stripCodeGenRecordForExport(liveRecord()), rec)
+    }
 }

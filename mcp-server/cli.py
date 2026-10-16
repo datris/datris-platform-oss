@@ -1083,8 +1083,10 @@ def catalog_export(name, out_path, json_output):
 @click.option("--overwrite", is_flag=True, default=False, help="Replace items already in the target catalog (asks for confirmation)")
 @click.option("--yes", is_flag=True, default=False, help="Skip the --overwrite confirmation prompt")
 @click.option("--no-state", "no_state", is_flag=True, default=False, help="Skip each tap's incremental state (for a clone)")
+@click.option("--regenerate-scripts", "regenerate_scripts", is_flag=True, default=False,
+              help="Regenerate pipelines' AI scripts on this install instead of restoring the archived ones")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Print the raw tool result")
-def catalog_restore(file, target, overwrite, yes, no_state, json_output):
+def catalog_restore(file, target, overwrite, yes, no_state, regenerate_scripts, json_output):
     """Restore a catalog archive FILE made by `datris catalog export`."""
     if not target:
         manifest = _archive_manifest(file) or {}
@@ -1100,6 +1102,8 @@ def catalog_restore(file, target, overwrite, yes, no_state, json_output):
         args["confirm"] = target
     if no_state:
         args["restore_state"] = False
+    if regenerate_scripts:
+        args["regenerate_scripts"] = True
 
     result = mcp("restore_catalog", args)
     if json_output:
@@ -1128,6 +1132,25 @@ def catalog_restore(file, target, overwrite, yes, no_state, json_output):
     click.echo(f"  {'✓' if not failed else '!'} Restored {taps_n} taps and {pipes_n} pipelines into catalog '{target}'")
     if result.get("tapsDisabled") and taps_n:
         click.echo("    Restored taps are disabled. Test each one, then enable it.")
+    imported = result.get("scriptsImported") or []
+    if imported:
+        click.echo(f"    Imported {len(imported)} AI script{'' if len(imported) == 1 else 's'}")
+    regenerated = result.get("scriptsRegenerated") or []
+    if regenerated:
+        click.echo(f"    Regenerated {len(regenerated)} AI script{'' if len(regenerated) == 1 else 's'}:")
+        for r in regenerated:
+            if isinstance(r, dict):
+                click.echo(f"      - {r.get('item')} ({r.get('reason')})")
+            else:
+                click.echo(f"      - {r}")
+    kept = result.get("scriptsKept") or []
+    if kept:
+        click.echo(f"    Kept {len(kept)} AI script{'' if len(kept) == 1 else 's'} already on this install (the archived one was not used):")
+        for r in kept:
+            if isinstance(r, dict):
+                click.echo(f"      - {r.get('item')} ({r.get('reason')})")
+            else:
+                click.echo(f"      - {r}")
     missing = _secret_names(result.get("missingSecrets"))
     if missing:
         click.echo(f"    Create these secrets before running the taps and pipelines: {', '.join(missing)}.")

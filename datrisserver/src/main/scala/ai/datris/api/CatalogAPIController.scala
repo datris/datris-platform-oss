@@ -9,7 +9,7 @@ import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, VersionActor}
 import ai.datris.build.sbt.BuildInfo
-import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineConfig, PipelineStatusRollup, TapConfig}
+import ai.datris.model.{CodeGenScript, DatrisEnvironment, DatrisException, PipelineConfig, PipelineStatusRollup, TapConfig}
 import ai.datris.util.{
     APIKeyValidator,
     CatalogArchive,
@@ -61,13 +61,14 @@ import scala.collection.mutable
   *     data (cascade, needs `confirm` equal to the name).
   *   - `GET /api/v1/catalog/{name}/export` downloads a zip backup of the
   *     catalog (configs, tap scripts and states, validation schemas, CodeGen
-  *     reference copies; secret names only, never values). See CatalogArchive.
+  *     scripts with their records; secret names only, never values). See CatalogArchive.
   *   - `GET /api/v1/catalog/{name}/enable-order` lists the catalog's taps in
   *     dependency levels (producers first) with per-tap readiness. Read only.
   *   - `POST /api/v1/catalog/{name}/restore` (multipart `file`) restores an
   *     archive as catalog `name`; refused with 409 when the catalog or any
   *     archived name already exists (`mode=overwrite&confirm=<name>` may
-  *     replace members of `name` only). Restored taps are disabled.
+  *     replace members of `name` only). Restored taps are disabled. Archived
+  *     CodeGen scripts become the live scripts unless `regenerateScripts=true`.
   *
   * Capability gate: `CapabilityRoutes` maps PUT to pipeline:update and DELETE
   * to pipeline:delete; each member is additionally scope-checked (owner and
@@ -575,10 +576,14 @@ class CatalogAPIController {
         @RequestParam(name = "mode", defaultValue = "new") mode: String,
         @RequestParam(name = "confirm", required = false) confirm: String,
         @RequestParam(name = "restoreState", defaultValue = "true") restoreState: Boolean,
+        @RequestParam(name = "regenerateScripts", defaultValue = "false") regenerateScripts: Boolean,
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint POST /catalog/" + name + "/restore called with mode: " + mode + ", restoreState: " + restoreState)
+            logger.info(
+                "API endpoint POST /catalog/" + name + "/restore called with mode: " + mode + ", restoreState: " + restoreState +
+                    ", regenerateScripts: " + regenerateScripts
+            )
             APIKeyValidator.validate(apiKey)
 
             if (CatalogOps.isReserved(name))
@@ -670,14 +675,26 @@ class CatalogAPIController {
                 writeValidationSchemas(contents.copy(pipelines = allowedPipelines), warnings, skipped)
 
                 // 2. Pipelines, through the same save path as POST /pipeline.
+                //    The archived CodeGen scripts are imported first, so the
+                //    save keeps them (fingerprint matches) with no model call.
                 val pipelineController = new PipelineAPIController
+                val scriptsImported = mutable.ArrayBuffer.empty[String]
+                val scriptsRegenerated = mutable.ArrayBuffer.empty[(String, String)]
+                val scriptsKept = mutable.ArrayBuffer.empty[(String, String)]
                 val pipelineResult = CatalogOps.execute(allowedPipelines.map(_.name)) { n =>
                     val archived = contents.pipelines.find(_.name == n).get
                     val toSave = CatalogArchive.stripPipelineForExport(archived).copy(catalog = name)
-                    pipelineController.savePipelineInternal(toSave, note, request) match {
+                    val plan = CatalogAPIController.importCodegenScripts(contents, n, PipelineScripts, actor, warnings, regenerateScripts)
+                    val beforeSave = PipelineScripts.Kinds.map(k => k -> PipelineScripts.record(n, k)).toMap
+                    val saved = pipelineController.savePipelineInternal(toSave, note, request) match {
                         case Left(refused) => throw new DatrisException(errorText(refused.getBody))
-                        case Right(_) =>
+                        case Right(c) => c
                     }
+                    val report =
+                        CatalogAPIController.classifyScripts(saved, plan, beforeSave, PipelineScripts, actor, warnings, regenerateScripts)
+                    scriptsImported ++= report.imported
+                    scriptsRegenerated ++= report.regenerated
+                    scriptsKept ++= report.kept
                 }
                 contents.pipelines.filter(p => pipelineResult.ok.contains(p.name)).foreach { p =>
                     warnings ++= CatalogArchive.installWarnings(p)
@@ -813,9 +830,24 @@ class CatalogAPIController {
                 out.addProperty("tapsDisabled", true)
                 out.addProperty("stateRestored", states.nonEmpty && stateFailures.isEmpty)
                 out.addProperty("dependentTaps", dependentTaps)
+                out.add("scriptsImported", toArray(scriptsImported.toList))
+                def itemsWithReason(rows: Seq[(String, String)]): JsonArray = {
+                    val arr = new JsonArray
+                    rows.foreach { case (item, reason) =>
+                        val o = new JsonObject
+                        o.addProperty("item", item)
+                        o.addProperty("reason", reason)
+                        arr.add(o)
+                    }
+                    arr
+                }
+                out.add("scriptsRegenerated", itemsWithReason(scriptsRegenerated.toList))
+                out.add("scriptsKept", itemsWithReason(scriptsKept.toList))
                 logger.info(
-                    "Catalog archive restored as '" + name + "' (mode " + m + "): " + tapResult.ok.size + " taps, " +
-                        pipelineResult.ok.size + " pipelines, " + failures.size + " failed"
+                    "Catalog archive restored as '" + name + "' (mode " + m + ", regenerateScripts " + regenerateScripts + "): " +
+                        tapResult.ok.size + " taps, " + pipelineResult.ok.size + " pipelines, " + failures.size + " failed, " +
+                        scriptsImported.size + " AI scripts imported, " + scriptsRegenerated.size + " AI scripts regenerated, " +
+                        scriptsKept.size + " AI scripts kept"
                 )
                 respond(out, failures)
             }
@@ -892,6 +924,14 @@ class CatalogAPIController {
             }.toMap
             if (kinds.isEmpty) None else Some(p.name -> kinds)
         }.toMap
+        // The record sidecar travels for Ready records only (a pending record
+        // has no script to carry); restore imports script + record together.
+        val codegenRecords = codegen.map { case (p, kinds) =>
+            p -> kinds.keys.flatMap { kind =>
+                try PipelineScripts.record(p, kind).filter(_.status == PipelineScripts.Ready).map(kind -> _)
+                catch { case _: Exception => None }
+            }.toMap
+        }.filter(_._2.nonEmpty)
 
         pipelines.foreach(p => warnings ++= CatalogArchive.installWarnings(p))
         pipelines.foreach(p => warnings ++= CatalogArchive.redactionWarnings(p))
@@ -925,7 +965,8 @@ class CatalogAPIController {
             scripts,
             states,
             schemas,
-            codegen
+            codegen,
+            codegenRecords
         )
         (manifest, entries)
     }
@@ -1212,6 +1253,116 @@ class CatalogAPIController {
 
 object CatalogAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[CatalogAPIController])
+
+    /** What restore did with one pipeline's archived AI scripts.
+      * `imported`: the records importScript wrote. `regenerated`:
+      * ("<pipeline>/<kind>", reason) for every AI kind the archived pipeline
+      * has that was not imported (its save regenerates it). */
+    case class ScriptImport(imported: Seq[CodeGenScript], regenerated: Seq[(String, String)])
+
+    /** Reason for an archived script exported before records travelled. */
+    val NoRecordReason = "no script record in the archive; re-export to carry it"
+    val NoScriptReason = "the archive has no script for it"
+    val RegenerateRequestedReason = "regenerateScripts was requested"
+
+    /** For each AI kind of `pipelineName`'s archived config: import the
+      * archived .py with its .json sidecar through `scripts.importScript`.
+      * A .py with no sidecar is reported with [[NoRecordReason]]; a sidecar
+      * importScript refuses is reported with its reason (a repository
+      * conflict is also added to `warnings`). With `regenerateScripts`
+      * nothing is imported and every kind is reported under `regenerated`.
+      * Never makes a model call. */
+    private[api] def importCodegenScripts(
+        contents: CatalogArchive.Contents,
+        pipelineName: String,
+        scripts: PipelineScripts,
+        actor: String,
+        warnings: mutable.ArrayBuffer[String],
+        regenerateScripts: Boolean = false
+    ): ScriptImport =
+        contents.pipelines.find(_.name == pipelineName) match {
+            case None => ScriptImport(Nil, Nil)
+            case Some(cfg) =>
+                val texts = contents.codegenScripts.getOrElse(pipelineName, Map.empty)
+                val recs = contents.codegenRecords.getOrElse(pipelineName, Map.empty)
+                val imported = mutable.ArrayBuffer.empty[CodeGenScript]
+                val regenerated = mutable.ArrayBuffer.empty[(String, String)]
+                PipelineScripts.Kinds.filter(k => PipelineScripts.instructionOf(cfg, k).isDefined).foreach { kind =>
+                    val item = pipelineName + "/" + kind
+                    if (regenerateScripts) regenerated += (item -> RegenerateRequestedReason)
+                    else
+                        (texts.get(kind), recs.get(kind)) match {
+                            case (None, _) => regenerated += (item -> NoScriptReason)
+                            case (Some(_), None) =>
+                                val problem = contents.codegenRecordProblems.getOrElse(pipelineName, Map.empty).get(kind)
+                                regenerated += (item -> problem.getOrElse(NoRecordReason))
+                            case (Some(text), Some(rec)) =>
+                                scripts.importScript(cfg, kind, text, rec, actor) match {
+                                    case Right(r) => imported += r
+                                    case Left(why) =>
+                                        regenerated += (item -> why)
+                                        if (why.contains(PipelineScripts.ConflictMarker)) warnings += (item + ": " + why)
+                                }
+                        }
+                }
+                ScriptImport(imported.toList, regenerated.toList)
+        }
+
+    /** What happened to one restored pipeline's AI scripts. `regenerated`
+      * and `kept` carry (item, reason): the reason the archived script was
+      * not imported. */
+    case class ScriptReport(imported: Seq[String], regenerated: Seq[(String, String)], kept: Seq[(String, String)])
+
+    /** After the pipeline save: the items whose imported record survived the
+      * save (same generatedAt and fingerprint) are imported. A kind that was
+      * not imported and whose live record the save left unchanged (a usable
+      * script already on the target) is kept, with the reason the archived
+      * one was not used; with `regenerateScripts` it is regenerated now
+      * instead, so the caller gets the current model's script. Every other AI
+      * kind was regenerated by the save, with the reason from `plan`. */
+    private[api] def classifyScripts(
+        saved: PipelineConfig,
+        plan: ScriptImport,
+        beforeSave: Map[String, Option[CodeGenScript]],
+        scripts: PipelineScripts,
+        actor: String,
+        warnings: mutable.ArrayBuffer[String],
+        regenerateScripts: Boolean
+    ): ScriptReport = {
+        val imported = mutable.ArrayBuffer.empty[String]
+        val regenerated = mutable.ArrayBuffer.empty[(String, String)]
+        val kept = mutable.ArrayBuffer.empty[(String, String)]
+        PipelineScripts.Kinds.filter(k => PipelineScripts.instructionOf(saved, k).isDefined).foreach { kind =>
+            val item = saved.name + "/" + kind
+            try {
+                val after = scripts.record(saved.name, kind)
+                plan.imported.find(_.kind == kind) match {
+                    case Some(imp) if after.exists(a => a.generatedAt == imp.generatedAt && a.fingerprint == imp.fingerprint) =>
+                        imported += item
+                    case Some(_) => regenerated += (item -> "the saved pipeline config differs from the archived one the script was written for")
+                    case None =>
+                        val reason = plan.regenerated.find(_._1 == item).map(_._2).getOrElse(NoScriptReason)
+                        // Kept only when a usable (Ready) live script is still there,
+                        // unchanged; an unchanged Pending record has no script to keep.
+                        val untouched = after.exists(a => a.status == PipelineScripts.Ready && beforeSave.getOrElse(kind, None).contains(a))
+                        if (untouched && regenerateScripts)
+                            scripts.regenerate(saved, kind, actor) match {
+                                case Right(_) => regenerated += (item -> reason)
+                                case Left(why) =>
+                                    warnings += (item + ": " + why)
+                                    regenerated += (item -> (reason + "; regenerating failed: " + why))
+                            }
+                        else if (untouched) kept += (item -> reason)
+                        else regenerated += (item -> reason)
+                }
+            } catch {
+                case e: Exception =>
+                    logger.warn("Catalog restore: could not report the " + item + " script: " + e.getMessage)
+                    regenerated += (item -> Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
+            }
+        }
+        ScriptReport(imported.toList, regenerated.toList, kept.toList)
+    }
 
     /** The refusal `POST /catalog/{name}/enable-ordered` returns before a job
       * starts, or None. `taps` = the catalog's member taps (no placeholders).

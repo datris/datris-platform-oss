@@ -77,6 +77,11 @@ trait CodeStore {
       * missing at head. */
     def pullLatest(ref: ScriptRef): Option[(String, String)] = None
 
+    /** The repository path a new script named `name` gets in this store, so a
+      * caller can look at branch head before its first write. None for a
+      * backend with no repository (built-in store). */
+    def repoPathFor(name: String): Option[String] = None
+
     /** Some(headSha) when the script's file at branch head differs from the
       * recorded commit's. Default: compare [[pullLatest]] with [[readScript]];
       * the repository store overrides it with a non-caching blob compare. */
@@ -276,6 +281,8 @@ class GithubScriptStore(
             if (pinned.exists(_.blobSha == head.blobSha)) None else Some(headSha)
         }
     }
+
+    override def repoPathFor(name: String): Option[String] = Some(GithubCodeStore.scriptRepoPath(familyOf(name), config))
 
     /** Branch-head read for the drift-pull flow: returns (content, headSha),
       * bypassing the pin; the head version is cached under its sha. */

@@ -174,3 +174,59 @@ def test_restore_without_no_state_omits_restore_state_or_sends_true(monkeypatch,
     assert len(stub.calls) == 1, stub.calls
     _, args = stub.calls[0]
     assert args.get("restore_state", True) is True
+
+
+# ── Restore honours archived CodeGen scripts (multi-env story 3) ────────
+
+
+def test_restore_regenerate_scripts_passes_regenerate_scripts_true(monkeypatch, tmp_path):
+    stub = _Mcp(RESTORE_OK)
+    monkeypatch.setattr(cli, "mcp", stub)
+    archive = _archive(tmp_path)
+    res = _run(["catalog", "restore", str(archive), "--as", "sales2", "--regenerate-scripts"])
+    assert res.exit_code == 0, res.output
+    assert len(stub.calls) == 1, stub.calls
+    name, args = stub.calls[0]
+    assert name == "restore_catalog"
+    assert args.get("regenerate_scripts") is True, args
+
+
+def test_restore_without_regenerate_scripts_omits_the_key(monkeypatch, tmp_path):
+    stub = _Mcp(RESTORE_OK)
+    monkeypatch.setattr(cli, "mcp", stub)
+    archive = _archive(tmp_path)
+    res = _run(["catalog", "restore", str(archive), "--as", "sales2"])
+    assert res.exit_code == 0, res.output
+    _, args = stub.calls[0]
+    assert "regenerate_scripts" not in args, args
+
+
+def test_restore_prints_imported_and_regenerated_ai_script_counts(monkeypatch, tmp_path):
+    result = dict(RESTORE_OK)
+    result["scriptsImported"] = ["p_orders/dataQuality", "p_orders/transformation"]
+    result["scriptsRegenerated"] = [
+        {"item": "p_refunds/dataQuality", "reason": "no script record in the archive; re-export to carry it"}
+    ]
+    stub = _Mcp(result)
+    monkeypatch.setattr(cli, "mcp", stub)
+    archive = _archive(tmp_path)
+    res = _run(["catalog", "restore", str(archive), "--as", "sales2"])
+    assert res.exit_code == 0, res.output
+    assert "Imported 2 AI scripts" in res.output, res.output
+    assert "Regenerated 1 AI script" in res.output, res.output
+    assert "no script record in the archive; re-export to carry it" in res.output, res.output
+
+
+def test_restore_prints_kept_ai_script_count_and_reason(monkeypatch, tmp_path):
+    result = dict(RESTORE_OK)
+    result["scriptsKept"] = [
+        {"item": "p_orders/dataQuality", "reason": "no script record in the archive; re-export to carry it"}
+    ]
+    stub = _Mcp(result)
+    monkeypatch.setattr(cli, "mcp", stub)
+    archive = _archive(tmp_path)
+    res = _run(["catalog", "restore", str(archive), "--as", "sales2"])
+    assert res.exit_code == 0, res.output
+    assert "Kept 1 AI script" in res.output, res.output
+    assert "p_orders/dataQuality" in res.output, res.output
+    assert "Regenerated" not in res.output, res.output

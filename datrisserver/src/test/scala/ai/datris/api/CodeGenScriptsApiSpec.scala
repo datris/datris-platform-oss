@@ -281,4 +281,24 @@ class CodeGenScriptsApiSpec extends AnyFunSuite {
         assert(e.get("commitSha").getAsString == editSha, s"$e")
         assert(e.get("origin").getAsString == "repository", s"$e")
     }
+
+    // =====================================================================
+    // Story: Restore honours archived CodeGen scripts
+    // (plans/stories/multi-env-3-restore-import-codegen-scripts.md):
+    // the GET entry also carries `fingerprint`, so a caller can see what a
+    // restore wrote.
+    // =====================================================================
+
+    test("codegenScriptsBody entry carries fingerprint equal to the record's") {
+        val (scripts, _) = savedScripts()
+        val byKind = entries(withEnv(PipelineAPIController.codegenScriptsBody(cfg, scripts)))
+        val rec = scripts.record("orders", "dataQuality").getOrElse(fail("no dataQuality record"))
+        assert(rec.fingerprint != null && rec.fingerprint.nonEmpty)
+        val dq = byKind("dataQuality")
+        assert(dq.has("fingerprint") && !dq.get("fingerprint").isJsonNull, s"fingerprint present: $dq")
+        assert(dq.get("fingerprint").getAsString == rec.fingerprint, s"$dq")
+        // A pending record carries its fingerprint as well.
+        val txRec = scripts.record("orders", "transformation").get
+        assert(byKind("transformation").get("fingerprint").getAsString == txRec.fingerprint, s"${byKind("transformation")}")
+    }
 }

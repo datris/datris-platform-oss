@@ -2057,6 +2057,8 @@ def _base_tools():
                 "needs `confirm` equal to the catalog name. It never writes secrets: missing ones come back under `missingSecrets` "
                 "for the user to create. Restored taps are left disabled; tell the user to test and enable them. "
                 "Items that could not be restored come back under `failed`; report them. "
+                "Archived AI scripts are restored as-is unless `regenerate_scripts` is set; `scriptsImported`, "
+                "`scriptsRegenerated` and `scriptsKept` (a live script left in place; both with the reason) say which were which. "
                 "The response carries `sourceEnvironment` (where the archive was exported) and `targetEnvironment` (this install), "
                 "plus a warning when they differ; tell the user."
             ),
@@ -2083,6 +2085,11 @@ def _base_tools():
                     "restore_state": {
                         "type": "boolean",
                         "description": "Optional, default true. false skips each tap's incremental state (for a copy that should start from scratch)."
+                    },
+                    "regenerate_scripts": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Optional, default false. true regenerates each pipeline's AI scripts on this install instead of restoring the archived ones."
                     },
                 },
                 "required": ["catalog", "archive_base64"]
@@ -4880,6 +4887,9 @@ def _dispatch(name: str, args: dict) -> str:
             data["confirm"] = str(confirm)
         if args.get("restore_state") is False:
             data["restoreState"] = "false"
+        # Sent only when true, so an older server sees no new parameter.
+        if args.get("regenerate_scripts") is True:
+            data["regenerateScripts"] = "true"
         catalog = urllib.parse.quote(raw_catalog, safe="")
         try:
             return _upload_content(
