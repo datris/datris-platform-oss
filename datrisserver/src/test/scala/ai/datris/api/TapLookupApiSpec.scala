@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.model.TapConfig
 import jakarta.servlet.http.HttpServletRequest
 import org.scalatest.funsuite.AnyFunSuite
 import org.springframework.http.ResponseEntity
@@ -18,6 +19,8 @@ import org.springframework.http.ResponseEntity
   * object TapAPIController {
   *     /** 404 with ApiErrors.errorBody("Tap: " + name + " not found"). */
   *     def tapNotFound(name: String): ResponseEntity[String]
+  *     /** POST /tap/run and POST /tap/state: Left(tapNotFound(name)) for None, Right(config) for Some. */
+  *     def tapOr404(name: String, config: Option[TapConfig]): Either[ResponseEntity[String], TapConfig]
   * }
   * class TapAPIController {
   *     /** None = no such tap (DELETE maps it to tapNotFound); Some(warnings) otherwise. */
@@ -44,5 +47,19 @@ class TapLookupApiSpec extends AnyFunSuite {
         // behaviour is covered by the manual Verify block.
         def deleted(c: TapAPIController, request: HttpServletRequest): Option[Seq[String]] = c.deleteTapInternal("nope", request)
         assert(deleted _ != null)
+    }
+
+    test("tapOr404 for a missing tap is the 404 not-found response") {
+        TapAPIController.tapOr404("nope", None) match {
+            case Left(r) =>
+                assert(r.getStatusCode.value == 404, r.getBody)
+                assert(r.getBody == "{\"error\":\"Tap: nope not found\"}", r.getBody)
+            case Right(c) => fail("expected 404, got config " + c)
+        }
+    }
+
+    test("tapOr404 for an existing tap returns its config") {
+        val tap = TapConfig(name = "t1", description = "d", targetPipeline = "p")
+        assert(TapAPIController.tapOr404("t1", Some(tap)) == Right(tap))
     }
 }

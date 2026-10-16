@@ -28,6 +28,11 @@ object TapAPIController {
             .contentType(MediaType.APPLICATION_JSON)
             .body[String](ApiErrors.errorBody("Tap: " + name + " not found"))
 
+    /** Tap lookup for POST /tap/run and POST /tap/state: Left(tapNotFound(name))
+      * when no config was read for `name`, Right(config) otherwise. */
+    def tapOr404(name: String, config: Option[TapConfig]): Either[ResponseEntity[String], TapConfig] =
+        config.toRight(tapNotFound(name))
+
     /** Some(message) when the tap's secretName names a server-managed secret
       * (SecretNames.ServerManaged); checked on save. TapScriptRunner refuses
       * the same at run time for taps saved before this check. */
@@ -1391,9 +1396,10 @@ class TapAPIController {
             if (name == null || name.isEmpty)
                 throw new DatrisException("Tap name is required")
 
-            val tapConfig = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
-            if (tapConfig == null)
-                throw new DatrisException("Tap: " + name + " not found")
+            val tapConfig = TapAPIController.tapOr404(name, Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name))) match {
+                case Left(notFound) => return notFound
+                case Right(c) => c
+            }
 
             // Scope check: `tap:run:owner=self` keys (e.g. rag-builder) may
             // only run taps they created. The loaded tap's createdByKeyLabel
@@ -1572,8 +1578,10 @@ class TapAPIController {
 
             if (name == null || name.isEmpty)
                 throw new DatrisException("Tap name is required")
-            if (TapConfigIO.read(DatrisEnvironment.current.tapTableName, name) == null)
-                throw new DatrisException("Tap: " + name + " not found")
+            TapAPIController.tapOr404(name, Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name))) match {
+                case Left(notFound) => return notFound
+                case Right(_) =>
+            }
 
             val gson = new Gson
             // `state` must be a JSON object (the same shape the wrapper accepts from

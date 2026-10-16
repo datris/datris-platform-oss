@@ -4354,6 +4354,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TapRunResult'
+        '404':
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /api/v1/tap/cron:
     post:
@@ -4487,8 +4496,17 @@ paths:
       responses:
         '200':
           description: State saved
+        '404':
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '500':
-          description: Error (unknown tap, or state is not a JSON object)
+          description: Error (state is not a JSON object)
     delete:
       tags: [Taps]
       summary: Reset a tap's incremental-sync state
