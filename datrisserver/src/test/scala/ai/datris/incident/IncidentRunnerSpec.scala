@@ -5,11 +5,17 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.incident.IncidentRunner.{ProposedAction, RealDiagnoser}
+import ai.datris.incident.IncidentRunner.{ProposedAction, RealDiagnoser, ScratchOutcome, ToolOutcome}
+import ai.datris.model.TapConfig
+import ai.datris.policy.RecoverySettings
+import ai.datris.util.RunProfiler.{ColumnStats, Quantiles}
 import com.google.gson.{JsonObject, JsonParser}
+import org.bson.Document
 import org.scalatest.funsuite.AnyFunSuite
 
 import java.time.Instant
+import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 class IncidentRunnerSpec extends AnyFunSuite {
 
@@ -242,5 +248,370 @@ class IncidentRunnerSpec extends AnyFunSuite {
         assert(json.contains("\"revertToVersion\":7"))
         assert(Incident.OpenStates.contains(i.state))
         assert(!incident(Incident.KindVolume).toPublicJson.has("revertToVersion"))
+    }
+
+    // ==================================================================
+    // Story: Scratch-first verification with evidence thresholds
+    // (plans/stories/self-healing-3-scratch-first-verify.md), Acceptance bullet 3.
+    //
+    // The state machine is driven end to end with fakes only (no Mongo, no
+    // LLM, no tap runner): fake Diagnoser / ToolExecutor (existing seams),
+    // `runAsync = false`, and the seams below. The story names the scratch
+    // seam and a "revert version seam"; the other names are chosen here so
+    // the loop can run without Mongo — keep them or update this spec:
+    //
+    // {{{
+    // object IncidentRunner {
+    //   /** What the scratch lane produced. `candidate` None with `error` Some = the scratch run failed. */
+    //   case class ScratchOutcome(candidate: Option[RunProfile], error: Option[String] = None)
+    //   /** The story's ScratchRunner seam: (stored tap, candidate script) => outcome.
+    //     * Production = TapRunner.run(mode = "scratch", scriptOverride) + rollup poll
+    //     * + ScratchReader paging + RunProfiler.profile. */
+    //   @volatile var scratch: (TapConfig, Option[String]) => ScratchOutcome
+    //   /** When non-null, used instead of PolicyIO.current.recovery. */
+    //   @volatile private[incident] var settingsOverride: RecoverySettings = null
+    //   /** Every stored-tap read in the runner (TapConfigIO.read): scratch input,
+    //     * isTapHealthy, currentTapVersion, revertIfNeeded's live version. */
+    //   @volatile private[incident] var tapLookup: String => Option[TapConfig]
+    //   /** The revert version seam: the direct restore inside revertIfNeeded,
+    //     * (incidentId, tapName, toVersion), called only when live.version != target. */
+    //   @volatile private[incident] var revertTap: (String, String, Int) => Unit
+    //   /** Only from awaiting_approval with scratchVerdict = needs-human. Honours runAsync. */
+    //   def proceed(id: String, by: String): Either[String, Unit]
+    // }
+    // object IncidentIO {
+    //   /** When non-null, every IncidentIO call (and the runner's raw
+    //     * nextActionIndex / scratchVerdict reads) is served by it instead of Mongo. */
+    //   @volatile private[incident] var store: IncidentIO.Store = null
+    //   trait Store {
+    //     def insert(i: Incident): Unit
+    //     def get(id: String): Option[Incident]
+    //     def list(state: Option[String], limit: Int): List[Incident]   // "open" = OpenStates
+    //     def transition(id: String, from: Set[String], to: String, sets: Seq[(String, Any)]): Boolean
+    //     def appendStep(id: String, step: IncidentStep): Unit
+    //     def set(id: String, sets: Seq[(String, Any)]): Unit
+    //     def incrementCounters(id: String, aiCalls: Int, actions: Int): Unit
+    //     def raw(id: String): Option[Document]
+    //   }
+    // }
+    // object IncidentEvidenceBuilder {
+    //   /** When non-null, replaces the lineage read that profiles the verifying real run. */
+    //   @volatile private[incident] var realProfileOverride: (Incident, Option[RunProfile]) => Option[RunProfile] = null
+    // }
+    // }}}
+    //
+    // The incident is seeded with evidence (a baseline) so runIncident skips
+    // the at-open lineage reads.
+    // ==================================================================
+
+    /** In-memory incident store over the same documents Mongo would hold. */
+    private class FakeStore extends IncidentIO.Store {
+        val docs = new java.util.concurrent.ConcurrentHashMap[String, Document]()
+        override def insert(i: Incident): Unit = { docs.put(i.id, i.toDocument); () }
+        override def get(id: String): Option[Incident] = Option(docs.get(id)).map(Incident.fromDocument)
+        override def list(state: Option[String], limit: Int): List[Incident] =
+            docs.values().asScala.toList.map(Incident.fromDocument).filter(i =>
+                state match {
+                    case Some("open") => Incident.OpenStates.contains(i.state)
+                    case Some(st) => i.state == st
+                    case None => true
+                }
+            ).take(limit)
+        override def transition(id: String, from: Set[String], to: String, sets: Seq[(String, Any)]): Boolean = synchronized {
+            val d = docs.get(id)
+            if (d == null || !from.contains(d.getString("state"))) false
+            else {
+                d.put("state", to)
+                sets.foreach { case (k, v) => d.put(k, v.asInstanceOf[AnyRef]) }
+                if (Incident.ClosedStates.contains(to)) {
+                    d.put("closedAt", Instant.now().toString)
+                    d.put("closedAtDate", java.util.Date.from(Instant.now()))
+                }
+                true
+            }
+        }
+        override def appendStep(id: String, step: IncidentStep): Unit = synchronized {
+            val d = docs.get(id)
+            if (d != null) {
+                val steps = Option(d.get("steps", classOf[java.util.List[Document]])).getOrElse {
+                    val l = new java.util.ArrayList[Document](); d.put("steps", l); l
+                }
+                steps.add(Document.parse(step.toJson.toString))
+            }
+        }
+        override def set(id: String, sets: Seq[(String, Any)]): Unit = synchronized {
+            val d = docs.get(id)
+            if (d != null) sets.foreach { case (k, v) => d.put(k, v.asInstanceOf[AnyRef]) }
+        }
+        override def incrementCounters(id: String, aiCalls: Int, actions: Int): Unit = synchronized {
+            val d = docs.get(id)
+            if (d != null) {
+                d.put("aiCalls", Option(d.getInteger("aiCalls")).map(_.intValue()).getOrElse(0) + aiCalls: java.lang.Integer)
+                d.put("actionsTaken", Option(d.getInteger("actionsTaken")).map(_.intValue()).getOrElse(0) + actions: java.lang.Integer)
+            }
+        }
+        override def raw(id: String): Option[Document] = Option(docs.get(id))
+    }
+
+    private val CandidateScript = "def fetch():\n    return [{'id': 1, 'price': 10}]\n"
+
+    private val t0 = Instant.parse("2026-10-16T10:00:00Z")
+    private val q = Quantiles(1.0, 10.0, 20.0, 30.0, 99.0)
+    private val baseColumns = List(
+        ColumnStats("id", "number", 0.0, 100L, Some(q), None, None),
+        ColumnStats("price", "number", 0.0, 90L, Some(q), None, None),
+        ColumnStats("region", "string", 0.0, 3L, None, None, Some(List(("eu", 60L), ("us", 40L))))
+    )
+
+    private def runProfile(runId: String, source: String, records: Long, columns: List[ColumnStats] = baseColumns): RunProfile =
+        RunProfile(
+            runId = runId,
+            source = source,
+            recordCount = records,
+            columns = columns,
+            dqFailures = 0,
+            dqPassRate = 1.0,
+            durationMs = 1000L,
+            scriptSha = None,
+            tapVersion = Some(3),
+            pipelineVersion = None,
+            sampledRows = records,
+            computedAt = t0
+        )
+
+    private val baseline = runProfile("run_base", "landed-sample", 100L)
+    private val healthyCandidate = runProfile("scratch_1", "scratch", 100L)
+    private val healthyReal = runProfile("run_real", "landed-sample", 100L)
+
+    private def evidenceWith(b: Option[RunProfile]): IncidentEvidence = IncidentEvidence(
+        baseline = b,
+        candidate = None,
+        real = None,
+        diff = None,
+        blastRadius = BlastRadius(Nil, Nil, Nil, Nil, None, None, None),
+        thresholds = Thresholds.Default,
+        checks = Nil,
+        verdict = Thresholds.Pending,
+        computedAt = t0
+    )
+
+    private case class Call(tool: String, args: JsonObject, stateAtCall: String)
+
+    /** Everything one scenario observed. */
+    private class Ctx(val id: String, val store: FakeStore) {
+        val calls = mutable.ArrayBuffer[Call]()
+        val scratchCalls = mutable.ArrayBuffer[(String, Option[String])]()
+        val reverts = mutable.ArrayBuffer[(String, String, Int)]()
+        @volatile var tap: TapConfig = TapConfig(name = "prices", description = "d", targetPipeline = "orders", version = 3, lastRunStatus = "failure")
+        def incident: Incident = store.get(id).getOrElse(fail("incident " + id + " vanished"))
+        def tools: List[String] = calls.map(_.tool).toList
+        def summaries: List[String] = incident.steps.map(_.summary)
+        def ev: IncidentEvidence = IncidentEvidenceBuilder.of(incident).getOrElse(fail("no evidence on " + incident))
+    }
+
+    private val structuralProposal: IncidentRunner.Proposal = {
+        val upd = new JsonObject()
+        upd.addProperty("name", "prices")
+        upd.addProperty("script", CandidateScript)
+        val run = new JsonObject()
+        run.addProperty("name", "prices")
+        IncidentRunner.Proposal(
+            "structural-script",
+            "source renamed account_id",
+            needsHuman = false,
+            List(ProposedAction("update_tap", upd, "fix the field name"), ProposedAction("run_tap", run, "land the fix")),
+            None
+        )
+    }
+
+    /** Install every seam, seed one open tap_failure incident and run `body`.
+      * `candidate` / `real` are what the scratch lane and the verifying real
+      * run profile to. */
+    private def scenario[T](
+        candidate: Option[RunProfile] = Some(healthyCandidate),
+        real: Option[RunProfile] = Some(healthyReal),
+        settings: RecoverySettings = RecoverySettings(mode = RecoverySettings.Propose),
+        seedBaseline: Option[RunProfile] = Some(baseline),
+        seedState: String = Incident.Open
+    )(body: Ctx => T): T = {
+        val store = new FakeStore
+        val ctx = new Ctx(Incident.newId(), store)
+        store.insert(Incident(
+            id = ctx.id,
+            kind = Incident.KindTapFailure,
+            resourceType = "tap",
+            resourceName = "prices",
+            openedAt = Instant.now(),
+            state = seedState,
+            trigger = JsonParser.parseString("""{"error":"KeyError: account_id"}""").getAsJsonObject,
+            steps = List(IncidentStep(Instant.now(), "open", "tap_failure signal on tap prices")),
+            evidence = Some(evidenceWith(seedBaseline).toJson)
+        ))
+
+        val saved = (
+            IncidentRunner.diagnoser,
+            IncidentRunner.executor,
+            IncidentRunner.runAsync,
+            IncidentRunner.scratch,
+            IncidentRunner.settingsOverride,
+            IncidentRunner.tapLookup,
+            IncidentRunner.revertTap,
+            IncidentIO.store,
+            IncidentEvidenceBuilder.realProfileOverride
+        )
+        IncidentIO.store = store
+        IncidentRunner.runAsync = false
+        IncidentRunner.settingsOverride = settings
+        IncidentRunner.diagnoser = new IncidentRunner.Diagnoser {
+            override def diagnose(incident: Incident, onAiCall: () => Unit): Either[String, IncidentRunner.Proposal] = {
+                onAiCall()
+                Right(structuralProposal)
+            }
+        }
+        IncidentRunner.executor = new IncidentRunner.ToolExecutor {
+            override def call(tool: String, args: JsonObject, incidentId: String): ToolOutcome = {
+                ctx.calls.synchronized { ctx.calls += Call(tool, args, store.get(incidentId).map(_.state).orNull) }
+                tool match {
+                    case "update_tap" | "create_tap" =>
+                        ctx.tap = ctx.tap.copy(version = ctx.tap.version + 1)
+                        ToolOutcome.Ok("""{"message":"script updated"}""")
+                    case "run_tap" =>
+                        ctx.tap = ctx.tap.copy(lastRunStatus = "success", lastRunRecordCount = real.map(_.recordCount.toInt).getOrElse(0))
+                        ToolOutcome.Ok("""{"mode":"run","recordCount":""" + real.map(_.recordCount).getOrElse(0L) + "}")
+                    case "get_pipeline_status" => ToolOutcome.Ok("""{"allDone":true,"status":"complete"}""")
+                    case _ => ToolOutcome.Ok("{}")
+                }
+            }
+        }
+        IncidentRunner.scratch = (t: TapConfig, script: Option[String]) => {
+            ctx.scratchCalls.synchronized { ctx.scratchCalls += ((t.name, script)) }
+            ScratchOutcome(candidate, if (candidate.isEmpty) Some("scratch run failed") else None)
+        }
+        IncidentRunner.tapLookup = (name: String) => if (name == "prices") Some(ctx.tap) else None
+        IncidentRunner.revertTap = (incidentId: String, tapName: String, toVersion: Int) => {
+            ctx.reverts.synchronized { ctx.reverts += ((incidentId, tapName, toVersion)) }
+            ctx.tap = ctx.tap.copy(version = toVersion)
+        }
+        IncidentEvidenceBuilder.realProfileOverride = (_: Incident, _: Option[RunProfile]) => real
+
+        try body(ctx)
+        finally {
+            IncidentRunner.diagnoser = saved._1
+            IncidentRunner.executor = saved._2
+            IncidentRunner.runAsync = saved._3
+            IncidentRunner.scratch = saved._4
+            IncidentRunner.settingsOverride = saved._5
+            IncidentRunner.tapLookup = saved._6
+            IncidentRunner.revertTap = saved._7
+            IncidentIO.store = saved._8
+            IncidentEvidenceBuilder.realProfileOverride = saved._9
+        }
+    }
+
+    private val Mutations = Set("update_tap", "create_tap", "run_tap", "test_tap")
+
+    test("scratch pass: actions execute, the real run verifies, resolved — scratch verification step comes before execute") {
+        scenario() { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.scratchCalls.toList == List(("prices", Some(CandidateScript))), "the candidate script from update_tap ran in the scratch lane")
+            assert(c.tools.filter(Mutations) == List("update_tap", "run_tap"), c.tools)
+            val i = c.incident
+            assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+            val scratchAt = i.steps.indexWhere(_.summary.contains("scratch verification"))
+            val executeAt = i.steps.indexWhere(_.phase == "execute")
+            assert(scratchAt >= 0, "a scratch verification step: " + c.summaries)
+            assert(executeAt >= 0, "an execute step: " + c.summaries)
+            assert(scratchAt < executeAt, "scratch verification precedes execute: " + c.summaries)
+            assert(c.ev.candidate.exists(_.runId == "scratch_1"), "the candidate profile is on the evidence")
+            assert(c.reverts.isEmpty)
+        }
+    }
+
+    test("scratch fail: failed, no update_tap / run_tap reached the executor, actionsTaken == 0") {
+        // 60 % of the rows dropped: maxRecordDeltaPct (25) breached.
+        scenario(candidate = Some(runProfile("scratch_1", "scratch", 40L))) { c =>
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(i.state == Incident.Failed, i.outcome + " / " + c.summaries)
+            assert(c.tools.filter(Mutations).isEmpty, "nothing mutating ran: " + c.tools)
+            assert(i.actionsTaken == 0)
+            assert(i.outcome.exists(_.startsWith("candidate failed scratch verification")), i.outcome)
+            assert(c.ev.verdict == Thresholds.Fail)
+            assert(c.tap.version == 3, "tap version unchanged")
+            assert(c.reverts.isEmpty, "no mutation happened, so nothing to restore")
+        }
+    }
+
+    test("scratch needs-human: awaiting_approval with no approval ids; proceed moves to executing and the actions then run") {
+        // A column removed with allowColumnRemoval = false.
+        scenario(candidate = Some(runProfile("scratch_1", "scratch", 100L, baseColumns.filterNot(_.name == "region")))) { c =>
+            IncidentRunner.runIncident(c.id)
+            val parked = c.incident
+            assert(parked.state == Incident.AwaitingApproval, parked.outcome + " / " + c.summaries)
+            assert(parked.awaitingApprovalIds.isEmpty, "nothing queued in Approvals: " + parked.awaitingApprovalIds)
+            assert(c.tools.filter(Mutations).isEmpty, "nothing mutating ran before a human decided: " + c.tools)
+            assert(parked.steps.exists(s => s.phase == "propose" && s.summary.startsWith("needs a human")), c.summaries)
+            assert(c.ev.verdict == Thresholds.NeedsHuman)
+
+            val r = IncidentRunner.proceed(c.id, "todd")
+            assert(r == Right(()), r)
+            val mutating = c.calls.filter(k => Mutations.contains(k.tool)).toList
+            assert(mutating.map(_.tool) == List("update_tap", "run_tap"), c.tools)
+            assert(mutating.head.stateAtCall == Incident.Executing, "the incident is executing when the first action runs")
+            assert(c.summaries.exists(_.contains("human proceeded past needs-human evidence: todd")), c.summaries)
+            assert(c.incident.state == Incident.Resolved, c.incident.outcome + " / " + c.summaries)
+        }
+    }
+
+    test("proceed is Left on a diagnosing incident, and on an approval-queued one without a needs-human verdict") {
+        scenario(seedState = Incident.Diagnosing) { c =>
+            assert(IncidentRunner.proceed(c.id, "todd").isLeft)
+            assert(c.incident.state == Incident.Diagnosing)
+            assert(c.calls.isEmpty)
+        }
+        scenario(seedState = Incident.AwaitingApproval) { c =>
+            c.store.set(c.id, Seq("awaitingApprovalIds" -> java.util.Arrays.asList("pa_1")))
+            assert(IncidentRunner.proceed(c.id, "todd").isLeft, "only a needs-human scratch verdict can be proceeded past")
+            assert(c.calls.isEmpty)
+        }
+        scenario() { c =>
+            assert(IncidentRunner.proceed("inc_doesnotexist", "todd").isLeft)
+        }
+    }
+
+    test("verifyMode = real never invokes the scratch seam") {
+        scenario(settings = RecoverySettings(mode = RecoverySettings.Propose, verifyMode = "real")) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.scratchCalls.isEmpty, "scratch lane skipped: " + c.scratchCalls)
+            assert(c.tools.filter(Mutations) == List("update_tap", "run_tap"), c.tools)
+            assert(c.incident.state == Incident.Resolved, c.incident.outcome + " / " + c.summaries)
+            assert(!c.summaries.exists(_.contains("scratch verification")), c.summaries)
+        }
+    }
+
+    test("real-stage breach after a scratch pass reverts the definition and says data already landed") {
+        // Scratch looked fine; the real run landed 30 % of the baseline rows.
+        scenario(real = Some(runProfile("run_real", "landed-sample", 30L))) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.scratchCalls.size == 1)
+            assert(c.tools.filter(Mutations) == List("update_tap", "run_tap"), c.tools)
+            val i = c.incident
+            assert(i.state == Incident.Failed, i.outcome + " / " + c.summaries)
+            assert(c.reverts.toList == List((c.id, "prices", 3)), "revertIfNeeded restored the pre-incident version: " + c.reverts)
+            assert(i.outcome.exists(_.contains("data already landed")), i.outcome)
+        }
+    }
+
+    test("no baseline: the scratch verdict is needs-human with the baseline check, and nothing executes") {
+        scenario(seedBaseline = None) { c =>
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(i.state == Incident.AwaitingApproval, i.outcome + " / " + c.summaries)
+            assert(c.tools.filter(Mutations).isEmpty, c.tools)
+            assert(c.ev.verdict == Thresholds.NeedsHuman)
+            val b = c.ev.checks.find(_.name == "baseline")
+            assert(b.exists(!_.passed), c.ev.checks)
+            assert(b.exists(_.observed == "no successful run in the last 30 days"), b)
+        }
     }
 }

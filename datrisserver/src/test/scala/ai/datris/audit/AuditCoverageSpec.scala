@@ -150,4 +150,20 @@ class AuditCoverageSpec extends AnyFunSuite {
         assert(ai.datris.auth.CapabilityRoutes.lookup("GET", "/api/v1/catalog/sample/enable-ordered") ==
             ai.datris.auth.RouteCheck.Require("tap", "read"))
     }
+
+    // Story: plans/stories/self-healing-3-scratch-first-verify.md, Acceptance
+    // bullet 4 (the parts a unit spec can reach) — POST /incidents/{id}/proceed
+    // is a live controller route, classified by its own CapabilityRoutes row
+    // (`incident:proceed`), so it is audited and scoped keys need the new key.
+    test("incident proceed route exists, is audit-classified and maps to incident:proceed") {
+        val live = routes().map(r => (r.method, r.path))
+        assert(live.contains(("POST", "/api/v1/incidents/{id}/proceed")), "POST /api/v1/incidents/{id}/proceed route missing")
+        assert(AuditClassifier.isKnown("POST", "/api/v1/incidents/sample/proceed"))
+        assert(!AuditClassifier.isDeliberatelySkipped("POST", "/api/v1/incidents/sample/proceed"))
+        assert(ai.datris.auth.CapabilityRoutes.lookup("POST", "/api/v1/incidents/sample/proceed") ==
+            ai.datris.auth.RouteCheck.Require("incident", "proceed"))
+        // abandon keeps its own key
+        assert(ai.datris.auth.CapabilityRoutes.lookup("POST", "/api/v1/incidents/sample/abandon") ==
+            ai.datris.auth.RouteCheck.Require("incident", "abandon"))
+    }
 }

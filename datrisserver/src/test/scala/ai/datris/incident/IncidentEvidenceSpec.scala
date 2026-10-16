@@ -265,4 +265,46 @@ class IncidentEvidenceSpec extends AnyFunSuite {
         val back = IncidentEvidence.fromJson(com.google.gson.JsonParser.parseString(text).getAsJsonObject)
         assert(back == fullEvidence)
     }
+
+    // ------------------------------------------------------------------
+    // Story: Scratch-first verification (plans/stories/self-healing-3-scratch-first-verify.md),
+    // Acceptance bullet 3 (last clause) — IncidentEvidenceBuilder.withCandidate and
+    // the no-baseline rule: never fall back to `real` silently.
+    //
+    //   def withCandidate(evidence: IncidentEvidence, candidate: RunProfile, thresholds: Thresholds): IncidentEvidence
+    // ------------------------------------------------------------------
+
+    private val atOpen = sparseEvidence.copy(baseline = Some(profile(baseStats)), candidate = None, real = None, diff = None, checks = Nil)
+
+    test("withCandidate with no baseline is needs-human with a failed `baseline` check") {
+        val cand = profile(baseStats, runId = "scratch_1", source = "scratch")
+        val ev = IncidentEvidenceBuilder.withCandidate(atOpen.copy(baseline = None), cand, defaults)
+        assert(ev.candidate.contains(cand), "the candidate is stored")
+        assert(ev.verdict == Thresholds.NeedsHuman, ev.verdict)
+        val b = ev.checks.find(_.name == "baseline")
+        assert(b.isDefined, "a check named baseline: " + ev.checks)
+        assert(!b.get.passed)
+        assert(b.get.observed == "no successful run in the last 30 days", b.get.observed)
+    }
+
+    test("withCandidate diffs baseline -> candidate and judges with the given thresholds") {
+        val same = IncidentEvidenceBuilder.withCandidate(atOpen, profile(baseStats, runId = "scratch_1", source = "scratch"), defaults)
+        assert(same.verdict == Thresholds.Pass, same.checks)
+        assert(same.diff.isDefined && same.diff.get.columnsRemoved.isEmpty)
+
+        // 60 % of rows dropped -> fail on maxRecordDeltaPct.
+        val dropped =
+            IncidentEvidenceBuilder.withCandidate(atOpen, profile(baseStats.copy(recordCount = 400L), runId = "scratch_2", source = "scratch"), defaults)
+        assert(dropped.verdict == Thresholds.Fail, dropped.checks)
+        assert(dropped.checks.exists(c => c.name == "maxRecordDeltaPct" && !c.passed))
+
+        // A column removed with allowColumnRemoval = false -> needs-human.
+        val removed = IncidentEvidenceBuilder.withCandidate(
+            atOpen,
+            profile(baseStats.copy(columns = baseStats.columns.filterNot(_.name == "region")), runId = "scratch_3", source = "scratch"),
+            defaults
+        )
+        assert(removed.verdict == Thresholds.NeedsHuman, removed.checks)
+        assert(removed.diff.get.columnsRemoved == List("region"))
+    }
 }

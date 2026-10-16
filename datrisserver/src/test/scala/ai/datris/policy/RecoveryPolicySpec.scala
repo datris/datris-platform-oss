@@ -110,4 +110,38 @@ class RecoveryPolicySpec extends AnyFunSuite {
             maxNullRateIncrease = 0.2
         ))
     }
+
+    // Story: Scratch-first verification (plans/stories/self-healing-3-scratch-first-verify.md),
+    // Acceptance bullet 1 — `recovery.verifyMode`: scratch-first (default) | real.
+
+    test("verifyMode defaults to scratch-first, including an older recovery block without it") {
+        assert(RecoverySettings.ScratchFirst == "scratch-first")
+        assert(RecoverySettings().verifyMode == RecoverySettings.ScratchFirst)
+        assert(policy("""{}""").recovery.verifyMode == RecoverySettings.ScratchFirst)
+        assert(policy("""{"recovery":{"mode":"propose","maxAiCallsPerIncident":5}}""").recovery.verifyMode == RecoverySettings.ScratchFirst)
+        assert(RecoverySettings.VerifyModes == Set("scratch-first", "real"))
+    }
+
+    test("verifyMode accepts real") {
+        val r = policy("""{"recovery":{"mode":"propose","verifyMode":"real"}}""").recovery
+        assert(r.verifyMode == "real")
+        assert(r.mode == RecoverySettings.Propose)
+    }
+
+    test("verifyMode = always is rejected naming the field") {
+        val r = AgentPolicy.fromJson("""{"recovery":{"verifyMode":"always"}}""")
+        assert(r.isLeft, r)
+        assert(r.left.get.contains("recovery.verifyMode must be scratch-first or real"), r)
+    }
+
+    test("verifyMode round-trips through toJson") {
+        for (vm <- Seq("real", "scratch-first")) {
+            val p = policy("""{"recovery":{"mode":"autopilot","verifyMode":"""" + vm + """"}}""")
+            assert(p.recovery.verifyMode == vm)
+            val json = p.toJson
+            assert(json.getAsJsonObject("recovery").get("verifyMode").getAsString == vm, json)
+            val back = policy(json.toString)
+            assert(back.recovery == p.recovery)
+        }
+    }
 }
