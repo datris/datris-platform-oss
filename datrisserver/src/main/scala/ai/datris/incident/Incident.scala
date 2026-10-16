@@ -51,6 +51,7 @@ case class Incident(
     actionsTaken: Int = 0,
     awaitingApprovalIds: List[String] = Nil,
     revertToVersion: Option[Int] = None, // resource version to restore if verification fails
+    revertToScriptVersions: Map[String, Int] = Map.empty, // pipeline incidents: script kind -> version before the first action (0 = no history yet)
     closedAt: Option[Instant] = None,
     outcome: Option[String] = None,
     evidence: Option[JsonObject] = None, // IncidentEvidence JSON; absent on pre-upgrade incidents
@@ -81,6 +82,11 @@ case class Incident(
             o.add("awaitingApprovalIds", a)
         }
         revertToVersion.foreach(v => o.addProperty("revertToVersion", v))
+        if (revertToScriptVersions.nonEmpty) {
+            val rv = new JsonObject()
+            revertToScriptVersions.toList.sortBy(_._1).foreach { case (k, v) => rv.addProperty(k, v) }
+            o.add("revertToScriptVersions", rv)
+        }
         closedAt.foreach(c => o.addProperty("closedAt", c.toString))
         outcome.foreach(o.addProperty("outcome", _))
         resumedAt.foreach(r => o.addProperty("resumedAt", r.toString))
@@ -170,6 +176,12 @@ object Incident {
             actionsTaken = Option(d.getInteger("actionsTaken")).map(_.intValue()).getOrElse(0),
             awaitingApprovalIds = Option(d.get("awaitingApprovalIds", classOf[java.util.List[String]])).map(_.asScala.toList).getOrElse(Nil),
             revertToVersion = Option(d.getInteger("revertToVersion")).map(_.intValue()),
+            revertToScriptVersions = Option(d.get("revertToScriptVersions", classOf[Document]))
+                .map(_.asScala.toList.flatMap {
+                    case (k, n: Number) => Some(k -> n.intValue())
+                    case _ => None
+                }.toMap)
+                .getOrElse(Map.empty),
             closedAt = instant("closedAt"),
             outcome = opt(d, "outcome"),
             evidence = Option(d.get("evidence", classOf[Document])).map(e => JsonParser.parseString(e.toJson).getAsJsonObject),

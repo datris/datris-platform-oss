@@ -46,6 +46,29 @@ object JobRunner {
       * message, falling back to its class name. Never a stack trace — this is
       * what lands in `rollup.jobs[].lastError.description`, the field agents
       * already read to decide what to retry. The stack stays on the event stream. */
+    /** "dq-script" | "transformation-script" | "loader" | "other" for a failed
+      * job, read from the exception cause chain's classes and stack-frame
+      * class names — code identity only, never a message or a row value. A
+      * destination loader that recorded its own failure is "loader". */
+    private[controller] def failingStage(e: Throwable, loaderFailure: Option[Throwable]): String = {
+        if (loaderFailure.isDefined) return "loader"
+        val seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[Throwable, java.lang.Boolean]())
+        val frames = scala.collection.mutable.ListBuffer[String]()
+        var current = e
+        while (current != null && seen.add(current)) {
+            frames += current.getClass.getName
+            Option(current.getStackTrace).foreach(_.foreach(f => frames += f.getClassName))
+            current = current.getCause
+        }
+        def has(cls: String): Boolean = frames.exists(f => f == cls || f.startsWith(cls + "$"))
+        // Transformation first: it shares helpers with CodeGenRuleEvaluator
+        // (staging, model call), never the other way round.
+        if (has("ai.datris.util.CodeGenTransformationEvaluator")) "transformation-script"
+        else if (has("ai.datris.util.CodeGenRuleEvaluator")) "dq-script"
+        else if (frames.exists(f => f.startsWith("ai.datris.util.") && (f.endsWith("Loader") || f.contains("Loader$")))) "loader"
+        else "other"
+    }
+
     private[controller] def loaderErrorMessage(t: Throwable): String =
         Option(t.getMessage).map(_.trim).filter(_.nonEmpty).getOrElse(t.getClass.getName)
 
@@ -327,6 +350,10 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                         // Class names only: what the recovery model still sees
                         // when DATRIS_AI_SAMPLE_VALUES=false withholds the text.
                         trigger.addProperty("errorClass", ErrorText.classChain(e))
+                        // Which stage failed, from exception classes and code frames
+                        // only (never message text or row values): the recovery
+                        // runner regenerates scripts only for the script stages.
+                        trigger.addProperty("failingStage", JobRunner.failingStage(e, Option(loaderFailure.get).map(_._2)))
                         if (fix != null) trigger.addProperty("aiSummary", fix.summary)
                         ai.datris.incident.IncidentRunner.open(ai.datris.incident.Incident.KindPipelineFailure, "pipeline", jobContext.config.name, trigger)
                     } catch {

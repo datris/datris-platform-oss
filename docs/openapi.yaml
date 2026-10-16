@@ -464,6 +464,7 @@ components:
           enum: [open, diagnosing, proposed, awaiting_approval, executing, verifying, resolved, failed, abandoned]
         trigger:
           type: object
+          description: The signal that opened the incident. A pipeline_failure trigger carries pipelineToken, error, errorClass and failingStage (dq-script | transformation-script | loader | other — derived from exception classes, never row values).
         steps:
           type: array
           items:
@@ -492,6 +493,14 @@ components:
           type: array
           items:
             type: string
+        revertToVersion:
+          type: integer
+          description: Tap incidents — the tap version restored if verification fails
+        revertToScriptVersions:
+          type: object
+          description: Pipeline incidents — script kind (dataQuality | transformation) to the script version recorded before the first action, restored if verification fails (0 = no history yet; restores version 1). Absent when nothing was regenerated.
+          additionalProperties:
+            type: integer
         closedAt:
           type: string
         outcome:
@@ -703,6 +712,20 @@ components:
           enum: [pending, pass, fail, needs-human]
         computedAt:
           type: string
+        scriptVersions:
+          type: array
+          description: Pipeline incidents only (absent otherwise) — each stored AI script the agent regenerated, with its script version before the first action and after; `after` equals `before` once a failed verification restored it
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+                enum: [dataQuality, transformation]
+              before:
+                type: integer
+                description: 0 when the script had no version history before the regenerate (the regenerate records the old script as version 1)
+              after:
+                type: integer
     AgentPolicy:
       type: object
       properties:

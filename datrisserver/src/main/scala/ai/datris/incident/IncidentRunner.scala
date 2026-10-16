@@ -69,8 +69,15 @@ object IncidentRunner {
     /** `create_tap` is here because it is the platform's documented path for
       * replacing a tap's SCRIPT (update_tap deliberately cannot change
       * scripts); the name-bound filter pins it to the incident's own tap, so
-      * it can never create a new one. */
-    val ExecutableTools: Set[String] = Set("run_tap", "test_tap", "update_tap", "create_tap")
+      * it can never create a new one.
+      *
+      * `regenerate_pipeline_scripts` is a runner action, not an MCP tool:
+      * pipeline incidents regenerate the pipeline's stored AI data-quality or
+      * transformation script (one REST call, see [[RealExecutor]]). */
+    val ExecutableTools: Set[String] = Set("run_tap", "test_tap", "update_tap", "create_tap", "regenerate_pipeline_scripts")
+
+    /** The one executable action of a pipeline incident. */
+    val RegenerateScripts = "regenerate_pipeline_scripts"
 
     case class ProposedAction(tool: String, args: JsonObject, purpose: String)
     case class Proposal(
@@ -139,6 +146,18 @@ object IncidentRunner {
       * toVersion). Called only when the live version differs from the target. */
     @volatile private[incident] var revertTap: (String, String, Int) => Unit =
         (incidentId: String, tapName: String, toVersion: Int) => restoreTapVersion(incidentId, tapName, toVersion)
+
+    /** What a pipeline incident can verify a regenerated script on. */
+    @volatile var inputSource: PipelineInputSource = PipelineInputSource
+
+    /** (pipeline, kind) => latest stored script version, 0 = no history yet. */
+    @volatile private[incident] var scriptLatestVersion: (String, String) => Int =
+        (pipeline: String, kind: String) => CodeGenScriptVersionIO.latestVersion(pipeline, kind)
+
+    /** (pipeline, kind, toVersion, actor) => restore that script version as
+      * the live script (a new latest version holding the old text). */
+    @volatile private[incident] var restoreScript: (String, String, Int, String) => Either[String, Unit] =
+        (pipeline: String, kind: String, toVersion: Int, actor: String) => restorePipelineScript(pipeline, kind, toVersion, actor)
 
     /** Rows of a scratch result profiled into `evidence.candidate`. */
     val ProfileRowCap = 5000
@@ -325,6 +344,17 @@ object IncidentRunner {
                         // Remember the version to revert to before any mutation.
                         if (incident.resourceType == "tap")
                             currentTapVersion(incident.resourceName).foreach(v => IncidentIO.set(id, "revertToVersion" -> (v: java.lang.Integer)))
+                        if (incident.resourceType == "pipeline") {
+                            // The script version each regenerated kind is restored
+                            // to if verification fails (0 = no history yet; the
+                            // regenerate seeds it, so 0 means "restore v1").
+                            val kinds = filtered.filter(_.tool == RegenerateScripts).flatMap(a => argString(a.args, "kind")).distinct
+                            if (kinds.nonEmpty) {
+                                val doc = new org.bson.Document()
+                                kinds.foreach(k => doc.put(k, (scriptLatestVersion(incident.resourceName, k): java.lang.Integer)))
+                                IncidentIO.set(id, "revertToScriptVersions" -> doc)
+                            }
+                        }
                         IncidentIO.set(id, "nextActionIndex" -> (0: java.lang.Integer))
                         if (s.verifyMode == RecoverySettings.ScratchFirst && incident.resourceType == "tap") {
                             // Stage 1: rehearse the candidate in the scratch lane
@@ -350,7 +380,7 @@ object IncidentRunner {
                                     webhook("awaiting_approval", id, incident.kind, incident.resourceType, incident.resourceName, Some(summary))
                                 case _ =>
                                     // Nothing mutated yet; called for symmetry with every other failed close.
-                                    revertIfNeeded(id, incident)
+                                    revertAll(id, incident)
                                     close(id, Incident.Failed, "candidate failed scratch verification: " + clip(summary))
                             }
                         } else executeFrom(id, 0)
@@ -466,12 +496,15 @@ object IncidentRunner {
     private[incident] def filterActions(incident: Incident, p: Proposal): List[ProposedAction] = {
         // Executable, and pinned to the incident's own resource: an action
         // naming any other tap (or none) is dropped, whatever the model said.
-        val executable = p.actions.filter(a =>
-            ExecutableTools.contains(a.tool) &&
-                Option(a.args).exists(o =>
-                    o.has("name") && o.get("name").isJsonPrimitive && o.get("name").getAsString == incident.resourceName
-                )
+        val pinned = p.actions.filter(a =>
+            ExecutableTools.contains(a.tool) && argString(a.args, "name").contains(incident.resourceName)
         )
+        // A pipeline incident's only action is regenerating one of its own
+        // stored AI scripts; a tap incident never regenerates anything.
+        val executable =
+            if (incident.resourceType == "pipeline")
+                pinned.filter(a => a.tool == RegenerateScripts && argString(a.args, "kind").exists(PipelineScripts.Kinds.contains))
+            else pinned.filter(_.tool != RegenerateScripts)
         val kindLimited =
             if (incident.kind == Incident.KindStale) executable.filter(_.tool == "run_tap").take(1)
             else executable
@@ -495,6 +528,7 @@ object IncidentRunner {
                 case ToolOutcome.Ok(text) =>
                     IncidentIO.incrementCounters(id, actions = 1)
                     step(id, "execute", a.tool + " ok — " + a.purpose, Some(clip(text)))
+                    if (a.tool == RegenerateScripts) argString(a.args, "kind").foreach(k => recordScriptVersion(id, incident, k))
                     lastRealRun = if (a.tool == "run_tap") Some(text) else None
                     i += 1
                     IncidentIO.set(id, "nextActionIndex" -> (i: java.lang.Integer))
@@ -510,7 +544,7 @@ object IncidentRunner {
                     return
                 case ToolOutcome.Failed(msg) =>
                     step(id, "execute", a.tool + " failed", Some(clip(msg)))
-                    revertIfNeeded(id, incident)
+                    revertAll(id, incident)
                     close(id, Incident.Failed, a.tool + " failed: " + clip(msg))
                     return
             }
@@ -525,9 +559,11 @@ object IncidentRunner {
         val incident = IncidentIO.get(id).getOrElse(return
         )
         IncidentIO.transition(id, Set(Incident.Executing, Incident.AwaitingApproval, Incident.Proposed), Incident.Verifying)
+        if (incident.resourceType == "pipeline") {
+            verifyPipeline(id, incident)
+            return
+        }
         if (incident.resourceType != "tap") {
-            // Pipeline incidents have no executable actions in v1; reaching
-            // verify means diagnosis-only — record and resolve.
             step(id, "verify", "no automatic verification for " + incident.resourceType + " incidents — closing with the diagnosis")
             close(id, Incident.Resolved, "diagnosed; see steps")
             return
@@ -544,7 +580,7 @@ object IncidentRunner {
                 val rollupOk = publisherToken.forall(t => pollRollup(id, t, incident))
                 recordRealRunEvidence(id)
                 if (healthy && rollupOk && realStageBreached(id)) {
-                    revertIfNeeded(id, incident)
+                    revertAll(id, incident)
                     close(id, Incident.Failed, RealBreachOutcome)
                 } else if (healthy && rollupOk) {
                     step(
@@ -556,7 +592,7 @@ object IncidentRunner {
                     close(id, Incident.Resolved, "recovered and verified")
                 } else {
                     step(id, "verify", "verification failed on the executed run: healthy=" + healthy + ", rollupOk=" + rollupOk, Some(clip(text)))
-                    revertIfNeeded(id, incident)
+                    revertAll(id, incident)
                     close(id, Incident.Failed, "verification failed after actions — definition reverted")
                 }
                 return
@@ -575,7 +611,7 @@ object IncidentRunner {
                 close(id, Incident.Abandoned, "verification denied by agent policy")
             case ToolOutcome.Failed(msg) =>
                 step(id, "verify", "verification run failed", Some(clip(msg)))
-                revertIfNeeded(id, incident)
+                revertAll(id, incident)
                 close(id, Incident.Failed, "verification run failed: " + clip(msg))
             case ToolOutcome.Ok(text) =>
                 IncidentIO.incrementCounters(id, actions = 1)
@@ -584,7 +620,7 @@ object IncidentRunner {
                 val rollupOk = publisherToken.forall(t => pollRollup(id, t, incident))
                 recordRealRunEvidence(id)
                 if (healthy && rollupOk && realStageBreached(id)) {
-                    revertIfNeeded(id, incident)
+                    revertAll(id, incident)
                     close(id, Incident.Failed, RealBreachOutcome)
                 } else if (healthy && rollupOk) {
                     step(
@@ -595,7 +631,7 @@ object IncidentRunner {
                     close(id, Incident.Resolved, "recovered and verified")
                 } else {
                     step(id, "verify", "verification failed: healthy=" + healthy + ", rollupOk=" + rollupOk, Some(clip(text)))
-                    revertIfNeeded(id, incident)
+                    revertAll(id, incident)
                     close(id, Incident.Failed, "verification failed after actions — definition reverted")
                 }
         }
@@ -638,6 +674,176 @@ object IncidentRunner {
             }
         } catch {
             case e: Exception => step(id, "execute", "revert failed", Some(clip(e.getMessage)))
+        }
+    }
+
+    /** Every safety net: the tap definition and a pipeline's stored scripts. */
+    private def revertAll(id: String, incident: Incident): Unit = {
+        revertIfNeeded(id, incident)
+        revertScriptIfNeeded(id, incident)
+    }
+
+    /** Raw-document flag: the script restore already ran (a restore appends a
+      * new latest version, so "latest != recorded" stays true after it). */
+    private val ScriptsRevertedField = "scriptsReverted"
+
+    /** Restore each pipeline script regenerated by this incident to the
+      * version recorded before the first action. Direct server-side call,
+      * never gated; runs at most once per incident; a Left is a "revert
+      * failed" step, never a throw. */
+    private def revertScriptIfNeeded(id: String, incident: Incident): Unit = {
+        if (incident.resourceType != "pipeline") return
+        try {
+            val fresh = IncidentIO.get(id).getOrElse(incident)
+            if (fresh.revertToScriptVersions.isEmpty) return
+            val already = IncidentIO.raw(id).exists(d => java.lang.Boolean.TRUE == d.get(ScriptsRevertedField))
+            if (already) return
+            IncidentIO.set(id, ScriptsRevertedField -> java.lang.Boolean.TRUE)
+            val name = incident.resourceName
+            fresh.revertToScriptVersions.toList.sortBy(_._1).foreach { case (kind, v) =>
+                val target = math.max(v, 1)
+                val latest =
+                    try scriptLatestVersion(name, kind)
+                    catch { case _: Exception => -1 }
+                if (latest != v) {
+                    val result =
+                        try restoreScript(name, kind, target, RecoveryKey.Label)
+                        catch { case e: Exception => Left(Option(e.getMessage).getOrElse(e.getClass.getSimpleName)) }
+                    result match {
+                        case Right(_) =>
+                            step(id, "execute", "restored " + kind + " script to version " + target)
+                            AuditLog.system(
+                                "incident",
+                                "revert",
+                                "pipeline",
+                                name,
+                                metadata = md("incidentId" -> id, "kind" -> kind, "toVersion" -> target.toString)
+                            )
+                            updateScriptVersion(id, kind, before = v, after = target)
+                        case Left(reason) =>
+                            step(id, "execute", "revert failed", Some(clip(kind + " script: " + reason)))
+                    }
+                }
+            }
+        } catch {
+            case e: Exception => step(id, "execute", "revert failed", Some(clip(e.getMessage)))
+        }
+    }
+
+    /** After a successful regenerate: evidence.scriptVersions gets
+      * (kind, before = the recorded version, after = the latest now). */
+    private def recordScriptVersion(id: String, incident: Incident, kind: String): Unit =
+        try {
+            val fresh = IncidentIO.get(id).getOrElse(incident)
+            val before = fresh.revertToScriptVersions.getOrElse(kind, 0)
+            updateScriptVersion(id, kind, before, scriptLatestVersion(incident.resourceName, kind))
+        } catch {
+            case e: Exception => logger.debug("incident " + id + ": script version evidence skipped: " + e.getMessage)
+        }
+
+    private def updateScriptVersion(id: String, kind: String, before: Int, after: Int): Unit =
+        try {
+            val base = IncidentIO.get(id).flatMap(IncidentEvidenceBuilder.of).getOrElse(emptyEvidence(settings))
+            val change = ScriptVersionChange(kind, before, after)
+            val list =
+                if (base.scriptVersions.exists(_.kind == kind)) base.scriptVersions.map(c => if (c.kind == kind) change else c)
+                else base.scriptVersions :+ change
+            IncidentEvidenceBuilder.store(id, base.copy(scriptVersions = list))
+        } catch {
+            case e: Exception => logger.debug("incident " + id + ": script version evidence skipped: " + e.getMessage)
+        }
+
+    /** Production [[restoreScript]]. */
+    private def restorePipelineScript(pipeline: String, kind: String, toVersion: Int, actor: String): Either[String, Unit] = {
+        val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
+        if (config == null) Left("pipeline " + pipeline + " no longer exists")
+        else PipelineScripts.restoreVersion(config, kind, toVersion, actor).map(_ => ())
+    }
+
+    /** Raw-document field: the feeding tap a pipeline incident verifies with. */
+    private val VerifyTapField = "verifyTap"
+
+    private def verifyTapOf(id: String): Option[String] =
+        try IncidentIO.raw(id).flatMap(d => Option(d.getString(VerifyTapField))).filter(_.nonEmpty)
+        catch { case _: Exception => None }
+
+    /** Verification for a pipeline incident whose stored script was just
+      * regenerated. Fed by a tap: rehearse the feeding tap's stored script in
+      * the scratch lane (the output flows through the pipeline with the new
+      * script into `_scratch/`), then run the tap for real. No recoverable
+      * input (uploads, Kafka, object-store triggers): say so and resolve
+      * unverified — the next run will tell. */
+    private def verifyPipeline(id: String, incident: Incident): Unit = {
+        val input =
+            try inputSource.lastGoodInput(incident)
+            catch { case _: Exception => None }
+        input match {
+            case Some(PipelineInputSource.TapFed(tapName)) =>
+                IncidentIO.set(id, VerifyTapField -> tapName)
+                if (settings.verifyMode == RecoverySettings.ScratchFirst) {
+                    val (verdict, summary) = scratchVerify(id, incident, None, tapName)
+                    verdict match {
+                        case Thresholds.Pass | ScratchUnavailable =>
+                        case Thresholds.NeedsHuman =>
+                            // The regenerated script changed the output's shape. It is
+                            // already live, so the safety net restores it; a person
+                            // decides whether the shape change was intended.
+                            revertAll(id, incident)
+                            close(id, Incident.Failed, "regenerated script needs a human (script restored): " + clip(summary))
+                            return
+                        case _ =>
+                            revertAll(id, incident)
+                            close(id, Incident.Failed, "regenerated script failed scratch verification: " + clip(summary))
+                            return
+                    }
+                }
+                val args = new JsonObject()
+                args.addProperty("name", tapName)
+                executor.call("run_tap", args, id) match {
+                    case ToolOutcome.PendingApproval(approvalId) =>
+                        IncidentIO.set(id, "awaitingApprovalIds" -> java.util.Arrays.asList(approvalId), "nextActionIndex" -> (Int.MaxValue: java.lang.Integer))
+                        IncidentIO.transition(id, Set(Incident.Verifying), Incident.AwaitingApproval)
+                        step(id, "gate", "verification run of tap " + tapName + " queued for approval", approvalId = Some(approvalId))
+                    case ToolOutcome.Denied(msg) =>
+                        step(id, "verify", "verification run denied by policy", Some(clip(msg)))
+                        close(id, Incident.Abandoned, "verification denied by agent policy")
+                    case ToolOutcome.Failed(msg) =>
+                        step(id, "verify", "verification run of tap " + tapName + " failed", Some(clip(msg)))
+                        revertAll(id, incident)
+                        close(id, Incident.Failed, "verification run failed: " + clip(msg))
+                    case ToolOutcome.Ok(text) =>
+                        IncidentIO.incrementCounters(id, actions = 1)
+                        val publisherToken = extractString(text, "publisherToken")
+                        val healthy = isTapHealthy(tapName)
+                        val rollupOk = publisherToken.forall(t => pollRollup(id, t, incident))
+                        recordRealRunEvidence(id)
+                        if (healthy && rollupOk && realStageBreached(id)) {
+                            revertAll(id, incident)
+                            close(id, Incident.Failed, RealScriptBreachOutcome)
+                        } else if (healthy && rollupOk) {
+                            step(
+                                id,
+                                "verify",
+                                "verified: real run of tap " + tapName + " healthy" + publisherToken.map(_ => ", pipeline rollup complete").getOrElse("") +
+                                    scratchVerdictNote(id)
+                            )
+                            close(id, Incident.Resolved, "scripts regenerated and verified")
+                        } else {
+                            step(id, "verify", "verification failed: healthy=" + healthy + ", rollupOk=" + rollupOk, Some(clip(text)))
+                            revertAll(id, incident)
+                            close(id, Incident.Failed, "verification failed after regenerating — script restored")
+                        }
+                }
+            case other =>
+                val fedBy =
+                    try inputSource.inputKind(incident)
+                    catch { case _: Exception => None }
+                val why = other match {
+                    case Some(PipelineInputSource.Snapshot(_)) => " (run snapshots cannot be replayed yet)"
+                    case _ => fedBy.map(k => " (fed by " + k + ")").getOrElse("")
+                }
+                step(id, "verify", "regenerated; no replayable input for this pipeline" + why + " — not verified, the next run will tell")
+                close(id, Incident.Resolved, "scripts regenerated — unverified")
         }
     }
 
@@ -722,16 +928,18 @@ object IncidentRunner {
     private def finishVerifyAfterApproval(id: String): Unit = {
         val incident = IncidentIO.get(id).getOrElse(return
         )
-        val healthy = incident.resourceType != "tap" || isTapHealthy(incident.resourceName)
+        val healthy =
+            if (incident.resourceType == "tap") isTapHealthy(incident.resourceName)
+            else verifyTapOf(id).forall(isTapHealthy)
         recordRealRunEvidence(id)
         if (healthy && realStageBreached(id)) {
-            revertIfNeeded(id, incident)
+            revertAll(id, incident)
             close(id, Incident.Failed, RealBreachOutcome)
         } else if (healthy) {
             step(id, "verify", "verified after approved run: resource healthy")
             close(id, Incident.Resolved, "recovered and verified (via approved run)")
         } else {
-            revertIfNeeded(id, incident)
+            revertAll(id, incident)
             close(id, Incident.Failed, "approved run did not leave the resource healthy — definition reverted")
         }
     }
@@ -741,6 +949,7 @@ object IncidentRunner {
     // ------------------------------------------------------------------
 
     private val RealBreachOutcome = "real run breached thresholds after scratch pass — definition reverted (data already landed)"
+    private val RealScriptBreachOutcome = "real run breached thresholds after scratch pass — script restored (data already landed)"
 
     private def scratchVerdictOf(id: String): Option[String] =
         try IncidentIO.raw(id).flatMap(d => Option(d.getString(ScratchVerdictField)))
@@ -788,13 +997,19 @@ object IncidentRunner {
       * verdict on the evidence and record a `verify` step. Not routed through
       * the executor / policy gate: it is the platform's own safety check and
       * writes only to `_scratch/`. Returns (verdict, one-line summary). */
-    private[incident] def scratchVerify(id: String, incident: Incident, candidateScript: Option[String]): (String, String) = {
+    private[incident] def scratchVerify(
+        id: String,
+        incident: Incident,
+        candidateScript: Option[String],
+        tapName: String = null
+    ): (String, String) = {
         val s = settings
+        val tapToRun = Option(tapName).getOrElse(incident.resourceName)
         val (verdict, summary) =
             try {
-                tapLookup(incident.resourceName) match {
+                tapLookup(tapToRun) match {
                     case None =>
-                        val msg = "tap " + incident.resourceName + " not found"
+                        val msg = "tap " + tapToRun + " not found"
                         storeScratchFailure(id, msg)
                         (Thresholds.Fail, msg)
                     case Some(tap) =>
@@ -816,7 +1031,7 @@ object IncidentRunner {
                                 "incident",
                                 "scratch-verify",
                                 "tap",
-                                incident.resourceName,
+                                tapToRun,
                                 metadata = md("incidentId" -> id, "verdict" -> ScratchUnavailable)
                             )
                             return (ScratchUnavailable, msg)
@@ -839,7 +1054,7 @@ object IncidentRunner {
                 case e: Exception => (Thresholds.Fail, "scratch verification error: " + clip(e.getMessage))
             }
         step(id, "verify", "scratch verification: " + summary)
-        AuditLog.system("incident", "scratch-verify", "tap", incident.resourceName, metadata = md("incidentId" -> id, "verdict" -> verdict))
+        AuditLog.system("incident", "scratch-verify", "tap", tapToRun, metadata = md("incidentId" -> id, "verdict" -> verdict))
         (verdict, summary)
     }
 
@@ -1214,6 +1429,10 @@ object IncidentRunner {
 
     private def clip(s: String): String = Option(s).getOrElse("").take(500)
 
+    /** A string arg of a proposed action, when present and a primitive. */
+    private def argString(args: JsonObject, key: String): Option[String] =
+        Option(args).filter(o => o.has(key) && o.get(key).isJsonPrimitive).map(_.get(key).getAsString)
+
     private def md(pairs: (String, String)*): JsonObject = {
         val o = new JsonObject()
         pairs.foreach { case (k, v) => o.addProperty(k, v) }
@@ -1344,7 +1563,7 @@ object IncidentRunner {
             sb.append("\n")
             sb.append("Diagnose this incident using the read-only tools available, then END your reply with ONLY a JSON object (no prose after it):\n")
             sb.append(
-                """{"classification":"transient|structural-script|structural-schema|credential|platform|needs-human","summary":"<one line>","needsHuman":<bool>,"actions":[{"tool":"run_tap|test_tap|update_tap","args":{...},"purpose":"<one line>"}],"learnNote":"<optional source quirk worth remembering>"}"""
+                """{"classification":"transient|structural-script|structural-schema|credential|platform|needs-human","summary":"<one line>","needsHuman":<bool>,"actions":[{"tool":"run_tap|test_tap|update_tap|regenerate_pipeline_scripts","args":{...},"purpose":"<one line>"}],"learnNote":"<optional source quirk worth remembering>"}"""
             ).append("\n\n")
             if (incident.kind == Incident.KindSchemaDrift)
                 sb.append(
@@ -1354,6 +1573,15 @@ object IncidentRunner {
                         "summarize the change and what a person should do about it.\n\n"
                 )
             sb.append("Rules for the proposal:\n")
+            if (incident.resourceType == "pipeline")
+                sb.append(
+                    "- For pipeline incidents the only executable action is regenerate_pipeline_scripts with args {\"name\": \"" + incident.resourceName +
+                        "\", \"kind\": \"dataQuality|transformation\"}; propose it when the failing step is the AI data-quality or transformation script " +
+                        "(the trigger's failingStage says so: dq-script or transformation-script). The platform regenerates the stored script from the " +
+                        "pipeline's current instruction, verifies it by re-running the feeding tap when there is one, and restores the previous script " +
+                        "version if verification fails. Destination, schema and upload problems (failingStage loader or other) are needsHuman=true with an " +
+                        "empty actions list. Tap actions are discarded for pipeline incidents.\n"
+                )
             sb.append("- transient (rate limit, network blip, quota): propose at most one run_tap.\n")
             sb.append("- every action's args MUST include \"name\": \"" + incident.resourceName + "\" — actions naming any other tap are discarded.\n")
             sb.append(
@@ -1387,8 +1615,9 @@ object IncidentRunner {
       * Calls carry the recovery key + incident id like any agent. */
     object RealExecutor extends ToolExecutor {
 
-        private def restFor(tool: String, args: JsonObject): Option[(String, String, Option[String])] = {
+        private[incident] def restFor(tool: String, args: JsonObject): Option[(String, String, Option[String])] = {
             def name = if (args != null && args.has("name")) args.get("name").getAsString else ""
+            def enc(v: String) = java.net.URLEncoder.encode(v, "UTF-8").replace("+", "%20")
             tool match {
                 case "update_tap" | "create_tap" if args != null && args.has("script") =>
                     val body = new JsonObject()
@@ -1416,6 +1645,14 @@ object IncidentRunner {
                     val ai = args != null && args.has("ai") && args.get("ai").isJsonPrimitive && args.get("ai").getAsBoolean
                     val q = "mode=" + (if (mode == "full") "full" else "quick") + (if (ai) "&probes=ai" else "")
                     Some(("GET", "/api/v1/doctor?" + q, None))
+                case RegenerateScripts if argString(args, "name").exists(_.nonEmpty) && argString(args, "kind").exists(PipelineScripts.Kinds.contains) =>
+                    // No storage / overwrite: a hand-edited repository file is
+                    // never overwritten by the agent; a 409 is a failed action.
+                    Some((
+                        "POST",
+                        "/api/v1/pipelines/" + enc(name) + "/codegen-scripts/" + args.get("kind").getAsString + "/regenerate",
+                        Some("{}")
+                    ))
                 case "get_pipeline_status" =>
                     val token = if (args != null && args.has("publisher_token")) args.get("publisher_token").getAsString else ""
                     Some(("GET", "/api/v1/pipeline/status?withrollup=true&publishertoken=" + java.net.URLEncoder.encode(token, "UTF-8"), None))

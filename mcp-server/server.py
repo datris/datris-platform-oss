@@ -3512,7 +3512,7 @@ def _base_tools():
         # --- Recovery-agent incidents (read-only; the platform opens them) ---
         Tool(
             name="list_incidents",
-            description="List the platform's recovery-agent incidents, newest first. An incident is opened by the platform itself when a scheduled tap finally fails, a pipeline job errors, a tap goes stale, a pipeline's volume swings, or a source changed its columns after a successful run (schema drift); the recovery agent diagnoses it and — within the agent policy's recovery mode — repairs and verifies it. Each entry carries kind, resource, state (open | diagnosing | proposed | awaiting_approval | executing | verifying | resolved | failed | abandoned), classification, a step-by-step narrative, and — when the platform computed evidence for it — a verdict (pending | pass | fail | needs-human). Use state=open for what is being worked right now. Returns {enabled:false, incidents:[]} when the recovery agent is off.",
+            description="List the platform's recovery-agent incidents, newest first. An incident is opened by the platform itself when a scheduled tap finally fails, a pipeline job errors, a tap goes stale, a pipeline's volume swings, or a source changed its columns after a successful run (schema drift); the recovery agent diagnoses it and — within the agent policy's recovery mode — repairs and verifies it (for taps, re-running or fixing the tap; for pipelines, regenerating the stored AI script; the evidence names the script versions before and after). Each entry carries kind, resource, state (open | diagnosing | proposed | awaiting_approval | executing | verifying | resolved | failed | abandoned), classification, a step-by-step narrative, and — when the platform computed evidence for it — a verdict (pending | pass | fail | needs-human). Use state=open for what is being worked right now. Returns {enabled:false, incidents:[]} when the recovery agent is off.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -3529,7 +3529,7 @@ def _base_tools():
         ),
         Tool(
             name="get_incident",
-            description="Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it is waiting on, outcome, and its evidence (before/after profile, diff, blast radius, thresholds, verdict). When the operator asks about a failure the platform is already working, explain THIS record instead of re-diagnosing from scratch.",
+            description="Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it is waiting on, outcome, and its evidence (before/after profile, diff, blast radius, thresholds, verdict). A pipeline incident's repair is regenerating the stored AI script; the evidence names the script versions before and after (scriptVersions), and revertToScriptVersions is what a failed verification restores. When the operator asks about a failure the platform is already working, explain THIS record instead of re-diagnosing from scratch.",
             inputSchema={
                 "type": "object",
                 "properties": {

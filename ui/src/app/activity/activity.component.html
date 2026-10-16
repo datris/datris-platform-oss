@@ -580,8 +580,9 @@
   <!-- Pre-incident vs current script, opened from an evidence card. -->
   <app-version-history
     *ngIf="historyTap"
-    entityType="tap"
+    [entityType]="historyEntityType"
     [name]="historyTap"
+    [kind]="historyKind"
     [preselectVersion]="historyFrom"
     [preselectAgainst]="historyTo"
     (closed)="closeScriptDiff()">

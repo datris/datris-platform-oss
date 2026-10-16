@@ -95,6 +95,15 @@ export interface IncidentEvidence {
   checks: ThresholdCheck[];
   verdict: EvidenceVerdict;
   computedAt: string;
+  /** Pipeline incidents: each regenerated stored AI script, version before
+   *  the first action and after (equal once a failed verification restored it). */
+  scriptVersions?: ScriptVersionChange[];
+}
+
+export interface ScriptVersionChange {
+  kind: string;     // dataQuality | transformation
+  before: number;   // 0 = no history before the regenerate (it seeds v1)
+  after: number;
 }
 
 /** Full lifecycle of a recovery-agent incident. `open` through `verifying`
@@ -132,6 +141,8 @@ export interface Incident {
   awaitingApprovalIds?: string[];
   /** Tap version to restore if verification fails (pre-incident version). */
   revertToVersion?: number;
+  /** Pipeline incidents: script kind → version restored if verification fails. */
+  revertToScriptVersions?: { [kind: string]: number };
   closedAt?: string;
   outcome?: string;
   /** Absent on incidents opened before evidence existed. */

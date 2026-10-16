@@ -90,7 +90,7 @@ Every mutating tool also accepts an optional `reason` — one line stating why t
 
 ## Recovery mode
 
-The policy document also carries the [recovery agent](/incidents)'s dial — `recovery.mode` (`off` / `propose` / `autopilot`) and its limits — plus per-resource `recovery` overrides. The recovery agent's every action passes through this same policy gate: under `propose`, everything it wants to do queues here for your approval. `recovery.verifyMode` (default `scratch-first`) has the platform rehearse each proposed fix into a scratch lane and compare it with the last good run before anything real changes; `real` skips the rehearsal.
+The policy document also carries the [recovery agent](/incidents)'s dial — `recovery.mode` (`off` / `propose` / `autopilot`) and its limits — plus per-resource `recovery` overrides. The recovery agent's every action passes through this same policy gate: under `propose`, everything it wants to do queues here for your approval. `recovery.verifyMode` (default `scratch-first`) has the platform rehearse each proposed fix into a scratch lane and compare it with the last good run before anything real changes; `real` skips the rehearsal. For a pipeline incident the one action it can take is regenerating the pipeline's stored AI data-quality or transformation script, which is the `pipeline:update:codegen-scripts` action here — the Recommended template sends it for approval.
 
 ## Related
 

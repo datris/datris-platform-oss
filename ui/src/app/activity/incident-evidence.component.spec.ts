@@ -209,4 +209,19 @@ describe('IncidentEvidenceComponent', () => {
     expect(t).toContain('no agent reads this week');
     expect(t).not.toContain('not audited');
   });
+
+  // self-healing-5: a pipeline incident compares the regenerated stored script's versions.
+  it('offers "Compare script versions" for a pipeline incident only when evidence.scriptVersions is present', () => {
+    const none = render(evidence(), 'pipeline');
+    expect(none.querySelector('.ie-compare')).toBeNull();
+    const ev = evidence();
+    ev.scriptVersions = [{ kind: 'transformation', before: 3, after: 4 }];
+    const el = render(ev, 'pipeline');
+    const btn = el.querySelector('.ie-compare') as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+    let emitted = 0;
+    fixture.componentInstance.compare.subscribe(() => emitted++);
+    btn.click();
+    expect(emitted).toBe(1);
+  });
 });

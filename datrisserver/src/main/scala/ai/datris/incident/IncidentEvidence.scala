@@ -58,6 +58,11 @@ case class BlastRadius(
     secretName: Option[String] = None
 )
 
+/** A pipeline incident's stored AI script, before the first action and now
+  * (story 5a's version numbers). `after == before` once a failed verification
+  * restored it. */
+case class ScriptVersionChange(kind: String, before: Int, after: Int)
+
 case class ThresholdCheck(name: String, passed: Boolean, observed: String, limit: String)
 
 case class Thresholds(
@@ -133,7 +138,8 @@ case class IncidentEvidence(
     thresholds: Thresholds,
     checks: List[ThresholdCheck],
     verdict: String, // pass | fail | needs-human | pending
-    computedAt: Instant
+    computedAt: Instant,
+    scriptVersions: List[ScriptVersionChange] = Nil // pipeline incidents only; absent for taps
 ) {
 
     def toJson: JsonObject = IncidentEvidence.Codec.evidence(this)
@@ -284,6 +290,15 @@ object IncidentEvidence {
             val cs = new JsonArray(); e.checks.foreach(c => cs.add(check(c))); o.add("checks", cs)
             o.addProperty("verdict", e.verdict)
             o.addProperty("computedAt", e.computedAt.toString)
+            if (e.scriptVersions.nonEmpty) {
+                val sv = new JsonArray()
+                e.scriptVersions.foreach { c =>
+                    val x = new JsonObject()
+                    x.addProperty("kind", c.kind); x.addProperty("before", c.before); x.addProperty("after", c.after)
+                    sv.add(x)
+                }
+                o.add("scriptVersions", sv)
+            }
             o
         }
 
@@ -409,7 +424,10 @@ object IncidentEvidence {
                     )
                 ),
                 verdict = str(o, "verdict").getOrElse(Thresholds.Pending),
-                computedAt = instant(o, "computedAt")
+                computedAt = instant(o, "computedAt"),
+                scriptVersions = objs(o, "scriptVersions").flatMap(c =>
+                    str(c, "kind").map(k => ScriptVersionChange(k, int(c, "before").getOrElse(0), int(c, "after").getOrElse(0)))
+                )
             )
     }
 }

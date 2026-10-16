@@ -158,7 +158,10 @@ export class ActivityComponent implements OnInit, OnDestroy {
   closedEvidenceOpen = new Set<string>();
   /** Version-history modal opened from an evidence card ("Compare script
    *  versions"): tap name and the pre-incident / current versions. */
+  /** The tap (or, for a pipeline incident, the pipeline) whose history is open. */
   historyTap = '';
+  historyEntityType: 'tap' | 'script' = 'tap';
+  historyKind = '';
   historyFrom: number | null = null;
   historyTo: number | null = null;
 
@@ -588,15 +591,31 @@ export class ActivityComponent implements OnInit, OnDestroy {
     else this.closedEvidenceOpen.add(i.id);
   }
 
-  /** Open the tap's version history on the pre-incident (`revertToVersion`)
-   *  vs current version diff. Tap incidents only. */
+  /** Open the version history on the pre-incident vs current diff: the tap's
+   *  versions (`revertToVersion`) for tap incidents, the regenerated stored
+   *  script's versions (`evidence.scriptVersions`) for pipeline incidents. */
   openScriptDiff(i: Incident): void {
+    if (i.resourceType === 'pipeline') {
+      const changes = i.evidence?.scriptVersions || [];
+      const c = changes.find(x => x.before !== x.after) || changes[0];
+      if (!c) return;
+      // 0 = no history before the regenerate, which seeded the old script as v1.
+      const from = Math.max(c.before, 1);
+      this.historyEntityType = 'script';
+      this.historyKind = c.kind;
+      this.historyFrom = from;
+      this.historyTo = c.after !== from ? c.after : null;
+      this.historyTap = i.resource;
+      return;
+    }
     if (i.resourceType !== 'tap' || i.revertToVersion === undefined || i.revertToVersion === null) return;
     const from = i.revertToVersion;
     const name = i.resource;
     this.tapService.getTapVersions(name).pipe(catchError(() => of([] as any[]))).subscribe(versions => {
       const nums = (versions || []).map((v: any) => Number(v?.version)).filter((n: number) => isFinite(n));
       const latest = nums.length > 0 ? Math.max(...nums) : null;
+      this.historyEntityType = 'tap';
+      this.historyKind = '';
       this.historyFrom = from;
       this.historyTo = latest !== null && latest !== from ? latest : null;
       this.historyTap = name;
@@ -605,6 +624,8 @@ export class ActivityComponent implements OnInit, OnDestroy {
 
   closeScriptDiff(): void {
     this.historyTap = '';
+    this.historyEntityType = 'tap';
+    this.historyKind = '';
     this.historyFrom = null;
     this.historyTo = null;
   }

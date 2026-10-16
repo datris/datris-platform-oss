@@ -55,6 +55,7 @@ export class IncidentEvidenceComponent implements OnChanges {
   }
 
   get canCompare(): boolean {
+    if (this.resourceType === 'pipeline') return (this.evidence?.scriptVersions || []).length > 0;
     return this.resourceType === 'tap' && this.revertToVersion !== undefined && this.revertToVersion !== null;
   }
 

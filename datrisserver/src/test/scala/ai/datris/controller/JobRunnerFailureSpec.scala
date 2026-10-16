@@ -266,4 +266,31 @@ class JobRunnerFailureSpec extends AnyFunSuite {
         assert(JobRunner.sideEffectsFor(null) == JobRunner.SideEffects(true, true, true, true))
         assert(JobRunner.sideEffectsFor(real.copy(rehearsal = true)) == JobRunner.SideEffects(false, false, false, false))
     }
+
+    // self-healing-5: the pipeline-failure trigger's failingStage, from class
+    // names and code frames only.
+    private def thrownAt(cls: String, message: String = "row value 42 leaked"): Exception = {
+        val e = new DatrisException(message)
+        e.setStackTrace(Array(new StackTraceElement(cls, "run", "X.scala", 1), new StackTraceElement("ai.datris.controller.JobRunner", "run", "J.scala", 1)))
+        e
+    }
+
+    test("failingStage names the script stage from the stack, a loader failure, or other") {
+        assert(JobRunner.failingStage(thrownAt("ai.datris.util.CodeGenRuleEvaluator$"), None) == "dq-script")
+        assert(JobRunner.failingStage(thrownAt("ai.datris.util.CodeGenTransformationEvaluator$"), None) == "transformation-script")
+        // The transformation evaluator shares CodeGenRuleEvaluator helpers: still a transformation failure.
+        val shared = new DatrisException("x")
+        shared.setStackTrace(Array(
+            new StackTraceElement("ai.datris.util.CodeGenRuleEvaluator$", "stageInput", "R.scala", 1),
+            new StackTraceElement("ai.datris.util.CodeGenTransformationEvaluator$", "runScript", "T.scala", 1)
+        ))
+        assert(JobRunner.failingStage(shared, None) == "transformation-script")
+        // The cause chain counts.
+        val wrapped = new RuntimeException("outer", thrownAt("ai.datris.util.CodeGenRuleEvaluator$"))
+        assert(JobRunner.failingStage(wrapped, None) == "dq-script")
+        assert(JobRunner.failingStage(thrownAt("ai.datris.util.PostgresLoader"), None) == "loader")
+        assert(JobRunner.failingStage(thrownAt("ai.datris.util.DataQuality"), Some(new RuntimeException("pg down"))) == "loader")
+        assert(JobRunner.failingStage(thrownAt("ai.datris.util.DataQuality"), None) == "other")
+        assert(JobRunner.failingStage(thrownAt("java.lang.ClassLoader"), None) == "other")
+    }
 }
