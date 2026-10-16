@@ -175,6 +175,10 @@ class IncidentRunnerSpec extends AnyFunSuite {
         assert(IncidentRunner.DiagnosisTools.intersect(mutating).isEmpty)
         // Phase 3: the doctor is a read-only diagnostic the agent may consult.
         assert(IncidentRunner.DiagnosisTools.contains("run_doctor"))
+        // self-healing-4: lineage, provenance, discovery and pipeline version
+        // history are readable during diagnosis (all metadata:read / pipeline:read).
+        for (t <- Seq("get_lineage", "find_data", "get_provenance", "list_pipeline_versions", "diff_pipeline_versions"))
+            assert(IncidentRunner.DiagnosisTools.contains(t), t + " in DiagnosisTools")
         assert(RecoveryKey.Capabilities.contains("config:read"))
         assert(IncidentRunner.ExecutableTools == Set("run_tap", "test_tap", "update_tap", "create_tap"))
     }
@@ -402,6 +406,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
         val calls = mutable.ArrayBuffer[Call]()
         val scratchCalls = mutable.ArrayBuffer[(String, Option[String])]()
         val reverts = mutable.ArrayBuffer[(String, String, Int)]()
+        @volatile var diagnoseCalls: Int = 0
         @volatile var tap: TapConfig = TapConfig(name = "prices", description = "d", targetPipeline = "orders", version = 3, lastRunStatus = "failure")
         def incident: Incident = store.get(id).getOrElse(fail("incident " + id + " vanished"))
         def tools: List[String] = calls.map(_.tool).toList
@@ -432,19 +437,23 @@ class IncidentRunnerSpec extends AnyFunSuite {
         real: Option[RunProfile] = Some(healthyReal),
         settings: RecoverySettings = RecoverySettings(mode = RecoverySettings.Propose),
         seedBaseline: Option[RunProfile] = Some(baseline),
-        seedState: String = Incident.Open
+        seedState: String = Incident.Open,
+        kind: String = Incident.KindTapFailure,
+        trigger: String = """{"error":"KeyError: account_id"}""",
+        proposal: IncidentRunner.Proposal = structuralProposal,
+        doctorResponse: String = "{}"
     )(body: Ctx => T): T = {
         val store = new FakeStore
         val ctx = new Ctx(Incident.newId(), store)
         store.insert(Incident(
             id = ctx.id,
-            kind = Incident.KindTapFailure,
+            kind = kind,
             resourceType = "tap",
             resourceName = "prices",
             openedAt = Instant.now(),
             state = seedState,
-            trigger = JsonParser.parseString("""{"error":"KeyError: account_id"}""").getAsJsonObject,
-            steps = List(IncidentStep(Instant.now(), "open", "tap_failure signal on tap prices")),
+            trigger = JsonParser.parseString(trigger).getAsJsonObject,
+            steps = List(IncidentStep(Instant.now(), "open", kind + " signal on tap prices")),
             evidence = Some(evidenceWith(seedBaseline).toJson)
         ))
 
@@ -464,8 +473,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
         IncidentRunner.settingsOverride = settings
         IncidentRunner.diagnoser = new IncidentRunner.Diagnoser {
             override def diagnose(incident: Incident, onAiCall: () => Unit): Either[String, IncidentRunner.Proposal] = {
+                ctx.diagnoseCalls += 1
                 onAiCall()
-                Right(structuralProposal)
+                Right(proposal)
             }
         }
         IncidentRunner.executor = new IncidentRunner.ToolExecutor {
@@ -479,6 +489,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
                         ctx.tap = ctx.tap.copy(lastRunStatus = "success", lastRunRecordCount = real.map(_.recordCount.toInt).getOrElse(0))
                         ToolOutcome.Ok("""{"mode":"run","recordCount":""" + real.map(_.recordCount).getOrElse(0L) + "}")
                     case "get_pipeline_status" => ToolOutcome.Ok("""{"allDone":true,"status":"complete"}""")
+                    case "run_doctor" => ToolOutcome.Ok(doctorResponse)
                     case _ => ToolOutcome.Ok("{}")
                 }
             }
@@ -650,5 +661,179 @@ class IncidentRunnerSpec extends AnyFunSuite {
             Thresholds.Default
         )
         assert(ev.verdict == Thresholds.Pass, ev.checks)
+    }
+
+    // ==================================================================
+    // Story: Schema-drift signal, credential and platform classifications,
+    // wider diagnosis tools (plans/stories/self-healing-4-signals.md),
+    // Acceptance bullet 3.
+    //
+    // Contract pinned here:
+    // {{{
+    // RecoverySettings(allowSchemaDriftActions: Boolean = false)
+    // /** Pure; the credential regex from the story, over the trigger error and the latest tap run log. */
+    // object Classifier { def credential(error: String, logs: String): Boolean }   // ai.datris.incident
+    // object IncidentEvidenceBuilder { def withSecret(e: IncidentEvidence, secretName: String): IncidentEvidence }
+    // }}}
+    // - Doctor-first: before diagnoser.diagnose the runner calls
+    //   executor.call("run_doctor", {"mode":"quick","ai":false}, id); a check
+    //   with status "error" whose id does not start with "tap." short-circuits
+    //   to Proposal("platform", <remediation lines>, needsHuman = true, Nil)
+    //   without the model. A doctor answer without an error check (or "{}")
+    //   changes nothing.
+    // - Credential: the stored classification is "credential", the stored
+    //   proposal has needsHuman = true and no actions, the incident parks in
+    //   awaiting_approval, evidence.blastRadius.secretName = tap.secretName
+    //   (read via tapLookup). The tap run-log read must never throw without
+    //   Mongo (the spec has none).
+    // - schema_drift is triaged (resolved, outcome "triaged: ...") unless
+    //   allowSchemaDriftActions && the effective recovery mode is autopilot
+    //   (with settingsOverride set, its `mode` is the effective mode).
+    // ==================================================================
+
+    private def transientRunProposal: IncidentRunner.Proposal = {
+        val run = new JsonObject()
+        run.addProperty("name", "prices")
+        IncidentRunner.Proposal("transient", "looks like a blip", needsHuman = false, List(ProposedAction("run_tap", run, "retry")), None)
+    }
+
+    private val DriftTrigger =
+        """{"added":["amount"],"removed":["price"],"previousColumns":["id","price","region"],"currentColumns":["id","amount","region"],"runTime":"2026-10-16 10:00:00"}"""
+
+    private def storedProposal(c: Ctx): JsonObject = c.incident.proposal.getOrElse(fail("no stored proposal: " + c.summaries))
+
+    test("schema_drift with allowSchemaDriftActions=false: one diagnosis, resolved as triaged, nothing executed") {
+        scenario(kind = Incident.KindSchemaDrift, trigger = DriftTrigger, settings = RecoverySettings(mode = RecoverySettings.Autopilot)) { c =>
+            c.tap = c.tap.copy(lastRunStatus = "success")
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(c.diagnoseCalls == 1, "exactly one diagnosis")
+            assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+            assert(i.outcome.exists(_.startsWith("triaged")), i.outcome)
+            assert(c.tools.filterNot(_ == "run_doctor").isEmpty, "the executor ran nothing but the read-only doctor: " + c.tools)
+            assert(c.scratchCalls.isEmpty, c.scratchCalls)
+            assert(i.actionsTaken == 0)
+            assert(c.tap.version == 3, "no tap version change")
+            assert(c.reverts.isEmpty)
+        }
+    }
+
+    test("schema_drift with allowSchemaDriftActions=true but mode propose is still triaged") {
+        scenario(
+            kind = Incident.KindSchemaDrift,
+            trigger = DriftTrigger,
+            settings = RecoverySettings(mode = RecoverySettings.Propose, allowSchemaDriftActions = true)
+        ) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.incident.state == Incident.Resolved, c.incident.outcome + " / " + c.summaries)
+            assert(c.incident.outcome.exists(_.startsWith("triaged")), c.incident.outcome)
+            assert(c.tools.filter(Mutations).isEmpty, c.tools)
+        }
+    }
+
+    test("schema_drift with allowSchemaDriftActions=true on autopilot follows the executable path") {
+        scenario(
+            kind = Incident.KindSchemaDrift,
+            trigger = DriftTrigger,
+            settings = RecoverySettings(mode = RecoverySettings.Autopilot, allowSchemaDriftActions = true)
+        ) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.tools.filter(Mutations) == List("update_tap", "run_tap"), c.tools)
+            assert(c.scratchCalls.toList == List(("prices", Some(CandidateScript))), c.scratchCalls)
+            val i = c.incident
+            assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+            assert(i.outcome.contains("recovered and verified"), i.outcome)
+        }
+    }
+
+    test("a trigger error with HTTP 401 forces credential: needsHuman, no actions, secret named — even when the model proposed run_tap") {
+        scenario(trigger = """{"error":"HTTP 401 Unauthorized from https://api.example.com/prices"}""", proposal = transientRunProposal) { c =>
+            c.tap = c.tap.copy(secretName = "prices-api")
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(i.classification.contains("credential"), i.classification + " / " + c.summaries)
+            val p = storedProposal(c)
+            assert(p.get("classification").getAsString == "credential", p)
+            assert(p.get("needsHuman").getAsBoolean, p)
+            assert(p.getAsJsonArray("actions").size() == 0, p)
+            assert(i.state == Incident.AwaitingApproval, i.outcome + " / " + c.summaries)
+            assert(i.awaitingApprovalIds.isEmpty)
+            assert(c.tools.filter(Mutations).isEmpty, "the proposed run_tap never ran: " + c.tools)
+            assert(c.scratchCalls.isEmpty)
+            assert(c.ev.blastRadius.secretName == Some("prices-api"), c.ev.blastRadius)
+        }
+    }
+
+    test("a non-credential failure is not reclassified (control)") {
+        scenario(trigger = """{"error":"HTTP 429 Too Many Requests"}""", proposal = transientRunProposal) { c =>
+            c.tap = c.tap.copy(secretName = "prices-api")
+            IncidentRunner.runIncident(c.id)
+            assert(c.incident.classification.contains("transient"), c.incident.classification)
+            assert(c.tools.filter(Mutations) == List("run_tap"), c.tools)
+        }
+    }
+
+    test("Classifier.credential matches auth failures in the error or the logs, and nothing else") {
+        assert(Classifier.credential("HTTP 401 Unauthorized", null))
+        assert(Classifier.credential("403 Forbidden", null))
+        assert(Classifier.credential("request failed: unauthorized", null))
+        assert(Classifier.credential(null, "Traceback ...\noauth error: invalid_grant\n"))
+        assert(Classifier.credential("the access token has expired", null))
+        assert(Classifier.credential("invalid token", null))
+        assert(Classifier.credential("Credentials are rejected by the server", null))
+        assert(!Classifier.credential("HTTP 429 Too Many Requests", "retrying later"))
+        assert(!Classifier.credential("KeyError: account_id", "fetched 4012 rows"))
+        assert(!Classifier.credential(null, null))
+        assert(!Classifier.credential("", ""))
+    }
+
+    test("withSecret sets blastRadius.secretName and keeps the rest of the evidence") {
+        val e = evidenceWith(Some(baseline))
+        val w = IncidentEvidenceBuilder.withSecret(e, "prices-api")
+        assert(w.blastRadius.secretName == Some("prices-api"))
+        assert(w.baseline == e.baseline)
+        assert(w.verdict == e.verdict)
+        assert(IncidentEvidence.fromJson(w.toJson).blastRadius.secretName == Some("prices-api"))
+    }
+
+    private val DoctorPlatformError =
+        """{"doctorVersion":1,"mode":"quick","checks":[
+          |{"id":"vault.token_ttl","status":"ok","severity":"info","detail":"ok","remediation":""},
+          |{"id":"disk.usage","status":"error","severity":"critical","detail":"disk 98% full","remediation":"Free disk space on the Docker host."}
+          |]}""".stripMargin
+
+    test("doctor-first: an error check short-circuits to platform with aiCalls == 0 and the diagnoser never called") {
+        scenario(doctorResponse = DoctorPlatformError, proposal = transientRunProposal) { c =>
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(c.diagnoseCalls == 0, "the model was never asked")
+            assert(i.aiCalls == 0, i.aiCalls)
+            assert(i.classification.contains("platform"), i.classification + " / " + c.summaries)
+            val p = storedProposal(c)
+            assert(p.get("needsHuman").getAsBoolean, p)
+            assert(p.getAsJsonArray("actions").size() == 0, p)
+            assert(p.get("summary").getAsString.contains("Free disk space on the Docker host."), p)
+            assert(i.state == Incident.AwaitingApproval, i.outcome + " / " + c.summaries)
+            assert(c.tools.filter(Mutations).isEmpty, c.tools)
+            val doctor = c.calls.find(_.tool == "run_doctor").getOrElse(fail("run_doctor was called: " + c.tools))
+            assert(doctor.args.get("mode").getAsString == "quick", doctor.args)
+            assert(doctor.args.has("ai") && !doctor.args.get("ai").getAsBoolean, doctor.args)
+        }
+    }
+
+    test("doctor-first: a tap-specific error check or a warning does not short-circuit") {
+        val tapSpecific =
+            """{"checks":[{"id":"tap.secret_scope","status":"error","severity":"high","detail":"x","remediation":"Re-tag the tap secret."}]}"""
+        scenario(doctorResponse = tapSpecific, proposal = transientRunProposal) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.diagnoseCalls == 1)
+            assert(!c.incident.classification.contains("platform"), c.incident.classification)
+        }
+        val warnOnly = """{"checks":[{"id":"disk.usage","status":"warn","severity":"medium","detail":"80%","remediation":"Watch disk."}]}"""
+        scenario(doctorResponse = warnOnly, proposal = transientRunProposal) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.diagnoseCalls == 1)
+            assert(c.incident.classification.contains("transient"), c.incident.classification)
+        }
     }
 }

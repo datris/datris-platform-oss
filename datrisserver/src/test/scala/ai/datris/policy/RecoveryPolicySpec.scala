@@ -144,4 +144,34 @@ class RecoveryPolicySpec extends AnyFunSuite {
             assert(back.recovery == p.recovery)
         }
     }
+
+    // Story: Schema-drift signal, credential and platform classifications
+    // (plans/stories/self-healing-4-signals.md), Acceptance bullet 5 —
+    // `recovery.allowSchemaDriftActions: Boolean = false`.
+
+    test("allowSchemaDriftActions defaults false, including an older recovery block without it") {
+        assert(!RecoverySettings().allowSchemaDriftActions)
+        assert(!policy("""{}""").recovery.allowSchemaDriftActions)
+        assert(!policy("""{"recovery":{"mode":"autopilot","maxAiCallsPerIncident":5}}""").recovery.allowSchemaDriftActions)
+    }
+
+    test("allowSchemaDriftActions parses and round-trips through toJson") {
+        val p = policy("""{"recovery":{"mode":"autopilot","allowSchemaDriftActions":true}}""")
+        assert(p.recovery.allowSchemaDriftActions)
+        assert(p.recovery.mode == RecoverySettings.Autopilot)
+        val json = p.toJson
+        assert(json.getAsJsonObject("recovery").get("allowSchemaDriftActions").getAsBoolean, json)
+        val back = policy(json.toString)
+        assert(back.recovery == p.recovery)
+        assert(back.recovery.allowSchemaDriftActions)
+
+        val off = policy("""{"recovery":{"mode":"autopilot","allowSchemaDriftActions":false}}""")
+        assert(policy(off.toJson.toString).recovery == off.recovery)
+        assert(!off.recovery.allowSchemaDriftActions)
+    }
+
+    test("a non-boolean allowSchemaDriftActions is rejected naming the field") {
+        val r = AgentPolicy.fromJson("""{"recovery":{"allowSchemaDriftActions":"yes"}}""")
+        assert(r.isLeft && r.left.get.contains("recovery.allowSchemaDriftActions"), r)
+    }
 }
