@@ -1342,7 +1342,9 @@ object CatalogAPIController {
                     case Some(_) => regenerated += (item -> "the saved pipeline config differs from the archived one the script was written for")
                     case None =>
                         val reason = plan.regenerated.find(_._1 == item).map(_._2).getOrElse(NoScriptReason)
-                        val untouched = after.isDefined && after == beforeSave.getOrElse(kind, None)
+                        // Kept only when a usable (Ready) live script is still there,
+                        // unchanged; an unchanged Pending record has no script to keep.
+                        val untouched = after.exists(a => a.status == PipelineScripts.Ready && beforeSave.getOrElse(kind, None).contains(a))
                         if (untouched && regenerateScripts)
                             scripts.regenerate(saved, kind, actor) match {
                                 case Right(_) => regenerated += (item -> reason)

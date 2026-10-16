@@ -271,5 +271,39 @@ class CatalogRestoreScriptsSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(calls.size == callsBefore + 2, "one generation per kind")
         assert(report.kept.isEmpty, s"$report")
         assert(report.regenerated.map(_._1).toSet == Set("orders/dataQuality", "orders/transformation"), s"$report")
+        assert(report.regenerated.toMap.values.forall(_ == CatalogAPIController.RegenerateRequestedReason), s"$report")
+    }
+
+    test("classifyScripts does not report an unchanged Pending live record as kept") {
+        Seq(Dq, Tx).foreach { k =>
+            val instr = PipelineScripts.instructionOf(cfg, k).get
+            records.write(
+                CodeGenScript(
+                    "orders",
+                    k,
+                    instr,
+                    null,
+                    fingerprint = PipelineScripts.fingerprint(instr, PipelineScripts.schemaSignature(cfg)),
+                    status = "pending",
+                    pendingReason = "the model could not be reached",
+                    origin = "save",
+                    contractVersion = PipelineScripts.contractVersion(k)
+                )
+            )
+        }
+        val warnings = mutable.ArrayBuffer.empty[String]
+        val plan = CatalogAPIController.importCodegenScripts(contents(withRecords = false), "orders", scripts, "todd", warnings)
+        val before = snapshot()
+        // The save left both Pending records exactly as they were (same reason, no timestamp).
+        val report = CatalogAPIController.classifyScripts(cfg, plan, before, scripts, "todd", warnings, regenerateScripts = false)
+        assert(snapshot() == before)
+        assert(report.kept.isEmpty, s"a pending record has no script to keep: $report")
+        assert(
+            report.regenerated.toMap == Map(
+                "orders/dataQuality" -> CatalogAPIController.NoRecordReason,
+                "orders/transformation" -> CatalogAPIController.NoRecordReason
+            ),
+            s"$report"
+        )
     }
 }
