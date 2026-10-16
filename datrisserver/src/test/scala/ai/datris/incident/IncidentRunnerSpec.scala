@@ -1005,7 +1005,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
         candidate: Option[RunProfile] = Some(healthyCandidate),
         real: Option[RunProfile] = Some(healthyReal),
         restoreResult: Either[String, Unit] = Right(()),
-        proposal: IncidentRunner.Proposal = proposalOf(regen())
+        proposal: IncidentRunner.Proposal = proposalOf(regen()),
+        // Tools the fake policy gate parks for approval (answered PendingApproval).
+        gated: Set[String] = Set.empty
     )(body: PCtx => T): T = {
         val store = new FakeStore
         val ctx = new PCtx(Incident.newId(), store)
@@ -1035,7 +1037,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
             IncidentEvidenceBuilder.realProfileOverride,
             IncidentRunner.inputSource,
             IncidentRunner.scriptLatestVersion,
-            IncidentRunner.restoreScript
+            IncidentRunner.restoreScript,
+            IncidentRunner.approvalLookup,
+            IncidentRunner.sweepEnabledOverride
         )
         IncidentIO.store = store
         IncidentRunner.runAsync = false
@@ -1050,6 +1054,10 @@ class IncidentRunnerSpec extends AnyFunSuite {
             override def call(tool: String, args: JsonObject, incidentId: String): ToolOutcome = {
                 ctx.calls.synchronized { ctx.calls += Call(tool, args, store.get(incidentId).map(_.state).orNull) }
                 tool match {
+                    case t if gated.contains(t) =>
+                        if (t == "regenerate_pipeline_scripts" && ctx.revertAtFirstAction.isEmpty)
+                            ctx.revertAtFirstAction = store.get(incidentId).map(_.revertToScriptVersions)
+                        ToolOutcome.PendingApproval("pa_" + t)
                     case "regenerate_pipeline_scripts" =>
                         if (ctx.revertAtFirstAction.isEmpty) ctx.revertAtFirstAction = store.get(incidentId).map(_.revertToScriptVersions)
                         val k = args.get("kind").getAsString
@@ -1097,6 +1105,8 @@ class IncidentRunnerSpec extends AnyFunSuite {
             IncidentRunner.inputSource = saved._10
             IncidentRunner.scriptLatestVersion = saved._11
             IncidentRunner.restoreScript = saved._12
+            IncidentRunner.approvalLookup = saved._13
+            IncidentRunner.sweepEnabledOverride = saved._14
         }
     }
 
@@ -1220,5 +1230,82 @@ class IncidentRunnerSpec extends AnyFunSuite {
         val none = evidenceWith(Some(baseline)).toJson
         assert(!none.has("scriptVersions"), "absent for tap incidents: " + none)
         assert(IncidentEvidence.fromJson(none).scriptVersions.isEmpty)
+    }
+
+    // ------------------------------------------------------------------
+    // Review fixes: approval-gated regenerate / verification run
+    // ------------------------------------------------------------------
+
+    private def executedApproval(id: String, incidentId: String): ai.datris.policy.PendingAction =
+        ai.datris.policy.PendingAction(
+            id = id,
+            action = "pipeline:update:codegen-scripts",
+            resourceType = Some("pipeline"),
+            resourceName = Some("orders"),
+            resourceVersion = None,
+            actor = ai.datris.audit.AuditActorInfo("api-key", RecoveryKey.Label),
+            reason = None,
+            agentSession = None,
+            incidentId = Some(incidentId),
+            method = "POST",
+            path = "/api/v1/pipelines/orders/codegen-scripts/transformation/regenerate",
+            query = None,
+            contentType = None,
+            body = Some("{}"),
+            bodyHash = "h",
+            createdAt = Instant.now(),
+            expiresAt = Instant.now().plusSeconds(3600),
+            state = ai.datris.policy.PendingAction.Executed
+        )
+
+    /** The sweep sees every queued approval executed. */
+    private def approveAndSweep(c: PCtx): Unit = {
+        IncidentRunner.approvalLookup = (aid: String) => Some(executedApproval(aid, c.id))
+        IncidentRunner.sweepEnabledOverride = Some(true)
+        IncidentRunner.sweepOpenIncidents()
+    }
+
+    test("pipeline incident: a regenerate executed through an approval still fills evidence.scriptVersions 3 -> 4") {
+        pipelineScenario(input = Some(PipelineInputSource.TapFed("prices")), gated = Set("regenerate_pipeline_scripts")) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+            assert(c.incident.revertToScriptVersions == Map("transformation" -> 3))
+            // The policy gate's replay performs the regenerate: a new latest version.
+            c.latest("transformation") = 4
+            approveAndSweep(c)
+            val i = c.incident
+            assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+            assert(c.ev.scriptVersions == List(ScriptVersionChange("transformation", 3, 4)), c.ev.scriptVersions)
+            assert(c.scratchCalls.toList == List(("prices", None)), c.scratchCalls)
+            assert(c.tools.count(_ == "regenerate_pipeline_scripts") == 1, "the replay, not the runner, ran the regenerate: " + c.tools)
+            assert(c.tools.contains("run_tap"), c.tools)
+        }
+    }
+
+    test("pipeline incident: an approved verification run that leaves the tap unhealthy restores the script and says so") {
+        pipelineScenario(input = Some(PipelineInputSource.TapFed("prices")), gated = Set("run_tap")) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+            c.tap = c.tap.copy(lastRunStatus = "failure")
+            approveAndSweep(c)
+            val i = c.incident
+            assert(i.state == Incident.Failed, i.outcome + " / " + c.summaries)
+            assert(i.outcome.exists(_.contains("script restored")), i.outcome)
+            assert(!i.outcome.exists(_.contains("definition reverted")), i.outcome)
+            assert(c.restores.toList == List(("orders", "transformation", 3, "recovery-agent")), c.restores)
+            assert(c.ev.scriptVersions == List(ScriptVersionChange("transformation", 3, 3)), c.ev.scriptVersions)
+        }
+    }
+
+    test("pipeline incident: an approved verification run that is healthy resolves with the script versions") {
+        pipelineScenario(input = Some(PipelineInputSource.TapFed("prices")), gated = Set("run_tap")) { c =>
+            IncidentRunner.runIncident(c.id)
+            approveAndSweep(c)
+            val i = c.incident
+            assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+            assert(i.outcome.exists(_.startsWith("scripts regenerated and verified")), i.outcome)
+            assert(c.ev.scriptVersions == List(ScriptVersionChange("transformation", 3, 4)), c.ev.scriptVersions)
+            assert(c.restores.isEmpty, c.restores)
+        }
     }
 }

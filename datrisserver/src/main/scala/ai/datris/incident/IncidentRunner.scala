@@ -147,6 +147,12 @@ object IncidentRunner {
     @volatile private[incident] var revertTap: (String, String, Int) => Unit =
         (incidentId: String, tapName: String, toVersion: Int) => restoreTapVersion(incidentId, tapName, toVersion)
 
+    /** Spec seam: the sweep's approval lookup (production PendingActionIO.get). */
+    @volatile private[incident] var approvalLookup: String => Option[PendingAction] = (approvalId: String) => PendingActionIO.get(approvalId)
+
+    /** Spec seam: when Some, used instead of [[enabled]] by the sweep. */
+    @volatile private[incident] var sweepEnabledOverride: Option[Boolean] = None
+
     /** What a pipeline incident can verify a regenerated script on. */
     @volatile var inputSource: PipelineInputSource = PipelineInputSource
 
@@ -774,6 +780,10 @@ object IncidentRunner {
       * input (uploads, Kafka, object-store triggers): say so and resolve
       * unverified — the next run will tell. */
     private def verifyPipeline(id: String, incident: Incident): Unit = {
+        // A regenerate that ran through an approval was replayed by the policy
+        // gate, not by executeFrom: fill evidence.scriptVersions here too
+        // (idempotent — replaced by kind).
+        IncidentIO.get(id).getOrElse(incident).revertToScriptVersions.keys.foreach(k => recordScriptVersion(id, incident, k))
         val input =
             try inputSource.lastGoodInput(incident)
             catch { case _: Exception => None }
@@ -888,12 +898,12 @@ object IncidentRunner {
     /** Move incidents forward whose approvals were decided, and abandon
       * whatever exceeded its limits. */
     def sweepOpenIncidents(): Unit = {
-        if (!enabled) return
+        if (!sweepEnabledOverride.getOrElse(enabled)) return
         IncidentIO.listOpen().foreach { incident =>
             try {
                 incident.state match {
                     case Incident.AwaitingApproval if incident.awaitingApprovalIds.nonEmpty =>
-                        val decisions = incident.awaitingApprovalIds.flatMap(PendingActionIO.get)
+                        val decisions = incident.awaitingApprovalIds.flatMap(a => approvalLookup(a).toList)
                         if (decisions.exists(_.state == PendingAction.Rejected))
                             close(incident.id, Incident.Abandoned, "approval rejected by " + decisions.flatMap(_.decidedBy).headOption.getOrElse("a person"))
                         else if (decisions.exists(d => d.state == PendingAction.Expired || d.isExpired()))
@@ -906,9 +916,9 @@ object IncidentRunner {
                             val next = storedNextActionIndex(incident)
                             if (next == Int.MaxValue) {
                                 // the executed approval WAS the verification run
-                                pool.submit(new Runnable { override def run(): Unit = finishVerifyAfterApproval(incident.id) })
+                                resume(incident.id, finishVerifyAfterApproval(incident.id))
                             } else {
-                                pool.submit(new Runnable { override def run(): Unit = executeFrom(incident.id, next + 1) })
+                                resume(incident.id, executeFrom(incident.id, next + 1))
                             }
                         }
                     case Incident.AwaitingApproval =>
@@ -925,6 +935,23 @@ object IncidentRunner {
         }
     }
 
+    /** Continue an incident after an approval: on the pool, or inline when
+      * specs run synchronously. A runner error fails the incident. */
+    private def resume(id: String, body: => Unit): Unit = {
+        val r = new Runnable {
+            override def run(): Unit =
+                try body
+                catch {
+                    case e: Exception =>
+                        logger.error("incident " + id + " runner error after approval: " + e.getMessage, e)
+                        try close(id, Incident.Failed, "runner error: " + clip(e.getMessage))
+                        catch { case _: Exception => }
+                }
+        }
+        if (runAsync) { pool.submit(r); () }
+        else r.run()
+    }
+
     private def finishVerifyAfterApproval(id: String): Unit = {
         val incident = IncidentIO.get(id).getOrElse(return
         )
@@ -932,15 +959,20 @@ object IncidentRunner {
             if (incident.resourceType == "tap") isTapHealthy(incident.resourceName)
             else verifyTapOf(id).forall(isTapHealthy)
         recordRealRunEvidence(id)
+        val pipeline = incident.resourceType == "pipeline"
         if (healthy && realStageBreached(id)) {
             revertAll(id, incident)
-            close(id, Incident.Failed, RealBreachOutcome)
+            close(id, Incident.Failed, if (pipeline) RealScriptBreachOutcome else RealBreachOutcome)
         } else if (healthy) {
             step(id, "verify", "verified after approved run: resource healthy")
-            close(id, Incident.Resolved, "recovered and verified (via approved run)")
+            close(id, Incident.Resolved, if (pipeline) "scripts regenerated and verified (via approved run)" else "recovered and verified (via approved run)")
         } else {
             revertAll(id, incident)
-            close(id, Incident.Failed, "approved run did not leave the resource healthy — definition reverted")
+            close(
+                id,
+                Incident.Failed,
+                "approved run did not leave the resource healthy — " + (if (pipeline) "script restored" else "definition reverted")
+            )
         }
     }
 
