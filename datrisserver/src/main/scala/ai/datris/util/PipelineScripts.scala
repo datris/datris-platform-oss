@@ -62,7 +62,7 @@ class PipelineScripts(
             try {
                 instructionOf(saved, kind) match {
                     case None =>
-                        removeKind(saved.name, kind)
+                        removeKind(saved.name, kind).foreach(w => logger.warn("Pipeline " + saved.name + "/" + kind + ": " + w))
                         None
                     case Some(instruction) => Some(saveKind(saved, kind, instruction, actor))
                 }
@@ -691,7 +691,8 @@ class PipelineScripts(
             try
                 storeOf(r.pipeline, backendOf(r)).deleteIfUnchanged(ref) match {
                     case DeleteOutcome.Deleted => None
-                    case DeleteOutcome.KeptEdited(_) =>
+                    case DeleteOutcome.KeptEdited(headSha) =>
+                        logger.warn("Kept CodeGen script " + ref + ": the file changed at branch head " + headSha + " since the recorded commit")
                         Some(PipelineScripts.keptOnDeleteWarning(r.pipeline, r.kind, path, r.scriptCommitSha))
                     case DeleteOutcome.Unchecked(error) =>
                         logger.warn("Kept CodeGen script " + ref + ": the repository could not be checked: " + error)
