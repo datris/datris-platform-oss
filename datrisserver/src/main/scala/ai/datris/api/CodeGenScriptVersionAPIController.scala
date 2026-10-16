@@ -40,9 +40,6 @@ object CodeGenScriptVersionAPIController {
     private def currentFingerprint(config: PipelineConfig, kind: String): Option[String] =
         PipelineScripts.instructionOf(config, kind).map(i => PipelineScripts.fingerprint(i, PipelineScripts.schemaSignature(config)))
 
-    private def liveVersion(scripts: PipelineScripts, config: PipelineConfig, kind: String): Int =
-        scripts.record(config.name, kind).filter(_.status != PipelineScripts.Pending).map(_.scriptVersion).getOrElse(0)
-
     private def summary(v: CodeGenScriptVersion, current: Option[String], live: Int): JsonObject = {
         val o = new JsonObject
         o.addProperty("version", v.version)
@@ -66,9 +63,10 @@ object CodeGenScriptVersionAPIController {
     /** GET …/versions: newest first, without the script text. 400 unknown kind. */
     def listVersionsWith(scripts: PipelineScripts, config: PipelineConfig, kind: String): ResponseEntity[String] = {
         if (!PipelineScripts.Kinds.contains(kind)) return unknownKind(kind)
-        val versions = scripts.scriptVersions(config.name, kind).sortBy(-_.version)
+        val all = scripts.scriptVersions(config.name, kind)
+        val versions = all.sortBy(-_.version)
         val current = currentFingerprint(config, kind)
-        val live = liveVersion(scripts, config, kind)
+        val live = scripts.liveVersion(config.name, kind, all)
         val arr = new JsonArray
         versions.foreach(v => arr.add(summary(v, current, live)))
         json(HttpStatus.OK, render(arr))
@@ -78,10 +76,11 @@ object CodeGenScriptVersionAPIController {
       * generatedAt, contractVersion, storage and repoPath. 404 unknown version. */
     def getVersionWith(scripts: PipelineScripts, config: PipelineConfig, kind: String, version: Int): ResponseEntity[String] = {
         if (!PipelineScripts.Kinds.contains(kind)) return unknownKind(kind)
-        scripts.scriptVersion(config.name, kind, version) match {
+        val all = scripts.scriptVersions(config.name, kind)
+        all.find(_.version == version) match {
             case None => notFound(config, kind, version)
             case Some(v) =>
-                val o = summary(v, currentFingerprint(config, kind), liveVersion(scripts, config, kind))
+                val o = summary(v, currentFingerprint(config, kind), scripts.liveVersion(config.name, kind, all))
                 o.addProperty("kind", v.kind)
                 o.addProperty("script", v.script)
                 o.addProperty("fingerprint", v.fingerprint)
@@ -154,7 +153,9 @@ class CodeGenScriptVersionAPIController {
 
     private val logger: Logger = LoggerFactory.getLogger(classOf[CodeGenScriptVersionAPIController])
 
-    /** Validate the key, load the pipeline (404), check owner scope, then run `body`. */
+    /** Validate the key, load the pipeline (404), check owner scope, then run
+      * `body`. An unknown kind is answered by `body` (400), so it comes after
+      * authentication and a refused restore is audited. */
     private def withPipeline(apiKey: String, name: String, action: String, request: HttpServletRequest)(
         body: PipelineConfig => ResponseEntity[String]
     ): ResponseEntity[String] =
@@ -183,7 +184,6 @@ class CodeGenScriptVersionAPIController {
         @PathVariable("kind") kind: String,
         request: HttpServletRequest
     ): ResponseEntity[String] = {
-        if (!PipelineScripts.Kinds.contains(kind)) return listVersionsWith(PipelineScripts, null, kind)
         logger.info("API endpoint GET /pipelines/" + name + "/codegen-scripts/" + kind + "/versions called")
         withPipeline(apiKey, name, "read", request)(config => listVersionsWith(PipelineScripts, config, kind))
     }
@@ -196,7 +196,6 @@ class CodeGenScriptVersionAPIController {
         @PathVariable("version") version: Int,
         request: HttpServletRequest
     ): ResponseEntity[String] = {
-        if (!PipelineScripts.Kinds.contains(kind)) return getVersionWith(PipelineScripts, null, kind, version)
         logger.info("API endpoint GET /pipelines/" + name + "/codegen-scripts/" + kind + "/versions/" + version + " called")
         withPipeline(apiKey, name, "read", request)(config => getVersionWith(PipelineScripts, config, kind, version))
     }
@@ -210,7 +209,6 @@ class CodeGenScriptVersionAPIController {
         @RequestParam("against") against: Int,
         request: HttpServletRequest
     ): ResponseEntity[String] = {
-        if (!PipelineScripts.Kinds.contains(kind)) return diffVersionsWith(PipelineScripts, null, kind, version, against)
         logger.info("API endpoint GET /pipelines/" + name + "/codegen-scripts/" + kind + "/versions/" + version + "/diff called")
         withPipeline(apiKey, name, "read", request)(config => diffVersionsWith(PipelineScripts, config, kind, version, against))
     }
@@ -223,7 +221,6 @@ class CodeGenScriptVersionAPIController {
         @PathVariable("version") version: Int,
         request: HttpServletRequest
     ): ResponseEntity[String] = {
-        if (!PipelineScripts.Kinds.contains(kind)) return restoreVersionWith(PipelineScripts, null, kind, version, null)
         logger.info("API endpoint POST /pipelines/" + name + "/codegen-scripts/" + kind + "/versions/" + version + "/restore called")
         withPipeline(apiKey, name, "update", request) { config =>
             val response = restoreVersionWith(PipelineScripts, config, kind, version, ResolvedKeyAccess.keyLabel(request).orNull)

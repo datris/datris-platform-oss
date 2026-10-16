@@ -63,8 +63,13 @@ class PipelineScripts(
       * Mongo). */
     private val history: Option[CodeGenScriptVersions] =
         if (versions == null) None
-        else if ((versions eq CodeGenScriptVersionIO) && !(records eq CodeGenScriptIO)) None
-        else Some(versions)
+        else if ((versions eq CodeGenScriptVersionIO) && !(records eq CodeGenScriptIO)) {
+            logger.warn(
+                "CodeGen script history is disabled for this PipelineScripts instance: it was given its own script records " +
+                    "but the default history store; pass `versions` to keep script versions"
+            )
+            None
+        } else Some(versions)
 
     // ------------------------------------------------------------------ save
 
@@ -727,17 +732,24 @@ class PipelineScripts(
                 records.read(pipeline, kind).flatMap(seedOf) match {
                     case None => Nil
                     case Some(seed) =>
+                        // History only: a read never writes the live record (it
+                        // could race a store). The unnumbered live record is
+                        // version 1 while the seed is its only row (see liveVersion).
                         h.append(seed)
-                        records.read(pipeline, kind).filter(_.scriptVersion == 0).foreach { live =>
-                            try records.write(live.copy(scriptVersion = seed.version))
-                            catch {
-                                case e: Throwable if scala.util.control.NonFatal(e) =>
-                                    logger.warn("Could not number the seeded CodeGen script " + pipeline + "/" + kind + ": " + messageOf(e))
-                            }
-                        }
                         List(seed)
                 }
     }
+
+    /** The version runs execute now, given the kind's versions `all`: the
+      * live record's `scriptVersion`, or 1 for a record stored before
+      * versioning whose only row is its v1 seed; 0 when nothing is live
+      * (no record, pending, or unnumbered with other rows). */
+    def liveVersion(pipeline: String, kind: String, all: List[CodeGenScriptVersion]): Int =
+        records.read(pipeline, kind).filter(_.status != Pending) match {
+            case Some(r) if r.scriptVersion > 0 => r.scriptVersion
+            case Some(_) if all.size == 1 && all.head.version == 1 && all.head.changeNote == SeedNote => 1
+            case _ => 0
+        }
 
     /** One version (seeding as [[scriptVersions]] does). */
     def scriptVersion(pipeline: String, kind: String, version: Int): Option[CodeGenScriptVersion] =
@@ -837,7 +849,8 @@ class PipelineScripts(
     private def commitVersion(plan: Option[VersionPlan], rec: CodeGenScript, text: String, actor: String, note: String): Unit =
         for (p <- plan; h <- history)
             try {
-                p.seed.foreach(h.append)
+                // A history read may have seeded v1 since the plan was made.
+                p.seed.foreach(seed => if (h.latestVersion(rec.pipeline, rec.kind) == 0) h.append(seed))
                 h.append(versionRow(rec, p.number, text, actor, note))
                 try h.prune(rec.pipeline, rec.kind, DatrisEnvironment.current.versionCap)
                 catch {

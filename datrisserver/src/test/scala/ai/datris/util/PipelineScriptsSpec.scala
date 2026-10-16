@@ -1493,6 +1493,24 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(history.rows.isEmpty)
     }
 
+    test("script versions: a list seeds v1 without writing the live record; the next regenerate appends exactly one v2") {
+        val cfg = csvCfg()
+        preUpgradeRecord(cfg)
+        val writesBefore = records.writes
+        assert(scripts.scriptVersions("orders", Dq).map(_.version) == List(1))
+        assert(scripts.scriptVersion("orders", Dq, 1).isDefined)
+        assert(records.writes == writesBefore, "a history read never writes the live record")
+        assert(records.read("orders", Dq).get.scriptVersion == 0)
+        assert(scripts.liveVersion("orders", Dq, history.listVersions("orders", Dq)) == 1, "the seeded pre-upgrade script is live")
+
+        assert(scripts.regenerate(cfg, Dq, "todd").isRight)
+        val all = history.listVersions("orders", Dq)
+        assert(all.count(_.version == 1) == 1 && all.count(_.version == 2) == 1 && all.size == 2, s"$all")
+        assert(all.head.changeNote == SeedNote && all.head.script == "print('legacy')", s"$all")
+        assert(records.read("orders", Dq).get.scriptVersion == 2)
+        assert(scripts.liveVersion("orders", Dq, all) == 2)
+    }
+
     test("restoreVersion(1) appends v4 with v1's text and model, origin restore-version, and deletes v3's built-in object") {
         val cfg = csvCfg()
         scripts.onSave(null, cfg, "todd") // v1, model-a

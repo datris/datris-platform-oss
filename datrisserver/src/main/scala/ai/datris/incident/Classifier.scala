@@ -10,10 +10,11 @@ Copyright (C) 2026 Datris (https://datris.ai)
 object Classifier {
 
     /** An authentication / authorization failure from the source. A bare
-      * 401/403 counts only next to HTTP / status / code / response (so
-      * "page 401 of 900" in a run log does not); the words count anywhere. */
+      * 401/403 counts only next to HTTP / status / code / response / error /
+      * returned / failed with (so "page 401 of 900" in a run log does not,
+      * while curl's "returned error: 401" does); the words count anywhere. */
     private val CredentialPattern =
-        ("""(?i)\b(?:https?|status|code|response)(?:[ _]?(?:code|error))?(?:/\d(?:\.\d)?)?[\s:=]*40[13]\b""" +
+        ("""(?i)\b(?:https?|status|code|response|error|returned|failed with)(?:[ _]?(?:code|error))?(?:/\d(?:\.\d)?)?[\s:=]*40[13]\b""" +
             """|unauthori[sz]ed|forbidden|invalid_grant|invalid[_ ]token|token (?:has )?expired|credentials? (?:are |is )?(?:expired|invalid|rejected)""").r
 
     /** True when the trigger error or the latest run's logs show the source

@@ -884,5 +884,10 @@ class IncidentRunnerSpec extends AnyFunSuite {
         assert(Classifier.credential(null, "HTTP/1.1 403"))
         assert(Classifier.credential("response status_code=401", null))
         assert(Classifier.credential("401 Client Error: Unauthorized for url", null))
+        // Bare-status phrasings (curl, generic HTTP clients).
+        assert(Classifier.credential("curl: (22) The requested URL returned error: 401", null))
+        assert(Classifier.credential(null, "request failed with 403"))
+        assert(Classifier.credential("upstream returned 401", null))
+        assert(Classifier.credential(null, "error: 403"))
     }
 }
