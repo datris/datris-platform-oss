@@ -180,7 +180,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
         for (t <- Seq("get_lineage", "find_data", "get_provenance", "list_pipeline_versions", "diff_pipeline_versions"))
             assert(IncidentRunner.DiagnosisTools.contains(t), t + " in DiagnosisTools")
         assert(RecoveryKey.Capabilities.contains("config:read"))
-        assert(IncidentRunner.ExecutableTools == Set("run_tap", "test_tap", "update_tap", "create_tap"))
+        // self-healing-5: pipeline incidents may regenerate their stored AI scripts.
+        assert(IncidentRunner.ExecutableTools == Set("run_tap", "test_tap", "update_tap", "create_tap", "regenerate_pipeline_scripts"))
+        assert(!IncidentRunner.DiagnosisTools.contains("regenerate_pipeline_scripts"))
     }
 
     // ------------------------------------------------------------------
@@ -889,5 +891,334 @@ class IncidentRunnerSpec extends AnyFunSuite {
         assert(Classifier.credential(null, "request failed with 403"))
         assert(Classifier.credential("upstream returned 401", null))
         assert(Classifier.credential(null, "error: 403"))
+    }
+
+    // ==================================================================
+    // Story: Pipeline incidents: regenerate stored AI scripts, verify when the
+    // input is recoverable (plans/stories/self-healing-5-pipeline-incidents.md),
+    // Acceptance bullets 1 and 2.
+    //
+    // Contract pinned here (names the story leaves open are chosen here —
+    // keep them or update this spec):
+    // {{{
+    // // ai.datris.incident
+    // trait PipelineInputSource { def lastGoodInput(incident: Incident): Option[PipelineInputSource.Input] }
+    // object PipelineInputSource extends PipelineInputSource {   // production: LineageService.recentRuns
+    //   sealed trait Input
+    //   case class TapFed(tap: String) extends Input
+    //   case class Snapshot(ref: String) extends Input             // reserved for deterministic-replay.md
+    // }
+    // case class ScriptVersionChange(kind: String, before: Int, after: Int)
+    // IncidentEvidence(..., scriptVersions: List[ScriptVersionChange] = Nil)
+    //   // toJson: "scriptVersions":[{"kind":..,"before":..,"after":..}], absent when empty
+    // Incident(..., revertToScriptVersions: Map[String, Int] = Map.empty)
+    //   // toPublicJson: "revertToScriptVersions":{"transformation":3}; fromDocument: absent -> Map.empty
+    // object IncidentRunner {
+    //   @volatile var inputSource: PipelineInputSource = PipelineInputSource
+    //   /** (pipeline, kind) => latest script version; production CodeGenScriptVersionIO.latestVersion. */
+    //   @volatile private[incident] var scriptLatestVersion: (String, String) => Int
+    //   /** (pipeline, kind, toVersion, actor) => restore; production reads the pipeline config
+    //     * and calls PipelineScripts.restoreVersion(config, kind, toVersion, actor). */
+    //   @volatile private[incident] var restoreScript: (String, String, Int, String) => Either[String, Unit]
+    //   object RealExecutor { private[incident] def restFor(tool: String, args: JsonObject): Option[(String, String, Option[String])] }
+    // }
+    // }}}
+    // - filterActions on a pipeline incident: only regenerate_pipeline_scripts,
+    //   args.name == resourceName, args.kind in PipelineScripts.Kinds. Tap
+    //   incidents never keep it.
+    // - Before the first action: revertToScriptVersions = kinds in the proposal
+    //   -> scriptLatestVersion(name, kind).
+    // - After regenerate succeeds: evidence.scriptVersions gets
+    //   (kind, before = revertToScriptVersions(kind), after = scriptLatestVersion).
+    // - verify for pipelines: inputSource TapFed(t) -> scratch(tapLookup(t), None)
+    //   with story 3's verdict rules, then run_tap {name: t}, rollup, resolved;
+    //   scratch fail -> restoreScript(name, kind, max(v, 1), "recovery-agent"),
+    //   step "restored <kind> script to version <v>", scriptVersions.after = v,
+    //   failed. A Left from restoreScript is an execute step "revert failed".
+    //   inputSource None -> resolved, outcome containing "unverified", no run_tap.
+    // ==================================================================
+
+    private def pipelineIncident(kind: String = Incident.KindPipelineFailure) =
+        incident(kind).copy(resourceType = "pipeline", resourceName = "orders")
+
+    private def regen(name: String = "orders", kind: String = "transformation"): ProposedAction = {
+        val args = new JsonObject()
+        if (name != null) args.addProperty("name", name)
+        if (kind != null) args.addProperty("kind", kind)
+        ProposedAction("regenerate_pipeline_scripts", args, "regenerate the transformation script")
+    }
+
+    private def proposalOf(actions: ProposedAction*): IncidentRunner.Proposal =
+        IncidentRunner.Proposal("structural-script", "the transformation script fails on the new input", needsHuman = false, actions.toList, None)
+
+    test("pipeline incident: regenerate_pipeline_scripts for its own pipeline and a known kind survives filterActions") {
+        val filtered = IncidentRunner.filterActions(pipelineIncident(), proposalOf(regen()))
+        assert(filtered.map(_.tool) == List("regenerate_pipeline_scripts"), filtered)
+        assert(filtered.head.args.get("name").getAsString == "orders")
+        assert(filtered.head.args.get("kind").getAsString == "transformation")
+        val dq = IncidentRunner.filterActions(pipelineIncident(), proposalOf(regen(kind = "dataQuality")))
+        assert(dq.map(_.tool) == List("regenerate_pipeline_scripts"), dq)
+    }
+
+    test("pipeline incident: another pipeline's name, an unknown or missing kind, and run_tap are dropped") {
+        val runOrders = action("run_tap", "orders")
+        val filtered = IncidentRunner.filterActions(
+            pipelineIncident(),
+            proposalOf(regen(name = "other"), regen(kind = "foo"), regen(kind = null), regen(name = null), runOrders, action("update_tap", "orders"))
+        )
+        assert(filtered.isEmpty, filtered.map(a => a.tool + " " + a.args))
+    }
+
+    test("tap incident: regenerate_pipeline_scripts is dropped even when it names the incident's resource") {
+        val filtered = IncidentRunner.filterActions(incident(Incident.KindTapFailure), proposalOf(regen(name = "prices"), action("run_tap")))
+        assert(filtered.map(_.tool) == List("run_tap"), filtered.map(_.tool))
+    }
+
+    test("RealExecutor maps regenerate_pipeline_scripts to POST .../codegen-scripts/{kind}/regenerate with body {} and no query string") {
+        val r = IncidentRunner.RealExecutor.restFor("regenerate_pipeline_scripts", regen().args)
+        assert(r == Some(("POST", "/api/v1/pipelines/orders/codegen-scripts/transformation/regenerate", Some("{}"))), r)
+        assert(!r.get._2.contains("?"), "storage / overwrite are never passed")
+    }
+
+    // ------------------------------------------------------------------
+    // Pipeline incident state machine
+    // ------------------------------------------------------------------
+
+    /** Everything one pipeline scenario observed. */
+    private class PCtx(val id: String, val store: FakeStore) {
+        val calls = mutable.ArrayBuffer[Call]()
+        val scratchCalls = mutable.ArrayBuffer[(String, Option[String])]()
+        val restores = mutable.ArrayBuffer[(String, String, Int, String)]()
+        val latest = mutable.Map[String, Int]("transformation" -> 3)
+        @volatile var revertAtFirstAction: Option[Map[String, Int]] = None
+        @volatile var tap: TapConfig = TapConfig(name = "prices", description = "d", targetPipeline = "orders", version = 3, lastRunStatus = "success")
+        def incident: Incident = store.get(id).getOrElse(fail("incident " + id + " vanished"))
+        def tools: List[String] = calls.map(_.tool).toList
+        def summaries: List[String] = incident.steps.map(_.summary)
+        def ev: IncidentEvidence = IncidentEvidenceBuilder.of(incident).getOrElse(fail("no evidence on " + incident))
+    }
+
+    private val PipelineMutations = Set("regenerate_pipeline_scripts", "run_tap", "update_tap", "create_tap", "test_tap")
+
+    private def pipelineScenario[T](
+        input: Option[PipelineInputSource.Input],
+        candidate: Option[RunProfile] = Some(healthyCandidate),
+        real: Option[RunProfile] = Some(healthyReal),
+        restoreResult: Either[String, Unit] = Right(()),
+        proposal: IncidentRunner.Proposal = proposalOf(regen())
+    )(body: PCtx => T): T = {
+        val store = new FakeStore
+        val ctx = new PCtx(Incident.newId(), store)
+        store.insert(Incident(
+            id = ctx.id,
+            kind = Incident.KindPipelineFailure,
+            resourceType = "pipeline",
+            resourceName = "orders",
+            openedAt = Instant.now(),
+            state = Incident.Open,
+            trigger = JsonParser.parseString(
+                """{"pipelineToken":"tok_1","error":"AI transformation script failed: KeyError 'amount'","failingStage":"transformation-script"}"""
+            ).getAsJsonObject,
+            steps = List(IncidentStep(Instant.now(), "open", "pipeline_failure signal on pipeline orders")),
+            evidence = Some(evidenceWith(Some(baseline)).toJson)
+        ))
+
+        val saved = (
+            IncidentRunner.diagnoser,
+            IncidentRunner.executor,
+            IncidentRunner.runAsync,
+            IncidentRunner.scratch,
+            IncidentRunner.settingsOverride,
+            IncidentRunner.tapLookup,
+            IncidentRunner.revertTap,
+            IncidentIO.store,
+            IncidentEvidenceBuilder.realProfileOverride,
+            IncidentRunner.inputSource,
+            IncidentRunner.scriptLatestVersion,
+            IncidentRunner.restoreScript
+        )
+        IncidentIO.store = store
+        IncidentRunner.runAsync = false
+        IncidentRunner.settingsOverride = RecoverySettings(mode = RecoverySettings.Propose)
+        IncidentRunner.diagnoser = new IncidentRunner.Diagnoser {
+            override def diagnose(incident: Incident, onAiCall: () => Unit): Either[String, IncidentRunner.Proposal] = {
+                onAiCall()
+                Right(proposal)
+            }
+        }
+        IncidentRunner.executor = new IncidentRunner.ToolExecutor {
+            override def call(tool: String, args: JsonObject, incidentId: String): ToolOutcome = {
+                ctx.calls.synchronized { ctx.calls += Call(tool, args, store.get(incidentId).map(_.state).orNull) }
+                tool match {
+                    case "regenerate_pipeline_scripts" =>
+                        if (ctx.revertAtFirstAction.isEmpty) ctx.revertAtFirstAction = store.get(incidentId).map(_.revertToScriptVersions)
+                        val k = args.get("kind").getAsString
+                        ctx.latest(k) = ctx.latest.getOrElse(k, 0) + 1
+                        ToolOutcome.Ok("""{"pipeline":"orders","kind":"""" + k + """","status":"ready"}""")
+                    case "run_tap" =>
+                        ctx.tap = ctx.tap.copy(lastRunStatus = "success", lastRunRecordCount = real.map(_.recordCount.toInt).getOrElse(0))
+                        ToolOutcome.Ok("""{"mode":"run","recordCount":""" + real.map(_.recordCount).getOrElse(0L) + ""","publisherToken":"pt_1"}""")
+                    case "get_pipeline_status" => ToolOutcome.Ok("""{"allDone":true,"status":"complete"}""")
+                    case _ => ToolOutcome.Ok("{}")
+                }
+            }
+        }
+        IncidentRunner.scratch = (t: TapConfig, script: Option[String]) => {
+            ctx.scratchCalls.synchronized { ctx.scratchCalls += ((t.name, script)) }
+            ScratchOutcome(candidate, if (candidate.isEmpty) Some("scratch run failed") else None)
+        }
+        IncidentRunner.tapLookup = (name: String) => if (name == "prices") Some(ctx.tap) else None
+        // A pipeline incident never reverts a tap: recorded so the restore assertions would catch it.
+        IncidentRunner.revertTap = (_: String, tapName: String, v: Int) => ctx.restores.synchronized { ctx.restores += ((tapName, "tap-revert", v, "")); () }
+        IncidentEvidenceBuilder.realProfileOverride = (_: Incident, _: Option[RunProfile]) => real
+        IncidentRunner.inputSource = new PipelineInputSource {
+            override def lastGoodInput(incident: Incident): Option[PipelineInputSource.Input] = input
+        }
+        IncidentRunner.scriptLatestVersion = (pipeline: String, kind: String) =>
+            if (pipeline == "orders") ctx.latest.getOrElse(kind, 0) else 0
+        IncidentRunner.restoreScript = (pipeline: String, kind: String, toVersion: Int, actor: String) => {
+            ctx.restores.synchronized { ctx.restores += ((pipeline, kind, toVersion, actor)) }
+            // A restore appends a NEW latest version holding the old text.
+            if (restoreResult.isRight) ctx.latest(kind) = ctx.latest.getOrElse(kind, 0) + 1
+            restoreResult
+        }
+
+        try body(ctx)
+        finally {
+            IncidentRunner.diagnoser = saved._1
+            IncidentRunner.executor = saved._2
+            IncidentRunner.runAsync = saved._3
+            IncidentRunner.scratch = saved._4
+            IncidentRunner.settingsOverride = saved._5
+            IncidentRunner.tapLookup = saved._6
+            IncidentRunner.revertTap = saved._7
+            IncidentIO.store = saved._8
+            IncidentEvidenceBuilder.realProfileOverride = saved._9
+            IncidentRunner.inputSource = saved._10
+            IncidentRunner.scriptLatestVersion = saved._11
+            IncidentRunner.restoreScript = saved._12
+        }
+    }
+
+    test("pipeline incident: revertToScriptVersions is recorded before the first action from the versions seam") {
+        pipelineScenario(input = Some(PipelineInputSource.TapFed("prices"))) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.tools.contains("regenerate_pipeline_scripts"), c.tools + " / " + c.summaries)
+            assert(c.revertAtFirstAction == Some(Map("transformation" -> 3)), c.revertAtFirstAction)
+            assert(c.incident.revertToScriptVersions == Map("transformation" -> 3))
+            assert(c.incident.revertToVersion.isEmpty, "a pipeline incident records no tap version")
+        }
+    }
+
+    test("pipeline incident fed by a tap: regenerate, scratch of the feeding tap's stored script, run_tap, resolved with scriptVersions 3 -> 4") {
+        pipelineScenario(input = Some(PipelineInputSource.TapFed("prices"))) { c =>
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+            assert(c.scratchCalls.toList == List(("prices", None)), "the feeding tap ran in scratch with its own script: " + c.scratchCalls)
+            val mutating = c.tools.filter(PipelineMutations)
+            assert(mutating == List("regenerate_pipeline_scripts", "run_tap"), c.tools)
+            val run = c.calls.find(_.tool == "run_tap").get
+            assert(run.args.get("name").getAsString == "prices", run.args)
+            assert(c.tools.contains("get_pipeline_status"), "the rollup of the real run is polled: " + c.tools)
+            assert(c.ev.scriptVersions == List(ScriptVersionChange("transformation", 3, 4)), c.ev.scriptVersions)
+            assert(c.ev.candidate.exists(_.runId == "scratch_1"), "the scratch run is evidence.candidate")
+            assert(c.ev.real.isDefined, "the real run is profiled onto the evidence")
+            assert(c.restores.isEmpty, c.restores)
+            // The scratch stage comes after the regenerate (the new script must be live) and before the real run.
+            val regenAt = i.steps.indexWhere(s => s.phase == "execute" && s.summary.startsWith("regenerate_pipeline_scripts"))
+            val scratchAt = i.steps.indexWhere(_.summary.contains("scratch verification"))
+            assert(regenAt >= 0 && scratchAt > regenAt, c.summaries)
+            val runAt = c.tools.indexOf("run_tap")
+            val regenCallAt = c.tools.indexOf("regenerate_pipeline_scripts")
+            assert(regenCallAt < runAt, c.tools)
+        }
+    }
+
+    test("pipeline incident: scratch fail restores the script once, says so, scriptVersions.after == 3, failed, no real run") {
+        // 60 % of the rows dropped: maxRecordDeltaPct (25) breached.
+        pipelineScenario(input = Some(PipelineInputSource.TapFed("prices")), candidate = Some(runProfile("scratch_1", "scratch", 40L))) { c =>
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(i.state == Incident.Failed, i.outcome + " / " + c.summaries)
+            assert(c.restores.toList == List(("orders", "transformation", 3, "recovery-agent")), c.restores)
+            assert(c.summaries.contains("restored transformation script to version 3"), c.summaries)
+            assert(c.ev.scriptVersions.map(_.after) == List(3), c.ev.scriptVersions)
+            assert(c.ev.scriptVersions.map(_.before) == List(3), c.ev.scriptVersions)
+            assert(!c.tools.contains("run_tap"), "no real run after a scratch fail: " + c.tools)
+        }
+    }
+
+    test("pipeline incident: a Left from the restore is a 'revert failed' step, never an exception") {
+        pipelineScenario(
+            input = Some(PipelineInputSource.TapFed("prices")),
+            candidate = Some(runProfile("scratch_1", "scratch", 40L)),
+            restoreResult = Left("the repository file was edited since the recorded commit")
+        ) { c =>
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(i.state == Incident.Failed, i.outcome + " / " + c.summaries)
+            assert(c.restores.size == 1, c.restores)
+            val st = i.steps.find(s => s.phase == "execute" && s.summary == "revert failed")
+            assert(st.isDefined, c.summaries)
+            assert(st.get.detail.exists(_.contains("the repository file was edited")), st)
+            assert(!i.outcome.exists(_.startsWith("runner error")), "the Left did not escape as an exception: " + i.outcome)
+            assert(!c.summaries.exists(_.startsWith("restored transformation script")), c.summaries)
+        }
+    }
+
+    test("pipeline incident with no replayable input: regenerated, resolved 'unverified', no scratch and no run_tap") {
+        pipelineScenario(input = None) { c =>
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+            assert(i.outcome.exists(_.contains("unverified")), i.outcome)
+            assert(c.tools.contains("regenerate_pipeline_scripts"), c.tools)
+            assert(!c.tools.contains("run_tap"), c.tools)
+            assert(c.scratchCalls.isEmpty, c.scratchCalls)
+            assert(c.summaries.exists(s => s.contains("no replayable input") && s.contains("not verified")), c.summaries)
+            assert(!c.summaries.exists(_.contains("no automatic verification for pipeline incidents")), "the v1 diagnosis-only text is gone")
+            assert(c.ev.scriptVersions == List(ScriptVersionChange("transformation", 3, 4)), c.ev.scriptVersions)
+            assert(c.restores.isEmpty)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Acceptance bullet 2: revertToScriptVersions round-trip
+    // ------------------------------------------------------------------
+
+    test("revertToScriptVersions survives toDocument / fromDocument and is an object in toPublicJson") {
+        val i = pipelineIncident().copy(
+            openedAt = Instant.parse("2026-10-16T10:00:00Z"),
+            revertToScriptVersions = Map("transformation" -> 3, "dataQuality" -> 0)
+        )
+        val back = Incident.fromDocument(i.toDocument)
+        assert(back.revertToScriptVersions == Map("transformation" -> 3, "dataQuality" -> 0), back.revertToScriptVersions)
+        assert(back == i)
+        val pub = i.toPublicJson
+        assert(pub.has("revertToScriptVersions") && pub.get("revertToScriptVersions").isJsonObject, pub)
+        val o = pub.getAsJsonObject("revertToScriptVersions")
+        assert(o.get("transformation").getAsInt == 3 && o.get("dataQuality").getAsInt == 0, o)
+    }
+
+    test("a document without revertToScriptVersions (pre-upgrade) reads as empty") {
+        val i = pipelineIncident().copy(openedAt = Instant.parse("2026-10-16T10:00:00Z"))
+        val d = i.toDocument
+        d.remove("revertToScriptVersions")
+        val back = Incident.fromDocument(d)
+        assert(back.revertToScriptVersions == Map.empty[String, Int])
+        assert(back == i)
+    }
+
+    test("evidence.scriptVersions serialises as [{kind, before, after}], reads back, and is absent when empty") {
+        val e = evidenceWith(Some(baseline)).copy(scriptVersions = List(ScriptVersionChange("transformation", 3, 4)))
+        val j = e.toJson
+        assert(j.has("scriptVersions") && j.get("scriptVersions").isJsonArray, j)
+        val first = j.getAsJsonArray("scriptVersions").get(0).getAsJsonObject
+        assert(first.get("kind").getAsString == "transformation" && first.get("before").getAsInt == 3 && first.get("after").getAsInt == 4, first)
+        assert(IncidentEvidence.fromJson(j).scriptVersions == List(ScriptVersionChange("transformation", 3, 4)))
+        val none = evidenceWith(Some(baseline)).toJson
+        assert(!none.has("scriptVersions"), "absent for tap incidents: " + none)
+        assert(IncidentEvidence.fromJson(none).scriptVersions.isEmpty)
     }
 }

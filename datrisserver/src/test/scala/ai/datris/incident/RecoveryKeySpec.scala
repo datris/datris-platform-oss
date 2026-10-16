@@ -41,7 +41,20 @@ class RecoveryKeySpec extends AnyFunSuite {
         val routes = MCPToolRoutes.tools.toMap
         val problems = (IncidentRunner.DiagnosisTools ++ IncidentRunner.ExecutableTools).toList.sorted.flatMap { tool =>
             routes.get(tool) match {
-                case None => Some(tool + ": not in MCPToolRoutes.tools")
+                // A runner action that is not an MCP tool (regenerate_pipeline_scripts,
+                // self-healing-5) is checked through the REST call the runner makes.
+                case None =>
+                    val args = new com.google.gson.JsonObject()
+                    args.addProperty("name", "orders")
+                    args.addProperty("kind", "transformation")
+                    IncidentRunner.RealExecutor.restFor(tool, args) match {
+                        case None => Some(tool + ": not in MCPToolRoutes.tools and no RealExecutor.restFor mapping")
+                        case Some((method: String, path: String, _)) =>
+                            CapabilityRoutes.lookup(method, path.takeWhile(_ != '?')) match {
+                                case RouteCheck.Require(resource, action) if key.matchesResourceAction(resource, action) => None
+                                case other => Some(tool + ": " + method + " " + path + " -> " + other + ", not held by RecoveryKey.Capabilities")
+                            }
+                    }
                 case Some(MCPToolRoutes.Local) => None
                 case Some(MCPToolRoutes.Mapped(method, path)) =>
                     CapabilityRoutes.lookup(method, path) match {
@@ -60,8 +73,14 @@ class RecoveryKeySpec extends AnyFunSuite {
         assert(!RecoveryKey.Capabilities.exists(c => c.startsWith("lineage:") || c.startsWith("provenance:")), RecoveryKey.Capabilities)
     }
 
-    test("a key issued with the pre-story capability list is missing nothing (ensure() grants nothing on upgrade)") {
-        // RecoveryKey.Capabilities as of the release before this story.
+    // Story: Pipeline incidents (plans/stories/self-healing-5-pipeline-incidents.md),
+    // Acceptance bullet 3 — this replaces self-healing-4's "missing nothing"
+    // case: the list below is the capability list as issued through
+    // self-healing-4, and story 5 adds exactly pipeline:update (for
+    // regenerate_pipeline_scripts), so ensure() widens an upgraded key by that
+    // one capability. Revoked keys are never widened (case above).
+    test("a key issued before pipeline:update existed is missing exactly that") {
+        // RecoveryKey.Capabilities as of self-healing-4.
         val issued = Seq(
             "tap:read",
             "tap:run",
@@ -80,6 +99,19 @@ class RecoveryKeySpec extends AnyFunSuite {
             "config:read"
         )
         val json = s"""{"capabilities":[${issued.map("\"" + _ + "\"").mkString(",")}],"revoked":false,"keyId":"k_1"}"""
-        assert(RecoveryKey.missingCapabilities(json).isEmpty, RecoveryKey.missingCapabilities(json))
+        assert(RecoveryKey.missingCapabilities(json) == Seq("pipeline:update"), RecoveryKey.missingCapabilities(json))
+        assert(RecoveryKey.Capabilities.contains("pipeline:update"))
+        // Still no deletes, secrets or pipeline definition changes beyond the script route.
+        assert(!RecoveryKey.Capabilities.exists(c => c.startsWith("pipeline:delete") || c.startsWith("pipeline:create") || c.startsWith("secret:")))
+    }
+
+    test("the regenerate route the runner calls is pipeline:update, which the recovery key holds after this story") {
+        val key = ResolvedKey(None, RecoveryKey.Label, Capability.parseList(RecoveryKey.Capabilities), isLegacyFullAccess = false)
+        CapabilityRoutes.lookup("POST", "/api/v1/pipelines/orders/codegen-scripts/transformation/regenerate") match {
+            case RouteCheck.Require(resource, action) =>
+                assert(resource + ":" + action == "pipeline:update")
+                assert(key.matchesResourceAction(resource, action), RecoveryKey.Capabilities)
+            case other => fail("regenerate route not mapped to a capability: " + other)
+        }
     }
 }
