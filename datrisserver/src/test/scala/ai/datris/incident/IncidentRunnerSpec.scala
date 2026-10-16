@@ -235,10 +235,12 @@ class IncidentRunnerSpec extends AnyFunSuite {
     }
 
     test("public JSON exposes the narrative but keeps state machinery consistent") {
-        val i = incident(Incident.KindVolume)
+        val i = incident(Incident.KindVolume).copy(revertToVersion = Some(7))
         val json = i.toPublicJson.toString
         assert(json.contains("\"kind\":\"volume\""))
         assert(json.contains("\"state\":\"open\""))
+        assert(json.contains("\"revertToVersion\":7"))
         assert(Incident.OpenStates.contains(i.state))
+        assert(!incident(Incident.KindVolume).toPublicJson.has("revertToVersion"))
     }
 }

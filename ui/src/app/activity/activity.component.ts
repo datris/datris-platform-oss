@@ -597,11 +597,6 @@ export class ActivityComponent implements OnInit, OnDestroy {
     this.historyTo = null;
   }
 
-  /** Chip tone for an evidence verdict. */
-  verdictClass(v?: string): string {
-    return 'verdict-' + (v || 'pending');
-  }
-
   toggleTimeline(i: Incident): void {
     if (this.timelineOpen.has(i.id)) this.timelineOpen.delete(i.id);
     else this.timelineOpen.add(i.id);
