@@ -59,12 +59,19 @@ components:
           nullable: true
         origin:
           type: string
-          enum: [save, run, regenerate, repository, restore]
+          enum: [save, run, regenerate, repository, restore, restore-version]
           nullable: true
           description: >-
             How the current script was recorded. `repository` means an edit
             made in the code repository was adopted with the pull endpoint;
-            `restore` means it was imported from a catalog archive.
+            `restore` means it was imported from a catalog archive;
+            `restore-version` means an earlier script version was restored.
+        version:
+          type: integer
+          description: >-
+            Number of the live script in its version history. Absent for a
+            script stored before script versioning (it is numbered 1 on the
+            first change or history read).
         fingerprint:
           type: string
           nullable: true
@@ -1405,6 +1412,96 @@ components:
               nullable: true
               description: Resolved tap script content (taps only; null if the object is absent)
 
+    CodeGenScriptVersionSummary:
+      type: object
+      description: One version of a pipeline's CodeGen script, without its text.
+      properties:
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          nullable: true
+          description: Key label or user that made the change; null for a run.
+        changeNote:
+          type: string
+          nullable: true
+          description: >-
+            For example `(seeded from pre-versioning state)`, `restored from
+            version 2`, `imported from catalog archive`, `adopted repository
+            commit abc1234`.
+        origin:
+          type: string
+          enum: [save, run, regenerate, repository, restore, restore-version]
+        model:
+          type: string
+          nullable: true
+          description: The CodeGen model that wrote this text.
+        commitSha:
+          type: string
+          nullable: true
+          description: Code repository only. The commit holding this text.
+        fingerprintMatchesCurrent:
+          type: boolean
+          description: >-
+            True when the version was written for the pipeline's current
+            instruction and source schema (only those versions can be restored).
+        isLive:
+          type: boolean
+          description: True for the version runs execute now.
+    CodeGenScriptVersion:
+      allOf:
+        - $ref: '#/components/schemas/CodeGenScriptVersionSummary'
+        - type: object
+          properties:
+            kind:
+              type: string
+              enum: [dataQuality, transformation]
+            script:
+              type: string
+              description: The script text of this version.
+            fingerprint:
+              type: string
+            generatedAt:
+              type: string
+              format: date-time
+            contractVersion:
+              type: integer
+            storage:
+              type: string
+              nullable: true
+            repoPath:
+              type: string
+              nullable: true
+    CodeGenScriptVersionDiff:
+      type: object
+      properties:
+        from:
+          type: integer
+          description: Base version of the comparison (the `against` parameter)
+        to:
+          type: integer
+          description: Target version of the comparison (the `version` path parameter)
+        script:
+          type: object
+          description: Same shape as the tap script diff of `EntityVersionDiff`
+          properties:
+            before:
+              type: string
+            after:
+              type: string
+            lines:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: [ctx, add, del]
+                  text:
+                    type: string
     EntityVersionDiff:
       type: object
       properties:
@@ -2232,7 +2329,9 @@ paths:
         store unless `storage` asks for another; the old copy is left in
         place. A repository-backed script whose file was edited in the
         repository since the recorded commit is not overwritten (409) unless
-        `overwrite=true`. Requires `pipeline:create`. Audited.
+        `overwrite=true`. The new script is a new version in the script's
+        history. Requires `pipeline:update` (agent-policy action
+        `pipeline:update:codegen-scripts`). Audited.
       parameters:
         - in: path
           name: name
@@ -2290,7 +2389,8 @@ paths:
         head of the configured branch (origin `repository`), so later runs
         execute the file as it is in the repository now. No commit is made.
         Later saves keep the adopted script while the instruction and source
-        schema are unchanged. Requires `pipeline:create`. Audited.
+        schema are unchanged. The adopted file is a new version in the
+        script's history. Requires `pipeline:update`. Audited.
       parameters:
         - in: path
           name: name
@@ -2316,6 +2416,170 @@ paths:
           description: Unknown pipeline
         '502':
           description: The code repository could not be read; the recorded commit is unchanged
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions:
+    get:
+      tags: [Pipelines]
+      summary: Version history of a CodeGen script
+      description: >-
+        Every change to the script the pipeline runs for `kind` (generated at
+        save or at a run, regenerated, pulled from the code repository,
+        imported by a catalog restore, or restored from this history), newest
+        first. A script stored before script versioning is listed as version 1
+        "(seeded from pre-versioning state)". Retention is `versionCap` per
+        pipeline and kind. The pipeline's definition version does not change
+        when its script does. Requires `pipeline:read`.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+      responses:
+        '200':
+          description: Versions, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CodeGenScriptVersionSummary'
+        '400':
+          description: Unknown kind
+        '404':
+          description: Unknown pipeline
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions/{version}:
+    get:
+      tags: [Pipelines]
+      summary: One version of a CodeGen script, with its text
+      description: Requires `pipeline:read`.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+        - in: path
+          name: version
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodeGenScriptVersion'
+        '400':
+          description: Unknown kind
+        '404':
+          description: Unknown pipeline or version
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions/{version}/diff:
+    get:
+      tags: [Pipelines]
+      summary: Line diff of two CodeGen script versions
+      description: >-
+        Server-computed line diff from `against` to `version`; each line is
+        typed `ctx`, `add` or `del`. Requires `pipeline:read`.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+        - in: path
+          name: version
+          required: true
+          schema:
+            type: integer
+        - in: query
+          name: against
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The diff
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodeGenScriptVersionDiff'
+        '400':
+          description: Unknown kind
+        '404':
+          description: Unknown pipeline or version
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions/{version}/restore:
+    post:
+      tags: [Pipelines]
+      summary: Restore a CodeGen script version
+      description: >-
+        Makes the text of `version` the script the pipeline runs, through the
+        same store path as a regenerate but with no model call: it becomes a
+        NEW latest version (origin `restore-version`) and keeps the model that
+        wrote it. A built-in script object is replaced; a repository-backed
+        script gets a new commit. The pipeline's definition version does not
+        change. Refused, with nothing changed, when the version was written
+        for a different instruction or source schema than the pipeline has
+        now, or for another script contract version (422), and when the
+        repository file was edited since the recorded commit (409). Requires
+        `pipeline:update` (agent-policy action `pipeline:update:codegen-scripts`).
+        Audited as `codegen-script-restore-version:<kind>`.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+        - in: path
+          name: version
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The script entry, now carrying the new `version`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodegenScript'
+        '400':
+          description: Unknown kind, or the pipeline has no AI instruction of that kind
+        '404':
+          description: Unknown pipeline or version
+        '409':
+          description: >-
+            The script's file was edited in the code repository since the
+            recorded commit; nothing was committed.
+        '422':
+          description: >-
+            The version was written for a different instruction, source schema
+            or script contract than the pipeline has now; nothing was changed.
+        '502':
+          description: The script could not be stored; the current script is unchanged
   /api/v1/pipeline/dest-types:
     get:
       tags: [Pipelines]

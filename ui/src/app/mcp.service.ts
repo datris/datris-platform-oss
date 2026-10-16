@@ -302,6 +302,14 @@ export class McpService {
         return this.http.get<any>('/api/v1/pipeline/version/diff?name=' + encodeURIComponent(params['name']) + '&version=' + params['version'] + '&against=' + params['against']);
       case 'restore_pipeline_version':
         return this.http.post<any>('/api/v1/pipeline/version/restore?name=' + encodeURIComponent(params['name']) + '&version=' + params['version'], {});
+      case 'list_script_versions':
+        return this.http.get<any>(this.scriptVersionsPath(params));
+      case 'get_script_version':
+        return this.http.get<any>(this.scriptVersionsPath(params) + '/' + encodeURIComponent(params['version']));
+      case 'diff_script_versions':
+        return this.http.get<any>(this.scriptVersionsPath(params) + '/' + encodeURIComponent(params['version']) + '/diff?against=' + encodeURIComponent(params['against']));
+      case 'restore_script_version':
+        return this.http.post<any>(this.scriptVersionsPath(params) + '/' + encodeURIComponent(params['version']) + '/restore', {});
 
       // Catalog assignment (read-modify-write on the named tap or pipeline)
       case 'set_catalog': {
@@ -385,6 +393,11 @@ export class McpService {
       default:
         throw new Error('Unknown tool: ' + toolName);
     }
+  }
+
+  /** /api/v1/pipelines/<name>/codegen-scripts/<kind>/versions for the script-version tools. */
+  private scriptVersionsPath(params: Record<string, any>): string {
+    return '/api/v1/pipelines/' + encodeURIComponent(params['name']) + '/codegen-scripts/' + encodeURIComponent(params['kind']) + '/versions';
   }
 
   private uploadBase64(url: string, contentB64: string, filename: string, extraData?: Record<string, any>): Observable<any> {

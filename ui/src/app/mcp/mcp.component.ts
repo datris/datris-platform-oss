@@ -564,6 +564,50 @@ export class McpComponent implements OnInit {
       ],
       playgroundEnabled: true
     },
+    {
+      name: 'list_script_versions',
+      description: 'List the version history of the script the pipeline runs for its AI data-quality rule or AI transformation, newest first: version, createdAt, createdBy, changeNote, origin, model, commitSha, fingerprintMatchesCurrent, isLive. The pipeline\'s definition version does not change when its script does. Read-only.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the pipeline', required: true, inputType: 'text' },
+        { name: 'kind', type: 'string', description: 'Which script: the AI data-quality rule (dataQuality) or the AI transformation (transformation)', required: true, inputType: 'select', optionsLoader: 'loadScriptKinds' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_script_version',
+      description: 'View one version of a pipeline\'s AI data-quality rule or AI transformation script, including the full script text. Read-only.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the pipeline', required: true, inputType: 'text' },
+        { name: 'kind', type: 'string', description: 'Which script: the AI data-quality rule (dataQuality) or the AI transformation (transformation)', required: true, inputType: 'select', optionsLoader: 'loadScriptKinds' },
+        { name: 'version', type: 'integer', description: 'Script version number to view', required: true, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'diff_script_versions',
+      description: 'Compare two versions of a pipeline\'s AI data-quality rule or AI transformation script. Returns a server-computed line diff (ctx / add / del). Read-only.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the pipeline', required: true, inputType: 'text' },
+        { name: 'kind', type: 'string', description: 'Which script: the AI data-quality rule (dataQuality) or the AI transformation (transformation)', required: true, inputType: 'select', optionsLoader: 'loadScriptKinds' },
+        { name: 'version', type: 'integer', description: 'Selected version', required: true, inputType: 'number' },
+        { name: 'against', type: 'integer', description: 'Baseline version to compare against', required: true, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'restore_script_version',
+      description: 'Make an earlier version of a pipeline\'s AI data-quality rule or AI transformation script the one it runs. APPEND-ONLY and SIDE-EFFECTING: writes the chosen text back as a NEW latest version (no model call); the definition version does not change. Refused when the pipeline\'s instruction or source schema no longer matches the version, or when a repository-backed file was edited since its recorded commit.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the pipeline', required: true, inputType: 'text' },
+        { name: 'kind', type: 'string', description: 'Which script: the AI data-quality rule (dataQuality) or the AI transformation (transformation)', required: true, inputType: 'select', optionsLoader: 'loadScriptKinds' },
+        { name: 'version', type: 'integer', description: 'Script version to restore (becomes a new latest version)', required: true, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
     // --- Vector Search ---
     {
       name: 'search_qdrant',
@@ -1097,7 +1141,8 @@ export class McpComponent implements OnInit {
       loadQdrantCollections: () => loadFromTool('list_qdrant_collections'),
       loadWeaviateClasses: () => loadFromTool('list_weaviate_classes'),
       loadMilvusCollections: () => loadFromTool('list_milvus_collections'),
-      loadChromaCollections: () => loadFromTool('list_chroma_collections')
+      loadChromaCollections: () => loadFromTool('list_chroma_collections'),
+      loadScriptKinds: () => { this.paramOptions[param.name] = ['dataQuality', 'transformation']; }
     };
     const loader = loaders[param.optionsLoader!];
     if (loader) loader();

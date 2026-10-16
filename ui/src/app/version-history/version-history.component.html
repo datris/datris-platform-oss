@@ -2,15 +2,20 @@
 <div class="modal-overlay" (click)="close()">
   <div class="vh-modal" (click)="$event.stopPropagation()">
     <div class="modal-header">
-      <h2 class="modal-title">Version History: {{ name }}</h2>
+      <h2 class="modal-title" *ngIf="!isScript">Version History: {{ name }}</h2>
+      <h2 class="modal-title" *ngIf="isScript">Script history: {{ name }} / {{ kind }}</h2>
       <button class="modal-close" (click)="close()">
         <span class="material-icons">close</span>
       </button>
     </div>
     <div class="modal-body">
-      <p class="vh-note">
+      <p class="vh-note" *ngIf="!isScript">
         Restoring a version is append-only — it creates a new latest version, nothing is lost.
         It does not run the {{ isTap ? 'tap' : 'pipeline' }}.
+      </p>
+      <p class="vh-note" *ngIf="isScript">
+        Restoring a version writes the chosen script back as a new latest version; the pipeline's definition version does not change.
+        A version written for a different instruction or source schema is refused.
       </p>
 
       <div class="vh-success" *ngIf="successMessage">{{ successMessage }}</div>
@@ -25,6 +30,7 @@
             <th>Version</th>
             <th>When</th>
             <th>By</th>
+            <th *ngIf="isScript">Origin</th>
             <th>Note</th>
             <th></th>
           </tr>
@@ -34,9 +40,10 @@
               class="vh-row"
               [class.vh-row-selected]="selectedVersion === v.version"
               (click)="selectVersion(v.version)">
-            <td class="vh-version">v{{ v.version }}</td>
+            <td class="vh-version">v{{ v.version }}<span class="vh-live" *ngIf="isScript && v.isLive"> (live)</span></td>
             <td>{{ v.createdAt }}</td>
             <td>{{ v.createdBy || '—' }}</td>
+            <td *ngIf="isScript">{{ v.origin || '—' }}</td>
             <td class="vh-note-cell">{{ v.changeNote || '—' }}</td>
             <td class="vh-actions">
               <button class="btn-secondary vh-restore-btn"
@@ -72,6 +79,7 @@
         <div class="vh-diff" *ngIf="diffAgainst !== null">
           <div class="logs-loading" *ngIf="diffLoading">Loading diff...</div>
           <div *ngIf="!diffLoading && diff">
+            <ng-container *ngIf="hasConfig">
             <div class="vh-subtitle">Config changes (v{{ diff.from }} → v{{ diff.to }})</div>
             <div class="vh-diff-empty" *ngIf="!diff.config || diff.config.length === 0">No config differences.</div>
             <div class="vh-diff-list" *ngIf="diff.config && diff.config.length > 0">
@@ -84,9 +92,10 @@
                 </span>
               </div>
             </div>
+            </ng-container>
 
-            <div *ngIf="isTap && diff.script">
-              <div class="vh-subtitle">Script changes</div>
+            <div *ngIf="hasScript && diff.script">
+              <div class="vh-subtitle">Script changes<ng-container *ngIf="isScript"> (v{{ diff.from }} → v{{ diff.to }})</ng-container></div>
               <div class="vh-diff-empty" *ngIf="!diff.script.lines || diff.script.lines.length === 0">No script differences.</div>
               <pre class="vh-script-diff" *ngIf="diff.script.lines && diff.script.lines.length > 0"><span
                 *ngFor="let line of diff.script.lines" class="vh-script-line" [ngClass]="lineClass(line.type)">{{ linePrefix(line.type) }} {{ line.text }}
@@ -97,9 +106,11 @@
 
         <!-- Snapshot view (no diff target selected) -->
         <div class="vh-snapshot" *ngIf="diffAgainst === null && !snapshotLoading && snapshot">
+          <ng-container *ngIf="hasConfig">
           <div class="vh-subtitle">Config</div>
           <pre class="config-json">{{ snapshotJson }}</pre>
-          <div *ngIf="isTap && snapshotScript">
+          </ng-container>
+          <div *ngIf="hasScript && snapshotScript">
             <div class="vh-subtitle">Script</div>
             <pre class="config-json">{{ snapshotScript }}</pre>
           </div>

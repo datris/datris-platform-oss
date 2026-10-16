@@ -25,6 +25,18 @@
   gap: 16px;
 }
 
+.detail-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.script-history-note {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 .version-history-btn {
   display: inline-flex;
   align-items: center;

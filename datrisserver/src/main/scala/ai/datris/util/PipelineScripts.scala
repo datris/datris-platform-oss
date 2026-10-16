@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{CodeGenScript, CsvAttributes, DatrisEnvironment, DatrisException, PipelineConfig, SchemaField}
+import ai.datris.model.{CodeGenScript, CodeGenScriptVersion, CsvAttributes, DatrisEnvironment, DatrisException, PipelineConfig, SchemaField}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.charset.StandardCharsets
@@ -32,9 +32,17 @@ import scala.collection.JavaConverters._
   * moved in the repository (a hand edit) is rejected and reported as a
   * warning, never overwritten silently, and [[pull]] adopts the head version.
   *
-  * Store, record IO, the model call and the current-model lookup are
-  * parameters so specs run without Mongo, MinIO, GitHub or a model;
-  * production defaults are on the companion object.
+  * Every change to the live script (save, run-time store, regenerate,
+  * restore of a version, catalog import, pull) appends a numbered version
+  * holding the text to `versions` (`<env>-codegen-script-version`); the live
+  * record's `scriptVersion` names it. History failures are warnings and
+  * never fail the change itself.
+  *
+  * Store, record IO, history IO, the model call and the current-model lookup
+  * are parameters so specs run without Mongo, MinIO, GitHub or a model;
+  * production defaults are on the companion object. A spec that injects its
+  * own records but not `versions` gets no history (the production history
+  * store is used only with the production record store).
   */
 class PipelineScripts(
     records: CodeGenScriptRecords,
@@ -42,11 +50,21 @@ class PipelineScripts(
     ai: (String, String) => String,
     currentModel: () => String,
     repoStoreFor: String => CodeStore = null,
-    defaultStorage: () => String = () => "minio"
+    defaultStorage: () => String = () => "minio",
+    versions: CodeGenScriptVersions = CodeGenScriptVersionIO
 ) {
     import PipelineScripts._
 
     private val logger: Logger = LoggerFactory.getLogger(classOf[PipelineScripts])
+
+    /** The script history, or None when a caller injected in-memory records
+      * but left `versions` at the Mongo default (history rows would describe
+      * records that are not the production ones, and the spec would need
+      * Mongo). */
+    private val history: Option[CodeGenScriptVersions] =
+        if (versions == null) None
+        else if ((versions eq CodeGenScriptVersionIO) && !(records eq CodeGenScriptIO)) None
+        else Some(versions)
 
     // ------------------------------------------------------------------ save
 
@@ -171,8 +189,11 @@ class PipelineScripts(
         existing: Option[CodeGenScript],
         actor: String,
         storage: String = null,
-        overwrite: Boolean = false
+        overwrite: Boolean = false,
+        model: String = null,
+        note: String = null
     ): CodeGenScript = {
+        val plan = planVersion(config.name, kind, existing)
         val backend = chooseBackend(existing, storage)
         val store = storeOf(config.name, backend)
         val sameBackendPrior = existing.filter(r => backendOf(r) == backend)
@@ -190,10 +211,11 @@ class PipelineScripts(
             scriptCommitSha = stored.scriptCommitSha,
             fingerprint = fp,
             generatedAgainst = if (generatedAgainst == null || generatedAgainst.isEmpty) null else new java.util.ArrayList[String](generatedAgainst.asJava),
-            model = currentModel(),
+            model = if (model != null) model else currentModel(),
             status = Ready,
             origin = origin,
-            contractVersion = contractVersion(kind)
+            contractVersion = contractVersion(kind),
+            scriptVersion = plan.map(_.number).getOrElse(0)
         )
         try records.write(rec)
         catch {
@@ -211,6 +233,7 @@ class PipelineScripts(
                 throw e
         }
         sameBackendPrior.foreach(old => if (backend != Github && !sameObject(old, rec)) deleteObject(old))
+        commitVersion(plan, rec, script, actor, note)
         rec
     }
 
@@ -489,6 +512,7 @@ class PipelineScripts(
             )
         val existing = records.read(config.name, kind)
         val backend = chooseBackend(existing, null)
+        val plan = planVersion(config.name, kind, existing)
         try {
             val store = storeOf(config.name, backend)
             val sameBackendPrior = existing.filter(r => backendOf(r) == backend)
@@ -530,7 +554,8 @@ class PipelineScripts(
                 model = archived.model,
                 status = Ready,
                 origin = "restore",
-                contractVersion = contractVersion(kind)
+                contractVersion = contractVersion(kind),
+                scriptVersion = plan.map(_.number).getOrElse(0)
             )
             try records.write(rec)
             catch {
@@ -539,6 +564,7 @@ class PipelineScripts(
                     throw e
             }
             sameBackendPrior.foreach(old => if (backend != Github && !sameObject(old, rec)) deleteObject(old))
+            commitVersion(plan, rec, text, actor, "imported from catalog archive")
             logger.info(
                 "CodeGen script " + config.name + "/" + kind + " imported from a catalog archive (model " + archived.model + ", generated " +
                     archived.generatedAt + ")" + Option(actor).map(" by " + _).getOrElse("")
@@ -593,7 +619,8 @@ class PipelineScripts(
                         case None => Left("'" + r.scriptRepoPath + "' is not on the configured branch of the code repository; there is nothing to pull")
                         case Some((content, _)) if content == null || content.trim.isEmpty =>
                             Left("'" + r.scriptRepoPath + "' is empty at the head of the configured branch; there is nothing to pull")
-                        case Some((_, headSha)) =>
+                        case Some((content, headSha)) =>
+                            val plan = planVersion(pipeline, kind, Some(r))
                             val base = r.copy(
                                 scriptCommitSha = headSha,
                                 generatedAt = java.time.Instant.now().toString,
@@ -601,13 +628,15 @@ class PipelineScripts(
                                 pendingReason = null,
                                 origin = "repository",
                                 conflictFingerprint = null,
-                                conflictReason = null
+                                conflictReason = null,
+                                scriptVersion = plan.map(_.number).getOrElse(r.scriptVersion)
                             )
                             val rec = current match {
                                 case Some(fp) => base.copy(fingerprint = fp, contractVersion = contractVersion(kind), generatedAgainst = null)
                                 case None => base
                             }
                             records.write(rec)
+                            commitVersion(plan, rec, content, actor, "adopted repository commit " + headSha.take(7))
                             logger.info(
                                 "CodeGen script " + pipeline + "/" + kind + " pinned to repository commit " + headSha +
                                     Option(actor).map(" by " + _).getOrElse("")
@@ -662,8 +691,8 @@ class PipelineScripts(
       * since the recorded commit, or that cannot be checked: then the file is
       * kept and one warning per kept file is returned. Records are deleted
       * either way. Best effort, never throws. */
-    def deleteAll(pipeline: String): Seq[String] =
-        Kinds.flatMap { kind =>
+    def deleteAll(pipeline: String): Seq[String] = {
+        val warnings = Kinds.flatMap { kind =>
             try removeKind(pipeline, kind)
             catch {
                 case e: Exception =>
@@ -671,6 +700,179 @@ class PipelineScripts(
                     None
             }
         }
+        history.foreach { h =>
+            try h.deleteAllForPipeline(pipeline)
+            catch {
+                case e: Throwable if scala.util.control.NonFatal(e) =>
+                    logger.warn("CodeGen script history cleanup failed for " + pipeline + ": " + messageOf(e))
+            }
+        }
+        warnings
+    }
+
+    // --------------------------------------------------------------- history
+
+    /** The script's versions, ascending. When the kind has no rows yet and
+      * its live record is ready and readable (a script stored before
+      * versioning), that script is seeded as v1 "(seeded from pre-versioning
+      * state)" first, once. Empty without history, for an unknown kind or for
+      * a kind with no readable script. Read failures propagate. */
+    def scriptVersions(pipeline: String, kind: String): List[CodeGenScriptVersion] = history match {
+        case None => Nil
+        case Some(_) if !Kinds.contains(kind) => Nil
+        case Some(h) =>
+            val rows = h.listVersions(pipeline, kind)
+            if (rows.nonEmpty || rehearsing) rows
+            else
+                records.read(pipeline, kind).flatMap(seedOf) match {
+                    case None => Nil
+                    case Some(seed) =>
+                        h.append(seed)
+                        records.read(pipeline, kind).filter(_.scriptVersion == 0).foreach { live =>
+                            try records.write(live.copy(scriptVersion = seed.version))
+                            catch {
+                                case e: Throwable if scala.util.control.NonFatal(e) =>
+                                    logger.warn("Could not number the seeded CodeGen script " + pipeline + "/" + kind + ": " + messageOf(e))
+                            }
+                        }
+                        List(seed)
+                }
+    }
+
+    /** One version (seeding as [[scriptVersions]] does). */
+    def scriptVersion(pipeline: String, kind: String, version: Int): Option[CodeGenScriptVersion] =
+        scriptVersions(pipeline, kind).find(_.version == version)
+
+    /** Make version `version`'s text the live script again, through the same
+      * store path as a regenerate (no model call): the result is a NEW latest
+      * version with origin "restore-version" and the model that wrote the
+      * restored text. A built-in object is replaced; a repository-backed
+      * script gets a new commit, refused (Left with [[conflictWarning]]) when
+      * the file was edited since the recorded commit. Left, with nothing
+      * changed, for an unknown kind or version, or a version written for
+      * another instruction, source schema or script contract version. */
+    def restoreVersion(config: PipelineConfig, kind: String, version: Int, actor: String): Either[String, CodeGenScript] = {
+        if (!Kinds.contains(kind)) return Left(unknownKindMessage(kind))
+        if (config == null || config.name == null) return Left("No pipeline config to restore the script into")
+        val instruction = instructionOf(config, kind) match {
+            case Some(i) => i
+            case None =>
+                return Left("Pipeline " + config.name + " has no AI " + (if (kind == PipelineScripts.DataQuality) "data-quality rule" else "transformation"))
+        }
+        val found =
+            try scriptVersion(config.name, kind, version)
+            catch {
+                case e: Throwable if scala.util.control.NonFatal(e) => return Left("the script history could not be read: " + messageOf(e))
+            }
+        val v = found match {
+            case Some(x) => x
+            case None => return Left(noVersionMessage(config.name, kind, version))
+        }
+        val fp = fingerprint(instruction, schemaSignature(config))
+        if (v.fingerprint != fp)
+            return Left(
+                "script version " + version + " was generated for a different instruction or source schema than pipeline " + config.name +
+                    " has now; nothing was changed"
+            )
+        if (v.contractVersion != contractVersion(kind))
+            return Left(
+                "script version " + version + " was written for script contract version " + v.contractVersion + "; this server uses version " +
+                    contractVersion(kind) + "; nothing was changed"
+            )
+        if (v.script == null || v.script.trim.isEmpty) return Left("script version " + version + " holds no script text; nothing was changed")
+        val existing = records.read(config.name, kind)
+        val against = Option(v.generatedAgainst).map(_.asScala.toList).getOrElse(Nil)
+        try
+            Right(
+                storeRecord(
+                    config,
+                    kind,
+                    instruction,
+                    fp,
+                    v.script,
+                    against,
+                    "restore-version",
+                    existing,
+                    actor,
+                    model = v.model,
+                    note = "restored from version " + version
+                )
+            )
+        catch {
+            // A hand-edited repository file is never overwritten by a restore.
+            case _: CodeRepoConflictException => Left(conflictWarning(config.name, kind, existing.orNull))
+            case e: Throwable if scala.util.control.NonFatal(e) => Left(messageOf(e))
+        }
+    }
+
+    /** The number the next live record gets and the v1 seed to write first. */
+    private case class VersionPlan(number: Int, seed: Option[CodeGenScriptVersion])
+
+    /** Decided before the live record is written (the prior object may be
+      * replaced by the write). None without history, in a rehearsal, or when
+      * the history cannot be read (a warning). */
+    private def planVersion(pipeline: String, kind: String, existing: Option[CodeGenScript]): Option[VersionPlan] =
+        if (rehearsing) None
+        else
+            history.flatMap { h =>
+                try {
+                    val latest = h.latestVersion(pipeline, kind)
+                    val seed = if (latest > 0) None else existing.flatMap(seedOf)
+                    Some(VersionPlan(latest + 1 + seed.size, seed))
+                } catch {
+                    case e: Throwable if scala.util.control.NonFatal(e) =>
+                        logger.warn("CodeGen script history unavailable for " + pipeline + "/" + kind + "; this change is not versioned: " + messageOf(e))
+                        None
+                }
+            }
+
+    /** v1 from a live record written before versioning: only a ready (not
+      * pending), readable script; keeps its model and fingerprint. */
+    private def seedOf(r: CodeGenScript): Option[CodeGenScriptVersion] =
+        if (r == null || r.status == Pending) None
+        else readStored(r).filter(_.trim.nonEmpty).map(text => versionRow(r, 1, text, null, SeedNote))
+
+    /** Append the planned version (and seed) once the live record is written,
+      * then prune to `versionCap`. Never throws. */
+    private def commitVersion(plan: Option[VersionPlan], rec: CodeGenScript, text: String, actor: String, note: String): Unit =
+        for (p <- plan; h <- history)
+            try {
+                p.seed.foreach(h.append)
+                h.append(versionRow(rec, p.number, text, actor, note))
+                try h.prune(rec.pipeline, rec.kind, DatrisEnvironment.current.versionCap)
+                catch {
+                    case e: Throwable if scala.util.control.NonFatal(e) =>
+                        logger.warn("Could not prune the CodeGen script history of " + rec.pipeline + "/" + rec.kind + ": " + messageOf(e))
+                }
+            } catch {
+                case e: Throwable if scala.util.control.NonFatal(e) =>
+                    logger.warn(
+                        "Could not record version " + p.number + " of the CodeGen script " + rec.pipeline + "/" + rec.kind +
+                            " (the script itself is stored): " + messageOf(e)
+                    )
+            }
+
+    private def versionRow(r: CodeGenScript, n: Int, text: String, actor: String, note: String): CodeGenScriptVersion =
+        CodeGenScriptVersion(
+            key = CodeGenScriptVersionIO.docKey(r.pipeline, r.kind, n),
+            entityName = CodeGenScriptVersionIO.entityName(r.pipeline, r.kind),
+            pipeline = r.pipeline,
+            kind = r.kind,
+            version = n,
+            script = text,
+            storage = r.storage,
+            scriptRepoPath = r.scriptRepoPath,
+            scriptCommitSha = r.scriptCommitSha,
+            fingerprint = r.fingerprint,
+            model = r.model,
+            origin = r.origin,
+            changeNote = note,
+            createdAt = java.time.Instant.now().toString,
+            createdBy = actor,
+            generatedAt = r.generatedAt,
+            contractVersion = r.contractVersion,
+            generatedAgainst = r.generatedAgainst
+        )
 
     // --------------------------------------------------------------- helpers
 
@@ -772,7 +974,8 @@ object PipelineScripts
         },
         () => scala.util.Try(DatrisEnvironment.aiConfigForCodegen.model).getOrElse(null),
         (pipeline: String) => GithubCodeStore.forPipeline(pipeline),
-        () => if (CodeRepoConfigIO.readEnabled().isDefined) "github" else "minio"
+        () => if (CodeRepoConfigIO.readEnabled().isDefined) "github" else "minio",
+        CodeGenScriptVersionIO
     ) {
 
     val DataQuality = "dataQuality"
@@ -785,6 +988,12 @@ object PipelineScripts
     /** Storage values on a record. */
     val Github = "github"
     val Builtin = "minio"
+
+    /** changeNote of a v1 seeded from a script stored before versioning. */
+    val SeedNote = "(seeded from pre-versioning state)"
+
+    def noVersionMessage(pipeline: String, kind: String, version: Int): String =
+        "no version " + version + " of the " + kind + " script for pipeline " + pipeline
 
     /** Reason text of a script generated during a scratch rehearsal. */
     val RehearsalReason = "rehearsal run — not stored"

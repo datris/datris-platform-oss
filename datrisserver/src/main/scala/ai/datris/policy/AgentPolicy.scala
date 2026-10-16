@@ -171,6 +171,7 @@ object AgentPolicy {
             "tap:delete" -> PolicyMode.Approve,
             "job:kill" -> PolicyMode.Approve,
             "pipeline:update:dest-types" -> PolicyMode.Approve,
+            "pipeline:update:codegen-scripts" -> PolicyMode.Approve,
             "secret:write" -> PolicyMode.Deny,
             "code-repo:write" -> PolicyMode.Deny,
             "config:write" -> PolicyMode.Deny
