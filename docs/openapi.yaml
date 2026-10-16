@@ -445,7 +445,7 @@ components:
           type: string
         kind:
           type: string
-          enum: [tap_failure, pipeline_failure, stale, volume]
+          enum: [tap_failure, pipeline_failure, stale, volume, schema_drift]
         resourceType:
           type: string
         resource:
@@ -474,6 +474,7 @@ components:
                 type: string
         classification:
           type: string
+          description: transient | structural-script | structural-schema | credential | platform | needs-human. `credential` and `platform` are decided by the platform, not the model, and never carry actions.
         proposal:
           type: object
         aiCalls:
@@ -662,6 +663,7 @@ components:
                 type: string
             secretName:
               type: string
+              description: The tap's secret name (never its value); the card shows it as the secret to check on credential incidents
         thresholds:
           type: object
           properties:
@@ -763,6 +765,13 @@ components:
             allowTypeChange:
               type: boolean
               default: false
+            allowSchemaDriftActions:
+              type: boolean
+              default: false
+              description: >-
+                Let a schema_drift incident propose and verify a tap script fix
+                when the tap's recovery mode is autopilot. Off = drift incidents
+                are diagnosis-only.
             minDqPassRate:
               type: number
               description: Absent means baseline pass rate minus 0.01

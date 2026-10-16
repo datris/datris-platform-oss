@@ -185,7 +185,10 @@
             {{ i.resourceType }}
           </span>
           <span class="incident-resource">{{ i.resource }}</span>
-          <span class="incident-classification" *ngIf="i.classification">{{ i.classification }}</span>
+          <span class="incident-classification" *ngIf="i.classification"
+                [class.iclass-credential]="i.classification === 'credential'"
+                [class.iclass-platform]="i.classification === 'platform'"
+                [title]="classificationTitle(i.classification)">{{ i.classification }}</span>
         </div>
         <div class="incident-times">
           opened {{ formatRelative(i.openedAt) }}
@@ -199,6 +202,7 @@
                                [resourceType]="i.resourceType"
                                [resource]="i.resource"
                                [revertToVersion]="i.revertToVersion"
+                               [classification]="i.classification"
                                (compare)="openScriptDiff(i)">
         </app-incident-evidence>
 
@@ -286,6 +290,7 @@
                                        [resourceType]="i.resourceType"
                                        [resource]="i.resource"
                                        [revertToVersion]="i.revertToVersion"
+                                       [classification]="i.classification"
                                        (compare)="openScriptDiff(i)">
                 </app-incident-evidence>
               </td>

@@ -545,7 +545,17 @@ export class ActivityComponent implements OnInit, OnDestroy {
       case 'pipeline_failure': return 'pipeline failure';
       case 'stale': return 'stale';
       case 'volume': return 'volume';
+      case 'schema_drift': return 'schema drift';
       default: return i.kind;
+    }
+  }
+
+  /** Hover text for the classification chip; the two code-decided classes explain themselves. */
+  classificationTitle(c: string | null | undefined): string {
+    switch (c) {
+      case 'credential': return 'The source rejected the tap\'s credentials — no tap actions are proposed; check the secret named on the evidence card.';
+      case 'platform': return 'The doctor reported a platform problem — fix it from the remediation in the summary; the AI was not asked.';
+      default: return '';
     }
   }
 

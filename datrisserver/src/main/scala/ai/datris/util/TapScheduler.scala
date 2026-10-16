@@ -136,6 +136,15 @@ object TapScheduler {
                         errorMessage = Option(e.getMessage).map(_.take(500)).orNull
                     )
             }
+            // Schema drift: only the cron path checks (a person watches a
+            // manual run). The re-read tap carries this run's columns.
+            try {
+                val fresh = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tap.name)
+                if (fresh != null) driftAfterCronRun(tap, fresh)
+            } catch {
+                case e: Exception =>
+                    logger.warn("TapScheduler: schema-drift check failed for tap: " + tap.name + " (best-effort, continuing)", e)
+            }
             try {
                 maybeSuggestFix(tap.name)
             } catch {
@@ -145,6 +154,32 @@ object TapScheduler {
         })
         thread.setDaemon(true)
         thread.start()
+    }
+
+    /** After a cron run: when the re-read tap's run succeeded and its column
+      * set differs from the run before (`before` = the tap as fired), open a
+      * diagnosis-first `schema_drift` incident naming the diff. Returns what
+      * IncidentRunner.open returned (None when nothing opened). */
+    private[util] def driftAfterCronRun(before: TapConfig, fresh: TapConfig): Option[String] = {
+        if (before == null || fresh == null || fresh.lastRunStatus != "success") return None
+        SchemaDrift.detect(before.lastRunColumns, fresh.lastRunColumns).flatMap { diff =>
+            def arr(xs: Iterable[String]): com.google.gson.JsonArray = {
+                val a = new com.google.gson.JsonArray()
+                xs.foreach(a.add(_))
+                a
+            }
+            import scala.collection.JavaConverters._
+            val trigger = new com.google.gson.JsonObject()
+            trigger.add("added", arr(diff.added))
+            trigger.add("removed", arr(diff.removed))
+            trigger.add("previousColumns", arr(before.lastRunColumns.asScala))
+            trigger.add("currentColumns", arr(fresh.lastRunColumns.asScala))
+            trigger.addProperty("runTime", fresh.lastRunTime)
+            logger.info(
+                "TapScheduler: schema drift on tap " + fresh.name + " — added " + diff.added.mkString(",") + "; removed " + diff.removed.mkString(",")
+            )
+            ai.datris.incident.IncidentRunner.open(ai.datris.incident.Incident.KindSchemaDrift, "tap", fresh.name, trigger)
+        }
     }
 
     /** A failed cron run is retried while: retries are enabled, the run

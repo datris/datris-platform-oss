@@ -35,6 +35,10 @@ object RecoveryKey {
         // (POST /api/v1/tap), which the capability table classifies as
         // tap:create — without it, script repairs are refused at the gate.
         "tap:create",
+        // pipeline:read also covers list_pipeline_versions / diff_pipeline_versions;
+        // metadata:read covers get_lineage, find_data and get_provenance
+        // (there is no lineage:* or provenance:* capability). RecoveryKeySpec
+        // checks every DiagnosisTools / ExecutableTools entry maps to one of these.
         "pipeline:read",
         "job:read",
         "metadata:read",

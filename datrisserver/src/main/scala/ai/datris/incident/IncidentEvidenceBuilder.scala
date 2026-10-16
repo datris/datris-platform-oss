@@ -157,6 +157,11 @@ object IncidentEvidenceBuilder {
         d.copy(dqPassRateDelta = Some(a.dqPassRate - b.dqPassRate))
     }
 
+    /** A credential incident names the secret to rotate (the name only; no
+      * value is read). Only `blastRadius.secretName` changes. */
+    def withSecret(e: IncidentEvidence, secretName: String): IncidentEvidence =
+        e.copy(blastRadius = e.blastRadius.copy(secretName = Option(secretName).map(_.trim).filter(_.nonEmpty)))
+
     /** Store the evidence on the incident. Never throws. */
     def store(id: String, evidence: IncidentEvidence): Unit =
         try IncidentIO.set(id, "evidence" -> Document.parse(evidence.toJson.toString))

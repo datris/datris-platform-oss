@@ -52,7 +52,15 @@ object IncidentRunner {
         "get_version",
         // Doctor is read-only and never spends money unless asked for AI
         // probes, which the diagnosis prompt tells the agent not to do.
-        "run_doctor"
+        "run_doctor",
+        // What a change touches: lineage, provenance, discovery and the
+        // pipeline's version history (metadata:read / pipeline:read — the
+        // recovery key already holds both).
+        "get_lineage",
+        "find_data",
+        "get_provenance",
+        "list_pipeline_versions",
+        "diff_pipeline_versions"
     )
 
     /** Actions the runner will execute from a proposal. Anything else —
@@ -115,6 +123,14 @@ object IncidentRunner {
     /** Spec seam: when non-null, used instead of PolicyIO.current.recovery. */
     @volatile private[incident] var settingsOverride: RecoverySettings = null
 
+    /** Spec seam: when non-null, open(...) delegates to it entirely. */
+    @volatile private[datris] var openOverride: (String, String, String, JsonObject) => Option[String] = null
+
+    /** The latest run's logs of a tap: (tapName, lastRunTime) => logs. Read
+      * for the credential classifier; never throws. */
+    @volatile private[incident] var tapRunLogs: (String, String) => Option[String] =
+        (name: String, runTime: String) => readTapRunLogs(name, runTime)
+
     /** Every stored-tap read in the runner. */
     @volatile private[incident] var tapLookup: String => Option[TapConfig] =
         (name: String) => Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name))
@@ -163,6 +179,8 @@ object IncidentRunner {
     /** Open an incident for a signal, applying every guard. Returns the id
       * when one was opened. Never throws. */
     def open(kind: String, resourceType: String, resourceName: String, trigger: JsonObject): Option[String] = {
+        val o = openOverride
+        if (o != null) return o(kind, resourceType, resourceName, trigger)
         try {
             if (!enabled) return None
             val mode = PolicyIO.current.effectiveRecoveryMode(resourceType, resourceName)
@@ -251,11 +269,32 @@ object IncidentRunner {
             var aiCalls = 0
             val onAiCall = () => { aiCalls += 1; IncidentIO.incrementCounters(id, aiCalls = 1) }
 
-            diagnoser.diagnose(incident, onAiCall) match {
+            // Doctor-first: a failure the platform's own self-check attributes
+            // to the platform is classified `platform` before any AI is spent.
+            val platform = if (isFailureKind(incident.kind)) doctorFirst(id) else None
+            val diagnosed = platform match {
+                case Some(p) => Right(p)
+                case None => diagnoser.diagnose(incident, onAiCall)
+            }
+
+            diagnosed match {
                 case Left(err) =>
                     step(id, "diagnose", "diagnosis failed", Some(err))
                     close(id, Incident.Failed, "diagnosis failed: " + clip(err))
-                case Right(p) =>
+                case Right(p0) =>
+                    // Credential failures are classified by code: never tap
+                    // actions, and the card names the secret to check.
+                    val secret = if (platform.isEmpty && isFailureKind(incident.kind)) credentialSecret(id, incident) else None
+                    val p = secret match {
+                        case Some(sec) =>
+                            p0.copy(
+                                classification = Classifier.Credential,
+                                summary = credentialSummary(p0.summary, sec),
+                                needsHuman = true,
+                                actions = Nil
+                            )
+                        case None => p0
+                    }
                     step(id, "diagnose", "classified " + p.classification, Some(p.summary))
                     val filtered = filterActions(incident, p)
                     IncidentIO.set(
@@ -269,10 +308,16 @@ object IncidentRunner {
                         // Diagnosis only in v1: the value is the triage text.
                         step(id, "close", "volume anomaly triaged — no automatic action taken")
                         close(id, Incident.Resolved, "triaged: " + p.summary)
+                    } else if (incident.kind == Incident.KindSchemaDrift && !driftActionable(incident, s)) {
+                        // Diagnosis only unless recovery.allowSchemaDriftActions
+                        // and autopilot: the value is the diagnosis naming the diff.
+                        step(id, "close", "schema drift triaged — no automatic action taken")
+                        close(id, Incident.Resolved, "triaged: " + p.summary)
                     } else if (p.needsHuman || filtered.isEmpty) {
                         IncidentIO.transition(id, Set(Incident.Diagnosing), Incident.AwaitingApproval)
                         step(id, "propose", "needs a human", Some(p.summary))
-                        webhook("awaiting_approval", id, incident.kind, incident.resourceType, incident.resourceName, Some(p.summary))
+                        val detail = p.summary + secret.filter(_.nonEmpty).map(n => " — secret: " + n).getOrElse("")
+                        webhook("awaiting_approval", id, incident.kind, incident.resourceType, incident.resourceName, Some(detail))
                     } else {
                         IncidentIO.transition(id, Set(Incident.Diagnosing), Incident.Proposed)
                         step(id, "propose", filtered.size + " action(s): " + filtered.map(_.tool).mkString(", "), Some(p.summary))
@@ -317,6 +362,94 @@ object IncidentRunner {
                 catch { case _: Exception => }
         }
     }
+
+    /** Failure signals get the doctor-first and credential checks; drift and
+      * volume incidents describe a run that succeeded. */
+    private def isFailureKind(kind: String): Boolean =
+        kind == Incident.KindTapFailure || kind == Incident.KindPipelineFailure || kind == Incident.KindStale
+
+    /** A drift incident may act only with the policy flag on AND the
+      * resource's effective recovery mode at autopilot. */
+    private def driftActionable(incident: Incident, s: RecoverySettings): Boolean =
+        s.allowSchemaDriftActions && {
+            val o = settingsOverride
+            val mode =
+                if (o != null) o.mode
+                else
+                    try PolicyIO.current.effectiveRecoveryMode(incident.resourceType, incident.resourceName)
+                    catch { case _: Exception => s.mode }
+            mode == RecoverySettings.Autopilot
+        }
+
+    /** Doctor-first: run the quick self-check (no AI probes). Any `error`
+      * check that is not tap-specific makes this a platform incident; the
+      * proposal quotes the remediation and the model is never asked. */
+    private[incident] def doctorFirst(id: String): Option[Proposal] = {
+        val args = new JsonObject()
+        args.addProperty("mode", "quick")
+        args.addProperty("ai", false)
+        val text = executor.call("run_doctor", args, id) match {
+            case ToolOutcome.Ok(t) => t
+            case other =>
+                step(id, "diagnose", "doctor check unavailable — continuing with diagnosis", Some(clip(other.toString)))
+                return None
+        }
+        val errors = Classifier.platformErrors(text)
+        if (errors.isEmpty) None
+        else {
+            step(id, "diagnose", "doctor reports " + errors.size + " platform error(s): " + errors.map(_._1).mkString(", "))
+            val lines = errors.map { case (cid, detail, remediation) =>
+                cid + ": " + detail + (if (remediation.nonEmpty) " — " + remediation else "")
+            }
+            Some(Proposal(Classifier.Platform, "Platform problem, not the tap: " + lines.mkString("; "), needsHuman = true, Nil, None))
+        }
+    }
+
+    /** The secret name to check when the failure is a credential failure
+      * (Some("") when it is one but no secret is configured), else None.
+      * Stamps the name onto the evidence. Only the name is read. */
+    private def credentialSecret(id: String, incident: Incident): Option[String] = {
+        val tap =
+            if (incident.resourceType == "tap")
+                try tapLookup(incident.resourceName)
+                catch { case _: Exception => None }
+            else None
+        val error = Option(incident.trigger).filter(_.has("error")).map(_.get("error")).filter(_.isJsonPrimitive).map(_.getAsString).orNull
+        def logs: String = tap.flatMap(t =>
+            Option(t.lastRunTime).filter(_.nonEmpty).flatMap(rt =>
+                try tapRunLogs(t.name, rt)
+                catch { case _: Exception => None }
+            )
+        ).orNull
+        if (!(Classifier.credential(error, null) || Classifier.credential(null, logs))) return None
+        val name = tap.flatMap(t => Option(t.secretName)).map(_.trim).getOrElse("")
+        if (name.nonEmpty) {
+            val current = IncidentIO.get(id).flatMap(IncidentEvidenceBuilder.of)
+            current.foreach(e => IncidentEvidenceBuilder.store(id, IncidentEvidenceBuilder.withSecret(e, name)))
+        }
+        Some(name)
+    }
+
+    private def credentialSummary(modelSummary: String, secret: String): String = {
+        val head = Option(modelSummary).map(_.trim).filter(_.nonEmpty).map(_ + " — ").getOrElse("")
+        if (secret.nonEmpty)
+            head + "The source rejected the credentials; check or rotate secret `" + secret + "` (Configuration → Secrets), then re-run the tap."
+        else head + "The source rejected the credentials; check the tap's credentials, then re-run the tap."
+    }
+
+    private def readTapRunLogs(name: String, runTime: String): Option[String] =
+        try {
+            val env = DatrisEnvironment.current
+            if (env == null) None
+            else
+                NoSQLDbUtil.getItemJSON(env.tapLogTableName, "key", name + "|" + runTime, "value")
+                    .flatMap(j => Option(gson.fromJson(j, classOf[ai.datris.model.TapRunLog])))
+                    .flatMap(l => Option(l.logs))
+        } catch {
+            case e: Exception =>
+                logger.debug("incident: tap run log read failed for " + name + ": " + e.getMessage)
+                None
+        }
 
     /** Cap and sanitize the proposal: executable tools only, at most
       * maxActionsPerIncident, stale-kind limited to a single run. */
@@ -1198,8 +1331,15 @@ object IncidentRunner {
             sb.append("\n")
             sb.append("Diagnose this incident using the read-only tools available, then END your reply with ONLY a JSON object (no prose after it):\n")
             sb.append(
-                """{"classification":"transient|structural-script|structural-schema|needs-human","summary":"<one line>","needsHuman":<bool>,"actions":[{"tool":"run_tap|test_tap|update_tap","args":{...},"purpose":"<one line>"}],"learnNote":"<optional source quirk worth remembering>"}"""
+                """{"classification":"transient|structural-script|structural-schema|credential|platform|needs-human","summary":"<one line>","needsHuman":<bool>,"actions":[{"tool":"run_tap|test_tap|update_tap","args":{...},"purpose":"<one line>"}],"learnNote":"<optional source quirk worth remembering>"}"""
             ).append("\n\n")
+            if (incident.kind == Incident.KindSchemaDrift)
+                sb.append(
+                    "This is a schema_drift incident: the tap's latest scheduled run SUCCEEDED but returned a different column set than the run before it. " +
+                        "The trigger lists the added and removed columns (a rename shows as one removed plus one added — say so when it looks like one). " +
+                        "Use get_lineage to name what is downstream and get_pipeline / list_pipeline_versions to judge whether the destination schema still fits; " +
+                        "summarize the change and what a person should do about it.\n\n"
+                )
             sb.append("Rules for the proposal:\n")
             sb.append("- transient (rate limit, network blip, quota): propose at most one run_tap.\n")
             sb.append("- every action's args MUST include \"name\": \"" + incident.resourceName + "\" — actions naming any other tap are discarded.\n")
@@ -1207,11 +1347,11 @@ object IncidentRunner {
                 "- structural-script (source shape changed, script bug): propose update_tap with args {\"name\": ..., \"script\": \"<the corrected full script>\"} (the platform replaces the tap's script with it), then run_tap.\n"
             )
             sb.append(
-                "- structural-schema (destination/type mismatch) or credentials/upstream outage: needsHuman=true with an empty actions list and a clear summary of what a person must do.\n"
+                "- structural-schema (destination/type mismatch), credential (the source rejected the tap's key or token) or an upstream outage: needsHuman=true with an empty actions list and a clear summary of what a person must do. The platform classifies credential failures itself and never runs tap actions for them.\n"
             )
             sb.append("- Never propose deletes, secret changes, or schema migrations — they are not executable here.\n")
             sb.append(
-                "- If the failure looks like the platform rather than the tap (a secret missing, an AI model or embedding service not answering, disk full, a component version mismatch), call run_doctor ONCE with mode \"quick\" and no AI probes; if it reports an error, classify as needs-human and quote its remediation.\n"
+                "- The platform runs the doctor's quick check (no AI probes) before this diagnosis and classifies platform errors itself, so you do not need to call run_doctor; if you do, use mode \"quick\" with no AI probes, and if it reports an error classify as platform and quote its remediation.\n"
             )
             sb.append(
                 "- The platform (not you) executes the actions and gates each one through the agent policy; the platform runs your candidate in a scratch lane first, compares it with the last good run, and only then runs it for real; it reverts your script change if either stage fails."
@@ -1224,7 +1364,8 @@ object IncidentRunner {
         "\n\n## Recovery-agent mode\n\n" +
             "This is a HEADLESS diagnosis run: no operator is present, nothing you write is a conversation. " +
             "Use only the read-only tools provided, keep tool calls few and purposeful, and end with the single JSON proposal object you were asked for. " +
-            "Do not ask questions; when information is missing, classify as needs-human and say what a person should check.\n"
+            "Do not ask questions; when information is missing, classify as needs-human and say what a person should check. " +
+            "Use get_lineage to say what is downstream before proposing a change.\n"
 
     /** REST-backed executor. Every executable action maps to exactly ONE
       * platform call, so the policy gate queues exactly that call and an
@@ -1256,6 +1397,12 @@ object IncidentRunner {
                     // run must say so explicitly or verification reads stale.
                     body.addProperty("mode", "run")
                     Some(("POST", "/api/v1/tap/run", Some(body.toString)))
+                case "run_doctor" =>
+                    // Quick mode; AI probes only when explicitly asked for.
+                    val mode = if (args != null && args.has("mode") && args.get("mode").isJsonPrimitive) args.get("mode").getAsString else "quick"
+                    val ai = args != null && args.has("ai") && args.get("ai").isJsonPrimitive && args.get("ai").getAsBoolean
+                    val q = "mode=" + (if (mode == "full") "full" else "quick") + (if (ai) "&probes=ai" else "")
+                    Some(("GET", "/api/v1/doctor?" + q, None))
                 case "get_pipeline_status" =>
                     val token = if (args != null && args.has("publisher_token")) args.get("publisher_token").getAsString else ""
                     Some(("GET", "/api/v1/pipeline/status?withrollup=true&publishertoken=" + java.net.URLEncoder.encode(token, "UTF-8"), None))

@@ -47,7 +47,11 @@ case class RecoverySettings(
     // How a proposed fix is verified: `scratch-first` rehearses the candidate
     // into the scratch destination and judges it before the real run;
     // `real` goes straight to the real run (the pre-scratch behaviour).
-    verifyMode: String = RecoverySettings.ScratchFirst
+    verifyMode: String = RecoverySettings.ScratchFirst,
+    // A schema_drift incident is diagnosis-only (one AI diagnosis, resolved
+    // as triaged) unless this is on AND the resource's recovery mode is
+    // autopilot, in which case a tap script fix may be proposed and run.
+    allowSchemaDriftActions: Boolean = false
 ) {
 
     /** The thresholds the incident evidence is judged against. */
@@ -144,6 +148,7 @@ case class AgentPolicy(
         r.addProperty("maxRecordDeltaPct", recovery.maxRecordDeltaPct)
         r.addProperty("allowColumnRemoval", recovery.allowColumnRemoval)
         r.addProperty("allowTypeChange", recovery.allowTypeChange)
+        r.addProperty("allowSchemaDriftActions", recovery.allowSchemaDriftActions)
         recovery.minDqPassRate.foreach(v => r.addProperty("minDqPassRate", v))
         r.addProperty("maxNullRateIncrease", recovery.maxNullRateIncrease)
         r.addProperty("verifyMode", recovery.verifyMode)
@@ -324,7 +329,8 @@ object AgentPolicy {
                 allowTypeChange = rBool("allowTypeChange", false),
                 minDqPassRate = rFraction("minDqPassRate"),
                 maxNullRateIncrease = rFraction("maxNullRateIncrease").getOrElse(0.10),
-                verifyMode = verifyMode
+                verifyMode = verifyMode,
+                allowSchemaDriftActions = rBool("allowSchemaDriftActions", false)
             )
         }
 

@@ -6,6 +6,12 @@
       <span class="ie-blast" *ngIf="blastLine">{{ blastLine }}<ng-container *ngIf="readersLine">; {{ readersLine }}</ng-container></span>
     </div>
 
+    <div class="ie-secret" *ngIf="secretName">
+      <span class="ie-label">Secret to check:</span>
+      <a class="ie-secret-link" [routerLink]="['/configuration']" [queryParams]="{ tab: 'secrets' }"
+         title="Open Configuration → Secrets"><code>{{ secretName }}</code></a>
+    </div>
+
     <div class="ie-facts" *ngIf="hasDiff || rowsLine || dqLine">
       <span class="ie-fact" *ngIf="hasDiff"
             [title]="'Added: ' + (added.join(', ') || 'none') + ' · Removed: ' + (removed.join(', ') || 'none')">

@@ -38,14 +38,14 @@ case class IncidentStep(
   * the narrative. */
 case class Incident(
     id: String,
-    kind: String, // tap_failure | pipeline_failure | stale | volume
+    kind: String, // tap_failure | pipeline_failure | stale | volume | schema_drift
     resourceType: String, // tap | pipeline
     resourceName: String,
     openedAt: Instant,
     state: String,
     trigger: JsonObject,
     steps: List[IncidentStep] = Nil,
-    classification: Option[String] = None, // transient | structural-script | structural-schema | needs-human
+    classification: Option[String] = None, // transient | structural-script | structural-schema | needs-human | credential | platform
     proposal: Option[JsonObject] = None, // the runner's parsed proposal, verbatim
     aiCalls: Int = 0,
     actionsTaken: Int = 0,
@@ -121,6 +121,11 @@ object Incident {
     val KindPipelineFailure = "pipeline_failure"
     val KindStale = "stale"
     val KindVolume = "volume"
+
+    /** A successful cron run returned a different column set than the run
+      * before it (TapScheduler.driftAfterCronRun). Diagnosis-only unless
+      * `recovery.allowSchemaDriftActions` and autopilot. */
+    val KindSchemaDrift = "schema_drift"
 
     private val random = new SecureRandom()
 

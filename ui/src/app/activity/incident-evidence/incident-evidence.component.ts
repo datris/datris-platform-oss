@@ -29,6 +29,8 @@ export class IncidentEvidenceComponent implements OnChanges {
   @Input() resource = '';
   @Input() revertToVersion?: number | null;
   @Input() compact = false;
+  /** The incident's classification; a `credential` incident shows the secret to check. */
+  @Input() classification?: string | null;
   /** "Compare script versions" clicked — the host opens the version-history modal. */
   @Output() compare = new EventEmitter<void>();
 
@@ -46,6 +48,7 @@ export class IncidentEvidenceComponent implements OnChanges {
   sparks: SparkRow[] = [];
   checks: ThresholdCheck[] = [];
   afterLabel = '';
+  secretName = '';
 
   ngOnChanges(): void {
     this.compute();
@@ -94,6 +97,8 @@ export class IncidentEvidenceComponent implements OnChanges {
     // Blast radius
     const br = ev.blastRadius;
     if (br) {
+      // Name only — no secret value is ever sent to the UI.
+      this.secretName = this.classification === 'credential' ? (br.secretName || '') : '';
       const parts: string[] = [];
       parts.push(plural((br.downstreamPipelines || []).length, 'pipeline'));
       const uc = (br.ucTables || []).length;
@@ -182,6 +187,7 @@ export class IncidentEvidenceComponent implements OnChanges {
     this.sparks = [];
     this.checks = [];
     this.afterLabel = '';
+    this.secretName = '';
   }
 }
 

@@ -54,3 +54,7 @@
   cursor: pointer;
 }
 .ie-compare:hover { background: rgba(0, 180, 255, 0.08); }
+
+.ie-secret { margin-top: 6px; }
+.ie-secret-link { color: var(--accent, #60a5fa); text-decoration: none; }
+.ie-secret-link:hover { text-decoration: underline; }
