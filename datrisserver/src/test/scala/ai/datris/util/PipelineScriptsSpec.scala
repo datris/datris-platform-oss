@@ -1073,8 +1073,11 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         val commitsBefore = repo.commits.size
         val r = s.importScript(cfg, Dq, "print('archived')", archivedRecord(cfg), "todd")
         assert(r.isLeft, r)
-        // Not a conflict warning: the save that follows regenerates over the file.
+        // Not a conflict warning; a catalog restore refuses this case up front
+        // (CatalogArchive.planRepoScripts), so only a direct caller sees it.
         assert(r.left.get == PipelineScripts.differentFileAtHeadReason(repo.pathOf(Dq)), r.left.get)
+        assert(r.left.get.endsWith("; the archived script was not imported"), r.left.get)
+        assert(!r.left.get.contains("regenerated"), r.left.get)
         assert(!r.left.get.contains(PipelineScripts.ConflictMarker), r.left.get)
         assert(repo.commits.size == commitsBefore, s"never overwritten: ${repo.commits}")
         assert(records.read("orders", Dq).isEmpty)

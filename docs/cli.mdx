@@ -450,7 +450,7 @@ Uncataloged is not a catalog and cannot be exported. On an error nothing is writ
 
 ### `datris catalog restore`
 
-Restore an archive made by `datris catalog export`, under the same name or a new one. A restore never merges into an existing catalog: it is refused when the catalog already exists or when any archived tap or pipeline name already exists anywhere on this install, and each clash is printed. Restored taps start disabled; test each one and then enable it. Secrets are never written: the command names any secret the restored items need that does not exist yet.
+Restore an archive made by `datris catalog export`, under the same name or a new one. A restore never merges into an existing catalog: it is refused when the catalog already exists, when any archived tap or pipeline name already exists anywhere on this install, or (with GitHub script storage) when an AI script file of a new pipeline differs at branch head, and each clash is printed. Restored taps start disabled; test each one and then enable it. Secrets are never written: the command names any secret the restored items need that does not exist yet.
 
 ```bash
 datris catalog restore <FILE> [OPTIONS]

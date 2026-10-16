@@ -504,30 +504,52 @@ object CatalogArchive {
         manifest.taps.flatMap(check(_, "tap")) ++ manifest.pipelines.flatMap(check(_, "pipeline"))
     }
 
-    /** What a restore does with each archived tap script when the target
-      * stores scripts in a code repository: `write` commits it, `reuse` pins
-      * the identical file already at branch head (no commit), `clashes` names
-      * files at branch head with different content that may not be replaced. */
-    case class RepoScriptPlan(clashes: Seq[String], reuse: Set[String], write: Set[String])
+    /** What a restore does with each archived script when the target stores
+      * scripts in a code repository. Tap scripts (keyed by tap): `write`
+      * commits it, `reuse` pins the identical file already at branch head (no
+      * commit). AI (CodeGen) scripts (keyed `<pipeline>/<kind>`): `codegenWrite`
+      * is committed by the pipeline save, `codegenReuse` pins the identical
+      * file at branch head. `clashes` names files at branch head with different
+      * content that may not be replaced. */
+    case class RepoScriptPlan(
+        clashes: Seq[String],
+        reuse: Set[String],
+        write: Set[String],
+        codegenReuse: Set[String],
+        codegenWrite: Set[String]
+    )
 
     private[util] def normaliseScript(text: String): String =
         if (text == null) "" else text.replace("\r\n", "\n").replaceAll("\\s+$", "")
 
-    /** Compare every archived tap script (tap -> text) with the file at branch
-      * head. A different file is a clash unless `mode` is "overwrite" and the
-      * tap is already a member of the target catalog. A clashing script is
-      * never in `write`; the caller refuses the whole restore when `clashes`
-      * is non-empty. `fileAt` is GithubClient.getFile. */
+    /** Compare every archived tap script (tap -> text) and every archived AI
+      * script (`codegenScripts`, pipeline -> kind -> text) with the file at
+      * branch head. A different tap file is a clash unless `mode` is
+      * "overwrite" and the tap is in `targetMembers`; a different AI script
+      * file is a clash unless `mode` is "overwrite" and the pipeline is in
+      * `targetPipelineMembers` (a new pipeline never overwrites a foreign
+      * file). A clashing script is never in `write` / `codegenWrite`; the
+      * caller refuses the whole restore when `clashes` is non-empty. `fileAt`
+      * is GithubClient.getFile. */
     def planRepoScripts(
         scripts: Map[String, String],
         cfg: CodeRepoConfig,
         mode: String,
         targetMembers: Set[String],
-        fileAt: (CodeRepoConfig, String, String) => Option[RepoFile]
+        fileAt: (CodeRepoConfig, String, String) => Option[RepoFile],
+        codegenScripts: Map[String, Map[String, String]],
+        targetPipelineMembers: Set[String]
     ): RepoScriptPlan = {
         val clashes = mutable.ArrayBuffer.empty[String]
         val reuse = mutable.Set.empty[String]
         val write = mutable.Set.empty[String]
+        val codegenReuse = mutable.Set.empty[String]
+        val codegenWrite = mutable.Set.empty[String]
+        def clash(label: String, path: String): Unit = {
+            clashes += (label + ": script file '" + path + "' already exists in the code repository (branch " +
+                cfg.branch + ") with different content")
+            ()
+        }
         scripts.toSeq.sortBy(_._1).foreach { case (tap, text) =>
             val path = GithubCodeStore.scriptRepoPath(tap, cfg)
             fileAt(cfg, path, cfg.branch) match {
@@ -535,14 +557,25 @@ object CatalogArchive {
                 case Some(f) if normaliseScript(f.content) == normaliseScript(text) => reuse += tap; ()
                 case Some(_) =>
                     if (mode == "overwrite" && targetMembers.contains(tap)) { write += tap; () }
-                    else {
-                        clashes += ("tap '" + tap + "': script file '" + path + "' already exists in the code repository (branch " +
-                            cfg.branch + ") with different content")
-                        ()
-                    }
+                    else clash("tap '" + tap + "'", path)
             }
         }
-        RepoScriptPlan(clashes.toList, reuse.toSet, write.toSet)
+        val aiScripts = for {
+            (pipeline, kinds) <- Option(codegenScripts).getOrElse(Map.empty).toSeq
+            (kind, text) <- Option(kinds).getOrElse(Map.empty).toSeq
+        } yield (pipeline, kind, text)
+        aiScripts.sortBy { case (p, k, _) => (p, k) }.foreach { case (pipeline, kind, text) =>
+            val key = pipeline + "/" + kind
+            val path = GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline(pipeline, kind), cfg)
+            fileAt(cfg, path, cfg.branch) match {
+                case None => codegenWrite += key; ()
+                case Some(f) if normaliseScript(f.content) == normaliseScript(text) => codegenReuse += key; ()
+                case Some(_) =>
+                    if (mode == "overwrite" && targetPipelineMembers.contains(pipeline)) { codegenWrite += key; () }
+                    else clash("pipeline script '" + key + "'", path)
+            }
+        }
+        RepoScriptPlan(clashes.toList, reuse.toSet, write.toSet, codegenReuse.toSet, codegenWrite.toSet)
     }
 
     /** Capability checks a restore runs for one archived item before writing

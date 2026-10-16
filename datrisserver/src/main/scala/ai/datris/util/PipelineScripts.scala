@@ -422,8 +422,10 @@ class PipelineScripts(
       * as [[CatalogArchive.normaliseScript]]) is pinned at the head commit
       * with no commit. A different file at head: when the target has no
       * record for it (or a record that pins no commit), Left with a reason
-      * that is not a conflict warning (the save that follows regenerates);
-      * otherwise the usual commit, rejected with [[conflictWarning]] when the
+      * that is not a conflict warning and nothing is committed (a catalog
+      * restore never reaches this for a new pipeline: its pre-check,
+      * [[CatalogArchive.planRepoScripts]], refuses the whole restore with 409
+      * first); otherwise the usual commit, rejected with [[conflictWarning]] when the
       * file changed since the recorded commit. */
     def importScript(config: PipelineConfig, kind: String, text: String, archived: CodeGenScript, actor: String): Either[String, CodeGenScript] = {
         if (config == null || config.name == null) return Left("No pipeline config to import the script into")
@@ -456,10 +458,10 @@ class PipelineScripts(
                         case Some((content, headSha)) if CatalogArchive.normaliseScript(content) == CatalogArchive.normaliseScript(text) =>
                             StoredScript(Github, scriptRepoPath = probe.get.scriptRepoPath, scriptCommitSha = headSha)
                         case Some(_) if existingRef.isEmpty =>
-                            // A file this install has no record of. Not imported; the
-                            // pipeline save that follows generates a script and commits
-                            // it there (a null base makes no hand-edit check), so the
-                            // reason says so. Not a conflict warning.
+                            // A file this install has no record of. Not imported and
+                            // not a conflict warning. A catalog restore refuses this
+                            // case up front (CatalogArchive.planRepoScripts), so only a
+                            // direct caller gets here.
                             return Left(differentFileAtHeadReason(probe.get.scriptRepoPath))
                         case Some(_) if existingRef.exists(r => r.scriptCommitSha == null || r.scriptCommitSha.isEmpty) =>
                             // A record that pins no commit: there is no base to check a
@@ -757,9 +759,10 @@ object PipelineScripts
             " is not stored in the code repository, so there is nothing to pull. Regenerate it with storage=github to move it there."
 
     /** importScript's reason when a new pipeline's script path already holds
-      * a different file at branch head. */
+      * a different file at branch head (a catalog restore refuses this case
+      * before importing; only a direct importScript caller sees it). */
     def differentFileAtHeadReason(path: String): String =
-        "a different file is already at '" + path + "' at branch head in the code repository; the save regenerated the script over it"
+        "a different file is already at '" + path + "' at branch head in the code repository; the archived script was not imported"
 
     /** Text that marks a rejected repository commit (the API maps it to 409). */
     val ConflictMarker = "changed in the code repository since the recorded commit"

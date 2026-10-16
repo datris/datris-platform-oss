@@ -633,11 +633,23 @@ class CatalogAPIController {
                 val repoCfg = if (store eq GithubCodeStore) CodeRepoConfigIO.readEnabled() else None
                 val pythonTaps = contents.taps.filterNot(_.isHttp).map(_.name).toSet
                 val scripts = contents.scripts.filter { case (n, _) => pythonTaps.contains(n) }
-                val targetTapMembers = CatalogOps.members(taps, pipelines, name).taps.map(_.name).toSet
+                val targetMembers = CatalogOps.members(taps, pipelines, name)
+                val targetTapMembers = targetMembers.taps.map(_.name).toSet
+                // AI scripts of a pipeline that is not yet a target member may
+                // not land on a different file at branch head either.
+                val targetPipelineMembers = targetMembers.pipelines.map(_.name).toSet
                 val repoPlan = repoCfg match {
                     case Some(cfg) =>
-                        CatalogArchive.planRepoScripts(scripts, cfg, m, targetTapMembers, (c, p, r) => GithubClient.getFile(c, p, r))
-                    case None => CatalogArchive.RepoScriptPlan(Nil, Set.empty, scripts.keySet)
+                        CatalogArchive.planRepoScripts(
+                            scripts,
+                            cfg,
+                            m,
+                            targetTapMembers,
+                            (c, p, r) => GithubClient.getFile(c, p, r),
+                            contents.codegenScripts,
+                            targetPipelineMembers
+                        )
+                    case None => CatalogArchive.RepoScriptPlan(Nil, Set.empty, scripts.keySet, Set.empty, Set.empty)
                 }
                 val allClashes = nameClashes ++ repoPlan.clashes
                 if (allClashes.nonEmpty)
