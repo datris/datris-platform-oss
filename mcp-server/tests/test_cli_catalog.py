@@ -215,3 +215,18 @@ def test_restore_prints_imported_and_regenerated_ai_script_counts(monkeypatch, t
     assert "Imported 2 AI scripts" in res.output, res.output
     assert "Regenerated 1 AI script" in res.output, res.output
     assert "no script record in the archive; re-export to carry it" in res.output, res.output
+
+
+def test_restore_prints_kept_ai_script_count_and_reason(monkeypatch, tmp_path):
+    result = dict(RESTORE_OK)
+    result["scriptsKept"] = [
+        {"item": "p_orders/dataQuality", "reason": "no script record in the archive; re-export to carry it"}
+    ]
+    stub = _Mcp(result)
+    monkeypatch.setattr(cli, "mcp", stub)
+    archive = _archive(tmp_path)
+    res = _run(["catalog", "restore", str(archive), "--as", "sales2"])
+    assert res.exit_code == 0, res.output
+    assert "Kept 1 AI script" in res.output, res.output
+    assert "p_orders/dataQuality" in res.output, res.output
+    assert "Regenerated" not in res.output, res.output

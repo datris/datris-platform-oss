@@ -221,4 +221,55 @@ class CatalogRestoreScriptsSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(reasons("orders/dataQuality") == "the script record in the archive could not be read", reasons)
         assert(reasons("orders/transformation") == "the script record in the archive names refunds/transformation", reasons)
     }
+
+    // E2E A1: an overwrite restore whose archived script is not imported, onto
+    // a pipeline that already has a usable live script, keeps that script; it
+    // is reported under kept, not regenerated.
+
+    private def snapshot(): Map[String, Option[CodeGenScript]] = Seq(Dq, Tx).map(k => k -> scripts.record("orders", k)).toMap
+
+    test("classifyScripts reports a usable live script the save kept as kept, not regenerated") {
+        scripts.onSave(null, cfg, "todd") // the target already runs this pipeline
+        val live = snapshot()
+        val callsBefore = calls.size
+        val warnings = mutable.ArrayBuffer.empty[String]
+        val plan = CatalogAPIController.importCodegenScripts(contents(withRecords = false), "orders", scripts, "todd", warnings)
+        val before = snapshot()
+        scripts.onSave(cfg, cfg, "todd") // savePipelineInternal's hook
+        val report = CatalogAPIController.classifyScripts(cfg, plan, before, scripts, "todd", warnings, regenerateScripts = false)
+        assert(calls.size == callsBefore, "nothing generated")
+        assert(snapshot() == live, "live records unchanged")
+        assert(report.imported.isEmpty && report.regenerated.isEmpty, s"$report")
+        assert(
+            report.kept.toMap == Map(
+                "orders/dataQuality" -> CatalogAPIController.NoRecordReason,
+                "orders/transformation" -> CatalogAPIController.NoRecordReason
+            ),
+            s"$report"
+        )
+    }
+
+    test("classifyScripts on a fresh target reports the scripts the save generated as regenerated") {
+        val warnings = mutable.ArrayBuffer.empty[String]
+        val plan = CatalogAPIController.importCodegenScripts(contents(withRecords = false), "orders", scripts, "todd", warnings)
+        val before = snapshot()
+        scripts.onSave(null, cfg, "todd")
+        val report = CatalogAPIController.classifyScripts(cfg, plan, before, scripts, "todd", warnings, regenerateScripts = false)
+        assert(calls.size == 2)
+        assert(report.kept.isEmpty && report.imported.isEmpty, s"$report")
+        assert(report.regenerated.map(_._1).toSet == Set("orders/dataQuality", "orders/transformation"), s"$report")
+    }
+
+    test("classifyScripts with regenerateScripts regenerates a live script the save kept, and reports it regenerated") {
+        scripts.onSave(null, cfg, "todd")
+        val callsBefore = calls.size
+        val warnings = mutable.ArrayBuffer.empty[String]
+        val plan = CatalogAPIController.importCodegenScripts(contents(withRecords = true), "orders", scripts, "todd", warnings, regenerateScripts = true)
+        val before = snapshot()
+        scripts.onSave(cfg, cfg, "todd")
+        val report = CatalogAPIController.classifyScripts(cfg, plan, before, scripts, "todd", warnings, regenerateScripts = true)
+        assert(calls.size == callsBefore + 2, "one generation per kind")
+        assert(report.kept.isEmpty, s"$report")
+        assert(report.regenerated.map(_._1).toSet == Set("orders/dataQuality", "orders/transformation"), s"$report")
+    }
 }

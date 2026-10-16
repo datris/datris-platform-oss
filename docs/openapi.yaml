@@ -424,6 +424,17 @@ components:
                 description: '`<pipeline>/<kind>`'
               reason:
                 type: string
+        scriptsKept:
+          type: array
+          description: AI scripts that were not imported but whose live script on this install already matched the pipeline's instruction and source schema, so it was left in place unchanged (no model call). The reason says why the archived script was not used.
+          items:
+            type: object
+            properties:
+              item:
+                type: string
+                description: '`<pipeline>/<kind>`'
+              reason:
+                type: string
     Incident:
       type: object
       properties:
@@ -1685,7 +1696,7 @@ paths:
           schema:
             type: boolean
             default: false
-          description: 'By default each pipeline''s archived AI scripts become its live scripts, with no model call. `true` regenerates them on this install instead. An archived script with no `.json` record, or whose record no longer matches the archived pipeline''s instruction and source schema or this server''s script contract, is regenerated either way; `scriptsRegenerated` names each with the reason.'
+          description: 'By default each pipeline''s archived AI scripts become its live scripts, with no model call. `true` regenerates them on this install instead. An archived script with no `.json` record, or whose record no longer matches the archived pipeline''s instruction and source schema or this server''s script contract, is regenerated either way (or, when the pipeline already has a live script that matches, kept); `scriptsRegenerated` and `scriptsKept` name each with the reason.'
       requestBody:
         required: true
         content:

@@ -103,7 +103,7 @@ A catalog archive holds:
 - the validation schemas the pipelines reference,
 - each pipeline's AI data-quality and AI transformation scripts, with the model and time they were generated.
 
-A restore makes the archived AI scripts the live scripts, so the target runs exactly what the source ran and no model call is made. A script is regenerated on the target instead when the archive was exported before script records were included (re-export it to carry them), when it was written for a different instruction or source schema, or when you ask for it (`datris catalog restore --regenerate-scripts`, `regenerateScripts=true` on the API). The restore result lists which scripts were imported and which were regenerated, with the reason.
+A restore makes the archived AI scripts the live scripts, so the target runs exactly what the source ran and no model call is made. A script is regenerated on the target instead when the archive was exported before script records were included (re-export it to carry them), when it was written for a different instruction or source schema, or when you ask for it (`datris catalog restore --regenerate-scripts`, `regenerateScripts=true` on the API). When the archived script cannot be used but the pipeline being overwritten already has a script for the same instruction and schema, that live script is kept as it is. The restore result lists which scripts were imported, regenerated or kept, with the reason.
 
 It never holds secret values, destination data, run history or version history. The archive lists the names of the secrets the catalog needs; create any that are missing on the target install. Restored taps are disabled until you enable them.
 

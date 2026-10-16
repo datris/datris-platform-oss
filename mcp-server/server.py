@@ -2057,8 +2057,8 @@ def _base_tools():
                 "needs `confirm` equal to the catalog name. It never writes secrets: missing ones come back under `missingSecrets` "
                 "for the user to create. Restored taps are left disabled; tell the user to test and enable them. "
                 "Items that could not be restored come back under `failed`; report them. "
-                "Archived AI scripts are restored as-is unless `regenerate_scripts` is set; `scriptsImported` and "
-                "`scriptsRegenerated` (with the reason) say which were which. "
+                "Archived AI scripts are restored as-is unless `regenerate_scripts` is set; `scriptsImported`, "
+                "`scriptsRegenerated` and `scriptsKept` (a live script left in place; both with the reason) say which were which. "
                 "The response carries `sourceEnvironment` (where the archive was exported) and `targetEnvironment` (this install), "
                 "plus a warning when they differ; tell the user."
             ),

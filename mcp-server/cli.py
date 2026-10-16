@@ -1143,6 +1143,14 @@ def catalog_restore(file, target, overwrite, yes, no_state, regenerate_scripts, 
                 click.echo(f"      - {r.get('item')} ({r.get('reason')})")
             else:
                 click.echo(f"      - {r}")
+    kept = result.get("scriptsKept") or []
+    if kept:
+        click.echo(f"    Kept {len(kept)} AI script{'' if len(kept) == 1 else 's'} already on this install (the archived one was not used):")
+        for r in kept:
+            if isinstance(r, dict):
+                click.echo(f"      - {r.get('item')} ({r.get('reason')})")
+            else:
+                click.echo(f"      - {r}")
     missing = _secret_names(result.get("missingSecrets"))
     if missing:
         click.echo(f"    Create these secrets before running the taps and pipelines: {', '.join(missing)}.")
