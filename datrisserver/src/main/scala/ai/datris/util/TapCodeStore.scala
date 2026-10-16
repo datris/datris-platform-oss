@@ -99,7 +99,10 @@ trait CodeStore {
     /** Delete the script unless its file changed at branch head since the
       * recorded commit (a hand edit is never destroyed). The outcome says
       * whether it was deleted, kept as edited, or kept because the check
-      * could not run. A failing delete after a clean check propagates. */
+      * could not run. A delete request that fails after a clean check is
+      * `DeleteFailed` for a repository script (the file may or may not be
+      * gone: a timed-out request can still have committed); for a built-in
+      * script it propagates, as before. */
     def deleteIfUnchanged(ref: ScriptRef): DeleteOutcome = {
         val drift =
             try driftHead(ref)
@@ -110,8 +113,13 @@ trait CodeStore {
         drift match {
             case Some(headSha) => DeleteOutcome.KeptEdited(headSha)
             case None =>
-                deleteScript(ref)
-                DeleteOutcome.Deleted
+                try {
+                    deleteScript(ref)
+                    DeleteOutcome.Deleted
+                } catch {
+                    case e: Throwable if scala.util.control.NonFatal(e) && ref != null && ref.scriptRepoPath != null && ref.scriptRepoPath.nonEmpty =>
+                        DeleteOutcome.DeleteFailed(Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.getClass.getSimpleName))
+                }
         }
     }
 
@@ -124,6 +132,7 @@ trait CodeStore {
             case DeleteOutcome.KeptEdited(_) =>
                 Some(CodeStore.keptOnDeleteWarning(ownerOf(ref), pathOf(ref), Option(ref).map(_.scriptCommitSha).orNull))
             case DeleteOutcome.Unchecked(error) => Some(CodeStore.uncheckedOnDeleteWarning(ownerOf(ref), pathOf(ref), error))
+            case DeleteOutcome.DeleteFailed(error) => Some(CodeStore.deleteUnconfirmedWarning(pathOf(ref), error))
         }
 
     /** What owns a script in warnings ("tap" | "pipeline"); "owner" when the
@@ -145,6 +154,10 @@ object DeleteOutcome {
 
     /** Kept: the drift check failed (repository unreachable, token expired, disabled). */
     case class Unchecked(error: String) extends DeleteOutcome
+
+    /** The check passed but the delete request failed: the file may or may
+      * not still be there (a timed-out request can have committed). */
+    case class DeleteFailed(error: String) extends DeleteOutcome
 }
 
 object CodeStore {
@@ -155,6 +168,12 @@ object CodeStore {
         "'" + path + "' was kept in the code repository: it changed since the recorded commit " + Option(sha).map(_.take(7)).orNull +
             " and a hand edit is never overwritten. The " + owner + " and its script record were deleted; " +
             "remove the file by hand if it is no longer wanted."
+
+    /** A repository file whose delete request failed after a clean check:
+      * nothing is claimed about whether it is still there. */
+    def deleteUnconfirmedWarning(path: String, error: String): String =
+        "The delete of '" + path + "' could not be confirmed (" + error +
+            "); check the repository and remove the file by hand if it is still there."
 
     /** A file kept on delete because the drift check could not run. */
     def uncheckedOnDeleteWarning(owner: String, path: String, error: String): String =

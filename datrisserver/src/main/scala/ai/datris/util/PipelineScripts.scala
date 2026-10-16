@@ -697,11 +697,14 @@ class PipelineScripts(
                     case DeleteOutcome.Unchecked(error) =>
                         logger.warn("Kept CodeGen script " + ref + ": the repository could not be checked: " + error)
                         Some(PipelineScripts.uncheckedOnDeleteWarning(r.pipeline, r.kind, path, error))
+                    case DeleteOutcome.DeleteFailed(error) =>
+                        logger.warn("Could not confirm the delete of CodeGen script " + ref + ": " + error)
+                        Some(CodeStore.deleteUnconfirmedWarning(path, error))
                 }
             catch {
                 case e: Exception =>
                     logger.warn("Could not delete CodeGen script object " + ref + ": " + e.getMessage)
-                    if (isRepoBacked(r)) Some(PipelineScripts.uncheckedOnDeleteWarning(r.pipeline, r.kind, path, messageOf(e))) else None
+                    if (isRepoBacked(r)) Some(CodeStore.deleteUnconfirmedWarning(path, messageOf(e))) else None
             }
         } else None
 

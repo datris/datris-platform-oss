@@ -195,7 +195,9 @@ script file that is unchanged since its recorded commit; git history is kept. A 
 in the repository since then is kept: a hand edit is never removed by Datris. The pipeline and its
 script records are still deleted, and the delete response's `warnings` names each kept file so you
 can remove it by hand if it is no longer wanted. When the repository cannot be reached the files are
-kept the same way, with a warning, and the delete still goes ahead. Deleting a tap whose script is in
+kept the same way, with a warning, and the delete still goes ahead. If the delete request itself fails
+(for example it times out), the warning says the delete could not be confirmed: check the repository
+and remove the file by hand if it is still there. Deleting a tap whose script is in
 the repository follows the same rule.
 
 ## Troubleshooting

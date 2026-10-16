@@ -527,9 +527,14 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
             StoredScript("github", scriptRepoPath = path, scriptCommitSha = commit(path, Some(script), base, actor))
         }
 
+        /** When set, a delete commits and then fails, as a request that timed
+          * out client-side after GitHub committed it would. */
+        var deleteFails: String = null
+
         override def deleteScript(ref: ScriptRef): Unit = {
             check()
             if (ref != null && ref.scriptRepoPath != null && head(ref.scriptRepoPath).isDefined) commit(ref.scriptRepoPath, None, null, null)
+            if (deleteFails != null) throw new RuntimeException(deleteFails)
         }
 
         override def scriptExists(ref: ScriptRef): Boolean = readScript(ref).isDefined
@@ -1001,6 +1006,27 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(w.contains(DqPath), w)
         assert(w.contains("kept in the code repository"), w)
         assert(w.contains(dqRec.scriptCommitSha.take(7)), s"names the recorded sha prefix: $w")
+    }
+
+    test("deleteAll reports an unconfirmed delete, not a kept file, when only the delete request fails") {
+        val s = withRepo()
+        s.onSave(null, csvCfg(txInstruction = instruction), "todd")
+        repo.hubEdit(DqPath, "# edited")
+        repo.deleteFails = "api.github.com:443 failed to respond"
+        val warnings: Seq[String] =
+            try s.deleteAll("orders")
+            catch { case e: Throwable => fail("deleteAll must not throw: " + e) }
+        assert(repo.head(DqPath).contains("# edited"), "the hand edit stays at head")
+        assert(repo.head(TxPath).isEmpty, "the transformation delete was committed")
+        assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty, "both records deleted")
+        assert(warnings.size == 2, s"$warnings")
+        val kept = warnings.filter(_.contains(DqPath))
+        assert(kept.size == 1 && kept.head.contains("kept in the code repository"), s"$warnings")
+        val failed = warnings.filter(_.contains(TxPath))
+        assert(failed.size == 1, s"$warnings")
+        val w = failed.head
+        assert(w.contains("could not be confirmed") && w.contains("api.github.com:443 failed to respond"), w)
+        assert(!w.contains("was kept") && !w.contains("could not be checked"), s"must not claim the file was kept: $w")
     }
 
     test("deleteAll keeps the files and warns when the repository is unreachable") {
