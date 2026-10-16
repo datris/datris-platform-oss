@@ -420,10 +420,11 @@ class PipelineScripts(
       * Repository backend: the file at branch head (the existing record's
       * path, or the path a new script would get) equal to `text` (normalised
       * as [[CatalogArchive.normaliseScript]]) is pinned at the head commit
-      * with no commit. A different file at head is never overwritten: Left
-      * with [[conflictWarning]] when the target has no record for it, and the
-      * usual commit (rejected as a conflict when the file changed since the
-      * recorded commit) when it has one. */
+      * with no commit. A different file at head: when the target has no
+      * record for it (or a record that pins no commit), Left with a reason
+      * that is not a conflict warning (the save that follows regenerates);
+      * otherwise the usual commit, rejected with [[conflictWarning]] when the
+      * file changed since the recorded commit. */
     def importScript(config: PipelineConfig, kind: String, text: String, archived: CodeGenScript, actor: String): Either[String, CodeGenScript] = {
         if (config == null || config.name == null) return Left("No pipeline config to import the script into")
         if (!Kinds.contains(kind)) return Left(unknownKindMessage(kind))
@@ -455,12 +456,18 @@ class PipelineScripts(
                         case Some((content, headSha)) if CatalogArchive.normaliseScript(content) == CatalogArchive.normaliseScript(text) =>
                             StoredScript(Github, scriptRepoPath = probe.get.scriptRepoPath, scriptCommitSha = headSha)
                         case Some(_) if existingRef.isEmpty =>
-                            // A file this install has no record of: never replace it.
-                            return Left(conflictWarning(
-                                config.name,
-                                kind,
-                                CodeGenScript(config.name, kind, instruction, null, scriptRepoPath = probe.get.scriptRepoPath)
-                            ))
+                            // A file this install has no record of. Not imported; the
+                            // pipeline save that follows generates a script and commits
+                            // it there (a null base makes no hand-edit check), so the
+                            // reason says so. Not a conflict warning.
+                            return Left(differentFileAtHeadReason(probe.get.scriptRepoPath))
+                        case Some(_) if existingRef.exists(r => r.scriptCommitSha == null || r.scriptCommitSha.isEmpty) =>
+                            // A record that pins no commit: there is no base to check a
+                            // hand edit against, so do not commit over the file.
+                            return Left(
+                                "a different file is already at '" + probe.get.scriptRepoPath +
+                                    "' at branch head in the code repository and this pipeline's script record pins no commit to check it against; the archived script was not imported"
+                            )
                         case _ => store.storeScript(kind, text, existingRef.orNull, actor)
                     }
                 } else store.storeScript(kind, text, sameBackendPrior.map(refOf).orNull, actor)
@@ -748,6 +755,11 @@ object PipelineScripts
     def notRepositoryMessage(pipeline: String, kind: String): String =
         "The " + kind + " script for pipeline " + pipeline +
             " is not stored in the code repository, so there is nothing to pull. Regenerate it with storage=github to move it there."
+
+    /** importScript's reason when a new pipeline's script path already holds
+      * a different file at branch head. */
+    def differentFileAtHeadReason(path: String): String =
+        "a different file is already at '" + path + "' at branch head in the code repository; the save regenerated the script over it"
 
     /** Text that marks a rejected repository commit (the API maps it to 409). */
     val ConflictMarker = "changed in the code repository since the recorded commit"

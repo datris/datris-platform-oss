@@ -585,7 +585,10 @@ object CatalogArchive {
         codegenScripts: Map[String, Map[String, String]] = Map.empty,
         // pipeline -> kind -> archived (stripped) record; only for a .py with
         // a parseable .json sidecar
-        codegenRecords: Map[String, Map[String, CodeGenScript]] = Map.empty
+        codegenRecords: Map[String, Map[String, CodeGenScript]] = Map.empty,
+        // pipeline -> kind -> why a .json sidecar next to an archived .py was
+        // not used (unreadable, or names another pipeline or kind)
+        codegenRecordProblems: Map[String, Map[String, String]] = Map.empty
     )
 
     def readContents(manifest: Manifest, entries: Map[String, Array[Byte]]): Either[String, Contents] = {
@@ -644,15 +647,27 @@ object CatalogArchive {
                         }
                     }.filter(_._2.nonEmpty).toMap
                     // A sidecar that does not parse, or names another
-                    // pipeline or kind, is ignored: the script regenerates.
-                    val codegenRecords = codegenScripts.map { case (n, kinds) =>
+                    // pipeline or kind, is not used (the script regenerates)
+                    // and the reason is kept in codegenRecordProblems.
+                    val parsed: Map[String, Map[String, Either[String, CodeGenScript]]] = codegenScripts.map { case (n, kinds) =>
                         n -> kinds.keys.flatMap { kind =>
-                            text(codegenRecordPath(n, kind)).flatMap(json => scala.util.Try(gson.fromJson(json, classOf[CodeGenScript])).toOption)
-                                .filter(r => r != null && r.pipeline == n && r.kind == kind)
-                                .map(r => kind -> stripCodeGenRecordForExport(r))
+                            text(codegenRecordPath(n, kind)).map { json =>
+                                val r: Either[String, CodeGenScript] =
+                                    scala.util.Try(gson.fromJson(json, classOf[CodeGenScript])).toOption.filter(_ != null) match {
+                                        case None => Left("the script record in the archive could not be read")
+                                        case Some(rec) if rec.pipeline != n || rec.kind != kind =>
+                                            Left("the script record in the archive names " + rec.pipeline + "/" + rec.kind)
+                                        case Some(rec) => Right(stripCodeGenRecordForExport(rec))
+                                    }
+                                kind -> r
+                            }
                         }.toMap
-                    }.filter(_._2.nonEmpty)
-                    Contents(taps, pipelines, scripts, schemas, codegenScripts, codegenRecords)
+                    }
+                    val codegenRecords =
+                        parsed.map { case (n, m) => n -> m.collect { case (k, Right(r)) => k -> r } }.filter(_._2.nonEmpty)
+                    val codegenRecordProblems =
+                        parsed.map { case (n, m) => n -> m.collect { case (k, Left(why)) => k -> why } }.filter(_._2.nonEmpty)
+                    Contents(taps, pipelines, scripts, schemas, codegenScripts, codegenRecords, codegenRecordProblems)
                 }
         }
     }

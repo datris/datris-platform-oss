@@ -201,4 +201,24 @@ class CatalogRestoreScriptsSpec extends AnyFunSuite with BeforeAndAfterEach {
         val dq = out.regenerated.find(_._1 == "orders/dataQuality").getOrElse(fail(s"dataQuality not reported: ${out.regenerated}"))
         assert(dq._2.contains("instruction or source schema"), dq._2)
     }
+
+    test("importCodegenScripts reports an unreadable or mismatched sidecar with its own reason, not the re-export one") {
+        val mf = CatalogArchive.Manifest(CatalogArchive.FormatVersion, "sales", "2026-10-15 10:00:00", "1.50.0", Nil, Seq("orders"), Nil, Nil)
+        val entries = CatalogArchive.archiveEntries(
+            mf,
+            Nil,
+            Seq(CatalogArchive.stripPipelineForExport(cfg.copy(catalog = "sales"))),
+            codegen = Map("orders" -> archivedText),
+            codegenRecords = Map("orders" -> Map(Dq -> sidecar(Dq), Tx -> sidecar(Tx).copy(pipeline = "refunds")))
+        )
+        val map = entries.map(e => e.path -> e.bytes).toMap +
+            (CatalogArchive.codegenRecordPath("orders", Dq) -> "{not json".getBytes("UTF-8"))
+        val c = CatalogArchive.readContents(mf, map).fold(e => fail(e), identity)
+        assert(c.codegenRecords.getOrElse("orders", Map.empty).isEmpty, c.codegenRecords)
+        val out = CatalogAPIController.importCodegenScripts(c, "orders", scripts, "todd", mutable.ArrayBuffer.empty[String])
+        assert(out.imported.isEmpty, s"${out.imported}")
+        val reasons = out.regenerated.toMap
+        assert(reasons("orders/dataQuality") == "the script record in the archive could not be read", reasons)
+        assert(reasons("orders/transformation") == "the script record in the archive names refunds/transformation", reasons)
+    }
 }

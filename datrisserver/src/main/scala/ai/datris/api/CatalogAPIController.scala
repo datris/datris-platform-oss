@@ -1286,7 +1286,9 @@ object CatalogAPIController {
                     else
                         (texts.get(kind), recs.get(kind)) match {
                             case (None, _) => regenerated += (item -> NoScriptReason)
-                            case (Some(_), None) => regenerated += (item -> NoRecordReason)
+                            case (Some(_), None) =>
+                                val problem = contents.codegenRecordProblems.getOrElse(pipelineName, Map.empty).get(kind)
+                                regenerated += (item -> problem.getOrElse(NoRecordReason))
                             case (Some(text), Some(rec)) =>
                                 scripts.importScript(cfg, kind, text, rec, actor) match {
                                     case Right(r) => imported += r

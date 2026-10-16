@@ -1073,7 +1073,9 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         val commitsBefore = repo.commits.size
         val r = s.importScript(cfg, Dq, "print('archived')", archivedRecord(cfg), "todd")
         assert(r.isLeft, r)
-        assert(r.left.get.contains(PipelineScripts.ConflictMarker), r.left.get)
+        // Not a conflict warning: the save that follows regenerates over the file.
+        assert(r.left.get == PipelineScripts.differentFileAtHeadReason(repo.pathOf(Dq)), r.left.get)
+        assert(!r.left.get.contains(PipelineScripts.ConflictMarker), r.left.get)
         assert(repo.commits.size == commitsBefore, s"never overwritten: ${repo.commits}")
         assert(records.read("orders", Dq).isEmpty)
     }
@@ -1092,5 +1094,20 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(r2.isRight, r2)
         assert(repo.writes.size == 1, s"one create commit: ${repo.writes}")
         assert(repo.head(repo.pathOf(Tx)).contains("print('archived tx')"))
+    }
+
+    test("importScript on a repository record that pins no commit and a different file at head is Left, no commit") {
+        val s = withRepo()
+        val cfg = csvCfg()
+        repo.hubEdit(repo.pathOf(Dq), "print('someone else')")
+        records.write(
+            CodeGenScript("orders", Dq, rule, null, storage = "github", scriptRepoPath = repo.pathOf(Dq), status = "pending", origin = "save")
+        )
+        val commitsBefore = repo.commits.size
+        val r = s.importScript(cfg, Dq, "print('archived')", archivedRecord(cfg), "todd")
+        assert(r.isLeft, r)
+        assert(r.left.get.contains("pins no commit"), r.left.get)
+        assert(repo.commits.size == commitsBefore, s"never overwritten: ${repo.commits}")
+        assert(repo.head(repo.pathOf(Dq)).contains("print('someone else')"))
     }
 }
