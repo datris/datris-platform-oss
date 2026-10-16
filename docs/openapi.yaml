@@ -723,6 +723,52 @@ components:
             maxPendingPerActor:
               type: integer
               default: 50
+        recovery:
+          type: object
+          description: The recovery agent's dial and limits (see Incidents)
+          properties:
+            mode:
+              type: string
+              enum: [off, propose, autopilot]
+              default: off
+            verifyMode:
+              type: string
+              enum: [scratch-first, real]
+              default: scratch-first
+              description: >-
+                scratch-first rehearses a proposed fix into the scratch
+                destination and judges it against the last good run before the
+                real run; real goes straight to the real run.
+            maxAiCallsPerIncident:
+              type: integer
+              default: 12
+            maxActionsPerIncident:
+              type: integer
+              default: 3
+            maxRuntimeMinutes:
+              type: integer
+              default: 15
+            maxOpenIncidents:
+              type: integer
+              default: 10
+            cooldownHours:
+              type: integer
+              default: 6
+            maxRecordDeltaPct:
+              type: integer
+              default: 25
+            allowColumnRemoval:
+              type: boolean
+              default: false
+            allowTypeChange:
+              type: boolean
+              default: false
+            minDqPassRate:
+              type: number
+              description: Absent means baseline pass rate minus 0.01
+            maxNullRateIncrease:
+              type: number
+              default: 0.1
         updatedAt:
           type: string
           readOnly: true
@@ -5568,6 +5614,30 @@ paths:
           description: The abandoned incident
         '409':
           description: Already closed
+  /api/v1/incidents/{id}/proceed:
+    post:
+      tags: [Recovery Agent]
+      summary: Proceed past a needs-human scratch verdict (admin / editor)
+      description: >-
+        A person accepting the evidence of an incident parked on a
+        needs-human scratch verdict: the agent applies its fix and runs it
+        for real. Never permitted from an agent-initiated request (403).
+        Requires the incident:proceed capability on scoped keys.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The incident, now executing
+        '403':
+          description: Agent-initiated request
+        '404':
+          description: Unknown id, or the recovery agent is off
+        '409':
+          description: The incident is not awaiting a needs-human scratch verdict
   /api/v1/activity/signals:
     get:
       tags: [Recovery Agent]

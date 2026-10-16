@@ -150,6 +150,8 @@ export class ActivityComponent implements OnInit, OnDestroy {
   abandonConfirm = new Set<string>();
   /** Incident ids with an abandon call in flight. */
   abandoning = new Set<string>();
+  /** Incident ids with a proceed call in flight. */
+  proceeding = new Set<string>();
   /** Per-incident error banner after a failed abandon from this page. */
   incidentActionError = new Map<string, string>();
   /** Closed-incident ids whose evidence card is expanded. */
@@ -654,6 +656,33 @@ export class ActivityComponent implements OnInit, OnDestroy {
         } else {
           this.incidentActionError.set(i.id, body.error || body.message || 'Abandon failed.');
         }
+        this.loadIncidents();
+      }
+    });
+  }
+
+  /** Parked on a needs-human scratch verdict with nothing queued in Approvals. */
+  canProceed(i: Incident): boolean {
+    return i.state === 'awaiting_approval' && i.verdict === 'needs-human' && !(i.awaitingApprovalIds?.length);
+  }
+
+  isProceeding(i: Incident): boolean {
+    return this.proceeding.has(i.id);
+  }
+
+  proceed(i: Incident): void {
+    if (this.proceeding.has(i.id)) return;
+    this.proceeding.add(i.id);
+    this.incidentActionError.delete(i.id);
+    this.incidentsService.proceed(i.id).subscribe({
+      next: () => {
+        this.proceeding.delete(i.id);
+        this.loadIncidents();
+      },
+      error: (err) => {
+        this.proceeding.delete(i.id);
+        const body = err?.error || {};
+        this.incidentActionError.set(i.id, body.error || body.message || 'Proceed failed.');
         this.loadIncidents();
       }
     });

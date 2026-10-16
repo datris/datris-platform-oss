@@ -137,6 +137,8 @@ export interface Incident {
   /** Absent on incidents opened before evidence existed. */
   evidence?: IncidentEvidence;
   verdict?: EvidenceVerdict;
+  /** Set when a person proceeded past a needs-human scratch verdict. */
+  resumedAt?: string;
 }
 
 export interface IncidentsPage {
@@ -229,6 +231,12 @@ export class IncidentsService {
    *  incident already reached a terminal state. Admin/editor only. */
   abandon(id: string): Observable<Incident> {
     return this.http.post<Incident>('/api/v1/incidents/' + encodeURIComponent(id) + '/abandon', {});
+  }
+
+  /** Accept a needs-human scratch verdict and let the agent run the fix for
+   *  real. 409 when the incident is no longer parked on that verdict. */
+  proceed(id: string): Observable<Incident> {
+    return this.http.post<Incident>('/api/v1/incidents/' + encodeURIComponent(id) + '/proceed', {});
   }
 
   /** Server-computed dashboard signals for the given window (24h/7d/30d). */

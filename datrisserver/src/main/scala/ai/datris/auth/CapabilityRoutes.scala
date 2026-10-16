@@ -211,10 +211,12 @@ object CapabilityRoutes {
         Route("POST", "/api/v1/approvals/*/reject", "approval", "decide"),
 
         // Recovery-agent incidents — read for everyone the key allows;
-        // abandoning one is a person's call (role-gated on top).
+        // abandoning one, or proceeding past a needs-human scratch verdict, is
+        // a person's call (role-gated on top; agents get 403).
         Route("GET", "/api/v1/incidents", "incident", "read"),
         Route("GET", "/api/v1/incidents/**", "incident", "read"),
         Route("POST", "/api/v1/incidents/*/abandon", "incident", "abandon"),
+        Route("POST", "/api/v1/incidents/*/proceed", "incident", "proceed"),
 
         // Server-side Activity signals (failures / stale / volume) — derived
         // operational metadata.

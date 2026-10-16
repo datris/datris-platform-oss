@@ -53,7 +53,8 @@ case class Incident(
     revertToVersion: Option[Int] = None, // resource version to restore if verification fails
     closedAt: Option[Instant] = None,
     outcome: Option[String] = None,
-    evidence: Option[JsonObject] = None // IncidentEvidence JSON; absent on pre-upgrade incidents
+    evidence: Option[JsonObject] = None, // IncidentEvidence JSON; absent on pre-upgrade incidents
+    resumedAt: Option[Instant] = None // a person proceeded past a needs-human verdict: the runtime budget restarts here
 ) {
 
     def isOpen: Boolean = Incident.OpenStates.contains(state)
@@ -82,6 +83,7 @@ case class Incident(
         revertToVersion.foreach(v => o.addProperty("revertToVersion", v))
         closedAt.foreach(c => o.addProperty("closedAt", c.toString))
         outcome.foreach(o.addProperty("outcome", _))
+        resumedAt.foreach(r => o.addProperty("resumedAt", r.toString))
         evidence.foreach { e =>
             o.add("evidence", e)
             if (e.has("verdict") && e.get("verdict").isJsonPrimitive) o.addProperty("verdict", e.get("verdict").getAsString)
@@ -165,7 +167,8 @@ object Incident {
             revertToVersion = Option(d.getInteger("revertToVersion")).map(_.intValue()),
             closedAt = instant("closedAt"),
             outcome = opt(d, "outcome"),
-            evidence = Option(d.get("evidence", classOf[Document])).map(e => JsonParser.parseString(e.toJson).getAsJsonObject)
+            evidence = Option(d.get("evidence", classOf[Document])).map(e => JsonParser.parseString(e.toJson).getAsJsonObject),
+            resumedAt = instant("resumedAt")
         )
     }
 }

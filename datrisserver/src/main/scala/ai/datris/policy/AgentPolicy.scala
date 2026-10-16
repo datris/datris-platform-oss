@@ -43,7 +43,11 @@ case class RecoverySettings(
     allowColumnRemoval: Boolean = false,
     allowTypeChange: Boolean = false,
     minDqPassRate: Option[Double] = None,
-    maxNullRateIncrease: Double = 0.10
+    maxNullRateIncrease: Double = 0.10,
+    // How a proposed fix is verified: `scratch-first` rehearses the candidate
+    // into the scratch destination and judges it before the real run;
+    // `real` goes straight to the real run (the pre-scratch behaviour).
+    verifyMode: String = RecoverySettings.ScratchFirst
 ) {
 
     /** The thresholds the incident evidence is judged against. */
@@ -62,6 +66,10 @@ object RecoverySettings {
     val Propose = "propose"
     val Autopilot = "autopilot"
     val Modes: Set[String] = Set(Off, Propose, Autopilot)
+
+    val ScratchFirst = "scratch-first"
+    val Real = "real"
+    val VerifyModes: Set[String] = Set(ScratchFirst, Real)
 }
 
 /** The agent policy: for every `resource:action[:sub]` key the capability
@@ -138,6 +146,7 @@ case class AgentPolicy(
         r.addProperty("allowTypeChange", recovery.allowTypeChange)
         recovery.minDqPassRate.foreach(v => r.addProperty("minDqPassRate", v))
         r.addProperty("maxNullRateIncrease", recovery.maxNullRateIncrease)
+        r.addProperty("verifyMode", recovery.verifyMode)
         o.add("recovery", r)
         updatedAt.foreach(o.addProperty("updatedAt", _))
         updatedBy.foreach(o.addProperty("updatedBy", _))
@@ -294,6 +303,15 @@ object AgentPolicy {
                     if (!RecoverySettings.Modes.contains(m)) { errors += "recovery.mode must be off, propose or autopilot"; RecoverySettings.Off }
                     else m
                 }
+            val verifyMode =
+                if (!r.has("verifyMode") || r.get("verifyMode").isJsonNull) RecoverySettings.ScratchFirst
+                else {
+                    val e = r.get("verifyMode")
+                    val m = if (e.isJsonPrimitive) e.getAsString.trim.toLowerCase else ""
+                    if (!RecoverySettings.VerifyModes.contains(m)) {
+                        errors += "recovery.verifyMode must be scratch-first or real"; RecoverySettings.ScratchFirst
+                    } else m
+                }
             recovery = RecoverySettings(
                 mode = mode,
                 maxAiCallsPerIncident = rInt("maxAiCallsPerIncident", 12, 1, 100),
@@ -305,7 +323,8 @@ object AgentPolicy {
                 allowColumnRemoval = rBool("allowColumnRemoval", false),
                 allowTypeChange = rBool("allowTypeChange", false),
                 minDqPassRate = rFraction("minDqPassRate"),
-                maxNullRateIncrease = rFraction("maxNullRateIncrease").getOrElse(0.10)
+                maxNullRateIncrease = rFraction("maxNullRateIncrease").getOrElse(0.10),
+                verifyMode = verifyMode
             )
         }
 

@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+- **Fixes are rehearsed in a scratch lane before they land.** When the recovery agent proposes a fix for a failing tap, the platform first runs it against a scratch copy of the pipeline and compares the result with the last good run. A fix that clearly breaks the data is stopped with nothing written; one that changes the data's shape waits for a person, who can review the evidence and choose "Proceed to real run". Installs with the recovery agent in `propose` or `autopilot` will see one extra verification step per incident, and some proposals may now end as failed or waiting for a person on the evidence alone. Set `recovery.verifyMode` to `real` in the agent policy to keep the previous behaviour.
+
 ## v1.51.0 — October 16, 2026
 
 **Run Datris across dev, QA and production: promote what you tested, and always know where you are.**

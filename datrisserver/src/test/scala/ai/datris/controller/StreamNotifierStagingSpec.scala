@@ -975,4 +975,21 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(persisted.size == 1)
         assert(su2.events.count(_._2.contains("removed duplicate destination column(s) [admit_date]")) == 1, s"lines: ${su2.events}")
     }
+
+    // Story: plans/stories/self-healing-3-scratch-first-verify.md — the scratch
+    // lane runs the stored pipeline with its destination swapped, via
+    // `configOverride`. (The null-override path reads PipelineConfigIO, i.e.
+    // Mongo, and is exercised end to end.)
+    test("configOverride: a scratch-destination override naming the pipeline is the config the run uses") {
+        val scratchCfg = jsonConfig.copy(destination = Destination(scratch = ScratchConfig()))
+        val chosen = new StreamNotifier().resolveConfig("orders", scratchCfg)
+        assert(chosen eq scratchCfg)
+        assert(chosen.destination.scratch != null && chosen.destination.database == null)
+    }
+
+    test("configOverride: an override naming a different pipeline is refused") {
+        val other = jsonConfig.copy(name = "not-orders")
+        val e = intercept[DatrisException](new StreamNotifier().resolveConfig("orders", other))
+        assert(e.getMessage.contains("not-orders") && e.getMessage.contains("orders"), e.getMessage)
+    }
 }

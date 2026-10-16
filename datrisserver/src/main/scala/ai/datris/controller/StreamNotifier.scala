@@ -31,7 +31,19 @@ class StreamNotifier {
       * it is recorded as `Data.size` and in the status stream. The stream is
       * consumed and closed here. */
     def process(source: InputStream, sizeHint: Long, filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo): JobContext =
-        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, config => stageData(source, sizeHint, config))
+        process(source, sizeHint, filename, pipeline, publisherToken, tapFeed, null: PipelineConfig)
+
+    /** As above, run against `configOverride` instead of the stored config when non-null. */
+    def process(
+        source: InputStream,
+        sizeHint: Long,
+        filename: String,
+        pipeline: String,
+        publisherToken: String,
+        tapFeed: TapFeedInfo,
+        configOverride: PipelineConfig
+    ): JobContext =
+        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, config => stageData(source, sizeHint, config), configOverride)
 
     /** Hand an already-staged, already-counted payload (a tap run's NDJSON /
       * XML / text file, plans/stories/streaming-pipeline-phase4.md) to one
@@ -41,15 +53,31 @@ class StreamNotifier {
       * unstructured pipelines still go through the `InputStream` overload's
       * parsing (schema evolution / rawBytes), fed from the staged file. */
     def process(staged: StagedPayload, sizeHint: Long, filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo): JobContext =
-        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, config => stageData(staged, sizeHint, config))
+        process(staged, sizeHint, filename, pipeline, publisherToken, tapFeed, null: PipelineConfig)
 
-    private def processWith(
+    /** As above, run against `configOverride` instead of the stored config when non-null. */
+    def process(
+        staged: StagedPayload,
         sizeHint: Long,
         filename: String,
         pipeline: String,
         publisherToken: String,
         tapFeed: TapFeedInfo,
-        stage: PipelineConfig => (Data, PipelineConfig)
+        configOverride: PipelineConfig
+    ): JobContext =
+        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, config => stageData(staged, sizeHint, config), configOverride)
+
+    /** `configOverride`, when set, is the config the run uses instead of the
+      * stored one (the recovery agent's scratch lane: the stored pipeline with
+      * its destination swapped for `scratch`). It must name `pipeline`. */
+    private[controller] def processWith(
+        sizeHint: Long,
+        filename: String,
+        pipeline: String,
+        publisherToken: String,
+        tapFeed: TapFeedInfo,
+        stage: PipelineConfig => (Data, PipelineConfig),
+        configOverride: PipelineConfig
     ): JobContext = {
         logger.info("StreamNotifier processing pipeline: " + pipeline + ", filename: " + filename)
         statusUtil.setFilename("stream: " + pipeline)
@@ -59,7 +87,7 @@ class StreamNotifier {
             statusUtil.setPipelineToken(pipelineToken)
             statusUtil.setPublisherToken(Option(publisherToken).getOrElse(pipelineToken))
 
-            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
+            val config = resolveConfig(pipeline, configOverride)
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
@@ -102,6 +130,17 @@ class StreamNotifier {
                 throw new DatrisException("StreamNotifier error: " + Throwables.getStackTraceAsString(e))
         }
     }
+
+    /** The config a run uses: `configOverride` when set (it must name
+      * `pipeline`), else the stored config (null when not configured). */
+    private[controller] def resolveConfig(pipeline: String, configOverride: PipelineConfig): PipelineConfig =
+        if (configOverride != null) {
+            if (configOverride.name != pipeline)
+                throw new DatrisException(
+                    "Pipeline config override names '" + configOverride.name + "' but the run is for pipeline '" + pipeline + "'"
+                )
+            configOverride
+        } else PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
 
     /** Write the incoming payload to a staged file and describe it as `Data`.
       * CSV: the header line is read off the stream, `DataUtil.evolveSchema`

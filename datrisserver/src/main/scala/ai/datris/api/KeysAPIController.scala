@@ -472,9 +472,10 @@ object KeysAPIController {
         // Approvals: agents read/poll what they queued (owner=self); deciding
         // is a person's job — the interceptor refuses agents even with the cap.
         ("approval", Seq("read", "decide"), Seq("owner")),
-        // Recovery-agent incidents: read for dashboards/agents; abandon is a
-        // person's call (role-gated; the controller refuses agents).
-        ("incident", Seq("read", "abandon"), Seq.empty),
+        // Recovery-agent incidents: read for dashboards/agents; abandon and
+        // proceed (past a needs-human scratch verdict) are a person's call
+        // (role-gated; the controller refuses agents).
+        ("incident", Seq("read", "abandon", "proceed"), Seq.empty),
         // Field protection: reveal decrypts `encrypt` ciphertext, admin rotates
         // the encryption key. Never in a template or role bundle; granted
         // explicitly, or held through `*:*` (admins, full-access, legacy keys).

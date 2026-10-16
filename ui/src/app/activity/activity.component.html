@@ -227,6 +227,14 @@
         <div class="approval-outcome approval-outcome-warn" *ngIf="incidentErrorFor(i) as e">{{ e }}</div>
 
         <div class="approval-actions" *ngIf="auth.canWrite()">
+          <button class="action-btn"
+                  *ngIf="canProceed(i) && !abandonConfirm.has(i.id)"
+                  [disabled]="isProceeding(i) || isAbandoning(i)"
+                  (click)="proceed(i)"
+                  title="The scratch run needs a person's judgement. Accept the evidence and let the agent apply the fix and run it for real">
+            <span class="action-spinner" *ngIf="isProceeding(i)"></span>
+            {{ isProceeding(i) ? 'Working…' : 'Proceed to real run' }}
+          </button>
           <button class="action-btn action-btn-ghost"
                   *ngIf="!abandonConfirm.has(i.id)"
                   [disabled]="isAbandoning(i)"

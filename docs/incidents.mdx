@@ -51,7 +51,7 @@ Guards, all enforced in code: one open incident per resource; a resource whose l
 
 During diagnosis it holds **read-only tools** — it cannot change anything while investigating. Among them is the [doctor](/doctor), so when a failure is really the platform (a missing secret, a model or embedding service not answering, a full disk) it can say so and hand the incident to a human with the fix, instead of re-running a tap that will fail the same way. Its proposal may only contain: re-run the tap, fix the tap script (then test it), or "this needs a human" with an explanation. Deletes, schema migrations and secret changes are structurally impossible for it. Script fixes land as a new version, so history is never lost.
 
-**Verification is mandatory**: after acting, the tap must complete a real run healthily, and when it feeds a pipeline the load must finish without error. If verification fails, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown.
+**Verification is mandatory**: before acting, the fix is rehearsed in a scratch lane and compared with the last good run (unless `recovery.verifyMode` is `real`); after acting, the tap must complete a real run healthily, and when it feeds a pipeline the load must finish without error. If verification fails, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown.
 
 Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so with the audit log on, the [audit log](/audit-log) is the incident's complete ledger ([strict mode](/audit-log#strict-mode) guarantees no entry is dropped) — and revoking that key stops the agent entirely, independent of any flag.
 

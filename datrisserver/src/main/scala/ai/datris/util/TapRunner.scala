@@ -9,7 +9,10 @@ import ai.datris.model.{
     CsvAttributes,
     DatrisEnvironment,
     DatrisException,
+    Destination,
     GlobalJobContext,
+    PipelineConfig,
+    ScratchConfig,
     StagedFormat,
     StagedPayload,
     TapConfig,
@@ -31,6 +34,73 @@ import java.util.{Date, TimeZone, UUID}
 object TapRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
+    /** The run mode that rehearses a tap into the scratch destination: the
+      * script runs (optionally an unsaved candidate), its output goes through
+      * the real pipeline with the destination swapped for `scratch`, and
+      * nothing is stamped on the tap nor committed to its cursor. */
+    val ScratchMode = "scratch"
+
+    /** Every persistent side effect of a run, so specs can drive the runner
+      * without Mongo / MinIO / a pipeline. Production wiring below. */
+    trait Effects {
+        def writeTap(tap: TapConfig): Unit
+        def readState(tapName: String): String
+        def commitState(state: TapState): Unit
+        def writeRunLog(log: TapRunLog): Unit
+        def readPipeline(name: String): PipelineConfig
+
+        /** Hand a staged payload to one pipeline run; returns the job's
+          * pipeline token. `configOverride` null = the stored config. */
+        def submit(
+            staged: StagedPayload,
+            sizeHint: Long,
+            filename: String,
+            pipeline: String,
+            publisherToken: String,
+            tapFeed: TapFeedInfo,
+            configOverride: PipelineConfig
+        ): String
+    }
+
+    object ProductionEffects extends Effects {
+        override def writeTap(tap: TapConfig): Unit = TapConfigIO.write(tap)
+        override def readState(tapName: String): String = TapStateIO.readStateJson(tapName)
+        override def commitState(state: TapState): Unit = TapStateIO.write(state)
+        override def writeRunLog(log: TapRunLog): Unit = {
+            val key = log.tapName + "|" + log.runTime
+            // Stamp top-level created_at so the Ops activity dashboard can do an
+            // indexed time-range scan across all taps without per-tap fan-out.
+            // Old rows without created_at are simply absent from the new endpoint;
+            // they'll roll off the dashboard window naturally.
+            val nowMs: java.lang.Long = System.currentTimeMillis()
+            NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value", new Gson().toJson(log), "created_at", nowMs)
+        }
+        override def readPipeline(name: String): PipelineConfig = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name)
+        override def submit(
+            staged: StagedPayload,
+            sizeHint: Long,
+            filename: String,
+            pipeline: String,
+            publisherToken: String,
+            tapFeed: TapFeedInfo,
+            configOverride: PipelineConfig
+        ): String = {
+            val jobContext = staged.format match {
+                // A CSV projection goes through the InputStream overload so schema
+                // evolution and the CSV parser run exactly as for an upload.
+                case StagedFormat.Delimited(_) =>
+                    val source = new BufferedInputStream(Files.newInputStream(Paths.get(staged.path)))
+                    new StreamNotifier().process(source, sizeHint, filename, pipeline, publisherToken, tapFeed, configOverride)
+                case _ =>
+                    new StreamNotifier().process(staged, sizeHint, filename, pipeline, publisherToken, tapFeed, configOverride)
+            }
+            GlobalJobContext.addJobContext(jobContext)
+            jobContext.pipelineToken
+        }
+    }
+
+    @volatile private[util] var effects: Effects = ProductionEffects
+
     /**
      * Execute a tap: run the script, feed results to the target pipeline.
      *
@@ -46,10 +116,15 @@ object TapRunner {
         mode: String = "run",
         testLimit: Int = 0,
         params: Map[String, String] = Map.empty,
-        trigger: String = "manual"
+        trigger: String = "manual",
+        scriptOverride: String = null
     ): TapScriptResult = {
         val push = mode == "run"
-        val publisherToken = if (push) UUID.randomUUID().toString else null
+        // Scratch never stamps or commits (push stays false) but does feed the
+        // pipeline — into the scratch destination — so it gets a publisher token.
+        val scratch = mode == ScratchMode
+        val fx = effects
+        val publisherToken = if (push || scratch) UUID.randomUUID().toString else null
         val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
         sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
         val now = sdf.format(new Date())
@@ -66,7 +141,7 @@ object TapRunner {
         // Only update status in DB for real runs, not tests
         if (push) {
             val runningConfig = tapConfig.copy(lastRunStatus = "running", lastRunTime = now, lastRunError = null, lastRunTrigger = trigger)
-            TapConfigIO.write(runningConfig)
+            fx.writeTap(runningConfig)
         }
 
         try {
@@ -74,7 +149,7 @@ object TapRunner {
             // non-incremental taps). Read for test runs too — a test should exercise
             // the same window a real run would — but only real successful runs commit.
             val previousState: String =
-                try TapStateIO.readStateJson(tapConfig.name)
+                try fx.readState(tapConfig.name)
                 catch {
                     case e: Exception =>
                         logger.warn("TapRunner: state read failed for tap: " + tapConfig.name + " — running without state: " + e.getMessage)
@@ -83,7 +158,7 @@ object TapRunner {
 
             // `mode` (not testLimit) picks the wall-clock ceiling: a UI test with
             // the sample checkbox off has testLimit = 0, and MCP test_tap sends none.
-            val result = TapScriptRunner.run(tapConfig, testLimit, params, previousState, mode)
+            val result = TapScriptRunner.run(tapConfig, testLimit, params, previousState, mode, scriptOverride)
             scriptResult = result
             val durationMs = System.currentTimeMillis() - startMs
 
@@ -102,7 +177,7 @@ object TapRunner {
                         lastRunTrigger = trigger,
                         lastRunRetrySafe = true
                     )
-                    TapConfigIO.write(failedConfig)
+                    fx.writeTap(failedConfig)
                 }
                 writeRunLog(
                     tapConfig.name,
@@ -144,7 +219,7 @@ object TapRunner {
                             lastRunTrigger = trigger,
                             lastRunRetrySafe = false
                         )
-                        TapConfigIO.write(failedConfig)
+                        fx.writeTap(failedConfig)
                     }
                     writeRunLog(
                         tapConfig.name,
@@ -179,7 +254,7 @@ object TapRunner {
                         lastRunRetrySafe = false,
                         retryCount = 0
                     )
-                    TapConfigIO.write(noRecordsConfig)
+                    fx.writeTap(noRecordsConfig)
                     // "Caught up, nothing new" is a legitimate cursor advance (e.g. a
                     // checked-through timestamp). A script that emitted no state simply
                     // leaves the bookmark where it was.
@@ -204,11 +279,13 @@ object TapRunner {
             // Push to pipeline if requested, records exist, and a target pipeline is configured
             val (processedCount, pipelineTokens) =
                 if (
-                    push && result.staged != null && !result.staged.isEmpty && result.recordCount > 0 &&
+                    (push || scratch) && result.staged != null && !result.staged.isEmpty && result.recordCount > 0 &&
                     tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
                 ) {
                     feedStarted = true
-                    feedPipeline(tapConfig, result, publisherToken, TapFeedInfo(tapConfig.name, now, tapConfig.scriptCommitSha, declaredSource(tapConfig)))
+                    val feed = TapFeedInfo(tapConfig.name, now, tapConfig.scriptCommitSha, declaredSource(tapConfig))
+                    if (scratch) feedScratch(tapConfig, result, publisherToken, feed)
+                    else feedPipeline(tapConfig, result, publisherToken, feed)
                 } else (result.recordCount, new java.util.ArrayList[String]())
 
             if (push) {
@@ -223,7 +300,7 @@ object TapRunner {
                     lastRunRetrySafe = false,
                     retryCount = 0
                 )
-                TapConfigIO.write(successConfig)
+                fx.writeTap(successConfig)
                 // Commit point for incremental state: the feed was accepted. Failure
                 // paths never reach here, so a failed run leaves the old cursor and
                 // the retry ladder re-fetches the same window (at-least-once; upsert
@@ -264,7 +341,7 @@ object TapRunner {
                         lastRunTrigger = trigger,
                         lastRunRetrySafe = !feedStarted
                     )
-                    TapConfigIO.write(failedConfig)
+                    fx.writeTap(failedConfig)
                 }
                 writeRunLog(
                     tapConfig.name,
@@ -281,9 +358,10 @@ object TapRunner {
                 )
                 TapScriptResult(null, 0, e.getMessage)
         } finally {
-            // Real runs: every StreamNotifier hand-off has adopted (moved) what it
-            // needs out of the tap's staging directory, so drop the directory now.
-            if (push) TapScriptRunner.release(scriptResult)
+            // Real and scratch runs: every StreamNotifier hand-off has adopted
+            // (moved) what it needs out of the tap's staging directory, so drop
+            // the directory now.
+            if (push || scratch) TapScriptRunner.release(scriptResult)
         }
     }
 
@@ -328,7 +406,7 @@ object TapRunner {
     private def commitState(tapConfig: TapConfig, result: TapScriptResult, runTime: String): Unit = {
         if (result.newState == null) return
         try {
-            TapStateIO.write(TapState(tapConfig.name, result.newState, runTime, tapConfig.name + "|" + runTime))
+            effects.commitState(TapState(tapConfig.name, result.newState, runTime, tapConfig.name + "|" + runTime))
             logger.info("TapRunner: committed incremental state for tap: " + tapConfig.name)
         } catch {
             case e: Exception =>
@@ -367,14 +445,7 @@ object TapRunner {
                     scriptCommitSha = scriptCommitSha,
                     queuedMs = queuedMs
                 )
-            val gson = new Gson
-            val key = tapName + "|" + runTime
-            // Stamp top-level created_at so the Ops activity dashboard can do an
-            // indexed time-range scan across all taps without per-tap fan-out.
-            // Old rows without created_at are simply absent from the new endpoint;
-            // they'll roll off the dashboard window naturally.
-            val nowMs: java.lang.Long = System.currentTimeMillis()
-            NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value", gson.toJson(log), "created_at", nowMs)
+            effects.writeRunLog(log)
         } catch {
             case e: Exception =>
                 logger.warn("Failed to write tap run log: " + e.getMessage)
@@ -386,15 +457,35 @@ object TapRunner {
       * else `tap:<name>`. See [[TapSourceResolver]]. Never credentials. */
     private[util] def declaredSource(tapConfig: TapConfig): String = TapSourceResolver.resolve(tapConfig)
 
-    private def feedPipeline(tapConfig: TapConfig, result: TapScriptResult, publisherToken: String, tapFeed: TapFeedInfo): (Int, java.util.List[String]) = {
+    /** [[feedPipeline]] with the pipeline's destination replaced by `scratch`
+      * (every other destination null): the rows go through the real source
+      * parsing, DQ and transformation and land only under `_scratch/`. */
+    private def feedScratch(tapConfig: TapConfig, result: TapScriptResult, publisherToken: String, tapFeed: TapFeedInfo): (Int, java.util.List[String]) = {
+        if (result.dataType == "document")
+            throw new DatrisException("Scratch verification is not supported for document taps (the scratch destination holds records, not documents)")
+        val stored = effects.readPipeline(tapConfig.targetPipeline)
+        if (stored == null)
+            throw new DatrisException("Pipeline: " + tapConfig.targetPipeline + " is not configured in the NoSQL database")
+        val scratchConfig = stored.copy(destination = Destination(scratch = ScratchConfig()))
+        feedPipeline(tapConfig, result, publisherToken, tapFeed, scratchConfig)
+    }
+
+    private def feedPipeline(
+        tapConfig: TapConfig,
+        result: TapScriptResult,
+        publisherToken: String,
+        tapFeed: TapFeedInfo,
+        configOverride: PipelineConfig = null
+    ): (Int, java.util.List[String]) = {
         if (result.dataType == "document") {
             return feedDocumentPipeline(tapConfig, result, publisherToken, tapFeed)
         }
 
-        logger.info("TapRunner: feeding " + result.recordCount + " records to pipeline: " + tapConfig.targetPipeline)
+        logger.info("TapRunner: feeding " + result.recordCount + " records to pipeline: " + tapConfig.targetPipeline +
+            (if (configOverride != null) " (scratch destination)" else ""))
 
         // Check what format the pipeline expects
-        val pipelineConfig = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tapConfig.targetPipeline)
+        val pipelineConfig = if (configOverride != null) configOverride else effects.readPipeline(tapConfig.targetPipeline)
         val pipelineExpectsCsv = pipelineConfig != null &&
             pipelineConfig.source != null &&
             pipelineConfig.source.fileAttributes != null &&
@@ -404,24 +495,23 @@ object TapRunner {
         // staged file, fed through the InputStream overload so schema evolution
         // and the CSV parser run exactly as for an upload. JSON / XML / text
         // pipelines adopt the staged file as-is — no bytes through the heap.
-        val jobContext = if (pipelineExpectsCsv) {
+        val pipelineToken = if (pipelineExpectsCsv) {
             val delimiter = CsvAttributes.delimiterOf(pipelineConfig)
             val (feed, filename) = projectForCsv(result, delimiter, "tap-" + tapConfig.name)
-            val source = new BufferedInputStream(Files.newInputStream(Paths.get(feed.path)))
-            new StreamNotifier().process(source, feed.bytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed)
+            effects.submit(feed, feed.bytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed, configOverride)
         } else
-            new StreamNotifier().process(
+            effects.submit(
                 result.staged,
                 result.staged.bytes,
                 "tap-" + tapConfig.name + ".json",
                 tapConfig.targetPipeline,
                 publisherToken,
-                tapFeed
+                tapFeed,
+                configOverride
             )
-        GlobalJobContext.addJobContext(jobContext)
-        logger.info("TapRunner: submitted job for pipeline: " + tapConfig.targetPipeline + ", token: " + jobContext.pipelineToken)
+        logger.info("TapRunner: submitted job for pipeline: " + tapConfig.targetPipeline + ", token: " + pipelineToken)
         val tokens = new java.util.ArrayList[String]()
-        tokens.add(jobContext.pipelineToken)
+        tokens.add(pipelineToken)
         (result.recordCount, tokens)
     }
 

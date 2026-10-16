@@ -37,6 +37,13 @@ object IncidentEvidenceBuilder {
     /** Recorded runs read for the baseline and the last-N counts. */
     val RecentRuns = 10
 
+    /** Observed text of the `baseline` check when there is nothing to compare a candidate with. */
+    val NoBaselineObserved = "no successful run in the last 30 days"
+
+    /** Spec seam: when non-null, replaces the lineage read that profiles the
+      * verifying real run, (incident, baseline) => real profile. */
+    @volatile private[incident] var realProfileOverride: (Incident, Option[RunProfile]) => Option[RunProfile] = null
+
     private def attempt[T](what: String)(f: => T): Option[T] =
         try Option(f)
         catch {
@@ -75,7 +82,10 @@ object IncidentEvidenceBuilder {
       * against candidate-if-present-else-real, evaluate the thresholds. */
     def afterRealRun(incident: Incident, evidence: IncidentEvidence): IncidentEvidence = {
         try {
-            val real = attempt("real profile")(realProfile(incident, evidence.baseline)).flatten
+            val hook = realProfileOverride
+            val real =
+                if (hook != null) hook(incident, evidence.baseline)
+                else attempt("real profile")(realProfile(incident, evidence.baseline)).flatten
             val withReal = evidence.copy(real = real.orElse(evidence.real), computedAt = Instant.now())
             judge(incident, withReal)
         } catch {
@@ -84,6 +94,43 @@ object IncidentEvidenceBuilder {
                 evidence
         }
     }
+
+    /** The scratch stage: store the candidate profile, diff baseline ->
+      * candidate and judge it with `thresholds`. With no baseline there is
+      * nothing to compare against, and the verdict is `needs-human` (never a
+      * silent fall-back to the real run). `lastN` feeds the vs-mean delta. */
+    def withCandidate(evidence: IncidentEvidence, candidate: RunProfile, thresholds: Thresholds): IncidentEvidence =
+        withCandidate(evidence, candidate, thresholds, Nil)
+
+    def withCandidate(evidence: IncidentEvidence, candidate: RunProfile, thresholds: Thresholds, lastN: Seq[Long]): IncidentEvidence = {
+        val withC = evidence.copy(candidate = Some(candidate), thresholds = thresholds, computedAt = Instant.now())
+        evidence.baseline match {
+            case None =>
+                val check = ThresholdCheck("baseline", passed = false, observed = NoBaselineObserved, limit = "a successful run to compare with")
+                withC.copy(diff = None, checks = List(check), verdict = Thresholds.NeedsHuman)
+            case Some(b) =>
+                val d = diffProfiles(b, candidate, lastN)
+                val (checks, verdict) = thresholds.evaluate(b, d)
+                withC.copy(diff = Some(d), checks = checks, verdict = verdict)
+        }
+    }
+
+    /** Stage 2 of scratch-first verification: baseline against what the real
+      * run landed, judged by the evidence's thresholds. None when either
+      * profile is missing. */
+    def judgeReal(incident: Incident, evidence: IncidentEvidence): Option[IncidentEvidence] =
+        for {
+            b <- evidence.baseline
+            r <- evidence.real
+        } yield {
+            val d = diffProfiles(b, r, lastNFor(incident, Set(r.runId)))
+            val (checks, verdict) = evidence.thresholds.evaluate(b, d)
+            evidence.copy(diff = Some(d), checks = checks, verdict = verdict, computedAt = Instant.now())
+        }
+
+    /** Record counts of the recent successful runs (never throws). */
+    private[incident] def lastNFor(incident: Incident, exclude: Set[String]): List[Long] =
+        attempt("last-N counts")(lastNCounts(incident, exclude)).getOrElse(Nil)
 
     /** Diff + checks + verdict from whatever profiles the evidence holds. */
     private[incident] def judge(incident: Incident, evidence: IncidentEvidence): IncidentEvidence = {
@@ -215,8 +262,17 @@ object IncidentEvidenceBuilder {
         if (incident.resourceType != "tap") None
         else attempt("tap")(TapConfigIO.read(DatrisEnvironment.current.tapTableName, incident.resourceName))
 
+    /** Recorded runs, minus scratch rehearsals (a run whose only output is the
+      * scratch destination landed nothing — it is never a baseline nor the
+      * verifying real run). */
     private def runs(incident: Incident): List[RunLineage] =
         attempt("recent runs")(LineageService.recentRuns(incident.resourceType, incident.resourceName, RecentRuns)).getOrElse(Nil)
+            .filterNot(isScratchOnly)
+
+    private[incident] def isScratchOnly(r: RunLineage): Boolean = {
+        val outs = Option(r.outputs).map(_.asScala.toList).getOrElse(Nil)
+        outs.nonEmpty && outs.forall(o => o != null && o.kind == "scratch")
+    }
 
     private def lastNCounts(incident: Incident, exclude: Set[String]): List[Long] =
         runs(incident).filter(isSuccess).filterNot(r => exclude.contains(r.runId)).map(_.recordCount.toLong)

@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.AuditLog
-import ai.datris.model.{DatrisEnvironment, TapConfig}
+import ai.datris.model.{DatrisEnvironment, DatrisException, TapConfig}
 import ai.datris.policy.{PendingAction, PendingActionIO, PolicyIO, RecoverySettings}
 import ai.datris.util._
 import com.google.gson.{Gson, JsonObject, JsonParser}
@@ -98,6 +98,37 @@ object IncidentRunner {
     /** Test seam: specs run incidents synchronously. */
     @volatile var runAsync: Boolean = true
 
+    /** What the scratch lane produced. `candidate` None with `error` Some =
+      * the scratch run itself failed. */
+    case class ScratchOutcome(candidate: Option[RunProfile], error: Option[String] = None)
+
+    /** The scratch lane: (stored tap, candidate script — None = the stored
+      * script) => outcome. Production = TapRunner.run(mode = "scratch",
+      * scriptOverride) + rollup poll + ScratchReader paging + RunProfiler. */
+    @volatile var scratch: (TapConfig, Option[String]) => ScratchOutcome = (t, script) => realScratch(t, script)
+
+    /** Spec seam: when non-null, used instead of PolicyIO.current.recovery. */
+    @volatile private[incident] var settingsOverride: RecoverySettings = null
+
+    /** Every stored-tap read in the runner. */
+    @volatile private[incident] var tapLookup: String => Option[TapConfig] =
+        (name: String) => Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name))
+
+    /** The direct restore inside revertIfNeeded: (incidentId, tapName,
+      * toVersion). Called only when the live version differs from the target. */
+    @volatile private[incident] var revertTap: (String, String, Int) => Unit =
+        (incidentId: String, tapName: String, toVersion: Int) => restoreTapVersion(incidentId, tapName, toVersion)
+
+    /** Rows of a scratch result profiled into `evidence.candidate`. */
+    val ProfileRowCap = 5000
+
+    /** Raw-document field: the scratch verdict an incident is parked on. */
+    private val ScratchVerdictField = "scratchVerdict"
+
+    /** The incident a production scratch run is polled under (the scratch
+      * seam's signature carries no id). */
+    private val scratchIncident = new ThreadLocal[String]()
+
     private lazy val pool = Executors.newFixedThreadPool(
         2,
         (r: Runnable) => {
@@ -112,9 +143,13 @@ object IncidentRunner {
         v != null && v.recoveryAgentEnabled && PolicyIO.enabled
     }
 
-    private[incident] def settings: RecoverySettings =
-        try PolicyIO.current.recovery
-        catch { case _: Exception => RecoverySettings() }
+    private[incident] def settings: RecoverySettings = {
+        val o = settingsOverride
+        if (o != null) o
+        else
+            try PolicyIO.current.recovery
+            catch { case _: Exception => RecoverySettings() }
+    }
 
     // ------------------------------------------------------------------
     // Open
@@ -185,8 +220,7 @@ object IncidentRunner {
 
     private def isTapHealthy(name: String): Boolean =
         try {
-            val t = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
-            t != null && Option(t.lastRunStatus).map(_.toLowerCase).exists(s => s == "success" || s == "no_records")
+            tapLookup(name).exists(t => Option(t.lastRunStatus).map(_.toLowerCase).exists(s => s == "success" || s == "no_records"))
         } catch {
             case _: Exception => false
         }
@@ -241,7 +275,34 @@ object IncidentRunner {
                         if (incident.resourceType == "tap")
                             currentTapVersion(incident.resourceName).foreach(v => IncidentIO.set(id, "revertToVersion" -> (v: java.lang.Integer)))
                         IncidentIO.set(id, "nextActionIndex" -> (0: java.lang.Integer))
-                        executeFrom(id, 0)
+                        if (s.verifyMode == RecoverySettings.ScratchFirst && incident.resourceType == "tap") {
+                            // Stage 1: rehearse the candidate in the scratch lane
+                            // before anything mutates (and, in propose mode,
+                            // before any approval is queued — so it carries the
+                            // evidence).
+                            val candidateScript = filtered.find(a => a.tool == "update_tap" || a.tool == "create_tap")
+                                .flatMap(a => Option(a.args).filter(_.has("script")).map(_.get("script")))
+                                .filter(_.isJsonPrimitive)
+                                .map(_.getAsString)
+                            val (verdict, summary) = scratchVerify(id, incident, candidateScript)
+                            verdict match {
+                                case Thresholds.Pass => executeFrom(id, 0)
+                                case Thresholds.NeedsHuman =>
+                                    IncidentIO.transition(
+                                        id,
+                                        Set(Incident.Diagnosing, Incident.Proposed),
+                                        Incident.AwaitingApproval,
+                                        ScratchVerdictField -> Thresholds.NeedsHuman,
+                                        "nextActionIndex" -> (0: java.lang.Integer)
+                                    )
+                                    step(id, "propose", "needs a human: " + summary)
+                                    webhook("awaiting_approval", id, incident.kind, incident.resourceType, incident.resourceName, Some(summary))
+                                case _ =>
+                                    // Nothing mutated yet; called for symmetry with every other failed close.
+                                    revertIfNeeded(id, incident)
+                                    close(id, Incident.Failed, "candidate failed scratch verification: " + clip(summary))
+                            }
+                        } else executeFrom(id, 0)
                     }
             }
         } catch {
@@ -334,11 +395,15 @@ object IncidentRunner {
                 val healthy = isTapHealthy(name)
                 val rollupOk = publisherToken.forall(t => pollRollup(id, t, incident))
                 recordRealRunEvidence(id)
-                if (healthy && rollupOk) {
+                if (healthy && rollupOk && realStageBreached(id)) {
+                    revertIfNeeded(id, incident)
+                    close(id, Incident.Failed, RealBreachOutcome)
+                } else if (healthy && rollupOk) {
                     step(
                         id,
                         "verify",
-                        "verified: the executed real run is healthy" + publisherToken.map(_ => " and the pipeline rollup completed").getOrElse("")
+                        "verified: the executed real run is healthy" + publisherToken.map(_ => " and the pipeline rollup completed").getOrElse("") +
+                            scratchVerdictNote(id)
                     )
                     close(id, Incident.Resolved, "recovered and verified")
                 } else {
@@ -370,8 +435,15 @@ object IncidentRunner {
                 val healthy = isTapHealthy(name)
                 val rollupOk = publisherToken.forall(t => pollRollup(id, t, incident))
                 recordRealRunEvidence(id)
-                if (healthy && rollupOk) {
-                    step(id, "verify", "verified: real run healthy" + publisherToken.map(_ => ", pipeline rollup complete").getOrElse(""))
+                if (healthy && rollupOk && realStageBreached(id)) {
+                    revertIfNeeded(id, incident)
+                    close(id, Incident.Failed, RealBreachOutcome)
+                } else if (healthy && rollupOk) {
+                    step(
+                        id,
+                        "verify",
+                        "verified: real run healthy" + publisherToken.map(_ => ", pipeline rollup complete").getOrElse("") + scratchVerdictNote(id)
+                    )
                     close(id, Incident.Resolved, "recovered and verified")
                 } else {
                     step(id, "verify", "verification failed: healthy=" + healthy + ", rollupOk=" + rollupOk, Some(clip(text)))
@@ -410,42 +482,49 @@ object IncidentRunner {
         try {
             val fresh = IncidentIO.get(id).getOrElse(incident)
             for (target <- fresh.revertToVersion if incident.resourceType == "tap") {
-                val env = DatrisEnvironment.current
-                val live = TapConfigIO.read(env.tapTableName, incident.resourceName)
-                if (live != null && live.version != target) {
-                    EntityVersionIO.get(env.tapVersionTableName, incident.resourceName, target).foreach { snapshot =>
-                        val snap = gson.fromJson(snapshot.config, classOf[TapConfig])
-                        val restored = snap.copy(
-                            createdAt = live.createdAt,
-                            createdByKeyLabel = live.createdByKeyLabel,
-                            lastRunStatus = live.lastRunStatus,
-                            lastRunTime = live.lastRunTime,
-                            lastRunRecordCount = live.lastRunRecordCount,
-                            lastRunError = live.lastRunError,
-                            lastRunDataType = live.lastRunDataType,
-                            lastRunColumns = live.lastRunColumns,
-                            lastTestRunStatus = live.lastTestRunStatus,
-                            lastTestRunTime = live.lastTestRunTime,
-                            lastTestRunRecordCount = live.lastTestRunRecordCount,
-                            lastTestRunError = live.lastTestRunError,
-                            lastTestRunDataType = live.lastTestRunDataType,
-                            lastTestRunColumns = live.lastTestRunColumns,
-                            // The live stamp names the BAD script's identity; the
-                            // reverted script is a different one. Drop the stamp so
-                            // the tap falls back to the unstamped branch of
-                            // TapCronGate (unrelated edits pass; the next cron change
-                            // is grandfathered by the prior success).
-                            lastTestRunScriptId = null
-                        )
-                        TapConfigIO.writeVersioned(restored, "incident " + id + ": reverted after failed verification", RecoveryKey.Label)
-                        step(id, "execute", "reverted tap to version " + target)
-                        AuditLog.system("incident", "revert", "tap", incident.resourceName, metadata = md("incidentId" -> id, "toVersion" -> target.toString))
-                    }
+                tapLookup(incident.resourceName).filter(_.version != target).foreach { _ =>
+                    revertTap(id, incident.resourceName, target)
+                    step(id, "execute", "reverted tap to version " + target)
+                    AuditLog.system("incident", "revert", "tap", incident.resourceName, metadata = md("incidentId" -> id, "toVersion" -> target.toString))
                 }
             }
         } catch {
             case e: Exception => step(id, "execute", "revert failed", Some(clip(e.getMessage)))
         }
+    }
+
+    /** Production [[revertTap]]: write the stored version snapshot back over
+      * the live tap, keeping the live run stamps. */
+    private def restoreTapVersion(id: String, tapName: String, target: Int): Unit = {
+        val env = DatrisEnvironment.current
+        val live = TapConfigIO.read(env.tapTableName, tapName)
+        if (live == null) throw new DatrisException("tap " + tapName + " no longer exists")
+        val snapshot = EntityVersionIO.get(env.tapVersionTableName, tapName, target)
+            .getOrElse(throw new DatrisException("no stored snapshot of tap " + tapName + " version " + target))
+        val snap = gson.fromJson(snapshot.config, classOf[TapConfig])
+        val restored = snap.copy(
+            createdAt = live.createdAt,
+            createdByKeyLabel = live.createdByKeyLabel,
+            lastRunStatus = live.lastRunStatus,
+            lastRunTime = live.lastRunTime,
+            lastRunRecordCount = live.lastRunRecordCount,
+            lastRunError = live.lastRunError,
+            lastRunDataType = live.lastRunDataType,
+            lastRunColumns = live.lastRunColumns,
+            lastTestRunStatus = live.lastTestRunStatus,
+            lastTestRunTime = live.lastTestRunTime,
+            lastTestRunRecordCount = live.lastTestRunRecordCount,
+            lastTestRunError = live.lastTestRunError,
+            lastTestRunDataType = live.lastTestRunDataType,
+            lastTestRunColumns = live.lastTestRunColumns,
+            // The live stamp names the BAD script's identity; the
+            // reverted script is a different one. Drop the stamp so
+            // the tap falls back to the unstamped branch of
+            // TapCronGate (unrelated edits pass; the next cron change
+            // is grandfathered by the prior success).
+            lastTestRunScriptId = null
+        )
+        TapConfigIO.writeVersioned(restored, "incident " + id + ": reverted after failed verification", RecoveryKey.Label)
     }
 
     // ------------------------------------------------------------------
@@ -497,7 +576,10 @@ object IncidentRunner {
         )
         val healthy = incident.resourceType != "tap" || isTapHealthy(incident.resourceName)
         recordRealRunEvidence(id)
-        if (healthy) {
+        if (healthy && realStageBreached(id)) {
+            revertIfNeeded(id, incident)
+            close(id, Incident.Failed, RealBreachOutcome)
+        } else if (healthy) {
             step(id, "verify", "verified after approved run: resource healthy")
             close(id, Incident.Resolved, "recovered and verified (via approved run)")
         } else {
@@ -509,6 +591,248 @@ object IncidentRunner {
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    private val RealBreachOutcome = "real run breached thresholds after scratch pass — definition reverted (data already landed)"
+
+    private def scratchVerdictOf(id: String): Option[String] =
+        try IncidentIO.raw(id).flatMap(d => Option(d.getString(ScratchVerdictField)))
+        catch { case _: Exception => None }
+
+    /** " (scratch verdict …)" for incidents that went through the scratch lane. */
+    private def scratchVerdictNote(id: String): String =
+        (for {
+            i <- IncidentIO.get(id)
+            ev <- IncidentEvidenceBuilder.of(i)
+            if ev.candidate.isDefined
+        } yield " (scratch verdict " + ev.verdict + ")").getOrElse("")
+
+    /** Stage 2 of scratch-first verification: an incident whose candidate was
+      * rehearsed in scratch is judged again on what the real run landed. A
+      * `fail` there stores the real-run judgement on the evidence and returns
+      * true (the caller reverts and fails the incident). Incidents verified
+      * the `real` way keep today's informational evidence. Never throws. */
+    private def realStageBreached(id: String): Boolean =
+        try {
+            (for {
+                i <- IncidentIO.get(id)
+                ev <- IncidentEvidenceBuilder.of(i)
+                if ev.candidate.isDefined
+                judged <- IncidentEvidenceBuilder.judgeReal(i, ev)
+            } yield {
+                if (judged.verdict == Thresholds.Fail) {
+                    IncidentEvidenceBuilder.store(id, judged)
+                    step(id, "verify", "real run breached thresholds: " + judged.summaryLine)
+                    true
+                } else false
+            }).getOrElse(false)
+        } catch {
+            case e: Exception =>
+                logger.debug("incident " + id + ": real-stage check skipped: " + e.getMessage)
+                false
+        }
+
+    // ------------------------------------------------------------------
+    // Scratch-first verification (stage 1)
+    // ------------------------------------------------------------------
+
+    /** Run the candidate (or, with no script change, the stored script) in
+      * the scratch lane, store the candidate profile + diff + checks +
+      * verdict on the evidence and record a `verify` step. Not routed through
+      * the executor / policy gate: it is the platform's own safety check and
+      * writes only to `_scratch/`. Returns (verdict, one-line summary). */
+    private[incident] def scratchVerify(id: String, incident: Incident, candidateScript: Option[String]): (String, String) = {
+        val s = settings
+        val (verdict, summary) =
+            try {
+                tapLookup(incident.resourceName) match {
+                    case None =>
+                        val msg = "tap " + incident.resourceName + " not found"
+                        storeScratchFailure(id, msg)
+                        (Thresholds.Fail, msg)
+                    case Some(tap) =>
+                        val outcome =
+                            try {
+                                scratchIncident.set(id)
+                                scratch(tap, candidateScript)
+                            } catch {
+                                case e: Exception => ScratchOutcome(None, Some(Option(e.getMessage).getOrElse(e.getClass.getSimpleName)))
+                            } finally scratchIncident.remove()
+                        outcome.candidate match {
+                            case None =>
+                                val msg = "the scratch run failed: " + clip(outcome.error.getOrElse("no result"))
+                                storeScratchFailure(id, msg)
+                                (Thresholds.Fail, msg)
+                            case Some(candidate) =>
+                                val fresh = IncidentIO.get(id).getOrElse(incident)
+                                val base = IncidentEvidenceBuilder.of(fresh).getOrElse(emptyEvidence(s))
+                                val lastN = IncidentEvidenceBuilder.lastNFor(fresh, Set(candidate.runId))
+                                val ev = IncidentEvidenceBuilder.withCandidate(base, candidate, s.thresholds, lastN)
+                                IncidentEvidenceBuilder.store(id, ev)
+                                (ev.verdict, ev.summaryLine)
+                        }
+                }
+            } catch {
+                case e: Exception => (Thresholds.Fail, "scratch verification error: " + clip(e.getMessage))
+            }
+        step(id, "verify", "scratch verification: " + summary)
+        AuditLog.system("incident", "scratch-verify", "tap", incident.resourceName, metadata = md("incidentId" -> id, "verdict" -> verdict))
+        (verdict, summary)
+    }
+
+    private def emptyEvidence(s: RecoverySettings): IncidentEvidence = IncidentEvidence(
+        baseline = None,
+        candidate = None,
+        real = None,
+        diff = None,
+        blastRadius = BlastRadius(Nil, Nil, Nil, Nil, None, None, None),
+        thresholds = s.thresholds,
+        checks = Nil,
+        verdict = Thresholds.Pending,
+        computedAt = Instant.now()
+    )
+
+    /** A scratch run that produced nothing to judge: verdict fail, with the reason as the check. */
+    private def storeScratchFailure(id: String, reason: String): Unit =
+        try {
+            val base = IncidentIO.get(id).flatMap(IncidentEvidenceBuilder.of).getOrElse(emptyEvidence(settings))
+            val check = ThresholdCheck("scratchRun", passed = false, observed = clip(reason), limit = "a clean scratch run")
+            IncidentEvidenceBuilder.store(id, base.copy(checks = List(check), verdict = Thresholds.Fail, computedAt = Instant.now()))
+        } catch {
+            case e: Exception => logger.debug("incident " + id + ": scratch failure evidence skipped: " + e.getMessage)
+        }
+
+    /** Production [[scratch]]: TapRunner in scratch mode, the rollup polled
+      * under the incident, up to [[ProfileRowCap]] landed scratch rows paged
+      * through ScratchReader and profiled. */
+    private def realScratch(tap: TapConfig, candidateScript: Option[String]): ScratchOutcome = {
+        val id = scratchIncident.get()
+        val started = System.currentTimeMillis()
+        val result = TapRunner.run(tap, mode = TapRunner.ScratchMode, scriptOverride = candidateScript.orNull)
+        if (result.error != null) return ScratchOutcome(None, Some(result.error))
+        val sha = candidateScript.map(sha256)
+        if (result.publisherToken == null) {
+            // Nothing was fed (0 records): the candidate's output is empty.
+            return ScratchOutcome(Some(RunProfile(
+                runId = "scratch:" + tap.name + "@" + Instant.now().toString,
+                source = "scratch",
+                recordCount = 0L,
+                columns = Nil,
+                dqFailures = 0,
+                dqPassRate = 1.0,
+                durationMs = System.currentTimeMillis() - started,
+                scriptSha = sha,
+                tapVersion = Some(tap.version),
+                pipelineVersion = None,
+                sampledRows = 0L,
+                computedAt = Instant.now()
+            )))
+        }
+        val incident = Option(id).flatMap(IncidentIO.get)
+        if (incident.isDefined && !pollRollup(id, result.publisherToken, incident.get))
+            return ScratchOutcome(None, Some("the scratch pipeline run did not complete cleanly"))
+        val job = ScratchReader.resolve(null, result.publisherToken)
+        val scratchSettings = ScratchLoader.settingsFromEnvironment()
+        val total: Long = Option(job.resultRowCount).map(_.longValue()).getOrElse(0L)
+        val cap = math.min(total, ProfileRowCap.toLong)
+        val rows = scala.collection.mutable.ArrayBuffer[Map[String, Any]]()
+        var offset = 0L
+        var done = false
+        // ScratchReader clamps a page to settings.inlineRows, so page through.
+        while (!done && offset < cap) {
+            val page = ScratchReader.read(scratchSettings, job, Some(offset), Some(math.min(scratchSettings.inlineRows.toLong, cap - offset).toInt))
+            val it = page.records.iterator()
+            while (it.hasNext) {
+                val e = it.next()
+                if (e.isJsonObject) rows += jsonRow(e.getAsJsonObject)
+            }
+            offset += page.returnedCount
+            done = page.returnedCount == 0
+        }
+        val config =
+            try Option(PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tap.targetPipeline))
+            catch { case _: Exception => None }
+        val stats = RunProfiler.profile(rows.iterator, IncidentEvidenceBuilder.valueSafe(config))
+        // The rollup carries no per-row DQ counts: a job that completed is
+        // taken as fully passing, the same rule recorded runs follow.
+        val ok = job.status == null || job.status == "success" || job.status == "warning"
+        ScratchOutcome(Some(RunProfile(
+            runId = job.pipelineToken,
+            source = "scratch",
+            recordCount = total,
+            columns = stats.columns,
+            dqFailures = if (ok) 0 else 1,
+            dqPassRate = if (ok) 1.0 else 0.0,
+            durationMs = System.currentTimeMillis() - started,
+            scriptSha = sha,
+            tapVersion = Some(tap.version),
+            pipelineVersion = config.map(_.version).filter(_ > 0),
+            sampledRows = stats.recordCount,
+            computedAt = Instant.now()
+        )))
+    }
+
+    private def jsonRow(o: JsonObject): Map[String, Any] = {
+        import scala.collection.JavaConverters._
+        o.entrySet().asScala.map { e =>
+            val v = e.getValue
+            val out: Any =
+                if (v == null || v.isJsonNull) null
+                else if (v.isJsonPrimitive) {
+                    val p = v.getAsJsonPrimitive
+                    if (p.isBoolean) p.getAsBoolean
+                    else if (p.isNumber) p.getAsBigDecimal
+                    else p.getAsString
+                } else v.toString
+            e.getKey -> out
+        }.toMap
+    }
+
+    private def sha256(text: String): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+            .map("%02x".format(_))
+            .mkString
+
+    // ------------------------------------------------------------------
+    // Proceed past a needs-human verdict
+    // ------------------------------------------------------------------
+
+    /** A person accepts a needs-human scratch verdict: only from
+      * `awaiting_approval` with `scratchVerdict = needs-human` and nothing
+      * queued in Approvals. Restarts the runtime budget and executes the
+      * proposal from the first action (inline when runAsync = false). */
+    def proceed(id: String, by: String): Either[String, Unit] = {
+        val incident = IncidentIO.get(id).getOrElse(return Left("incident " + id + " not found"))
+        if (incident.state != Incident.AwaitingApproval)
+            return Left("incident is " + incident.state + ", not awaiting a needs-human verdict")
+        if (incident.awaitingApprovalIds.nonEmpty || !scratchVerdictOf(id).contains(Thresholds.NeedsHuman))
+            return Left("only an incident parked on a needs-human scratch verdict can be proceeded past")
+        if (
+            !IncidentIO.transition(
+                id,
+                Set(Incident.AwaitingApproval),
+                Incident.Executing,
+                ScratchVerdictField -> null,
+                "resumedAt" -> Instant.now().toString,
+                "nextActionIndex" -> (0: java.lang.Integer)
+            )
+        ) return Left("incident changed state; reload and try again")
+        val who = Option(by).map(_.trim).filter(_.nonEmpty).getOrElse("a person")
+        step(id, "gate", "human proceeded past needs-human evidence: " + who)
+        AuditLog.system("incident", "proceed", incident.resourceType, incident.resourceName, metadata = md("incidentId" -> id, "by" -> who))
+        if (runAsync) { pool.submit(new Runnable { override def run(): Unit = runProceeded(id) }); () }
+        else runProceeded(id)
+        Right(())
+    }
+
+    private def runProceeded(id: String): Unit =
+        try executeFrom(id, 0)
+        catch {
+            case e: Exception =>
+                logger.error("incident " + id + " runner error after proceed: " + e.getMessage, e)
+                try close(id, Incident.Failed, "runner error: " + clip(e.getMessage))
+                catch { case _: Exception => }
+        }
 
     /** Profile the verifying real run into the incident's evidence (diff,
       * checks, verdict). Informational only: verification decisions above do
@@ -523,11 +847,15 @@ object IncidentRunner {
             case e: Exception => logger.debug("incident " + id + ": real-run evidence skipped: " + e.getMessage)
         }
 
-    private def runtimeExceeded(incident: Incident): Boolean =
-        incident.openedAt.plus(settings.maxRuntimeMinutes.toLong, ChronoUnit.MINUTES).isBefore(Instant.now())
+    /** The runtime budget runs from the open — or from the moment a person
+      * proceeded past a needs-human verdict, which restarts it. */
+    private def runtimeExceeded(incident: Incident): Boolean = {
+        val from = incident.resumedAt.filter(_.isAfter(incident.openedAt)).getOrElse(incident.openedAt)
+        from.plus(settings.maxRuntimeMinutes.toLong, ChronoUnit.MINUTES).isBefore(Instant.now())
+    }
 
     private def currentTapVersion(name: String): Option[Int] =
-        try Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)).map(_.version)
+        try tapLookup(name).map(_.version)
         catch { case _: Exception => None }
 
     private def parseStoredActions(incident: Incident): Vector[ProposedAction] =
@@ -551,13 +879,7 @@ object IncidentRunner {
     private def storedNextActionIndex(incident: Incident): Int = {
         // nextActionIndex is stored outside the case class; re-read the raw doc.
         try {
-            IncidentIO.get(incident.id) // ensure fresh
-            val coll = ai.datris.util.NoSQLDbUtil match {
-                case m: MongoDBUtil => m.collection(DatrisEnvironment.current.incidentTableName)
-                case _ => return 0
-            }
-            Option(coll.find(com.mongodb.client.model.Filters.eq("_id", incident.id)).first())
-                .flatMap(d => Option(d.getInteger("nextActionIndex"))).map(_.intValue()).getOrElse(0)
+            IncidentIO.raw(incident.id).flatMap(d => Option(d.getInteger("nextActionIndex"))).map(_.intValue()).getOrElse(0)
         } catch {
             case _: Exception => 0
         }
@@ -840,7 +1162,7 @@ object IncidentRunner {
             sb.append("- transient (rate limit, network blip, quota): propose at most one run_tap.\n")
             sb.append("- every action's args MUST include \"name\": \"" + incident.resourceName + "\" — actions naming any other tap are discarded.\n")
             sb.append(
-                "- structural-script (source shape changed, script bug): propose update_tap with args {\"name\": ..., \"script\": \"<the corrected full script>\"} (the platform replaces the tap's script with it), then test_tap, then run_tap.\n"
+                "- structural-script (source shape changed, script bug): propose update_tap with args {\"name\": ..., \"script\": \"<the corrected full script>\"} (the platform replaces the tap's script with it), then run_tap.\n"
             )
             sb.append(
                 "- structural-schema (destination/type mismatch) or credentials/upstream outage: needsHuman=true with an empty actions list and a clear summary of what a person must do.\n"
@@ -850,7 +1172,7 @@ object IncidentRunner {
                 "- If the failure looks like the platform rather than the tap (a secret missing, an AI model or embedding service not answering, disk full, a component version mismatch), call run_doctor ONCE with mode \"quick\" and no AI probes; if it reports an error, classify as needs-human and quote its remediation.\n"
             )
             sb.append(
-                "- The platform (not you) executes the actions, gates each one through the agent policy, verifies with a real run, and reverts your script change if verification fails."
+                "- The platform (not you) executes the actions and gates each one through the agent policy; the platform runs your candidate in a scratch lane first, compares it with the last good run, and only then runs it for real; it reverts your script change if either stage fails."
             )
             sb.toString
         }

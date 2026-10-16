@@ -373,7 +373,7 @@ object LineageService {
                 at(("tap:" + r.input.tapName, pipelineId)).add(r.completedAt, r.status, r.recordCount.toLong)
         }
         val sourceOf = taps.filter(_ != null).map(t => t.name -> ("source:" + TapRunner.declaredSource(t))).toMap
-        tapLogs.filter(l => l != null && l.tapName != null && l.mode != "test").foreach { l =>
+        tapLogs.filter(l => l != null && l.tapName != null && l.mode != "test" && l.mode != TapRunner.ScratchMode).foreach { l =>
             sourceOf.get(l.tapName).foreach { src =>
                 at((src, "tap:" + l.tapName)).add(l.runTime, l.status, l.recordCount.toLong)
             }
