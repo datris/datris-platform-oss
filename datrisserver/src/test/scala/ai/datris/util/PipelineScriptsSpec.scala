@@ -1266,4 +1266,34 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(repo.commits.size == commitsBefore, s"never overwritten: ${repo.commits}")
         assert(repo.head(repo.pathOf(Dq)).contains("print('someone else')"))
     }
+
+    // Story: self-healing-3 review — a scratch rehearsal job may generate a
+    // script but never stores it (the candidate's header may be wrong).
+    test("a rehearsal run with no stored script generates for this run only and writes nothing") {
+        val cfg = csvCfg()
+        val gen = new RunGen
+        val writesBefore = records.writes
+        val objectsBefore = store.objects.size
+        val r = PipelineScripts.withRehearsal(true)(scripts.forRun(cfg, Dq, List("renamed_col", "age", "email"), gen.fn))
+        assert(gen.count == 1, "generated once for the run")
+        assert(r.action == PipelineScripts.GenerateOnce, r.action)
+        assert(r.reason.startsWith(PipelineScripts.RehearsalReason), r.reason)
+        assert(records.writes == writesBefore, "no CodeGen record written")
+        assert(records.read("orders", Dq).isEmpty, "nothing stored")
+        assert(store.objects.size == objectsBefore, "no script object written")
+        assert(PipelineScripts.statusLine(r).contains("for this run only"), PipelineScripts.statusLine(r))
+        // Outside the rehearsal the same call stores, as before.
+        val real = scripts.forRun(cfg, Dq, header, gen.fn)
+        assert(real.action == PipelineScripts.GenerateAndStore && records.read("orders", Dq).isDefined)
+    }
+
+    test("a rehearsal run with a matching stored script runs it, writing nothing") {
+        val cfg = csvCfg()
+        scripts.onSave(null, cfg, "todd")
+        val writesBefore = records.writes
+        val gen = new RunGen
+        val r = PipelineScripts.withRehearsal(true)(scripts.forRun(cfg, Dq, header, gen.fn))
+        assert(r.action == PipelineScripts.Stored && gen.count == 0)
+        assert(records.writes == writesBefore)
+    }
 }

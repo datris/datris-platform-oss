@@ -461,7 +461,7 @@ object LineageService {
                 }
             catch { case e: Exception => logger.debug("lineage: summary read failed: " + e.getMessage); Nil }
 
-        val landed = summaries
+        val landed = ActivitySignals.withoutRehearsals(summaries)
             .filter(s =>
                 s.json != null && pipelineName.equals(s.json.pipeline) &&
                     Option(s.json.status).exists(st => st.equalsIgnoreCase("success") || st.equalsIgnoreCase("warning"))

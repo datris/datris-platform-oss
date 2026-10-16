@@ -128,14 +128,25 @@ object ActivitySignals {
                 }
             catch { case e: Exception => logger.debug("signals: summary read failed: " + e.getMessage); Nil }
 
+        val realLogs = withoutRehearsalLogs(tapLogs)
+        val realSummaries = withoutRehearsals(summaries)
         Signals(
             windowMs = windowMs,
             computedAtMs = now,
-            failing = computeFailing(now, windowMs, taps.map(t => t.name -> t).toMap, tapLogs, summaries),
+            failing = computeFailing(now, windowMs, taps.map(t => t.name -> t).toMap, realLogs, realSummaries),
             staleTaps = computeStale(now, taps),
-            volumes = computeVolumes(now, windowMs, summaries)
+            volumes = computeVolumes(now, windowMs, realSummaries)
         )
     }
+
+    /** Scratch rehearsals (the recovery agent's candidate runs) are not the
+      * pipeline's or the tap's own runs: they never count as a failure, a
+      * landing or a volume point. */
+    private[datris] def withoutRehearsals(summaries: List[PipelineStatusSummaryTable]): List[PipelineStatusSummaryTable] =
+        summaries.filter(s => s != null && s.json != null && !s.json.rehearsal)
+
+    private[datris] def withoutRehearsalLogs(logs: List[TapRunLog]): List[TapRunLog] =
+        logs.filter(l => l != null && l.mode != TapRunner.ScratchMode)
 
     // ------------------------------------------------------------------
 

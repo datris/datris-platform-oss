@@ -274,7 +274,9 @@ class PipelineScripts(
     def forRun(config: PipelineConfig, kind: String, runHeader: List[String], generate: () => String): Resolved = {
         val instruction = instructionOf(config, kind).getOrElse(throw new DatrisException("Pipeline " + config.name + " has no AI " + kind + " instruction"))
         val fp = fingerprint(instruction, schemaSignature(config))
-        val existing = clearStaleConflict(records.read(config.name, kind), fp)
+        val rehearsal = PipelineScripts.rehearsing
+        // A scratch rehearsal writes nothing: no conflict clearing, no store.
+        val existing = if (rehearsal) records.read(config.name, kind) else clearStaleConflict(records.read(config.name, kind), fp)
         val header = Option(runHeader).getOrElse(Nil)
 
         val reason: String = existing match {
@@ -319,6 +321,29 @@ class PipelineScripts(
         }
 
         val script = generate()
+        if (rehearsal) {
+            // The candidate's header may be wrong (that is what is being
+            // rehearsed): never store a script written against it.
+            val transient = existing.map(_.copy(
+                generatedAt = java.time.Instant.now().toString,
+                generatedAgainst = new java.util.ArrayList[String](header.asJava),
+                model = currentModel(),
+                origin = "run"
+            )).getOrElse(CodeGenScript(
+                config.name,
+                kind,
+                instruction,
+                null,
+                java.time.Instant.now().toString,
+                fingerprint = fp,
+                model = currentModel(),
+                status = Pending,
+                pendingReason = RehearsalReason,
+                origin = "run",
+                contractVersion = contractVersion(kind)
+            ))
+            return Resolved(GenerateOnce, script, RehearsalReason + " (" + reason + ")", transient)
+        }
         val rec =
             try storeRecord(config, kind, instruction, fp, script, header, "run", existing, null)
             catch {
@@ -760,6 +785,17 @@ object PipelineScripts
     /** Storage values on a record. */
     val Github = "github"
     val Builtin = "minio"
+
+    /** Reason text of a script generated during a scratch rehearsal. */
+    val RehearsalReason = "rehearsal run — not stored"
+
+    private val rehearsalVar = new scala.util.DynamicVariable[Boolean](false)
+
+    /** True inside [[withRehearsal]]`(true)`: the current job is a scratch
+      * rehearsal, so [[PipelineScripts.forRun]] stores nothing. */
+    def rehearsing: Boolean = rehearsalVar.value
+
+    def withRehearsal[T](on: Boolean)(f: => T): T = rehearsalVar.withValue(on)(f)
 
     val Stored = "stored"
     val GenerateAndStore = "generate-and-store"

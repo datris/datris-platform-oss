@@ -257,4 +257,13 @@ class JobRunnerFailureSpec extends AnyFunSuite {
             assert(JobRunner.deriveCountAndType(Data(0L, null, null, null, null, rawBytes = null)) == ((0, null)))
         } finally TenantContext.clear()
     }
+
+    // Review round 2: a scratch rehearsal job suppresses every side effect a
+    // real run has beyond its scratch result.
+    test("sideEffectsFor: a rehearsal suppresses fix suggestions, incidents, run lineage and stored CodeGen scripts") {
+        val real = PipelineMetadata("orders", "f.json", null, "pub", bulkUpload = false)
+        assert(JobRunner.sideEffectsFor(real) == JobRunner.SideEffects(true, true, true, true))
+        assert(JobRunner.sideEffectsFor(null) == JobRunner.SideEffects(true, true, true, true))
+        assert(JobRunner.sideEffectsFor(real.copy(rehearsal = true)) == JobRunner.SideEffects(false, false, false, false))
+    }
 }

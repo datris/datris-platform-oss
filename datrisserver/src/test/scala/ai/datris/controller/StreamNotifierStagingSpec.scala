@@ -1009,4 +1009,49 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
             ai.datris.util.DataUtil.evolveSchema(List("id", "amount", "region"), scratchCsv, new LevelStatusUtil, StreamNotifier.schemaPersist(true))
         )
     }
+
+    // Review round 2: the override wiring itself, through stageFor, with a
+    // recording StatusUtil so no status write reaches Mongo.
+    private val evolvingCsv = "id,amount,region\n1,5,eu\n2,9,us\n"
+
+    test("stageFor (InputStream): a scratch override evolves in memory; the stored-config path tries to persist") {
+        val scratchCsv = csvConfig.copy(destination = Destination(schemaProperties = csvConfig.destination.schemaProperties, scratch = ScratchConfig()))
+        val bytes = evolvingCsv.getBytes(StandardCharsets.UTF_8)
+        val notifier = new StreamNotifier(new LevelStatusUtil)
+        val (_, resolved) =
+            StagingArea.withToken("stagefor-override")(notifier.stageFor(new ByteArrayInputStream(bytes), bytes.length.toLong, scratchCsv)(scratchCsv))
+        StagingArea.delete("stagefor-override")
+        assert(resolved.source.schemaProperties.fields.asScala.map(_.name).toList.contains("region"))
+        // configOverride = null on the same bytes: PipelineConfigIO.write is attempted (no Mongo here).
+        intercept[Throwable](
+            StagingArea.withToken("stagefor-stored")(notifier.stageFor(new ByteArrayInputStream(bytes), bytes.length.toLong, null)(scratchCsv))
+        )
+        StagingArea.delete("stagefor-stored")
+    }
+
+    test("stageFor (StagedPayload): a non-adoptable staged payload for a CSV pipeline honours the override too") {
+        val scratchCsv = csvConfig.copy(destination = Destination(schemaProperties = csvConfig.destination.schemaProperties, scratch = ScratchConfig()))
+        def stagedCsv(): StagedPayload = {
+            val f = Files.createTempFile(root, "staged-csv", ".txt")
+            Files.write(f, evolvingCsv.getBytes(StandardCharsets.UTF_8))
+            StagedPayload(f.toString, StagedFormat.Text, 1L, Files.size(f))
+        }
+        val notifier = new StreamNotifier(new LevelStatusUtil)
+        val s1 = stagedCsv()
+        val (_, resolved) = StagingArea.withToken("stagefor-staged-override")(notifier.stageFor(s1, s1.bytes, scratchCsv)(scratchCsv))
+        StagingArea.delete("stagefor-staged-override")
+        assert(resolved.source.schemaProperties.fields.asScala.map(_.name).toList.contains("region"))
+        val s2 = stagedCsv()
+        intercept[Throwable](StagingArea.withToken("stagefor-staged-stored")(notifier.stageFor(s2, s2.bytes, null)(scratchCsv)))
+        StagingArea.delete("stagefor-staged-stored")
+    }
+
+    test("metadataFor: a run is a rehearsal only with a config override") {
+        val n = new StreamNotifier(new LevelStatusUtil)
+        val feed = TapFeedInfo("prices", "2026-10-16 10:00:00", null, "source.example")
+        val scratchCfg = jsonConfig.copy(destination = Destination(scratch = ScratchConfig()))
+        assert(n.metadataFor("orders", "f.json", "pub", feed, scratchCfg).rehearsal)
+        assert(!n.metadataFor("orders", "f.json", "pub", feed, null).rehearsal)
+        assert(n.metadataFor("orders", "f.json", "pub", feed, null).tapName == "prices")
+    }
 }

@@ -19,9 +19,13 @@ import java.nio.file.{Files, Paths, StandardCopyOption}
 import java.util.UUID
 import scala.collection.JavaConverters._
 
-class StreamNotifier {
+/** `statusUtilOverride` is a spec seam (a recording StatusUtil); production
+  * passes nothing. */
+class StreamNotifier(statusUtilOverride: StatusUtil = null) {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileNotifier])
-    private val statusUtil = new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
+    private val statusUtil =
+        if (statusUtilOverride != null) statusUtilOverride
+        else new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
 
     def process(byteArray: Array[Byte], filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo = null): JobContext =
         process(new ByteArrayInputStream(byteArray), byteArray.length.toLong, filename, pipeline, publisherToken, tapFeed)
@@ -43,18 +47,18 @@ class StreamNotifier {
         tapFeed: TapFeedInfo,
         configOverride: PipelineConfig
     ): JobContext =
-        // An override (the scratch lane) is a throwaway config: schema
-        // evolution applies to it in memory only and is never persisted over
-        // the stored pipeline — the next real run evolves the stored schema.
-        processWith(
-            sizeHint,
-            filename,
-            pipeline,
-            publisherToken,
-            tapFeed,
-            config => stageData(source, sizeHint, config, persistSchema = configOverride == null),
-            configOverride
-        )
+        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, stageFor(source, sizeHint, configOverride), configOverride)
+
+    /** The staging step for an InputStream run. An override (the scratch lane)
+      * is a throwaway config: schema evolution applies to it in memory only
+      * and is never persisted over the stored pipeline — the next real run
+      * evolves the stored schema. */
+    private[controller] def stageFor(source: InputStream, sizeHint: Long, configOverride: PipelineConfig): PipelineConfig => (Data, PipelineConfig) =
+        config => stageData(source, sizeHint, config, persistSchema = configOverride == null)
+
+    /** As [[stageFor]], for an already-staged payload. */
+    private[controller] def stageFor(staged: StagedPayload, sizeHint: Long, configOverride: PipelineConfig): PipelineConfig => (Data, PipelineConfig) =
+        config => stageData(staged, sizeHint, config, persistSchema = configOverride == null)
 
     /** Hand an already-staged, already-counted payload (a tap run's NDJSON /
       * XML / text file, plans/stories/streaming-pipeline-phase4.md) to one
@@ -76,7 +80,7 @@ class StreamNotifier {
         tapFeed: TapFeedInfo,
         configOverride: PipelineConfig
     ): JobContext =
-        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, config => stageData(staged, sizeHint, config), configOverride)
+        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, stageFor(staged, sizeHint, configOverride), configOverride)
 
     /** `configOverride`, when set, is the config the run uses instead of the
       * stored one (the recovery agent's scratch lane: the stored pipeline with
@@ -97,22 +101,13 @@ class StreamNotifier {
         try {
             statusUtil.setPipelineToken(pipelineToken)
             statusUtil.setPublisherToken(Option(publisherToken).getOrElse(pipelineToken))
+            statusUtil.setRehearsal(configOverride != null)
 
             val config = resolveConfig(pipeline, configOverride)
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
-            val metadata = PipelineMetadata(
-                pipeline,
-                filename,
-                null,
-                Option(publisherToken).getOrElse(pipelineToken),
-                bulkUpload = false,
-                tapName = if (tapFeed != null) tapFeed.tapName else null,
-                tapRunTime = if (tapFeed != null) tapFeed.runTime else null,
-                tapScriptSha = if (tapFeed != null) tapFeed.scriptCommitSha else null,
-                tapSource = if (tapFeed != null) tapFeed.source else null
-            )
+            val metadata = metadataFor(pipeline, filename, Option(publisherToken).getOrElse(pipelineToken), tapFeed, configOverride)
             val gson = new Gson
             // Must persist metadata before any statusUtil calls so getPipelineName can resolve the pipeline token
             NoSQLDbUtil.setItemNameValue(
@@ -141,6 +136,27 @@ class StreamNotifier {
                 throw new DatrisException("StreamNotifier error: " + Throwables.getStackTraceAsString(e))
         }
     }
+
+    /** The run's metadata. A run against a config override is a rehearsal. */
+    private[controller] def metadataFor(
+        pipeline: String,
+        filename: String,
+        publisherToken: String,
+        tapFeed: TapFeedInfo,
+        configOverride: PipelineConfig
+    ): PipelineMetadata =
+        PipelineMetadata(
+            pipeline,
+            filename,
+            null,
+            publisherToken,
+            bulkUpload = false,
+            tapName = if (tapFeed != null) tapFeed.tapName else null,
+            tapRunTime = if (tapFeed != null) tapFeed.runTime else null,
+            tapScriptSha = if (tapFeed != null) tapFeed.scriptCommitSha else null,
+            tapSource = if (tapFeed != null) tapFeed.source else null,
+            rehearsal = configOverride != null
+        )
 
     /** The config a run uses: `configOverride` when set (it must name
       * `pipeline`), else the stored config (null when not configured). */
@@ -256,7 +272,10 @@ class StreamNotifier {
       * format does not match what the pipeline expects (CSV, unstructured, or a
       * mismatch such as XML into a JSON pipeline) is fed through the
       * `InputStream` overload instead, which parses it exactly as an upload. */
-    private[controller] def stageData(staged: StagedPayload, sizeHint: Long, config: PipelineConfig): (Data, PipelineConfig) = {
+    private[controller] def stageData(staged: StagedPayload, sizeHint: Long, config: PipelineConfig): (Data, PipelineConfig) =
+        stageData(staged, sizeHint, config, persistSchema = true)
+
+    private[controller] def stageData(staged: StagedPayload, sizeHint: Long, config: PipelineConfig, persistSchema: Boolean): (Data, PipelineConfig) = {
         if (staged == null || staged.isEmpty)
             throw new DatrisException("StreamNotifier: no staged payload to feed for pipeline: " + config.name)
         val attrs = config.source.fileAttributes
@@ -265,7 +284,7 @@ class StreamNotifier {
                 (attrs.xmlAttributes != null && (staged.format == StagedFormat.Xml || staged.format == StagedFormat.Text))
         if (!adoptable) {
             val source = new BufferedInputStream(Files.newInputStream(Paths.get(staged.path)))
-            return stageData(source, sizeHint, config)
+            return stageData(source, sizeHint, config, persistSchema)
         }
         val target = StagingArea.newFile("notifier", staged.format)
         Files.move(Paths.get(staged.path), target, StandardCopyOption.REPLACE_EXISTING)
