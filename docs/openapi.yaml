@@ -350,13 +350,16 @@ components:
             $ref: '#/components/schemas/CatalogFailure'
         warnings:
           type: array
-          description: Cascade only (always present there, possibly empty; absent for detach). Follow-up actions for pipelines that were deleted, such as a Unity Catalog table committed through the REST catalog that an admin has to drop. Never affects the 200/207 status.
+          description: Cascade only (always present there, possibly empty; absent for detach). Follow-up actions for items that were deleted, such as a Unity Catalog table committed through the REST catalog that an admin has to drop, or a script file kept in the code repository because it was edited there since its recorded commit. Pipeline entries come first, then tap entries. Never affects the 200/207 status.
           items:
             type: object
             properties:
               pipeline:
                 type: string
-                description: Name of the deleted pipeline.
+                description: Name of the deleted pipeline (pipeline entries only).
+              tap:
+                type: string
+                description: Name of the deleted tap (tap entries only).
               message:
                 type: string
                 description: What is left behind and what to do, e.g. `Unity Catalog still holds main.sales.orders; have an admin drop it`.
@@ -1197,6 +1200,15 @@ paths:
             application/json:
               schema:
                 type: object
+        '404':
+          description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '500':
           description: Error
 
@@ -1350,7 +1362,7 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop, or a catalogMode managed table Unity Catalog owns (Datris deleted nothing there).
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand.
           content:
             application/json:
               schema:
@@ -3667,7 +3679,11 @@ paths:
     delete:
       tags: [Taps]
       summary: Delete a tap
-      description: Deletes the tap configuration and its script from MinIO.
+      description: >-
+        Deletes the tap configuration and its script. A script stored in a code
+        repository gets a delete commit unless its file was edited there since
+        the recorded commit (or the repository cannot be reached); that file is
+        kept and named in `warnings`.
       parameters:
         - name: name
           in: query
@@ -3677,6 +3693,18 @@ paths:
       responses:
         '200':
           description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  warnings:
+                    type: array
+                    description: Follow-up actions, e.g. a script file kept in the code repository. Possibly empty.
+                    items:
+                      type: string
         '404':
           description: Tap not found
 

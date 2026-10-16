@@ -32,11 +32,7 @@ class PipelineAPIController {
             APIKeyValidator.validate(apiKey)
 
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
-            if (config == null)
-                throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
-            val gson = new Gson
-            val json = gson.toJson(config)
-            new ResponseEntity[String](json, HttpStatus.OK)
+            PipelineAPIController.pipelineResponse(config, pipeline)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -616,8 +612,10 @@ class PipelineAPIController {
                 case ex: Exception => logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
             }
             // Stored CodeGen scripts (objects under pipeline-scripts/<pipeline>/
-            // and their index records). Non-fatal, as for tap scripts.
-            try PipelineScripts.deleteAll(pipeline)
+            // and their index records). Non-fatal, as for tap scripts. A
+            // repository file hand-edited since its recorded commit is kept
+            // and named in a warning.
+            try warnings ++= PipelineScripts.deleteAll(pipeline)
             catch {
                 case ex: Exception => logger.warn("CodeGen script cleanup failed for " + pipeline + ": " + ex.getMessage)
             }
@@ -1018,6 +1016,16 @@ class PipelineAPIController {
 }
 
 object PipelineAPIController {
+
+    /** GET /pipeline's response for the config read by name: 404 with the
+      * "not configured in the NoSQL database" error body when it is null,
+      * else 200 with its Gson JSON. */
+    def pipelineResponse(config: PipelineConfig, name: String): ResponseEntity[String] =
+        if (config == null)
+            ResponseEntity
+                .status(HttpStatus.NOT_FOUND)
+                .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured in the NoSQL database")))
+        else new ResponseEntity[String](new Gson().toJson(config), HttpStatus.OK)
 
     /** POST /api/v1/pipeline body: `warnings` (the given ones plus one per
       * pending CodeGen script, naming its reason) and `codegenScripts`

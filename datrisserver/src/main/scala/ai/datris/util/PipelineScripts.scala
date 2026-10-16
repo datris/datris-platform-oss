@@ -238,10 +238,13 @@ class PipelineScripts(
         rec
     }
 
-    private def removeKind(pipeline: String, kind: String): Unit =
-        records.read(pipeline, kind).foreach { old =>
-            deleteObject(old)
+    /** Remove one kind's object (unless its repository file was hand-edited)
+      * and its record; the warning when the file was kept. */
+    private def removeKind(pipeline: String, kind: String): Option[String] =
+        records.read(pipeline, kind).flatMap { old =>
+            val warning = deleteObject(old)
             records.delete(pipeline, kind)
+            warning
         }
 
     // ------------------------------------------------------------------- run
@@ -615,12 +618,19 @@ class PipelineScripts(
 
     // ---------------------------------------------------------------- delete
 
-    /** Remove both kinds' objects (a delete commit per file for repository
-      * scripts; history is kept) and records. Best effort, never throws. */
-    def deleteAll(pipeline: String): Unit =
-        Kinds.foreach { kind =>
+    /** Remove both kinds' objects and records. A repository script gets a
+      * delete commit (history is kept) unless its file changed at branch head
+      * since the recorded commit, or that cannot be checked: then the file is
+      * kept and one warning per kept file is returned. Records are deleted
+      * either way. Best effort, never throws. */
+    def deleteAll(pipeline: String): Seq[String] =
+        Kinds.flatMap { kind =>
             try removeKind(pipeline, kind)
-            catch { case e: Exception => logger.warn("CodeGen script cleanup failed for " + pipeline + "/" + kind + ": " + e.getMessage) }
+            catch {
+                case e: Exception =>
+                    logger.warn("CodeGen script cleanup failed for " + pipeline + "/" + kind + ": " + e.getMessage)
+                    None
+            }
         }
 
     // --------------------------------------------------------------- helpers
@@ -670,10 +680,29 @@ class PipelineScripts(
             repoStoreFor(pipeline)
         } else storeFor(pipeline)
 
-    private def deleteObject(r: CodeGenScript): Unit =
-        if (r != null && hasRef(r))
-            try storeOf(r.pipeline, backendOf(r)).deleteScript(refOf(r))
-            catch { case e: Exception => logger.warn("Could not delete CodeGen script object " + refOf(r) + ": " + e.getMessage) }
+    /** Delete the record's object unless it is a repository file edited at
+      * branch head since the recorded commit (or that cannot be checked):
+      * Some(warning) when a repository file was kept. A built-in object is
+      * deleted as before (failures logged). */
+    private def deleteObject(r: CodeGenScript): Option[String] =
+        if (r != null && hasRef(r)) {
+            val ref = refOf(r)
+            val path = Option(r.scriptRepoPath).getOrElse(r.scriptPath)
+            try
+                storeOf(r.pipeline, backendOf(r)).deleteIfUnchanged(ref) match {
+                    case DeleteOutcome.Deleted => None
+                    case DeleteOutcome.KeptEdited(_) =>
+                        Some(PipelineScripts.keptOnDeleteWarning(r.pipeline, r.kind, path, r.scriptCommitSha))
+                    case DeleteOutcome.Unchecked(error) =>
+                        logger.warn("Kept CodeGen script " + ref + ": the repository could not be checked: " + error)
+                        Some(PipelineScripts.uncheckedOnDeleteWarning(r.pipeline, r.kind, path, error))
+                }
+            catch {
+                case e: Exception =>
+                    logger.warn("Could not delete CodeGen script object " + ref + ": " + e.getMessage)
+                    if (isRepoBacked(r)) Some(PipelineScripts.uncheckedOnDeleteWarning(r.pipeline, r.kind, path, messageOf(e))) else None
+            }
+        } else None
 
     private def sameObject(a: CodeGenScript, b: CodeGenScript): Boolean =
         a.storage == b.storage && a.scriptPath == b.scriptPath && a.scriptRepoPath == b.scriptRepoPath
@@ -777,6 +806,20 @@ object PipelineScripts
             "and with no model call, until you resolve it: adopt the repository version with POST " +
             pullPath(pipeline, kind) + " (pull), or replace it with POST " + regeneratePath(pipeline, kind) + "?overwrite=true."
     }
+
+    /** The warning for a repository script kept on delete because its file
+      * changed at branch head since the recorded commit `sha`. */
+    def keptOnDeleteWarning(pipeline: String, kind: String, path: String, sha: String): String =
+        "'" + path + "' was kept in the code repository: it changed since the recorded commit " + Option(sha).map(_.take(7)).orNull +
+            " and a hand edit is never overwritten. The pipeline " + pipeline + " and its " + kind +
+            " script record were deleted; remove the file by hand if it is no longer wanted."
+
+    /** The warning for a repository script kept on delete because the
+      * repository could not be checked (unreachable, token expired, disabled). */
+    def uncheckedOnDeleteWarning(pipeline: String, kind: String, path: String, error: String): String =
+        "'" + path + "' was kept in the code repository: whether it changed since the recorded commit could not be checked (" + error +
+            "), and a hand edit is never overwritten. The pipeline " + pipeline + " and its " + kind +
+            " script record were deleted; remove the file by hand if it is no longer wanted."
 
     private[util] def backendOf(r: CodeGenScript): String =
         if (r != null && r.storage == Github) Github else Builtin

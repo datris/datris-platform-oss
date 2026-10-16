@@ -190,8 +190,13 @@ If repository storage is disabled while scripts point at it, their runs fail wit
 CodeGen script is stored in a code repository, but no enabled repository is configured"; re-enable
 the repository, or regenerate with `storage=builtin` to move the script back to built-in storage.
 
-**Delete.** Deleting the pipeline makes a delete commit per script file; git history is kept. A
-repository failure is logged and does not block the delete.
+**Delete.** Deleting the pipeline (or a catalog together with its items) makes a delete commit per
+script file that is unchanged since its recorded commit; git history is kept. A file that was edited
+in the repository since then is kept: a hand edit is never removed by Datris. The pipeline and its
+script records are still deleted, and the delete response's `warnings` names each kept file so you
+can remove it by hand if it is no longer wanted. When the repository cannot be reached the files are
+kept the same way, with a warning, and the delete still goes ahead. Deleting a tap whose script is in
+the repository follows the same rule.
 
 ## Troubleshooting
 

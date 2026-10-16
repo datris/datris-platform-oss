@@ -95,6 +95,72 @@ trait CodeStore {
                 if (pinned.contains(content)) None else Some(headSha)
             }
         }
+
+    /** Delete the script unless its file changed at branch head since the
+      * recorded commit (a hand edit is never destroyed). The outcome says
+      * whether it was deleted, kept as edited, or kept because the check
+      * could not run. A failing delete after a clean check propagates. */
+    def deleteIfUnchanged(ref: ScriptRef): DeleteOutcome = {
+        val drift =
+            try driftHead(ref)
+            catch {
+                case e: Throwable if scala.util.control.NonFatal(e) =>
+                    return DeleteOutcome.Unchecked(Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.getClass.getSimpleName))
+            }
+        drift match {
+            case Some(headSha) => DeleteOutcome.KeptEdited(headSha)
+            case None =>
+                deleteScript(ref)
+                DeleteOutcome.Deleted
+        }
+    }
+
+    /** As [[deleteIfUnchanged]], as text: None when deleted, else the
+      * warning naming the kept file. On a backend with no branch (built-in
+      * store) [[driftHead]] is None, so this is a plain [[deleteScript]]. */
+    def deleteUnlessEdited(ref: ScriptRef): Option[String] =
+        deleteIfUnchanged(ref) match {
+            case DeleteOutcome.Deleted => None
+            case DeleteOutcome.KeptEdited(_) =>
+                Some(CodeStore.keptOnDeleteWarning(ownerOf(ref), pathOf(ref), Option(ref).map(_.scriptCommitSha).orNull))
+            case DeleteOutcome.Unchecked(error) => Some(CodeStore.uncheckedOnDeleteWarning(ownerOf(ref), pathOf(ref), error))
+        }
+
+    /** What owns a script in warnings ("tap" | "pipeline"); "owner" when the
+      * backend cannot tell. */
+    protected def ownerOf(ref: ScriptRef): String = "owner"
+
+    private def pathOf(ref: ScriptRef): String =
+        Option(ref).flatMap(r => Option(r.scriptRepoPath).orElse(Option(r.scriptPath))).getOrElse("the script file")
+}
+
+/** What [[CodeStore.deleteIfUnchanged]] did. */
+sealed trait DeleteOutcome
+
+object DeleteOutcome {
+    case object Deleted extends DeleteOutcome
+
+    /** Kept: the file at branch head (`headSha`) differs from the recorded commit's. */
+    case class KeptEdited(headSha: String) extends DeleteOutcome
+
+    /** Kept: the drift check failed (repository unreachable, token expired, disabled). */
+    case class Unchecked(error: String) extends DeleteOutcome
+}
+
+object CodeStore {
+
+    /** A file kept on delete because it changed at head since `sha`.
+      * `owner` is "tap" or "pipeline". */
+    def keptOnDeleteWarning(owner: String, path: String, sha: String): String =
+        "'" + path + "' was kept in the code repository: it changed since the recorded commit " + Option(sha).map(_.take(7)).orNull +
+            " and a hand edit is never overwritten. The " + owner + " and its script record were deleted; " +
+            "remove the file by hand if it is no longer wanted."
+
+    /** A file kept on delete because the drift check could not run. */
+    def uncheckedOnDeleteWarning(owner: String, path: String, error: String): String =
+        "'" + path + "' was kept in the code repository: whether it changed since the recorded commit could not be checked (" + error +
+            "), and a hand edit is never overwritten. The " + owner + " and its script record were deleted; " +
+            "remove the file by hand if it is no longer wanted."
 }
 
 /** Tap-typed adapter over a [[CodeStore]] (see plans/tap-github-storage.md).
@@ -118,6 +184,10 @@ trait TapCodeStore {
 
     /** Remove the script from the backend. Idempotent. */
     def deleteScript(tap: TapConfig): Unit = underlying.deleteScript(ScriptRef.of(tap))
+
+    /** Remove the script unless its repository file was hand-edited since
+      * the recorded commit; Some(warning) when the file was kept. */
+    def deleteUnlessEdited(tap: TapConfig): Option[String] = underlying.deleteUnlessEdited(ScriptRef.of(tap))
 
     /** Whether the script exists in the backend. */
     def scriptExists(tap: TapConfig): Boolean = underlying.scriptExists(ScriptRef.of(tap))
@@ -281,6 +351,14 @@ class GithubScriptStore(
             if (pinned.exists(_.blobSha == head.blobSha)) None else Some(headSha)
         }
     }
+
+    override protected def ownerOf(ref: ScriptRef): String =
+        if (ref == null) "owner"
+        else
+            familyOf(ref.name) match {
+                case ScriptFamily.Tap(_) => "tap"
+                case ScriptFamily.Pipeline(_, _) => "pipeline"
+            }
 
     override def repoPathFor(name: String): Option[String] = Some(GithubCodeStore.scriptRepoPath(familyOf(name), config))
 

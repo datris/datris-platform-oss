@@ -778,8 +778,13 @@ class TapAPIController {
             logger.info("API endpoint DELETE /tap called with name: " + name)
             APIKeyValidator.validate(apiKey)
 
-            deleteTapInternal(name, request)
-            new ResponseEntity[String]("{\"message\": \"Tap deleted: " + name + "\"}", HttpStatus.OK)
+            val warnings = deleteTapInternal(name, request)
+            val out = new com.google.gson.JsonObject
+            out.addProperty("message", "Tap deleted: " + name)
+            val arr = new com.google.gson.JsonArray
+            warnings.foreach(arr.add(_))
+            out.add("warnings", arr)
+            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -792,8 +797,11 @@ class TapAPIController {
       * Shared with the catalog cascade delete and placeholder cleanup
       * (`CatalogAPIController`). Throws on a scope denial. `checkScope=false`
       * is only for `__catalog__` placeholders, which are catalog bookkeeping
-      * already authorised by the catalog route's capability gate. */
-    def deleteTapInternal(name: String, request: HttpServletRequest, checkScope: Boolean = true): Unit = {
+      * already authorised by the catalog route's capability gate. Returns
+      * warnings for the caller: a repository script file kept because it was
+      * hand-edited since its recorded commit (or could not be checked). */
+    def deleteTapInternal(name: String, request: HttpServletRequest, checkScope: Boolean = true): Seq[String] = {
+        val warnings = Seq.newBuilder[String]
         // Delete script from MinIO if it exists
         val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
         if (existing != null) {
@@ -801,9 +809,11 @@ class TapAPIController {
             // taps they created. Loaded resource carries createdByKeyLabel.
             if (checkScope) CapabilityCheck.assertOwnerScope(request, "tap", "delete", existing.createdByKeyLabel)
             // For repo-backed taps this commits a file removal (history is
-            // preserved — that's the point of the repo). Non-fatal: a dead
-            // repo connection must not block deleting the tap itself.
-            try TapCodeStore.forTap(existing).deleteScript(existing)
+            // preserved — that's the point of the repo), unless the file was
+            // hand-edited at branch head since the recorded commit: then it is
+            // kept and named in a warning. Non-fatal: a dead repo connection
+            // must not block deleting the tap itself.
+            try TapCodeStore.forTap(existing).deleteUnlessEdited(existing).foreach(warnings += _)
             catch { case e: Exception => logger.warn("Tap script cleanup failed for '" + name + "': " + e.getMessage) }
         }
 
@@ -857,6 +867,7 @@ class TapAPIController {
         catch { case ex: Exception => logger.warn("Tap state cleanup failed for " + name + ": " + ex.getMessage) }
 
         TapConfigIO.delete(DatrisEnvironment.current.tapTableName, name)
+        warnings.result()
     }
 
     /** Repoint an existing tap at freshly written MinIO bytes unless the
