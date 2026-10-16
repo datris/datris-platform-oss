@@ -20,6 +20,19 @@ import scala.collection.JavaConverters._
 
 object TapAPIController {
 
+    /** 404 for a tap name with no config (GET and DELETE /tap), with the
+      * "Tap: <name> not found" error body. */
+    def tapNotFound(name: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody("Tap: " + name + " not found"))
+
+    /** Tap lookup for POST /tap/run and POST /tap/state: Left(tapNotFound(name))
+      * when no config was read for `name`, Right(config) otherwise. */
+    def tapOr404(name: String, config: Option[TapConfig]): Either[ResponseEntity[String], TapConfig] =
+        config.toRight(tapNotFound(name))
+
     /** Some(message) when the tap's secretName names a server-managed secret
       * (SecretNames.ServerManaged); checked on save. TapScriptRunner refuses
       * the same at run time for taps saved before this check. */
@@ -306,7 +319,7 @@ class TapAPIController {
 
             val config = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
             if (config == null)
-                throw new DatrisException("Tap: " + name + " not found")
+                return TapAPIController.tapNotFound(name)
             val gson = new Gson
             // Include script content from MinIO. Track "missing" separately from
             // "never generated" so the UI can tell the user the script was deleted
@@ -778,8 +791,16 @@ class TapAPIController {
             logger.info("API endpoint DELETE /tap called with name: " + name)
             APIKeyValidator.validate(apiKey)
 
-            deleteTapInternal(name, request)
-            new ResponseEntity[String]("{\"message\": \"Tap deleted: " + name + "\"}", HttpStatus.OK)
+            val warnings = deleteTapInternal(name, request) match {
+                case None => return TapAPIController.tapNotFound(name)
+                case Some(w) => w
+            }
+            val out = new com.google.gson.JsonObject
+            out.addProperty("message", "Tap deleted: " + name)
+            val arr = new com.google.gson.JsonArray
+            warnings.foreach(arr.add(_))
+            out.add("warnings", arr)
+            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -792,8 +813,14 @@ class TapAPIController {
       * Shared with the catalog cascade delete and placeholder cleanup
       * (`CatalogAPIController`). Throws on a scope denial. `checkScope=false`
       * is only for `__catalog__` placeholders, which are catalog bookkeeping
-      * already authorised by the catalog route's capability gate. */
-    def deleteTapInternal(name: String, request: HttpServletRequest, checkScope: Boolean = true): Unit = {
+      * already authorised by the catalog route's capability gate. Returns
+      * warnings for the caller: a repository script file kept because it was
+      * hand-edited since its recorded commit (or could not be checked).
+      * None when no tap of that name exists (the leftover run log, versions
+      * and sync state are still cleaned up, as before); the route maps it to
+      * 404, the catalog callers tolerate it. */
+    def deleteTapInternal(name: String, request: HttpServletRequest, checkScope: Boolean = true): Option[Seq[String]] = {
+        val warnings = Seq.newBuilder[String]
         // Delete script from MinIO if it exists
         val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
         if (existing != null) {
@@ -801,9 +828,11 @@ class TapAPIController {
             // taps they created. Loaded resource carries createdByKeyLabel.
             if (checkScope) CapabilityCheck.assertOwnerScope(request, "tap", "delete", existing.createdByKeyLabel)
             // For repo-backed taps this commits a file removal (history is
-            // preserved — that's the point of the repo). Non-fatal: a dead
-            // repo connection must not block deleting the tap itself.
-            try TapCodeStore.forTap(existing).deleteScript(existing)
+            // preserved — that's the point of the repo), unless the file was
+            // hand-edited at branch head since the recorded commit: then it is
+            // kept and named in a warning. Non-fatal: a dead repo connection
+            // must not block deleting the tap itself.
+            try TapCodeStore.forTap(existing).deleteUnlessEdited(existing).foreach(warnings += _)
             catch { case e: Exception => logger.warn("Tap script cleanup failed for '" + name + "': " + e.getMessage) }
         }
 
@@ -857,6 +886,7 @@ class TapAPIController {
         catch { case ex: Exception => logger.warn("Tap state cleanup failed for " + name + ": " + ex.getMessage) }
 
         TapConfigIO.delete(DatrisEnvironment.current.tapTableName, name)
+        if (existing == null) None else Some(warnings.result())
     }
 
     /** Repoint an existing tap at freshly written MinIO bytes unless the
@@ -1366,9 +1396,10 @@ class TapAPIController {
             if (name == null || name.isEmpty)
                 throw new DatrisException("Tap name is required")
 
-            val tapConfig = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
-            if (tapConfig == null)
-                throw new DatrisException("Tap: " + name + " not found")
+            val tapConfig = TapAPIController.tapOr404(name, Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name))) match {
+                case Left(notFound) => return notFound
+                case Right(c) => c
+            }
 
             // Scope check: `tap:run:owner=self` keys (e.g. rag-builder) may
             // only run taps they created. The loaded tap's createdByKeyLabel
@@ -1547,8 +1578,10 @@ class TapAPIController {
 
             if (name == null || name.isEmpty)
                 throw new DatrisException("Tap name is required")
-            if (TapConfigIO.read(DatrisEnvironment.current.tapTableName, name) == null)
-                throw new DatrisException("Tap: " + name + " not found")
+            TapAPIController.tapOr404(name, Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name))) match {
+                case Left(notFound) => return notFound
+                case Right(_) =>
+            }
 
             val gson = new Gson
             // `state` must be a JSON object (the same shape the wrapper accepts from

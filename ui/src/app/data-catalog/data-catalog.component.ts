@@ -890,7 +890,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
 
   private showOpWarnings(label: string, warnings: any): void {
     const list = Array.isArray(warnings)
-      ? warnings.map((w: any) => ({ pipeline: String(w && w.pipeline || ''), message: String(w && w.message || '') }))
+      ? warnings.map((w: any) => ({ pipeline: String(w && (w.pipeline || w.tap) || ''), message: String(w && w.message || '') }))
       : [];
     this.opWarnings = list;
     this.opWarningsLabel = list.length > 0 ? label : '';

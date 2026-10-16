@@ -350,13 +350,16 @@ components:
             $ref: '#/components/schemas/CatalogFailure'
         warnings:
           type: array
-          description: Cascade only (always present there, possibly empty; absent for detach). Follow-up actions for pipelines that were deleted, such as a Unity Catalog table committed through the REST catalog that an admin has to drop. Never affects the 200/207 status.
+          description: Cascade only (always present there, possibly empty; absent for detach). Follow-up actions for items that were deleted, such as a Unity Catalog table committed through the REST catalog that an admin has to drop, or a script file kept in the code repository because it was edited there since its recorded commit. Pipeline entries come first, then tap entries. Never affects the 200/207 status.
           items:
             type: object
             properties:
               pipeline:
                 type: string
-                description: Name of the deleted pipeline.
+                description: Name of the deleted pipeline (pipeline entries only).
+              tap:
+                type: string
+                description: Name of the deleted tap (tap entries only).
               message:
                 type: string
                 description: What is left behind and what to do, e.g. `Unity Catalog still holds main.sales.orders; have an admin drop it`.
@@ -1197,6 +1200,15 @@ paths:
             application/json:
               schema:
                 type: object
+        '404':
+          description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '500':
           description: Error
 
@@ -1264,7 +1276,7 @@ paths:
                   $ref: '#/components/schemas/UnityCatalogSync'
       responses:
         '200':
-          description: Pipeline created/updated. `warnings` is advisory; the pipeline is saved either way (empty array when there is nothing to say). It warns when an object-store Iceberg pipeline's Unity Catalog secret points at a Databricks workspace with catalogMode register or rest, which Databricks cannot serve (set catalogMode managed or use the databricks destination), and when a CodeGen script could not be generated at save. `codegenScripts` reports, per AI data-quality rule and AI transformation, whether the script generated at save is `ready` or `pending` (empty array when the pipeline has neither). Saving a pipeline with an AI instruction can wait for up to two model calls; re-saving with an unchanged instruction and source schema makes none.
+          description: Pipeline created/updated. `warnings` is advisory; the pipeline is saved either way (empty array when there is nothing to say). It warns when an object-store Iceberg pipeline's Unity Catalog secret points at a Databricks workspace with catalogMode register or rest, which Databricks cannot serve (set catalogMode managed or use the databricks destination), when a CodeGen script could not be generated at save, and when the save dropped an AI instruction whose script file was kept in the code repository (edited there since its recorded commit, or the repository could not be reached; the file is named so it can be removed by hand). `codegenScripts` reports, per AI data-quality rule and AI transformation, whether the script generated at save is `ready` or `pending` (empty array when the pipeline has neither). Saving a pipeline with an AI instruction can wait for up to two model calls; re-saving with an unchanged instruction and source schema makes none.
           content:
             application/json:
               schema:
@@ -1350,7 +1362,7 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop, or a catalogMode managed table Unity Catalog owns (Datris deleted nothing there).
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand.
           content:
             application/json:
               schema:
@@ -1360,6 +1372,15 @@ paths:
                     type: array
                     items:
                       type: string
+        '404':
+          description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '500':
           description: Error
 
@@ -3624,7 +3645,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/TapDetail'
         '404':
-          description: Tap not found
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
     post:
       tags: [Taps]
       summary: Create or update a tap
@@ -3667,7 +3695,11 @@ paths:
     delete:
       tags: [Taps]
       summary: Delete a tap
-      description: Deletes the tap configuration and its script from MinIO.
+      description: >-
+        Deletes the tap configuration and its script. A script stored in a code
+        repository gets a delete commit unless its file was edited there since
+        the recorded commit (or the repository cannot be reached); that file is
+        kept and named in `warnings`.
       parameters:
         - name: name
           in: query
@@ -3677,8 +3709,27 @@ paths:
       responses:
         '200':
           description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  warnings:
+                    type: array
+                    description: Follow-up actions, e.g. a script file kept in the code repository. Possibly empty.
+                    items:
+                      type: string
         '404':
-          description: Tap not found
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /api/v1/tap/logs:
     get:
@@ -4303,6 +4354,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TapRunResult'
+        '404':
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /api/v1/tap/cron:
     post:
@@ -4436,8 +4496,17 @@ paths:
       responses:
         '200':
           description: State saved
+        '404':
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '500':
-          description: Error (unknown tap, or state is not a JSON object)
+          description: Error (state is not a JSON object)
     delete:
       tags: [Taps]
       summary: Reset a tap's incremental-sync state

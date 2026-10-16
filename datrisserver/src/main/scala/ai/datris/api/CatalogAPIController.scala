@@ -284,7 +284,9 @@ class CatalogAPIController {
                         // detach does), so the helpers skip their owner-only check.
                         val tapController = new TapAPIController
                         val pipelineController = new PipelineAPIController
-                        val t = CatalogOps.execute(members.taps.map(_.name)) { n =>
+                        // deleteTapInternal's warnings (a hand-edited repository
+                        // script kept) become {tap, message} warnings.
+                        val t = CatalogOps.executeCollecting(members.taps.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readTap(n, name)
                                 CapabilityCheck.assertScope(
@@ -293,7 +295,7 @@ class CatalogAPIController {
                                     "delete",
                                     CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
                                 )
-                                tapController.deleteTapInternal(n, request, checkScope = false)
+                                tapController.deleteTapInternal(n, request, checkScope = false).getOrElse(Nil)
                             }
                         }
                         // A surviving tap must not be left pointing at a deleted
@@ -330,7 +332,7 @@ class CatalogAPIController {
                 val out = new JsonObject
                 out.add(if (m == "detach") "detached" else "deleted", toArray(okNames))
                 out.add("failed", failedArray(failures))
-                if (m == "cascade") out.add("warnings", warningsArray(pipelineResult.warnings))
+                if (m == "cascade") out.add("warnings", CatalogAPIController.warningsArray(pipelineResult.warnings, tapResult.warnings))
                 respond(out, failures)
             }
         } catch {
@@ -633,11 +635,23 @@ class CatalogAPIController {
                 val repoCfg = if (store eq GithubCodeStore) CodeRepoConfigIO.readEnabled() else None
                 val pythonTaps = contents.taps.filterNot(_.isHttp).map(_.name).toSet
                 val scripts = contents.scripts.filter { case (n, _) => pythonTaps.contains(n) }
-                val targetTapMembers = CatalogOps.members(taps, pipelines, name).taps.map(_.name).toSet
+                val targetMembers = CatalogOps.members(taps, pipelines, name)
+                val targetTapMembers = targetMembers.taps.map(_.name).toSet
+                // AI scripts of a pipeline that is not yet a target member may
+                // not land on a different file at branch head either.
+                val targetPipelineMembers = targetMembers.pipelines.map(_.name).toSet
                 val repoPlan = repoCfg match {
                     case Some(cfg) =>
-                        CatalogArchive.planRepoScripts(scripts, cfg, m, targetTapMembers, (c, p, r) => GithubClient.getFile(c, p, r))
-                    case None => CatalogArchive.RepoScriptPlan(Nil, Set.empty, scripts.keySet)
+                        CatalogArchive.planRepoScripts(
+                            scripts,
+                            cfg,
+                            m,
+                            targetTapMembers,
+                            (c, p, r) => GithubClient.getFile(c, p, r),
+                            contents.codegenScripts,
+                            targetPipelineMembers
+                        )
+                    case None => CatalogArchive.RepoScriptPlan(Nil, Set.empty, scripts.keySet, Set.empty, Set.empty)
                 }
                 val allClashes = nameClashes ++ repoPlan.clashes
                 if (allClashes.nonEmpty)
@@ -1183,7 +1197,7 @@ class CatalogAPIController {
         try {
             val live = TapConfigIO.read(DatrisEnvironment.current.tapTableName, placeholder)
             if (live != null && CatalogOps.Placeholder.belongsTo(live, catalog))
-                new TapAPIController().deleteTapInternal(placeholder, request, checkScope = false)
+                new TapAPIController().deleteTapInternal(placeholder, request, checkScope = false).getOrElse(Nil)
             None
         } catch {
             case e: Exception =>
@@ -1222,17 +1236,6 @@ class CatalogAPIController {
         arr
     }
 
-    private def warningsArray(warnings: Seq[(String, String)]): JsonArray = {
-        val arr = new JsonArray
-        warnings.foreach { case (n, msg) =>
-            val o = new JsonObject
-            o.addProperty("pipeline", n)
-            o.addProperty("message", msg)
-            arr.add(o)
-        }
-        arr
-    }
-
     private def respond(out: JsonObject, failures: Seq[(String, String)]): ResponseEntity[String] =
         ResponseEntity
             .status(if (failures.isEmpty) HttpStatus.OK else HttpStatus.MULTI_STATUS)
@@ -1253,6 +1256,23 @@ class CatalogAPIController {
 
 object CatalogAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[CatalogAPIController])
+
+    /** The cascade delete's `warnings`: pipeline warnings as
+      * {pipeline, message}, then tap warnings as {tap, message}, each list in
+      * input order. */
+    private[api] def warningsArray(pipelineWarnings: Seq[(String, String)], tapWarnings: Seq[(String, String)]): JsonArray = {
+        val arr = new JsonArray
+        def add(key: String, warnings: Seq[(String, String)]): Unit =
+            warnings.foreach { case (n, msg) =>
+                val o = new JsonObject
+                o.addProperty(key, n)
+                o.addProperty("message", msg)
+                arr.add(o)
+            }
+        add("pipeline", pipelineWarnings)
+        add("tap", tapWarnings)
+        arr
+    }
 
     /** What restore did with one pipeline's archived AI scripts.
       * `imported`: the records importScript wrote. `regenerated`:

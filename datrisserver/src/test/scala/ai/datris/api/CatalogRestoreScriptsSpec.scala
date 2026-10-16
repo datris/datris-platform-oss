@@ -306,4 +306,45 @@ class CatalogRestoreScriptsSpec extends AnyFunSuite with BeforeAndAfterEach {
             s"$report"
         )
     }
+
+    // Story: Restore refuses a new pipeline whose AI script path holds a foreign
+    // file (plans/stories/multi-env-3b-restore-ai-script-head-check.md). The
+    // controller returns 409 before step 0 whenever planRepoScripts reports a
+    // clash; this pins that seam: a foreign file at orders/dataQuality's path
+    // is a clash, so neither importCodegenScripts nor the save is reached.
+
+    test("a clashing AI script plan means no record and no commit") {
+        val c = contents(withRecords = true)
+        val repoCfg = CodeRepoConfig(repo = "acme/scripts", branch = "main", pathPrefix = "taps/")
+        val dqPath = GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline("orders", Dq), repoCfg)
+        val head = Map(dqPath -> "print('foreign')")
+        val checked = mutable.ArrayBuffer.empty[(String, String)]
+        val fileAt: (CodeRepoConfig, String, String) => Option[RepoFile] = (_, path, ref) => {
+            checked += (path -> ref)
+            head.get(path).map(t => RepoFile(t, "blob-" + t.hashCode, "head-sha"))
+        }
+        val plan = CatalogArchive.planRepoScripts(
+            c.scripts,
+            repoCfg,
+            "new",
+            Set.empty,
+            fileAt,
+            c.codegenScripts,
+            Set.empty
+        )
+        assert(plan.clashes.nonEmpty, s"foreign file at $dqPath must clash: $plan")
+        assert(plan.clashes.exists(_.contains("pipeline script 'orders/dataQuality'")), s"$plan")
+        assert(plan.clashes.exists(_.contains(dqPath)), s"$plan")
+        assert(!plan.codegenWrite.contains("orders/dataQuality"), s"$plan")
+        assert(checked.contains(dqPath -> "main"), s"checked at branch head: $checked")
+
+        // restoreCatalog: allClashes = nameClashes ++ repoPlan.clashes; non-empty -> 409, no step 0-2.
+        if (plan.clashes.isEmpty) {
+            CatalogAPIController.importCodegenScripts(c, "orders", scripts, "todd", mutable.ArrayBuffer.empty[String])
+            scripts.onSave(null, cfg, "todd")
+        }
+        assert(records.rows.isEmpty, s"no record written: ${records.rows}")
+        assert(store.objects.isEmpty, s"no script stored: ${store.objects}")
+        assert(calls.isEmpty, s"no model call: ${calls.size}")
+    }
 }

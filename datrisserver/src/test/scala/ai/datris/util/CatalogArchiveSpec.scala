@@ -62,11 +62,18 @@ import scala.collection.mutable
   *
   *   /** GitHub-backed restore target: compare each archived tap script with the
   *     * file at branch head (`fileAt(cfg, GithubCodeStore.scriptRepoPath(tap, cfg), cfg.branch)`,
-  *     * the same seam GithubScriptStore takes for GithubClient.getFile). */
-  *   case class RepoScriptPlan(clashes: Seq[String], reuse: Set[String], write: Set[String])
+  *     * the same seam GithubScriptStore takes for GithubClient.getFile), and each
+  *     * archived AI script (pipeline -> kind -> text, dataQuality / transformation
+  *     * only) with the file at
+  *     * `GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline(p, kind), cfg)`.
+  *     * codegenReuse / codegenWrite are keyed "<p>/<kind>". */
+  *   case class RepoScriptPlan(clashes: Seq[String], reuse: Set[String], write: Set[String],
+  *                             codegenReuse: Set[String], codegenWrite: Set[String])
   *   def planRepoScripts(scripts: Map[String, String], cfg: CodeRepoConfig, mode: String,
   *                       targetMembers: Set[String],
-  *                       fileAt: (CodeRepoConfig, String, String) => Option[RepoFile]): RepoScriptPlan
+  *                       fileAt: (CodeRepoConfig, String, String) => Option[RepoFile],
+  *                       codegenScripts: Map[String, Map[String, String]],
+  *                       targetPipelineMembers: Set[String]): RepoScriptPlan
   *
   *   /** Which archived tap states the restore writes (tap -> state JSON):
   *     * none when restoreState is false; never a tap that existed before. */
@@ -477,7 +484,7 @@ class CatalogArchiveSpec extends AnyFunSuite {
 
     test("GitHub target: a script already at branch head with different bytes is a clash in mode=new and nothing is written") {
         val repo = new StubRepo(Map("taps/orders.py" -> "print('theirs')"))
-        val plan = planRepoScripts(Map("orders" -> "print('ours')"), repoCfg, "new", Set.empty, repo.fileAt)
+        val plan = planRepoScripts(Map("orders" -> "print('ours')"), repoCfg, "new", Set.empty, repo.fileAt, Map.empty, Set.empty)
         assert(mentions(plan.clashes, "orders"), plan)
         assert(plan.write.isEmpty, "nothing is committed when there is a clash: " + plan)
         assert(plan.reuse.isEmpty, plan)
@@ -486,7 +493,7 @@ class CatalogArchiveSpec extends AnyFunSuite {
 
     test("GitHub target: identical bytes at branch head are reused without a new commit") {
         val repo = new StubRepo(Map("taps/orders.py" -> "print('same')"))
-        val plan = planRepoScripts(Map("orders" -> "print('same')"), repoCfg, "new", Set.empty, repo.fileAt)
+        val plan = planRepoScripts(Map("orders" -> "print('same')"), repoCfg, "new", Set.empty, repo.fileAt, Map.empty, Set.empty)
         assert(plan.clashes.isEmpty, plan)
         assert(plan.reuse == Set("orders"), plan)
         assert(plan.write.isEmpty, "identical bytes need no commit: " + plan)
@@ -494,13 +501,119 @@ class CatalogArchiveSpec extends AnyFunSuite {
 
     test("GitHub target: an absent file is written; overwrite of a target member with different bytes is written, a non-member still clashes") {
         val repo = new StubRepo(Map("taps/orders.py" -> "old", "taps/refunds.py" -> "theirs"))
-        val fresh = planRepoScripts(Map("new_tap" -> "print(1)"), repoCfg, "new", Set.empty, repo.fileAt)
+        val fresh = planRepoScripts(Map("new_tap" -> "print(1)"), repoCfg, "new", Set.empty, repo.fileAt, Map.empty, Set.empty)
         assert(fresh.write == Set("new_tap") && fresh.clashes.isEmpty, fresh)
 
-        val over = planRepoScripts(Map("orders" -> "new", "refunds" -> "ours"), repoCfg, "overwrite", Set("orders"), repo.fileAt)
+        val over = planRepoScripts(Map("orders" -> "new", "refunds" -> "ours"), repoCfg, "overwrite", Set("orders"), repo.fileAt, Map.empty, Set.empty)
         assert(over.write.contains("orders"), over)
         assert(mentions(over.clashes, "refunds"), over)
         assert(!over.write.contains("refunds"), over)
+    }
+
+    // Story: Restore refuses a new pipeline whose AI script path holds a foreign
+    // file (plans/stories/multi-env-3b-restore-ai-script-head-check.md).
+    // planRepoScripts(scripts, cfg, mode, targetMembers, fileAt, codegenScripts,
+    // targetPipelineMembers) also compares each archived AI script
+    // (pipeline -> kind -> text) with the file at
+    // GithubCodeStore.scriptRepoPath(ScriptFamily.Pipeline(p, kind), cfg);
+    // RepoScriptPlan.codegenReuse / codegenWrite are keyed "<p>/<kind>".
+
+    private val aiPath = "taps/pipelines/orders/data-quality.py"
+    private val aiClash =
+        "pipeline script 'orders/dataQuality': script file '" + aiPath +
+            "' already exists in the code repository (branch main) with different content"
+
+    test("planRepoScripts: an AI script identical at branch head is pinned (codegenReuse) and is no clash") {
+        val repo = new StubRepo(Map(aiPath -> "print('same dq')\n"))
+        val plan = planRepoScripts(
+            Map.empty,
+            repoCfg,
+            "new",
+            Set.empty,
+            repo.fileAt,
+            codegenScripts = Map("orders" -> Map("dataQuality" -> "print('same dq')")),
+            targetPipelineMembers = Set.empty
+        )
+        assert(plan.clashes.isEmpty, plan)
+        assert(plan.codegenReuse == Set("orders/dataQuality"), plan)
+        assert(plan.codegenWrite.isEmpty, "identical bytes need no commit: " + plan)
+        assert(plan.reuse.isEmpty && plan.write.isEmpty, "reuse / write stay tap-only: " + plan)
+        assert(repo.calls.contains(aiPath -> "main"), "checked at branch head: " + repo.calls)
+    }
+
+    test("planRepoScripts: an AI script missing at branch head is written (codegenWrite) and is no clash") {
+        val repo = new StubRepo(Map.empty)
+        val plan = planRepoScripts(
+            Map.empty,
+            repoCfg,
+            "new",
+            Set.empty,
+            repo.fileAt,
+            codegenScripts = Map("orders" -> Map("dataQuality" -> "print('dq')")),
+            targetPipelineMembers = Set.empty
+        )
+        assert(plan.clashes.isEmpty, plan)
+        assert(plan.codegenWrite == Set("orders/dataQuality"), plan)
+        assert(plan.codegenReuse.isEmpty, plan)
+        assert(plan.reuse.isEmpty && plan.write.isEmpty, "reuse / write stay tap-only: " + plan)
+        assert(repo.calls.contains(aiPath -> "main"), "checked at branch head: " + repo.calls)
+    }
+
+    test(
+        "planRepoScripts: a different AI script file for a pipeline that is not a target member is a clash naming orders/dataQuality and the path, nothing in codegenWrite"
+    ) {
+        Seq("new" -> Set.empty[String], "overwrite" -> Set.empty[String], "overwrite" -> Set("refunds")).foreach { case (mode, members) =>
+            val repo = new StubRepo(Map(aiPath -> "print('foreign')"))
+            val plan = planRepoScripts(
+                Map.empty,
+                repoCfg,
+                mode,
+                Set.empty,
+                repo.fileAt,
+                codegenScripts = Map("orders" -> Map("dataQuality" -> "print('archived dq')")),
+                targetPipelineMembers = members
+            )
+            val ctx = s"mode=$mode members=$members: $plan"
+            assert(mentions(plan.clashes, "orders/dataQuality"), ctx)
+            assert(mentions(plan.clashes, aiPath), ctx)
+            assert(plan.clashes == Seq(aiClash), ctx)
+            assert(plan.codegenWrite.isEmpty, "nothing is committed when there is a clash: " + ctx)
+            assert(plan.codegenReuse.isEmpty, ctx)
+            assert(repo.calls.contains(aiPath -> "main"), "checked at branch head: " + repo.calls)
+        }
+    }
+
+    test("planRepoScripts: a different AI script file for a target member under overwrite is not a clash") {
+        val repo = new StubRepo(Map(aiPath -> "print('hand edited')"))
+        val plan = planRepoScripts(
+            Map.empty,
+            repoCfg,
+            "overwrite",
+            Set.empty,
+            repo.fileAt,
+            codegenScripts = Map("orders" -> Map("dataQuality" -> "print('archived dq')")),
+            targetPipelineMembers = Set("orders")
+        )
+        assert(plan.clashes.isEmpty, plan)
+        assert(plan.codegenWrite.contains("orders/dataQuality"), plan)
+        assert(!plan.codegenReuse.contains("orders/dataQuality"), plan)
+    }
+
+    test("planRepoScripts: a .py under codegen that is not a CodeGen kind is ignored (no clash, no lookup)") {
+        val repo = new StubRepo(Map(aiPath -> "print('same dq')"))
+        val plan = planRepoScripts(
+            Map.empty,
+            repoCfg,
+            "new",
+            Set.empty,
+            repo.fileAt,
+            codegenScripts = Map("orders" -> Map("helper" -> "print('helper')")),
+            targetPipelineMembers = Set.empty
+        )
+        assert(plan.clashes.isEmpty, plan)
+        assert(plan.codegenReuse.isEmpty && plan.codegenWrite.isEmpty, plan)
+        assert(plan.reuse.isEmpty && plan.write.isEmpty, plan)
+        assert(repo.calls.isEmpty, "an unknown kind is never looked up: " + repo.calls)
     }
 
     // ------------------------------------------------------ Acceptance bullet 7

@@ -169,7 +169,7 @@
   <div class="op-failures-banner warn" *ngIf="opWarnings.length > 0">
     <div class="op-failures-head">
       <span class="material-icons">info</span>
-      <span>{{ opWarningsLabel }}: {{ opWarnings.length }} pipeline{{ opWarnings.length !== 1 ? 's' : '' }} left a table in Unity Catalog.</span>
+      <span>{{ opWarningsLabel }}: {{ opWarnings.length }} warning{{ opWarnings.length !== 1 ? 's' : '' }} to review.</span>
       <button class="move-error-close" (click)="dismissOpWarnings()" title="Dismiss">
         <span class="material-icons">close</span>
       </button>

@@ -106,7 +106,7 @@ Merge the pull request before you restore. Then the archive matches the branch a
 |---|---|
 | Same bytes as the archive | Pins the script to the existing commit and makes no commit. |
 | Missing | Commits the archived script on the branch. |
-| Different, and the pipeline is not yet in the target catalog | Does not import the archived script; the pipeline save regenerates one and commits it over that file. The result lists the script under regenerated with the reason. |
+| Different, and the pipeline is not yet in the target catalog | Refuses the whole restore with 409, names the file, and writes nothing. |
 | Different, and the pipeline is already in the target catalog (`--overwrite`) | Commits the archived script over it. If the file was changed in the repository since that pipeline's recorded commit, or the target's script record pins no commit to check against, the script is not imported and the result gives the reason. |
 
 **Branch protection on `main`.** Saving a tap or an AI script on a GitHub-backed install commits directly to its branch. You can set this up in one of two ways:

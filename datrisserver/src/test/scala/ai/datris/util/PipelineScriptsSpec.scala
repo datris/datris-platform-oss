@@ -418,7 +418,8 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
     test("deleteAll removes the objects and the records") {
         scripts.onSave(null, csvCfg(txInstruction = instruction), "todd")
         assert(store.objects.size == 2)
-        scripts.deleteAll("orders")
+        val warnings: Seq[String] = scripts.deleteAll("orders")
+        assert(warnings == Nil, s"built-in storage never keeps a file: $warnings")
         assert(store.objects.isEmpty, s"${store.objects}")
         assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty)
         assert(scripts.readText("orders", Dq).isEmpty)
@@ -526,9 +527,14 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
             StoredScript("github", scriptRepoPath = path, scriptCommitSha = commit(path, Some(script), base, actor))
         }
 
+        /** When set, a delete commits and then fails, as a request that timed
+          * out client-side after GitHub committed it would. */
+        var deleteFails: String = null
+
         override def deleteScript(ref: ScriptRef): Unit = {
             check()
             if (ref != null && ref.scriptRepoPath != null && head(ref.scriptRepoPath).isDefined) commit(ref.scriptRepoPath, None, null, null)
+            if (deleteFails != null) throw new RuntimeException(deleteFails)
         }
 
         override def scriptExists(ref: ScriptRef): Boolean = readScript(ref).isDefined
@@ -944,6 +950,153 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
     }
 
     // =====================================================================
+    // Story: Delete keeps a hand-edited repository script and warns
+    // (plans/stories/pipeline-delete-drift-warning-and-404.md).
+    // Pinned seam:
+    // {{{
+    // trait CodeStore {
+    //     /** Delete unless the file changed at head since ref.scriptCommitSha;
+    //       * Some(warning) when the file was kept (edited, or not checkable). */
+    //     def deleteUnlessEdited(ref: ScriptRef): Option[String]
+    // }
+    // class PipelineScripts(...) {
+    //     /** Records always deleted; returns one warning per kept file. Never throws. */
+    //     def deleteAll(pipeline: String): Seq[String]
+    // }
+    // object PipelineScripts {
+    //     def keptOnDeleteWarning(pipeline: String, kind: String, path: String, sha: String): String
+    // }
+    // }}}
+    // The drift check must reach FakeRepo through CodeStore.driftHead (its
+    // default compares pullLatest with readScript; pullLatest's check()
+    // throws while `down` is set).
+    // =====================================================================
+
+    private val DqPath = "taps/pipelines/orders/data-quality.py"
+    private val TxPath = "taps/pipelines/orders/transformation.py"
+
+    test("deleteAll deletes an unchanged repository file with no warning") {
+        val s = withRepo()
+        s.onSave(null, csvCfg(txInstruction = instruction), "todd")
+        assert(repo.head(DqPath).isDefined && repo.head(TxPath).isDefined, s"${repo.commits}")
+        val warnings: Seq[String] =
+            try s.deleteAll("orders")
+            catch { case e: Throwable => fail("deleteAll must not throw: " + e) }
+        assert(warnings == Nil, s"$warnings")
+        assert(repo.head(DqPath).isEmpty, "unchanged data-quality file deleted at head")
+        assert(repo.head(TxPath).isEmpty, "unchanged transformation file deleted at head")
+        assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty)
+    }
+
+    test("deleteAll keeps a file edited at head and reports it") {
+        val s = withRepo()
+        s.onSave(null, csvCfg(txInstruction = instruction), "todd")
+        val dqRec = records.read("orders", Dq).getOrElse(fail("no data-quality record"))
+        assert(dqRec.scriptRepoPath == DqPath, s"$dqRec")
+        repo.hubEdit(DqPath, "# edited")
+        val warnings: Seq[String] =
+            try s.deleteAll("orders")
+            catch { case e: Throwable => fail("deleteAll must not throw: " + e) }
+        assert(repo.head(DqPath).contains("# edited"), s"the hand edit stays at head: ${repo.commits}")
+        assert(repo.head(TxPath).isEmpty, "the unchanged transformation file is deleted")
+        assert(!repo.commits.exists(c => c.path == DqPath && c.content.isEmpty), "no delete commit for the edited file")
+        assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty, "both records deleted")
+        assert(warnings.size == 1, s"$warnings")
+        val w = warnings.head
+        assert(w.contains(DqPath), w)
+        assert(w.contains("kept in the code repository"), w)
+        assert(w.contains(dqRec.scriptCommitSha.take(7)), s"names the recorded sha prefix: $w")
+    }
+
+    test("deleteAll reports an unconfirmed delete, not a kept file, when only the delete request fails") {
+        val s = withRepo()
+        s.onSave(null, csvCfg(txInstruction = instruction), "todd")
+        repo.hubEdit(DqPath, "# edited")
+        repo.deleteFails = "api.github.com:443 failed to respond"
+        val warnings: Seq[String] =
+            try s.deleteAll("orders")
+            catch { case e: Throwable => fail("deleteAll must not throw: " + e) }
+        assert(repo.head(DqPath).contains("# edited"), "the hand edit stays at head")
+        assert(repo.head(TxPath).isEmpty, "the transformation delete was committed")
+        assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty, "both records deleted")
+        assert(warnings.size == 2, s"$warnings")
+        val kept = warnings.filter(_.contains(DqPath))
+        assert(kept.size == 1 && kept.head.contains("kept in the code repository"), s"$warnings")
+        val failed = warnings.filter(_.contains(TxPath))
+        assert(failed.size == 1, s"$warnings")
+        val w = failed.head
+        assert(w.contains("could not be confirmed") && w.contains("api.github.com:443 failed to respond"), w)
+        assert(!w.contains("was kept") && !w.contains("could not be checked"), s"must not claim the file was kept: $w")
+    }
+
+    test("deleteAll keeps the files and warns when the repository is unreachable") {
+        val s = withRepo()
+        s.onSave(null, csvCfg(txInstruction = instruction), "todd")
+        val commitsBefore = repo.commits.size
+        repo.down = "401"
+        val warnings: Seq[String] =
+            try s.deleteAll("orders")
+            catch { case e: Throwable => fail("deleteAll must not throw: " + e) }
+        assert(repo.commits.size == commitsBefore, s"nothing committed: ${repo.commits}")
+        assert(records.read("orders", Dq).isEmpty && records.read("orders", Tx).isEmpty, "records deleted anyway")
+        assert(warnings.size == 2, s"one warning per kept file: $warnings")
+    }
+
+    // =====================================================================
+    // Story: pipeline-delete-drift-warning-and-404.md, Part 2. A save that
+    // drops an AI instruction removes that kind's record; a repository file
+    // edited at head since the recorded commit is kept and named in the save
+    // warnings. Pinned seam:
+    // {{{
+    // object PipelineScripts {
+    //     case class SaveResult(outcomes: List[Outcome], warnings: List[String])
+    //     def keptOnRemoveWarning(...): String      // "... saved without its <kind> instruction ..."
+    //     def uncheckedOnRemoveWarning(...): String
+    // }
+    // class PipelineScripts(...) {
+    //     /** onSave's body; onSave == onSaveResult(...).outcomes. Never throws. */
+    //     def onSaveResult(previous: PipelineConfig, saved: PipelineConfig, actor: String): PipelineScripts.SaveResult
+    // }
+    // }}}
+    // =====================================================================
+
+    test("saving without an instruction keeps a file edited at head and warns") {
+        val s = withRepo()
+        val saved = csvCfg()
+        s.onSave(null, saved, "todd")
+        val dqRec = records.read("orders", Dq).getOrElse(fail("no data-quality record"))
+        assert(dqRec.scriptRepoPath == DqPath, s"$dqRec")
+        repo.hubEdit(DqPath, "# edited")
+        val cfgWithoutDq = csvCfg(dqRule = null)
+        val result: PipelineScripts.SaveResult =
+            try s.onSaveResult(saved, cfgWithoutDq, "todd")
+            catch { case e: Throwable => fail("onSaveResult must not throw: " + e) }
+        assert(result.warnings.size == 1, s"${result.warnings}")
+        val w = result.warnings.head
+        assert(w.contains(DqPath), w)
+        assert(w.contains("kept in the code repository"), w)
+        assert(w.contains(dqRec.scriptCommitSha.take(7)), s"names the recorded sha prefix: $w")
+        assert(w.contains("saved without"), s"save wording, not delete wording: $w")
+        assert(repo.head(DqPath).isDefined, s"the hand edit stays at head: ${repo.commits}")
+        assert(records.read("orders", Dq).isEmpty, "the data-quality record is removed")
+        assert(!result.outcomes.exists(_.kind == Dq), s"no outcome for the removed kind: ${result.outcomes}")
+    }
+
+    test("saving without an instruction removes an unchanged file silently") {
+        val s = withRepo()
+        val saved = csvCfg()
+        s.onSave(null, saved, "todd")
+        assert(repo.head(DqPath).isDefined, s"${repo.commits}")
+        val result: PipelineScripts.SaveResult =
+            try s.onSaveResult(saved, csvCfg(dqRule = null), "todd")
+            catch { case e: Throwable => fail("onSaveResult must not throw: " + e) }
+        assert(result.warnings == Nil, s"${result.warnings}")
+        assert(repo.head(DqPath).isEmpty, "the unchanged file is deleted at head")
+        assert(records.read("orders", Dq).isEmpty, "the data-quality record is removed")
+        assert(!result.outcomes.exists(_.kind == Dq), s"${result.outcomes}")
+    }
+
+    // =====================================================================
     // Story: Restore honours archived CodeGen scripts
     // (plans/stories/multi-env-3-restore-import-codegen-scripts.md),
     // Acceptance bullets 2-4. Pinned seam:
@@ -1073,8 +1226,11 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         val commitsBefore = repo.commits.size
         val r = s.importScript(cfg, Dq, "print('archived')", archivedRecord(cfg), "todd")
         assert(r.isLeft, r)
-        // Not a conflict warning: the save that follows regenerates over the file.
+        // Not a conflict warning; a catalog restore refuses this case up front
+        // (CatalogArchive.planRepoScripts), so only a direct caller sees it.
         assert(r.left.get == PipelineScripts.differentFileAtHeadReason(repo.pathOf(Dq)), r.left.get)
+        assert(r.left.get.endsWith("; the archived script was not imported"), r.left.get)
+        assert(!r.left.get.contains("regenerated"), r.left.get)
         assert(!r.left.get.contains(PipelineScripts.ConflictMarker), r.left.get)
         assert(repo.commits.size == commitsBefore, s"never overwritten: ${repo.commits}")
         assert(records.read("orders", Dq).isEmpty)

@@ -56,13 +56,24 @@ class PipelineScripts(
       * it pending with the reason. Kinds the config no longer has are removed.
       * `actor` is the saving key's label (the commit's `{user}`). Never
       * throws. */
-    def onSave(previous: PipelineConfig, saved: PipelineConfig, actor: String): List[Outcome] = {
-        if (saved == null || saved.name == null) return Nil
-        Kinds.flatMap { kind =>
+    def onSave(previous: PipelineConfig, saved: PipelineConfig, actor: String): List[Outcome] =
+        onSaveResult(previous, saved, actor).outcomes
+
+    /** [[onSave]] plus the warnings for kinds the config no longer has whose
+      * repository file was kept (hand-edited at head since the recorded
+      * commit, or the repository could not be checked). The record is removed
+      * either way. Never throws. */
+    def onSaveResult(previous: PipelineConfig, saved: PipelineConfig, actor: String): SaveResult = {
+        if (saved == null || saved.name == null) return SaveResult(Nil, Nil)
+        val warnings = scala.collection.mutable.ListBuffer[String]()
+        val outcomes = Kinds.flatMap { kind =>
             try {
                 instructionOf(saved, kind) match {
                     case None =>
-                        removeKind(saved.name, kind)
+                        removeKind(saved.name, kind, removedBySave = true).foreach { w =>
+                            logger.warn("Pipeline " + saved.name + "/" + kind + ": " + w)
+                            warnings += w
+                        }
                         None
                     case Some(instruction) => Some(saveKind(saved, kind, instruction, actor))
                 }
@@ -72,6 +83,7 @@ class PipelineScripts(
                     if (instructionOf(saved, kind).isDefined) Some(Outcome(kind, Pending, messageOf(e))) else None
             }
         }
+        SaveResult(outcomes, warnings.toList)
     }
 
     private def saveKind(config: PipelineConfig, kind: String, instruction: String, actor: String): Outcome = {
@@ -238,10 +250,15 @@ class PipelineScripts(
         rec
     }
 
-    private def removeKind(pipeline: String, kind: String): Unit =
-        records.read(pipeline, kind).foreach { old =>
-            deleteObject(old)
+    /** Remove one kind's object (unless its repository file was hand-edited)
+      * and its record; the warning when the file was kept. `removedBySave`
+      * picks the save wording (the instruction was dropped) over the delete
+      * wording (the pipeline was deleted). */
+    private def removeKind(pipeline: String, kind: String, removedBySave: Boolean = false): Option[String] =
+        records.read(pipeline, kind).flatMap { old =>
+            val warning = deleteObject(old, removedBySave)
             records.delete(pipeline, kind)
+            warning
         }
 
     // ------------------------------------------------------------------- run
@@ -422,8 +439,10 @@ class PipelineScripts(
       * as [[CatalogArchive.normaliseScript]]) is pinned at the head commit
       * with no commit. A different file at head: when the target has no
       * record for it (or a record that pins no commit), Left with a reason
-      * that is not a conflict warning (the save that follows regenerates);
-      * otherwise the usual commit, rejected with [[conflictWarning]] when the
+      * that is not a conflict warning and nothing is committed (a catalog
+      * restore never reaches this for a new pipeline: its pre-check,
+      * [[CatalogArchive.planRepoScripts]], refuses the whole restore with 409
+      * first); otherwise the usual commit, rejected with [[conflictWarning]] when the
       * file changed since the recorded commit. */
     def importScript(config: PipelineConfig, kind: String, text: String, archived: CodeGenScript, actor: String): Either[String, CodeGenScript] = {
         if (config == null || config.name == null) return Left("No pipeline config to import the script into")
@@ -456,10 +475,10 @@ class PipelineScripts(
                         case Some((content, headSha)) if CatalogArchive.normaliseScript(content) == CatalogArchive.normaliseScript(text) =>
                             StoredScript(Github, scriptRepoPath = probe.get.scriptRepoPath, scriptCommitSha = headSha)
                         case Some(_) if existingRef.isEmpty =>
-                            // A file this install has no record of. Not imported; the
-                            // pipeline save that follows generates a script and commits
-                            // it there (a null base makes no hand-edit check), so the
-                            // reason says so. Not a conflict warning.
+                            // A file this install has no record of. Not imported and
+                            // not a conflict warning. A catalog restore refuses this
+                            // case up front (CatalogArchive.planRepoScripts), so only a
+                            // direct caller gets here.
                             return Left(differentFileAtHeadReason(probe.get.scriptRepoPath))
                         case Some(_) if existingRef.exists(r => r.scriptCommitSha == null || r.scriptCommitSha.isEmpty) =>
                             // A record that pins no commit: there is no base to check a
@@ -613,12 +632,19 @@ class PipelineScripts(
 
     // ---------------------------------------------------------------- delete
 
-    /** Remove both kinds' objects (a delete commit per file for repository
-      * scripts; history is kept) and records. Best effort, never throws. */
-    def deleteAll(pipeline: String): Unit =
-        Kinds.foreach { kind =>
+    /** Remove both kinds' objects and records. A repository script gets a
+      * delete commit (history is kept) unless its file changed at branch head
+      * since the recorded commit, or that cannot be checked: then the file is
+      * kept and one warning per kept file is returned. Records are deleted
+      * either way. Best effort, never throws. */
+    def deleteAll(pipeline: String): Seq[String] =
+        Kinds.flatMap { kind =>
             try removeKind(pipeline, kind)
-            catch { case e: Exception => logger.warn("CodeGen script cleanup failed for " + pipeline + "/" + kind + ": " + e.getMessage) }
+            catch {
+                case e: Exception =>
+                    logger.warn("CodeGen script cleanup failed for " + pipeline + "/" + kind + ": " + e.getMessage)
+                    None
+            }
         }
 
     // --------------------------------------------------------------- helpers
@@ -668,10 +694,40 @@ class PipelineScripts(
             repoStoreFor(pipeline)
         } else storeFor(pipeline)
 
-    private def deleteObject(r: CodeGenScript): Unit =
-        if (r != null && hasRef(r))
-            try storeOf(r.pipeline, backendOf(r)).deleteScript(refOf(r))
-            catch { case e: Exception => logger.warn("Could not delete CodeGen script object " + refOf(r) + ": " + e.getMessage) }
+    /** Delete the record's object unless it is a repository file edited at
+      * branch head since the recorded commit (or that cannot be checked):
+      * Some(warning) when a repository file was kept. A built-in object is
+      * deleted as before (failures logged). `removedBySave` words the warning
+      * for a save that dropped the instruction rather than a delete. */
+    private def deleteObject(r: CodeGenScript, removedBySave: Boolean = false): Option[String] =
+        if (r != null && hasRef(r)) {
+            val ref = refOf(r)
+            val path = Option(r.scriptRepoPath).getOrElse(r.scriptPath)
+            try
+                storeOf(r.pipeline, backendOf(r)).deleteIfUnchanged(ref) match {
+                    case DeleteOutcome.Deleted => None
+                    case DeleteOutcome.KeptEdited(headSha) =>
+                        logger.warn("Kept CodeGen script " + ref + ": the file changed at branch head " + headSha + " since the recorded commit")
+                        Some(
+                            if (removedBySave) PipelineScripts.keptOnRemoveWarning(r.pipeline, r.kind, path, r.scriptCommitSha)
+                            else PipelineScripts.keptOnDeleteWarning(r.pipeline, r.kind, path, r.scriptCommitSha)
+                        )
+                    case DeleteOutcome.Unchecked(error) =>
+                        logger.warn("Kept CodeGen script " + ref + ": the repository could not be checked: " + error)
+                        Some(
+                            if (removedBySave) PipelineScripts.uncheckedOnRemoveWarning(r.pipeline, r.kind, path, error)
+                            else PipelineScripts.uncheckedOnDeleteWarning(r.pipeline, r.kind, path, error)
+                        )
+                    case DeleteOutcome.DeleteFailed(error) =>
+                        logger.warn("Could not confirm the delete of CodeGen script " + ref + ": " + error)
+                        Some(CodeStore.deleteUnconfirmedWarning(path, error))
+                }
+            catch {
+                case e: Exception =>
+                    logger.warn("Could not delete CodeGen script object " + ref + ": " + e.getMessage)
+                    if (isRepoBacked(r)) Some(CodeStore.deleteUnconfirmedWarning(path, messageOf(e))) else None
+            }
+        } else None
 
     private def sameObject(a: CodeGenScript, b: CodeGenScript): Boolean =
         a.storage == b.storage && a.scriptPath == b.scriptPath && a.scriptRepoPath == b.scriptRepoPath
@@ -729,6 +785,10 @@ object PipelineScripts
         warning: String = null
     )
 
+    /** A save's per-kind outcomes plus the warnings for repository files
+      * kept when the save dropped a kind's instruction. */
+    case class SaveResult(outcomes: List[Outcome], warnings: List[String])
+
     /** action: "stored" | "generate-and-store" | "generate-once". */
     case class Resolved(action: String, script: String, reason: String, record: CodeGenScript)
 
@@ -757,9 +817,10 @@ object PipelineScripts
             " is not stored in the code repository, so there is nothing to pull. Regenerate it with storage=github to move it there."
 
     /** importScript's reason when a new pipeline's script path already holds
-      * a different file at branch head. */
+      * a different file at branch head (a catalog restore refuses this case
+      * before importing; only a direct importScript caller sees it). */
     def differentFileAtHeadReason(path: String): String =
-        "a different file is already at '" + path + "' at branch head in the code repository; the save regenerated the script over it"
+        "a different file is already at '" + path + "' at branch head in the code repository; the archived script was not imported"
 
     /** Text that marks a rejected repository commit (the API maps it to 409). */
     val ConflictMarker = "changed in the code repository since the recorded commit"
@@ -774,6 +835,37 @@ object PipelineScripts
             "and with no model call, until you resolve it: adopt the repository version with POST " +
             pullPath(pipeline, kind) + " (pull), or replace it with POST " + regeneratePath(pipeline, kind) + "?overwrite=true."
     }
+
+    /** The warning for a repository script kept on delete because its file
+      * changed at branch head since the recorded commit `sha`. */
+    def keptOnDeleteWarning(pipeline: String, kind: String, path: String, sha: String): String =
+        "'" + path + "' was kept in the code repository: it changed since the recorded commit " + Option(sha).map(_.take(7)).orNull +
+            " and a hand edit is never overwritten. The pipeline " + pipeline + " and its " + kind +
+            " script record were deleted; remove the file by hand if it is no longer wanted."
+
+    /** The warning for a repository script kept on delete because the
+      * repository could not be checked (unreachable, token expired, disabled). */
+    def uncheckedOnDeleteWarning(pipeline: String, kind: String, path: String, error: String): String =
+        "'" + path + "' was kept in the code repository: whether it changed since the recorded commit could not be checked (" + error +
+            "), and a hand edit is never overwritten. The pipeline " + pipeline + " and its " + kind +
+            " script record were deleted; remove the file by hand if it is no longer wanted."
+
+    /** The warning for a repository script kept when a save dropped its
+      * instruction, because its file changed at branch head since the
+      * recorded commit `sha`. */
+    def keptOnRemoveWarning(pipeline: String, kind: String, path: String, sha: String): String =
+        "'" + path + "' was kept in the code repository: it changed since the recorded commit " + Option(sha).map(_.take(7)).orNull +
+            " and a hand edit is never overwritten. " + removedOnSaveTail(pipeline, kind)
+
+    /** The warning for a repository script kept when a save dropped its
+      * instruction, because the repository could not be checked. */
+    def uncheckedOnRemoveWarning(pipeline: String, kind: String, path: String, error: String): String =
+        "'" + path + "' was kept in the code repository: whether it changed since the recorded commit could not be checked (" + error +
+            "), and a hand edit is never overwritten. " + removedOnSaveTail(pipeline, kind)
+
+    private def removedOnSaveTail(pipeline: String, kind: String): String =
+        "The pipeline " + pipeline + " was saved without its " + kind +
+            " instruction and the script record was removed; remove the file by hand if it is no longer wanted."
 
     private[util] def backendOf(r: CodeGenScript): String =
         if (r != null && r.storage == Github) Github else Builtin
