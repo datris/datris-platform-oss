@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{CodeRepoConfig, PipelineConfig, TapConfig}
+import ai.datris.model.{CodeGenScript, CodeRepoConfig, PipelineConfig, TapConfig}
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
@@ -27,8 +27,11 @@ import scala.collection.mutable
   * taps/<name>.state.json                           incremental state
   * pipelines/<name>.json                            stripped PipelineConfig
   * pipelines/<name>/validation-schema/<file>        referenced validation schema
-  * pipelines/<name>/codegen/<kind>.py               CodeGen script (reference copy)
+  * pipelines/<name>/codegen/<kind>.py               CodeGen script (imported as the live script on restore)
+  * pipelines/<name>/codegen/<kind>.json             its stripped CodeGenScript record (fingerprint, model,
+  *                                                  generatedAt, contract); absent in older archives
   * }}}
+  * A `.py` without its `.json` sidecar is regenerated on restore.
   * Secret values are never in an archive: the manifest lists secret NAMES
   * (and their `_type`) only. */
 object CatalogArchive {
@@ -49,6 +52,7 @@ object CatalogArchive {
     def pipelineConfigPath(name: String): String = PipelinesDir + name + ".json"
     def validationSchemaPath(pipeline: String, file: String): String = PipelinesDir + pipeline + "/validation-schema/" + file
     def codegenPath(pipeline: String, kind: String): String = PipelinesDir + pipeline + "/codegen/" + kind + ".py"
+    def codegenRecordPath(pipeline: String, kind: String): String = PipelinesDir + pipeline + "/codegen/" + kind + ".json"
 
     /** A secret the catalog references: its name, the items that use it, and
       * its kind (the stored `_type` when known, else a hint: "tap" or "platform"). */
@@ -138,6 +142,23 @@ object CatalogArchive {
             transformation = transformation
         )
     }
+
+    /** CodeGen script record as exported next to its `.py`: the script
+      * bytes travel as their own entry, and every install-specific field
+      * (storage backend, object path, repository path and commit, pending and
+      * conflict state) is cleared. Fingerprint, model, generatedAt,
+      * generatedAgainst, origin, contractVersion and instruction travel. */
+    def stripCodeGenRecordForExport(r: CodeGenScript): CodeGenScript =
+        r.copy(
+            script = null,
+            storage = null,
+            scriptPath = null,
+            scriptRepoPath = null,
+            scriptCommitSha = null,
+            pendingReason = null,
+            conflictFingerprint = null,
+            conflictReason = null
+        )
 
     /** `restEndpoint` row-function parameters holding credentials:
       * 3 = bearer token, 4 = API key (Transformation.runRestEndpointFunction). */
@@ -359,7 +380,8 @@ object CatalogArchive {
         scripts: Map[String, String] = Map.empty,
         states: Map[String, String] = Map.empty,
         validationSchemas: Map[String, Map[String, Array[Byte]]] = Map.empty,
-        codegen: Map[String, Map[String, String]] = Map.empty
+        codegen: Map[String, Map[String, String]] = Map.empty,
+        codegenRecords: Map[String, Map[String, CodeGenScript]] = Map.empty
     ): Seq[Entry] = {
         val gson = new com.google.gson.GsonBuilder().setPrettyPrinting().create()
         val out = mutable.ArrayBuffer.empty[Entry]
@@ -376,6 +398,9 @@ object CatalogArchive {
             }
             codegen.getOrElse(p.name, Map.empty).toSeq.sortBy(_._1).foreach { case (kind, text) =>
                 out += Entry(codegenPath(p.name, kind), utf8(text))
+                codegenRecords.get(p.name).flatMap(_.get(kind)).foreach { r =>
+                    out += Entry(codegenRecordPath(p.name, kind), utf8(gson.toJson(stripCodeGenRecordForExport(r))))
+                }
             }
         }
         out.toList
@@ -485,7 +510,7 @@ object CatalogArchive {
       * files at branch head with different content that may not be replaced. */
     case class RepoScriptPlan(clashes: Seq[String], reuse: Set[String], write: Set[String])
 
-    private def normaliseScript(text: String): String =
+    private[util] def normaliseScript(text: String): String =
         if (text == null) "" else text.replace("\r\n", "\n").replaceAll("\\s+$", "")
 
     /** Compare every archived tap script (tap -> text) with the file at branch
@@ -555,7 +580,12 @@ object CatalogArchive {
         taps: Seq[TapConfig],
         pipelines: Seq[PipelineConfig],
         scripts: Map[String, String],
-        validationSchemas: Map[String, Map[String, Array[Byte]]]
+        validationSchemas: Map[String, Map[String, Array[Byte]]],
+        // pipeline -> kind -> archived CodeGen script text
+        codegenScripts: Map[String, Map[String, String]] = Map.empty,
+        // pipeline -> kind -> archived (stripped) record; only for a .py with
+        // a parseable .json sidecar
+        codegenRecords: Map[String, Map[String, CodeGenScript]] = Map.empty
     )
 
     def readContents(manifest: Manifest, entries: Map[String, Array[Byte]]): Either[String, Contents] = {
@@ -604,7 +634,25 @@ object CatalogArchive {
                             case (path, bytes) if path.startsWith(prefix) && path.length > prefix.length => path.substring(prefix.length) -> bytes
                         }
                     }.filter(_._2.nonEmpty).toMap
-                    Contents(taps, pipelines, scripts, schemas)
+                    val codegenScripts = pipelineNames.map { n =>
+                        val prefix = PipelinesDir + n + "/codegen/"
+                        n -> entries.collect {
+                            case (path, bytes)
+                                if path.startsWith(prefix) && path.endsWith(".py") && path.length > prefix.length + 3 &&
+                                    !path.substring(prefix.length).contains("/") =>
+                                path.substring(prefix.length, path.length - 3) -> new String(bytes, StandardCharsets.UTF_8)
+                        }
+                    }.filter(_._2.nonEmpty).toMap
+                    // A sidecar that does not parse, or names another
+                    // pipeline or kind, is ignored: the script regenerates.
+                    val codegenRecords = codegenScripts.map { case (n, kinds) =>
+                        n -> kinds.keys.flatMap { kind =>
+                            text(codegenRecordPath(n, kind)).flatMap(json => scala.util.Try(gson.fromJson(json, classOf[CodeGenScript])).toOption)
+                                .filter(r => r != null && r.pipeline == n && r.kind == kind)
+                                .map(r => kind -> stripCodeGenRecordForExport(r))
+                        }.toMap
+                    }.filter(_._2.nonEmpty)
+                    Contents(taps, pipelines, scripts, schemas, codegenScripts, codegenRecords)
                 }
         }
     }

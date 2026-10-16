@@ -419,14 +419,15 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'restore_catalog',
-      description: 'Restore an export_catalog archive as a catalog with the same or a new name. Never merges: refused when the catalog or any archived name already exists (mode=overwrite replaces items already in the catalog and needs confirm). Never writes secrets (missing ones are listed). Restored taps are left disabled. ONLY call when the user has explicitly asked.',
+      description: 'Restore an export_catalog archive as a catalog with the same or a new name. Never merges: refused when the catalog or any archived name already exists (mode=overwrite replaces items already in the catalog and needs confirm). Never writes secrets (missing ones are listed). Restored taps are left disabled. Archived AI scripts are restored as-is unless regenerate_scripts is set. ONLY call when the user has explicitly asked.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'catalog', type: 'string', description: 'Catalog name to restore into.', required: true, inputType: 'text' },
         { name: 'archive_base64', type: 'string', description: 'The archive as base64 (archiveBase64 from export_catalog).', required: true, inputType: 'textarea' },
         { name: 'mode', type: 'string', description: 'new (default) or overwrite.', required: false, inputType: 'text' },
         { name: 'confirm', type: 'string', description: 'Required for mode=overwrite: the catalog name, repeated.', required: false, inputType: 'text' },
-        { name: 'restore_state', type: 'boolean', description: 'Optional, default true. false skips each tap\'s incremental state.', required: false, inputType: 'text' }
+        { name: 'restore_state', type: 'boolean', description: 'Optional, default true. false skips each tap\'s incremental state.', required: false, inputType: 'text' },
+        { name: 'regenerate_scripts', type: 'boolean', description: 'Optional, default false. true regenerates the AI scripts on this install instead of restoring the archived ones.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

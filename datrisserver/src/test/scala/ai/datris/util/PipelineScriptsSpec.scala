@@ -538,6 +538,8 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
             if (ref == null || ref.scriptRepoPath == null) None else head(ref.scriptRepoPath).map(c => (c, headSha))
         }
 
+        override def repoPathFor(name: String): Option[String] = Some(pathOf(name))
+
         def writes: List[Commit] = commits.filter(c => c.actor != "someone").toList
     }
 
@@ -1059,5 +1061,36 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(repo.commits.size == commitsBefore, s"a hand edit is never overwritten: ${repo.commits}")
         assert(repo.head(repo.pathOf(Dq)).contains("print('hand edit')"))
         assert(records.read("orders", Dq).get.scriptCommitSha == pinned, "the record keeps its pin")
+    }
+
+    // A fresh target (no record yet): CodeStore.repoPathFor gives the path a
+    // new script would get, so branch head is checked before the first write.
+
+    test("importScript on a fresh repository target: a different file already at the script path is Left, no commit") {
+        val s = withRepo()
+        val cfg = csvCfg()
+        repo.hubEdit(repo.pathOf(Dq), "print('someone else')")
+        val commitsBefore = repo.commits.size
+        val r = s.importScript(cfg, Dq, "print('archived')", archivedRecord(cfg), "todd")
+        assert(r.isLeft, r)
+        assert(r.left.get.contains(PipelineScripts.ConflictMarker), r.left.get)
+        assert(repo.commits.size == commitsBefore, s"never overwritten: ${repo.commits}")
+        assert(records.read("orders", Dq).isEmpty)
+    }
+
+    test("importScript on a fresh repository target: the identical file at the script path is pinned, and no file commits once") {
+        val s = withRepo()
+        val cfg = csvCfg()
+        val headSha = repo.hubEdit(repo.pathOf(Dq), "print('archived')")
+        val r = s.importScript(cfg, Dq, "print('archived')", archivedRecord(cfg), "todd")
+        assert(r.isRight, r)
+        assert(records.read("orders", Dq).get.scriptCommitSha == headSha)
+        assert(repo.writes.isEmpty, s"no commit: ${repo.writes}")
+
+        val tx = csvCfg(txInstruction = instruction)
+        val r2 = s.importScript(tx, Tx, "print('archived tx')", archivedRecord(tx, Tx), "todd")
+        assert(r2.isRight, r2)
+        assert(repo.writes.size == 1, s"one create commit: ${repo.writes}")
+        assert(repo.head(repo.pathOf(Tx)).contains("print('archived tx')"))
     }
 }

@@ -462,6 +462,7 @@ datris catalog restore <FILE> [OPTIONS]
 | `--overwrite` | Replace the items already in the target catalog instead of creating a new one. Asks you to type the catalog name to confirm |
 | `--yes` | Skip the `--overwrite` confirmation prompt (for scripts) |
 | `--no-state` | Skip each tap's incremental state, so a clone starts from scratch instead of from the source's cursor |
+| `--regenerate-scripts` | Regenerate each pipeline's AI data-quality and transformation scripts on this install instead of restoring the archived ones. Without it, the archived scripts become the live scripts and the command prints `Imported N AI scripts`, plus `Regenerated N AI scripts` with the reason for any it could not import |
 | `--json` | Print the raw tool result |
 
 **Examples:**

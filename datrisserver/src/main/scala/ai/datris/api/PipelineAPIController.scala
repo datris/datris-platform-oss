@@ -1083,6 +1083,7 @@ object PipelineAPIController {
                 e.addProperty("status", Option(r.status).getOrElse(PipelineScripts.Ready))
                 e.addProperty("pendingReason", r.pendingReason)
                 e.addProperty("origin", r.origin)
+                e.addProperty("fingerprint", r.fingerprint)
                 e.addProperty("storage", r.storage)
                 e.addProperty("repoPath", r.scriptRepoPath)
                 e.addProperty("commitSha", r.scriptCommitSha)

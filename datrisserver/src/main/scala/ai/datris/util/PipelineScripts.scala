@@ -405,6 +405,100 @@ class PipelineScripts(
         }
     }
 
+    // ---------------------------------------------------------------- import
+
+    /** Make an archived script (catalog restore) the live one, with the
+      * archive's fingerprint, model, generatedAt, generatedAgainst and
+      * contractVersion; status ready, origin "restore". No model call, so a
+      * restored pipeline runs the bytes the archive carried.
+      *
+      * Left (nothing written) when `archived.fingerprint` is not this config's
+      * fingerprint (the script was written for another instruction or source
+      * schema), when its contract version is not this server's, or when the
+      * script cannot be stored. The caller's next save then regenerates.
+      *
+      * Repository backend: the file at branch head (the existing record's
+      * path, or the path a new script would get) equal to `text` (normalised
+      * as [[CatalogArchive.normaliseScript]]) is pinned at the head commit
+      * with no commit. A different file at head is never overwritten: Left
+      * with [[conflictWarning]] when the target has no record for it, and the
+      * usual commit (rejected as a conflict when the file changed since the
+      * recorded commit) when it has one. */
+    def importScript(config: PipelineConfig, kind: String, text: String, archived: CodeGenScript, actor: String): Either[String, CodeGenScript] = {
+        if (config == null || config.name == null) return Left("No pipeline config to import the script into")
+        if (!Kinds.contains(kind)) return Left(unknownKindMessage(kind))
+        val instruction = instructionOf(config, kind) match {
+            case Some(i) => i
+            case None =>
+                return Left("Pipeline " + config.name + " has no AI " + (if (kind == PipelineScripts.DataQuality) "data-quality rule" else "transformation"))
+        }
+        if (archived == null) return Left("no script record in the archive")
+        if (text == null || text.trim.isEmpty) return Left("the archived script is empty")
+        val fp = fingerprint(instruction, schemaSignature(config))
+        if (archived.fingerprint != fp)
+            return Left("the archived script was generated for a different instruction or source schema than the archived pipeline config")
+        if (archived.contractVersion != contractVersion(kind))
+            return Left(
+                "the archived script was written for script contract version " + archived.contractVersion + "; this server uses version " +
+                    contractVersion(kind)
+            )
+        val existing = records.read(config.name, kind)
+        val backend = chooseBackend(existing, null)
+        try {
+            val store = storeOf(config.name, backend)
+            val sameBackendPrior = existing.filter(r => backendOf(r) == backend)
+            val stored: StoredScript =
+                if (backend == Github) {
+                    val existingRef = sameBackendPrior.filter(isRepoBacked).map(refOf)
+                    val probe = existingRef.orElse(store.repoPathFor(kind).map(path => ScriptRef(kind, Github, scriptRepoPath = path)))
+                    probe.flatMap(store.pullLatest) match {
+                        case Some((content, headSha)) if CatalogArchive.normaliseScript(content) == CatalogArchive.normaliseScript(text) =>
+                            StoredScript(Github, scriptRepoPath = probe.get.scriptRepoPath, scriptCommitSha = headSha)
+                        case Some(_) if existingRef.isEmpty =>
+                            // A file this install has no record of: never replace it.
+                            return Left(conflictWarning(
+                                config.name,
+                                kind,
+                                CodeGenScript(config.name, kind, instruction, null, scriptRepoPath = probe.get.scriptRepoPath)
+                            ))
+                        case _ => store.storeScript(kind, text, existingRef.orNull, actor)
+                    }
+                } else store.storeScript(kind, text, sameBackendPrior.map(refOf).orNull, actor)
+            val rec = CodeGenScript(
+                pipeline = config.name,
+                kind = kind,
+                instruction = instruction,
+                script = null,
+                generatedAt = archived.generatedAt,
+                storage = stored.storage,
+                scriptPath = stored.scriptPath,
+                scriptRepoPath = stored.scriptRepoPath,
+                scriptCommitSha = stored.scriptCommitSha,
+                fingerprint = fp,
+                generatedAgainst = archived.generatedAgainst,
+                model = archived.model,
+                status = Ready,
+                origin = "restore",
+                contractVersion = contractVersion(kind)
+            )
+            try records.write(rec)
+            catch {
+                case e: Throwable if backend != Github =>
+                    deleteObject(rec)
+                    throw e
+            }
+            sameBackendPrior.foreach(old => if (backend != Github && !sameObject(old, rec)) deleteObject(old))
+            logger.info(
+                "CodeGen script " + config.name + "/" + kind + " imported from a catalog archive (model " + archived.model + ", generated " +
+                    archived.generatedAt + ")" + Option(actor).map(" by " + _).getOrElse("")
+            )
+            Right(rec)
+        } catch {
+            case _: CodeRepoConflictException => Left(conflictWarning(config.name, kind, existing.orNull))
+            case e: Throwable if scala.util.control.NonFatal(e) => Left(messageOf(e))
+        }
+    }
+
     // ------------------------------------------------------- drift and pull
 
     /** Some(headSha) when the script's file at branch head differs from the

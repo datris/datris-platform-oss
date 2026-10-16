@@ -9,8 +9,9 @@ File-content checks for the docs-only Acceptance bullets:
      /production/environments exactly once.
   4. Every internal link on the new page resolves to a file (and heading,
      for anchors).
-  5. "Limits today" has exactly four bullets, matching plan stories
-     B, F, D, E in that order.
+  5. "Limits today" has exactly three bullets, matching plan stories
+     F, D, E in that order (story B, restore imports archived CodeGen
+     scripts, removed its bullet: plans/stories/multi-env-3-...).
   7. No .md file under docs/ (regression guard; passes today).
 
 Bullet 6 (three fresh installs, dev -> qa -> prod promotion, no-commit
@@ -168,10 +169,10 @@ def test_every_internal_link_on_the_environments_page_resolves():
 
 # ---- bullet 5 ---------------------------------------------------------------
 
-# Plan §6 stories B, F, D, E, in the order the story lists them.
+# Plan §6 stories F, D, E, in the order the story lists them. Story B
+# (restore imports the archived CodeGen scripts) shipped and its bullet
+# was removed; the section must not claim the old behaviour any more.
 LIMIT_MATCHERS = [
-    ("B: CodeGen scripts regenerate on restore",
-     r"regenerat", r"codegen|code ?gen"),
     ("F: no dry run / preview",
      r"dry run", r"overwrite|preview"),
     ("D: restored taps start disabled, no CLI test+enable",
@@ -181,11 +182,14 @@ LIMIT_MATCHERS = [
 ]
 
 
-def test_limits_today_has_exactly_four_bullets_matching_b_f_d_e():
+def test_limits_today_has_exactly_three_bullets_matching_f_d_e():
     sec = _section(_page(), r"^limits today$")
     assert sec is not None, "no 'Limits today' section"
     bullets = [l for l in sec.splitlines() if re.match(r"^\s*[-*]\s+\S", l)]
-    assert len(bullets) == 4, f"expected exactly 4 bullets, got {len(bullets)}:\n" + "\n".join(bullets)
+    assert len(bullets) == 3, f"expected exactly 3 bullets, got {len(bullets)}:\n" + "\n".join(bullets)
+    assert not re.search(r"reference cop", sec, re.IGNORECASE), "archived CodeGen scripts are no longer reference copies"
+    assert not any(re.search(r"regenerat", l, re.IGNORECASE) and re.search(r"codegen|code ?gen", l, re.IGNORECASE) for l in bullets), \
+        "story B shipped: no bullet says CodeGen scripts regenerate on restore"
     for line in bullets:
         assert not line.startswith((" ", "\t")), "bullets are top-level, one line each: " + line[:200]
     for (name, a, b), line in zip(LIMIT_MATCHERS, bullets):
