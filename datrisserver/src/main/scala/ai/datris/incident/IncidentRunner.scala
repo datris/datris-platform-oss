@@ -668,12 +668,15 @@ object IncidentRunner {
 
     /** Restore the tap definition captured before the first mutation. Direct
       * server-side restore — the safety net must not itself be gateable. */
-    private def revertIfNeeded(id: String, incident: Incident): Unit = {
+    /** True when a revert was performed. */
+    private def revertIfNeeded(id: String, incident: Incident): Boolean = {
+        var reverted = false
         try {
             val fresh = IncidentIO.get(id).getOrElse(incident)
             for (target <- fresh.revertToVersion if incident.resourceType == "tap") {
                 tapLookup(incident.resourceName).filter(_.version != target).foreach { _ =>
                     revertTap(id, incident.resourceName, target)
+                    reverted = true
                     step(id, "execute", "reverted tap to version " + target)
                     AuditLog.system("incident", "revert", "tap", incident.resourceName, metadata = md("incidentId" -> id, "toVersion" -> target.toString))
                 }
@@ -681,12 +684,15 @@ object IncidentRunner {
         } catch {
             case e: Exception => step(id, "execute", "revert failed", Some(clip(e.getMessage)))
         }
+        reverted
     }
 
-    /** Every safety net: the tap definition and a pipeline's stored scripts. */
-    private def revertAll(id: String, incident: Incident): Unit = {
-        revertIfNeeded(id, incident)
-        revertScriptIfNeeded(id, incident)
+    /** Every safety net: the tap definition and a pipeline's stored scripts.
+      * True when anything was restored. */
+    private def revertAll(id: String, incident: Incident): Boolean = {
+        val tap = revertIfNeeded(id, incident)
+        val scripts = revertScriptIfNeeded(id, incident)
+        tap || scripts
     }
 
     /** Raw-document flag: the script restore already ran (a restore appends a
@@ -697,13 +703,14 @@ object IncidentRunner {
       * version recorded before the first action. Direct server-side call,
       * never gated; runs at most once per incident; a Left is a "revert
       * failed" step, never a throw. */
-    private def revertScriptIfNeeded(id: String, incident: Incident): Unit = {
-        if (incident.resourceType != "pipeline") return
+    private def revertScriptIfNeeded(id: String, incident: Incident): Boolean = {
+        if (incident.resourceType != "pipeline") return false
+        var restored = false
         try {
             val fresh = IncidentIO.get(id).getOrElse(incident)
-            if (fresh.revertToScriptVersions.isEmpty) return
+            if (fresh.revertToScriptVersions.isEmpty) return false
             val already = IncidentIO.raw(id).exists(d => java.lang.Boolean.TRUE == d.get(ScriptsRevertedField))
-            if (already) return
+            if (already) return false
             IncidentIO.set(id, ScriptsRevertedField -> java.lang.Boolean.TRUE)
             val name = incident.resourceName
             fresh.revertToScriptVersions.toList.sortBy(_._1).foreach { case (kind, v) =>
@@ -717,6 +724,7 @@ object IncidentRunner {
                         catch { case e: Exception => Left(Option(e.getMessage).getOrElse(e.getClass.getSimpleName)) }
                     result match {
                         case Right(_) =>
+                            restored = true
                             step(id, "execute", "restored " + kind + " script to version " + target)
                             AuditLog.system(
                                 "incident",
@@ -734,6 +742,7 @@ object IncidentRunner {
         } catch {
             case e: Exception => step(id, "execute", "revert failed", Some(clip(e.getMessage)))
         }
+        restored
     }
 
     /** After a successful regenerate: evidence.scriptVersions gets
@@ -908,15 +917,23 @@ object IncidentRunner {
                             close(incident.id, Incident.Abandoned, "approval rejected by " + decisions.flatMap(_.decidedBy).headOption.getOrElse("a person"))
                         else if (decisions.exists(d => d.state == PendingAction.Expired || d.isExpired()))
                             close(incident.id, Incident.Abandoned, "approval expired undecided")
-                        else if (decisions.exists(_.state == PendingAction.Failed))
-                            close(incident.id, Incident.Failed, "approved action failed on execution")
-                        else if (decisions.nonEmpty && decisions.forall(_.state == PendingAction.Executed)) {
+                        else if (decisions.exists(_.state == PendingAction.Failed)) {
+                            // The replay was refused (non-2xx): whatever ran before it
+                            // is undone, exactly as an inline failed action would be.
+                            val reverted = revertAll(incident.id, incident)
+                            val note =
+                                if (!reverted) ""
+                                else if (incident.resourceType == "pipeline") " — script restored"
+                                else " — definition reverted"
+                            close(incident.id, Incident.Failed, "approved action failed on execution" + note)
+                        } else if (decisions.nonEmpty && decisions.forall(_.state == PendingAction.Executed)) {
                             IncidentIO.set(incident.id, "awaitingApprovalIds" -> java.util.Collections.emptyList[String]())
                             step(incident.id, "gate", "approval executed — continuing")
                             val next = storedNextActionIndex(incident)
                             if (next == Int.MaxValue) {
                                 // the executed approval WAS the verification run
-                                resume(incident.id, finishVerifyAfterApproval(incident.id))
+                                val replayBody = decisions.flatMap(_.resultBody).headOption
+                                resume(incident.id, finishVerifyAfterApproval(incident.id, replayBody))
                             } else {
                                 resume(incident.id, executeFrom(incident.id, next + 1))
                             }
@@ -952,14 +969,22 @@ object IncidentRunner {
         else r.run()
     }
 
-    private def finishVerifyAfterApproval(id: String): Unit = {
+    /** `replayBody`: the approved run's response as the policy gate stored it
+      * (clipped), for its publisherToken. */
+    private def finishVerifyAfterApproval(id: String, replayBody: Option[String] = None): Unit = {
         val incident = IncidentIO.get(id).getOrElse(return
         )
-        val healthy =
+        val pipeline = incident.resourceType == "pipeline"
+        val tapHealthy =
             if (incident.resourceType == "tap") isTapHealthy(incident.resourceName)
             else verifyTapOf(id).forall(isTapHealthy)
+        // A pipeline incident is judged on the load with the regenerated
+        // script, not only on the tap: poll the rollup of the approved run,
+        // as the inline verification does.
+        val rollupOk =
+            !pipeline || !tapHealthy || replayBody.flatMap(publisherTokenIn).forall(t => pollRollup(id, t, incident))
+        val healthy = tapHealthy && rollupOk
         recordRealRunEvidence(id)
-        val pipeline = incident.resourceType == "pipeline"
         if (healthy && realStageBreached(id)) {
             revertAll(id, incident)
             close(id, Incident.Failed, if (pipeline) RealScriptBreachOutcome else RealBreachOutcome)
@@ -986,6 +1011,12 @@ object IncidentRunner {
     private def scratchVerdictOf(id: String): Option[String] =
         try IncidentIO.raw(id).flatMap(d => Option(d.getString(ScratchVerdictField)))
         catch { case _: Exception => None }
+
+    /** The publisherToken of a (possibly clipped) run response. */
+    private def publisherTokenIn(text: String): Option[String] =
+        extractString(text, "publisherToken").orElse {
+            "\"publisherToken\"\\s*:\\s*\"([^\"]+)\"".r.findFirstMatchIn(Option(text).getOrElse("")).map(_.group(1))
+        }
 
     /** " (scratch verdict …)" for incidents that went through the scratch lane. */
     private def scratchVerdictNote(id: String): String =

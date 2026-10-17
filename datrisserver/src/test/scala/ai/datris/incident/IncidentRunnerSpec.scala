@@ -1007,7 +1007,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
         restoreResult: Either[String, Unit] = Right(()),
         proposal: IncidentRunner.Proposal = proposalOf(regen()),
         // Tools the fake policy gate parks for approval (answered PendingApproval).
-        gated: Set[String] = Set.empty
+        gated: Set[String] = Set.empty,
+        // What the fake rollup answers for get_pipeline_status.
+        rollupStatus: String = "complete"
     )(body: PCtx => T): T = {
         val store = new FakeStore
         val ctx = new PCtx(Incident.newId(), store)
@@ -1066,7 +1068,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
                     case "run_tap" =>
                         ctx.tap = ctx.tap.copy(lastRunStatus = "success", lastRunRecordCount = real.map(_.recordCount.toInt).getOrElse(0))
                         ToolOutcome.Ok("""{"mode":"run","recordCount":""" + real.map(_.recordCount).getOrElse(0L) + ""","publisherToken":"pt_1"}""")
-                    case "get_pipeline_status" => ToolOutcome.Ok("""{"allDone":true,"status":"complete"}""")
+                    case "get_pipeline_status" => ToolOutcome.Ok("""{"allDone":true,"status":"""" + rollupStatus + """"}""")
                     case _ => ToolOutcome.Ok("{}")
                 }
             }
@@ -1236,7 +1238,12 @@ class IncidentRunnerSpec extends AnyFunSuite {
     // Review fixes: approval-gated regenerate / verification run
     // ------------------------------------------------------------------
 
-    private def executedApproval(id: String, incidentId: String): ai.datris.policy.PendingAction =
+    private def executedApproval(
+        id: String,
+        incidentId: String,
+        state: String = ai.datris.policy.PendingAction.Executed,
+        resultBody: Option[String] = None
+    ): ai.datris.policy.PendingAction =
         ai.datris.policy.PendingAction(
             id = id,
             action = "pipeline:update:codegen-scripts",
@@ -1255,12 +1262,17 @@ class IncidentRunnerSpec extends AnyFunSuite {
             bodyHash = "h",
             createdAt = Instant.now(),
             expiresAt = Instant.now().plusSeconds(3600),
-            state = ai.datris.policy.PendingAction.Executed
+            state = state,
+            resultBody = resultBody
         )
 
     /** The sweep sees every queued approval executed. */
-    private def approveAndSweep(c: PCtx): Unit = {
-        IncidentRunner.approvalLookup = (aid: String) => Some(executedApproval(aid, c.id))
+    private def approveAndSweep(
+        c: PCtx,
+        state: String = ai.datris.policy.PendingAction.Executed,
+        resultBody: Option[String] = None
+    ): Unit = {
+        IncidentRunner.approvalLookup = (aid: String) => Some(executedApproval(aid, c.id, state, resultBody))
         IncidentRunner.sweepEnabledOverride = Some(true)
         IncidentRunner.sweepOpenIncidents()
     }
@@ -1297,14 +1309,53 @@ class IncidentRunnerSpec extends AnyFunSuite {
         }
     }
 
+    private val ReplayedRun = Some("""{"mode":"run","recordCount":100,"publisherToken":"pt_1"}""")
+
     test("pipeline incident: an approved verification run that is healthy resolves with the script versions") {
         pipelineScenario(input = Some(PipelineInputSource.TapFed("prices")), gated = Set("run_tap")) { c =>
             IncidentRunner.runIncident(c.id)
-            approveAndSweep(c)
+            val polledBefore = c.tools.count(_ == "get_pipeline_status")
+            approveAndSweep(c, resultBody = ReplayedRun)
+            assert(c.tools.count(_ == "get_pipeline_status") > polledBefore, "the approved run's rollup is polled: " + c.tools)
             val i = c.incident
             assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
             assert(i.outcome.exists(_.startsWith("scripts regenerated and verified")), i.outcome)
             assert(c.ev.scriptVersions == List(ScriptVersionChange("transformation", 3, 4)), c.ev.scriptVersions)
+            assert(c.restores.isEmpty, c.restores)
+        }
+    }
+
+    test("pipeline incident: an approved verification run whose load fails with the new script restores it, even with the tap healthy") {
+        pipelineScenario(input = Some(PipelineInputSource.TapFed("prices")), gated = Set("run_tap"), rollupStatus = "error") { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+            approveAndSweep(c, resultBody = ReplayedRun)
+            val i = c.incident
+            assert(i.state == Incident.Failed, i.outcome + " / " + c.summaries)
+            assert(i.outcome.exists(_.contains("script restored")), i.outcome)
+            assert(c.restores.toList == List(("orders", "transformation", 3, "recovery-agent")), c.restores)
+        }
+    }
+
+    test("pipeline incident: a gated verification run whose replay failed restores the script and says so") {
+        pipelineScenario(input = Some(PipelineInputSource.TapFed("prices")), gated = Set("run_tap")) { c =>
+            IncidentRunner.runIncident(c.id)
+            approveAndSweep(c, state = ai.datris.policy.PendingAction.Failed, resultBody = Some("""{"error":"boom"}"""))
+            val i = c.incident
+            assert(i.state == Incident.Failed, i.outcome + " / " + c.summaries)
+            assert(i.outcome.contains("approved action failed on execution — script restored"), i.outcome)
+            assert(c.restores.toList == List(("orders", "transformation", 3, "recovery-agent")), c.restores)
+            assert(c.summaries.contains("restored transformation script to version 3"), c.summaries)
+        }
+    }
+
+    test("pipeline incident: a gated regenerate whose replay failed changed nothing, so nothing is restored") {
+        pipelineScenario(input = Some(PipelineInputSource.TapFed("prices")), gated = Set("regenerate_pipeline_scripts")) { c =>
+            IncidentRunner.runIncident(c.id)
+            approveAndSweep(c, state = ai.datris.policy.PendingAction.Failed)
+            val i = c.incident
+            assert(i.state == Incident.Failed, i.outcome + " / " + c.summaries)
+            assert(i.outcome.contains("approved action failed on execution"), i.outcome)
             assert(c.restores.isEmpty, c.restores)
         }
     }
