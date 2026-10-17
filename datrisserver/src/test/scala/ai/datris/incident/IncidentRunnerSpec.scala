@@ -484,6 +484,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
 
         /** (tapName, stamp, mutating executor calls made before the stamp). */
         val stamps = mutable.ArrayBuffer[(String, IncidentRunner.RehearsalStamp, Int)]()
+
+        /** Stored-tap writes through the tapWrite seam (restored test fields). */
+        val tapWrites = mutable.ArrayBuffer[TapConfig]()
         @volatile var diagnoseCalls: Int = 0
         @volatile var tap: TapConfig = TapConfig(name = "prices", description = "d", targetPipeline = "orders", version = 3, lastRunStatus = "failure")
         def incident: Incident = store.get(id).getOrElse(fail("incident " + id + " vanished"))
@@ -519,7 +522,8 @@ class IncidentRunnerSpec extends AnyFunSuite {
         kind: String = Incident.KindTapFailure,
         trigger: String = """{"error":"KeyError: account_id"}""",
         proposal: IncidentRunner.Proposal = structuralProposal,
-        doctorResponse: String = "{}"
+        doctorResponse: String = "{}",
+        gated: Set[String] = Set.empty
     )(body: Ctx => T): T = {
         val store = new FakeStore
         val ctx = new Ctx(Incident.newId(), store)
@@ -547,6 +551,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
             IncidentEvidenceBuilder.realProfileOverride
         )
         val savedStamp = IncidentRunner.stampTest
+        val savedTapWrite = IncidentRunner.tapWrite
+        val savedApprovalLookup = IncidentRunner.approvalLookup
+        val savedSweepEnabled = IncidentRunner.sweepEnabledOverride
         IncidentIO.store = store
         IncidentRunner.runAsync = false
         IncidentRunner.settingsOverride = settings
@@ -561,6 +568,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
             override def call(tool: String, args: JsonObject, incidentId: String): ToolOutcome = {
                 ctx.calls.synchronized { ctx.calls += Call(tool, args, store.get(incidentId).map(_.state).orNull) }
                 tool match {
+                    case t if gated.contains(t) => ToolOutcome.PendingApproval("pa_" + t)
                     case "update_tap" | "create_tap" =>
                         ctx.tap = ctx.tap.copy(version = ctx.tap.version + 1)
                         ToolOutcome.Ok("""{"message":"script updated"}""")
@@ -582,8 +590,14 @@ class IncidentRunnerSpec extends AnyFunSuite {
             ctx.reverts.synchronized { ctx.reverts += ((incidentId, tapName, toVersion)) }
             ctx.tap = ctx.tap.copy(version = toVersion)
         }
-        IncidentRunner.stampTest = (tapName: String, stamp: IncidentRunner.RehearsalStamp) =>
+        IncidentRunner.stampTest = (tapName: String, stamp: IncidentRunner.RehearsalStamp) => {
             ctx.stamps.synchronized { ctx.stamps += ((tapName, stamp, ctx.calls.count(k => Mutations.contains(k.tool)))); () }
+            ctx.tap = stamp.applyTo(ctx.tap, "rehearsed-at")
+        }
+        IncidentRunner.tapWrite = (t: TapConfig) => {
+            ctx.tapWrites.synchronized { ctx.tapWrites += t; () }
+            ctx.tap = t
+        }
         IncidentEvidenceBuilder.realProfileOverride = (_: Incident, _: Option[RunProfile]) => real
 
         try body(ctx)
@@ -598,6 +612,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
             IncidentIO.store = saved._8
             IncidentEvidenceBuilder.realProfileOverride = saved._9
             IncidentRunner.stampTest = savedStamp
+            IncidentRunner.tapWrite = savedTapWrite
+            IncidentRunner.approvalLookup = savedApprovalLookup
+            IncidentRunner.sweepEnabledOverride = savedSweepEnabled
         }
     }
 
@@ -761,6 +778,81 @@ class IncidentRunnerSpec extends AnyFunSuite {
             ) == stored,
             "lastRun*, cron, enabled, version and the script reference are untouched"
         )
+    }
+
+    private def tapApproval(id: String, incidentId: String, state: String): ai.datris.policy.PendingAction =
+        ai.datris.policy.PendingAction(
+            id = id,
+            action = "tap:update",
+            resourceType = Some("tap"),
+            resourceName = Some("prices"),
+            resourceVersion = None,
+            actor = ai.datris.audit.AuditActorInfo("api-key", RecoveryKey.Label),
+            reason = None,
+            agentSession = None,
+            incidentId = Some(incidentId),
+            method = "POST",
+            path = "/api/v1/tap/script",
+            query = None,
+            contentType = None,
+            body = Some("{}"),
+            bodyHash = "h",
+            createdAt = Instant.now(),
+            expiresAt = Instant.now().plusSeconds(3600),
+            state = state,
+            decidedBy = Some("todd")
+        )
+
+    private val priorTested = (t: TapConfig) =>
+        t.copy(
+            cronExpression = "0 0 3 * * ?",
+            lastTestRunStatus = "success",
+            lastTestRunTime = "t-prior",
+            lastTestRunRecordCount = 7,
+            lastTestRunDataType = "json",
+            lastTestRunColumns = java.util.Arrays.asList("id"),
+            lastTestRunScriptId = "stored-script-id"
+        )
+
+    test("a rejected approval puts back the tap's own test run the rehearsal overwrote") {
+        scenario(gated = Set("update_tap")) { c =>
+            c.tap = priorTested(c.tap)
+            IncidentRunner.runIncident(c.id)
+            assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+            assert(c.tap.lastTestRunScriptId == ai.datris.util.TapScriptIdentity.ofText(CandidateScript), "rehearsal stamped")
+            IncidentRunner.approvalLookup = (aid: String) => Some(tapApproval(aid, c.id, ai.datris.policy.PendingAction.Rejected))
+            IncidentRunner.sweepEnabledOverride = Some(true)
+            IncidentRunner.sweepOpenIncidents()
+            assert(c.incident.state == Incident.Abandoned, c.incident.outcome + " / " + c.summaries)
+            assert(c.tapWrites.size == 1, c.tapWrites)
+            val t = c.tap
+            assert(t.lastTestRunScriptId == "stored-script-id" && t.lastTestRunStatus == "success" && t.lastTestRunTime == "t-prior")
+            assert(t.lastTestRunRecordCount == 7 && t.lastTestRunDataType == "json" && t.lastTestRunColumns.asScala.toList == List("id"))
+            assert(t.cronExpression == "0 0 3 * * ?" && t.version == 3, "nothing but the test fields changed")
+        }
+    }
+
+    test("a manual test after the rehearsal is not overwritten by the restore") {
+        scenario(gated = Set("update_tap")) { c =>
+            c.tap = priorTested(c.tap)
+            IncidentRunner.runIncident(c.id)
+            c.tap = c.tap.copy(lastTestRunScriptId = "manually-tested", lastTestRunTime = "t-manual")
+            IncidentRunner.approvalLookup = (aid: String) => Some(tapApproval(aid, c.id, ai.datris.policy.PendingAction.Rejected))
+            IncidentRunner.sweepEnabledOverride = Some(true)
+            IncidentRunner.sweepOpenIncidents()
+            assert(c.incident.state == Incident.Abandoned)
+            assert(c.tapWrites.isEmpty, c.tapWrites)
+        }
+    }
+
+    test("a fix that executed and then failed verification does not restore the rehearsal's test fields") {
+        scenario(real = Some(runProfile("run_real", "landed-sample", 30L))) { c =>
+            c.tap = priorTested(c.tap)
+            IncidentRunner.runIncident(c.id)
+            assert(c.incident.state == Incident.Failed, c.incident.outcome + " / " + c.summaries)
+            assert(c.tools.contains("update_tap"))
+            assert(c.tapWrites.isEmpty, "the fix was stored; its test stamp is handled by the revert: " + c.tapWrites)
+        }
     }
 
     test("scratch fail stamps nothing") {

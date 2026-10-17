@@ -175,6 +175,13 @@ object IncidentRunner {
     @volatile private[incident] var stampTest: (String, RehearsalStamp) => Unit =
         (name: String, stamp: RehearsalStamp) => writeRehearsalStamp(name, stamp)
 
+    /** The plain (non-versioned) stored-tap write that puts back the test
+      * fields a rehearsal overwrote, when the candidate was never stored. */
+    @volatile private[incident] var tapWrite: TapConfig => Unit = (t: TapConfig) => TapConfigIO.write(t)
+
+    /** Raw-document field: the stored tap's test fields before a rehearsal stamp. */
+    private val RehearsalPriorField = "rehearsalPriorTest"
+
     /** The direct restore inside revertIfNeeded: (incidentId, tapName,
       * toVersion). Called only when the live version differs from the target. */
     @volatile private[incident] var revertTap: (String, String, Int) => Unit =
@@ -1162,6 +1169,21 @@ object IncidentRunner {
 
     private def stampRehearsal(id: String, tapName: String, script: String, candidate: RunProfile, result: Option[TapScriptResult]): Unit =
         try {
+            // Remember what the stamp overwrites, so a candidate that is never
+            // stored (rejected, expired, failed) hands the tap its own test back.
+            // Only the first rehearsal of an incident records it.
+            if (IncidentIO.raw(id).forall(d => d.get(RehearsalPriorField) == null))
+                tapLookup(tapName).foreach { live =>
+                    val prior = new org.bson.Document()
+                    prior.put("lastTestRunStatus", live.lastTestRunStatus)
+                    prior.put("lastTestRunTime", live.lastTestRunTime)
+                    prior.put("lastTestRunRecordCount", (live.lastTestRunRecordCount: java.lang.Integer))
+                    prior.put("lastTestRunError", live.lastTestRunError)
+                    prior.put("lastTestRunDataType", live.lastTestRunDataType)
+                    prior.put("lastTestRunColumns", Option(live.lastTestRunColumns).map(c => new java.util.ArrayList[String](c)).orNull)
+                    prior.put("lastTestRunScriptId", live.lastTestRunScriptId)
+                    IncidentIO.set(id, RehearsalPriorField -> prior)
+                }
             val columns = result.flatMap(r => Option(r.columns)).getOrElse {
                 import scala.collection.JavaConverters._
                 candidate.columns.map(_.name).asJava
@@ -1453,11 +1475,48 @@ object IncidentRunner {
                 Metrics.timer("datris_incident_duration_seconds", "kind", i.kind)
                     .record(java.time.Duration.between(i.openedAt, Instant.now()))
                 if (state == Incident.Resolved) suggestLearnNote(i)
+                else if (i.resourceType == "tap") restoreRehearsalStamp(id, i)
                 webhook(state, id, i.kind, i.resourceType, i.resourceName, Some(outcome))
             }
             logger.info("incident " + id + " closed: " + state + " — " + outcome)
         }
     }
+
+    /** An incident closed without its script fix being stored: if the stored
+      * tap still carries the rehearsal stamp for the candidate, put back the
+      * test fields it had before (plain write — not a definition edit). A
+      * stamp someone replaced since (a manual test) is left alone. */
+    private def restoreRehearsalStamp(id: String, before: Incident): Unit =
+        try {
+            val i = IncidentIO.get(id).getOrElse(before)
+            if (!executedScriptFix(i.steps)) {
+                val prior = IncidentIO.raw(id).flatMap(d => Option(d.get(RehearsalPriorField, classOf[org.bson.Document])))
+                val candidate = i.proposal.flatMap { p =>
+                    import scala.collection.JavaConverters._
+                    Option(p.getAsJsonArray("actions")).toList.flatMap(_.asScala).filter(_.isJsonObject).map(_.getAsJsonObject)
+                        .find(a => a.has("tool") && ScriptFixTools.contains(a.get("tool").getAsString))
+                        .flatMap(a => Option(a.getAsJsonObject("args")))
+                        .filter(args => args.has("script") && args.get("script").isJsonPrimitive)
+                        .map(_.get("script").getAsString)
+                }
+                for (pr <- prior; script <- candidate; live <- tapLookup(i.resourceName))
+                    if (live.lastTestRunScriptId == TapScriptIdentity.ofText(script)) {
+                        val cols = Option(pr.get("lastTestRunColumns", classOf[java.util.List[String]])).map(c => new java.util.ArrayList[String](c)).orNull
+                        tapWrite(live.copy(
+                            lastTestRunStatus = pr.getString("lastTestRunStatus"),
+                            lastTestRunTime = pr.getString("lastTestRunTime"),
+                            lastTestRunRecordCount = Option(pr.getInteger("lastTestRunRecordCount")).map(_.intValue()).getOrElse(0),
+                            lastTestRunError = pr.getString("lastTestRunError"),
+                            lastTestRunDataType = pr.getString("lastTestRunDataType"),
+                            lastTestRunColumns = cols,
+                            lastTestRunScriptId = pr.getString("lastTestRunScriptId")
+                        ))
+                        logger.info("incident " + id + ": candidate never stored — restored the test run of tap " + i.resourceName)
+                    }
+            }
+        } catch {
+            case e: Exception => logger.warn("incident " + id + ": could not restore the tap's test run after a rehearsal: " + e.getMessage)
+        }
 
     /** A resolved incident whose fix changed the tap's script (an executed
       * update_tap / create_tap — inline or through an approval) and whose
