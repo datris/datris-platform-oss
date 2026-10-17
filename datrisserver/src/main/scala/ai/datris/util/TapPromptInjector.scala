@@ -70,7 +70,9 @@ object TapPromptInjector {
         if (userText == null || userText.isEmpty) return Nil
         if (fragments.isEmpty) return Nil
         val lowered = userText.toLowerCase
-        fragments.filter { f =>
+        // Disabled fragments (including suggested ones nobody accepted yet)
+        // never reach a prompt, whoever hands them to the matcher.
+        fragments.filter(_.enabled).filter { f =>
             // The data-sources registry is injected whole elsewhere, never keyword-matched.
             f.key == null || !f.key.equalsIgnoreCase(DataSourcesKey)
         }.filter { f =>

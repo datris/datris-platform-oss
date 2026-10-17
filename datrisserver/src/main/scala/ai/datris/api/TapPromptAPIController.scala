@@ -9,6 +9,8 @@ import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, DatrisException, TapPromptFragment}
 import ai.datris.util.{AIUtil, APIKeyValidator, TapPromptFragmentIO, TapPromptInjector}
+import ai.datris.policy.PolicyActor
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -21,12 +23,21 @@ class TapPromptAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[TapPromptAPIController])
 
     @GetMapping(path = Array("/tap-prompts"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def listFragments(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+    def listFragments(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(name = "status", required = false) status: String
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /tap-prompts called")
             APIKeyValidator.validate(apiKey)
             val tableName = DatrisEnvironment.current.tapPromptTableName
-            val fragments = TapPromptFragmentIO.readAll(tableName)
+            // ?status=suggested lists the recovery agent's suggestions;
+            // ?status=active the person-written / accepted ones (a fragment
+            // saved before statuses existed has none and counts as active).
+            val wanted = Option(status).map(_.trim.toLowerCase).filter(_.nonEmpty)
+            val fragments = TapPromptFragmentIO.readAll(tableName).filter { f =>
+                wanted.forall(w => Option(f.status).map(_.trim.toLowerCase).getOrElse(TapPromptFragment.StatusActive) == w)
+            }
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(fragments.asJava), HttpStatus.OK)
         } catch {
@@ -57,7 +68,11 @@ class TapPromptAPIController {
     }
 
     @PostMapping(path = Array("/tap-prompts"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def saveFragment(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): ResponseEntity[String] = {
+    def saveFragment(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /tap-prompts called")
             APIKeyValidator.validate(apiKey)
@@ -71,8 +86,26 @@ class TapPromptAPIController {
             val now = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
                 .format(new java.util.Date())
             val existing = TapPromptFragmentIO.read(tableName, incoming.key)
+            val existingSuggested = existing != null && TapPromptFragment.StatusSuggested.equalsIgnoreCase(Option(existing.status).getOrElse(""))
+            // A suggested fragment was written by the recovery agent; only a
+            // person may accept, edit or otherwise overwrite it.
+            if (existingSuggested && PolicyActor.isAgent(request))
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body[String]("{\"error\": \"a person accepts suggested fragments\"}")
             val createdAt = if (existing != null && existing.createdAt != null) existing.createdAt else now
-            val stamped = incoming.copy(createdAt = createdAt, updatedAt = now)
+            // Accepting a suggestion keeps where it came from; enabling one
+            // without naming a status accepts it.
+            val status =
+                if (incoming.status != null) incoming.status.trim.toLowerCase
+                else if (existingSuggested && incoming.enabled) TapPromptFragment.StatusActive
+                else if (existing != null) existing.status
+                else null
+            val stamped = incoming.copy(
+                createdAt = createdAt,
+                updatedAt = now,
+                status = status,
+                origin = Option(incoming.origin).orElse(Option(existing).flatMap(e => Option(e.origin))).orNull,
+                incidentId = Option(incoming.incidentId).orElse(Option(existing).flatMap(e => Option(e.incidentId))).orNull
+            )
 
             TapPromptFragmentIO.write(stamped)
             TapPromptInjector.invalidateCache()

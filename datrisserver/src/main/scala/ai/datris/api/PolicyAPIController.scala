@@ -8,7 +8,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.audit.AuditActor
 import ai.datris.config.RequiresRole
 import ai.datris.model.DatrisEnvironment
-import ai.datris.policy.{AgentPolicy, PendingActionIO, PolicyActor, PolicyIO, PolicyRoutes}
+import ai.datris.policy.{AgentPolicy, PendingActionIO, PolicyActor, PolicyIO, PolicyRoutes, RecoverySettings}
+import ai.datris.util.EnvironmentLabel
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
@@ -41,6 +42,12 @@ class PolicyAPIController {
                 out.addProperty("pendingCount", 0)
             }
             out.add("recommended", AgentPolicy.Recommended.toJson)
+            // The recovery block recommended for this install's environment
+            // label (dev -> autopilot, loose; everything else -> propose,
+            // strict). Offered, never applied without a person.
+            val label = EnvironmentLabel.current
+            out.add("recoveryRecommended", RecoverySettings.toJson(RecoverySettings.recommendedFor(label)))
+            label.foreach(out.addProperty("environmentLabel", _)) // absent when DATRIS_ENV is unset
             val actions = new JsonArray()
             PolicyRoutes.catalog.foreach(actions.add)
             out.add("actions", actions)

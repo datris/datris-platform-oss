@@ -3529,7 +3529,7 @@ def _base_tools():
         ),
         Tool(
             name="get_incident",
-            description="Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it is waiting on, outcome, and its evidence (before/after profile, diff, blast radius, thresholds, verdict). A pipeline incident's repair is regenerating the stored AI script; the evidence names the script versions before and after (scriptVersions), and revertToScriptVersions is what a failed verification restores. When the operator asks about a failure the platform is already working, explain THIS record instead of re-diagnosing from scratch.",
+            description="Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it is waiting on, outcome, and its evidence (before/after profile, diff, blast radius, thresholds, verdict). A pipeline incident's repair is regenerating the stored AI script; the evidence names the script versions before and after (scriptVersions), and revertToScriptVersions is what a failed verification restores. The one-line evidence summary of this evidence (numbers and column names, never values) is also what the incident webhook sends (evidenceSummary). When the operator asks about a failure the platform is already working, explain THIS record instead of re-diagnosing from scratch.",
             inputSchema={
                 "type": "object",
                 "properties": {

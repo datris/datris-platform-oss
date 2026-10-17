@@ -3,9 +3,9 @@ title: "Incidents & Recovery Agent"
 description: "The platform opens an incident when a data flow breaks, diagnoses it, and — within limits you set — repairs and verifies it."
 ---
 
-With the recovery agent on, Datris stops waiting for you to notice a broken data flow. When a scheduled tap finally fails (after the platform's own retries), a pipeline job errors, a tap goes stale, or a pipeline's volume swings hard, the platform opens an **incident**, diagnoses it with the same judgment as the Ops chat, proposes a fix, passes every action through the [agent policy](/agent-policy), executes what it may, **verifies the fix with a real run — reverting it if verification fails** — and records the whole story.
+With the recovery agent on, Datris stops waiting for you to notice a broken data flow. When a scheduled tap finally fails (after the platform's own retries), a pipeline job errors, a tap goes stale, a pipeline's volume swings hard, or a tap's columns change, the platform opens an **incident**, diagnoses it with the same judgment as the Ops chat, and proposes a fix. Every action passes through the [agent policy](/agent-policy). The platform **rehearses the fix in a scratch lane, shows the before/after evidence, then lands it** with a real run. If verification fails it reverts the fix. Every step is recorded on the incident.
 
-The loop is: observe → diagnose → propose → gate → execute → verify → record. The AI proposes; deterministic platform code decides. Limits, verification and the revert are code the model cannot talk its way past.
+The loop is: observe → diagnose → propose → rehearse → gate → execute → verify → record. The AI proposes; deterministic platform code decides. Limits, verification and the revert are code the model cannot talk its way past.
 
 ## Enabling it
 
@@ -16,7 +16,8 @@ Requires the [agent policy](/agent-policy) (`USE_AGENT_POLICY=true`) for its app
    ```bash
    RECOVERY_AGENT_ENABLED=true
    # optional: JSON POST on incident open / awaiting_approval / resolved / failed / abandoned
-   # (also receives doctor_error / doctor_recovered when DOCTOR_INTERVAL_MINUTES is set)
+   # (also receives doctor_error / doctor_recovered when DOCTOR_INTERVAL_MINUTES is set);
+   # incident events carry evidenceSummary, one line of numbers, once evidence exists
    INCIDENT_WEBHOOK_URL=
    ```
 
@@ -36,6 +37,8 @@ Requires the [agent policy](/agent-policy) (`USE_AGENT_POLICY=true`) for its app
 
 A per-tap or per-pipeline override can put one resource on a different mode — one critical tap on `propose` while everything else runs `autopilot`, or the reverse.
 
+The Agent Policy page shows the current recovery block next to the one recommended for this install's [environment label](/production/environments#recovery-agent-per-environment): `autopilot` with loose thresholds on `dev`, `propose` with strict thresholds on `qa`, `production` and unlabelled installs. An admin can apply the recommendation with one click after a confirmation. The mode never changes on its own.
+
 ## What opens an incident
 
 | Signal | When |
@@ -46,19 +49,77 @@ A per-tap or per-pipeline override can put one resource on a different mode — 
 | Volume anomaly | A pipeline's records in the current 24-hour window are ±60 % vs the previous 24-hour window (with at least 3 runs in that prior window) |
 | Schema drift | A scheduled tap run succeeds but returns a different set of columns than the run before it (added, removed or renamed columns); manual runs never open one |
 
-Guards, all enforced in code: one open incident per resource; a resource whose latest run is healthy never gets one; a cooldown (default 6 h) after a failed or abandoned attempt; a cap on simultaneous open incidents. Volume and schema-drift incidents are **diagnosis-only** — the value is the triage, not an action. Set `recovery.allowSchemaDriftActions` to `true` to let a schema-drift incident on an `autopilot` tap propose and verify a script fix; destination schema changes always stay with a person.
+Guards, all enforced in code: one open incident per resource; a resource whose latest run is healthy never gets one; a cooldown (default 6 h) after a failed or abandoned attempt; a cap on simultaneous open incidents. Volume and schema-drift incidents are **diagnosis-only** by default: the value is the triage, not an action (see [Schema drift incidents](#schema-drift-incidents)).
 
 ## What the agent may do
 
-During diagnosis it holds **read-only tools** — it cannot change anything while investigating. Among them is the [doctor](/doctor), so when a failure is really the platform (a missing secret, a model or embedding service not answering, a full disk) it can say so and hand the incident to a human with the fix, instead of re-running a tap that will fail the same way. It can also read lineage, provenance, data discovery and pipeline version history, so its summary says what a change touches. Before any AI diagnosis the platform runs the doctor's quick check itself: an error that stops any run from succeeding (a full disk or staging area, the strict audit log refusing entries, the script sidecar down, runs turned away by the runner queue, a missing primary AI secret) classifies the incident `platform` and hands it to a person with the doctor's fix, without spending an AI call. Other doctor errors are passed to the diagnosis as context. A failure where the source rejected the credentials (401, 403, an expired or invalid token) is classified `credential` in code — no tap actions are proposed, and the evidence card shows **Secret to check** with the secret's name (never its value) and a link to Configuration → Secrets. For a tap, its proposal may only contain: re-run the tap, fix the tap script (then test it), or "this needs a human" with an explanation. For a pipeline whose AI data-quality or transformation script fails, it may regenerate that stored script from the pipeline's current instruction — verified through the feeding tap (scratch lane first, then a real run) when the pipeline is fed by one, restored to the previous script version if verification fails, and closed as resolved but unverified when the pipeline is fed by uploads or another source it cannot re-feed; destination, schema and upload problems go to a person. A failed verification restores the script to the version it had when the incident proposed the fix — including over any change a person made to it while the proposal waited for approval. Deletes, schema migrations and secret changes are structurally impossible for it. Script fixes land as a new version, so history is never lost.
+During diagnosis it holds **read-only tools**, so it cannot change anything while investigating. They include the [doctor](/doctor), lineage, provenance, data discovery and pipeline version history, so its summary says what a change touches. For a tap, its proposal may only contain: re-run the tap, fix the tap script (then test it), or "this needs a human" with an explanation. For a pipeline, its only action is regenerating a stored AI script (see [Pipeline incidents](#pipeline-incidents)). Deletes, schema migrations and secret changes are structurally impossible for it. Script fixes land as a new version, so history is never lost.
 
-**Verification is mandatory**: before acting, the fix is rehearsed in a scratch lane and compared with the last good run (unless `recovery.verifyMode` is `real`); after acting, the tap must complete a real run healthily, and when it feeds a pipeline the load must finish without error. If verification fails, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown.
+Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so with the audit log on, the [audit log](/audit-log) is the incident's complete ledger ([strict mode](/audit-log#strict-mode) guarantees no entry is dropped). Revoking that key stops the agent entirely, independent of any flag.
 
-Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so with the audit log on, the [audit log](/audit-log) is the incident's complete ledger ([strict mode](/audit-log#strict-mode) guarantees no entry is dropped) — and revoking that key stops the agent entirely, independent of any flag.
+## What you see before you approve
+
+Incidents with platform-computed evidence show an **evidence card** on the incident in Activity → Incidents and, compact, on its approval above Approve / Reject. Platform code computes it, not a model:
+
+| Field | What it shows |
+|---|---|
+| Blast radius | What the resource feeds: downstream pipelines, datasets and Unity Catalog tables, and how many agent identities queried them in the last 7 days when reads are audited |
+| Columns | Columns added and removed, and type changes |
+| Rows | Record count of the last good run and of the fix's run, with the percentage change |
+| DQ pass rate | Before and after |
+| Null rates | The five biggest null-rate movers |
+| Distribution | A quantile sparkline per numeric column |
+| Checks | Each [threshold](/agent-policy#recovery-mode) with a pass/fail tick, and the verdict (`pass`, `fail`, `needs-human`) |
+| Script versions | **Compare script versions** opens the version-history diff between the pre-incident and current script (tap definition versions for a tap, AI script versions for a pipeline) |
+| Secret to check | Credential incidents only: the secret's name, never its value, with a link to Configuration → Secrets |
+
+Column values are never shown on the card, in the webhook or to the model when `DATRIS_AI_SAMPLE_VALUES=false`. Incidents opened before the upgrade have no evidence and render as before.
+
+## Scratch-first verification
+
+With `recovery.verifyMode` at its default `scratch-first`, a proposed fix is verified in two stages:
+
+1. **Scratch rehearsal.** The proposed script runs in test mode: the source is called, the incremental cursor is not committed, and nothing is stamped on the tap. Its output goes through the real pipeline with the destination swapped for the scratch lane (the [Live Read](/destinations/live-read) destination). The landed rows are profiled and compared with the last good run against the thresholds. In `propose` mode this happens before the approval is queued, so the approval already carries the evidence.
+2. **Real run.** Only a `pass` continues. The fix is applied (directly or after approval) and the tap must complete a real run healthily; when it feeds a pipeline the load must finish without error. The real run's landed data is profiled into the evidence too.
+
+The verdict decides what happens next:
+
+| Verdict | Outcome |
+|---|---|
+| `pass` | Continue to the real run |
+| `fail` | The record-count change, a null-rate increase or the DQ pass rate breached its limit. The incident closes as failed with nothing written to the real destination |
+| `needs-human` | A column was removed or a type changed and the policy does not allow it. The incident waits in `awaiting_approval` with the card; **Proceed to real run** (or `POST /api/v1/incidents/{id}/proceed`) lets a person accept the shape change. Agents may not proceed |
+
+If the real run fails verification, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown. `verifyMode: real` skips the rehearsal and goes straight to the real run.
+
+## Schema drift incidents
+
+A schema-drift incident opens when a scheduled tap run succeeds but returns a different set of columns than the run before it. By default it is **diagnosis-only**: one AI diagnosis explains the change and the incident resolves as triaged. Set `recovery.allowSchemaDriftActions` to `true` to let a schema-drift incident on a tap in `autopilot` propose a script fix and run it through scratch-first verification. Destination schema changes always stay with a person.
+
+## Credential and platform failures
+
+Before any AI diagnosis the platform runs the doctor's quick check itself. An error that stops any run from succeeding (a full disk or staging area, the strict audit log refusing entries, the script sidecar down, runs turned away by the runner queue, a missing primary AI secret) classifies the incident `platform` and hands it to a person with the doctor's fix, without spending an AI call. Other doctor errors are passed to the diagnosis as context.
+
+A failure where the source rejected the credentials (401, 403, an expired or invalid token) is classified `credential` in code. No tap actions are proposed, and the evidence card names the **Secret to check** (never its value) with a link to Configuration → Secrets. Re-running a tap with a bad key would fail the same way.
+
+## Pipeline incidents
+
+For a pipeline whose AI data-quality or transformation script fails, the only action is regenerating that stored script from the pipeline's current instruction (the `pipeline:update:codegen-scripts` policy action).
+
+- **Fed by a tap:** the fix is verified through the feeding tap, scratch lane first, then a real run. If verification fails, the script is restored to the version it had when the incident proposed the fix, including over any change a person made while the proposal waited for approval.
+- **Fed by uploads or another source the platform cannot re-feed:** the incident closes as resolved but **unverified**. The next run shows whether the fix worked.
+
+Destination, schema and upload problems go to a person.
+
+## Learning from incidents
+
+The diagnosis may include a `learnNote`, a source quirk worth remembering (for example, that a source returns timestamps without an offset). When an incident **resolves** after a tap script fix (`update_tap`), the platform saves the note as a **suggested** [tap prompt fragment](/tap-prompts#suggested-fragments) named `incident-<id>`. Its alias is the tap's source host. The incident's timeline records "learn note saved as suggested prompt fragment incident-&lt;id&gt;".
+
+A suggested fragment is stored disabled, so it never reaches a prompt until a person accepts it. List suggestions with `GET /api/v1/tap-prompts?status=suggested` and accept one from a user session with `POST /api/v1/tap-prompts` and `"enabled": true, "status": "active"`. Agents can list suggestions but cannot accept them. Notes are capped at 2,000 characters and pass through the same scrubber as run errors when `DATRIS_AI_SAMPLE_VALUES=false`. Resolutions by a re-run only, and failed or abandoned incidents, save nothing.
 
 ## Limits
 
-Set under the agent policy's `recovery` section; enforced by the runner, not the prompt:
+Set under the agent policy's `recovery` section; enforced by the runner, not the prompt. The verification thresholds (`maxRecordDeltaPct`, `allowColumnRemoval` and the rest) are in the [Recovery mode table](/agent-policy#recovery-mode).
 
 | Limit | Default |
 |-------|---------|
@@ -71,12 +132,14 @@ Set under the agent policy's `recovery` section; enforced by the runner, not the
 ## Watching it
 
 - **Activity → Incidents**: every incident with its state, classification, step-by-step narrative, and any approvals it waits on; a person can abandon one at any time.
-- **Evidence card**: incidents with platform-computed evidence show it on the incident (and, compact, on its approval above Approve/Reject): what the resource feeds, column and row-count changes, DQ pass rate before and after, the biggest null-rate movers, a quantile sparkline per numeric column, each threshold check with a pass/fail tick, the verdict, and a **Compare script versions** button that opens the tap's version history on the pre-incident vs current diff. Column values are never shown.
+- **Evidence card**: see [What you see before you approve](#what-you-see-before-you-approve).
+- **Webhook**: with `INCIDENT_WEBHOOK_URL` set, every incident event is a JSON POST with `event`, `incidentId`, `kind`, `resourceType`, `resource`, `detail` and `ts`. Once the incident has evidence it also carries `evidenceSummary`: one line of counts (verdict, records before and after, columns added and removed, DQ change, downstream pipelines, failed checks), never a column value.
 - **Ops chat**: incidents the platform is working appear in the assistant's context — ask "what happened to the prices tap?" and it explains the incident record instead of re-diagnosing.
-- **Agents**: `list_incidents` / `get_incident` MCP tools (read-only — only the platform opens incidents).
+- **Agents**: `list_incidents`, `get_incident` and `get_incident_evidence` MCP tools (read-only: only the platform opens incidents).
 - **Metrics**: `datris_incidents_total{kind,outcome}` and `datris_incident_duration_seconds` on the Prometheus endpoint.
 
 ## Related
 
 - [Agent Policy](/agent-policy) — the gate every recovery action passes through
 - [Audit Log](/audit-log) — the incident's ledger, joined on the incident id
+- [Tap Prompt Fragments](/tap-prompts) — where accepted learn notes go to work

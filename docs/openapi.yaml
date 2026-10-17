@@ -757,7 +757,12 @@ components:
               default: 50
         recovery:
           type: object
-          description: The recovery agent's dial and limits (see Incidents)
+          description: >-
+            The recovery agent's dial, limits and verification thresholds (see
+            Incidents). Threshold fields absent from the stored policy default
+            by DATRIS_ENV label: maxRecordDeltaPct 50 and allowColumnRemoval /
+            allowTypeChange true on dev, the documented defaults elsewhere.
+            mode defaults to off on every label.
           properties:
             mode:
               type: string
@@ -789,12 +794,15 @@ components:
             maxRecordDeltaPct:
               type: integer
               default: 25
+              description: Largest record-count change (percent) before the verdict is fail; default 50 on a dev install
             allowColumnRemoval:
               type: boolean
               default: false
+              description: When false a removed column makes the verdict needs-human; default true on a dev install
             allowTypeChange:
               type: boolean
               default: false
+              description: When false a column type change makes the verdict needs-human; default true on a dev install
             allowSchemaDriftActions:
               type: boolean
               default: false
@@ -1366,6 +1374,21 @@ components:
           type: string
         updatedAt:
           type: string
+        status:
+          type: string
+          enum: [active, suggested]
+          description: >-
+            Absent or active for fragments a person wrote or accepted;
+            suggested for fragments the recovery agent wrote from an incident's
+            learn note (stored with enabled false). Accept one by POSTing it
+            with enabled true and status active; agents may not.
+        origin:
+          type: string
+          enum: [incident]
+          description: Where a suggested fragment came from
+        incidentId:
+          type: string
+          description: The incident whose learn note produced the fragment
 
     ChatRequest:
       type: object
@@ -5682,6 +5705,18 @@ paths:
                       type: string
                   pendingCount:
                     type: integer
+                  recoveryRecommended:
+                    type: object
+                    description: >-
+                      The recovery block recommended for this install's
+                      DATRIS_ENV label, in the shape of AgentPolicy.recovery:
+                      autopilot with maxRecordDeltaPct 50 and column removal /
+                      type change allowed on dev; propose with the strict
+                      defaults on qa, production, other labels and unset.
+                      Never applied automatically.
+                  environmentLabel:
+                    type: string
+                    description: DATRIS_ENV; absent when unset
     put:
       tags: [Agent Policy]
       summary: Replace the agent policy (admin)
@@ -6522,6 +6557,14 @@ paths:
       tags: [Tap Prompts]
       summary: List tap prompt fragments
       description: Returns every prompt fragment. Fragments are per-source snippets injected into the tap code-generation system prompt when a tap's description mentions the fragment's key or an alias.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, suggested]
+          description: Only fragments with this status (a fragment with no status counts as active)
       responses:
         '200':
           description: All fragments
@@ -6536,7 +6579,12 @@ paths:
     post:
       tags: [Tap Prompts]
       summary: Create or update a tap prompt fragment
-      description: Creates a new fragment or updates the existing fragment with the same `key`. Timestamps are managed server-side.
+      description: >-
+        Creates a new fragment or updates the existing fragment with the same
+        `key`. Timestamps are managed server-side. Sending `enabled: true,
+        status: active` for a suggested fragment accepts it; origin and
+        incidentId are kept. Agent-initiated requests may not change a
+        suggested fragment (403).
       requestBody:
         required: true
         content:
@@ -6554,6 +6602,8 @@ paths:
                   status:
                     type: string
                     example: ok
+        '403':
+          description: An agent tried to accept or change a suggested fragment ("a person accepts suggested fragments")
         '500':
           description: Error (including missing key)
 

@@ -90,7 +90,36 @@ Every mutating tool also accepts an optional `reason` — one line stating why t
 
 ## Recovery mode
 
-The policy document also carries the [recovery agent](/incidents)'s dial — `recovery.mode` (`off` / `propose` / `autopilot`) and its limits — plus per-resource `recovery` overrides. The recovery agent's every action passes through this same policy gate: under `propose`, everything it wants to do queues here for your approval. `recovery.verifyMode` (default `scratch-first`) has the platform rehearse each proposed fix into a scratch lane and compare it with the last good run before anything real changes; `real` skips the rehearsal. For a pipeline incident the one action it can take is regenerating the pipeline's stored AI data-quality or transformation script, which is the `pipeline:update:codegen-scripts` action here — the Recommended template sends it for approval.
+The policy document also carries the [recovery agent](/incidents)'s dial — `recovery.mode` (`off` / `propose` / `autopilot`) and its limits — plus per-resource `recovery` overrides. Every action the recovery agent takes passes through this same policy gate: under `propose`, everything it wants to do queues here for your approval. For a pipeline incident the one action it can take is regenerating the pipeline's stored AI data-quality or transformation script, which is the `pipeline:update:codegen-scripts` action here — the Recommended template sends it for approval.
+
+Set the block with `PUT /api/v1/policy` or the [Configuration assistant](/configuration-assistant). The Agent Policy page shows it read-only under **Recovery (set via API or the Configuration assistant)**.
+
+The `recovery` block also holds the thresholds a proposed fix's evidence is judged against, and how the fix is verified:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `maxRecordDeltaPct` | `25` | Largest record-count change, in percent, between the last good run and the fix's run before the verdict is `fail` |
+| `allowColumnRemoval` | `false` | When `false`, a removed column makes the verdict `needs-human` |
+| `allowTypeChange` | `false` | When `false`, a column type change makes the verdict `needs-human` |
+| `minDqPassRate` | baseline − 1 pt | Lowest DQ pass rate (0.0-1.0) the fix's run may have; unset means one point below the last good run |
+| `maxNullRateIncrease` | `0.10` | Largest increase in any column's null rate (a fraction) |
+| `verifyMode` | `scratch-first` | `scratch-first` rehearses each fix in a scratch lane and judges it before anything real changes; `real` skips the rehearsal and verifies with the real run only |
+| `allowSchemaDriftActions` | `false` | When `true`, a schema-drift incident on an `autopilot` tap may propose and verify a script fix; otherwise schema drift is diagnosis-only |
+
+An added column never fails a check. See [Scratch-first verification](/incidents#scratch-first-verification) for what each verdict does.
+
+### Recommended settings per environment
+
+`GET /api/v1/policy` returns `recoveryRecommended`, the block recommended for this install's `DATRIS_ENV` label, and `environmentLabel`:
+
+| Label | Recommended `mode` | `maxRecordDeltaPct` | `allowColumnRemoval` | `allowTypeChange` |
+|---|---|---|---|---|
+| `dev` | `autopilot` | `50` | `true` | `true` |
+| `qa`, `production`, any other label, or unset | `propose` | `25` | `false` | `false` |
+
+The other fields keep the defaults above on every label; `verifyMode` is `scratch-first` everywhere. An admin can apply the recommendation with **Apply recommended recovery settings** on the Agent Policy page, after a confirmation that names the mode it will set. The per-resource recovery overrides are kept.
+
+The label also sets the default for threshold fields that the stored policy does not contain: a `dev` install falls back to 50 / `true` / `true`, every other install to the strict values. A saved policy writes every field, so after a save the stored values apply on any label. `recovery.mode` defaults to `off` on every label; the platform never switches it on by itself.
 
 ## Related
 

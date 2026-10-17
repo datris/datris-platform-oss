@@ -1384,15 +1384,67 @@ object IncidentRunner {
                 Metrics.counter("datris_incidents_total", "kind", i.kind, "outcome", state).increment()
                 Metrics.timer("datris_incident_duration_seconds", "kind", i.kind)
                     .record(java.time.Duration.between(i.openedAt, Instant.now()))
+                if (state == Incident.Resolved) suggestLearnNote(i)
                 webhook(state, id, i.kind, i.resourceType, i.resourceName, Some(outcome))
             }
             logger.info("incident " + id + " closed: " + state + " — " + outcome)
         }
     }
 
+    /** A resolved incident whose fix changed the tap's script (an executed
+      * update_tap / create_tap — inline or through an approval) and whose
+      * proposal carries a learnNote: save the note as a suggested prompt
+      * fragment. A run-only resolution teaches nothing about the source. */
+    private def suggestLearnNote(before: Incident): Unit =
+        try {
+            val i = IncidentIO.get(before.id).getOrElse(before)
+            val note = i.proposal
+                .filter(p => p.has("learnNote") && p.get("learnNote").isJsonPrimitive)
+                .map(_.get("learnNote").getAsString.trim)
+                .filter(_.nonEmpty)
+            if (note.isDefined && i.resourceType == "tap" && executedScriptFix(i.steps)) {
+                if (LearnNotes.trySuggest(i, note.get))
+                    step(i.id, "close", "learn note saved as suggested prompt fragment " + LearnNotes.keyFor(i.id))
+            }
+        } catch {
+            case e: Exception => logger.debug("learn note for incident " + before.id + " skipped: " + e.getMessage)
+        }
+
+    private val ScriptFixTools = Set("update_tap", "create_tap")
+
+    /** Whether the steps record an executed update_tap / create_tap: an
+      * inline `<tool> ok` execute step, or a gated one whose approval was
+      * then executed. */
+    private[incident] def executedScriptFix(steps: List[IncidentStep]): Boolean = {
+        var queuedFix = false
+        steps.exists { s =>
+            val summary = Option(s.summary).getOrElse("")
+            val tool = summary.takeWhile(_ != ' ')
+            if (s.phase == "execute" && ScriptFixTools.contains(tool) && summary.startsWith(tool + " ok")) true
+            else if (s.phase == "gate" && summary.endsWith("queued for approval")) { queuedFix = ScriptFixTools.contains(tool); false }
+            else s.phase == "gate" && summary.startsWith("approval executed") && queuedFix
+        }
+    }
+
+    /** Spec seam: when non-null, webhook() hands every payload (the JSON
+      * body text) to it instead of HttpUtil.post — also when
+      * INCIDENT_WEBHOOK_URL is unset. */
+    @volatile private[incident] var webhookSink: String => Unit = null
+
+    /** The one-line evidence summary (numbers and column names, never column
+      * values) of the incident's evidence as stored right now. */
+    private def storedEvidenceSummary(id: String): Option[String] =
+        try IncidentIO.get(id).flatMap(_.evidence).map(e => IncidentEvidence.fromJson(e).summaryLine).filter(_.nonEmpty)
+        catch {
+            case e: Exception =>
+                logger.debug("incident webhook: evidence summary skipped: " + e.getMessage)
+                None
+        }
+
     private def webhook(event: String, id: String, kind: String, resourceType: String, resourceName: String, detail: Option[String]): Unit = {
-        val url = Option(DatrisEnvironment.values).flatMap(v => Option(v.incidentWebhookUrl)).map(_.trim).filter(_.nonEmpty).getOrElse(return
-        )
+        val sink = webhookSink
+        val url = Option(DatrisEnvironment.values).flatMap(v => Option(v.incidentWebhookUrl)).map(_.trim).filter(_.nonEmpty)
+        if (sink == null && url.isEmpty) return
         try {
             val o = new JsonObject()
             o.addProperty("event", event)
@@ -1401,8 +1453,10 @@ object IncidentRunner {
             o.addProperty("resourceType", resourceType)
             o.addProperty("resource", resourceName)
             detail.foreach(o.addProperty("detail", _))
+            storedEvidenceSummary(id).foreach(o.addProperty("evidenceSummary", _))
             o.addProperty("ts", Instant.now().toString)
-            HttpUtil.post(url, "application/json", o.toString)
+            if (sink != null) sink(o.toString)
+            else HttpUtil.post(url.get, "application/json", o.toString)
         } catch {
             case e: Exception => logger.debug("incident webhook failed: " + e.getMessage)
         }

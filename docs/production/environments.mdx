@@ -151,6 +151,10 @@ Use these roles and keys (see [API Keys](/api-keys), [Agent Policy](/agent-polic
 
 Create keys from templates and rotate them on a schedule. Issue one key per agent per environment so that the audit log attributes every action to the right agent. On prod, start the agent policy from **Use recommended** and set every mutating action a prod agent can reach to **Approve**.
 
+### Recovery agent per environment
+
+The [recovery agent](/incidents) recommends different settings per `DATRIS_ENV` label. On `dev` the recommendation is `autopilot` with loose thresholds (record-count changes up to 50 %, column removal and type changes allowed), so the agent repairs broken dev taps on its own. On `qa` and `production` (and an unlabelled install) it is `propose` with the strict thresholds, so every fix waits for a person with the evidence card. Configuration → Agent Policy shows the recommendation next to the current settings, and an admin applies it with one click. Nothing switches on by itself: `recovery.mode` stays `off` until someone sets it. See the [thresholds table](/agent-policy#recovery-mode). A fix verified in dev reaches prod through the normal [catalog promotion](#promote-a-catalog).
+
 ## Promote a catalog
 
 These steps promote the `sales` catalog from dev to qa. Repeat them from qa to prod.

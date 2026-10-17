@@ -94,4 +94,4 @@ Grouped by purpose. Tool names are exact. Every tool that changes state accepts 
 
 | Tool | Notes |
 |---|---|
-| `list_incidents`, `get_incident`, `get_incident_evidence` | Failures the platform's recovery agent is already working, with narrative, pending approvals, and platform-computed evidence (before/after profiles, diff, blast radius, thresholds, verdict). When the user asks about such a failure, explain the record rather than re-diagnosing. Read-only. |
+| `list_incidents`, `get_incident`, `get_incident_evidence` | Failures the platform's recovery agent is already working, with narrative, pending approvals, and platform-computed evidence (before/after profiles, diff, blast radius, thresholds, verdict). The incident webhook sends a one-line evidence summary (counts only, no values). When the user asks about such a failure, explain the record rather than re-diagnosing. Read-only. A learn note from a resolved fix becomes a suggested tap prompt fragment (`GET /api/v1/tap-prompts?status=suggested`); only a person can accept it. |
