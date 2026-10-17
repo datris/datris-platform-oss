@@ -1359,4 +1359,190 @@ class IncidentRunnerSpec extends AnyFunSuite {
             assert(c.restores.isEmpty, c.restores)
         }
     }
+
+    // ==================================================================
+    // Story: Environment-aware recovery defaults, learn notes as suggested
+    // prompt fragments, webhook evidence
+    // (plans/stories/self-healing-6-env-defaults-learn-notes.md),
+    // Acceptance bullets 2 (runner-driven half) and 3.
+    //
+    // Contract pinned here:
+    // {{{
+    // object IncidentRunner {
+    //   /** Spec seam: when non-null, webhook() hands every payload (the JSON
+    //     * body text) to it instead of HttpUtil.post — also when
+    //     * INCIDENT_WEBHOOK_URL is unset. */
+    //   @volatile private[incident] var webhookSink: String => Unit = null
+    // }
+    // }}}
+    // - Payload key `evidenceSummary` = IncidentEvidence.fromJson(<the
+    //   incident's evidence as stored when the webhook fires>).summaryLine, on
+    //   `awaiting_approval` and on every close; absent when the incident has
+    //   no evidence. Existing keys unchanged.
+    // - close(Resolved) with proposal.learnNote and an executed update_tap /
+    //   create_tap calls LearnNotes.suggest (one LearnNotes.write of
+    //   `incident-<id>`) and records the step
+    //   "learn note saved as suggested prompt fragment incident-<id>".
+    // ==================================================================
+
+    private def withWebhooks[T](body: mutable.ArrayBuffer[JsonObject] => T): T = {
+        val sent = mutable.ArrayBuffer[JsonObject]()
+        val saved = IncidentRunner.webhookSink
+        IncidentRunner.webhookSink = (payload: String) => sent.synchronized { sent += JsonParser.parseString(payload).getAsJsonObject; () }
+        try body(sent)
+        finally IncidentRunner.webhookSink = saved
+    }
+
+    private def payloadFor(sent: mutable.ArrayBuffer[JsonObject], event: String): JsonObject =
+        sent.find(o => o.has("event") && o.get("event").getAsString == event).getOrElse(fail("no " + event + " webhook in " + sent))
+
+    test("the awaiting_approval webhook carries evidenceSummary = summaryLine") {
+        // A column removed with allowColumnRemoval = false: parked on needs-human.
+        withWebhooks { sent =>
+            scenario(candidate = Some(runProfile("scratch_1", "scratch", 100L, baseColumns.filterNot(_.name == "region")))) { c =>
+                IncidentRunner.runIncident(c.id)
+                assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+                val p = payloadFor(sent, "awaiting_approval")
+                assert(p.has("evidenceSummary"), p)
+                assert(p.get("evidenceSummary").getAsString == c.ev.summaryLine, p)
+                // Existing keys unchanged.
+                for (k <- Seq("event", "incidentId", "kind", "resourceType", "resource", "ts")) assert(p.has(k), k + " in " + p)
+                assert(p.get("incidentId").getAsString == c.id)
+            }
+        }
+    }
+
+    test("the resolved webhook carries evidenceSummary = summaryLine") {
+        withWebhooks { sent =>
+            scenario() { c =>
+                IncidentRunner.runIncident(c.id)
+                assert(c.incident.state == Incident.Resolved, c.incident.outcome + " / " + c.summaries)
+                val p = payloadFor(sent, Incident.Resolved)
+                assert(p.has("evidenceSummary"), p)
+                assert(p.get("evidenceSummary").getAsString == c.ev.summaryLine, p)
+                assert(p.has("detail"), "the outcome detail is still sent: " + p)
+            }
+        }
+    }
+
+    test("a baseline whose columns[0].topK holds alice@example.com yields webhook payloads without that value") {
+        val Value = "alice@example.com"
+        val withEmail = ColumnStats("email", "string", 0.0, 2L, None, None, Some(List((Value, 60L), ("bob@example.org", 40L)))) :: baseColumns
+        withWebhooks { sent =>
+            scenario(
+                seedBaseline = Some(runProfile("run_base", "landed-sample", 100L, withEmail)),
+                candidate = Some(runProfile("scratch_1", "scratch", 100L, withEmail)),
+                real = Some(runProfile("run_real", "landed-sample", 100L, withEmail))
+            ) { c =>
+                IncidentRunner.runIncident(c.id)
+                val stored = c.incident.evidence.getOrElse(fail("no evidence"))
+                val firstCol = stored.getAsJsonObject("baseline").getAsJsonArray("columns").get(0).getAsJsonObject
+                assert(firstCol.toString.contains(Value), "fixture sanity: the stored baseline.columns[0].topK holds the value: " + firstCol)
+                assert(sent.nonEmpty, "webhooks were sent")
+                assert(sent.exists(_.has("evidenceSummary")), sent)
+                sent.foreach(p => assert(!p.toString.contains(Value), "a webhook payload leaked a column value: " + p))
+            }
+        }
+    }
+
+    test("an incident without evidence sends no evidenceSummary key") {
+        // A pre-upgrade needs-human card: no evidence, nothing queued, and old
+        // enough that the sweep abandons it.
+        val store = new FakeStore
+        val id = Incident.newId()
+        store.insert(Incident(
+            id = id,
+            kind = Incident.KindTapFailure,
+            resourceType = "tap",
+            resourceName = "prices",
+            openedAt = Instant.now().minusSeconds(3L * 24 * 3600),
+            state = Incident.AwaitingApproval,
+            trigger = new JsonObject(),
+            steps = List(IncidentStep(Instant.now(), "open", "tap_failure signal on tap prices"))
+        ))
+        val saved = (IncidentIO.store, IncidentRunner.settingsOverride, IncidentRunner.sweepEnabledOverride, IncidentRunner.runAsync)
+        IncidentIO.store = store
+        IncidentRunner.settingsOverride = RecoverySettings(mode = RecoverySettings.Propose)
+        IncidentRunner.sweepEnabledOverride = Some(true)
+        IncidentRunner.runAsync = false
+        try withWebhooks { sent =>
+                IncidentRunner.sweepOpenIncidents()
+                assert(store.get(id).map(_.state).contains(Incident.Abandoned), store.get(id))
+                val p = payloadFor(sent, Incident.Abandoned)
+                assert(!p.has("evidenceSummary"), p)
+            }
+        finally {
+            IncidentIO.store = saved._1
+            IncidentRunner.settingsOverride = saved._2
+            IncidentRunner.sweepEnabledOverride = saved._3
+            IncidentRunner.runAsync = saved._4
+        }
+    }
+
+    // ---- learn notes (runner-driven half of LearnNotesSpec's bullet) ----
+
+    private val Note = "the source renamed account_id to accountId; read either"
+
+    private def withLearnNoteWrites[T](body: mutable.ArrayBuffer[ai.datris.model.TapPromptFragment] => T): T = {
+        val written = mutable.ArrayBuffer[ai.datris.model.TapPromptFragment]()
+        val saved = LearnNotes.write
+        LearnNotes.write = (f: ai.datris.model.TapPromptFragment) => written.synchronized { written += f; () }
+        try body(written)
+        finally LearnNotes.write = saved
+    }
+
+    test("learn notes: resolved with a learnNote and an executed update_tap writes the suggested fragment incident-<id>") {
+        withLearnNoteWrites { written =>
+            scenario(proposal = structuralProposal.copy(learnNote = Some(Note))) { c =>
+                c.tap = c.tap.copy(source = "api.weather.gov")
+                IncidentRunner.runIncident(c.id)
+                assert(c.incident.state == Incident.Resolved, c.incident.outcome + " / " + c.summaries)
+                assert(c.tools.contains("update_tap"), c.tools)
+                assert(written.size == 1, written)
+                val f = written.head
+                assert(f.key == "incident-" + c.id)
+                assert(!f.enabled)
+                assert(f.status == "suggested")
+                assert(f.incidentId == c.id)
+                assert(f.aliases.asScala.toList == List("api.weather.gov"), f.aliases)
+                assert(f.content == Note)
+                assert(c.summaries.exists(_.contains("learn note saved as suggested prompt fragment incident-" + c.id)), c.summaries)
+            }
+        }
+    }
+
+    test("learn notes: resolved via run_tap only writes nothing") {
+        withLearnNoteWrites { written =>
+            scenario(proposal = transientRunProposal.copy(learnNote = Some(Note))) { c =>
+                c.tap = c.tap.copy(source = "api.weather.gov")
+                IncidentRunner.runIncident(c.id)
+                assert(c.incident.state == Incident.Resolved, c.incident.outcome + " / " + c.summaries)
+                assert(c.tools.filter(Mutations) == List("run_tap"), c.tools)
+                assert(written.isEmpty, "no script fix, no suggestion: " + written)
+                assert(!c.summaries.exists(_.contains("learn note saved")), c.summaries)
+            }
+        }
+    }
+
+    test("learn notes: a failed incident writes nothing") {
+        withLearnNoteWrites { written =>
+            // 60 % of the rows dropped: the candidate fails scratch verification.
+            scenario(candidate = Some(runProfile("scratch_1", "scratch", 40L)), proposal = structuralProposal.copy(learnNote = Some(Note))) { c =>
+                c.tap = c.tap.copy(source = "api.weather.gov")
+                IncidentRunner.runIncident(c.id)
+                assert(c.incident.state == Incident.Failed, c.incident.outcome + " / " + c.summaries)
+                assert(written.isEmpty, written)
+            }
+        }
+        withLearnNoteWrites { written =>
+            // The fix ran, but the real run breached the thresholds.
+            scenario(real = Some(runProfile("run_real", "landed-sample", 30L)), proposal = structuralProposal.copy(learnNote = Some(Note))) { c =>
+                c.tap = c.tap.copy(source = "api.weather.gov")
+                IncidentRunner.runIncident(c.id)
+                assert(c.incident.state == Incident.Failed, c.incident.outcome + " / " + c.summaries)
+                assert(c.tools.contains("update_tap"), c.tools)
+                assert(written.isEmpty, written)
+            }
+        }
+    }
 }

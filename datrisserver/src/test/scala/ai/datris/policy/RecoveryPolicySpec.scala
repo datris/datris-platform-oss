@@ -174,4 +174,98 @@ class RecoveryPolicySpec extends AnyFunSuite {
         val r = AgentPolicy.fromJson("""{"recovery":{"allowSchemaDriftActions":"yes"}}""")
         assert(r.isLeft && r.left.get.contains("recovery.allowSchemaDriftActions"), r)
     }
+
+    // Story: Environment-aware recovery defaults
+    // (plans/stories/self-healing-6-env-defaults-learn-notes.md), Acceptance bullet 1.
+    //
+    // Contract pinned here:
+    // {{{
+    // object RecoverySettings {
+    //   /** dev (case-insensitive) -> autopilot, 50 % rows, column removal and type change allowed;
+    //     * qa, production, any other label and None -> propose with the strict defaults. */
+    //   def recommendedFor(label: Option[String]): RecoverySettings
+    //   /** The per-field default AgentPolicy.fromJson uses for threshold fields absent from the JSON. */
+    //   def thresholdDefaultsFor(label: Option[String]): ai.datris.incident.Thresholds
+    // }
+    // }}}
+    // The label is EnvironmentLabel.current; specs set the `datris.env`
+    // system property ("" = unset, and it shadows DATRIS_ENV).
+
+    private def withLabel[T](label: String)(body: => T): T = {
+        val saved = sys.props.get("datris.env")
+        sys.props("datris.env") = label
+        try body
+        finally saved match {
+                case Some(v) => sys.props("datris.env") = v
+                case None => sys.props -= "datris.env"
+            }
+    }
+
+    private val Strict = Thresholds(25.0, allowColumnRemoval = false, allowTypeChange = false, minDqPassRate = None, maxNullRateIncrease = 0.10)
+    private val Loose = Thresholds(50.0, allowColumnRemoval = true, allowTypeChange = true, minDqPassRate = None, maxNullRateIncrease = 0.10)
+
+    test("datris.env=dev: fromJson(\"{}\") keeps mode off but defaults the thresholds loose (50 / true / true)") {
+        withLabel("dev") {
+            for (json <- Seq("""{}""", """{"recovery":{}}""", """{"recovery":{"maxAiCallsPerIncident":5}}""")) {
+                val r = policy(json).recovery
+                assert(r.mode == RecoverySettings.Off, json + " -> " + r)
+                assert(r.maxRecordDeltaPct == 50, json + " -> " + r)
+                assert(r.allowColumnRemoval, json + " -> " + r)
+                assert(r.allowTypeChange, json + " -> " + r)
+                assert(r.verifyMode == RecoverySettings.ScratchFirst, "verifyMode does not vary by label: " + r)
+                assert(r.thresholds == Loose, r.thresholds)
+            }
+        }
+    }
+
+    test("datris.env=qa, production or unset: fromJson(\"{}\") has the strict thresholds (25 / false / false)") {
+        for (label <- Seq("qa", "production", "")) withLabel(label) {
+            val r = policy("""{}""").recovery
+            assert(r.mode == RecoverySettings.Off, "label '" + label + "': " + r)
+            assert(r.maxRecordDeltaPct == 25, "label '" + label + "': " + r)
+            assert(!r.allowColumnRemoval && !r.allowTypeChange, "label '" + label + "': " + r)
+            assert(r.thresholds == Strict, "label '" + label + "': " + r.thresholds)
+        }
+    }
+
+    test("recommendedFor: dev -> autopilot with loose thresholds; production / qa / None -> propose with strict thresholds") {
+        val dev = RecoverySettings.recommendedFor(Some("dev"))
+        assert(dev.mode == RecoverySettings.Autopilot)
+        assert(dev.maxRecordDeltaPct == 50 && dev.allowColumnRemoval && dev.allowTypeChange, dev)
+        assert(RecoverySettings.recommendedFor(Some("DEV")).mode == RecoverySettings.Autopilot, "the dev label is case-insensitive")
+
+        for (label <- Seq(Some("production"), Some("qa"), None)) {
+            val r = RecoverySettings.recommendedFor(label)
+            assert(r.mode == RecoverySettings.Propose, label + " -> " + r)
+            assert(r.maxRecordDeltaPct == 25 && !r.allowColumnRemoval && !r.allowTypeChange, label + " -> " + r)
+            assert(r.verifyMode == RecoverySettings.ScratchFirst, label + " -> " + r)
+        }
+
+        assert(RecoverySettings.thresholdDefaultsFor(Some("dev")) == Loose)
+        assert(RecoverySettings.thresholdDefaultsFor(Some("Dev")) == Loose)
+        assert(RecoverySettings.thresholdDefaultsFor(Some("qa")) == Strict)
+        assert(RecoverySettings.thresholdDefaultsFor(Some("production")) == Strict)
+        assert(RecoverySettings.thresholdDefaultsFor(None) == Strict)
+    }
+
+    test("a stored block that sets maxRecordDeltaPct = 10 keeps 10 under any label") {
+        for (label <- Seq("dev", "qa", "production", "")) withLabel(label) {
+            val r = policy("""{"recovery":{"mode":"propose","maxRecordDeltaPct":10}}""").recovery
+            assert(r.maxRecordDeltaPct == 10, "label '" + label + "': " + r)
+        }
+    }
+
+    test("toJson -> fromJson is identity under a different label (explicit fields win)") {
+        val unlabelled = withLabel("")(policy("""{"recovery":{"mode":"propose"}}"""))
+        assert(unlabelled.recovery.maxRecordDeltaPct == 25)
+        val readOnDev = withLabel("dev")(policy(unlabelled.toJson.toString))
+        assert(readOnDev.recovery == unlabelled.recovery, "a saved strict block stays strict on dev: " + readOnDev.recovery)
+
+        val dev = withLabel("dev")(policy("""{"recovery":{"mode":"autopilot"}}"""))
+        assert(dev.recovery.maxRecordDeltaPct == 50)
+        for (label <- Seq("production", "qa", "")) {
+            val back = withLabel(label)(policy(dev.toJson.toString))
+            assert(back.recovery == dev.recovery, "a saved loose block stays loose on '" + label + "': " + back.recovery)
+        }
+    }
 }

@@ -145,3 +145,12 @@ def test_tool_catalog_surfaces_list_get_incident_evidence_and_drift_check_passes
 def test_ui_service_dispatches_get_incident_evidence():
     svc = (ROOT / "ui" / "src" / "app" / "mcp.service.ts").read_text()
     assert "case 'get_incident_evidence'" in svc
+
+
+# ---- Story self-healing-6 (plans/stories/self-healing-6-env-defaults-learn-notes.md):
+# the incident webhook now carries `evidenceSummary`; get_incident says so.
+
+def test_get_incident_description_says_the_evidence_summary_is_what_the_webhook_sends():
+    d = _tool("get_incident").description.lower()
+    assert "evidence summary" in d, d
+    assert "webhook" in d, d
