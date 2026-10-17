@@ -1604,20 +1604,124 @@ object IncidentRunner {
             }
         }
 
-        private[incident] def parseProposal(text: String): Either[String, Proposal] = {
-            val jsonStr = {
-                val t = text.trim
-                val fenced = """(?s).*```(?:json)?\s*(\{.*?\})\s*```.*""".r
-                t match {
-                    case fenced(inner) => inner
-                    case _ =>
-                        val start = t.indexOf('{')
-                        val end = t.lastIndexOf('}')
-                        if (start >= 0 && end > start) t.substring(start, end + 1) else t
+        private val ProposalKeys = Set("classification", "summary", "needsHuman", "actions")
+
+        private val FencedObject = """(?s).*```(?:json)?\s*(\{.*?\})\s*```.*""".r
+
+        /** The last balanced `{...}` ending at the final `}`, scanning
+          * backwards and tracking depth outside JSON string literals. */
+        private[incident] def lastBalancedObject(t: String): Option[String] = {
+            val end = t.lastIndexOf('}')
+            if (end < 0) None
+            else {
+                var depth = 0
+                var inString = false
+                var i = end
+                var start = -1
+                while (i >= 0 && start < 0) {
+                    val c = t.charAt(i)
+                    if (c == '"') {
+                        var bs = 0
+                        var j = i - 1
+                        while (j >= 0 && t.charAt(j) == '\\') { bs += 1; j -= 1 }
+                        if (bs % 2 == 0) inString = !inString
+                    } else if (!inString) {
+                        if (c == '}') depth += 1
+                        else if (c == '{') {
+                            depth -= 1
+                            if (depth == 0) start = i
+                        }
+                    }
+                    i -= 1
+                }
+                if (start >= 0) Some(t.substring(start, end + 1)) else None
+            }
+        }
+
+        /** The balanced `{...}` starting at `start`, scanning forwards. */
+        private def balancedFrom(t: String, start: Int): Option[String] = {
+            var depth = 0
+            var inString = false
+            var escaped = false
+            var i = start
+            while (i < t.length) {
+                val c = t.charAt(i)
+                if (inString) {
+                    if (escaped) escaped = false
+                    else if (c == '\\') escaped = true
+                    else if (c == '"') inString = false
+                } else if (c == '"') inString = true
+                else if (c == '{') depth += 1
+                else if (c == '}') {
+                    depth -= 1
+                    if (depth == 0) return Some(t.substring(start, i + 1))
+                }
+                i += 1
+            }
+            None
+        }
+
+        /** Candidate JSON strings, most likely first: the last balanced object,
+          * the fenced block, then every `{` from the end (lazily). */
+        private def proposalCandidates(t: String): Iterator[String] = {
+            val fenced = t match {
+                case FencedObject(inner) => Some(inner)
+                case _ => None
+            }
+            val starts = Iterator.iterate(t.lastIndexOf('{'))(i => if (i > 0) t.lastIndexOf('{', i - 1) else -1).takeWhile(_ >= 0)
+            lastBalancedObject(t).iterator ++ fenced.iterator ++ starts.flatMap(balancedFrom(t, _))
+        }
+
+        /** The proposal object in a model reply. Prefers the LAST object that
+          * carries a proposal key; falls back to the first candidate that is a
+          * JSON object at all; otherwise the first parse error. */
+        private def extractProposalObject(text: String): Either[String, JsonObject] = {
+            val t = Option(text).getOrElse("").trim
+            var firstError: Option[String] = None
+            var firstObject: Option[JsonObject] = None
+            val it = proposalCandidates(t)
+            while (it.hasNext) {
+                val c = it.next()
+                try {
+                    val e = JsonParser.parseString(c)
+                    if (e.isJsonObject) {
+                        val o = e.getAsJsonObject
+                        if (ProposalKeys.exists(o.has)) return Right(o)
+                        if (firstObject.isEmpty) firstObject = Some(o)
+                    } else if (firstError.isEmpty) firstError = Some("not a JSON object")
+                } catch {
+                    case ex: Exception => if (firstError.isEmpty) firstError = Some(String.valueOf(ex.getMessage))
                 }
             }
+            firstObject match {
+                case Some(o) => Right(o)
+                case None =>
+                    // No candidate at all: parse the whole text for the old error shape.
+                    firstError match {
+                        case Some(err) => Left(err)
+                        case None =>
+                            try {
+                                val e = JsonParser.parseString(t)
+                                if (e.isJsonObject) Right(e.getAsJsonObject) else Left("not a JSON object")
+                            } catch { case ex: Exception => Left(String.valueOf(ex.getMessage)) }
+                    }
+            }
+        }
+
+        private[incident] def parseProposal(text: String): Either[String, Proposal] = {
+            def invalid(msg: String) = Left("proposal was not valid JSON: " + msg + " — text: " + clip(text))
+            extractProposalObject(text) match {
+                case Left(msg) => invalid(msg)
+                case Right(o) =>
+                    proposalFrom(o) match {
+                        case Left(msg) => invalid(msg)
+                        case ok => ok
+                    }
+            }
+        }
+
+        private def proposalFrom(o: JsonObject): Either[String, Proposal] = {
             try {
-                val o = JsonParser.parseString(jsonStr).getAsJsonObject
                 val classification = if (o.has("classification")) o.get("classification").getAsString else "needs-human"
                 val actions =
                     if (o.has("actions") && o.get("actions").isJsonArray) {
@@ -1641,7 +1745,7 @@ object IncidentRunner {
                     learnNote = if (o.has("learnNote") && o.get("learnNote").isJsonPrimitive) Some(o.get("learnNote").getAsString) else None
                 ))
             } catch {
-                case e: Exception => Left("proposal was not valid JSON: " + e.getMessage + " — text: " + clip(text))
+                case e: Exception => Left(String.valueOf(e.getMessage))
             }
         }
 
@@ -1678,7 +1782,8 @@ object IncidentRunner {
             incident.steps.filter(_.summary.startsWith(DoctorNotePrefix)).foreach(st => sb.append(st.summary.take(500)).append("\n"))
             IncidentEvidenceBuilder.of(incident).foreach(e => sb.append(IncidentEvidenceBuilder.blastRadiusLine(incident, e.blastRadius)).append("\n"))
             sb.append("\n")
-            sb.append("Diagnose this incident using the read-only tools available, then END your reply with ONLY a JSON object (no prose after it):\n")
+            sb.append("Diagnose this incident using the read-only tools available, then END your reply with ONLY a JSON object (no prose after it). " +
+                "Put any explanation in the object's summary field, not in text before the object:\n")
             sb.append(
                 """{"classification":"transient|structural-script|structural-schema|credential|platform|needs-human","summary":"<one line>","needsHuman":<bool>,"actions":[{"tool":"run_tap|test_tap|update_tap|regenerate_pipeline_scripts","args":{...},"purpose":"<one line>"}],"learnNote":"<optional source quirk worth remembering>"}"""
             ).append("\n\n")
@@ -1721,7 +1826,8 @@ object IncidentRunner {
     private val RecoveryAddendum: String =
         "\n\n## Recovery-agent mode\n\n" +
             "This is a HEADLESS diagnosis run: no operator is present, nothing you write is a conversation. " +
-            "Use only the read-only tools provided, keep tool calls few and purposeful, and end with the single JSON proposal object you were asked for. " +
+            "Use only the read-only tools provided, keep tool calls few and purposeful, and end your reply with the single JSON proposal object you were asked for — " +
+            "the reply must END with that object, and any explanation goes in its summary field, not in prose before the object. " +
             "Do not ask questions; when information is missing, classify as needs-human and say what a person should check. " +
             "Use get_lineage to say what is downstream before proposing a change.\n"
 

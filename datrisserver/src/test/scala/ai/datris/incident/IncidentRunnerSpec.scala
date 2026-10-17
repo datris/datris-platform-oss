@@ -84,6 +84,79 @@ class IncidentRunnerSpec extends AnyFunSuite {
         assert(RealDiagnoser.parseProposal("").isLeft)
     }
 
+    test("prose with braces before a trailing JSON object parses to the object") {
+        val r = RealDiagnoser.parseProposal(
+            """The field {id} moved and {name} is now nested.
+              |
+              |{"classification":"transient","summary":"retry","needsHuman":false,"actions":[{"tool":"run_tap","args":{"name":"prices"},"purpose":"retry"}]}""".stripMargin
+        )
+        assert(r.isRight, r)
+        assert(r.right.get.classification == "transient")
+        assert(r.right.get.actions.map(_.tool) == List("run_tap"))
+    }
+
+    test("an object followed by trailing prose parses") {
+        val r = RealDiagnoser.parseProposal(
+            """{"classification":"credential","summary":"key rejected","needsHuman":true,"actions":[]}
+              |
+              |Let me know if you need more detail.""".stripMargin
+        )
+        assert(r.isRight, r)
+        assert(r.right.get.classification == "credential")
+    }
+
+    test("an object followed by trailing prose containing braces parses") {
+        val r = RealDiagnoser.parseProposal(
+            """{"classification":"credential","summary":"key rejected","needsHuman":true,"actions":[]} (see the {token} field}"""
+        )
+        assert(r.isRight, r)
+        assert(r.right.get.classification == "credential")
+    }
+
+    test("two JSON objects: the LAST one with proposal keys wins") {
+        val r = RealDiagnoser.parseProposal(
+            """First draft: {"classification":"transient","summary":"draft","needsHuman":false,"actions":[]}
+              |Final: {"classification":"structural-script","summary":"final","needsHuman":false,"actions":[]}
+              |Sample record seen: {"price": 1.5}""".stripMargin
+        )
+        assert(r.isRight, r)
+        assert(r.right.get.summary == "final")
+        assert(r.right.get.classification == "structural-script")
+    }
+
+    test("braces and escaped quotes inside string values parse correctly") {
+        val r = RealDiagnoser.parseProposal(
+            """Notes first {.
+              |{"classification":"structural-script","summary":"template {customer_email} became \"{email_address}\" }","needsHuman":false,"actions":[{"tool":"update_tap","args":{"name":"prices","script":"x = {'a': 1}\nprint(\"}\")"},"purpose":"fix"}]}""".stripMargin
+        )
+        assert(r.isRight, r)
+        val p = r.right.get
+        assert(p.summary == "template {customer_email} became \"{email_address}\" }")
+        assert(p.actions.head.args.get("script").getAsString == "x = {'a': 1}\nprint(\"}\")")
+    }
+
+    test("garbage with no object is a Left carrying the clip") {
+        val r = RealDiagnoser.parseProposal("The run failed {because of the source and I cannot tell more")
+        assert(r.isLeft)
+        assert(r.left.get.startsWith("proposal was not valid JSON: "))
+        assert(r.left.get.contains(" — text: The run failed {because"))
+    }
+
+    test("regression: prose with a brace before the proposal (inc_a935304193c4 shape)") {
+        val text =
+            "The tap breaks on a source field rename, so this is a script problem. In the source data, records {1-40} call `customer_email` " +
+                "and records 41-120 call it `email_address`. The script reads only the first name.\n\n" +
+                "{\"classification\":\"script\",\"summary\":\"...\",\"needsHuman\":false,\"actions\":[{\"tool\":\"create_tap\",\"args\":{\"name\":\"x\",\"script\":\"...\"},\"purpose\":\"...\"}],\"learnNote\":\"...\"}"
+        val r = RealDiagnoser.parseProposal(text)
+        assert(r.isRight, r)
+        val p = r.right.get
+        assert(p.classification == "script")
+        assert(!p.needsHuman)
+        assert(p.actions.map(_.tool) == List("create_tap"))
+        assert(p.actions.head.args.get("name").getAsString == "x")
+        assert(p.learnNote.contains("..."))
+    }
+
     // ------------------------------------------------------------------
     // Action filtering (code decides, not the model)
     // ------------------------------------------------------------------
