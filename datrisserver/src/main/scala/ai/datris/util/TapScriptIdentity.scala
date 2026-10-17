@@ -36,6 +36,19 @@ object TapScriptIdentity {
         else Try(readScript(tap)).toOption.flatten.map(sha256Hex)
     }
 
+    /** The identity `of` will compute for a BUILT-IN (MinIO) tap once `text`
+      * is stored and read back: the MinIO reader returns the object line by
+      * line joined with "\n" (any line terminator, no trailing one), so the
+      * text is put through the same reader before hashing. A passing scratch
+      * rehearsal of `text` is stamped with this (see TapCronGate's rehearsed
+      * stamp) so the approved fix can be stored on a scheduled tap. */
+    def ofText(text: String): String = sha256Hex(asStored(text))
+
+    private def asStored(text: String): String = {
+        val reader = new java.io.BufferedReader(new java.io.StringReader(Option(text).getOrElse("")))
+        Stream.continually(reader.readLine()).takeWhile(_ != null).mkString("\n")
+    }
+
     private def nonEmpty(s: String): Option[String] = Option(s).filter(_.nonEmpty)
 
     private def sha256Hex(text: String): String =

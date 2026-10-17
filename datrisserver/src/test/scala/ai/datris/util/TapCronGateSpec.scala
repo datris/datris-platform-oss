@@ -164,4 +164,43 @@ class TapCronGateSpec extends AnyFunSuite {
         assert(moved.isDefined, "a changed endpoint under a cron must be re-tested")
         assert(moved.get.contains("feed") && moved.get.contains(Remedy), moved.get)
     }
+    // ------------------------------------- scratch rehearsal as a test run ---
+    // An incident's passing scratch rehearsal of candidate text T stamps the
+    // stored tap with TapScriptIdentity.ofText(T) (inc_35530374ace4).
+
+    private val T = "def fetch():\n    return [{'id': 1}]\n"
+    private val U = "def fetch():\n    return [{'id': 2}]\n"
+
+    test("ofText(T) is the identity a built-in tap computes once T is stored and read back") {
+        val minio = TapConfig(name = "prices", description = "d", targetPipeline = "p", scriptPath = "tap-scripts/prices_2.py")
+        // The MinIO reader joins lines with \n and drops the final terminator.
+        val readBack = "def fetch():\n    return [{'id': 1}]"
+        assert(TapScriptIdentity.of(minio, _ => Some(readBack)).contains(TapScriptIdentity.ofText(T)))
+        assert(TapScriptIdentity.ofText(T.replace("\n", "\r\n")) == TapScriptIdentity.ofText(T), "CRLF is not a different script")
+        assert(TapScriptIdentity.ofText(U) != TapScriptIdentity.ofText(T))
+    }
+
+    test("a stamp for T accepts the store lane and check for T with the cron unchanged") {
+        val stored = gh("aaa111", cron = Cron, testStatus = "success", stamp = TapScriptIdentity.ofText(T))
+        assert(TapCronGate.checkScriptStore(stored, T, _ => Some(U)).isEmpty, "the rehearsed bytes may replace the scheduled script")
+        assert(TapCronGate.checkScriptStore(stored, U, _ => Some(T)).isDefined, "other bytes are still refused")
+
+        // POST /tap/script after the write: the stamp moves onto the new pin.
+        val repointed = gh("ccc333", cron = Cron, testStatus = "success", stamp = TapScriptIdentity.ofText(T))
+        val carried = TapCronGate.carryRehearsedStamp(stored, T, repointed, t => TapScriptIdentity.of(t))
+        assert(carried.map(_.lastTestRunScriptId).contains("gh:ccc333"), carried)
+        val gateBase = stored.copy(lastTestRunScriptId = carried.get.lastTestRunScriptId)
+        assert(TapCronGate.check(gateBase, carried.get).isEmpty, "the scheduled tap is repointed at the rehearsed bytes")
+        // A later POST /api/v1/tap of the stored tap with the cron unchanged.
+        assert(TapCronGate.check(carried.get, gh("ccc333", cron = Cron, description = "edited")).isEmpty)
+        assert(TapCronGate.check(carried.get, gh("ccc333", cron = OtherCron)).isEmpty)
+        assert(TapCronGate.carryRehearsedStamp(stored, U, repointed, t => TapScriptIdentity.of(t)).isEmpty)
+    }
+
+    test("a rehearsal stamp counts only when green, and never for HTTP taps") {
+        val notGreen = gh("aaa111", cron = Cron, testStatus = "failure", stamp = TapScriptIdentity.ofText(T))
+        assert(TapCronGate.checkScriptStore(notGreen, T, _ => Some(U)).isDefined)
+        assert(!TapCronGate.rehearsed(http("https://feeds.example.org/v1", cron = Cron, testStatus = "success", stamp = TapScriptIdentity.ofText(T)), T))
+        assert(!TapCronGate.rehearsed(null, T))
+    }
 }

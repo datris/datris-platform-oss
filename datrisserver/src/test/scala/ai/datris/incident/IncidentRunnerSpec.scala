@@ -481,6 +481,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
         val calls = mutable.ArrayBuffer[Call]()
         val scratchCalls = mutable.ArrayBuffer[(String, Option[String])]()
         val reverts = mutable.ArrayBuffer[(String, String, Int)]()
+
+        /** (tapName, stamp, mutating executor calls made before the stamp). */
+        val stamps = mutable.ArrayBuffer[(String, IncidentRunner.RehearsalStamp, Int)]()
         @volatile var diagnoseCalls: Int = 0
         @volatile var tap: TapConfig = TapConfig(name = "prices", description = "d", targetPipeline = "orders", version = 3, lastRunStatus = "failure")
         def incident: Incident = store.get(id).getOrElse(fail("incident " + id + " vanished"))
@@ -543,6 +546,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
             IncidentIO.store,
             IncidentEvidenceBuilder.realProfileOverride
         )
+        val savedStamp = IncidentRunner.stampTest
         IncidentIO.store = store
         IncidentRunner.runAsync = false
         IncidentRunner.settingsOverride = settings
@@ -578,6 +582,8 @@ class IncidentRunnerSpec extends AnyFunSuite {
             ctx.reverts.synchronized { ctx.reverts += ((incidentId, tapName, toVersion)) }
             ctx.tap = ctx.tap.copy(version = toVersion)
         }
+        IncidentRunner.stampTest = (tapName: String, stamp: IncidentRunner.RehearsalStamp) =>
+            ctx.stamps.synchronized { ctx.stamps += ((tapName, stamp, ctx.calls.count(k => Mutations.contains(k.tool)))); () }
         IncidentEvidenceBuilder.realProfileOverride = (_: Incident, _: Option[RunProfile]) => real
 
         try body(ctx)
@@ -591,6 +597,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
             IncidentRunner.revertTap = saved._7
             IncidentIO.store = saved._8
             IncidentEvidenceBuilder.realProfileOverride = saved._9
+            IncidentRunner.stampTest = savedStamp
         }
     }
 
@@ -698,6 +705,94 @@ class IncidentRunnerSpec extends AnyFunSuite {
             val b = c.ev.checks.find(_.name == "baseline")
             assert(b.exists(!_.passed), c.ev.checks)
             assert(b.exists(_.observed == "no successful run in the last 30 days"), b)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // A passing rehearsal counts as the candidate script's test run
+    // (inc_35530374ace4: the approved update_tap hit the test-before-cron gate)
+    // ------------------------------------------------------------------
+
+    test("scratch pass with an update_tap script stamps the stored tap's test run once, with the candidate identity, before any action") {
+        scenario() { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.stamps.size == 1, c.stamps)
+            val (tap, stamp, callsBefore) = c.stamps.head
+            assert(tap == "prices")
+            assert(stamp.scriptId == ai.datris.util.TapScriptIdentity.ofText(CandidateScript))
+            assert(stamp.recordCount == 100)
+            assert(stamp.columns.asScala.toList == List("id", "price", "region"))
+            assert(callsBefore == 0, "stamped before the first mutating executor call (the gated store)")
+            assert(c.tools.filter(Mutations) == List("update_tap", "run_tap"), c.tools)
+        }
+    }
+
+    test("a rehearsal stamp sets a successful test run and touches nothing else") {
+        val cols = java.util.Arrays.asList("id", "price")
+        val stored = TapConfig(
+            name = "prices",
+            description = "d",
+            targetPipeline = "orders",
+            version = 7,
+            scriptPath = "tap-scripts/prices_1.py",
+            cronExpression = "0 0 3 * * ?",
+            enabled = true,
+            lastRunStatus = "failure",
+            lastRunTime = "t0",
+            lastRunRecordCount = 5,
+            lastRunError = "KeyError",
+            lastTestRunStatus = "failure",
+            lastTestRunError = "old",
+            lastTestRunScriptId = "old-id"
+        )
+        val out = IncidentRunner.RehearsalStamp("abc", 120, "json", cols).applyTo(stored, "t1")
+        assert(out.lastTestRunStatus == "success")
+        assert(out.lastTestRunTime == "t1" && out.lastTestRunRecordCount == 120 && out.lastTestRunDataType == "json")
+        assert(out.lastTestRunColumns == cols && out.lastTestRunError == null && out.lastTestRunScriptId == "abc")
+        assert(
+            out.copy(
+                lastTestRunStatus = stored.lastTestRunStatus,
+                lastTestRunTime = stored.lastTestRunTime,
+                lastTestRunRecordCount = stored.lastTestRunRecordCount,
+                lastTestRunError = stored.lastTestRunError,
+                lastTestRunDataType = stored.lastTestRunDataType,
+                lastTestRunColumns = stored.lastTestRunColumns,
+                lastTestRunScriptId = stored.lastTestRunScriptId
+            ) == stored,
+            "lastRun*, cron, enabled, version and the script reference are untouched"
+        )
+    }
+
+    test("scratch fail stamps nothing") {
+        scenario(candidate = Some(runProfile("scratch_1", "scratch", 40L))) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.incident.state == Incident.Failed)
+            assert(c.stamps.isEmpty, c.stamps)
+        }
+        scenario(candidate = None) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.stamps.isEmpty, "a scratch run that itself failed stamps nothing: " + c.stamps)
+        }
+    }
+
+    test("a run_tap-only proposal rehearses the stored script and stamps nothing") {
+        val run = new JsonObject()
+        run.addProperty("name", "prices")
+        val p = IncidentRunner.Proposal("transient", "rate limited", needsHuman = false, List(ProposedAction("run_tap", run, "retry")), None)
+        scenario(proposal = p) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.scratchCalls.toList == List(("prices", None)))
+            assert(c.stamps.isEmpty, c.stamps)
+        }
+    }
+
+    test("scratch needs-human with a candidate script stamps (a person may Proceed)") {
+        scenario(candidate = Some(runProfile("scratch_1", "scratch", 100L, baseColumns.filterNot(_.name == "region")))) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.incident.state == Incident.AwaitingApproval)
+            assert(c.stamps.size == 1, c.stamps)
+            assert(c.stamps.head._2.scriptId == ai.datris.util.TapScriptIdentity.ofText(CandidateScript))
+            assert(c.tools.filter(Mutations).isEmpty, c.tools)
         }
     }
 

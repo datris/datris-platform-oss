@@ -79,7 +79,7 @@ Column values are never shown on the card, in the webhook or to the model when `
 
 With `recovery.verifyMode` at its default `scratch-first`, a proposed fix is verified in two stages:
 
-1. **Scratch rehearsal.** The proposed script runs in test mode: the source is called, the incremental cursor is not committed, and nothing is stamped on the tap. Its output goes through the real pipeline with the destination swapped for the scratch lane (the [Live Read](/destinations/live-read) destination). The landed rows are profiled and compared with the last good run against the thresholds. In `propose` mode this happens before the approval is queued, so the approval already carries the evidence.
+1. **Scratch rehearsal.** The proposed script runs in test mode: the source is called, the incremental cursor is not committed, and the tap's last-run status is not touched. Its output goes through the real pipeline with the destination swapped for the scratch lane (the [Live Read](/destinations/live-read) destination). The landed rows are profiled and compared with the last good run against the thresholds. In `propose` mode this happens before the approval is queued, so the approval already carries the evidence. A rehearsal that passes (or waits for a person) counts as the proposed script's test run, so the approved fix can be saved on a scheduled tap without clearing its schedule first.
 2. **Real run.** Only a `pass` continues. The fix is applied (directly or after approval) and the tap must complete a real run healthily; when it feeds a pipeline the load must finish without error. The real run's landed data is profiled into the evidence too.
 
 The verdict decides what happens next:

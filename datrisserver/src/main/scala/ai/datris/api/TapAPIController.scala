@@ -962,17 +962,25 @@ class TapAPIController {
                 // SCHEDULED tap at untested bytes (the scheduler would fire them
                 // before the gated save ever runs). The new reference is still
                 // returned so the caller can test against it.
-                TapCronGate.check(existing, repointed) match {
+                // A passing scratch rehearsal of exactly these bytes stamped the
+                // tap; the stamp moves onto the new reference so the scheduled
+                // tap is repointed and stays green.
+                val (gateBase, toStore) =
+                    TapCronGate.carryRehearsedStamp(existing, script, repointed, t => TapScriptIdentity.of(t)) match {
+                        case Some(carried) => (existing.copy(lastTestRunScriptId = carried.lastTestRunScriptId), carried)
+                        case None => (existing, repointed)
+                    }
+                TapCronGate.check(gateBase, toStore) match {
                     case None =>
                         // Re-derive the dependency stamp from the new bytes.
                         val stamped =
                             try {
                                 val (taps, pipelines) = TapAPIController.loadAllForDependencies()
-                                TapAPIController.stampInferredDependsOn(repointed, Some(script), pipelines, taps)
+                                TapAPIController.stampInferredDependsOn(toStore, Some(script), pipelines, taps)
                             } catch {
                                 case e: Exception =>
                                     logger.warn("POST /tap/script: dependency inference failed for '" + tapName + "': " + e.getMessage)
-                                    repointed
+                                    toStore
                             }
                         TapConfigIO.write(stamped)
                     case Some(msg) =>

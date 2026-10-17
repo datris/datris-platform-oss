@@ -117,7 +117,33 @@ object IncidentRunner {
       * the scratch run itself failed. `unavailable` Some = the scratch lane
       * cannot rehearse this tap (document taps); the reason is recorded and
       * the incident is verified with the real run, as `verifyMode = real`. */
-    case class ScratchOutcome(candidate: Option[RunProfile], error: Option[String] = None, unavailable: Option[String] = None)
+    case class ScratchOutcome(
+        candidate: Option[RunProfile],
+        error: Option[String] = None,
+        unavailable: Option[String] = None,
+        result: Option[TapScriptResult] = None
+    )
+
+    /** What a passing scratch rehearsal of a candidate script writes on the
+      * STORED tap's `lastTestRun*` fields: it counts as that script's test run
+      * for the test-before-cron gate. `scriptId` is
+      * `TapScriptIdentity.ofText(candidate)`. */
+    case class RehearsalStamp(scriptId: String, recordCount: Int, dataType: String, columns: java.util.List[String]) {
+
+        /** `tap` with this rehearsal as its passing test run. Touches
+          * `lastTestRun*` only — never lastRun*, state, cron, enabled or the
+          * script reference. */
+        def applyTo(tap: TapConfig, now: String): TapConfig =
+            tap.copy(
+                lastTestRunStatus = "success",
+                lastTestRunTime = now,
+                lastTestRunRecordCount = recordCount,
+                lastTestRunError = null,
+                lastTestRunDataType = dataType,
+                lastTestRunColumns = columns,
+                lastTestRunScriptId = scriptId
+            )
+    }
 
     /** scratchVerify's verdict when the lane is not available for the tap. */
     private[incident] val ScratchUnavailable = "unavailable"
@@ -141,6 +167,13 @@ object IncidentRunner {
     /** Every stored-tap read in the runner. */
     @volatile private[incident] var tapLookup: String => Option[TapConfig] =
         (name: String) => Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name))
+
+    /** Writes a passing rehearsal as the tap's test run: (tapName, stamp).
+      * Production reads the stored tap and rewrites its `lastTestRun*` fields
+      * only, non-versioned (as a `mode=test` run does). Not routed through the
+      * executor, so not gateable. */
+    @volatile private[incident] var stampTest: (String, RehearsalStamp) => Unit =
+        (name: String, stamp: RehearsalStamp) => writeRehearsalStamp(name, stamp)
 
     /** The direct restore inside revertIfNeeded: (incidentId, tapName,
       * toVersion). Called only when the live version differs from the target. */
@@ -1110,6 +1143,12 @@ object IncidentRunner {
                                 val lastN = IncidentEvidenceBuilder.lastNFor(fresh, Set(candidate.runId))
                                 val ev = IncidentEvidenceBuilder.withCandidate(base, candidate, s.thresholds, lastN)
                                 IncidentEvidenceBuilder.store(id, ev)
+                                // A pass (or needs-human, which a person may
+                                // Proceed past) of a candidate script is that
+                                // script's test run, so the approved fix can be
+                                // stored on a scheduled tap.
+                                if ((ev.verdict == Thresholds.Pass || ev.verdict == Thresholds.NeedsHuman) && !tap.isHttp)
+                                    candidateScript.foreach(script => stampRehearsal(id, tapToRun, script, candidate, outcome.result))
                                 (ev.verdict, ev.summaryLine)
                         }
                 }
@@ -1119,6 +1158,31 @@ object IncidentRunner {
         step(id, "verify", "scratch verification: " + summary)
         AuditLog.system("incident", "scratch-verify", "tap", tapToRun, metadata = md("incidentId" -> id, "verdict" -> verdict))
         (verdict, summary)
+    }
+
+    private def stampRehearsal(id: String, tapName: String, script: String, candidate: RunProfile, result: Option[TapScriptResult]): Unit =
+        try {
+            val columns = result.flatMap(r => Option(r.columns)).getOrElse {
+                import scala.collection.JavaConverters._
+                candidate.columns.map(_.name).asJava
+            }
+            stampTest(
+                tapName,
+                RehearsalStamp(
+                    scriptId = TapScriptIdentity.ofText(script),
+                    recordCount = result.map(_.recordCount).getOrElse(candidate.recordCount.toInt),
+                    dataType = result.map(_.dataType).orNull,
+                    columns = columns
+                )
+            )
+        } catch {
+            case e: Exception => logger.warn("incident " + id + ": could not record the scratch rehearsal as a test run of " + tapName + ": " + e.getMessage)
+        }
+
+    /** Production [[stampTest]]: plain (non-versioned) write, as a `mode=test` run. */
+    private def writeRehearsalStamp(tapName: String, stamp: RehearsalStamp): Unit = {
+        val live = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+        if (live != null) TapConfigIO.write(stamp.applyTo(live, ai.datris.api.TapAPIController.nowStamp()))
     }
 
     /** Some(reason) when the scratch lane cannot rehearse `tap`: it emits
@@ -1189,7 +1253,8 @@ object IncidentRunner {
         if (result.dataType == "document") return ScratchOutcome(None, None, Some("document taps"))
         // Nothing was fed (0 records, or no target pipeline): judge the
         // script's own output.
-        if (result.publisherToken == null) return ScratchOutcome(Some(unfedProfile(tap, result, sha, System.currentTimeMillis() - started)))
+        if (result.publisherToken == null)
+            return ScratchOutcome(Some(unfedProfile(tap, result, sha, System.currentTimeMillis() - started)), result = Some(result))
         val incident = Option(id).flatMap(IncidentIO.get)
         if (incident.isDefined && !pollRollup(id, result.publisherToken, incident.get))
             return ScratchOutcome(None, Some("the scratch pipeline run did not complete cleanly"))
@@ -1218,20 +1283,23 @@ object IncidentRunner {
         // The rollup carries no per-row DQ counts: a job that completed is
         // taken as fully passing, the same rule recorded runs follow.
         val ok = job.status == null || job.status == "success" || job.status == "warning"
-        ScratchOutcome(Some(RunProfile(
-            runId = job.pipelineToken,
-            source = "scratch",
-            recordCount = total,
-            columns = stats.columns,
-            dqFailures = if (ok) 0 else 1,
-            dqPassRate = if (ok) 1.0 else 0.0,
-            durationMs = System.currentTimeMillis() - started,
-            scriptSha = sha,
-            tapVersion = Some(tap.version),
-            pipelineVersion = config.map(_.version).filter(_ > 0),
-            sampledRows = stats.recordCount,
-            computedAt = Instant.now()
-        )))
+        ScratchOutcome(
+            Some(RunProfile(
+                runId = job.pipelineToken,
+                source = "scratch",
+                recordCount = total,
+                columns = stats.columns,
+                dqFailures = if (ok) 0 else 1,
+                dqPassRate = if (ok) 1.0 else 0.0,
+                durationMs = System.currentTimeMillis() - started,
+                scriptSha = sha,
+                tapVersion = Some(tap.version),
+                pipelineVersion = config.map(_.version).filter(_ > 0),
+                sampledRows = stats.recordCount,
+                computedAt = Instant.now()
+            )),
+            result = Some(result)
+        )
     }
 
     private def jsonRow(o: JsonObject): Map[String, Any] = {
