@@ -446,6 +446,7 @@ _ECHO_ENVIRONMENT_TOOLS = frozenset({
     "update_secret",
     "restore_tap_version",
     "restore_pipeline_version",
+    "restore_script_version",
 })
 
 
@@ -1684,6 +1685,7 @@ _MUTATING_TOOLS = {
     "apply_dest_types", "upload_config", "update_secret", "create_tap_secret",
     "delete_tap_secret", "create_tap", "run_tap", "delete_tap", "set_tap_state",
     "test_tap", "update_tap", "restore_tap_version", "restore_pipeline_version",
+    "restore_script_version",
 }
 
 _APPROVAL_NOTE = (
@@ -3365,6 +3367,87 @@ def _base_tools():
             }
         ),
         Tool(
+            name="list_script_versions",
+            description=(
+                "List the version HISTORY of the script the pipeline runs for its AI data-quality rule or AI "
+                "transformation (`kind`), newest first. Each entry has `version`, `createdAt`, `createdBy`, "
+                "`changeNote`, `origin` (save, regenerate, run, restore-version, restore, repository), `model`, "
+                "`commitSha` (repository-backed scripts), `fingerprintMatchesCurrent` (written for the pipeline's "
+                "current instruction and source schema) and `isLive` (the script runs now use). Every change to the "
+                "script is kept; the pipeline's definition version does not change when its script does. Read-only. "
+                "See also `get_script_version`, `diff_script_versions`, `restore_script_version`."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the pipeline"},
+                    "kind": {"type": "string", "enum": ["dataQuality", "transformation"],
+                             "description": "Which script: the AI data-quality rule or the AI transformation"}
+                },
+                "required": ["name", "kind"]
+            }
+        ),
+        Tool(
+            name="get_script_version",
+            description=(
+                "View one version of a pipeline's AI data-quality rule or AI transformation script: the list fields "
+                "plus the full `script` text, `fingerprint`, `generatedAt` and `contractVersion`. Read-only; does not "
+                "change what the pipeline runs. Get version numbers from `list_script_versions`."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the pipeline"},
+                    "kind": {"type": "string", "enum": ["dataQuality", "transformation"],
+                             "description": "Which script: the AI data-quality rule or the AI transformation"},
+                    "version": {"type": "integer", "description": "Script version number to view"}
+                },
+                "required": ["name", "kind", "version"]
+            }
+        ),
+        Tool(
+            name="diff_script_versions",
+            description=(
+                "Compare two versions of a pipeline's AI data-quality rule or AI transformation script. Returns a "
+                "server-computed line diff: `script.lines` entries typed `ctx`, `add` or `del`. Read-only. "
+                "`version` is the newer/selected version; `against` is the baseline."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the pipeline"},
+                    "kind": {"type": "string", "enum": ["dataQuality", "transformation"],
+                             "description": "Which script: the AI data-quality rule or the AI transformation"},
+                    "version": {"type": "integer", "description": "Selected version"},
+                    "against": {"type": "integer", "description": "Baseline version to compare against"}
+                },
+                "required": ["name", "kind", "version", "against"]
+            }
+        ),
+        Tool(
+            name="restore_script_version",
+            description=(
+                "Make an earlier version of a pipeline's AI data-quality rule or AI transformation script the one "
+                "the pipeline runs. APPEND-ONLY and SIDE-EFFECTING: the restore writes the chosen text back as a NEW "
+                "latest version (no model call); the pipeline's definition version does not change. If that text is "
+                "already the live script, nothing is written and the response carries `noop: true`. Refused when the "
+                "pipeline's instruction or source schema no longer matches the version (HTTP 422 with the reason; "
+                "nothing is changed), and refused with HTTP 409 when a repository-backed script file was edited since "
+                "its recorded commit. Only call this when the operator has explicitly asked to restore this specific "
+                "script version. Report the new version and stop."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the pipeline"},
+                    "kind": {"type": "string", "enum": ["dataQuality", "transformation"],
+                             "description": "Which script: the AI data-quality rule or the AI transformation"},
+                    "version": {"type": "integer", "description": "Script version to restore (becomes a new latest version)"}
+                },
+                "required": ["name", "kind", "version"]
+            }
+        ),
+        Tool(
             name="wait_seconds",
             description=(
                 "Sleep for a fixed number of seconds, then return. Use this to pace polling against long-running "
@@ -3430,7 +3513,7 @@ def _base_tools():
         # --- Recovery-agent incidents (read-only; the platform opens them) ---
         Tool(
             name="list_incidents",
-            description="List the platform's recovery-agent incidents, newest first. An incident is opened by the platform itself when a scheduled tap finally fails, a pipeline job errors, a tap goes stale, or a pipeline's volume swings; the recovery agent diagnoses it and — within the agent policy's recovery mode — repairs and verifies it. Each entry carries kind, resource, state (open | diagnosing | proposed | awaiting_approval | executing | verifying | resolved | failed | abandoned), classification, and a step-by-step narrative. Use state=open for what is being worked right now. Returns {enabled:false, incidents:[]} when the recovery agent is off.",
+            description="List the platform's recovery-agent incidents, newest first. An incident is opened by the platform itself when a scheduled tap finally fails, a pipeline job errors, a tap goes stale, a pipeline's volume swings, or a source changed its columns after a successful run (schema drift); the recovery agent diagnoses it and — within the agent policy's recovery mode — repairs and verifies it (for taps, re-running or fixing the tap; for pipelines, regenerating the stored AI script; the evidence names the script versions before and after). Each entry carries kind, resource, state (open | diagnosing | proposed | awaiting_approval | executing | verifying | resolved | failed | abandoned), classification, a step-by-step narrative, and — when the platform computed evidence for it — a verdict (pending | pass | fail | needs-human). Use state=open for what is being worked right now. Returns {enabled:false, incidents:[]} when the recovery agent is off.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -3447,7 +3530,21 @@ def _base_tools():
         ),
         Tool(
             name="get_incident",
-            description="Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it is waiting on, and outcome. When the operator asks about a failure the platform is already working, explain THIS record instead of re-diagnosing from scratch.",
+            description="Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it is waiting on, outcome, and its evidence (before/after profile, diff, blast radius, thresholds, verdict). A pipeline incident's repair is regenerating the stored AI script; the evidence names the script versions before and after (scriptVersions), and revertToScriptVersions is what a failed verification restores. The one-line evidence summary of this evidence (numbers and column names, never values) is also what the incident webhook sends (evidenceSummary). When the operator asks about a failure the platform is already working, explain THIS record instead of re-diagnosing from scratch.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "incident_id": {
+                        "type": "string",
+                        "description": "The incident id (inc_…).",
+                    },
+                },
+                "required": ["incident_id"],
+            }
+        ),
+        Tool(
+            name="get_incident_evidence",
+            description="Read the deterministic evidence the platform computed for one recovery-agent incident: the baseline profile of the last successful run before it broke, the profile of the real run after the fix, the diff between them (columns added or removed, type changes, record-count delta, null-rate deltas, distribution shift), the blast radius (downstream pipelines, datasets and catalog tables, and which agent identities queried them when reads are audited), the thresholds in force, each threshold check, and the verdict (pending | pass | fail | needs-human). Computed by platform code, never by a model; values from protected or sensitive-looking columns are never included. Returns an error when the incident has no evidence.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -4985,6 +5082,17 @@ def _dispatch(name: str, args: dict) -> str:
         from urllib.parse import quote
         return _call("post", f"/api/v1/pipeline/version/restore?name={quote(args['name'])}&version={int(args['version'])}")
 
+    elif name in ("list_script_versions", "get_script_version", "diff_script_versions", "restore_script_version"):
+        from urllib.parse import quote
+        base = f"/api/v1/pipelines/{quote(args['name'], safe='')}/codegen-scripts/{quote(args['kind'], safe='')}/versions"
+        if name == "list_script_versions":
+            return _call("get", base)
+        if name == "get_script_version":
+            return _call("get", f"{base}/{int(args['version'])}")
+        if name == "diff_script_versions":
+            return _call("get", f"{base}/{int(args['version'])}/diff?against={int(args['against'])}")
+        return _call("post", f"{base}/{int(args['version'])}/restore")
+
     elif name == "wait_seconds":
         # Clamp to a safe range; the LLM occasionally asks for absurd values.
         # Upper bound matches the description so the agent learns the limit.
@@ -5028,7 +5136,13 @@ def _dispatch(name: str, args: dict) -> str:
         incident_id = str(args.get("incident_id", "")).strip()
         if not incident_id:
             return json.dumps({"error": "incident_id is required"})
-        return _call("get", f"/api/v1/incidents/{incident_id}")
+        return _call("get", f"/api/v1/incidents/{urllib.parse.quote(incident_id, safe='')}")
+
+    elif name == "get_incident_evidence":
+        incident_id = str(args.get("incident_id", "")).strip()
+        if not incident_id:
+            return json.dumps({"error": "incident_id is required"})
+        return _call("get", f"/api/v1/incidents/{urllib.parse.quote(incident_id, safe='')}/evidence")
 
     elif name == "find_data":
         query = str(args.get("query", "")).strip()

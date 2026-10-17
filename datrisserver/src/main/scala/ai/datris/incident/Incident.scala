@@ -38,21 +38,24 @@ case class IncidentStep(
   * the narrative. */
 case class Incident(
     id: String,
-    kind: String, // tap_failure | pipeline_failure | stale | volume
+    kind: String, // tap_failure | pipeline_failure | stale | volume | schema_drift
     resourceType: String, // tap | pipeline
     resourceName: String,
     openedAt: Instant,
     state: String,
     trigger: JsonObject,
     steps: List[IncidentStep] = Nil,
-    classification: Option[String] = None, // transient | structural-script | structural-schema | needs-human
+    classification: Option[String] = None, // transient | structural-script | structural-schema | needs-human | credential | platform
     proposal: Option[JsonObject] = None, // the runner's parsed proposal, verbatim
     aiCalls: Int = 0,
     actionsTaken: Int = 0,
     awaitingApprovalIds: List[String] = Nil,
     revertToVersion: Option[Int] = None, // resource version to restore if verification fails
+    revertToScriptVersions: Map[String, Int] = Map.empty, // pipeline incidents: script kind -> version before the first action (0 = no history yet)
     closedAt: Option[Instant] = None,
-    outcome: Option[String] = None
+    outcome: Option[String] = None,
+    evidence: Option[JsonObject] = None, // IncidentEvidence JSON; absent on pre-upgrade incidents
+    resumedAt: Option[Instant] = None // a person proceeded past a needs-human verdict: the runtime budget restarts here
 ) {
 
     def isOpen: Boolean = Incident.OpenStates.contains(state)
@@ -78,8 +81,19 @@ case class Incident(
             awaitingApprovalIds.foreach(a.add)
             o.add("awaitingApprovalIds", a)
         }
+        revertToVersion.foreach(v => o.addProperty("revertToVersion", v))
+        if (revertToScriptVersions.nonEmpty) {
+            val rv = new JsonObject()
+            revertToScriptVersions.toList.sortBy(_._1).foreach { case (k, v) => rv.addProperty(k, v) }
+            o.add("revertToScriptVersions", rv)
+        }
         closedAt.foreach(c => o.addProperty("closedAt", c.toString))
         outcome.foreach(o.addProperty("outcome", _))
+        resumedAt.foreach(r => o.addProperty("resumedAt", r.toString))
+        evidence.foreach { e =>
+            o.add("evidence", e)
+            if (e.has("verdict") && e.get("verdict").isJsonPrimitive) o.addProperty("verdict", e.get("verdict").getAsString)
+        }
         o
     }
 
@@ -113,6 +127,11 @@ object Incident {
     val KindPipelineFailure = "pipeline_failure"
     val KindStale = "stale"
     val KindVolume = "volume"
+
+    /** A successful cron run returned a different column set than the run
+      * before it (TapScheduler.driftAfterCronRun). Diagnosis-only unless
+      * `recovery.allowSchemaDriftActions` and autopilot. */
+    val KindSchemaDrift = "schema_drift"
 
     private val random = new SecureRandom()
 
@@ -157,8 +176,16 @@ object Incident {
             actionsTaken = Option(d.getInteger("actionsTaken")).map(_.intValue()).getOrElse(0),
             awaitingApprovalIds = Option(d.get("awaitingApprovalIds", classOf[java.util.List[String]])).map(_.asScala.toList).getOrElse(Nil),
             revertToVersion = Option(d.getInteger("revertToVersion")).map(_.intValue()),
+            revertToScriptVersions = Option(d.get("revertToScriptVersions", classOf[Document]))
+                .map(_.asScala.toList.flatMap {
+                    case (k, n: Number) => Some(k -> n.intValue())
+                    case _ => None
+                }.toMap)
+                .getOrElse(Map.empty),
             closedAt = instant("closedAt"),
-            outcome = opt(d, "outcome")
+            outcome = opt(d, "outcome"),
+            evidence = Option(d.get("evidence", classOf[Document])).map(e => JsonParser.parseString(e.toJson).getAsJsonObject),
+            resumedAt = instant("resumedAt")
         )
     }
 }

@@ -113,6 +113,9 @@ object TapCronGate {
       * `readScript` reads the CURRENT stored bytes of `existing`. */
     def checkScriptStore(existing: TapConfig, script: String, readScript: TapConfig => Option[String]): Option[String] = {
         if (existing == null || blankToNull(existing.cronExpression) == null) return None
+        // These exact bytes passed a scratch rehearsal (an incident's candidate
+        // fix): that counts as their test run, so they may replace the script.
+        if (rehearsed(existing, script)) return None
         val stored = scala.util.Try(readScript(existing)).toOption.flatten
         // Exact equality on normalised text: the object-store reader joins
         // lines and drops the trailing newline, and editors differ on CRLF /
@@ -120,6 +123,27 @@ object TapCronGate {
         if (stored.exists(normalise(_) == normalise(script))) None
         else Some(storeRefusal(existing.name))
     }
+
+    /** Does the STORED tap carry a passing test stamped for exactly `script`
+      * as text (`TapScriptIdentity.ofText`)? Written by the incident runner
+      * when a scratch rehearsal of a candidate script passes, before the fix
+      * is stored. For a built-in tap a regular `mode=test` stamp has the same
+      * form, so a match there also means these bytes passed. Never true for
+      * HTTP taps (no script). */
+    def rehearsed(existing: TapConfig, script: String): Boolean =
+        existing != null && !existing.isHttp && script != null &&
+            "success".equalsIgnoreCase(existing.lastTestRunStatus) &&
+            Option(blankToNull(existing.lastTestRunScriptId)).contains(TapScriptIdentity.ofText(script))
+
+    /** The store lane (`POST /tap/script`) after it wrote `script`: when the
+      * stored tap's stamp is a rehearsal of exactly these bytes, the stamp
+      * moves with them onto the new reference (`idOf(repointed)` — the same
+      * hash on built-in storage, the new commit pin on a code repository).
+      * Returns `repointed` with the carried stamp, or None when no rehearsal
+      * applies or the new reference yields no identity. */
+    def carryRehearsedStamp(existing: TapConfig, script: String, repointed: TapConfig, idOf: TapConfig => Option[String]): Option[TapConfig] =
+        if (!rehearsed(existing, script)) None
+        else scala.util.Try(idOf(repointed)).toOption.flatten.map(id => repointed.copy(lastTestRunScriptId = id))
 
     /** Up-front gate for the AI script endpoints (`/tap/generate|fix|review|optimize`),
       * which always write NEW bytes: a SCHEDULED tap must never be repointed at

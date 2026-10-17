@@ -130,4 +130,24 @@ class ActivitySignalsSpec extends AnyFunSuite {
         val n = vols.find(_.name == "new").get
         assert(n.deltaPct.isEmpty && !n.isAnomaly)
     }
+
+    // Review round 2: scratch rehearsals never count as a failure, a landing
+    // or a volume point (a rehearsal's error must not open a pipeline or
+    // volume incident).
+    test("rehearsal summaries and scratch tap-run logs are filtered out of the signals") {
+        val real = summary("orders", 1000L, 10)
+        val rehearsal = summary("orders", 2000L, 1).copy(json = summary("orders", 2000L, 1).json.copy(status = "error", rehearsal = true))
+        assert(ActivitySignals.withoutRehearsals(List(real, rehearsal)) == List(real))
+        val runLog = ai.datris.model.TapRunLog("prices", "t1", "failure", mode = "run")
+        val scratchLog = ai.datris.model.TapRunLog("prices", "t2", "failure", mode = "scratch")
+        assert(ActivitySignals.withoutRehearsalLogs(List(runLog, scratchLog)) == List(runLog))
+    }
+
+    test("an older summary row without the rehearsal field reads as a real run") {
+        val json =
+            """{"pipeline_token":"t1","json":{"createdAtTimestamp":"x","createdAt":1,"updatedAt":1,"pipeline":"orders","pipelineToken":"t1","process":"p","startTime":"s","endTime":"e","totalTime":"1s","status":"error","recordCount":3},"created_at":1}"""
+        val row = new com.google.gson.Gson().fromJson(json, classOf[PipelineStatusSummaryTable])
+        assert(!row.json.rehearsal)
+        assert(ActivitySignals.withoutRehearsals(List(row)).size == 1)
+    }
 }

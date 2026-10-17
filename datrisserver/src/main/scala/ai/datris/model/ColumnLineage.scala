@@ -47,7 +47,11 @@ case class InferredColumnLineage(
   * committed because the file was edited in the repository since
   * `scriptCommitSha`. While the pipeline still has that fingerprint, runs
   * execute the recorded commit with no model call. Cleared by pull, by
-  * regenerate with overwrite, or by any successful store. */
+  * regenerate with overwrite, or by any successful store.
+  *
+  * `scriptVersion` is the number of the live script in the script history
+  * (`<env>-codegen-script-version`, [[CodeGenScriptVersion]]); 0 on rows
+  * written before scripts were versioned. */
 case class CodeGenScript(
     pipeline: String,
     kind: String,
@@ -66,5 +70,6 @@ case class CodeGenScript(
     origin: String = null,
     contractVersion: Int = 0,
     conflictFingerprint: String = null,
-    conflictReason: String = null
+    conflictReason: String = null,
+    scriptVersion: Int = 0
 )

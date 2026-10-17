@@ -377,3 +377,26 @@
 @media (max-width: 700px) {
   .matrix-row { flex-direction: column; align-items: flex-start; }
 }
+
+.recovery {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.recovery-table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.recovery-table th,
+.recovery-table td {
+  padding: 4px 16px 4px 0;
+  text-align: left;
+}
+
+.recovery-table th {
+  font-weight: 600;
+  color: var(--text-secondary, #666);
+}

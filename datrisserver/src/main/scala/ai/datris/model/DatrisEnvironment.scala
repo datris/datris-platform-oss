@@ -323,6 +323,7 @@ case class DatrisEnvironment(
       * and the stored CodeGen script index per `pipeline|kind` (CodeGenScriptIO). */
     def columnLineageTableName: String = environment + "-column-lineage"
     def codegenScriptTableName: String = environment + "-codegen-scripts"
+    def codegenScriptVersionTableName: String = environment + "-codegen-script-version"
 
     /** One doc per pipeline: last Unity Catalog metadata sync (hashes per
       * statement group, last run id, last error). See UnityCatalogSyncIO. */

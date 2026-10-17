@@ -3,7 +3,108 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable, of } from 'rxjs';
 import { catchError, map, shareReplay } from 'rxjs/operators';
 
-export type IncidentKind = 'tap_failure' | 'pipeline_failure' | 'stale' | 'volume';
+export type IncidentKind = 'tap_failure' | 'pipeline_failure' | 'stale' | 'volume' | 'schema_drift';
+
+// ── Incident evidence (server: ai.datris.incident.IncidentEvidence.toJson) ──
+// Deterministic, platform-computed. Units: record deltas and
+// `maxRecordDeltaPct` are percentages; null rates and DQ pass rates are
+// fractions (0.0-1.0). Optional fields are omitted by the server when absent.
+
+export type EvidenceVerdict = 'pass' | 'fail' | 'needs-human' | 'pending';
+
+export interface Quantiles {
+  p1: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p99: number;
+}
+
+export interface ColumnStats {
+  name: string;
+  inferredType: string;
+  nullRate: number;
+  distinct: number;
+  quantiles?: Quantiles;
+  lengthQuantiles?: Quantiles;
+  /** Only present for columns the server deems safe. The UI never displays
+   *  these values. */
+  topK?: { value: string; count: number }[];
+}
+
+export interface RunProfile {
+  runId: string;
+  source: string; // landed-sample | scratch | snapshot | lineage-only
+  recordCount: number;
+  columns: ColumnStats[];
+  dqFailures: number;
+  dqPassRate: number;
+  durationMs: number;
+  scriptSha?: string;
+  tapVersion?: number;
+  pipelineVersion?: number;
+  sampledRows: number;
+  computedAt: string;
+}
+
+export interface ProfileDiff {
+  columnsAdded: string[];
+  columnsRemoved: string[];
+  typeChanges: { column: string; from: string; to: string }[];
+  recordDeltaPct?: number;
+  recordDeltaVsMeanOfLastN?: number;
+  lastN: number;
+  nullRateDeltas: { column: string; delta: number }[];
+  quantileShift: { column: string; shift: number }[];
+  dqPassRateDelta?: number;
+}
+
+export interface BlastRadius {
+  downstreamPipelines: string[];
+  downstreamDatasets: { kind: string; coords: string }[];
+  ucTables: string[];
+  consumersFromContracts?: string[];
+  lastDownstreamRunAt?: string;
+  /** Absent (or null) when reads are not audited — readers unknown. */
+  agentsThatQueriedLast7d?: string[] | null;
+  secretName?: string;
+}
+
+export interface Thresholds {
+  maxRecordDeltaPct: number;
+  allowColumnRemoval: boolean;
+  allowTypeChange: boolean;
+  minDqPassRate?: number;
+  maxNullRateIncrease: number;
+}
+
+export interface ThresholdCheck {
+  name: string;
+  passed: boolean;
+  observed: string;
+  limit: string;
+}
+
+export interface IncidentEvidence {
+  baseline?: RunProfile;
+  candidate?: RunProfile;
+  real?: RunProfile;
+  diff?: ProfileDiff;
+  blastRadius: BlastRadius;
+  thresholds: Thresholds;
+  checks: ThresholdCheck[];
+  verdict: EvidenceVerdict;
+  computedAt: string;
+  /** Pipeline incidents: each regenerated stored AI script, version before
+   *  the first action and after (equal once a failed verification restored it). */
+  scriptVersions?: ScriptVersionChange[];
+}
+
+export interface ScriptVersionChange {
+  kind: string;     // dataQuality | transformation
+  before: number;   // 0 = no history before the regenerate (it seeds v1)
+  after: number;
+}
 
 /** Full lifecycle of a recovery-agent incident. `open` through `verifying`
  *  are active states; `resolved` / `failed` / `abandoned` are terminal. */
@@ -38,8 +139,17 @@ export interface Incident {
   aiCalls: number;
   actionsTaken: number;
   awaitingApprovalIds?: string[];
+  /** Tap version to restore if verification fails (pre-incident version). */
+  revertToVersion?: number;
+  /** Pipeline incidents: script kind → version restored if verification fails. */
+  revertToScriptVersions?: { [kind: string]: number };
   closedAt?: string;
   outcome?: string;
+  /** Absent on incidents opened before evidence existed. */
+  evidence?: IncidentEvidence;
+  verdict?: EvidenceVerdict;
+  /** Set when a person proceeded past a needs-human scratch verdict. */
+  resumedAt?: string;
 }
 
 export interface IncidentsPage {
@@ -123,10 +233,21 @@ export class IncidentsService {
     return this.http.get<Incident>('/api/v1/incidents/' + encodeURIComponent(id));
   }
 
+  /** Evidence for one incident (404 when the incident has none). */
+  evidence(id: string): Observable<IncidentEvidence> {
+    return this.http.get<IncidentEvidence>('/api/v1/incidents/' + encodeURIComponent(id) + '/evidence');
+  }
+
   /** Close an active incident without further agent action. 409 when the
    *  incident already reached a terminal state. Admin/editor only. */
   abandon(id: string): Observable<Incident> {
     return this.http.post<Incident>('/api/v1/incidents/' + encodeURIComponent(id) + '/abandon', {});
+  }
+
+  /** Accept a needs-human scratch verdict and let the agent run the fix for
+   *  real. 409 when the incident is no longer parked on that verdict. */
+  proceed(id: string): Observable<Incident> {
+    return this.http.post<Incident>('/api/v1/incidents/' + encodeURIComponent(id) + '/proceed', {});
   }
 
   /** Server-computed dashboard signals for the given window (24h/7d/30d). */

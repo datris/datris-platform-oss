@@ -933,7 +933,8 @@ object TapScriptRunner {
         testLimit: Int = 0,
         params: Map[String, String] = Map.empty,
         previousState: String = null,
-        mode: String = "run"
+        mode: String = "run",
+        scriptOverride: String = null
     ): TapScriptResult = {
         // HTTP taps run zero code on the platform: the "script" is a user-hosted
         // endpoint speaking the same envelope contract, so the entire Python lane
@@ -943,8 +944,11 @@ object TapScriptRunner {
 
         logger.info("TapScriptRunner: executing tap: " + tapConfig.name)
 
-        // Step 1: Read script from its storage backend (MinIO or code repo)
-        val scriptContent = TapCodeStore.forTap(tapConfig).readScript(tapConfig).getOrElse(
+        // Step 1: Read script from its storage backend (MinIO or code repo) —
+        // unless the caller supplies the text (an unsaved candidate script the
+        // recovery agent's scratch lane rehearses). Same wrapper, venv, sidecar
+        // and cap either way.
+        val scriptContent = Option(scriptOverride).orElse(TapCodeStore.forTap(tapConfig).readScript(tapConfig)).getOrElse(
             throw new DatrisException(
                 "Tap script is missing from " +
                     (if (tapConfig.scriptStorage == "github") "the code repository (path: " + tapConfig.scriptRepoPath + ")"
@@ -954,6 +958,11 @@ object TapScriptRunner {
         )
         runScript(tapConfig, scriptContent, testLimit, params, previousState, mode)
     }
+
+    /** Spec seam for the sidecar hand-off: when non-null, [[runScript]] calls
+      * it with (tap, the exact script text about to execute, mode) instead of
+      * the wrapper / venv / sidecar. Production leaves it null. */
+    @volatile private[util] var executeOverride: (TapConfig, String, String) => TapScriptResult = null
 
     /** Element-at-a-time re-serialization must not alter the data (same
       * settings as PayloadStager): keep nulls, keep `<`/`>`/`&` unescaped. */
@@ -981,6 +990,8 @@ object TapScriptRunner {
         previousState: String = null,
         mode: String = "run"
     ): TapScriptResult = {
+        val hook = executeOverride
+        if (hook != null) return hook(tapConfig, scriptContent, mode)
         val tapToken = "tap-" + java.util.UUID.randomUUID().toString
         val result = StagingArea.withToken(tapToken)(runScriptStaged(tapConfig, scriptContent, testLimit, params, previousState, mode))
         if (result.error != null) StagingArea.delete(tapToken)

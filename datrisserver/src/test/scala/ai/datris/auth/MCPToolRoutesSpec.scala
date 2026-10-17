@@ -33,8 +33,24 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 83)
+        assert(MCPToolRoutes.allToolNames.size == 88)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
+    }
+
+    // Story: Incident evidence model (plans/stories/self-healing-1-evidence-model.md),
+    // Acceptance bullet 6. A read-only incident tool: visible with incident:read,
+    // hidden from a tap:read-only key, mapped to GET /api/v1/incidents/{id}/evidence.
+    test("get_incident_evidence is an incident:read tool mapped to GET /api/v1/incidents/{id}/evidence") {
+        assert(
+            MCPToolRoutes.tools.toMap.get("get_incident_evidence") ==
+                Some(MCPToolRoutes.Mapped("GET", "/api/v1/incidents/example/evidence"))
+        )
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/incidents/inc_x/evidence") == RouteCheck.Require("incident", "read"))
+        assert(MCPToolRoutes.allowedTools(key("incident:read")).contains("get_incident_evidence"))
+        assert(!MCPToolRoutes.allowedTools(key("tap:read")).contains("get_incident_evidence"))
+        assert(MCPToolRoutes.allowedTools(legacyKey).contains("get_incident_evidence"))
+        // The neighbouring tool is untouched.
+        assert(MCPToolRoutes.tools.toMap.get("get_incident") == Some(MCPToolRoutes.Mapped("GET", "/api/v1/incidents/example")))
     }
 
     // Story: Catalog backup and restore (plans/stories/catalog-backup-restore.md).
@@ -295,5 +311,25 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(CapabilityRoutes.lookup("POST", "/api/v1/pipeline/protect/preset") == RouteCheck.Require("pipeline", "read"))
         assert(key("pipeline:read").matchesResourceAction("pipeline", "read"))
         assert(!key("job:read").matchesResourceAction("pipeline", "read"))
+    }
+
+    // Story: Version history for stored CodeGen scripts
+    // (plans/stories/self-healing-5a-script-versions.md), Acceptance bullet 4.
+    test("script version tools map to the codegen-scripts versions routes; restore needs pipeline:update") {
+        val tools = MCPToolRoutes.tools.toMap
+        val base = "/api/v1/pipelines/example/codegen-scripts/transformation/versions"
+        assert(tools.get("list_script_versions") == Some(MCPToolRoutes.Mapped("GET", base)))
+        assert(tools.get("get_script_version") == Some(MCPToolRoutes.Mapped("GET", base + "/1")))
+        assert(tools.get("diff_script_versions") == Some(MCPToolRoutes.Mapped("GET", base + "/2/diff")))
+        assert(tools.get("restore_script_version") == Some(MCPToolRoutes.Mapped("POST", base + "/1/restore")))
+
+        val reader = MCPToolRoutes.allowedTools(key("pipeline:read")).toSet
+        Seq("list_script_versions", "get_script_version", "diff_script_versions").foreach(t => assert(reader.contains(t), t))
+        assert(!reader.contains("restore_script_version"))
+        assert(MCPToolRoutes.allowedTools(key("pipeline:update")).contains("restore_script_version"))
+        assert(!MCPToolRoutes.allowedTools(ragBuilder).contains("restore_script_version"), "rag-builder has no pipeline:update")
+        assert(MCPToolRoutes.allowedTools(legacyKey).contains("restore_script_version"))
+        // The pipeline-definition restore next to it is untouched.
+        assert(tools.get("restore_pipeline_version") == Some(MCPToolRoutes.Mapped("POST", "/api/v1/pipeline/version/restore")))
     }
 }

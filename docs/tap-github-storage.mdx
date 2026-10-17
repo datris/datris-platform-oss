@@ -147,7 +147,7 @@ commit abc1234)"). `GET /api/v1/pipelines/{name}/codegen-scripts` returns `stora
 read endpoint then reports `drift: true` with the branch-head `headSha`, and for the transformation script the Columns section
 of the [lineage panel](/provenance#column-level-lineage) shows "Changed in the repository" with a
 **Load latest** action. To adopt the edit, call
-`POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/pull` (needs `pipeline:create`); it records
+`POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/pull` (needs `pipeline:update`); it records
 the head commit and makes no commit of its own. Later saves keep the adopted edit while the
 instruction and source schema are unchanged.
 

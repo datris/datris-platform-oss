@@ -59,12 +59,19 @@ components:
           nullable: true
         origin:
           type: string
-          enum: [save, run, regenerate, repository, restore]
+          enum: [save, run, regenerate, repository, restore, restore-version]
           nullable: true
           description: >-
             How the current script was recorded. `repository` means an edit
             made in the code repository was adopted with the pull endpoint;
-            `restore` means it was imported from a catalog archive.
+            `restore` means it was imported from a catalog archive;
+            `restore-version` means an earlier script version was restored.
+        version:
+          type: integer
+          description: >-
+            Number of the live script in its version history. Absent for a
+            script stored before script versioning (it is numbered 1 on the
+            first change or history read).
         fingerprint:
           type: string
           nullable: true
@@ -445,7 +452,7 @@ components:
           type: string
         kind:
           type: string
-          enum: [tap_failure, pipeline_failure, stale, volume]
+          enum: [tap_failure, pipeline_failure, stale, volume, schema_drift]
         resourceType:
           type: string
         resource:
@@ -457,6 +464,7 @@ components:
           enum: [open, diagnosing, proposed, awaiting_approval, executing, verifying, resolved, failed, abandoned]
         trigger:
           type: object
+          description: The signal that opened the incident. A pipeline_failure trigger carries pipelineToken, error, errorClass and failingStage (dq-script | transformation-script | loader | other — derived from exception classes, never row values).
         steps:
           type: array
           items:
@@ -474,6 +482,7 @@ components:
                 type: string
         classification:
           type: string
+          description: transient | structural-script | structural-schema | credential | platform | needs-human. `credential` and `platform` are decided by the platform, not the model, and never carry actions.
         proposal:
           type: object
         aiCalls:
@@ -484,10 +493,239 @@ components:
           type: array
           items:
             type: string
+        revertToVersion:
+          type: integer
+          description: Tap incidents — the tap version restored if verification fails
+        revertToScriptVersions:
+          type: object
+          description: Pipeline incidents — script kind (dataQuality | transformation) to the script version recorded before the first action, restored if verification fails (0 = no history yet; restores version 1). Absent when nothing was regenerated.
+          additionalProperties:
+            type: integer
         closedAt:
           type: string
         outcome:
           type: string
+        evidence:
+          $ref: '#/components/schemas/IncidentEvidence'
+        verdict:
+          type: string
+          enum: [pending, pass, fail, needs-human]
+          description: Copy of evidence.verdict; present only when the incident has evidence
+    RunProfile:
+      type: object
+      description: Deterministic profile of one run. Values from protected or sensitive-looking columns never appear (no topK, no value quantiles).
+      properties:
+        runId:
+          type: string
+        source:
+          type: string
+          enum: [landed-sample, scratch, snapshot, lineage-only]
+        recordCount:
+          type: integer
+          format: int64
+        columns:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              inferredType:
+                type: string
+                enum: [number, string, boolean, 'null', mixed]
+              nullRate:
+                type: number
+                description: Fraction 0.0-1.0
+              distinct:
+                type: integer
+                format: int64
+              quantiles:
+                $ref: '#/components/schemas/Quantiles'
+              lengthQuantiles:
+                $ref: '#/components/schemas/Quantiles'
+              topK:
+                type: array
+                description: Only for value-safe columns with at most 50 distinct values
+                items:
+                  type: object
+                  properties:
+                    value:
+                      type: string
+                    count:
+                      type: integer
+                      format: int64
+        dqFailures:
+          type: integer
+        dqPassRate:
+          type: number
+          description: Fraction 0.0-1.0
+        durationMs:
+          type: integer
+          format: int64
+        scriptSha:
+          type: string
+        tapVersion:
+          type: integer
+        pipelineVersion:
+          type: integer
+        sampledRows:
+          type: integer
+          format: int64
+        computedAt:
+          type: string
+    Quantiles:
+      type: object
+      properties:
+        p1:
+          type: number
+        p25:
+          type: number
+        p50:
+          type: number
+        p75:
+          type: number
+        p99:
+          type: number
+    IncidentEvidence:
+      type: object
+      description: Computed by platform code, never by a model. Record deltas are percentages; null rates and DQ pass rates are fractions.
+      properties:
+        baseline:
+          $ref: '#/components/schemas/RunProfile'
+        candidate:
+          $ref: '#/components/schemas/RunProfile'
+        real:
+          $ref: '#/components/schemas/RunProfile'
+        diff:
+          type: object
+          properties:
+            columnsAdded:
+              type: array
+              items:
+                type: string
+            columnsRemoved:
+              type: array
+              items:
+                type: string
+            typeChanges:
+              type: array
+              items:
+                type: object
+                properties:
+                  column:
+                    type: string
+                  from:
+                    type: string
+                  to:
+                    type: string
+            recordDeltaPct:
+              type: number
+            recordDeltaVsMeanOfLastN:
+              type: number
+            lastN:
+              type: integer
+            nullRateDeltas:
+              type: array
+              description: Five largest by magnitude, sign preserved
+              items:
+                type: object
+                properties:
+                  column:
+                    type: string
+                  delta:
+                    type: number
+            quantileShift:
+              type: array
+              description: Per numeric column, (p50 delta) / (baseline p75 - p25); 0 when the IQR is 0
+              items:
+                type: object
+                properties:
+                  column:
+                    type: string
+                  shift:
+                    type: number
+            dqPassRateDelta:
+              type: number
+        blastRadius:
+          type: object
+          properties:
+            downstreamPipelines:
+              type: array
+              items:
+                type: string
+            downstreamDatasets:
+              type: array
+              items:
+                type: object
+                properties:
+                  kind:
+                    type: string
+                  coords:
+                    type: string
+            ucTables:
+              type: array
+              items:
+                type: string
+            consumersFromContracts:
+              type: array
+              items:
+                type: string
+            lastDownstreamRunAt:
+              type: string
+            agentsThatQueriedLast7d:
+              type: array
+              description: Absent when unknown (reads are not audited)
+              items:
+                type: string
+            secretName:
+              type: string
+              description: The tap's secret name (never its value); the card shows it as the secret to check on credential incidents
+        thresholds:
+          type: object
+          properties:
+            maxRecordDeltaPct:
+              type: number
+            allowColumnRemoval:
+              type: boolean
+            allowTypeChange:
+              type: boolean
+            minDqPassRate:
+              type: number
+              description: Absent means baseline pass rate minus 0.01
+            maxNullRateIncrease:
+              type: number
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              passed:
+                type: boolean
+              observed:
+                type: string
+              limit:
+                type: string
+        verdict:
+          type: string
+          enum: [pending, pass, fail, needs-human]
+        computedAt:
+          type: string
+        scriptVersions:
+          type: array
+          description: Pipeline incidents only (absent otherwise) — each stored AI script the agent regenerated, with its script version before the first action and after; `after` equals `before` once a failed verification restored it
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+                enum: [dataQuality, transformation]
+              before:
+                type: integer
+                description: 0 when the script had no version history before the regenerate (the regenerate records the old script as version 1)
+              after:
+                type: integer
     AgentPolicy:
       type: object
       properties:
@@ -517,6 +755,67 @@ components:
             maxPendingPerActor:
               type: integer
               default: 50
+        recovery:
+          type: object
+          description: >-
+            The recovery agent's dial, limits and verification thresholds (see
+            Incidents). Threshold fields absent from the stored policy default
+            by DATRIS_ENV label: maxRecordDeltaPct 50 and allowColumnRemoval /
+            allowTypeChange true on dev, the documented defaults elsewhere.
+            mode defaults to off on every label.
+          properties:
+            mode:
+              type: string
+              enum: [off, propose, autopilot]
+              default: off
+            verifyMode:
+              type: string
+              enum: [scratch-first, real]
+              default: scratch-first
+              description: >-
+                scratch-first rehearses a proposed fix into the scratch
+                destination and judges it against the last good run before the
+                real run; real goes straight to the real run.
+            maxAiCallsPerIncident:
+              type: integer
+              default: 12
+            maxActionsPerIncident:
+              type: integer
+              default: 3
+            maxRuntimeMinutes:
+              type: integer
+              default: 15
+            maxOpenIncidents:
+              type: integer
+              default: 10
+            cooldownHours:
+              type: integer
+              default: 6
+            maxRecordDeltaPct:
+              type: integer
+              default: 25
+              description: Largest record-count change (percent) before the verdict is fail; default 50 on a dev install
+            allowColumnRemoval:
+              type: boolean
+              default: false
+              description: When false a removed column makes the verdict needs-human; default true on a dev install
+            allowTypeChange:
+              type: boolean
+              default: false
+              description: When false a column type change makes the verdict needs-human; default true on a dev install
+            allowSchemaDriftActions:
+              type: boolean
+              default: false
+              description: >-
+                Let a schema_drift incident propose and verify a tap script fix
+                when the tap's recovery mode is autopilot. Off = drift incidents
+                are diagnosis-only.
+            minDqPassRate:
+              type: number
+              description: Absent means baseline pass rate minus 0.01
+            maxNullRateIncrease:
+              type: number
+              default: 0.1
         updatedAt:
           type: string
           readOnly: true
@@ -564,6 +863,11 @@ components:
           type: integer
         resultBody:
           type: string
+        incidentId:
+          type: string
+          description: Set when a recovery-agent incident queued this action
+        incidentEvidence:
+          $ref: '#/components/schemas/IncidentEvidence'
     QueryResponse:
       type: object
       properties:
@@ -1070,6 +1374,21 @@ components:
           type: string
         updatedAt:
           type: string
+        status:
+          type: string
+          enum: [active, suggested]
+          description: >-
+            Absent or active for fragments a person wrote or accepted;
+            suggested for fragments the recovery agent wrote from an incident's
+            learn note (stored with enabled false). Accept one by POSTing it
+            with enabled true and status active; agents may not.
+        origin:
+          type: string
+          enum: [incident]
+          description: Where a suggested fragment came from
+        incidentId:
+          type: string
+          description: The incident whose learn note produced the fragment
 
     ChatRequest:
       type: object
@@ -1139,6 +1458,96 @@ components:
               nullable: true
               description: Resolved tap script content (taps only; null if the object is absent)
 
+    CodeGenScriptVersionSummary:
+      type: object
+      description: One version of a pipeline's CodeGen script, without its text.
+      properties:
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          nullable: true
+          description: Key label or user that made the change; null for a run.
+        changeNote:
+          type: string
+          nullable: true
+          description: >-
+            For example `(seeded from pre-versioning state)`, `restored from
+            version 2`, `imported from catalog archive`, `adopted repository
+            commit abc1234`.
+        origin:
+          type: string
+          enum: [save, run, regenerate, repository, restore, restore-version]
+        model:
+          type: string
+          nullable: true
+          description: The CodeGen model that wrote this text.
+        commitSha:
+          type: string
+          nullable: true
+          description: Code repository only. The commit holding this text.
+        fingerprintMatchesCurrent:
+          type: boolean
+          description: >-
+            True when the version was written for the pipeline's current
+            instruction and source schema (only those versions can be restored).
+        isLive:
+          type: boolean
+          description: True for the version runs execute now.
+    CodeGenScriptVersion:
+      allOf:
+        - $ref: '#/components/schemas/CodeGenScriptVersionSummary'
+        - type: object
+          properties:
+            kind:
+              type: string
+              enum: [dataQuality, transformation]
+            script:
+              type: string
+              description: The script text of this version.
+            fingerprint:
+              type: string
+            generatedAt:
+              type: string
+              format: date-time
+            contractVersion:
+              type: integer
+            storage:
+              type: string
+              nullable: true
+            repoPath:
+              type: string
+              nullable: true
+    CodeGenScriptVersionDiff:
+      type: object
+      properties:
+        from:
+          type: integer
+          description: Base version of the comparison (the `against` parameter)
+        to:
+          type: integer
+          description: Target version of the comparison (the `version` path parameter)
+        script:
+          type: object
+          description: Same shape as the tap script diff of `EntityVersionDiff`
+          properties:
+            before:
+              type: string
+            after:
+              type: string
+            lines:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: [ctx, add, del]
+                  text:
+                    type: string
     EntityVersionDiff:
       type: object
       properties:
@@ -1966,7 +2375,9 @@ paths:
         store unless `storage` asks for another; the old copy is left in
         place. A repository-backed script whose file was edited in the
         repository since the recorded commit is not overwritten (409) unless
-        `overwrite=true`. Requires `pipeline:create`. Audited.
+        `overwrite=true`. The new script is a new version in the script's
+        history. Requires `pipeline:update` (agent-policy action
+        `pipeline:update:codegen-scripts`). Audited.
       parameters:
         - in: path
           name: name
@@ -2024,7 +2435,8 @@ paths:
         head of the configured branch (origin `repository`), so later runs
         execute the file as it is in the repository now. No commit is made.
         Later saves keep the adopted script while the instruction and source
-        schema are unchanged. Requires `pipeline:create`. Audited.
+        schema are unchanged. The adopted file is a new version in the
+        script's history. Requires `pipeline:update`. Audited.
       parameters:
         - in: path
           name: name
@@ -2050,6 +2462,172 @@ paths:
           description: Unknown pipeline
         '502':
           description: The code repository could not be read; the recorded commit is unchanged
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions:
+    get:
+      tags: [Pipelines]
+      summary: Version history of a CodeGen script
+      description: >-
+        Every change to the script the pipeline runs for `kind` (generated at
+        save or at a run, regenerated, pulled from the code repository,
+        imported by a catalog restore, or restored from this history), newest
+        first. A script stored before script versioning is listed as version 1
+        "(seeded from pre-versioning state)". Retention is `versionCap` per
+        pipeline and kind. The pipeline's definition version does not change
+        when its script does. Requires `pipeline:read`.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+      responses:
+        '200':
+          description: Versions, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CodeGenScriptVersionSummary'
+        '400':
+          description: Unknown kind
+        '404':
+          description: Unknown pipeline
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions/{version}:
+    get:
+      tags: [Pipelines]
+      summary: One version of a CodeGen script, with its text
+      description: Requires `pipeline:read`.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+        - in: path
+          name: version
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodeGenScriptVersion'
+        '400':
+          description: Unknown kind
+        '404':
+          description: Unknown pipeline or version
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions/{version}/diff:
+    get:
+      tags: [Pipelines]
+      summary: Line diff of two CodeGen script versions
+      description: >-
+        Server-computed line diff from `against` to `version`; each line is
+        typed `ctx`, `add` or `del`. Requires `pipeline:read`.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+        - in: path
+          name: version
+          required: true
+          schema:
+            type: integer
+        - in: query
+          name: against
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The diff
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodeGenScriptVersionDiff'
+        '400':
+          description: Unknown kind
+        '404':
+          description: Unknown pipeline or version
+  /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions/{version}/restore:
+    post:
+      tags: [Pipelines]
+      summary: Restore a CodeGen script version
+      description: >-
+        Makes the text of `version` the script the pipeline runs, through the
+        same store path as a regenerate but with no model call: it becomes a
+        NEW latest version (origin `restore-version`) and keeps the model that
+        wrote it. A built-in script object is replaced; a repository-backed
+        script gets a new commit. The pipeline's definition version does not
+        change. When the version's text is already the live script, nothing
+        is written (no version, no commit) and the current entry is returned
+        with `noop: true`. Refused, with nothing changed, when the version was written
+        for a different instruction or source schema than the pipeline has
+        now, or for another script contract version (422), and when the
+        repository file was edited since the recorded commit (409). Requires
+        `pipeline:update` (agent-policy action `pipeline:update:codegen-scripts`).
+        Audited as `codegen-script-restore-version:<kind>`.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [dataQuality, transformation]
+        - in: path
+          name: version
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The script entry, now carrying the new `version`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodegenScript'
+        '400':
+          description: Unknown kind, or the pipeline has no AI instruction of that kind
+        '404':
+          description: Unknown pipeline or version
+        '409':
+          description: >-
+            The script's file was edited in the code repository since the
+            recorded commit; nothing was committed.
+        '422':
+          description: >-
+            The version was written for a different instruction, source schema
+            or script contract than the pipeline has now; nothing was changed.
+        '502':
+          description: The script could not be stored; the current script is unchanged
   /api/v1/pipeline/dest-types:
     get:
       tags: [Pipelines]
@@ -5129,6 +5707,18 @@ paths:
                       type: string
                   pendingCount:
                     type: integer
+                  recoveryRecommended:
+                    type: object
+                    description: >-
+                      The recovery block recommended for this install's
+                      DATRIS_ENV label, in the shape of AgentPolicy.recovery:
+                      autopilot with maxRecordDeltaPct 50 and column removal /
+                      type change allowed on dev; propose with the strict
+                      defaults on qa, production, other labels and unset.
+                      Never applied automatically.
+                  environmentLabel:
+                    type: string
+                    description: DATRIS_ENV; absent when unset
     put:
       tags: [Agent Policy]
       summary: Replace the agent policy (admin)
@@ -5318,6 +5908,29 @@ paths:
                 $ref: '#/components/schemas/Incident'
         '404':
           description: Unknown id, or the recovery agent is off
+  /api/v1/incidents/{id}/evidence:
+    get:
+      tags: [Recovery Agent]
+      summary: Read one incident's evidence
+      description: >-
+        The deterministic evidence the platform computed for the incident —
+        baseline and after-fix run profiles, their diff, blast radius,
+        thresholds in force, threshold checks and verdict.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The evidence
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentEvidence'
+        '404':
+          description: Unknown id, no evidence on the incident, or the recovery agent is off
   /api/v1/incidents/{id}/abandon:
     post:
       tags: [Recovery Agent]
@@ -5334,6 +5947,30 @@ paths:
           description: The abandoned incident
         '409':
           description: Already closed
+  /api/v1/incidents/{id}/proceed:
+    post:
+      tags: [Recovery Agent]
+      summary: Proceed past a needs-human scratch verdict (admin / editor)
+      description: >-
+        A person accepting the evidence of an incident parked on a
+        needs-human scratch verdict: the agent applies its fix and runs it
+        for real. Never permitted from an agent-initiated request (403).
+        Requires the incident:proceed capability on scoped keys.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The incident, now executing
+        '403':
+          description: Agent-initiated request
+        '404':
+          description: Unknown id, or the recovery agent is off
+        '409':
+          description: The incident is not awaiting a needs-human scratch verdict
   /api/v1/activity/signals:
     get:
       tags: [Recovery Agent]
@@ -5922,6 +6559,14 @@ paths:
       tags: [Tap Prompts]
       summary: List tap prompt fragments
       description: Returns every prompt fragment. Fragments are per-source snippets injected into the tap code-generation system prompt when a tap's description mentions the fragment's key or an alias.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, suggested]
+          description: Only fragments with this status (a fragment with no status counts as active)
       responses:
         '200':
           description: All fragments
@@ -5936,7 +6581,12 @@ paths:
     post:
       tags: [Tap Prompts]
       summary: Create or update a tap prompt fragment
-      description: Creates a new fragment or updates the existing fragment with the same `key`. Timestamps are managed server-side.
+      description: >-
+        Creates a new fragment or updates the existing fragment with the same
+        `key`. Timestamps are managed server-side. Sending `enabled: true,
+        status: active` for a suggested fragment accepts it; origin and
+        incidentId are kept. Agent-initiated requests may not change a
+        suggested fragment (403).
       requestBody:
         required: true
         content:
@@ -5954,6 +6604,8 @@ paths:
                   status:
                     type: string
                     example: ok
+        '403':
+          description: An agent tried to accept or change a suggested fragment ("a person accepts suggested fragments")
         '500':
           description: Error (including missing key)
 

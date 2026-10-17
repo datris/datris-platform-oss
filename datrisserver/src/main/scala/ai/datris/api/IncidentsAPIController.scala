@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.AuditLog
 import ai.datris.config.RequiresRole
-import ai.datris.incident.{Incident, IncidentIO}
+import ai.datris.incident.{Incident, IncidentIO, IncidentRunner}
 import ai.datris.model.DatrisEnvironment
 import ai.datris.policy.PolicyActor
 import com.google.common.base.Throwables
@@ -18,7 +18,7 @@ import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 
 /** Read access to the recovery agent's incidents, plus a human-only
-  * abandon. Nothing here opens incidents — the platform does that. */
+  * abandon and proceed. Nothing here opens incidents — the platform does that. */
 @RestController
 @RequestMapping(Array("/api/v1/incidents"))
 class IncidentsAPIController {
@@ -69,6 +69,28 @@ class IncidentsAPIController {
         }
     }
 
+    /** The incident's deterministic evidence (baseline / real profiles,
+      * diff, blast radius, thresholds, verdict). 404 when the incident or its
+      * evidence is absent (incidents opened before evidence existed). */
+    @GetMapping(path = Array("/{id}/evidence"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def evidence(@PathVariable("id") id: String): ResponseEntity[String] = {
+        try {
+            if (!enabled) return disabled()
+            IncidentIO.get(id) match {
+                case Some(i) =>
+                    i.evidence match {
+                        case Some(e) => new ResponseEntity[String](gson.toJson(e), HttpStatus.OK)
+                        case None => ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](errorJson("incident " + id + " has no evidence"))
+                    }
+                case None => ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](errorJson("no incident " + id))
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("Error reading incident evidence: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](errorJson(e.getMessage))
+        }
+    }
+
     /** A person closing an incident by hand: "stop working this". */
     @PostMapping(path = Array("/{id}/abandon"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     @RequiresRole(Array("admin", "editor"))
@@ -89,6 +111,30 @@ class IncidentsAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error abandoning incident: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](errorJson(e.getMessage))
+        }
+    }
+
+    /** A person accepting a needs-human scratch verdict: "run it for real".
+      * 409 unless the incident is parked on that verdict. */
+    @PostMapping(path = Array("/{id}/proceed"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    @RequiresRole(Array("admin", "editor"))
+    def proceed(@PathVariable("id") id: String, request: HttpServletRequest): ResponseEntity[String] = {
+        try {
+            if (!enabled) return disabled()
+            if (PolicyActor.isAgent(request))
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](errorJson("agents may not proceed past needs-human evidence"))
+            val incident = IncidentIO.get(id).getOrElse(return ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](errorJson("no incident " + id)))
+            IncidentRunner.proceed(id, PolicyActor.label(request)) match {
+                case Left(msg) => ResponseEntity.status(HttpStatus.CONFLICT).body[String](errorJson(msg))
+                case Right(_) =>
+                    AuditLog.record(request, "incident", "proceed", "incident", id)
+                    val updated = IncidentIO.get(id).getOrElse(incident)
+                    new ResponseEntity[String](gson.toJson(updated.toPublicJson), HttpStatus.OK)
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("Error proceeding incident: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](errorJson(e.getMessage))
         }
     }

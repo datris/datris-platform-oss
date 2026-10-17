@@ -36,14 +36,96 @@ case class RecoverySettings(
     maxActionsPerIncident: Int = 3,
     maxRuntimeMinutes: Int = 15,
     maxOpenIncidents: Int = 10,
-    cooldownHours: Int = 6
-)
+    cooldownHours: Int = 6,
+    // Verification thresholds (incident evidence). Record delta is a
+    // percentage; rates are fractions. minDqPassRate None = baseline - 0.01.
+    maxRecordDeltaPct: Int = 25,
+    allowColumnRemoval: Boolean = false,
+    allowTypeChange: Boolean = false,
+    minDqPassRate: Option[Double] = None,
+    maxNullRateIncrease: Double = 0.10,
+    // How a proposed fix is verified: `scratch-first` rehearses the candidate
+    // into the scratch destination and judges it before the real run;
+    // `real` goes straight to the real run (the pre-scratch behaviour).
+    verifyMode: String = RecoverySettings.ScratchFirst,
+    // A schema_drift incident is diagnosis-only (one AI diagnosis, resolved
+    // as triaged) unless this is on AND the resource's recovery mode is
+    // autopilot, in which case a tap script fix may be proposed and run.
+    allowSchemaDriftActions: Boolean = false
+) {
+
+    /** The thresholds the incident evidence is judged against. */
+    def thresholds: ai.datris.incident.Thresholds =
+        ai.datris.incident.Thresholds(
+            maxRecordDeltaPct = maxRecordDeltaPct.toDouble,
+            allowColumnRemoval = allowColumnRemoval,
+            allowTypeChange = allowTypeChange,
+            minDqPassRate = minDqPassRate,
+            maxNullRateIncrease = maxNullRateIncrease
+        )
+}
 
 object RecoverySettings {
     val Off = "off"
     val Propose = "propose"
     val Autopilot = "autopilot"
     val Modes: Set[String] = Set(Off, Propose, Autopilot)
+
+    val ScratchFirst = "scratch-first"
+    val Real = "real"
+    val VerifyModes: Set[String] = Set(ScratchFirst, Real)
+
+    private def isDev(label: Option[String]): Boolean = label.exists(_.trim.equalsIgnoreCase("dev"))
+
+    /** The per-field default [[AgentPolicy.fromJson]] uses for threshold
+      * fields absent from stored JSON: loose on a `dev` install (50 % rows,
+      * column removal and type changes allowed), strict everywhere else —
+      * an unlabelled install is treated as production. */
+    def thresholdDefaultsFor(label: Option[String]): ai.datris.incident.Thresholds =
+        if (isDev(label))
+            ai.datris.incident.Thresholds(
+                maxRecordDeltaPct = 50.0,
+                allowColumnRemoval = true,
+                allowTypeChange = true,
+                minDqPassRate = None,
+                maxNullRateIncrease = 0.10
+            )
+        else RecoverySettings().thresholds
+
+    /** The recovery block recommended for an install with this environment
+      * label: autopilot with loose thresholds on `dev`; propose with the
+      * strict defaults on `qa`, `production`, any other label and none.
+      * Offered, never applied silently — `mode` still defaults to off. */
+    def recommendedFor(label: Option[String]): RecoverySettings = {
+        val t = thresholdDefaultsFor(label)
+        RecoverySettings(
+            mode = if (isDev(label)) Autopilot else Propose,
+            maxRecordDeltaPct = t.maxRecordDeltaPct.toInt,
+            allowColumnRemoval = t.allowColumnRemoval,
+            allowTypeChange = t.allowTypeChange,
+            minDqPassRate = t.minDqPassRate,
+            maxNullRateIncrease = t.maxNullRateIncrease
+        )
+    }
+
+    /** The JSON form of a recovery block (the `recovery` object of [[AgentPolicy.toJson]]). */
+    def toJson(recovery: RecoverySettings): JsonObject = {
+        val r = new JsonObject
+        r.addProperty("mode", recovery.mode)
+        r.addProperty("maxAiCallsPerIncident", recovery.maxAiCallsPerIncident)
+        r.addProperty("maxActionsPerIncident", recovery.maxActionsPerIncident)
+        r.addProperty("maxRuntimeMinutes", recovery.maxRuntimeMinutes)
+        r.addProperty("maxOpenIncidents", recovery.maxOpenIncidents)
+        r.addProperty("cooldownHours", recovery.cooldownHours)
+        r.addProperty("maxRecordDeltaPct", recovery.maxRecordDeltaPct)
+        r.addProperty("allowColumnRemoval", recovery.allowColumnRemoval)
+        r.addProperty("allowTypeChange", recovery.allowTypeChange)
+        r.addProperty("allowSchemaDriftActions", recovery.allowSchemaDriftActions)
+        recovery.minDqPassRate.foreach(v => r.addProperty("minDqPassRate", v))
+        r.addProperty("maxNullRateIncrease", recovery.maxNullRateIncrease)
+        r.addProperty("verifyMode", recovery.verifyMode)
+        r
+    }
 }
 
 /** The agent policy: for every `resource:action[:sub]` key the capability
@@ -108,13 +190,7 @@ case class AgentPolicy(
         l.addProperty("pendingTtlHours", limits.pendingTtlHours)
         l.addProperty("maxPendingPerActor", limits.maxPendingPerActor)
         o.add("limits", l)
-        val r = new JsonObject()
-        r.addProperty("mode", recovery.mode)
-        r.addProperty("maxAiCallsPerIncident", recovery.maxAiCallsPerIncident)
-        r.addProperty("maxActionsPerIncident", recovery.maxActionsPerIncident)
-        r.addProperty("maxRuntimeMinutes", recovery.maxRuntimeMinutes)
-        r.addProperty("maxOpenIncidents", recovery.maxOpenIncidents)
-        r.addProperty("cooldownHours", recovery.cooldownHours)
+        val r = RecoverySettings.toJson(recovery)
         o.add("recovery", r)
         updatedAt.foreach(o.addProperty("updatedAt", _))
         updatedBy.foreach(o.addProperty("updatedBy", _))
@@ -126,6 +202,22 @@ object AgentPolicy {
 
     val Empty: AgentPolicy = AgentPolicy()
 
+    /** The policy in force when none is stored: [[Empty]] with the recovery
+      * threshold defaults of this install's environment label, exactly what
+      * `fromJson("{}")` yields (mode stays off). */
+    def emptyForCurrentLabel: AgentPolicy = {
+        val t = RecoverySettings.thresholdDefaultsFor(ai.datris.util.EnvironmentLabel.current)
+        Empty.copy(recovery =
+            Empty.recovery.copy(
+                maxRecordDeltaPct = t.maxRecordDeltaPct.toInt,
+                allowColumnRemoval = t.allowColumnRemoval,
+                allowTypeChange = t.allowTypeChange,
+                minDqPassRate = t.minDqPassRate,
+                maxNullRateIncrease = t.maxNullRateIncrease
+            )
+        )
+    }
+
     /** One-click starting point the UI offers: pause before anything
       * destructive or table-rewriting, refuse secret writes outright. */
     val Recommended: AgentPolicy = AgentPolicy(
@@ -134,6 +226,7 @@ object AgentPolicy {
             "tap:delete" -> PolicyMode.Approve,
             "job:kill" -> PolicyMode.Approve,
             "pipeline:update:dest-types" -> PolicyMode.Approve,
+            "pipeline:update:codegen-scripts" -> PolicyMode.Approve,
             "secret:write" -> PolicyMode.Deny,
             "code-repo:write" -> PolicyMode.Deny,
             "config:write" -> PolicyMode.Deny
@@ -234,9 +327,13 @@ object AgentPolicy {
             )
         }
 
-        var recovery = RecoverySettings()
-        if (root.has("recovery") && root.get("recovery").isJsonObject) {
-            val r = root.getAsJsonObject("recovery")
+        // Threshold fields absent from the stored JSON default by environment
+        // label; mode still defaults to off on every label.
+        val labelDefaults = RecoverySettings.thresholdDefaultsFor(ai.datris.util.EnvironmentLabel.current)
+        val r =
+            if (root.has("recovery") && root.get("recovery").isJsonObject) root.getAsJsonObject("recovery")
+            else new JsonObject
+        val recovery = {
             def rInt(name: String, default: Int, min: Int, max: Int): Int =
                 if (!r.has(name) || r.get(name).isJsonNull) default
                 else
@@ -247,6 +344,23 @@ object AgentPolicy {
                     } catch {
                         case _: Exception => errors += "recovery." + name + " must be an integer"; default
                     }
+            def rBool(name: String, default: Boolean): Boolean =
+                if (!r.has(name) || r.get(name).isJsonNull) default
+                else {
+                    val e = r.get(name)
+                    if (e.isJsonPrimitive && e.getAsJsonPrimitive.isBoolean) e.getAsBoolean
+                    else { errors += "recovery." + name + " must be true or false"; default }
+                }
+            def rFraction(name: String): Option[Double] =
+                if (!r.has(name) || r.get(name).isJsonNull) None
+                else
+                    try {
+                        val v = r.get(name).getAsDouble
+                        if (v.isNaN || v < 0.0 || v > 1.0) { errors += "recovery." + name + " must be between 0.0 and 1.0"; None }
+                        else Some(v)
+                    } catch {
+                        case _: Exception => errors += "recovery." + name + " must be a number"; None
+                    }
             val mode =
                 if (!r.has("mode") || r.get("mode").isJsonNull) RecoverySettings.Off
                 else {
@@ -254,13 +368,29 @@ object AgentPolicy {
                     if (!RecoverySettings.Modes.contains(m)) { errors += "recovery.mode must be off, propose or autopilot"; RecoverySettings.Off }
                     else m
                 }
-            recovery = RecoverySettings(
+            val verifyMode =
+                if (!r.has("verifyMode") || r.get("verifyMode").isJsonNull) RecoverySettings.ScratchFirst
+                else {
+                    val e = r.get("verifyMode")
+                    val m = if (e.isJsonPrimitive) e.getAsString.trim.toLowerCase else ""
+                    if (!RecoverySettings.VerifyModes.contains(m)) {
+                        errors += "recovery.verifyMode must be scratch-first or real"; RecoverySettings.ScratchFirst
+                    } else m
+                }
+            RecoverySettings(
                 mode = mode,
                 maxAiCallsPerIncident = rInt("maxAiCallsPerIncident", 12, 1, 100),
                 maxActionsPerIncident = rInt("maxActionsPerIncident", 3, 1, 20),
                 maxRuntimeMinutes = rInt("maxRuntimeMinutes", 15, 1, 240),
                 maxOpenIncidents = rInt("maxOpenIncidents", 10, 1, 100),
-                cooldownHours = rInt("cooldownHours", 6, 1, 24 * 14)
+                cooldownHours = rInt("cooldownHours", 6, 1, 24 * 14),
+                maxRecordDeltaPct = rInt("maxRecordDeltaPct", labelDefaults.maxRecordDeltaPct.toInt, 0, 100),
+                allowColumnRemoval = rBool("allowColumnRemoval", labelDefaults.allowColumnRemoval),
+                allowTypeChange = rBool("allowTypeChange", labelDefaults.allowTypeChange),
+                minDqPassRate = rFraction("minDqPassRate").orElse(labelDefaults.minDqPassRate),
+                maxNullRateIncrease = rFraction("maxNullRateIncrease").getOrElse(labelDefaults.maxNullRateIncrease),
+                verifyMode = verifyMode,
+                allowSchemaDriftActions = rBool("allowSchemaDriftActions", false)
             )
         }
 

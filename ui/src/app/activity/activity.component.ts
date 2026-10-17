@@ -150,8 +150,20 @@ export class ActivityComponent implements OnInit, OnDestroy {
   abandonConfirm = new Set<string>();
   /** Incident ids with an abandon call in flight. */
   abandoning = new Set<string>();
+  /** Incident ids with a proceed call in flight. */
+  proceeding = new Set<string>();
   /** Per-incident error banner after a failed abandon from this page. */
   incidentActionError = new Map<string, string>();
+  /** Closed-incident ids whose evidence card is expanded. */
+  closedEvidenceOpen = new Set<string>();
+  /** Version-history modal opened from an evidence card ("Compare script
+   *  versions"): tap name and the pre-incident / current versions. */
+  /** The tap (or, for a pipeline incident, the pipeline) whose history is open. */
+  historyTap = '';
+  historyEntityType: 'tap' | 'script' = 'tap';
+  historyKind = '';
+  historyFrom: number | null = null;
+  historyTo: number | null = null;
 
   // Latest server-side signals response (null until the first successful
   // fetch, or when the endpoint errors — client-computed values are the
@@ -536,7 +548,17 @@ export class ActivityComponent implements OnInit, OnDestroy {
       case 'pipeline_failure': return 'pipeline failure';
       case 'stale': return 'stale';
       case 'volume': return 'volume';
+      case 'schema_drift': return 'schema drift';
       default: return i.kind;
+    }
+  }
+
+  /** Hover text for the classification chip; the two code-decided classes explain themselves. */
+  classificationTitle(c: string | null | undefined): string {
+    switch (c) {
+      case 'credential': return 'The source rejected the tap\'s credentials — no tap actions are proposed; check the secret named on the evidence card.';
+      case 'platform': return 'The doctor reported a platform problem — fix it from the remediation in the summary; the AI was not asked.';
+      default: return '';
     }
   }
 
@@ -562,6 +584,50 @@ export class ActivityComponent implements OnInit, OnDestroy {
     if (!i.steps || i.steps.length === 0) return null;
     const s = i.steps[i.steps.length - 1];
     return { summary: s.summary, ts: s.ts || null };
+  }
+
+  toggleClosedEvidence(i: Incident): void {
+    if (this.closedEvidenceOpen.has(i.id)) this.closedEvidenceOpen.delete(i.id);
+    else this.closedEvidenceOpen.add(i.id);
+  }
+
+  /** Open the version history on the pre-incident vs current diff: the tap's
+   *  versions (`revertToVersion`) for tap incidents, the regenerated stored
+   *  script's versions (`evidence.scriptVersions`) for pipeline incidents. */
+  openScriptDiff(i: Incident): void {
+    if (i.resourceType === 'pipeline') {
+      const changes = i.evidence?.scriptVersions || [];
+      const c = changes.find(x => x.before !== x.after) || changes[0];
+      if (!c) return;
+      // 0 = no history before the regenerate, which seeded the old script as v1.
+      const from = Math.max(c.before, 1);
+      this.historyEntityType = 'script';
+      this.historyKind = c.kind;
+      this.historyFrom = from;
+      this.historyTo = c.after !== from ? c.after : null;
+      this.historyTap = i.resource;
+      return;
+    }
+    if (i.resourceType !== 'tap' || i.revertToVersion === undefined || i.revertToVersion === null) return;
+    const from = i.revertToVersion;
+    const name = i.resource;
+    this.tapService.getTapVersions(name).pipe(catchError(() => of([] as any[]))).subscribe(versions => {
+      const nums = (versions || []).map((v: any) => Number(v?.version)).filter((n: number) => isFinite(n));
+      const latest = nums.length > 0 ? Math.max(...nums) : null;
+      this.historyEntityType = 'tap';
+      this.historyKind = '';
+      this.historyFrom = from;
+      this.historyTo = latest !== null && latest !== from ? latest : null;
+      this.historyTap = name;
+    });
+  }
+
+  closeScriptDiff(): void {
+    this.historyTap = '';
+    this.historyEntityType = 'tap';
+    this.historyKind = '';
+    this.historyFrom = null;
+    this.historyTo = null;
   }
 
   toggleTimeline(i: Incident): void {
@@ -621,6 +687,33 @@ export class ActivityComponent implements OnInit, OnDestroy {
         } else {
           this.incidentActionError.set(i.id, body.error || body.message || 'Abandon failed.');
         }
+        this.loadIncidents();
+      }
+    });
+  }
+
+  /** Parked on a needs-human scratch verdict with nothing queued in Approvals. */
+  canProceed(i: Incident): boolean {
+    return i.state === 'awaiting_approval' && i.verdict === 'needs-human' && !(i.awaitingApprovalIds?.length);
+  }
+
+  isProceeding(i: Incident): boolean {
+    return this.proceeding.has(i.id);
+  }
+
+  proceed(i: Incident): void {
+    if (this.proceeding.has(i.id)) return;
+    this.proceeding.add(i.id);
+    this.incidentActionError.delete(i.id);
+    this.incidentsService.proceed(i.id).subscribe({
+      next: () => {
+        this.proceeding.delete(i.id);
+        this.loadIncidents();
+      },
+      error: (err) => {
+        this.proceeding.delete(i.id);
+        const body = err?.error || {};
+        this.incidentActionError.set(i.id, body.error || body.message || 'Proceed failed.');
         this.loadIncidents();
       }
     });

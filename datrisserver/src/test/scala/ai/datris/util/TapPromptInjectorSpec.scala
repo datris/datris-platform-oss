@@ -52,4 +52,28 @@ class TapPromptInjectorSpec extends AnyFunSuite {
         assert(TapPromptInjector.dataSourcesFrom(List(frag(TapPromptInjector.DataSourcesKey, content = "   \n"))).isEmpty)
         assert(TapPromptInjector.dataSourcesFrom(List(frag(TapPromptInjector.DataSourcesKey, content = null))).isEmpty)
     }
+
+    // Story: learn notes as suggested prompt fragments
+    // (plans/stories/self-healing-6-env-defaults-learn-notes.md), Acceptance bullet 4.
+    // matchFragments(userText, fragments) applies the same enabled filter the
+    // loader does, so a suggested (enabled = false) fragment is never injected
+    // even when handed to the matcher directly.
+
+    test("a suggested, enabled=false fragment whose key appears in a description is not injected; once accepted it is") {
+        val suggested = TapPromptFragment(
+            key = "incident-inc_000000000042",
+            aliases = List("api.weather.gov").asJava,
+            content = "the source returns local timestamps without an offset",
+            enabled = false,
+            status = "suggested",
+            origin = "incident",
+            incidentId = "inc_000000000042"
+        )
+        val description = "pull hourly observations from api.weather.gov for incident-inc_000000000042 stations"
+        assert(TapPromptInjector.matchFragments(description, List(suggested, frag("Stripe"))).isEmpty)
+
+        // What POST /tap-prompts stores when a person accepts it.
+        val accepted = suggested.copy(enabled = true, status = "active")
+        assert(TapPromptInjector.matchFragments(description, List(accepted, frag("Stripe"))).map(_.key) == List(suggested.key))
+    }
 }

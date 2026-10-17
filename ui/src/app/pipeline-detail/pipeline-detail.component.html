@@ -2,10 +2,24 @@
   <a class="back-link" routerLink="/data/ingestion">&#8592; Back to Data Ingestion</a>
   <div class="detail-header">
     <h1 class="dataset-title">{{ pipeline }}</h1>
-    <button class="version-history-btn" (click)="openHistory()" *ngIf="pipeline">
-      <span class="material-icons">manage_history</span>
-      Version history
-    </button>
+    <div class="detail-actions" *ngIf="pipeline">
+      <button class="version-history-btn" (click)="openHistory()">
+        <span class="material-icons">manage_history</span>
+        Version history
+      </button>
+      <!-- CodeGen script history: the pipeline's AI scripts are looked up on
+           first click, then one button per script. -->
+      <button class="version-history-btn" *ngIf="scriptKinds === null" (click)="loadScriptKinds()" [disabled]="scriptKindsLoading"
+              title="Version history of the AI data-quality rule and AI transformation scripts">
+        <span class="material-icons">history_edu</span>
+        {{ scriptKindsLoading ? 'Loading…' : 'Script history' }}
+      </button>
+      <button class="version-history-btn" *ngFor="let k of scriptKinds || []" (click)="openScriptHistory(k)">
+        <span class="material-icons">history_edu</span>
+        Script history: {{ k }}
+      </button>
+      <span class="script-history-note" *ngIf="scriptKindsNote">{{ scriptKindsNote }}</span>
+    </div>
   </div>
   <!-- AI fix suggestion for the failed run: full diagnosis + concrete fix,
        shown above the raw step-by-step event stream. -->
@@ -104,4 +118,13 @@
   [name]="pipeline"
   (closed)="closeHistory()"
   (restored)="onHistoryRestored()">
+</app-version-history>
+
+<!-- CodeGen script version history -->
+<app-version-history
+  *ngIf="historyKind && pipeline"
+  entityType="script"
+  [name]="pipeline"
+  [kind]="historyKind"
+  (closed)="closeScriptHistory()">
 </app-version-history>

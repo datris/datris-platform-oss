@@ -3,7 +3,8 @@ import { Subscription } from 'rxjs';
 import { filter } from 'rxjs/operators';
 import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import { Router } from '@angular/router';
-import { AgentPolicy, AgentPolicyService, PolicyMode, PolicyResponse } from './agent-policy.service';
+import { AuthService } from '../../auth.service';
+import { AgentPolicy, AgentPolicyService, PolicyMode, PolicyResponse, RecoverySettings } from './agent-policy.service';
 
 /** One row of the action matrix. Sub-actions ("pipeline:update:dest-types")
  *  are indented under their two-part parent and inherit its mode unless set. */
@@ -62,7 +63,12 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
   updatedBy?: string;
   pendingCount = 0;
 
-  constructor(private svc: AgentPolicyService, private router: Router, private chatState: ConfigAssistantStateService) {}
+  constructor(
+    private svc: AgentPolicyService,
+    private router: Router,
+    private chatState: ConfigAssistantStateService,
+    private auth: AuthService
+  ) {}
 
   ngOnInit(): void {
     // Reload when the configuration chat changes this sub-tab's setting.
@@ -232,6 +238,8 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
       }
     }).subscribe({
       next: (res) => {
+        // Keep the stored copy current: Apply recommended builds its body from it.
+        if (this.status) this.status = { ...this.status, policy: res.policy };
         this.applyPolicy(res.policy);
         this.success = `Policy saved (version ${this.version}).`;
         this.saving = false;
@@ -239,6 +247,55 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
       error: (err) => {
         this.error = err?.error?.error || err?.error?.message || 'Failed to save policy';
         this.saving = false;
+      }
+    });
+  }
+
+  // ------- recovery (read-only, plus apply-recommended) -------
+
+  /** Admins (or everyone when user auth is off) may apply the recommendation. */
+  get isAdmin(): boolean {
+    return !this.auth.userAuthEnabled || this.auth.current()?.role === 'admin';
+  }
+
+  get recovery(): RecoverySettings | undefined {
+    return this.status?.policy?.recovery;
+  }
+
+  get recoveryRecommended(): RecoverySettings | undefined {
+    return this.status?.recoveryRecommended;
+  }
+
+  applyingRecovery = false;
+
+  /** PUT the stored policy unchanged except `recovery` = the recommendation.
+   *  The stored overrides (which carry the per-resource recovery modes) go
+   *  back as-is: a PUT with `recovery` also replaces those from the body. */
+  applyRecommendedRecovery(): void {
+    const rec = this.recoveryRecommended;
+    const stored = this.status?.policy;
+    if (!rec || !stored || !this.enabled || this.applyingRecovery || !this.isAdmin) return;
+    const label = this.status?.environmentLabel ? `the "${this.status.environmentLabel}" environment` : 'this unlabelled install';
+    const msg = `Set the recovery agent to "${rec.mode}" mode with the thresholds recommended for ${label}?`;
+    if (!window.confirm(msg)) return;
+    this.applyingRecovery = true;
+    this.error = '';
+    this.success = '';
+    this.svc.save({
+      actions: { ...(stored.actions || {}) },
+      overrides: JSON.parse(JSON.stringify(stored.overrides || {})),
+      limits: { ...(stored.limits || { pendingTtlHours: 24, maxPendingPerActor: 50 }) },
+      recovery: { ...rec }
+    }).subscribe({
+      next: (res) => {
+        if (this.status) this.status = { ...this.status, policy: res.policy };
+        this.applyPolicy(res.policy);
+        this.success = `Recovery set to ${res.policy?.recovery?.mode ?? rec.mode} (version ${this.version}).`;
+        this.applyingRecovery = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.error || err?.error?.message || 'Failed to apply recovery settings';
+        this.applyingRecovery = false;
       }
     });
   }

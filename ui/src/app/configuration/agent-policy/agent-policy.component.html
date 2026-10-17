@@ -144,6 +144,34 @@
       </div>
     </section>
 
+    <!-- Recovery (read-only) -->
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h4>Recovery (set via API or the Configuration assistant)</h4>
+          <p class="hint">How the recovery agent handles incidents. The recommendation follows this install's environment label<span *ngIf="status?.environmentLabel"> ({{ status?.environmentLabel }})</span>.</p>
+        </div>
+      </div>
+      <div class="recovery">
+        <table class="recovery-table">
+          <thead>
+            <tr><th></th><th>Current</th><th>Recommended</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Mode</td><td>{{ recovery?.mode || 'off' }}</td><td>{{ recoveryRecommended?.mode || '—' }}</td></tr>
+            <tr><td>Max record change (%)</td><td>{{ recovery?.maxRecordDeltaPct ?? '—' }}</td><td>{{ recoveryRecommended?.maxRecordDeltaPct ?? '—' }}</td></tr>
+            <tr><td>Allow column removal</td><td>{{ recovery?.allowColumnRemoval ?? '—' }}</td><td>{{ recoveryRecommended?.allowColumnRemoval ?? '—' }}</td></tr>
+            <tr><td>Allow type change</td><td>{{ recovery?.allowTypeChange ?? '—' }}</td><td>{{ recoveryRecommended?.allowTypeChange ?? '—' }}</td></tr>
+            <tr><td>Verify mode</td><td>{{ recovery?.verifyMode || '—' }}</td><td>{{ recoveryRecommended?.verifyMode || '—' }}</td></tr>
+            <tr><td>Schema drift actions</td><td>{{ recovery?.allowSchemaDriftActions ?? '—' }}</td><td>{{ recoveryRecommended?.allowSchemaDriftActions ?? '—' }}</td></tr>
+          </tbody>
+        </table>
+        <button *ngIf="isAdmin && recoveryRecommended" class="btn-secondary" (click)="applyRecommendedRecovery()" [disabled]="applyingRecovery || loading">
+          {{ applyingRecovery ? 'Applying…' : 'Apply recommended recovery settings' }}
+        </button>
+      </div>
+    </section>
+
     <p class="rules">
       <span>Agents can never change this policy or decide approvals, whatever key they hold.</span>
       <span>Reads, queries and searches are never gated.</span>
