@@ -268,4 +268,18 @@ class RecoveryPolicySpec extends AnyFunSuite {
             assert(back.recovery == dev.recovery, "a saved loose block stays loose on '" + label + "': " + back.recovery)
         }
     }
+
+    test("no stored policy: the empty policy carries the label's threshold defaults, same as fromJson(\"{}\")") {
+        withLabel("dev") {
+            val e = AgentPolicy.emptyForCurrentLabel
+            assert(e.recovery.mode == RecoverySettings.Off, e.recovery)
+            assert(e.recovery.thresholds == Loose, e.recovery.thresholds)
+            assert(e == policy("""{}"""), e)
+        }
+        for (label <- Seq("qa", "production", "")) withLabel(label) {
+            val e = AgentPolicy.emptyForCurrentLabel
+            assert(e.recovery.thresholds == Strict, "label '" + label + "': " + e.recovery.thresholds)
+            assert(e == policy("""{}"""), "label '" + label + "': " + e)
+        }
+    }
 }

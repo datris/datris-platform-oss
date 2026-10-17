@@ -86,11 +86,11 @@ class TapPromptAPIController {
             val now = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
                 .format(new java.util.Date())
             val existing = TapPromptFragmentIO.read(tableName, incoming.key)
-            val existingSuggested = existing != null && TapPromptFragment.StatusSuggested.equalsIgnoreCase(Option(existing.status).getOrElse(""))
+            val existingSuggested = TapPromptAPIController.isSuggested(existing)
             // A suggested fragment was written by the recovery agent; only a
             // person may accept, edit or otherwise overwrite it.
             if (existingSuggested && PolicyActor.isAgent(request))
-                return ResponseEntity.status(HttpStatus.FORBIDDEN).body[String]("{\"error\": \"a person accepts suggested fragments\"}")
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](TapPromptAPIController.PersonAcceptsBody)
             val createdAt = if (existing != null && existing.createdAt != null) existing.createdAt else now
             // Accepting a suggestion keeps where it came from; enabling one
             // without naming a status accepts it.
@@ -177,11 +177,20 @@ class TapPromptAPIController {
     }
 
     @DeleteMapping(path = Array("/tap-prompts/{key}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def deleteFragment(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @PathVariable key: String): ResponseEntity[String] = {
+    def deleteFragment(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable key: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /tap-prompts/" + key + " called")
             APIKeyValidator.validate(apiKey)
             val tableName = DatrisEnvironment.current.tapPromptTableName
+            // Deleting a suggestion and re-POSTing the key would sidestep the
+            // accept refusal (and drop its provenance): a person decides.
+            val existing = TapPromptFragmentIO.read(tableName, key)
+            if (TapPromptAPIController.isSuggested(existing) && PolicyActor.isAgent(request))
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](TapPromptAPIController.PersonAcceptsBody)
             TapPromptFragmentIO.delete(tableName, key)
             TapPromptInjector.invalidateCache()
             new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
@@ -191,4 +200,11 @@ class TapPromptAPIController {
                 ApiErrors.internal(e)
         }
     }
+}
+
+object TapPromptAPIController {
+    val PersonAcceptsBody = "{\"error\": \"a person accepts suggested fragments\"}"
+
+    def isSuggested(f: TapPromptFragment): Boolean =
+        f != null && TapPromptFragment.StatusSuggested.equalsIgnoreCase(Option(f.status).getOrElse(""))
 }

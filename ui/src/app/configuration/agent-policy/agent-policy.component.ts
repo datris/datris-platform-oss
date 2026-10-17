@@ -238,6 +238,8 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
       }
     }).subscribe({
       next: (res) => {
+        // Keep the stored copy current: Apply recommended builds its body from it.
+        if (this.status) this.status = { ...this.status, policy: res.policy };
         this.applyPolicy(res.policy);
         this.success = `Policy saved (version ${this.version}).`;
         this.saving = false;

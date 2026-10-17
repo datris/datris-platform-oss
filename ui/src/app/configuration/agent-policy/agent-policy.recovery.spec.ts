@@ -138,4 +138,32 @@ describe('AgentPolicyComponent: recovery recommendation panel', () => {
     fixture.detectChanges();
     httpMock.expectNone(r => r.method === 'PUT' && r.url === '/api/v1/policy');
   });
+
+  it('Apply after a Save sends the just-saved actions and limits, not the ones first loaded', async () => {
+    await setup('admin');
+    const cmp = fixture.componentInstance;
+    cmp.setMode('tap:create', 'deny');
+    cmp.pendingTtlHours = 48;
+    cmp.save();
+    const saveReq = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/v1/policy');
+    expect(saveReq.request.body.recovery).withContext('a plain Save does not send recovery').toBeUndefined();
+    const saved = {
+      ...policyResponse().policy,
+      version: 4,
+      actions: { 'tap:run': 'approve', 'tap:create': 'deny' },
+      limits: { pendingTtlHours: 48, maxPendingPerActor: 50 }
+    };
+    saveReq.flush({ enabled: true, policy: saved });
+    fixture.detectChanges();
+
+    spyOn(window, 'confirm').and.returnValue(true);
+    applyButton()!.click();
+    fixture.detectChanges();
+    const req = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/v1/policy');
+    const body = req.request.body as any;
+    expect(body.actions).toEqual({ 'tap:run': 'approve', 'tap:create': 'deny' });
+    expect(body.limits).toEqual({ pendingTtlHours: 48, maxPendingPerActor: 50 });
+    expect(body.recovery).toEqual(RECOMMENDED_RECOVERY);
+    req.flush({ enabled: true, policy: { ...saved, version: 5, recovery: RECOMMENDED_RECOVERY } });
+  });
 });

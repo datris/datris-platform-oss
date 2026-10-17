@@ -38,7 +38,7 @@ class PolicyAPIController {
                 out.add("policy", PolicyIO.current.toJson)
                 out.addProperty("pendingCount", PendingActionIO.countPendingAll())
             } else {
-                out.add("policy", AgentPolicy.Empty.toJson)
+                out.add("policy", AgentPolicy.emptyForCurrentLabel.toJson)
                 out.addProperty("pendingCount", 0)
             }
             out.add("recommended", AgentPolicy.Recommended.toJson)

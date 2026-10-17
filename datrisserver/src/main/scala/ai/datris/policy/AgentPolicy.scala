@@ -202,6 +202,22 @@ object AgentPolicy {
 
     val Empty: AgentPolicy = AgentPolicy()
 
+    /** The policy in force when none is stored: [[Empty]] with the recovery
+      * threshold defaults of this install's environment label, exactly what
+      * `fromJson("{}")` yields (mode stays off). */
+    def emptyForCurrentLabel: AgentPolicy = {
+        val t = RecoverySettings.thresholdDefaultsFor(ai.datris.util.EnvironmentLabel.current)
+        Empty.copy(recovery =
+            Empty.recovery.copy(
+                maxRecordDeltaPct = t.maxRecordDeltaPct.toInt,
+                allowColumnRemoval = t.allowColumnRemoval,
+                allowTypeChange = t.allowTypeChange,
+                minDqPassRate = t.minDqPassRate,
+                maxNullRateIncrease = t.maxNullRateIncrease
+            )
+        )
+    }
+
     /** One-click starting point the UI offers: pause before anything
       * destructive or table-rewriting, refuse secret writes outright. */
     val Recommended: AgentPolicy = AgentPolicy(

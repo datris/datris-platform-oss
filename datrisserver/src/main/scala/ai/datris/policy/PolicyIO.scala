@@ -53,14 +53,14 @@ object PolicyIO {
                             // parser is all-or-nothing; log loudly and keep the
                             // last good cached value if there is one.
                             logger.error("Stored agent policy is invalid (" + err + "); keeping the last good policy in memory")
-                            Option(cache.get()).map(_.policy).getOrElse(AgentPolicy.Empty)
+                            Option(cache.get()).map(_.policy).getOrElse(AgentPolicy.emptyForCurrentLabel)
                     }
-                case None => AgentPolicy.Empty
+                case None => AgentPolicy.emptyForCurrentLabel
             }
         } catch {
             case e: Exception =>
                 logger.warn("Could not read agent policy: " + e.getMessage)
-                Option(cache.get()).map(_.policy).getOrElse(AgentPolicy.Empty)
+                Option(cache.get()).map(_.policy).getOrElse(AgentPolicy.emptyForCurrentLabel)
         }
 
     def write(policy: AgentPolicy, by: String): AgentPolicy = {
