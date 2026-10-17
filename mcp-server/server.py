@@ -3429,7 +3429,8 @@ def _base_tools():
             description=(
                 "Make an earlier version of a pipeline's AI data-quality rule or AI transformation script the one "
                 "the pipeline runs. APPEND-ONLY and SIDE-EFFECTING: the restore writes the chosen text back as a NEW "
-                "latest version (no model call); the pipeline's definition version does not change. Refused when the "
+                "latest version (no model call); the pipeline's definition version does not change. If that text is "
+                "already the live script, nothing is written and the response carries `noop: true`. Refused when the "
                 "pipeline's instruction or source schema no longer matches the version (HTTP 422 with the reason; "
                 "nothing is changed), and refused with HTTP 409 when a repository-backed script file was edited since "
                 "its recorded commit. Only call this when the operator has explicitly asked to restore this specific "

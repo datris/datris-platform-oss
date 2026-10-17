@@ -1546,6 +1546,36 @@ class PipelineScriptsSpec extends AnyFunSuite with BeforeAndAfterEach with AiSam
         assert(run.action == PipelineScripts.Stored && run.script == v1.script && gen.count == 0, s"$run")
     }
 
+    test("restoreVersion of the version that is already live appends, stores and commits nothing") {
+        val cfg = csvCfg()
+        scripts.onSave(null, cfg, "todd") // v1
+        assert(scripts.regenerate(cfg, Dq, "todd").isRight) // v2, live
+        val live = records.read("orders", Dq).get
+        val writesBefore = records.writes
+        val objectsBefore = store.objects.toMap
+        val historyBefore = history.rows.toList
+        val r = scripts.restoreVersion(cfg, Dq, 2, "ops")
+        assert(r == Right(live), s"$r")
+        assert(records.writes == writesBefore && records.read("orders", Dq).get == live, "no record write")
+        assert(store.objects.toMap == objectsBefore, "store untouched")
+        assert(history.rows.toList == historyBefore, "no version appended")
+
+        // A different version's text still restores as a new version.
+        assert(scripts.restoreVersion(cfg, Dq, 1, "ops").toOption.exists(_.scriptVersion == 3))
+
+        // Repository-backed: no empty commit either.
+        beforeEach()
+        val s2 = withRepo()
+        s2.onSave(null, cfg, "todd") // v1 commit
+        assert(records.read("orders", Dq).get.storage == "github")
+        val commitsBefore = repo.writes.size
+        val writes2 = records.writes
+        assert(s2.restoreVersion(cfg, Dq, 1, "ops").isRight)
+        assert(repo.writes.size == commitsBefore, s"no commit: ${repo.writes}")
+        assert(records.writes == writes2)
+        assert(history.latestVersion("orders", Dq) == 1)
+    }
+
     test("restoreVersion of a version written for a different instruction or schema is Left and changes nothing") {
         val cfgA = csvCfg()
         val cfgB = csvCfg(dqRule = "age must be between 0 and 120")

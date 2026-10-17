@@ -496,6 +496,24 @@ class CodeGenScriptsApiSpec extends AnyFunSuite {
         assert(after.has("version") && after.get("version").getAsInt == 3, s"$after")
     }
 
+    test("POST restore of the live version is 200 with noop true and the current entry") {
+        val scripts = versionedScripts()
+        withEnv(scripts.onSave(null, dqOnly, "todd")) // v1
+        withEnv(scripts.regenerate(dqOnly, "dataQuality", "todd")) // v2, live
+        val live = scripts.record("orders", "dataQuality").get
+        val r = withEnv(CodeGenScriptVersionAPIController.restoreVersionWith(scripts, dqOnly, "dataQuality", 2, "ops"))
+        assert(r.getStatusCode.value == 200, r.getBody)
+        val body = json(r)
+        assert(body.has("noop") && body.get("noop").getAsBoolean, s"$body")
+        assert(body.get("version").getAsInt == 2 && body.get("kind").getAsString == "dataQuality", s"$body")
+        assert(scripts.record("orders", "dataQuality").get == live, "nothing written")
+        val listed = JsonParser.parseString(withEnv(CodeGenScriptVersionAPIController.listVersionsWith(scripts, dqOnly, "dataQuality")).getBody).getAsJsonArray
+        assert(listed.size == 2, s"$listed")
+        // A real restore carries no noop.
+        val real = json(withEnv(CodeGenScriptVersionAPIController.restoreVersionWith(scripts, dqOnly, "dataQuality", 1, "ops")))
+        assert(!real.has("noop") && real.get("version").getAsInt == 3, s"$real")
+    }
+
     test("POST restore: unknown version 404, unknown kind 400, mismatched fingerprint 422 with the reason") {
         val scripts = versionedScripts()
         withEnv(scripts.onSave(null, dqOnly, "todd")) // v1

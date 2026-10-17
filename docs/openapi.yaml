@@ -2582,7 +2582,9 @@ paths:
         NEW latest version (origin `restore-version`) and keeps the model that
         wrote it. A built-in script object is replaced; a repository-backed
         script gets a new commit. The pipeline's definition version does not
-        change. Refused, with nothing changed, when the version was written
+        change. When the version's text is already the live script, nothing
+        is written (no version, no commit) and the current entry is returned
+        with `noop: true`. Refused, with nothing changed, when the version was written
         for a different instruction or source schema than the pipeline has
         now, or for another script contract version (422), and when the
         repository file was edited since the recorded commit (409). Requires

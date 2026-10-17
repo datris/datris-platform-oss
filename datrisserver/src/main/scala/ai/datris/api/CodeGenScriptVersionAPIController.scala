@@ -121,7 +121,8 @@ object CodeGenScriptVersionAPIController {
     }
 
     /** POST …/versions/{version}/restore: 200 with the kind's GET entry
-      * (carrying the new `version`); 400 unknown kind or no instruction; 404
+      * (carrying the new `version`, or `noop: true` and the current entry
+      * when the version's text is already live); 400 unknown kind or no instruction; 404
       * unknown version; 409 a repository file edited since the recorded
       * commit; 422 a version written for another instruction, source schema
       * or script contract; 502 the script could not be stored. */
@@ -129,9 +130,12 @@ object CodeGenScriptVersionAPIController {
         if (!PipelineScripts.Kinds.contains(kind)) return unknownKind(kind)
         if (PipelineScripts.instructionOf(config, kind).isEmpty)
             return error(HttpStatus.BAD_REQUEST, "Pipeline: " + config.name + " has no AI " + kind + " instruction to restore a script for")
+        val before = scripts.record(config.name, kind)
         scripts.restoreVersion(config, kind, version, actor) match {
             case Right(rec) =>
                 val entry = PipelineAPIController.codegenScriptEntry(scripts, config.name, kind, rec.instruction, scripts.modelNow)
+                // The version was already live: nothing was written.
+                if (before.contains(rec)) entry.addProperty("noop", true)
                 json(HttpStatus.OK, entry.toString)
             case Left(msg) => error(restoreFailureStatus(config, kind, version, msg), msg)
         }

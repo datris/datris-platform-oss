@@ -762,7 +762,10 @@ class PipelineScripts(
       * script gets a new commit, refused (Left with [[conflictWarning]]) when
       * the file was edited since the recorded commit. Left, with nothing
       * changed, for an unknown kind or version, or a version written for
-      * another instruction, source schema or script contract version. */
+      * another instruction, source schema or script contract version. When
+      * the version's text is already the live script (same fingerprint and
+      * text, ready), nothing is stored, versioned or committed and the live
+      * record is returned unchanged. */
     def restoreVersion(config: PipelineConfig, kind: String, version: Int, actor: String): Either[String, CodeGenScript] = {
         if (!Kinds.contains(kind)) return Left(unknownKindMessage(kind))
         if (config == null || config.name == null) return Left("No pipeline config to restore the script into")
@@ -793,6 +796,12 @@ class PipelineScripts(
             )
         if (v.script == null || v.script.trim.isEmpty) return Left("script version " + version + " holds no script text; nothing was changed")
         val existing = records.read(config.name, kind)
+        // Already live (same fingerprint and text, ready): nothing to store,
+        // no version, no (empty) commit. The caller gets the live record.
+        existing.filter(r => r.status == Ready && r.fingerprint == v.fingerprint) match {
+            case Some(live) if readStored(live).contains(v.script) => return Right(live)
+            case _ => ()
+        }
         val against = Option(v.generatedAgainst).map(_.asScala.toList).getOrElse(Nil)
         try
             Right(
