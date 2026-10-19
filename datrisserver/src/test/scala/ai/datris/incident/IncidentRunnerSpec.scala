@@ -1064,6 +1064,16 @@ class IncidentRunnerSpec extends AnyFunSuite {
         assert(!Classifier.credential("KeyError: account_id", "fetched 4012 rows"))
         assert(!Classifier.credential(null, null))
         assert(!Classifier.credential("", ""))
+        // The platform's own missing-secret refusal (TapScriptRunner), in the error or the logs
+        assert(Classifier.credential(
+            "Tap references secret 'dog-api' but no credentials were injected — the secret is missing or empty in the vault. The script would run unauthenticated and silently return no data.",
+            null
+        ))
+        assert(Classifier.credential(
+            null,
+            "ERROR Tap references secret 'weather-key' but NO CREDENTIALS WERE INJECTED — the secret is missing or empty in the vault."
+        ))
+        assert(!Classifier.credential("KeyError: secret_sauce", "reading the secret config"))
     }
 
     test("withSecret sets blastRadius.secretName and keeps the rest of the evidence") {

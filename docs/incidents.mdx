@@ -100,7 +100,7 @@ A schema-drift incident opens when a scheduled tap run succeeds but returns a di
 
 Before any AI diagnosis the platform runs the doctor's quick check itself. An error that stops any run from succeeding (a full disk or staging area, the strict audit log refusing entries, the script sidecar down, runs turned away by the runner queue, a missing primary AI secret) classifies the incident `platform` and hands it to a person with the doctor's fix, without spending an AI call. Other doctor errors are passed to the diagnosis as context.
 
-A failure where the source rejected the credentials (401, 403, an expired or invalid token) is classified `credential` in code. No tap actions are proposed, and the evidence card names the **Secret to check** (never its value) with a link to Configuration → Secrets. Re-running a tap with a bad key would fail the same way.
+A failure where the source rejected the credentials (401, 403, an expired or invalid token), or where the tap's secret is missing or empty, is classified `credential` in code. No tap actions are proposed, and the evidence card names the **Secret to check** (never its value) with a link to Configuration → Secrets. Re-running a tap with a bad key would fail the same way.
 
 ## Pipeline incidents
 

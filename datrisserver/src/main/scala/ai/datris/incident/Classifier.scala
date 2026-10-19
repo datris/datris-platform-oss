@@ -12,10 +12,14 @@ object Classifier {
     /** An authentication / authorization failure from the source. A bare
       * 401/403 counts only next to HTTP / status / code / response / error /
       * returned / failed with (so "page 401 of 900" in a run log does not,
-      * while curl's "returned error: 401" does); the words count anywhere. */
+      * while curl's "returned error: 401" does); the words count anywhere.
+      * Also the platform's own missing-secret refusal from TapScriptRunner
+      * ("Tap references secret 'x' but no credentials were injected — the
+      * secret is missing or empty in the vault."). */
     private val CredentialPattern =
         ("""(?i)\b(?:https?|status|code|response|error|returned|failed with)(?:[ _]?(?:code|error))?(?:/\d(?:\.\d)?)?[\s:=]*40[13]\b""" +
-            """|unauthori[sz]ed|forbidden|invalid_grant|invalid[_ ]token|token (?:has )?expired|credentials? (?:are |is )?(?:expired|invalid|rejected)""").r
+            """|unauthori[sz]ed|forbidden|invalid_grant|invalid[_ ]token|token (?:has )?expired|credentials? (?:are |is )?(?:expired|invalid|rejected)""" +
+            """|no credentials were injected|secret is missing or empty""").r
 
     /** True when the trigger error or the latest run's logs show the source
       * rejected the tap's credentials. Either argument may be null. */
