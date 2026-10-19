@@ -945,6 +945,16 @@
   border: 1px solid rgba(192, 132, 252, 0.25);
   color: #c084fc;
 }
+.incident-classification.iclass-credential {
+  background: rgba(251, 191, 36, 0.10);
+  border-color: rgba(251, 191, 36, 0.30);
+  color: #fbbf24;
+}
+.incident-classification.iclass-platform {
+  background: rgba(248, 113, 113, 0.10);
+  border-color: rgba(248, 113, 113, 0.30);
+  color: #f87171;
+}
 
 .incident-times {
   margin-top: 4px;

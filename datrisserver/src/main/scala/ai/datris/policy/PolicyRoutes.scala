@@ -25,6 +25,10 @@ object PolicyRoutes {
       * must still be what CapabilityRoutes returns for the same route. */
     private val subActions: Seq[(String, String, String)] = Seq(
         ("POST", "/api/v1/pipeline/dest-types", "pipeline:update:dest-types"),
+        // Replacing the CodeGen script a pipeline runs (regenerate, or restore
+        // an earlier version) without changing its definition.
+        ("POST", "/api/v1/pipelines/*/codegen-scripts/*/regenerate", "pipeline:update:codegen-scripts"),
+        ("POST", "/api/v1/pipelines/*/codegen-scripts/*/versions/*/restore", "pipeline:update:codegen-scripts"),
         // Ordered enable of a whole catalog (tests, enables and runs every
         // tap in dependency order): one approval for the job, not one per tap.
         ("POST", "/api/v1/catalog/*/enable-ordered", "tap:run:enable-ordered")

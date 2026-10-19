@@ -412,7 +412,7 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
-            CapabilityCheck.assertOwnerScope(request, "pipeline", "create", config.createdByKeyLabel)
+            CapabilityCheck.assertOwnerScope(request, "pipeline", "update", config.createdByKeyLabel)
             if (PipelineScripts.instructionOf(config, kind).isEmpty)
                 return ResponseEntity
                     .status(HttpStatus.BAD_REQUEST)
@@ -433,12 +433,12 @@ class PipelineAPIController {
             val force = overwrite != null && overwrite.booleanValue
             PipelineScripts.regenerate(config, kind, actor, Option(storage).filter(_.nonEmpty).orNull, force) match {
                 case Right(rec) =>
-                    auditCodegenScript(request, "regenerate", name, kind, "success", None)
+                    PipelineAPIController.auditCodegenScript(request, "regenerate", name, kind, "success", None)
                     val body = PipelineAPIController.codegenScriptsBody(config, PipelineScripts)
                     val entry = body.getAsJsonArray("scripts").asScala.map(_.getAsJsonObject).find(_.get("kind").getAsString == kind)
                     ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(entry.getOrElse(new JsonObject).toString)
                 case Left(error) =>
-                    auditCodegenScript(request, "regenerate", name, kind, "failure", Some(error))
+                    PipelineAPIController.auditCodegenScript(request, "regenerate", name, kind, "failure", Some(error))
                     val status =
                         if (error.contains(PipelineScripts.ConflictMarker)) HttpStatus.CONFLICT
                         else HttpStatus.BAD_GATEWAY
@@ -479,10 +479,10 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
-            CapabilityCheck.assertOwnerScope(request, "pipeline", "create", config.createdByKeyLabel)
+            CapabilityCheck.assertOwnerScope(request, "pipeline", "update", config.createdByKeyLabel)
             val response = PipelineAPIController.pullCodegenScriptWith(PipelineScripts, name, kind, ResolvedKeyAccess.keyLabel(request).orNull, config)
-            if (response.getStatusCode.is2xxSuccessful) auditCodegenScript(request, "pull", name, kind, "success", None)
-            else auditCodegenScript(request, "pull", name, kind, "failure", Some(String.valueOf(response.getBody)))
+            if (response.getStatusCode.is2xxSuccessful) PipelineAPIController.auditCodegenScript(request, "pull", name, kind, "success", None)
+            else PipelineAPIController.auditCodegenScript(request, "pull", name, kind, "failure", Some(String.valueOf(response.getBody)))
             response
         } catch {
             case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
@@ -491,33 +491,6 @@ class PipelineAPIController {
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
-
-    private def auditCodegenScript(
-        request: HttpServletRequest,
-        operation: String,
-        pipeline: String,
-        kind: String,
-        outcome: String,
-        error: Option[String]
-    ): Unit =
-        try {
-            if (ai.datris.audit.AuditLog.enabled)
-                ai.datris.audit.AuditLog.submit(
-                    ai.datris.audit.AuditEntry(
-                        ts = java.time.Instant.now(),
-                        actor = ai.datris.audit.AuditActor.resolve(request),
-                        category = "pipeline",
-                        action = "codegen-script-" + operation + ":" + kind,
-                        resourceType = Some("pipeline"),
-                        resourceName = Some(pipeline),
-                        outcome = outcome,
-                        errorMessage = error,
-                        request = Some(ai.datris.audit.AuditLog.requestInfo(request))
-                    )
-                )
-        } catch {
-            case ex: Exception => logger.warn("Audit of CodeGen script " + operation + " failed for " + pipeline + ": " + ex.getMessage)
-        }
 
     @DeleteMapping(path = Array("/pipeline"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def deletePipeline(
@@ -1019,6 +992,37 @@ class PipelineAPIController {
 
 object PipelineAPIController {
 
+    private val auditLogger: Logger = LoggerFactory.getLogger(classOf[PipelineAPIController])
+
+    /** Audit entry `codegen-script-<operation>:<kind>` for a CodeGen script
+      * change (regenerate, pull, restore-version). Never throws. */
+    private[api] def auditCodegenScript(
+        request: HttpServletRequest,
+        operation: String,
+        pipeline: String,
+        kind: String,
+        outcome: String,
+        error: Option[String]
+    ): Unit =
+        try {
+            if (ai.datris.audit.AuditLog.enabled)
+                ai.datris.audit.AuditLog.submit(
+                    ai.datris.audit.AuditEntry(
+                        ts = java.time.Instant.now(),
+                        actor = ai.datris.audit.AuditActor.resolve(request),
+                        category = "pipeline",
+                        action = "codegen-script-" + operation + ":" + kind,
+                        resourceType = Some("pipeline"),
+                        resourceName = Some(pipeline),
+                        outcome = outcome,
+                        errorMessage = error,
+                        request = Some(ai.datris.audit.AuditLog.requestInfo(request))
+                    )
+                )
+        } catch {
+            case ex: Exception => auditLogger.warn("Audit of CodeGen script " + operation + " failed for " + pipeline + ": " + ex.getMessage)
+        }
+
     /** GET /pipeline's response for the config read by name: 404 with the
       * "not configured in the NoSQL database" error body when it is null,
       * else 200 with its Gson JSON. */
@@ -1097,6 +1101,7 @@ object PipelineAPIController {
                 e.addProperty("status", Option(r.status).getOrElse(PipelineScripts.Ready))
                 e.addProperty("pendingReason", r.pendingReason)
                 e.addProperty("origin", r.origin)
+                if (r.scriptVersion > 0) e.addProperty("version", r.scriptVersion)
                 e.addProperty("fingerprint", r.fingerprint)
                 e.addProperty("storage", r.storage)
                 e.addProperty("repoPath", r.scriptRepoPath)

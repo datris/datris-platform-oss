@@ -38,6 +38,7 @@ ECHO_TOOLS = [
     "update_secret",
     "restore_tap_version",
     "restore_pipeline_version",
+    "restore_script_version",  # story self-healing-5a
 ]
 
 _FIXED_DESTS = ["postgres", "mongodb", "objectstore", "kafka", "snowflake", "databricks"]
@@ -185,7 +186,7 @@ def test_production_adds_confirm_sentence_and_names_no_domain(monkeypatch, fixed
 @pytest.mark.parametrize("tool", ECHO_TOOLS)
 def test_delete_and_update_tools_echo_environment(monkeypatch, tool):
     assert tool in server._ECHO_ENVIRONMENT_TOOLS
-    assert len(server._ECHO_ENVIRONMENT_TOOLS) == 9
+    assert len(server._ECHO_ENVIRONMENT_TOOLS) == 10
     _set_label(monkeypatch, "qa")
 
     body = json.dumps({"status": "ok", "name": "thing"})

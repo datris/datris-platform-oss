@@ -25,6 +25,24 @@ object IncidentIO {
     private val indexed = mutable.Set[String]()
     val MaxListLimit = 200
 
+    /** The persistence behind every IncidentIO call, so IncidentRunnerSpec can
+      * run the loop without Mongo. `list(Some("open"), ...)` means OpenStates.
+      * `raw` is the stored document (fields outside the case class, e.g.
+      * nextActionIndex / scratchVerdict). */
+    trait Store {
+        def insert(i: Incident): Unit
+        def get(id: String): Option[Incident]
+        def list(state: Option[String], limit: Int): List[Incident]
+        def transition(id: String, from: Set[String], to: String, sets: Seq[(String, Any)]): Boolean
+        def appendStep(id: String, step: IncidentStep): Unit
+        def set(id: String, sets: Seq[(String, Any)]): Unit
+        def incrementCounters(id: String, aiCalls: Int, actions: Int): Unit
+        def raw(id: String): Option[Document]
+    }
+
+    /** Spec seam: when non-null, served instead of Mongo. */
+    @volatile private[incident] var store: Store = null
+
     private def collection(): com.mongodb.client.MongoCollection[Document] =
         NoSQLDbUtil match {
             case m: MongoDBUtil =>
@@ -47,32 +65,61 @@ object IncidentIO {
         }
     }
 
-    def insert(i: Incident): Unit = collection().insertOne(i.toDocument)
+    def insert(i: Incident): Unit = {
+        val st = store
+        if (st != null) st.insert(i) else collection().insertOne(i.toDocument)
+        ()
+    }
 
-    def get(id: String): Option[Incident] =
-        Option(collection().find(Filters.eq("_id", id)).first()).map(Incident.fromDocument)
+    def get(id: String): Option[Incident] = {
+        val st = store
+        if (st != null) st.get(id)
+        else Option(collection().find(Filters.eq("_id", id)).first()).map(Incident.fromDocument)
+    }
 
-    def openFor(resourceType: String, resourceName: String): Option[Incident] =
+    /** The stored document as-is. */
+    def raw(id: String): Option[Document] = {
+        val st = store
+        if (st != null) st.raw(id)
+        else Option(collection().find(Filters.eq("_id", id)).first())
+    }
+
+    def openFor(resourceType: String, resourceName: String): Option[Incident] = {
+        val st = store
+        if (st != null) return st.list(Some("open"), MaxListLimit).find(i => i.resourceType == resourceType && i.resourceName == resourceName)
         Option(collection().find(Filters.and(
             Filters.eq("resourceType", resourceType),
             Filters.eq("resource", resourceName),
             Filters.in("state", Incident.OpenStates.toSeq.asJava)
         )).first()).map(Incident.fromDocument)
+    }
 
-    def countOpen(): Long =
-        collection().countDocuments(Filters.in("state", Incident.OpenStates.toSeq.asJava))
+    def countOpen(): Long = {
+        val st = store
+        if (st != null) st.list(Some("open"), MaxListLimit).size.toLong
+        else collection().countDocuments(Filters.in("state", Incident.OpenStates.toSeq.asJava))
+    }
 
-    /** Most recent close time for a resource — the cooldown anchor. */
-    def lastClosedAt(resourceType: String, resourceName: String): Option[Instant] =
+    /** Most recent failed or abandoned close for a resource — the cooldown
+      * anchor. A resolved close never starts a cooldown. */
+    def lastClosedAt(resourceType: String, resourceName: String): Option[Instant] = {
+        val st = store
+        if (st != null)
+            return st.list(None, MaxListLimit)
+                .filter(i => i.resourceType == resourceType && i.resourceName == resourceName && Incident.CooldownStates.contains(i.state))
+                .flatMap(_.closedAt).sorted.lastOption
         Option(collection().find(Filters.and(
             Filters.eq("resourceType", resourceType),
             Filters.eq("resource", resourceName),
-            Filters.in("state", Incident.ClosedStates.toSeq.asJava)
+            Filters.in("state", Incident.CooldownStates.toSeq.asJava)
         )).sort(Sorts.descending("closedAtDate")).first())
             .map(Incident.fromDocument)
             .flatMap(_.closedAt)
+    }
 
     def list(state: Option[String], limit: Int): List[Incident] = {
+        val st = store
+        if (st != null) return st.list(state, math.max(1, math.min(limit, MaxListLimit)))
         val filter: Bson = state match {
             case Some("open") => Filters.in("state", Incident.OpenStates.toSeq.asJava)
             case Some(s) => Filters.eq("state", s)
@@ -88,6 +135,8 @@ object IncidentIO {
 
     /** Conditional state transition — only from the expected state. */
     def transition(id: String, from: Set[String], to: String, sets: (String, Any)*): Boolean = {
+        val st = store
+        if (st != null) return st.transition(id, from, to, sets)
         val base: Seq[Bson] = Seq(Updates.set("state", to)) ++ sets.map { case (k, v) => Updates.set(k, v) }
         val withClose =
             if (Incident.ClosedStates.contains(to))
@@ -103,15 +152,23 @@ object IncidentIO {
         r.getModifiedCount == 1
     }
 
-    def appendStep(id: String, step: IncidentStep): Unit =
-        collection().updateOne(Filters.eq("_id", id), Updates.push("steps", Document.parse(step.toJson.toString)))
+    def appendStep(id: String, step: IncidentStep): Unit = {
+        val st = store
+        if (st != null) st.appendStep(id, step)
+        else collection().updateOne(Filters.eq("_id", id), Updates.push("steps", Document.parse(step.toJson.toString)))
+        ()
+    }
 
     def set(id: String, sets: (String, Any)*): Unit = {
         if (sets.isEmpty) return
+        val st = store
+        if (st != null) return st.set(id, sets)
         collection().updateOne(Filters.eq("_id", id), Updates.combine(sets.map { case (k, v) => Updates.set(k, v) }.asJava))
     }
 
-    def incrementCounters(id: String, aiCalls: Int = 0, actions: Int = 0): Unit =
+    def incrementCounters(id: String, aiCalls: Int = 0, actions: Int = 0): Unit = {
+        val st = store
+        if (st != null) return st.incrementCounters(id, aiCalls, actions)
         collection().updateOne(
             Filters.eq("_id", id),
             Updates.combine(
@@ -119,4 +176,6 @@ object IncidentIO {
                 Updates.inc("actionsTaken", actions)
             )
         )
+        ()
+    }
 }

@@ -50,7 +50,7 @@ class ApprovalsAPIController {
                     if (PolicyActor.isAgent(request)) Some(PolicyActor.label(request))
                     else Option(actor).map(_.trim).filter(_.nonEmpty)
                 val lim = Option(limit).map(_.intValue()).getOrElse(100)
-                PendingActionIO.list(st, actorFilter, lim).foreach(pa => arr.add(pa.toPublicJson))
+                PendingActionIO.list(st, actorFilter, lim).foreach(pa => arr.add(withIncidentEvidence(pa)))
             }
             out.add("approvals", arr)
             new ResponseEntity[String](gson.toJson(out), HttpStatus.OK)
@@ -66,7 +66,7 @@ class ApprovalsAPIController {
         try {
             if (!PolicyIO.enabled) return disabled()
             visible(id, request) match {
-                case Some(pa) => new ResponseEntity[String](gson.toJson(pa.toPublicJson), HttpStatus.OK)
+                case Some(pa) => new ResponseEntity[String](gson.toJson(withIncidentEvidence(pa)), HttpStatus.OK)
                 case None => notFound(id)
             }
         } catch {
@@ -206,6 +206,18 @@ class ApprovalsAPIController {
         val out = pa.toPublicJson
         out.addProperty("error", message)
         gson.toJson(out)
+    }
+
+    /** The approval's public JSON plus, when it belongs to a recovery-agent
+      * incident, that incident's evidence as `incidentEvidence`. A failed
+      * lookup leaves the field out. */
+    private def withIncidentEvidence(pa: PendingAction): JsonObject = {
+        val o = pa.toPublicJson
+        pa.incidentId.foreach { iid =>
+            try ai.datris.incident.IncidentIO.get(iid).flatMap(_.evidence).foreach(e => o.add("incidentEvidence", e))
+            catch { case e: Exception => logger.debug("approval " + pa.id + ": incident evidence lookup failed: " + e.getMessage) }
+        }
+        o
     }
 
     private def disabled(): ResponseEntity[String] =

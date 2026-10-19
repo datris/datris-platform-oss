@@ -1,6 +1,8 @@
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { PipelineStatusService, PipelineStatusDetail, PipelineJobRollup, PipelineResultPage } from '../pipeline-status.service';
+import { LineageService } from '../lineage.service';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-pipeline-detail',
@@ -12,6 +14,12 @@ export class PipelineDetailComponent implements OnInit, OnDestroy {
   pipeline: string | null = '';
   pipelineStatusDetails: PipelineStatusDetail[] = [];
   showHistory = false;
+  /** Kinds of the pipeline's stored CodeGen scripts; null until looked up. */
+  scriptKinds: string[] | null = null;
+  scriptKindsLoading = false;
+  scriptKindsNote = '';
+  /** The kind whose script history modal is open. */
+  historyKind = '';
   /** The rollup entry for this run; carries `resultUri` when the pipeline is
    *  scratch and the run produced a result (null on older servers). */
   resultJob: PipelineJobRollup | null = null;
@@ -32,6 +40,7 @@ export class PipelineDetailComponent implements OnInit, OnDestroy {
   constructor(
     private route: ActivatedRoute,
     private pipelineStatusService: PipelineStatusService,
+    private lineageService: LineageService,
   ) { }
 
   ngOnInit(): void {
@@ -66,6 +75,33 @@ export class PipelineDetailComponent implements OnInit, OnDestroy {
 
   onHistoryRestored(): void {
     this.loadData();
+  }
+
+  /** Looks up the pipeline's AI scripts once; opens the history directly when there is only one. */
+  loadScriptKinds(): void {
+    if (!this.pipeline || this.scriptKindsLoading) return;
+    this.scriptKindsLoading = true;
+    this.scriptKindsNote = '';
+    this.lineageService.codegenScripts(this.pipeline).subscribe({
+      next: r => {
+        this.scriptKindsLoading = false;
+        this.scriptKinds = (r.scripts || []).map(s => s.kind);
+        if (this.scriptKinds.length === 0) this.scriptKindsNote = 'This pipeline has no AI data-quality rule or AI transformation.';
+        else if (this.scriptKinds.length === 1) this.openScriptHistory(this.scriptKinds[0]);
+      },
+      error: e => {
+        this.scriptKindsLoading = false;
+        this.scriptKindsNote = 'Could not load the scripts: ' + httpErrorText(e, '');
+      }
+    });
+  }
+
+  openScriptHistory(kind: string): void {
+    this.historyKind = kind;
+  }
+
+  closeScriptHistory(): void {
+    this.historyKind = '';
   }
 
   /** True when the run carries a scratch result to read back. */

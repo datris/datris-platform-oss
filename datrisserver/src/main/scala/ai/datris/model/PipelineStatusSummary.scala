@@ -21,7 +21,10 @@ case class PipelineStatusSummary(
     // One-line AI fix-suggestion headline for failed jobs, so the Ops →
     // Ingestion list can show it inline without a click-through. Full
     // diagnosis/suggestion live on the PipelineStatus suggestion event.
-    aiSummary: String = null
+    aiSummary: String = null,
+    // A scratch rehearsal job (see PipelineMetadata.rehearsal): ignored by
+    // Activity signals and freshness. Absent (false) on older rows.
+    rehearsal: Boolean = false
 )
 
 case class PipelineStatusSummaryTable(

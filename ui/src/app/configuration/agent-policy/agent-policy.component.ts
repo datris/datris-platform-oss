@@ -3,7 +3,8 @@ import { Subscription } from 'rxjs';
 import { filter } from 'rxjs/operators';
 import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import { Router } from '@angular/router';
-import { AgentPolicy, AgentPolicyService, PolicyMode, PolicyResponse } from './agent-policy.service';
+import { AuthService } from '../../auth.service';
+import { AgentPolicy, AgentPolicyService, PolicyLimits, PolicyMode, PolicyResponse, RecoveryMode, RecoverySettings, VerifyMode } from './agent-policy.service';
 
 /** One row of the action matrix. Sub-actions ("pipeline:update:dest-types")
  *  are indented under their two-part parent and inherit its mode unless set. */
@@ -13,6 +14,10 @@ interface ActionRow {
   sub: boolean;        // 3-part key
   parentKey?: string;  // for sub-actions: the 2-part key it inherits from
 }
+
+/** Server default limits (AgentPolicy.scala PolicyLimits); used when a
+ *  stored policy carries none. */
+const DEFAULT_LIMITS: PolicyLimits = { pendingTtlHours: 24, maxPendingPerActor: 50 };
 
 interface ResourceGroup {
   resource: string;
@@ -62,7 +67,12 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
   updatedBy?: string;
   pendingCount = 0;
 
-  constructor(private svc: AgentPolicyService, private router: Router, private chatState: ConfigAssistantStateService) {}
+  constructor(
+    private svc: AgentPolicyService,
+    private router: Router,
+    private chatState: ConfigAssistantStateService,
+    private auth: AuthService
+  ) {}
 
   ngOnInit(): void {
     // Reload when the configuration chat changes this sub-tab's setting.
@@ -144,11 +154,23 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
       resource,
       entries: Object.entries(m || {}).map(([action, mode]) => ({ action, mode }))
     }));
-    this.pendingTtlHours = p?.limits?.pendingTtlHours ?? 24;
-    this.maxPendingPerActor = p?.limits?.maxPendingPerActor ?? 10;
+    this.pendingTtlHours = p?.limits?.pendingTtlHours ?? DEFAULT_LIMITS.pendingTtlHours;
+    this.maxPendingPerActor = p?.limits?.maxPendingPerActor ?? DEFAULT_LIMITS.maxPendingPerActor;
+    this.applyRecoveryMeta(p);
+  }
+
+  /** Refresh the saved-document metadata and the recovery draft only. The
+   *  recovery Save and Apply use this so unsaved matrix, override and limit
+   *  edits on screen survive; the table reads `status.policy.recovery`. */
+  private applyRecoveryMeta(p: AgentPolicy | undefined): void {
     this.version = p?.version ?? 0;
     this.updatedAt = p?.updatedAt;
     this.updatedBy = p?.updatedBy;
+    this.recoveryDraft = {
+      mode: ((p?.recovery?.mode as RecoveryMode) || 'off'),
+      verifyMode: ((p?.recovery?.verifyMode as VerifyMode) || 'scratch-first'),
+      allowSchemaDriftActions: !!p?.recovery?.allowSchemaDriftActions
+    };
   }
 
   modeOf(key: string): PolicyMode {
@@ -232,6 +254,8 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
       }
     }).subscribe({
       next: (res) => {
+        // Keep the stored copy current: Apply recommended builds its body from it.
+        if (this.status) this.status = { ...this.status, policy: res.policy };
         this.applyPolicy(res.policy);
         this.success = `Policy saved (version ${this.version}).`;
         this.saving = false;
@@ -239,6 +263,119 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
       error: (err) => {
         this.error = err?.error?.error || err?.error?.message || 'Failed to save policy';
         this.saving = false;
+      }
+    });
+  }
+
+  // ------- recovery (editable controls + apply-recommended) -------
+
+  readonly recoveryModes: { value: RecoveryMode; label: string; meaning: string }[] = [
+    { value: 'off', label: 'Off', meaning: 'No incidents open; failures get an AI suggestion in Run History, nothing more.' },
+    { value: 'propose', label: 'Propose', meaning: 'Incidents open and are diagnosed; every proposed action waits for a person under Approvals.' },
+    { value: 'autopilot', label: 'Autopilot', meaning: 'Actions follow the action matrix: auto runs, approve queues, deny refuses.' }
+  ];
+
+  readonly verifyModes: { value: VerifyMode; label: string; meaning: string }[] = [
+    { value: 'scratch-first', label: 'Scratch-first', meaning: 'A fix is rehearsed against a scratch copy and compared with the last good run before it lands.' },
+    { value: 'real', label: 'Real', meaning: 'A fix is verified by the real run only, with no rehearsal.' }
+  ];
+
+  /** Working copy of the editable recovery fields; reset by applyRecoveryMeta. */
+  recoveryDraft: { mode: RecoveryMode; verifyMode: VerifyMode; allowSchemaDriftActions: boolean } = {
+    mode: 'off', verifyMode: 'scratch-first', allowSchemaDriftActions: false
+  };
+
+  savingRecovery = false;
+
+  meaningOf(list: { value: string; meaning: string }[], value: string): string {
+    return list.find(m => m.value === value)?.meaning || '';
+  }
+
+  /** True when the draft differs from the stored recovery block. */
+  get recoveryDirty(): boolean {
+    const r = this.recovery;
+    return this.recoveryDraft.mode !== (r?.mode || 'off')
+      || this.recoveryDraft.verifyMode !== (r?.verifyMode || 'scratch-first')
+      || this.recoveryDraft.allowSchemaDriftActions !== !!r?.allowSchemaDriftActions;
+  }
+
+  /** PUT the stored policy unchanged except the three edited recovery fields.
+   *  Thresholds and the stored overrides (with their per-resource recovery
+   *  modes) go back as-is, like applyRecommendedRecovery. */
+  saveRecovery(): void {
+    const stored = this.status?.policy;
+    if (!stored || !this.enabled || this.savingRecovery || !this.isAdmin || !this.recoveryDirty) return;
+    const draft = { ...this.recoveryDraft };
+    if (draft.mode === 'autopilot' && (stored.recovery?.mode || 'off') !== 'autopilot') {
+      if (!window.confirm('The recovery agent will act within your action matrix without asking. Switch recovery to autopilot?')) return;
+    }
+    this.savingRecovery = true;
+    this.error = '';
+    this.success = '';
+    this.svc.save({
+      actions: { ...(stored.actions || {}) },
+      overrides: JSON.parse(JSON.stringify(stored.overrides || {})),
+      limits: { ...(stored.limits || DEFAULT_LIMITS) },
+      recovery: { ...(stored.recovery || { mode: 'off' }), ...draft }
+    }).subscribe({
+      next: (res) => {
+        if (this.status) this.status = { ...this.status, policy: res.policy };
+        this.applyRecoveryMeta(res.policy);
+        const mode = res.policy?.recovery?.mode ?? draft.mode;
+        const verify = res.policy?.recovery?.verifyMode ?? draft.verifyMode;
+        this.success = `Recovery set to ${mode}, verify ${verify} (version ${this.version}).`;
+        this.savingRecovery = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.error || err?.error?.message || 'Failed to save recovery settings';
+        this.savingRecovery = false;
+      }
+    });
+  }
+
+  /** Admins (or everyone when user auth is off) may apply the recommendation. */
+  get isAdmin(): boolean {
+    return !this.auth.userAuthEnabled || this.auth.current()?.role === 'admin';
+  }
+
+  get recovery(): RecoverySettings | undefined {
+    return this.status?.policy?.recovery;
+  }
+
+  get recoveryRecommended(): RecoverySettings | undefined {
+    return this.status?.recoveryRecommended;
+  }
+
+  applyingRecovery = false;
+
+  /** PUT the stored policy unchanged except `recovery` = the recommendation.
+   *  The stored overrides (which carry the per-resource recovery modes) go
+   *  back as-is: a PUT with `recovery` also replaces those from the body. */
+  applyRecommendedRecovery(): void {
+    const rec = this.recoveryRecommended;
+    const stored = this.status?.policy;
+    if (!rec || !stored || !this.enabled || this.applyingRecovery || !this.isAdmin) return;
+    const label = this.status?.environmentLabel ? `the "${this.status.environmentLabel}" environment` : 'this unlabelled install';
+    const msg = `Set the recovery agent to "${rec.mode}" mode with the thresholds recommended for ${label}?`;
+    if (!window.confirm(msg)) return;
+    this.applyingRecovery = true;
+    this.error = '';
+    this.success = '';
+    this.svc.save({
+      actions: { ...(stored.actions || {}) },
+      overrides: JSON.parse(JSON.stringify(stored.overrides || {})),
+      limits: { ...(stored.limits || DEFAULT_LIMITS) },
+      recovery: { ...rec }
+    }).subscribe({
+      next: (res) => {
+        if (this.status) this.status = { ...this.status, policy: res.policy };
+        this.applyRecoveryMeta(res.policy);
+        this.success = `Recovery set to ${res.policy?.recovery?.mode ?? rec.mode} (version ${this.version}).`;
+        this.applyingRecovery = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.error || err?.error?.message || 'Failed to apply recovery settings';
+        this.applyingRecovery = false;
       }
     });
   }

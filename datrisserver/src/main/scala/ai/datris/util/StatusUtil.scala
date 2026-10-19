@@ -26,6 +26,7 @@ class StatusUtil {
     private var hadError: Boolean = false
     private var recordCountValue: Int = 0
     private var dataType: Option[String] = None
+    private var rehearsal: Boolean = false
     // Detail for the event being written by the current 3-argument info/error
     // call. Why not a plain `detail` parameter on `send`: the 2-argument
     // info/error are the overridable primitives that ~15 test doubles override
@@ -53,6 +54,11 @@ class StatusUtil {
         if (pipelineToken != null)
             this.pipelineToken = Some(pipelineToken)
     }
+
+    /** Mark this job's status summary as a scratch rehearsal. */
+    def setRehearsal(value: Boolean): Unit = rehearsal = value
+
+    def isRehearsal: Boolean = rehearsal
 
     def setPublisherToken(publisherToken: String): Unit = {
         if (publisherToken != null)
@@ -280,7 +286,8 @@ class StatusUtil {
                 this.dataType.orElse(Option(pipelineStatusSummary.dataType)).orNull,
                 // Preserve a previously stamped suggestion headline unless this
                 // event carries a fresh one.
-                if (fix != null) fix.summary else pipelineStatusSummary.aiSummary
+                if (fix != null) fix.summary else pipelineStatusSummary.aiSummary,
+                rehearsal = rehearsal || pipelineStatusSummary.rehearsal
             )
 
             NoSQLDbUtil.updateItemJSON(
@@ -307,7 +314,8 @@ class StatusUtil {
                 "processing",
                 this.recordCountValue,
                 this.dataType.orNull,
-                if (fix != null) fix.summary else null
+                if (fix != null) fix.summary else null,
+                rehearsal = rehearsal
             )
 
             NoSQLDbUtil.putItemJSON(

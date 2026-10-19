@@ -22,7 +22,13 @@ case class PipelineMetadata(
     // archive the bulk files were extracted from, so FieldProtection's purge
     // removes the original too. Null everywhere else (and on metadata
     // written before it existed).
-    sourceObject: String = null
+    sourceObject: String = null,
+    // The recovery agent's scratch rehearsal (a run against a config
+    // override): JobRunner suppresses every side effect a real run has beyond
+    // its scratch result — failure incidents, AI fix suggestions, run
+    // lineage, stored CodeGen scripts — and the job's status summary is
+    // marked so Activity signals and freshness ignore it.
+    rehearsal: Boolean = false
 )
 
 /** Carrier for tap-run identity from TapRunner into StreamNotifier, so a

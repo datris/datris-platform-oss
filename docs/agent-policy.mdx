@@ -49,7 +49,7 @@ The policy applies within a few seconds of saving; no restart.
 
 ## Actions
 
-The actions you can set are exactly the ones the [capability model](/api-keys) already recognizes — `pipeline:create`, `tap:delete`, `job:kill`, `secret:write`, and so on — plus two refinements: `pipeline:update:dest-types`, the destination column-type migration, which shares a capability with an ordinary pipeline save but rewrites a landed table, and `tap:run:enable-ordered`, which enables and runs every tap of a catalog in dependency order as one job (one approval for the whole job). A sub-action inherits its parent's mode unless set; `resource:*` sets every action on a resource.
+The actions you can set are exactly the ones the [capability model](/api-keys) already recognizes — `pipeline:create`, `tap:delete`, `job:kill`, `secret:write`, and so on — plus three refinements: `pipeline:update:dest-types`, the destination column-type migration, which shares a capability with an ordinary pipeline save but rewrites a landed table; `pipeline:update:codegen-scripts`, which replaces the AI data-quality or AI transformation script a pipeline runs (regenerate, or restore an earlier script version) without changing its definition; and `tap:run:enable-ordered`, which enables and runs every tap of a catalog in dependency order as one job (one approval for the whole job). A sub-action inherits its parent's mode unless set; `resource:*` sets every action on a resource.
 
 Reads, queries, searches and metadata lookups are never gated. What a key may read is governed by its [capabilities](/api-keys).
 
@@ -90,7 +90,36 @@ Every mutating tool also accepts an optional `reason` — one line stating why t
 
 ## Recovery mode
 
-The policy document also carries the [recovery agent](/incidents)'s dial — `recovery.mode` (`off` / `propose` / `autopilot`) and its limits — plus per-resource `recovery` overrides. The recovery agent's every action passes through this same policy gate: under `propose`, everything it wants to do queues here for your approval.
+The policy document also carries the [recovery agent](/incidents)'s dial — `recovery.mode` (`off` / `propose` / `autopilot`) and its limits — plus per-resource `recovery` overrides. Every action the recovery agent takes passes through this same policy gate: under `propose`, everything it wants to do queues here for your approval. For a pipeline incident the one action it can take is regenerating the pipeline's stored AI data-quality or transformation script, which is the `pipeline:update:codegen-scripts` action here — the Recommended template sends it for approval.
+
+The page's **Recovery** panel edits `mode`, `verifyMode` and `allowSchemaDriftActions` — admins only, and switching to `autopilot` asks you to confirm — then **Save recovery settings** stores them without touching anything else in the policy. The thresholds in the table below (`maxRecordDeltaPct` through `maxNullRateIncrease`) are shown there and set with `PUT /api/v1/policy` or the [Configuration assistant](/configuration-assistant).
+
+The `recovery` block also holds the thresholds a proposed fix's evidence is judged against, and how the fix is verified:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `maxRecordDeltaPct` | `25` | Largest record-count change, in percent, between the last good run and the fix's run before the verdict is `fail` |
+| `allowColumnRemoval` | `false` | When `false`, a removed column makes the verdict `needs-human` |
+| `allowTypeChange` | `false` | When `false`, a column type change makes the verdict `needs-human` |
+| `minDqPassRate` | baseline − 1 pt | Lowest DQ pass rate (0.0-1.0) the fix's run may have; unset means one point below the last good run |
+| `maxNullRateIncrease` | `0.10` | Largest increase in any column's null rate (a fraction) |
+| `verifyMode` | `scratch-first` | `scratch-first` rehearses each fix in a scratch lane and judges it before anything real changes; `real` skips the rehearsal and verifies with the real run only |
+| `allowSchemaDriftActions` | `false` | When `true`, a schema-drift incident on an `autopilot` tap may propose and verify a script fix; otherwise schema drift is diagnosis-only |
+
+An added column never fails a check. See [Scratch-first verification](/incidents#scratch-first-verification) for what each verdict does.
+
+### Recommended settings per environment
+
+`GET /api/v1/policy` returns `recoveryRecommended`, the block recommended for this install's `DATRIS_ENV` label, and `environmentLabel`:
+
+| Label | Recommended `mode` | `maxRecordDeltaPct` | `allowColumnRemoval` | `allowTypeChange` |
+|---|---|---|---|---|
+| `dev` | `autopilot` | `50` | `true` | `true` |
+| `qa`, `production`, any other label, or unset | `propose` | `25` | `false` | `false` |
+
+The other fields keep the defaults above on every label; `verifyMode` is `scratch-first` everywhere. An admin can apply the recommendation with **Apply recommended recovery settings** on the Agent Policy page, after a confirmation that names the mode it will set. The per-resource recovery overrides are kept.
+
+The label also sets the default for threshold fields that the stored policy does not contain: a `dev` install falls back to 50 / `true` / `true`, every other install to the strict values. A saved policy writes every field, so after a save the stored values apply on any label. `recovery.mode` defaults to `off` on every label; the platform never switches it on by itself.
 
 ## Related
 

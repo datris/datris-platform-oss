@@ -377,3 +377,67 @@
 @media (max-width: 700px) {
   .matrix-row { flex-direction: column; align-items: flex-start; }
 }
+
+.recovery {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.recovery-table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.recovery-table th,
+.recovery-table td {
+  padding: 4px 16px 4px 0;
+  text-align: left;
+}
+
+.recovery-table th {
+  font-weight: 600;
+  color: var(--text-secondary, #666);
+}
+
+.recovery-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recovery-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+}
+
+.recovery-field select {
+  max-width: 520px;
+  padding: 7px 10px;
+  background: #0a0e1a;
+  border: 1px solid rgba(99, 179, 237, 0.15);
+  border-radius: 4px;
+  color: #f0f4ff;
+  font-size: 0.8rem;
+}
+
+.recovery-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recovery-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+
+.recovery-field select:disabled,
+.recovery-field input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

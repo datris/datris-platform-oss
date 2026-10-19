@@ -12,12 +12,35 @@ export interface PolicyLimits {
   maxPendingPerActor: number;
 }
 
+export type RecoveryMode = 'off' | 'propose' | 'autopilot';
+export type VerifyMode = 'scratch-first' | 'real';
+
+/** The recovery agent's settings (`policy.recovery`). Editable on the Agent
+ *  Policy page (mode, verify mode, schema-drift actions); thresholds via the
+ *  API or the Configuration assistant. */
+export interface RecoverySettings {
+  mode: RecoveryMode | string;
+  maxAiCallsPerIncident?: number;
+  maxActionsPerIncident?: number;
+  maxRuntimeMinutes?: number;
+  maxOpenIncidents?: number;
+  cooldownHours?: number;
+  maxRecordDeltaPct?: number;
+  allowColumnRemoval?: boolean;
+  allowTypeChange?: boolean;
+  allowSchemaDriftActions?: boolean;
+  minDqPassRate?: number;
+  maxNullRateIncrease?: number;
+  verifyMode?: VerifyMode | string;
+}
+
 /** The policy document as stored. Unlisted actions are effectively "auto". */
 export interface AgentPolicy {
   version: number;
   actions: Record<string, PolicyMode>;
   overrides: PolicyOverrides;
   limits: PolicyLimits;
+  recovery?: RecoverySettings;
   updatedAt?: string;
   updatedBy?: string;
 }
@@ -29,12 +52,19 @@ export interface PolicyResponse {
   /** Every gateable action key, sorted (e.g. "pipeline:create", "tap:run"). */
   actions: string[];
   pendingCount: number;
+  /** The recovery block recommended for this install's environment label. */
+  recoveryRecommended?: RecoverySettings;
+  /** DATRIS_ENV, absent when unset. */
+  environmentLabel?: string;
 }
 
 export interface PolicyUpdate {
   actions: Record<string, PolicyMode>;
   overrides: PolicyOverrides;
   limits: PolicyLimits;
+  /** When present the server also replaces the per-resource recovery modes
+   *  from `overrides` — send them back inside `overrides`. */
+  recovery?: RecoverySettings;
 }
 
 @Injectable({ providedIn: 'root' })

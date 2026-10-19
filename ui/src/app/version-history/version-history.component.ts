@@ -1,6 +1,7 @@
 import { Component, Input, Output, EventEmitter, OnChanges, SimpleChanges } from '@angular/core';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
+import { LineageService } from '../lineage.service';
 import { Observable } from 'rxjs';
 import { httpErrorText } from '../shared/http-error';
 
@@ -11,8 +12,14 @@ import { httpErrorText } from '../shared/http-error';
     standalone: false
 })
 export class VersionHistoryComponent implements OnChanges {
-  @Input() entityType: 'tap' | 'pipeline' = 'tap';
+  @Input() entityType: 'tap' | 'pipeline' | 'script' = 'tap';
   @Input() name = '';
+  /** Script mode: which CodeGen script ('dataQuality' | 'transformation'). */
+  @Input() kind = '';
+  /** Open straight on the diff `preselectVersion` vs `preselectAgainst`
+   *  (e.g. pre-incident vs current script). Both must be set. */
+  @Input() preselectVersion?: number | null;
+  @Input() preselectAgainst?: number | null;
   @Output() closed = new EventEmitter<void>();
   @Output() restored = new EventEmitter<void>();
 
@@ -37,36 +44,61 @@ export class VersionHistoryComponent implements OnChanges {
 
   constructor(
     private tapService: TapService,
-    private pipelineService: PipelineService
+    private pipelineService: PipelineService,
+    private lineageService: LineageService
   ) { }
 
   get isTap(): boolean { return this.entityType === 'tap'; }
 
+  /** History of a pipeline's CodeGen script rather than a definition. */
+  get isScript(): boolean { return this.entityType === 'script'; }
+
+  /** Versions carry a script (taps and CodeGen scripts). */
+  get hasScript(): boolean { return this.isTap || this.isScript; }
+
+  /** Versions carry a config snapshot (taps and pipelines). */
+  get hasConfig(): boolean { return !this.isScript; }
+
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['name'] && this.name) {
+    if ((changes['name'] || changes['kind']) && this.name && (!this.isScript || this.kind)) {
       this.loadVersions();
+      this.applyPreselect();
     }
   }
 
+  /** Select `preselectVersion` and diff it against `preselectAgainst` when
+   *  both are given; no-op otherwise (existing callers pass neither). */
+  private applyPreselect(): void {
+    const v = this.preselectVersion;
+    const against = this.preselectAgainst;
+    if (v === undefined || v === null || against === undefined || against === null || v === against) return;
+    this.selectVersion(v);
+    this.onDiffAgainstChange(String(against));
+  }
+
   private listVersions(): Observable<any[]> {
+    if (this.isScript) return this.lineageService.scriptVersions(this.name, this.kind);
     return this.isTap
       ? this.tapService.getTapVersions(this.name)
       : this.pipelineService.getPipelineVersions(this.name);
   }
 
   private getVersion(version: number): Observable<any> {
+    if (this.isScript) return this.lineageService.scriptVersion(this.name, this.kind, version);
     return this.isTap
       ? this.tapService.getTapVersion(this.name, version)
       : this.pipelineService.getPipelineVersion(this.name, version);
   }
 
   private diffVersions(version: number, against: number): Observable<any> {
+    if (this.isScript) return this.lineageService.diffScriptVersions(this.name, this.kind, version, against);
     return this.isTap
       ? this.tapService.diffTapVersions(this.name, version, against)
       : this.pipelineService.diffPipelineVersions(this.name, version, against);
   }
 
   private restoreVersion(version: number): Observable<any> {
+    if (this.isScript) return this.lineageService.restoreScriptVersion(this.name, this.kind, version);
     return this.isTap
       ? this.tapService.restoreTapVersion(this.name, version)
       : this.pipelineService.restorePipelineVersion(this.name, version);
@@ -158,9 +190,11 @@ export class VersionHistoryComponent implements OnChanges {
 
   restore(version: number): void {
     if (this.restoring) return;
-    const label = this.isTap ? 'tap' : 'pipeline';
-    const msg = "Restore " + label + " '" + this.name + "' to version " + version +
-      "? This creates a new latest version; nothing is lost.";
+    const msg = this.isScript
+      ? "Restore the " + this.kind + " script of pipeline '" + this.name + "' to version " + version +
+        "? Its text becomes a new latest version; nothing is lost."
+      : "Restore " + (this.isTap ? 'tap' : 'pipeline') + " '" + this.name + "' to version " + version +
+        "? This creates a new latest version; nothing is lost.";
     if (!confirm(msg)) return;
     this.restoring = true;
     this.error = '';

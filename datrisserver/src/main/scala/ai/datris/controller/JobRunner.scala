@@ -32,10 +32,43 @@ object JobRunner {
 
     private val destinationTimeoutMinutes: Int = 10
 
+    /** What a job does beyond loading its destinations. A scratch rehearsal
+      * (PipelineMetadata.rehearsal) does none of it: its outcome belongs to
+      * the incident that ran it, not to the pipeline. */
+    case class SideEffects(fixSuggestion: Boolean, openIncident: Boolean, recordLineage: Boolean, storeCodeGenScripts: Boolean)
+
+    private[controller] def sideEffectsFor(metadata: ai.datris.model.PipelineMetadata): SideEffects = {
+        val real = metadata == null || !metadata.rehearsal
+        SideEffects(fixSuggestion = real, openIncident = real, recordLineage = real, storeCodeGenScripts = real)
+    }
+
     /** The destination-facing text for a loader failure: the exception's own
       * message, falling back to its class name. Never a stack trace — this is
       * what lands in `rollup.jobs[].lastError.description`, the field agents
       * already read to decide what to retry. The stack stays on the event stream. */
+    /** "dq-script" | "transformation-script" | "loader" | "other" for a failed
+      * job, read from the exception cause chain's classes and stack-frame
+      * class names — code identity only, never a message or a row value. A
+      * destination loader that recorded its own failure is "loader". */
+    private[controller] def failingStage(e: Throwable, loaderFailure: Option[Throwable]): String = {
+        if (loaderFailure.isDefined) return "loader"
+        val seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[Throwable, java.lang.Boolean]())
+        val frames = scala.collection.mutable.ListBuffer[String]()
+        var current = e
+        while (current != null && seen.add(current)) {
+            frames += current.getClass.getName
+            Option(current.getStackTrace).foreach(_.foreach(f => frames += f.getClassName))
+            current = current.getCause
+        }
+        def has(cls: String): Boolean = frames.exists(f => f == cls || f.startsWith(cls + "$"))
+        // Transformation first: it shares helpers with CodeGenRuleEvaluator
+        // (staging, model call), never the other way round.
+        if (has("ai.datris.util.CodeGenTransformationEvaluator")) "transformation-script"
+        else if (has("ai.datris.util.CodeGenRuleEvaluator")) "dq-script"
+        else if (frames.exists(f => f.startsWith("ai.datris.util.") && (f.endsWith("Loader") || f.contains("Loader$")))) "loader"
+        else "other"
+    }
+
     private[controller] def loaderErrorMessage(t: Throwable): String =
         Option(t.getMessage).map(_.trim).filter(_.nonEmpty).getOrElse(t.getClass.getName)
 
@@ -138,6 +171,7 @@ class JobRunner(jobContext: JobContext) extends Runnable {
         // the happens-before; the AtomicReference keeps the first-wins rule
         // honest when two destinations fail in the same run.
         val loaderFailure = new AtomicReference[(String, Throwable)](null)
+        val effects = JobRunner.sideEffectsFor(jobContext.metadata)
 
         try {
             statusUtil.info("begin", "Process started")
@@ -158,12 +192,12 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             val jobContextProtected =
                 FieldProtection.apply(jobContextPreprocessed, rawStaged = if (jobContext.data != null) jobContext.data.staged else null)
 
-            // Do data quality?
-            if (config.dataQuality != null)
-                new DataQuality(jobContextProtected).process()
+            // Data quality, then transformations. A rehearsal may generate
+            // CodeGen scripts but never stores them.
+            val jobContextTransform = PipelineScripts.withRehearsal(!effects.storeCodeGenScripts) {
+                if (config.dataQuality != null)
+                    new DataQuality(jobContextProtected).process()
 
-            // Transformations?
-            val jobContextTransform = {
                 if (config.transformation != null)
                     new Transformation(jobContextProtected).process()
                 else
@@ -274,7 +308,7 @@ class JobRunner(jobContext: JobContext) extends Runnable {
 
             statusUtil.overrideProcessName(this.getClass.getSimpleName)
             statusUtil.info("end", "Process completed")
-            recordRunLineage(startedAtMs, recordCount, dataType, loaderFutures, "SUCCESS", null)
+            if (effects.recordLineage) recordRunLineage(startedAtMs, recordCount, dataType, loaderFutures, "SUCCESS", null)
         } catch {
             // Catch Throwable (not Exception) for defense in depth. The runLoader
             // wrapper above already translates fatal errors into RuntimeException
@@ -292,7 +326,7 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                 // logged here once, under the run token.
                 logger.error(jobContext.pipelineToken + ": pipeline failed", e)
                 val errorMessage = JobRunner.reportFailure(statusUtil, Option(loaderFailure.get), e)
-                recordRunLineage(
+                if (effects.recordLineage) recordRunLineage(
                     startedAtMs,
                     recordCount,
                     dataType,
@@ -300,7 +334,7 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     if (jobContext.state == CANCELLED || e.isInstanceOf[InterruptedException]) "CANCELLED" else "ERROR",
                     Option(e.getMessage).getOrElse(e.getClass.getName)
                 )
-                val fix = FixSuggestionUtil.suggest("pipeline", new Gson().toJson(jobContext.config), stackTrace)
+                val fix = if (effects.fixSuggestion) FixSuggestionUtil.suggest("pipeline", new Gson().toJson(jobContext.config), stackTrace) else null
                 if (fix != null) {
                     logger.info("AI Fix Suggestion: " + fix.summary)
                     statusUtil.suggestion(fix)
@@ -308,18 +342,23 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                 // Recovery agent: a pipeline job ended in error — open an
                 // incident (no-op unless enabled; one per resource; cooldowns
                 // and the recovered-rule apply inside).
-                try {
-                    val trigger = new com.google.gson.JsonObject()
-                    trigger.addProperty("pipelineToken", jobContext.pipelineToken)
-                    trigger.addProperty("error", errorMessage.take(500))
-                    // Class names only: what the recovery model still sees
-                    // when DATRIS_AI_SAMPLE_VALUES=false withholds the text.
-                    trigger.addProperty("errorClass", ErrorText.classChain(e))
-                    if (fix != null) trigger.addProperty("aiSummary", fix.summary)
-                    ai.datris.incident.IncidentRunner.open(ai.datris.incident.Incident.KindPipelineFailure, "pipeline", jobContext.config.name, trigger)
-                } catch {
-                    case ie: Exception => logger.debug("incident open skipped: " + ie.getMessage)
-                }
+                if (effects.openIncident)
+                    try {
+                        val trigger = new com.google.gson.JsonObject()
+                        trigger.addProperty("pipelineToken", jobContext.pipelineToken)
+                        trigger.addProperty("error", errorMessage.take(500))
+                        // Class names only: what the recovery model still sees
+                        // when DATRIS_AI_SAMPLE_VALUES=false withholds the text.
+                        trigger.addProperty("errorClass", ErrorText.classChain(e))
+                        // Which stage failed, from exception classes and code frames
+                        // only (never message text or row values): the recovery
+                        // runner regenerates scripts only for the script stages.
+                        trigger.addProperty("failingStage", JobRunner.failingStage(e, Option(loaderFailure.get).map(_._2)))
+                        if (fix != null) trigger.addProperty("aiSummary", fix.summary)
+                        ai.datris.incident.IncidentRunner.open(ai.datris.incident.Incident.KindPipelineFailure, "pipeline", jobContext.config.name, trigger)
+                    } catch {
+                        case ie: Exception => logger.debug("incident open skipped: " + ie.getMessage)
+                    }
                 throw new DatrisException("Pipeline error: " + errorMessage)
         }
     }

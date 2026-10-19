@@ -131,6 +131,32 @@ export interface CodegenScript {
   /** True while a new script was not committed because the repository file changed; runs keep the recorded commit. */
   conflict?: boolean;
   conflictReason?: string;
+  /** Number of the live script in its version history; absent for scripts stored before versioning. */
+  version?: number;
+}
+
+/** One entry of GET /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions (newest first). */
+export interface CodegenScriptVersionSummary {
+  version: number;
+  createdAt?: string | null;
+  createdBy?: string | null;
+  changeNote?: string | null;
+  /** save | regenerate | run | restore-version | restore | repository */
+  origin?: string | null;
+  model?: string | null;
+  commitSha?: string | null;
+  /** Written for the pipeline's current instruction and source schema (restorable). */
+  fingerprintMatchesCurrent?: boolean;
+  /** The version runs execute now. */
+  isLive?: boolean;
+}
+
+/** GET …/versions/{version}: the summary plus the script text. */
+export interface CodegenScriptVersion extends CodegenScriptVersionSummary {
+  script?: string | null;
+  fingerprint?: string | null;
+  generatedAt?: string | null;
+  contractVersion?: number;
 }
 
 /** Options for a forced regenerate. */
@@ -209,6 +235,31 @@ export class LineageService {
       {},
       { params }
     );
+  }
+
+  private scriptVersionsBase(pipeline: string, kind: string): string {
+    return '/api/v1/pipelines/' + encodeURIComponent(pipeline) + '/codegen-scripts/' + encodeURIComponent(kind) + '/versions';
+  }
+
+  /** Version history of one CodeGen script, newest first. */
+  scriptVersions(pipeline: string, kind: string): Observable<CodegenScriptVersionSummary[]> {
+    return this.http.get<CodegenScriptVersionSummary[]>(this.scriptVersionsBase(pipeline, kind));
+  }
+
+  /** One version of a CodeGen script, with its text. */
+  scriptVersion(pipeline: string, kind: string, version: number): Observable<CodegenScriptVersion> {
+    return this.http.get<CodegenScriptVersion>(this.scriptVersionsBase(pipeline, kind) + '/' + version);
+  }
+
+  /** Line diff of two script versions: { from, to, script: { before, after, lines } }. */
+  diffScriptVersions(pipeline: string, kind: string, version: number, against: number): Observable<any> {
+    return this.http.get<any>(this.scriptVersionsBase(pipeline, kind) + '/' + version + '/diff',
+      { params: new HttpParams().set('against', String(against)) });
+  }
+
+  /** Make a version's text the live script again (a new latest version); resolves with the new entry. */
+  restoreScriptVersion(pipeline: string, kind: string, version: number): Observable<CodegenScript> {
+    return this.http.post<CodegenScript>(this.scriptVersionsBase(pipeline, kind) + '/' + version + '/restore', {});
   }
 
   /** Adopt the code repository's branch-head version of a repository-backed script; resolves with the new entry. */

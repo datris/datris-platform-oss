@@ -21,7 +21,8 @@ import scala.collection.JavaConverters._
   *
   * Deliberately minimal bundle (open decision #2 in the plan, resolved to
   * the recommendation): reads, tap run/update, job read, approvals it
-  * queued. No deletes, no secrets, no pipeline definition changes — schema
+  * queued, regenerate a pipeline's stored AI script. No deletes, no secrets,
+  * no pipeline definition changes — schema
   * changes are always proposed to a human via the approval queue. */
 object RecoveryKey {
 
@@ -35,6 +36,10 @@ object RecoveryKey {
         // (POST /api/v1/tap), which the capability table classifies as
         // tap:create — without it, script repairs are refused at the gate.
         "tap:create",
+        // pipeline:read also covers list_pipeline_versions / diff_pipeline_versions;
+        // metadata:read covers get_lineage, find_data and get_provenance
+        // (there is no lineage:* or provenance:* capability). RecoveryKeySpec
+        // checks every DiagnosisTools / ExecutableTools entry maps to one of these.
         "pipeline:read",
         "job:read",
         "metadata:read",
@@ -46,7 +51,11 @@ object RecoveryKey {
         "policy:read",
         "approval:read:owner=self",
         // run_doctor (GET /api/v1/doctor) during diagnosis — read-only.
-        "config:read"
+        "config:read",
+        // regenerate_pipeline_scripts (POST /pipelines/*/codegen-scripts/*/regenerate,
+        // story 5a classification) — pipeline incidents regenerate their stored AI
+        // script. Never the pipeline definition: no pipeline:create / delete.
+        "pipeline:update"
         // `protect:*` is deliberately absent: an agent never reveals an
         // encrypted field value or rotates its key (ProtectCapabilityTemplatesSpec).
     )

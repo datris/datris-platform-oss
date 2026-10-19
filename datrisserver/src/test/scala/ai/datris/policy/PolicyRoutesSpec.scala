@@ -101,4 +101,46 @@ class PolicyRoutesSpec extends AnyFunSuite {
         assert(CapabilityRoutes.lookup("GET", "/api/v1/pipeline/result") == RouteCheck.Require("job", "read"))
         assert(CapabilityRoutes.lookup("GET", "/api/v1/pipeline/status") == RouteCheck.Require("job", "read"))
     }
+
+    // Story: Version history for stored CodeGen scripts
+    // (plans/stories/self-healing-5a-script-versions.md), Acceptance bullet 3.
+    // regenerate and pull move from pipeline:create to pipeline:update;
+    // regenerate and restore share the pipeline:update:codegen-scripts sub-key.
+    test("regenerate and script-version restore are the pipeline:update:codegen-scripts sub-action") {
+        assert(PolicyRoutes.actionKey("POST", "/api/v1/pipelines/orders/codegen-scripts/transformation/regenerate")
+            .contains("pipeline:update:codegen-scripts"))
+        assert(PolicyRoutes.actionKey("POST", "/api/v1/pipelines/orders/codegen-scripts/dataQuality/versions/3/restore")
+            .contains("pipeline:update:codegen-scripts"))
+        // The parent of each sub-action is what the capability table says.
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/pipelines/orders/codegen-scripts/transformation/regenerate") ==
+            RouteCheck.Require("pipeline", "update"))
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/pipelines/orders/codegen-scripts/dataQuality/versions/3/restore") ==
+            RouteCheck.Require("pipeline", "update"))
+        assert(PolicyRoutes.isKnownActionKey("pipeline:update:codegen-scripts"))
+        assert(PolicyRoutes.isGateable("pipeline:update:codegen-scripts"))
+        assert(PolicyRoutes.catalog.contains("pipeline:update:codegen-scripts"))
+        assert(!PolicyRoutes.targetsCatalog("pipeline:update:codegen-scripts"))
+    }
+
+    test("script-version reads are pipeline reads; pull is pipeline:update with no sub-key") {
+        val base = "/api/v1/pipelines/orders/codegen-scripts/transformation/versions"
+        assert(CapabilityRoutes.lookup("GET", base) == RouteCheck.Require("pipeline", "read"))
+        assert(CapabilityRoutes.lookup("GET", base + "/2") == RouteCheck.Require("pipeline", "read"))
+        assert(CapabilityRoutes.lookup("GET", base + "/2/diff") == RouteCheck.Require("pipeline", "read"))
+        assert(PolicyRoutes.actionKey("GET", base).contains("pipeline:read"))
+        assert(PolicyRoutes.actionKey("GET", base + "/2/diff").contains("pipeline:read"))
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/pipelines/orders/codegen-scripts/transformation/pull") ==
+            RouteCheck.Require("pipeline", "update"))
+        assert(PolicyRoutes.actionKey("POST", "/api/v1/pipelines/orders/codegen-scripts/transformation/pull").contains("pipeline:update"))
+        // The read of the live scripts is untouched.
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/pipelines/orders/codegen-scripts") == RouteCheck.Require("pipeline", "read"))
+    }
+
+    test("the Recommended template validates and asks approval for codegen-script changes") {
+        assert(AgentPolicy.fromJson(AgentPolicy.Recommended.toJson.toString).isRight)
+        assert(AgentPolicy.Recommended.actions.get("pipeline:update:codegen-scripts").contains(PolicyMode.Approve))
+        assert(AgentPolicy.Recommended.decide("pipeline:update:codegen-scripts", Some("pipeline"), Some("orders")) == PolicyMode.Approve)
+        // A plain config save stays auto.
+        assert(AgentPolicy.Recommended.decide("pipeline:update", Some("pipeline"), Some("orders")) == PolicyMode.Auto)
+    }
 }

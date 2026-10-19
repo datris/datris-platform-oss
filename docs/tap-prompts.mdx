@@ -52,6 +52,25 @@ GET `/api/v1/tap-prompts` lists all fragments; DELETE `/api/v1/tap-prompts/{key}
 - **Content** (required) — the extra system-prompt text. Typically 2-6 sentences covering library choice, env-var names, rate limits, pagination style, and gotchas.
 - **Enabled** (default on) — setting it `false` keeps the fragment in storage but stops it from matching.
 
+- **Status** (optional) — `active` (or absent) for fragments a person wrote or accepted; `suggested` for fragments the recovery agent wrote. `origin` (`incident`) and `incidentId` say where a suggestion came from.
+
+### Suggested fragments
+
+When an [incident](/incidents#learning-from-incidents) resolves after a tap script fix and the diagnosis recorded a `learnNote` (a source quirk worth remembering), the platform saves the note as a fragment named `incident-<id>`. Its alias is the tap's source host, and it is stored with `enabled: false` and `status: "suggested"`. Disabled fragments are never injected, so a suggestion reaches no prompt until a person accepts it. There is still no dedicated UI for fragments; review suggestions through the API:
+
+```bash
+# List suggestions
+curl -s -H "x-api-key: <your key>" "http://localhost:8080/api/v1/tap-prompts?status=suggested"
+
+# Accept one (edit content and aliases first if you like)
+curl -X POST http://localhost:8080/api/v1/tap-prompts \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: <your key>" \
+  -d '{"key": "incident-inc_…", "aliases": ["api.example.org"], "content": "…", "enabled": true, "status": "active"}'
+```
+
+Only a person may accept, edit or overwrite a suggested fragment. The same `POST` from an agent is refused with `403` ("a person accepts suggested fragments"). To discard a suggestion, `DELETE /api/v1/tap-prompts/incident-<id>`. `GET /api/v1/tap-prompts?status=active` lists the fragments that are not suggestions.
+
 ### Writing good fragments
 
 Keep them dense and actionable:
@@ -75,7 +94,7 @@ The same storage is exposed via REST for scripting and tenant migrations. See [T
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/v1/tap-prompts` | List all fragments |
+| `GET` | `/api/v1/tap-prompts` | List all fragments (`?status=suggested` or `?status=active` to filter) |
 | `GET` | `/api/v1/tap-prompts/{key}` | Get a single fragment |
 | `POST` | `/api/v1/tap-prompts` | Create or update a fragment (keyed on `key`) |
 | `DELETE` | `/api/v1/tap-prompts/{key}` | Delete a fragment |

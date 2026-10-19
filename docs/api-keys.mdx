@@ -144,6 +144,17 @@ Tap secrets (`_type=tap`) are the only secrets a tap can read: a tap that names 
 
 `protect:reveal` (read back the original of an [`encrypt`-protected field](/transformation/field-protection#revealing-a-value)) and `protect:admin` (rotate its key, and edits to the field-protection secret) are never in a scoped template or in the editor and viewer role bundles: grant them explicitly to the key that needs them. Admins, the `full-access` template, and legacy unscoped keys hold them through `*:*`.
 
+Changing the AI script a pipeline runs (its AI data-quality rule or AI transformation script) without changing the pipeline's definition is a pipeline update: regenerating it, adopting the code-repository version with pull, and restoring an earlier script version all need `pipeline:update`; listing, reading and diffing script versions need `pipeline:read`. The `rag-builder` template holds `pipeline:create` but not `pipeline:update`, so its keys cannot regenerate, pull or restore scripts; add `pipeline:update` to a key that should.
+
+| Route | Capability |
+|---|---|
+| `POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/regenerate` | `pipeline:update` |
+| `POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/pull` | `pipeline:update` |
+| `POST /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions/{version}/restore` | `pipeline:update` |
+| `GET /api/v1/pipelines/{name}/codegen-scripts/{kind}/versions` (and one version, diff) | `pipeline:read` |
+
+The platform's own `recovery-agent` key holds `pipeline:update` so a [pipeline incident](/incidents) can regenerate the pipeline's stored AI script; it has no `pipeline:create` or `pipeline:delete`, so it never changes a pipeline's definition. A key issued by an earlier release gains `pipeline:update` the next time the server starts (recorded in the audit log as a grant); a revoked recovery key is never changed.
+
 When user-auth is on, logged-in browser sessions are first-class identities too: `session:admin`, `session:editor1`, etc. The capability bundle is derived from the user's role (admin → full access, editor → create/update/run, viewer → read-only). The API-Keys tab in Configuration shows scoped *keys*; per-role capabilities are managed via the **Users** tab.
 
 ## Multi-tenant

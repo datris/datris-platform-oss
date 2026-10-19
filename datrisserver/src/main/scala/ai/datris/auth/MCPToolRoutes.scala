@@ -139,6 +139,11 @@ object MCPToolRoutes {
         "get_pipeline_version" -> Mapped("GET", "/api/v1/pipeline/version"),
         "diff_pipeline_versions" -> Mapped("GET", "/api/v1/pipeline/version/diff"),
         "restore_pipeline_version" -> Mapped("POST", "/api/v1/pipeline/version/restore"),
+        // CodeGen script version history (AI data-quality rule / AI transformation)
+        "list_script_versions" -> Mapped("GET", "/api/v1/pipelines/example/codegen-scripts/transformation/versions"),
+        "get_script_version" -> Mapped("GET", "/api/v1/pipelines/example/codegen-scripts/transformation/versions/1"),
+        "diff_script_versions" -> Mapped("GET", "/api/v1/pipelines/example/codegen-scripts/transformation/versions/2/diff"),
+        "restore_script_version" -> Mapped("POST", "/api/v1/pipelines/example/codegen-scripts/transformation/versions/1/restore"),
 
         // Agent workflow helper — no REST call at all
         "wait_seconds" -> Local,
@@ -151,6 +156,7 @@ object MCPToolRoutes {
         // Recovery-agent incidents (read-only; the platform opens them)
         "list_incidents" -> Mapped("GET", "/api/v1/incidents"),
         "get_incident" -> Mapped("GET", "/api/v1/incidents/example"),
+        "get_incident_evidence" -> Mapped("GET", "/api/v1/incidents/example/evidence"),
 
         // Discovery + provenance (read-only)
         "find_data" -> Mapped("GET", "/api/v1/catalog/find"),

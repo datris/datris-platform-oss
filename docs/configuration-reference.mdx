@@ -127,7 +127,7 @@ Two independent flags control access. Set them together — see [the supported m
 | `PROVENANCE_STRICT` | `false` | Strict evidence mode for provenance stamping. `false`: a run with `provenance.stamp` on whose data cannot be stamped loads unstamped. `true`: that run fails before anything is loaded, and unknown `provenance.fields` names are refused on save. XML sources are exempt: they are never stamped and still load unstamped. Does not turn stamping on. Restart to change. Maps to `provenance.strict`. See [Provenance](/provenance#strict-mode) |
 | `USE_AGENT_POLICY` | `false` | Per-action auto / approve / deny for agent-initiated changes, with a human approval queue under Activity → Approvals. With it on and no rules set, nothing changes. Restart to change. See [Agent Policy](/agent-policy) |
 | `RECOVERY_AGENT_ENABLED` | `false` | The platform opens, diagnoses and — within the agent policy's recovery mode — repairs incidents for failed, stale or anomalous data flows. Needs `USE_AGENT_POLICY=true`. See [Incidents](/incidents) |
-| `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional URL receiving a JSON POST on incident open / awaiting-approval / resolved / failed, and on doctor checks flipping to error when the periodic run is on |
+| `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional URL receiving a JSON POST on incident open / awaiting-approval / resolved / failed, and on doctor checks flipping to error when the periodic run is on. Incident events with evidence carry `evidenceSummary`, one line of counts with no column values |
 | `DOCTOR_ONSTARTUP` | `true` | Log the cheap [doctor](/doctor) checks at boot as `DOCTOR` lines. Maps to `doctor.onStartup` |
 | `DOCTOR_INTERVAL_MINUTES` | `0` | Re-run the server-side doctor checks every N minutes and POST checks that flip to error (or recover) to `INCIDENT_WEBHOOK_URL`. `0` = off. AI probes never run on the timer. Maps to `doctor.intervalMinutes` |
 | `DATRIS_UPDATE_CHECK` | `1` | Host-side only, read by the `datris doctor` CLI from the project `.env` or its environment (not by any container). `0`, `false` or `off` stops the `version.update` check from asking datris.ai whether a newer version exists; with it on, a full `datris doctor` run sends the server version, OS and CPU architecture. See [Doctor](/doctor#update-check) |
@@ -404,6 +404,7 @@ The following buckets are created automatically by the `minio-init` container:
 | `{environment}-tap-prompt` | Tap prompt fragments |
 | `{environment}-code-repo` | Git repository connections for repo-backed tap scripts |
 | `{environment}-codegen-scripts` | Index of each pipeline's stored CodeGen scripts (AI rule, AI transformation): where the script is stored, fingerprint, model, generated-at, ready or pending. The script text is in the object store under `pipeline-scripts/<pipeline>/`, or in the code repository under `<pathPrefix>pipelines/<pipeline>/` with the recorded commit |
+| `{environment}-codegen-script-version` | Append-only versions of each pipeline's CodeGen scripts, per pipeline and kind, with the script text inline (pruned per `versionCap`) |
 | `{environment}-run-lineage` | One document per pipeline run (what it read, wrote, and how it ended) |
 | `{environment}-column-lineage` | AI-inferred column mappings per pipeline version |
 | `{environment}-user` | User accounts (when `USE_USER_AUTH=true`) |

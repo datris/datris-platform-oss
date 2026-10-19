@@ -497,6 +497,31 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
     });
   }
 
+  /** Pipeline whose transformation script history modal is open ('' when closed). */
+  scriptHistoryPipeline = '';
+
+  openScriptHistory(): void {
+    const c = this.columns();
+    if (c) this.scriptHistoryPipeline = c.pipeline;
+  }
+
+  /** A restored version is the live script now: refresh the panel's script line. */
+  onScriptRestored(): void {
+    const c = this.columns();
+    if (!c) return;
+    this.scriptText = null;
+    this.lineageService.codegenScripts(c.pipeline).subscribe({
+      next: r => {
+        const tx = (r.scripts || []).find(s => s.kind === 'transformation');
+        if (tx) {
+          this.applyScriptEntry(c, tx);
+          this.scriptDriftHead = tx.drift && tx.headSha ? tx.headSha : null;
+        }
+      },
+      error: () => { /* the panel keeps the previous line */ }
+    });
+  }
+
   /** Forces a new transformation script, then shows the new generated-at / model. */
   regenerateScript(): void {
     const c = this.columns();

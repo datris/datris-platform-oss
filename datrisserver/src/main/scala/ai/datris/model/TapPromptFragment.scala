@@ -11,5 +11,19 @@ case class TapPromptFragment(
     content: String = "",
     enabled: Boolean = true,
     createdAt: String = null,
-    updatedAt: String = null
+    updatedAt: String = null,
+    /** null / "active" (a person wrote or accepted it) | "suggested" (written
+      * by the recovery agent from an incident's learn note, enabled = false
+      * until a person accepts it). */
+    status: String = null,
+    /** Where a suggested fragment came from: "incident". */
+    origin: String = null,
+    /** The incident whose learn note produced this fragment. */
+    incidentId: String = null
 )
+
+object TapPromptFragment {
+    val StatusActive = "active"
+    val StatusSuggested = "suggested"
+    val OriginIncident = "incident"
+}
