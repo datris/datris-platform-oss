@@ -712,6 +712,23 @@ class IncidentRunnerSpec extends AnyFunSuite {
         }
     }
 
+    test("a script fix that lands as version N+1 is reverted to version N when the real run fails") {
+        // The store lane versions a script replacement (TapScriptStoreVersioning),
+        // so the agent's update_tap moves the live tap 3 -> 4 (the fake executor
+        // bumps the version the same way). revertToVersion is captured before the
+        // first action and must still name the pre-fix version.
+        scenario(real = Some(runProfile("run_real", "landed-sample", 30L))) { c =>
+            IncidentRunner.runIncident(c.id)
+            val i = c.incident
+            assert(i.revertToVersion == Some(3), "captured before the fix landed: " + i.revertToVersion)
+            assert(c.calls.find(_.tool == "run_tap").isDefined, c.tools)
+            assert(c.reverts.toList == List((c.id, "prices", 3)), c.reverts)
+            assert(c.tap.version == 3, "the live tap is back on the pre-fix version: " + c.tap.version)
+            assert(i.state == Incident.Failed, i.outcome + " / " + c.summaries)
+            assert(c.summaries.contains("reverted tap to version 3"), c.summaries)
+        }
+    }
+
     test("no baseline: the scratch verdict is needs-human with the baseline check, and nothing executes") {
         scenario(seedBaseline = None) { c =>
             IncidentRunner.runIncident(c.id)

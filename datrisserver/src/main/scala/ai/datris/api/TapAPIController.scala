@@ -775,6 +775,10 @@ class TapAPIController {
 
         // Definition-edit write → mints a new immutable version snapshot.
         // (Status churn from TapRunner stays on plain TapConfigIO.write.)
+        // A save that changes nothing (e.g. the config write that follows a
+        // script store, which already versioned the new script) mints no
+        // version and leaves the stored tap as it is.
+        if (existing != null && TapScriptStoreVersioning.sameDefinition(existing, stamped)) return Right(existing)
         val note = if (changeNote != null && changeNote.nonEmpty) changeNote
         else if (existing != null) "updated" else "created"
         val saved = TapConfigIO.writeVersioned(stamped, note, VersionActor.resolve(request))
@@ -982,7 +986,17 @@ class TapAPIController {
                                     logger.warn("POST /tap/script: dependency inference failed for '" + tapName + "': " + e.getMessage)
                                     toStore
                             }
-                        TapConfigIO.write(stamped)
+                        // Replacing an existing tap's script is a definition
+                        // edit: it lands as a new version naming who made it
+                        // (and the incident, when the recovery agent did).
+                        // An identical re-store or a stamp-only move stays a
+                        // plain write.
+                        val incidentId = Option(request.getHeader(ai.datris.audit.AuditActor.HeaderIncident))
+                            .map(_.trim).filter(_.nonEmpty).map(_.take(64))
+                        TapScriptStoreVersioning.decide(existing, stamped, incidentId, t => TapScriptIdentity.of(t)) match {
+                            case Some(note) => TapConfigIO.writeVersioned(stamped, note, VersionActor.resolve(request))
+                            case None => TapConfigIO.write(stamped)
+                        }
                     case Some(msg) =>
                         logger.info("POST /tap/script: not repointing scheduled tap '" + tapName + "' at untested script: " + msg)
                 }
