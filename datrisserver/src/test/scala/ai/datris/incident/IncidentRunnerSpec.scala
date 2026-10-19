@@ -1832,7 +1832,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
             }
         }
     }
-    // ---- a person's fix closes a parked incident (inc_851c817c1720) ----
+    // ---- a fix made outside the agent closes a parked incident (inc_851c817c1720) ----
 
     /** A tap lastRunTime as TapRunner stamps it. */
     private def runTime(at: Instant): String = {
@@ -1866,7 +1866,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
         }
     }
 
-    test("recovered by a person: a needs-human parked tap incident closes resolved once the tap ran healthy after it opened") {
+    test("recovered outside the agent: a needs-human parked tap incident closes resolved once the tap ran healthy after it opened") {
         withLearnNoteWrites { written =>
             withRecoverySeams() { superseded =>
                 scenario(proposal = credentialProposal, trigger = """{"error":"401 Unauthorized"}""") { c =>
@@ -1874,14 +1874,18 @@ class IncidentRunnerSpec extends AnyFunSuite {
                     assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
                     assert(c.incident.awaitingApprovalIds.isEmpty)
                     // The person recreated the secret and re-ran the tap.
-                    c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(Instant.now().plusSeconds(5)))
+                    c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(Instant.now().plusSeconds(5)), lastRunTrigger = "manual")
                     IncidentRunner.sweepEnabledOverride = Some(true)
                     IncidentRunner.sweepOpenIncidents()
                     val i = c.incident
                     assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
-                    assert(i.outcome.contains("recovered by a person"), i.outcome)
                     assert(
-                        i.steps.exists(s => s.phase == "verify" && s.summary.startsWith("recovered by a person: tap prices ran healthy at ")),
+                        c.summaries.exists(s => s.startsWith("recovered outside the agent: tap prices ran healthy at ") && s.endsWith("(trigger manual)")),
+                        c.summaries
+                    )
+                    assert(i.outcome.contains("recovered outside the agent"), i.outcome)
+                    assert(
+                        i.steps.exists(s => s.phase == "verify" && s.summary.startsWith("recovered outside the agent: tap prices ran healthy at ")),
                         c.summaries
                     )
                     assert(written.isEmpty, "no learn note for a person's fix: " + written)
@@ -1895,7 +1899,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
         }
     }
 
-    test("recovered by a person: a healthy run from before the incident opened leaves it parked") {
+    test("recovered outside the agent: a healthy run from before the incident opened leaves it parked") {
         withRecoverySeams() { _ =>
             scenario(seedState = Incident.AwaitingApproval) { c =>
                 c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(Instant.now().minusSeconds(3600)))
@@ -1912,7 +1916,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
         }
     }
 
-    test("recovered by a person: a queued approval is withdrawn as superseded and the incident resolves") {
+    test("recovered outside the agent: a queued approval is withdrawn as superseded and the incident resolves") {
         withLearnNoteWrites { written =>
             withRecoverySeams() { superseded =>
                 scenario(gated = Set("update_tap"), proposal = structuralProposal.copy(learnNote = Some(Note))) { c =>
@@ -1932,9 +1936,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
                     val i = c.incident
                     assert(superseded.toList == List(("pa_update_tap", "superseded: resource recovered")), superseded)
                     assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
-                    assert(i.outcome.contains("recovered by a person"), i.outcome)
+                    assert(i.outcome.contains("recovered outside the agent"), i.outcome)
                     assert(i.awaitingApprovalIds.isEmpty, i.awaitingApprovalIds)
-                    assert(c.summaries.exists(s => s.startsWith("recovered by a person") && s.endsWith("1 queued action(s) superseded")), c.summaries)
+                    assert(c.summaries.exists(s => s.startsWith("recovered outside the agent") && s.endsWith("1 queued action(s) superseded")), c.summaries)
                     assert(written.isEmpty, "the queued fix never executed: " + written)
                     assert(c.reverts.isEmpty, c.reverts)
                     assert(c.tap.lastTestRunScriptId == "stored-script-id", "the rehearsal stamp of the never-stored candidate is put back")
@@ -1943,7 +1947,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
         }
     }
 
-    test("recovered by a person: an approved or executed approval is never superseded") {
+    test("recovered outside the agent: an approved or executed approval is never superseded") {
         withRecoverySeams() { superseded =>
             scenario(gated = Set("update_tap")) { c =>
                 IncidentRunner.runIncident(c.id)
@@ -1953,6 +1957,77 @@ class IncidentRunnerSpec extends AnyFunSuite {
                 IncidentRunner.sweepOpenIncidents()
                 assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
                 assert(superseded.isEmpty, superseded)
+            }
+        }
+    }
+
+    test("recovered outside the agent: an approval decided while the sweep withdraws it leaves the incident to the approval") {
+        withRecoverySeams() { superseded =>
+            scenario(gated = Set("update_tap")) { c =>
+                IncidentRunner.runIncident(c.id)
+                assert(c.incident.awaitingApprovalIds == List("pa_update_tap"))
+                c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(Instant.now().plusSeconds(5)))
+                IncidentRunner.approvalLookup = (aid: String) => Some(tapApproval(aid, c.id, ai.datris.policy.PendingAction.Pending))
+                // A person approved between the sweep's read and its withdraw.
+                IncidentRunner.supersedeApproval = (_: String, _: String) => false
+                IncidentRunner.sweepEnabledOverride = Some(true)
+                IncidentRunner.sweepOpenIncidents()
+                val i = c.incident
+                assert(i.state == Incident.AwaitingApproval, i.outcome + " / " + c.summaries)
+                assert(i.awaitingApprovalIds == List("pa_update_tap"), "the queued id is kept for the next sweep")
+                assert(!c.summaries.exists(_.startsWith("recovered outside the agent")), c.summaries)
+                // The next sweep sees the executed approval and continues as usual.
+                IncidentRunner.approvalLookup = (aid: String) => Some(executedApproval(aid, c.id, ai.datris.policy.PendingAction.Executed, None))
+                IncidentRunner.sweepOpenIncidents()
+                assert(c.summaries.contains("approval executed — continuing"), c.summaries)
+                assert(!c.incident.outcome.exists(_.contains("recovered outside the agent")), c.incident.outcome)
+            }
+        }
+    }
+
+    test("recovered outside the agent: a person proceeding past the card meanwhile wins over the recovery close") {
+        withRecoverySeams() { _ =>
+            scenario(seedState = Incident.AwaitingApproval) { c =>
+                c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(Instant.now().plusSeconds(5)))
+                // proceed() moves awaiting_approval -> executing while the sweep profiles the healthy run.
+                IncidentEvidenceBuilder.realProfileOverride = (_: Incident, _: Option[RunProfile]) => {
+                    c.store.transition(c.id, Set(Incident.AwaitingApproval), Incident.Executing, Nil)
+                    Some(healthyReal)
+                }
+                IncidentRunner.sweepEnabledOverride = Some(true)
+                IncidentRunner.sweepOpenIncidents()
+                assert(c.incident.state == Incident.Executing, c.incident.outcome + " / " + c.summaries)
+                assert(!c.summaries.exists(_.startsWith("recovered outside the agent")), c.summaries)
+            }
+        }
+    }
+
+    test("recovered outside the agent: the agent's own inline run_tap does not count, a later run does") {
+        val runThenFix = IncidentRunner.Proposal(
+            "structural-script",
+            "retry, then fix the field",
+            needsHuman = false,
+            List(action("run_tap"), structuralProposal.actions.head),
+            None
+        )
+        withRecoverySeams() { superseded =>
+            scenario(gated = Set("update_tap"), proposal = runThenFix, settings = RecoverySettings(mode = RecoverySettings.Propose, verifyMode = "real")) { c =>
+                c.store.set(c.id, Seq("openedAt" -> Instant.now().minusSeconds(600).toString))
+                IncidentRunner.runIncident(c.id)
+                assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+                val ownRun = c.incident.steps.find(s => s.phase == "execute" && s.summary.startsWith("run_tap ok")).getOrElse(fail(c.summaries.toString))
+                // TapRunner stamps the run's start, before its execute step.
+                c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(ownRun.ts.minusSeconds(2)))
+                IncidentRunner.approvalLookup = (aid: String) => Some(tapApproval(aid, c.id, ai.datris.policy.PendingAction.Pending))
+                IncidentRunner.sweepEnabledOverride = Some(true)
+                IncidentRunner.sweepOpenIncidents()
+                assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+                assert(superseded.isEmpty, "the person's pending approval is not withdrawn: " + superseded)
+                // A later cron run is outside the agent.
+                c.tap = c.tap.copy(lastRunTime = runTime(ownRun.ts.plusSeconds(5)), lastRunTrigger = "cron")
+                IncidentRunner.sweepOpenIncidents()
+                assert(c.incident.state == Incident.Resolved, c.incident.outcome + " / " + c.summaries)
+                assert(c.summaries.exists(_.endsWith("(trigger cron) — 1 queued action(s) superseded")), c.summaries)
             }
         }
     }
@@ -1967,7 +2042,7 @@ class IncidentRunnerSpec extends AnyFunSuite {
             status = status
         )
 
-    test("recovered by a person: a parked pipeline incident resolves on a SUCCESS run completed after it opened") {
+    test("recovered outside the agent: a parked pipeline incident resolves on a SUCCESS run completed after it opened") {
         val later = Instant.now().plusSeconds(5)
         // A scratch-only rehearsal and a failed run after the open do not count.
         withRecoverySeams(runs = List(lineageRun("r_scratch", later, outputKind = "scratch"), lineageRun("r_err", later, status = "ERROR"))) { _ =>
@@ -1985,8 +2060,8 @@ class IncidentRunnerSpec extends AnyFunSuite {
                 IncidentRunner.sweepOpenIncidents()
                 val i = c.incident
                 assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
-                assert(i.outcome.contains("recovered by a person"), i.outcome)
-                assert(c.summaries.exists(_.startsWith("recovered by a person: pipeline orders ran healthy at " + later.toString)), c.summaries)
+                assert(i.outcome.contains("recovered outside the agent"), i.outcome)
+                assert(c.summaries.exists(_.startsWith("recovered outside the agent: pipeline orders ran healthy at " + later.toString)), c.summaries)
                 assert(c.restores.isEmpty, "no script restore: " + c.restores)
                 assert(superseded.isEmpty)
             }

@@ -1017,13 +1017,17 @@ object IncidentRunner {
 
     private val SupersededNote = "superseded: resource recovered"
 
-    /** A parked incident whose resource ran healthy after it opened (a person
-      * fixed the cause and re-ran it, or the next scheduled run succeeded):
-      * withdraw whatever it still has queued, profile the healthy run into the
-      * evidence and close it resolved. Returns whether it closed. */
+    /** A parked incident whose resource ran healthy after it opened and after
+      * the agent's own last run (a person fixed the cause and re-ran it, or
+      * the next scheduled run succeeded): withdraw whatever it still has
+      * queued, profile the healthy run into the evidence and close it
+      * resolved. A queued action someone decided meanwhile, or a person
+      * proceeding past the card meanwhile, leaves it to the normal path.
+      * Returns whether it closed. */
     private def closeIfRecovered(incident: Incident, decisions: List[PendingAction]): Boolean = {
-        val healthyAt = recoveredAt(incident).getOrElse(return false)
-        val withdrawn = decisions.filter(_.state == PendingAction.Pending).count { d =>
+        val healthy = recoveredAt(incident).getOrElse(return false)
+        val pending = decisions.filter(_.state == PendingAction.Pending)
+        val withdrawn = pending.map { d =>
             try supersedeApproval(d.id, SupersededNote)
             catch {
                 case e: Exception =>
@@ -1031,45 +1035,77 @@ object IncidentRunner {
                     false
             }
         }
+        if (withdrawn.exists(!_)) {
+            // Decided concurrently (an approval moved off pending): the next
+            // sweep handles the decision as usual.
+            logger.info("incident " + incident.id + ": resource ran healthy but a queued action was decided meanwhile — not closing")
+            return false
+        }
+        if (!IncidentIO.get(incident.id).exists(_.state == Incident.AwaitingApproval)) return false
         if (incident.awaitingApprovalIds.nonEmpty)
             IncidentIO.set(incident.id, "awaitingApprovalIds" -> java.util.Collections.emptyList[String]())
         recordRealRunEvidence(incident.id)
+        val superseded = if (withdrawn.nonEmpty) " — " + withdrawn.size + " queued action(s) superseded" else ""
+        val via = healthy.via.map(v => " (" + v + ")").getOrElse("")
+        val closed = close(
+            incident.id,
+            Incident.Resolved,
+            RecoveredOutside,
+            from = Set(Incident.AwaitingApproval),
+            beforeClose = Some((
+                "verify",
+                RecoveredOutside + ": " + incident.resourceType + " " + incident.resourceName + " ran healthy at " + healthy.at + via + superseded
+            ))
+        )
         // The candidate a withdrawn action would have stored never landed:
         // put back the tap's own test run a rehearsal overwrote.
-        if (incident.resourceType == "tap") restoreRehearsalStamp(incident.id, incident)
-        val superseded = if (withdrawn > 0) " — " + withdrawn + " queued action(s) superseded" else ""
-        step(
-            incident.id,
-            "verify",
-            "recovered by a person: " + incident.resourceType + " " + incident.resourceName + " ran healthy at " + healthyAt + superseded
-        )
-        close(incident.id, Incident.Resolved, "recovered by a person")
-        true
+        if (closed && incident.resourceType == "tap") restoreRehearsalStamp(incident.id, incident)
+        closed
     }
 
+    private val RecoveredOutside = "recovered outside the agent"
+
+    /** A healthy run of an incident's resource: when, and what started it. */
+    private[incident] case class HealthyRun(at: Instant, via: Option[String])
+
     /** When the incident's resource last ran healthy after the incident
-      * opened. A tap: its stored last run is a success stamped after the open.
-      * A pipeline: a recorded SUCCESS run (not a scratch-only rehearsal)
-      * completed after the open. Unreadable or unparseable means no. */
-    private[incident] def recoveredAt(incident: Incident): Option[Instant] =
+      * opened and after the agent's own last run_tap. A tap: its stored last
+      * run is a success stamped after both (TapRunner stamps a run's START,
+      * so the agent's own run is always stamped before its execute step). A
+      * pipeline: a recorded SUCCESS run (not a scratch-only rehearsal)
+      * completed after the open; when the agent ran a tap itself, a tap-fed
+      * run counts only if that tap run started after the agent's. Unreadable
+      * or unparseable means no. */
+    private[incident] def recoveredAt(incident: Incident): Option[HealthyRun] =
         try {
+            val lastOwnRun = incident.steps
+                .filter(s => s.phase == "execute" && Option(s.summary).exists(_.startsWith("run_tap ok")))
+                .map(_.ts).sorted.lastOption
+            def afterOwn(at: Instant): Boolean = at.isAfter(incident.openedAt) && lastOwnRun.forall(at.isAfter)
             incident.resourceType match {
                 case "tap" =>
                     tapLookup(incident.resourceName)
                         .filter(t => Option(t.lastRunStatus).exists(_.equalsIgnoreCase("success")))
-                        .flatMap(t => parseRunTime(t.lastRunTime))
-                        .filter(_.isAfter(incident.openedAt))
+                        .flatMap(t =>
+                            parseRunTime(t.lastRunTime).filter(afterOwn)
+                                .map(at => HealthyRun(at, Option(t.lastRunTrigger).map(_.trim).filter(_.nonEmpty).map("trigger " + _)))
+                        )
                 case "pipeline" =>
                     recentRunsLookup("pipeline", incident.resourceName, 5)
                         .filter(r => r != null && r.status == "SUCCESS" && !IncidentEvidenceBuilder.isScratchOnly(r))
+                        .filter { r =>
+                            val in = Option(r.input)
+                            lastOwnRun.isEmpty || !in.exists(_.kind == "tap") ||
+                            in.flatMap(i => parseRunTime(i.tapRunTime)).exists(afterOwn)
+                        }
                         .flatMap(r =>
                             Option(r.completedAt).flatMap(c =>
                                 try Some(Instant.parse(c))
                                 catch { case _: Exception => None }
-                            )
+                            ).filter(_.isAfter(incident.openedAt))
+                                .map(at => HealthyRun(at, Option(r.input).flatMap(i => Option(i.kind)).filter(_.nonEmpty).map("input " + _)))
                         )
-                        .filter(_.isAfter(incident.openedAt))
-                        .sorted.lastOption
+                        .sortBy(_.at).lastOption
                 case _ => None
             }
         } catch {
@@ -1568,9 +1604,20 @@ object IncidentRunner {
     private def step(id: String, phase: String, summary: String, detail: Option[String] = None, approvalId: Option[String] = None): Unit =
         IncidentIO.appendStep(id, IncidentStep(Instant.now(), phase, summary, detail, approvalId))
 
-    private def close(id: String, state: String, outcome: String): Unit = {
+    /** `from`: the states the close may move from. `beforeClose`: a
+      * (phase, summary) step written only when the close happens, just before
+      * the close step. Returns whether this call closed the incident. */
+    private def close(
+        id: String,
+        state: String,
+        outcome: String,
+        from: Set[String] = Incident.OpenStates,
+        beforeClose: Option[(String, String)] = None
+    ): Boolean = {
         val incident = IncidentIO.get(id)
-        if (IncidentIO.transition(id, Incident.OpenStates, state, "outcome" -> outcome)) {
+        val moved = IncidentIO.transition(id, from, state, "outcome" -> outcome)
+        if (moved) {
+            beforeClose.foreach { case (phase, summary) => step(id, phase, summary) }
             step(id, "close", state + ": " + outcome)
             incident.foreach { i =>
                 AuditLog.system(
@@ -1589,6 +1636,7 @@ object IncidentRunner {
             }
             logger.info("incident " + id + " closed: " + state + " — " + outcome)
         }
+        moved
     }
 
     /** An incident closed without its script fix being stored: if the stored
