@@ -953,8 +953,12 @@ object IncidentRunner {
                 incident.state match {
                     case Incident.AwaitingApproval if incident.awaitingApprovalIds.nonEmpty =>
                         val decisions = incident.awaitingApprovalIds.flatMap(a => approvalLookup(a).toList)
+                        // Nothing decided yet (every action still pending or
+                        // lapsed): a person may have fixed the cause themselves.
+                        val undecided = decisions.forall(d => d.state == PendingAction.Pending || d.state == PendingAction.Expired)
                         if (decisions.exists(_.state == PendingAction.Rejected))
                             close(incident.id, Incident.Abandoned, "approval rejected by " + decisions.flatMap(_.decidedBy).headOption.getOrElse("a person"))
+                        else if (undecided && closeIfRecovered(incident, decisions)) ()
                         else if (decisions.exists(d => d.state == PendingAction.Expired || d.isExpired()))
                             close(incident.id, Incident.Abandoned, "approval expired undecided")
                         else if (decisions.exists(_.state == PendingAction.Failed)) {
@@ -979,8 +983,11 @@ object IncidentRunner {
                             }
                         }
                     case Incident.AwaitingApproval =>
-                        // needs-human card with nothing queued: expire with the runtime budget ×8
-                        if (incident.openedAt.plus(settings.maxRuntimeMinutes.toLong * 8, ChronoUnit.MINUTES).isBefore(Instant.now()))
+                        // needs-human card with nothing queued: closes resolved
+                        // once a person's fix ran healthy, else expires with the
+                        // runtime budget ×8
+                        if (closeIfRecovered(incident, Nil)) ()
+                        else if (incident.openedAt.plus(settings.maxRuntimeMinutes.toLong * 8, ChronoUnit.MINUTES).isBefore(Instant.now()))
                             close(incident.id, Incident.Abandoned, "no human decision arrived")
                     case _ =>
                         if (runtimeExceeded(incident))
@@ -990,6 +997,108 @@ object IncidentRunner {
                 case e: Exception => logger.warn("incident sweep error on " + incident.id + ": " + e.getMessage)
             }
         }
+    }
+
+    /** Spec seam: recent recorded runs of a node (production LineageService.recentRuns). */
+    @volatile private[incident] var recentRunsLookup: (String, String, Int) => List[ai.datris.model.RunLineage] =
+        (nodeType: String, name: String, max: Int) => LineageService.recentRuns(nodeType, name, max)
+
+    /** Spec seam: withdraw one still-pending queued action (pending ->
+      * expired with a decision note). Production PendingActionIO.transition. */
+    @volatile private[incident] var supersedeApproval: (String, String) => Boolean = (approvalId: String, note: String) =>
+        PendingActionIO.transition(
+            approvalId,
+            PendingAction.Pending,
+            PendingAction.Expired,
+            "decidedBy" -> RecoveryKey.Label,
+            "decidedAt" -> Instant.now().toString,
+            "decisionNote" -> note
+        )
+
+    private val SupersededNote = "superseded: resource recovered"
+
+    /** A parked incident whose resource ran healthy after it opened (a person
+      * fixed the cause and re-ran it, or the next scheduled run succeeded):
+      * withdraw whatever it still has queued, profile the healthy run into the
+      * evidence and close it resolved. Returns whether it closed. */
+    private def closeIfRecovered(incident: Incident, decisions: List[PendingAction]): Boolean = {
+        val healthyAt = recoveredAt(incident).getOrElse(return false)
+        val withdrawn = decisions.filter(_.state == PendingAction.Pending).count { d =>
+            try supersedeApproval(d.id, SupersededNote)
+            catch {
+                case e: Exception =>
+                    logger.warn("incident " + incident.id + ": could not withdraw approval " + d.id + ": " + e.getMessage)
+                    false
+            }
+        }
+        if (incident.awaitingApprovalIds.nonEmpty)
+            IncidentIO.set(incident.id, "awaitingApprovalIds" -> java.util.Collections.emptyList[String]())
+        recordRealRunEvidence(incident.id)
+        // The candidate a withdrawn action would have stored never landed:
+        // put back the tap's own test run a rehearsal overwrote.
+        if (incident.resourceType == "tap") restoreRehearsalStamp(incident.id, incident)
+        val superseded = if (withdrawn > 0) " — " + withdrawn + " queued action(s) superseded" else ""
+        step(
+            incident.id,
+            "verify",
+            "recovered by a person: " + incident.resourceType + " " + incident.resourceName + " ran healthy at " + healthyAt + superseded
+        )
+        close(incident.id, Incident.Resolved, "recovered by a person")
+        true
+    }
+
+    /** When the incident's resource last ran healthy after the incident
+      * opened. A tap: its stored last run is a success stamped after the open.
+      * A pipeline: a recorded SUCCESS run (not a scratch-only rehearsal)
+      * completed after the open. Unreadable or unparseable means no. */
+    private[incident] def recoveredAt(incident: Incident): Option[Instant] =
+        try {
+            incident.resourceType match {
+                case "tap" =>
+                    tapLookup(incident.resourceName)
+                        .filter(t => Option(t.lastRunStatus).exists(_.equalsIgnoreCase("success")))
+                        .flatMap(t => parseRunTime(t.lastRunTime))
+                        .filter(_.isAfter(incident.openedAt))
+                case "pipeline" =>
+                    recentRunsLookup("pipeline", incident.resourceName, 5)
+                        .filter(r => r != null && r.status == "SUCCESS" && !IncidentEvidenceBuilder.isScratchOnly(r))
+                        .flatMap(r =>
+                            Option(r.completedAt).flatMap(c =>
+                                try Some(Instant.parse(c))
+                                catch { case _: Exception => None }
+                            )
+                        )
+                        .filter(_.isAfter(incident.openedAt))
+                        .sorted.lastOption
+                case _ => None
+            }
+        } catch {
+            case e: Exception =>
+                logger.debug("incident " + incident.id + ": recovery check skipped: " + e.getMessage)
+                None
+        }
+
+    /** A tap's lastRunTime, written by TapRunner with the environment's
+      * dateFormat / dateTimezone. ISO-8601 is accepted too. */
+    private[incident] def parseRunTime(s: String): Option[Instant] = {
+        val text = Option(s).map(_.trim).filter(_.nonEmpty).getOrElse(return None)
+        val env = DatrisEnvironment.current
+        val (fmt, tz) =
+            if (env != null) (env.dateFormat, env.dateTimezone)
+            else ("yyyy-MM-dd HH:mm:ss z", "UTC")
+        val viaFormat =
+            try {
+                val sdf = new java.text.SimpleDateFormat(fmt)
+                sdf.setTimeZone(java.util.TimeZone.getTimeZone(tz))
+                sdf.setLenient(false)
+                val pos = new java.text.ParsePosition(0)
+                val d = sdf.parse(text, pos)
+                if (d == null || pos.getIndex != text.length) None else Some(d.toInstant)
+            } catch { case _: Exception => None }
+        viaFormat.orElse(
+            try Some(Instant.parse(text))
+            catch { case _: Exception => None }
+        )
     }
 
     /** Continue an incident after an approval: on the pool, or inline when

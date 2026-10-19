@@ -100,17 +100,18 @@ object IncidentIO {
         else collection().countDocuments(Filters.in("state", Incident.OpenStates.toSeq.asJava))
     }
 
-    /** Most recent close time for a resource — the cooldown anchor. */
+    /** Most recent failed or abandoned close for a resource — the cooldown
+      * anchor. A resolved close never starts a cooldown. */
     def lastClosedAt(resourceType: String, resourceName: String): Option[Instant] = {
         val st = store
         if (st != null)
             return st.list(None, MaxListLimit)
-                .filter(i => i.resourceType == resourceType && i.resourceName == resourceName && Incident.ClosedStates.contains(i.state))
+                .filter(i => i.resourceType == resourceType && i.resourceName == resourceName && Incident.CooldownStates.contains(i.state))
                 .flatMap(_.closedAt).sorted.lastOption
         Option(collection().find(Filters.and(
             Filters.eq("resourceType", resourceType),
             Filters.eq("resource", resourceName),
-            Filters.in("state", Incident.ClosedStates.toSeq.asJava)
+            Filters.in("state", Incident.CooldownStates.toSeq.asJava)
         )).sort(Sorts.descending("closedAtDate")).first())
             .map(Incident.fromDocument)
             .flatMap(_.closedAt)

@@ -75,6 +75,8 @@ Incidents with platform-computed evidence show an **evidence card** on the incid
 
 Column values are never shown on the card, in the webhook or to the model when `DATRIS_AI_SAMPLE_VALUES=false`. Incidents opened before the upgrade have no evidence and render as before.
 
+An incident waiting on a person closes itself as **resolved** when the tap or pipeline next runs healthy after a person fixes the cause (for example, recreating a rejected secret and re-running the tap). Any queued actions it was waiting on are withdrawn from Activity → Approvals, and the closing step says how many. A resolved incident starts no cooldown.
+
 ## Scratch-first verification
 
 With `recovery.verifyMode` at its default `scratch-first`, a proposed fix is verified in two stages:

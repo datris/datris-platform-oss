@@ -121,6 +121,9 @@ object Incident {
 
     val OpenStates: Set[String] = Set(Open, Diagnosing, Proposed, AwaitingApproval, Executing, Verifying)
     val ClosedStates: Set[String] = Set(Resolved, Failed, Abandoned)
+
+    /** Closes that start the per-resource cooldown: a resolved incident does not. */
+    val CooldownStates: Set[String] = Set(Failed, Abandoned)
     val States: Set[String] = OpenStates ++ ClosedStates
 
     val KindTapFailure = "tap_failure"

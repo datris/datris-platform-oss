@@ -1832,4 +1832,189 @@ class IncidentRunnerSpec extends AnyFunSuite {
             }
         }
     }
+    // ---- a person's fix closes a parked incident (inc_851c817c1720) ----
+
+    /** A tap lastRunTime as TapRunner stamps it. */
+    private def runTime(at: Instant): String = {
+        val env = ai.datris.model.DatrisEnvironment.current
+        val (fmt, tz) = if (env != null) (env.dateFormat, env.dateTimezone) else ("yyyy-MM-dd HH:mm:ss z", "UTC")
+        val sdf = new java.text.SimpleDateFormat(fmt)
+        sdf.setTimeZone(java.util.TimeZone.getTimeZone(tz))
+        sdf.format(java.util.Date.from(at))
+    }
+
+    private val credentialProposal = IncidentRunner.Proposal(
+        "credential",
+        "the source rejected the credentials",
+        needsHuman = true,
+        Nil,
+        Some(Note)
+    )
+
+    /** Seams the recovery check reads that the scenarios do not install. */
+    private def withRecoverySeams[T](
+        runs: List[ai.datris.model.RunLineage] = Nil
+    )(body: mutable.ArrayBuffer[(String, String)] => T): T = {
+        val superseded = mutable.ArrayBuffer[(String, String)]()
+        val saved = (IncidentRunner.recentRunsLookup, IncidentRunner.supersedeApproval)
+        IncidentRunner.recentRunsLookup = (_: String, _: String, _: Int) => runs
+        IncidentRunner.supersedeApproval = (id: String, note: String) => superseded.synchronized { superseded += ((id, note)); true }
+        try body(superseded)
+        finally {
+            IncidentRunner.recentRunsLookup = saved._1
+            IncidentRunner.supersedeApproval = saved._2
+        }
+    }
+
+    test("recovered by a person: a needs-human parked tap incident closes resolved once the tap ran healthy after it opened") {
+        withLearnNoteWrites { written =>
+            withRecoverySeams() { superseded =>
+                scenario(proposal = credentialProposal, trigger = """{"error":"401 Unauthorized"}""") { c =>
+                    IncidentRunner.runIncident(c.id)
+                    assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+                    assert(c.incident.awaitingApprovalIds.isEmpty)
+                    // The person recreated the secret and re-ran the tap.
+                    c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(Instant.now().plusSeconds(5)))
+                    IncidentRunner.sweepEnabledOverride = Some(true)
+                    IncidentRunner.sweepOpenIncidents()
+                    val i = c.incident
+                    assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+                    assert(i.outcome.contains("recovered by a person"), i.outcome)
+                    assert(
+                        i.steps.exists(s => s.phase == "verify" && s.summary.startsWith("recovered by a person: tap prices ran healthy at ")),
+                        c.summaries
+                    )
+                    assert(written.isEmpty, "no learn note for a person's fix: " + written)
+                    assert(!c.summaries.exists(_.contains("learn note saved")), c.summaries)
+                    assert(c.reverts.isEmpty, c.reverts)
+                    assert(superseded.isEmpty, superseded)
+                    assert(c.ev.real.exists(_.runId == "run_real"), "the healthy run is profiled into evidence.real")
+                    assert(c.tools.filter(Mutations).isEmpty, "the platform ran nothing itself: " + c.tools)
+                }
+            }
+        }
+    }
+
+    test("recovered by a person: a healthy run from before the incident opened leaves it parked") {
+        withRecoverySeams() { _ =>
+            scenario(seedState = Incident.AwaitingApproval) { c =>
+                c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(Instant.now().minusSeconds(3600)))
+                IncidentRunner.sweepEnabledOverride = Some(true)
+                IncidentRunner.sweepOpenIncidents()
+                assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+                // A failed run after the open, and an unparseable stamp, do not count either.
+                c.tap = c.tap.copy(lastRunStatus = "failure", lastRunTime = runTime(Instant.now().plusSeconds(5)))
+                IncidentRunner.sweepOpenIncidents()
+                c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = "not a time")
+                IncidentRunner.sweepOpenIncidents()
+                assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+            }
+        }
+    }
+
+    test("recovered by a person: a queued approval is withdrawn as superseded and the incident resolves") {
+        withLearnNoteWrites { written =>
+            withRecoverySeams() { superseded =>
+                scenario(gated = Set("update_tap"), proposal = structuralProposal.copy(learnNote = Some(Note))) { c =>
+                    c.tap = priorTested(c.tap)
+                    IncidentRunner.runIncident(c.id)
+                    assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+                    assert(c.incident.awaitingApprovalIds == List("pa_update_tap"), c.incident.awaitingApprovalIds)
+                    IncidentRunner.approvalLookup = (aid: String) => Some(tapApproval(aid, c.id, ai.datris.policy.PendingAction.Pending))
+                    IncidentRunner.sweepEnabledOverride = Some(true)
+                    // Still pending and the tap still failing: nothing changes.
+                    IncidentRunner.sweepOpenIncidents()
+                    assert(c.incident.state == Incident.AwaitingApproval)
+                    assert(superseded.isEmpty)
+
+                    c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(Instant.now().plusSeconds(5)))
+                    IncidentRunner.sweepOpenIncidents()
+                    val i = c.incident
+                    assert(superseded.toList == List(("pa_update_tap", "superseded: resource recovered")), superseded)
+                    assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+                    assert(i.outcome.contains("recovered by a person"), i.outcome)
+                    assert(i.awaitingApprovalIds.isEmpty, i.awaitingApprovalIds)
+                    assert(c.summaries.exists(s => s.startsWith("recovered by a person") && s.endsWith("1 queued action(s) superseded")), c.summaries)
+                    assert(written.isEmpty, "the queued fix never executed: " + written)
+                    assert(c.reverts.isEmpty, c.reverts)
+                    assert(c.tap.lastTestRunScriptId == "stored-script-id", "the rehearsal stamp of the never-stored candidate is put back")
+                }
+            }
+        }
+    }
+
+    test("recovered by a person: an approved or executed approval is never superseded") {
+        withRecoverySeams() { superseded =>
+            scenario(gated = Set("update_tap")) { c =>
+                IncidentRunner.runIncident(c.id)
+                c.tap = c.tap.copy(lastRunStatus = "success", lastRunTime = runTime(Instant.now().plusSeconds(5)))
+                IncidentRunner.approvalLookup = (aid: String) => Some(tapApproval(aid, c.id, ai.datris.policy.PendingAction.Approved))
+                IncidentRunner.sweepEnabledOverride = Some(true)
+                IncidentRunner.sweepOpenIncidents()
+                assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+                assert(superseded.isEmpty, superseded)
+            }
+        }
+    }
+
+    private def lineageRun(runId: String, completedAt: Instant, status: String = "SUCCESS", outputKind: String = "postgres") =
+        ai.datris.model.RunLineage(
+            runId = runId,
+            pipeline = "orders",
+            outputs = java.util.Arrays.asList(ai.datris.model.RunLineageOutput(kind = outputKind, status = status)),
+            recordCount = 100,
+            completedAt = completedAt.toString,
+            status = status
+        )
+
+    test("recovered by a person: a parked pipeline incident resolves on a SUCCESS run completed after it opened") {
+        val later = Instant.now().plusSeconds(5)
+        // A scratch-only rehearsal and a failed run after the open do not count.
+        withRecoverySeams(runs = List(lineageRun("r_scratch", later, outputKind = "scratch"), lineageRun("r_err", later, status = "ERROR"))) { _ =>
+            pipelineScenario(input = None) { c =>
+                c.store.set(c.id, Seq("state" -> Incident.AwaitingApproval))
+                IncidentRunner.sweepEnabledOverride = Some(true)
+                IncidentRunner.sweepOpenIncidents()
+                assert(c.incident.state == Incident.AwaitingApproval, c.incident.outcome + " / " + c.summaries)
+            }
+        }
+        withRecoverySeams(runs = List(lineageRun("r_old", Instant.now().minusSeconds(3600)), lineageRun("r_new", later))) { superseded =>
+            pipelineScenario(input = None) { c =>
+                c.store.set(c.id, Seq("state" -> Incident.AwaitingApproval))
+                IncidentRunner.sweepEnabledOverride = Some(true)
+                IncidentRunner.sweepOpenIncidents()
+                val i = c.incident
+                assert(i.state == Incident.Resolved, i.outcome + " / " + c.summaries)
+                assert(i.outcome.contains("recovered by a person"), i.outcome)
+                assert(c.summaries.exists(_.startsWith("recovered by a person: pipeline orders ran healthy at " + later.toString)), c.summaries)
+                assert(c.restores.isEmpty, "no script restore: " + c.restores)
+                assert(superseded.isEmpty)
+            }
+        }
+    }
+
+    test("a resolved close does not start the cooldown; a failed or abandoned one does") {
+        val store = new FakeStore
+        val saved = IncidentIO.store
+        IncidentIO.store = store
+        try {
+            def closed(state: String) = {
+                val id = Incident.newId()
+                store.insert(Incident(
+                    id = id,
+                    kind = Incident.KindTapFailure,
+                    resourceType = "tap",
+                    resourceName = "prices",
+                    openedAt = Instant.now(),
+                    state = Incident.AwaitingApproval,
+                    trigger = new JsonObject()
+                ))
+                assert(store.transition(id, Incident.OpenStates, state, Nil))
+            }
+            closed(Incident.Resolved)
+            assert(IncidentIO.lastClosedAt("tap", "prices").isEmpty)
+            closed(Incident.Abandoned)
+            assert(IncidentIO.lastClosedAt("tap", "prices").isDefined)
+        } finally IncidentIO.store = saved
+    }
 }
