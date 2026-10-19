@@ -12,11 +12,14 @@ export interface PolicyLimits {
   maxPendingPerActor: number;
 }
 
-/** The recovery agent's settings (`policy.recovery`). Set via the API or the
- *  Configuration assistant; this page only shows them and applies the
- *  environment's recommendation. */
+export type RecoveryMode = 'off' | 'propose' | 'autopilot';
+export type VerifyMode = 'scratch-first' | 'real';
+
+/** The recovery agent's settings (`policy.recovery`). Editable on the Agent
+ *  Policy page (mode, verify mode, schema-drift actions); thresholds via the
+ *  API or the Configuration assistant. */
 export interface RecoverySettings {
-  mode: 'off' | 'propose' | 'autopilot' | string;
+  mode: RecoveryMode | string;
   maxAiCallsPerIncident?: number;
   maxActionsPerIncident?: number;
   maxRuntimeMinutes?: number;
@@ -28,7 +31,7 @@ export interface RecoverySettings {
   allowSchemaDriftActions?: boolean;
   minDqPassRate?: number;
   maxNullRateIncrease?: number;
-  verifyMode?: string;
+  verifyMode?: VerifyMode | string;
 }
 
 /** The policy document as stored. Unlisted actions are effectively "auto". */

@@ -92,7 +92,7 @@ Every mutating tool also accepts an optional `reason` — one line stating why t
 
 The policy document also carries the [recovery agent](/incidents)'s dial — `recovery.mode` (`off` / `propose` / `autopilot`) and its limits — plus per-resource `recovery` overrides. Every action the recovery agent takes passes through this same policy gate: under `propose`, everything it wants to do queues here for your approval. For a pipeline incident the one action it can take is regenerating the pipeline's stored AI data-quality or transformation script, which is the `pipeline:update:codegen-scripts` action here — the Recommended template sends it for approval.
 
-Set the block with `PUT /api/v1/policy` or the [Configuration assistant](/configuration-assistant). The Agent Policy page shows it read-only under **Recovery (set via API or the Configuration assistant)**.
+The page's **Recovery** panel edits `mode`, `verifyMode` and `allowSchemaDriftActions` — admins only, and switching to `autopilot` asks you to confirm — then **Save recovery settings** stores them without touching anything else in the policy. The thresholds in the table below (`maxRecordDeltaPct` through `maxNullRateIncrease`) are shown there and set with `PUT /api/v1/policy` or the [Configuration assistant](/configuration-assistant).
 
 The `recovery` block also holds the thresholds a proposed fix's evidence is judged against, and how the fix is verified:
 

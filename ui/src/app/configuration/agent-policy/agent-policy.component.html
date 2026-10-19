@@ -144,15 +144,35 @@
       </div>
     </section>
 
-    <!-- Recovery (read-only) -->
+    <!-- Recovery -->
     <section class="card">
       <div class="card-header">
         <div>
-          <h4>Recovery (set via API or the Configuration assistant)</h4>
-          <p class="hint">How the recovery agent handles incidents. The recommendation follows this install's environment label<span *ngIf="status?.environmentLabel"> ({{ status?.environmentLabel }})</span>.</p>
+          <h4>Recovery</h4>
+          <p class="hint">How the recovery agent handles incidents. Thresholds are set via the API or the Configuration assistant; the recommendation follows this install's environment label<span *ngIf="status?.environmentLabel"> ({{ status?.environmentLabel }})</span>. Saving sends the stored action matrix, not unsaved matrix edits.</p>
         </div>
       </div>
       <div class="recovery">
+        <div class="recovery-controls">
+          <label class="recovery-field">
+            <span>Mode</span>
+            <select name="recoveryMode" [(ngModel)]="recoveryDraft.mode" [disabled]="!isAdmin || savingRecovery">
+              <option *ngFor="let m of recoveryModes" value="{{ m.value }}">{{ m.label }} — {{ m.meaning }}</option>
+            </select>
+            <span class="limit-hint">{{ meaningOf(recoveryModes, recoveryDraft.mode) }}</span>
+          </label>
+          <label class="recovery-field">
+            <span>Verify mode</span>
+            <select name="recoveryVerifyMode" [(ngModel)]="recoveryDraft.verifyMode" [disabled]="!isAdmin || savingRecovery">
+              <option *ngFor="let v of verifyModes" value="{{ v.value }}">{{ v.label }}</option>
+            </select>
+            <span class="limit-hint">{{ meaningOf(verifyModes, recoveryDraft.verifyMode) }}</span>
+          </label>
+          <div class="recovery-field">
+            <label class="recovery-check"><input type="checkbox" name="allowSchemaDriftActions" [(ngModel)]="recoveryDraft.allowSchemaDriftActions" [disabled]="!isAdmin || savingRecovery"> Allow schema drift actions</label>
+            <span class="limit-hint">When on, a schema-drift incident on an autopilot tap may propose and verify a script fix; otherwise schema drift is diagnosis-only.</span>
+          </div>
+        </div>
         <table class="recovery-table">
           <thead>
             <tr><th></th><th>Current</th><th>Recommended</th></tr>
@@ -166,9 +186,15 @@
             <tr><td>Schema drift actions</td><td>{{ recovery?.allowSchemaDriftActions ?? '—' }}</td><td>{{ recoveryRecommended?.allowSchemaDriftActions ?? '—' }}</td></tr>
           </tbody>
         </table>
-        <button *ngIf="isAdmin && recoveryRecommended" class="btn-secondary" (click)="applyRecommendedRecovery()" [disabled]="applyingRecovery || loading">
-          {{ applyingRecovery ? 'Applying…' : 'Apply recommended recovery settings' }}
-        </button>
+        <div class="recovery-actions">
+          <button class="btn-primary" (click)="saveRecovery()" [disabled]="!isAdmin || savingRecovery || loading || !recoveryDirty" [attr.title]="!isAdmin ? 'Admins only' : null">
+            {{ savingRecovery ? 'Saving…' : 'Save recovery settings' }}
+          </button>
+          <button *ngIf="isAdmin && recoveryRecommended" class="btn-secondary" (click)="applyRecommendedRecovery()" [disabled]="applyingRecovery || loading">
+            {{ applyingRecovery ? 'Applying…' : 'Apply recommended recovery settings' }}
+          </button>
+        </div>
+        <p *ngIf="!isAdmin" class="limit-hint">Only an admin can change recovery settings.</p>
       </div>
     </section>
 

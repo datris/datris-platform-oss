@@ -27,7 +27,7 @@ Requires the [agent policy](/agent-policy) (`USE_AGENT_POLICY=true`) for its app
    docker compose up -d --force-recreate datris
    ```
 
-3. Set the **recovery mode** in Configuration → Agent Policy. It ships as `off`, so nothing changes until you choose:
+3. Set the **recovery mode** in Configuration → Agent Policy → Recovery: choose a mode, a verify mode and whether schema-drift incidents may act, then **Save recovery settings**. It ships as `off`, so nothing changes until you choose:
 
 | Mode | Behavior |
 |------|----------|
@@ -37,7 +37,7 @@ Requires the [agent policy](/agent-policy) (`USE_AGENT_POLICY=true`) for its app
 
 A per-tap or per-pipeline override can put one resource on a different mode — one critical tap on `propose` while everything else runs `autopilot`, or the reverse.
 
-The Agent Policy page shows the current recovery block next to the one recommended for this install's [environment label](/production/environments#recovery-agent-per-environment): `autopilot` with loose thresholds on `dev`, `propose` with strict thresholds on `qa`, `production` and unlabelled installs. An admin can apply the recommendation with one click after a confirmation. The mode never changes on its own.
+The Agent Policy page shows the current recovery block next to the one recommended for this install's [environment label](/production/environments#recovery-agent-per-environment): `autopilot` with loose thresholds on `dev`, `propose` with strict thresholds on `qa`, `production` and unlabelled installs. An admin can apply the recommendation with one click after a confirmation. Switching to `autopilot` asks you to confirm. The mode never changes on its own.
 
 ## What opens an incident
 
