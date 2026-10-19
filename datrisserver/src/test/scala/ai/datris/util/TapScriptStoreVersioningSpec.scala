@@ -55,6 +55,21 @@ class TapScriptStoreVersioningSpec extends AnyFunSuite {
         assert(TapScriptStoreVersioning.decide(ghTap, repointed, Some("  "), bytes) == Some("script replaced"))
     }
 
+    test("an AI lane passes its own note; the incident id is still appended") {
+        val repointed = minioTap.copy(scriptPath = "tap-scripts/orders_bbbb2222.py")
+        assert(
+            TapScriptStoreVersioning.decide(minioTap, repointed, None, bytes, TapScriptStoreVersioning.ScriptGenerated) == Some("script generated")
+        )
+        assert(
+            TapScriptStoreVersioning.decide(minioTap, repointed, Some("inc_7"), bytes, TapScriptStoreVersioning.ScriptFixed) ==
+                Some("script fixed (incident inc_7)")
+        )
+        assert(TapScriptStoreVersioning.decide(minioTap, repointed, None, bytes, null) == Some("script replaced"))
+        // Same rules as the store lane: identical bytes stay a plain write.
+        val sameBytes = minioTap.copy(scriptPath = "tap-scripts/orders_cccc3333.py")
+        assert(TapScriptStoreVersioning.decide(minioTap, sameBytes, None, bytes, TapScriptStoreVersioning.ScriptGenerated).isEmpty)
+    }
+
     test("no existing tap (wizard first upload): plain write") {
         assert(TapScriptStoreVersioning.decide(null, minioTap, Some("inc_42"), bytes).isEmpty)
     }

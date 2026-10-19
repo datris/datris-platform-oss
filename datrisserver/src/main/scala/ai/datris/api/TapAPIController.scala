@@ -901,9 +901,17 @@ class TapAPIController {
       * Callers put the message under `error` in an otherwise-200 body: the
       * wizard reads only script/scriptPath/packages/changes from these
       * responses, and MCP create_tap hands any body with `error` to the agent. */
-    private def repointUnlessGated(existing: TapConfig, newScriptPath: String): Option[String] =
+    private def repointUnlessGated(existing: TapConfig, newScriptPath: String, request: HttpServletRequest, note: String): Option[String] =
         TapCronGate.checkAiRepoint(existing, newScriptPath) match {
-            case None => TapConfigIO.write(existing.copy(scriptPath = newScriptPath)); None
+            case None =>
+                // Same rule as the store lane: new bytes on an existing tap are a
+                // definition edit and land as a new version.
+                val repointed = existing.copy(scriptPath = newScriptPath)
+                TapScriptStoreVersioning.decide(existing, repointed, incidentHeader(request), t => TapScriptIdentity.of(t), note) match {
+                    case Some(n) => TapConfigIO.writeVersioned(repointed, n, VersionActor.resolve(request))
+                    case None => TapConfigIO.write(repointed)
+                }
+                None
             case Some(msg) =>
                 logger.info("Not repointing scheduled tap '" + existing.name + "' at untested script: " + msg)
                 Some(msg)
@@ -991,9 +999,7 @@ class TapAPIController {
                         // (and the incident, when the recovery agent did).
                         // An identical re-store or a stamp-only move stays a
                         // plain write.
-                        val incidentId = Option(request.getHeader(ai.datris.audit.AuditActor.HeaderIncident))
-                            .map(_.trim).filter(_.nonEmpty).map(_.take(64))
-                        TapScriptStoreVersioning.decide(existing, stamped, incidentId, t => TapScriptIdentity.of(t)) match {
+                        TapScriptStoreVersioning.decide(existing, stamped, incidentHeader(request), t => TapScriptIdentity.of(t)) match {
                             case Some(note) => TapConfigIO.writeVersioned(stamped, note, VersionActor.resolve(request))
                             case None => TapConfigIO.write(stamped)
                         }
@@ -1017,6 +1023,10 @@ class TapAPIController {
                 ApiErrors.internal(e)
         }
     }
+
+    /** The incident id the recovery executor tags its calls with, if any. */
+    private def incidentHeader(request: HttpServletRequest): Option[String] =
+        Option(request).flatMap(r => Option(r.getHeader(ai.datris.audit.AuditActor.HeaderIncident))).map(_.trim).filter(_.nonEmpty).map(_.take(64))
 
     private def actorLabel(request: HttpServletRequest): String =
         ResolvedKeyAccess.keyLabel(request).orNull
@@ -1101,7 +1111,8 @@ class TapAPIController {
     @PostMapping(path = Array("/tap/generate"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def generateScript(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, String]
+        @RequestBody body: java.util.Map[String, String],
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             val description = body.get("description")
@@ -1132,7 +1143,7 @@ class TapAPIController {
 
             // Update scriptPath in MongoDB if tap already exists
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
-            val gateMsg = if (existing != null) repointUnlessGated(existing, result.scriptPath) else None
+            val gateMsg = if (existing != null) repointUnlessGated(existing, result.scriptPath, request, TapScriptStoreVersioning.ScriptGenerated) else None
 
             val gson = new Gson
             val response = new java.util.HashMap[String, Any]()
@@ -1176,7 +1187,8 @@ class TapAPIController {
     @PostMapping(path = Array("/tap/fix"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def fixScript(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, String]
+        @RequestBody body: java.util.Map[String, String],
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             val tapName = body.get("tapName")
@@ -1200,7 +1212,7 @@ class TapAPIController {
 
             // Update scriptPath in MongoDB if tap already exists
             val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, Option(tapName).getOrElse(""))
-            val gateMsg = if (existingTap != null) repointUnlessGated(existingTap, result.scriptPath) else None
+            val gateMsg = if (existingTap != null) repointUnlessGated(existingTap, result.scriptPath, request, TapScriptStoreVersioning.ScriptFixed) else None
 
             val gson = new Gson
             val response = new java.util.HashMap[String, Any]()
@@ -1219,7 +1231,8 @@ class TapAPIController {
     @PostMapping(path = Array("/tap/review"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def reviewScript(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, Object]
+        @RequestBody body: java.util.Map[String, Object],
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             val tapName = Option(body.get("tapName")).map(_.toString).getOrElse("tap")
@@ -1244,7 +1257,7 @@ class TapAPIController {
                 if (result.rewritten) {
                     val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
                     if (existingTap != null && result.scriptPath != null && result.scriptPath != oldScriptPath)
-                        repointUnlessGated(existingTap, result.scriptPath)
+                        repointUnlessGated(existingTap, result.scriptPath, request, TapScriptStoreVersioning.ScriptReviewed)
                     else None
                 } else None
 
@@ -1267,7 +1280,8 @@ class TapAPIController {
     @PostMapping(path = Array("/tap/optimize"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def optimizeScript(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, Object]
+        @RequestBody body: java.util.Map[String, Object],
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             val tapName = Option(body.get("tapName")).map(_.toString).getOrElse("tap")
@@ -1290,7 +1304,7 @@ class TapAPIController {
             val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
             val gateMsg =
                 if (existingTap != null && opt.scriptPath != null && opt.scriptPath != oldScriptPath)
-                    repointUnlessGated(existingTap, opt.scriptPath)
+                    repointUnlessGated(existingTap, opt.scriptPath, request, TapScriptStoreVersioning.ScriptOptimized)
                 else None
 
             val gson = new Gson

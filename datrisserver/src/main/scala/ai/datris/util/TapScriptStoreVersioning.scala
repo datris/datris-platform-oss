@@ -11,7 +11,8 @@ import com.google.gson.{Gson, JsonObject}
 /** Version-history decisions for the two tap write lanes, kept pure so they
   * are unit-testable without Spring or a database.
   *
-  *  - [[decide]]: the script store lane (`POST /tap/script`) repoints a stored
+  *  - [[decide]]: the script store lane (`POST /tap/script`) and the AI lanes
+  *    (`/tap/generate`, fix, review, optimize) repoint a stored
   *    tap at new script bytes. When that replaces the script of an EXISTING
   *    tap it is a definition edit and must land as a new version; the first
   *    upload for a not-yet-saved tap, an identical re-store, and a write that
@@ -23,6 +24,10 @@ import com.google.gson.{Gson, JsonObject}
 object TapScriptStoreVersioning {
 
     val ScriptReplaced = "script replaced"
+    val ScriptGenerated = "script generated"
+    val ScriptFixed = "script fixed"
+    val ScriptReviewed = "script reviewed"
+    val ScriptOptimized = "script optimized"
 
     /** Some(change note) when `repointed` replaces the script of `existing`
       * and must be written with `TapConfigIO.writeVersioned`; None for a plain
@@ -32,7 +37,8 @@ object TapScriptStoreVersioning {
         existing: TapConfig,
         repointed: TapConfig,
         incidentId: Option[String],
-        identity: TapConfig => Option[String]
+        identity: TapConfig => Option[String],
+        note: String = ScriptReplaced
     ): Option[String] = {
         if (existing == null || repointed == null) None
         else if (sameReference(existing, repointed)) None
@@ -40,7 +46,8 @@ object TapScriptStoreVersioning {
             val before = safeIdentity(existing, identity)
             val after = safeIdentity(repointed, identity)
             if (before.isDefined && before == after) None
-            else Some(ScriptReplaced + incidentId.map(_.trim).filter(_.nonEmpty).map(i => " (incident " + i + ")").getOrElse(""))
+            else Some(Option(note).filter(_.nonEmpty).getOrElse(ScriptReplaced) + incidentId.map(_.trim).filter(_.nonEmpty).map(i => " (incident " + i + ")")
+                .getOrElse(""))
         }
     }
 
