@@ -4,7 +4,7 @@ import { filter } from 'rxjs/operators';
 import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import { Router } from '@angular/router';
 import { AuthService } from '../../auth.service';
-import { AgentPolicy, AgentPolicyService, PolicyMode, PolicyResponse, RecoveryMode, RecoverySettings, VerifyMode } from './agent-policy.service';
+import { AgentPolicy, AgentPolicyService, PolicyLimits, PolicyMode, PolicyResponse, RecoveryMode, RecoverySettings, VerifyMode } from './agent-policy.service';
 
 /** One row of the action matrix. Sub-actions ("pipeline:update:dest-types")
  *  are indented under their two-part parent and inherit its mode unless set. */
@@ -14,6 +14,10 @@ interface ActionRow {
   sub: boolean;        // 3-part key
   parentKey?: string;  // for sub-actions: the 2-part key it inherits from
 }
+
+/** Server default limits (AgentPolicy.scala PolicyLimits); used when a
+ *  stored policy carries none. */
+const DEFAULT_LIMITS: PolicyLimits = { pendingTtlHours: 24, maxPendingPerActor: 50 };
 
 interface ResourceGroup {
   resource: string;
@@ -150,8 +154,15 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
       resource,
       entries: Object.entries(m || {}).map(([action, mode]) => ({ action, mode }))
     }));
-    this.pendingTtlHours = p?.limits?.pendingTtlHours ?? 24;
-    this.maxPendingPerActor = p?.limits?.maxPendingPerActor ?? 10;
+    this.pendingTtlHours = p?.limits?.pendingTtlHours ?? DEFAULT_LIMITS.pendingTtlHours;
+    this.maxPendingPerActor = p?.limits?.maxPendingPerActor ?? DEFAULT_LIMITS.maxPendingPerActor;
+    this.applyRecoveryMeta(p);
+  }
+
+  /** Refresh the saved-document metadata and the recovery draft only. The
+   *  recovery Save and Apply use this so unsaved matrix, override and limit
+   *  edits on screen survive; the table reads `status.policy.recovery`. */
+  private applyRecoveryMeta(p: AgentPolicy | undefined): void {
     this.version = p?.version ?? 0;
     this.updatedAt = p?.updatedAt;
     this.updatedBy = p?.updatedBy;
@@ -269,7 +280,7 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
     { value: 'real', label: 'Real', meaning: 'A fix is verified by the real run only, with no rehearsal.' }
   ];
 
-  /** Working copy of the editable recovery fields; reset by applyPolicy. */
+  /** Working copy of the editable recovery fields; reset by applyRecoveryMeta. */
   recoveryDraft: { mode: RecoveryMode; verifyMode: VerifyMode; allowSchemaDriftActions: boolean } = {
     mode: 'off', verifyMode: 'scratch-first', allowSchemaDriftActions: false
   };
@@ -304,12 +315,12 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
     this.svc.save({
       actions: { ...(stored.actions || {}) },
       overrides: JSON.parse(JSON.stringify(stored.overrides || {})),
-      limits: { ...(stored.limits || { pendingTtlHours: 24, maxPendingPerActor: 50 }) },
+      limits: { ...(stored.limits || DEFAULT_LIMITS) },
       recovery: { ...(stored.recovery || { mode: 'off' }), ...draft }
     }).subscribe({
       next: (res) => {
         if (this.status) this.status = { ...this.status, policy: res.policy };
-        this.applyPolicy(res.policy);
+        this.applyRecoveryMeta(res.policy);
         const mode = res.policy?.recovery?.mode ?? draft.mode;
         const verify = res.policy?.recovery?.verifyMode ?? draft.verifyMode;
         this.success = `Recovery set to ${mode}, verify ${verify} (version ${this.version}).`;
@@ -353,12 +364,12 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
     this.svc.save({
       actions: { ...(stored.actions || {}) },
       overrides: JSON.parse(JSON.stringify(stored.overrides || {})),
-      limits: { ...(stored.limits || { pendingTtlHours: 24, maxPendingPerActor: 50 }) },
+      limits: { ...(stored.limits || DEFAULT_LIMITS) },
       recovery: { ...rec }
     }).subscribe({
       next: (res) => {
         if (this.status) this.status = { ...this.status, policy: res.policy };
-        this.applyPolicy(res.policy);
+        this.applyRecoveryMeta(res.policy);
         this.success = `Recovery set to ${res.policy?.recovery?.mode ?? rec.mode} (version ${this.version}).`;
         this.applyingRecovery = false;
       },

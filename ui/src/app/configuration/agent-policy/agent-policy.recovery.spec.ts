@@ -360,6 +360,33 @@ describe('AgentPolicyComponent: recovery mode controls', () => {
     expect(saveRecoveryButton()!.disabled).withContext('Save disabled again after saving').toBeTrue();
   });
 
+  it('an unsaved matrix edit survives a recovery Save, and the Mode cell shows the new mode', async () => {
+    await setup('admin');
+    spyOn(window, 'confirm').and.returnValue(true);
+    cmp().setMode('tap:create', 'deny');
+    cmp().pendingTtlHours = 48;
+    await settle();
+    cmp().recoveryDraft.mode = 'propose';
+    cmp().saveRecovery();
+    fixture.detectChanges();
+
+    const req = httpMock.expectOne(isPut);
+    const body = req.request.body as any;
+    expect(body.actions).withContext('the recovery Save sends the stored matrix').toEqual({ 'tap:run': 'approve' });
+    expect(body.limits).toEqual({ pendingTtlHours: 24, maxPendingPerActor: 50 });
+    req.flush({ enabled: true, policy: { ...policyResponse().policy, version: 4, recovery: { ...STORED_RECOVERY, mode: 'propose' } } });
+    await settle();
+
+    expect(currentCell('Mode')).toBe('propose');
+    expect(cmp().actions).withContext('unsaved matrix edit kept').toEqual({ 'tap:run': 'approve', 'tap:create': 'deny' });
+    expect(cmp().pendingTtlHours).withContext('unsaved limit edit kept').toBe(48);
+    const rows = Array.from(root().querySelectorAll('.matrix-row')) as HTMLElement[];
+    const row = rows.find(r => (r.querySelector('code')?.textContent || '').trim() === 'tap:create');
+    expect(row).withContext('tap:create matrix row').toBeTruthy();
+    expect((row!.querySelector('.seg-active')?.textContent || '').trim()).withContext('the edited action still shows Deny').toBe('Deny');
+    expect(cmp().version).toBe(4);
+  });
+
   it('switching to autopilot asks for confirmation naming the action matrix', async () => {
     await setup('admin');
     const confirmSpy = spyOn(window, 'confirm').and.returnValue(true);
