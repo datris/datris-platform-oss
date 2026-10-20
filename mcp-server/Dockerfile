@@ -1,5 +1,5 @@
 # Pinned by digest (multi-arch manifest list); Dependabot docker sends digest-bump PRs.
-FROM python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217
+FROM python:3.15-slim@sha256:2da676046630d7bf14c6764ae1143dc7fa0377a53f94bf5a642f0b214aca5bce
 
 LABEL io.modelcontextprotocol.server.name="io.github.datris/datris"
 
