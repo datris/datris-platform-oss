@@ -1,7 +1,7 @@
 # datris-tap-runner — isolated tap execution sidecar (tap-execution-isolation Phase 3).
 # Holds NO platform secrets: no JVM, no Vault, no /datris/.env, no /config, no Docker socket.
 # Pinned by digest (multi-arch manifest list); Dependabot docker sends digest-bump PRs.
-FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+FROM python:3.15-slim-bookworm@sha256:2a41267d9de9d358f77a1de356e0f16ecba8d39827855be0ce9ef4792edce402
 
 # The Debian packages in the slim image lag behind bookworm-security fixes
 # (libpcre2 CVEs flagged by the weekly Trivy image scan).
