@@ -58,7 +58,7 @@ def _posted_run_body(captured):
 # ------------------------------------------------------------- schema ---
 
 def test_test_tap_schema_has_integer_limit_defaulting_to_20():
-    schema = _tool("test_tap").inputSchema
+    schema = _tool("test_tap").input_schema
     props = schema["properties"]
     assert "limit" in props, "test_tap must accept an optional `limit` for the preview size: " + repr(sorted(props))
     assert props["limit"]["type"] == "integer", props["limit"]
@@ -66,7 +66,7 @@ def test_test_tap_schema_has_integer_limit_defaulting_to_20():
 
 
 def test_test_tap_schema_still_requires_only_name():
-    schema = _tool("test_tap").inputSchema
+    schema = _tool("test_tap").input_schema
     assert schema["required"] == ["name"], (
         "`name` must stay the only required field — `limit` is optional: " + repr(schema["required"])
     )

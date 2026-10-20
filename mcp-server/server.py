@@ -27,6 +27,7 @@ import asyncio
 import contextvars
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -36,10 +37,24 @@ from collections import deque
 from typing import Any
 
 import anyio
+import jsonschema
 import requests
 from dotenv import load_dotenv
 from mcp.server import Server
-from mcp.types import Resource, Tool, TextContent, CallToolResult
+from mcp.server.context import ServerRequestContext
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListResourcesResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    ReadResourceRequestParams,
+    ReadResourceResult,
+    Resource,
+    TextContent,
+    TextResourceContents,
+    Tool,
+)
 
 load_dotenv()
 
@@ -154,21 +169,21 @@ def _record_count_from_result(result_text: str) -> int | None:
     return None
 
 
-def _read_client_info() -> tuple[str, str]:
-    """Read MCP clientInfo (name, version) from the current request context.
-    Returns ("", "") when unavailable (e.g. stdio-only bootstrap, or SDK internals changed)."""
+def _read_client_info(ctx: Any) -> tuple[str, str]:
+    """Read MCP client info (name, version) from the request context the SDK
+    hands each handler. SDK 2.x exposes `client_info` on
+    InitializeRequestParams; `clientInfo` is the legacy attribute name.
+    Returns ("", "") when unavailable (no context, or no initialize params)."""
     try:
-        ctx = server.request_context
         if ctx is None:
             return ("", "")
         session = getattr(ctx, "session", None)
         if session is None:
             return ("", "")
-        # Try common attribute names across MCP SDK versions.
-        params = getattr(session, "client_params", None) or getattr(session, "_client_params", None)
+        params = getattr(session, "client_params", None)
         if params is None:
             return ("", "")
-        ci = getattr(params, "clientInfo", None)
+        ci = getattr(params, "client_info", None) or getattr(params, "clientInfo", None)
         if ci is None:
             return ("", "")
         name = getattr(ci, "name", "") or ""
@@ -179,10 +194,10 @@ def _read_client_info() -> tuple[str, str]:
 
 
 def _activity_record(session_id: str, tool: str, status: str, latency_ms: int, api_key: str,
-                     args: Any, result_text: str, error_msg: str) -> None:
+                     args: Any, result_text: str, error_msg: str, ctx: Any = None) -> None:
     now = time.time()
     api_key_hint = api_key[:6] if api_key else ""
-    client_name, client_version = _read_client_info()
+    client_name, client_version = _read_client_info(ctx)
     args_preview = _build_args_preview(args)
     args_full = _pretty_json(args) if args else ""
     response_preview = ""
@@ -593,16 +608,6 @@ def _mcp_server_version():
     return "unknown"
 
 
-# Instructions are delivered per session via create_initialization_options(),
-# which reads server.instructions at session start. The import-time value uses
-# the fail-open full set (no network call during import); every transport
-# entry point (stdio, /sse, /mcp) refreshes server.instructions from the
-# cached availability fetch just before the session initializes, so a cache
-# refresh reaches new sessions.
-# version= makes initialize report serverInfo.version as the datris-mcp-server
-# version; without it the SDK falls back to the `mcp` package version.
-server = Server("datris", version=_mcp_server_version(), instructions=_render_destination_templates(
-    _INSTRUCTIONS_TEMPLATE, list(ALL_STRUCTURED_DESTINATIONS)))
 
 
 def _effective_api_key() -> str:
@@ -1595,9 +1600,9 @@ The platform maintains a per-tap ledger of processed documents (URI + content ha
 """
 
 
-@server.list_resources()
-async def list_resources():
-    return [
+async def list_resources(ctx: ServerRequestContext | None,
+                         params: PaginatedRequestParams | None) -> ListResourcesResult:
+    return ListResourcesResult(resources=[
         Resource(
             uri="datris://pipeline-config-reference",
             name="Pipeline Configuration Reference",
@@ -1610,18 +1615,24 @@ async def list_resources():
             description="Canonical reference for everything tap-related: creation (instruction vs script), reading platform data from a tap script (auto-injected DATRIS_PLATFORM_* env vars + query API callback — no credentials needed), per-run params, incremental sync via persistent state (DATRIS_TAP_STATE bookmarks), scheduling (with CRON cookbook), run flow + polling, error handling (persistedReason table, payload disk budget guidance), document taps, and outcome verification via publisherToken + get_tap_logs. Re-read this any time you need to verify your understanding of how taps work — including the SCHEDULING RULE for recurring data needs.",
             mimeType="text/plain",
         ),
-    ]
+    ])
 
 
-@server.read_resource()
-async def read_resource(uri):
-    if str(uri) == "datris://pipeline-config-reference":
+def _text_resource(uri: str, text: str) -> ReadResourceResult:
+    return ReadResourceResult(contents=[TextResourceContents(uri=uri, mimeType="text/plain", text=text)])
+
+
+async def read_resource(ctx: ServerRequestContext | None,
+                        params: ReadResourceRequestParams) -> ReadResourceResult:
+    uri = str(params.uri)
+    if uri == "datris://pipeline-config-reference":
         # Rendered per read (not at import) so the destination list tracks the
         # availability cache. to_thread keeps the availability fetch's blocking
         # `requests` call off the event loop (same rationale as call_tool).
-        return await asyncio.to_thread(_render_destination_templates, PIPELINE_CONFIG_REFERENCE)
-    if str(uri) == "datris://tap-workflow-reference":
-        return TAP_WORKFLOW_REFERENCE
+        text = await asyncio.to_thread(_render_destination_templates, PIPELINE_CONFIG_REFERENCE)
+        return _text_resource(uri, text)
+    if uri == "datris://tap-workflow-reference":
+        return _text_resource(uri, TAP_WORKFLOW_REFERENCE)
     raise ValueError(f"Unknown resource: {uri}")
 
 
@@ -1665,13 +1676,13 @@ def _allowed_tool_names() -> set | None:
     return allowed
 
 
-@server.list_tools()
-async def list_tools():
+async def list_tools(ctx: ServerRequestContext | None,
+                     params: PaginatedRequestParams | None) -> ListToolsResult:
     allowed = await asyncio.to_thread(_allowed_tool_names)
     tools = _all_tools()
     if allowed is None:
-        return tools
-    return [t for t in tools if t.name in allowed]
+        return ListToolsResult(tools=tools)
+    return ListToolsResult(tools=[t for t in tools if t.name in allowed])
 
 
 # Tools that change platform state. Each gets an optional `reason` argument
@@ -1708,7 +1719,7 @@ def _all_tools():
     tools = _base_tools()
     for t in tools:
         if t.name in _MUTATING_TOOLS:
-            props = t.inputSchema.setdefault("properties", {})
+            props = t.input_schema.setdefault("properties", {})
             if "reason" not in props:
                 props["reason"] = {
                     "type": "string",
@@ -3776,8 +3787,20 @@ def _is_error_payload(text):
     return len(obj) == 1 or "errorKind" in obj or "clashes" in obj
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
+def _tool_input_schema(name: str) -> dict | None:
+    """The input schema call_tool validates arguments against (None for an
+    unknown tool, which keeps _dispatch's own "Unknown tool" path)."""
+    for t in _all_tools():
+        if t.name == name:
+            return t.input_schema
+    return None
+
+
+async def call_tool(ctx: ServerRequestContext | None, params: CallToolRequestParams) -> CallToolResult:
+    # Exceptions are caught below and returned as isError results: SDK 2.x
+    # would otherwise turn them into JSON-RPC errors.
+    name = params.name
+    arguments = params.arguments or {}
     started = time.time()
     session_id = _session_id.get() or "stdio"
     api_key = _session_api_key.get()
@@ -3824,7 +3847,57 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
     finally:
         latency_ms = int((time.time() - started) * 1000)
         _activity_record(session_id, name, status, latency_ms, api_key,
-                         arguments, result_text, error_msg)
+                         arguments, result_text, error_msg, ctx=ctx)
+
+
+# Instructions are delivered per session via create_initialization_options(),
+# which reads server.instructions at session start. The import-time value uses
+# the fail-open full set (no network call during import); every transport
+# entry point (stdio, /sse, /mcp) refreshes server.instructions from the
+# cached availability fetch just before the session initializes, so a cache
+# refresh reaches new sessions.
+# version= makes initialize report serverInfo.version as the datris-mcp-server
+# version; without it the SDK falls back to the `mcp` package version.
+async def validated_call_tool(ctx: ServerRequestContext | None, params: CallToolRequestParams) -> CallToolResult:
+    """The registered tools/call handler. SDK 1.x validated arguments against
+    the tool's inputSchema before call_tool ran; 2.x does not, so this does it
+    first, with the same "Input validation error: " text agents saw on 1.x.
+    The full arguments are validated (`reason` is declared in the mutating
+    tools' schemas). A refused call is recorded in the activity feed as an
+    error and never reaches the Datris API."""
+    started = time.time()
+    arguments = params.arguments or {}
+    try:
+        schema = _tool_input_schema(params.name)
+        if schema is not None:
+            jsonschema.validate(instance=arguments, schema=schema)
+    except jsonschema.ValidationError as e:
+        error_msg = f"Input validation error: {e.message}"
+        latency_ms = int((time.time() - started) * 1000)
+        _activity_record(_session_id.get() or "stdio", params.name, "error", latency_ms, _session_api_key.get(),
+                         arguments, error_msg, error_msg, ctx=ctx)
+        return CallToolResult(content=[TextContent(type="text", text=error_msg)], isError=True)
+    return await call_tool(ctx, params)
+
+
+server = Server(
+    "datris",
+    version=_mcp_server_version(),
+    instructions=_render_destination_templates(_INSTRUCTIONS_TEMPLATE, list(ALL_STRUCTURED_DESTINATIONS)),
+    on_list_resources=list_resources,
+    on_read_resource=read_resource,
+    on_list_tools=list_tools,
+    on_call_tool=validated_call_tool,
+)
+
+
+def _max_request_body_bytes() -> int:
+    """HTTP request-body cap for the /sse and /mcp transports. SDK 2.x
+    defaults to 4 MiB, which would reject inline upload content and catalog
+    archives. Derived from the documented upload ceiling DATRIS_MAX_UPLOAD_MB
+    (default 1024, same as the Datris server), scaled 4/3 for base64 plus
+    1 MiB of JSON-RPC envelope."""
+    return int(os.getenv("DATRIS_MAX_UPLOAD_MB", "1024")) * 1024 * 1024 * 4 // 3 + 1024 * 1024
 
 
 def _test_limit(value) -> int:
@@ -5270,6 +5343,40 @@ async def _handle_activity(scope, send) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+# SDK 2.x runs each request handler in the contextvars of the task that
+# delivered the message. On SSE that is the `/messages` POST, not the `/sse`
+# GET where the session's API key, on-behalf-of, incident and activity id are
+# set. Remember those per SSE transport session id (sniffed from the endpoint
+# event the transport writes on the stream) and re-apply them on each POST.
+_sse_session_vars: dict[str, tuple[str, str, str, str]] = {}
+_SSE_SESSION_ID_RE = re.compile(rb"session_id=([0-9a-f]{32})")
+
+
+def _sse_send_capturing_session(send, session_vars: tuple[str, str, str, str], captured: list):
+    async def wrapped(message):
+        if not captured and message.get("type") == "http.response.body":
+            m = _SSE_SESSION_ID_RE.search(message.get("body", b"") or b"")
+            if m:
+                sid = m.group(1).decode("ascii")
+                captured.append(sid)
+                _sse_session_vars[sid] = session_vars
+        await send(message)
+    return wrapped
+
+
+def _apply_sse_session_vars(scope) -> None:
+    qs = urllib.parse.parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
+    sid = (qs.get("session_id") or [""])[0]
+    session_vars = _sse_session_vars.get(sid)
+    if session_vars is None:
+        return
+    api_key, on_behalf_of, incident, sess_id = session_vars
+    _session_api_key.set(api_key)
+    _session_on_behalf_of.set(on_behalf_of)
+    _session_incident.set(incident)
+    _session_id.set(sess_id)
+
+
 async def run_sse(port: int):
     # Dual transport: serves SSE (/sse + /messages) for Claude Desktop / Cursor
     # AND Streamable HTTP (/mcp) for the in-product Datris Assistant. Both
@@ -5282,8 +5389,9 @@ async def run_sse(port: int):
     import contextlib
     import uvicorn
 
-    sse = SseServerTransport("/messages")
-    streamable_mgr = StreamableHTTPSessionManager(app=server, json_response=False, stateless=True)
+    sse = SseServerTransport("/messages", max_request_body_size=_max_request_body_bytes())
+    streamable_mgr = StreamableHTTPSessionManager(
+        app=server, json_response=False, stateless=True, max_request_body_size=_max_request_body_bytes())
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
@@ -5314,14 +5422,19 @@ async def run_sse(port: int):
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
+                captured: list = []
+                sse_send = _sse_send_capturing_session(
+                    send, (api_key, _session_on_behalf_of.get(), _session_incident.get(), sess_id), captured)
                 try:
                     # Refresh the instructions' baked-in destination list for
                     # this session (create_initialization_options reads
                     # server.instructions at session start).
                     server.instructions = await asyncio.to_thread(_render_instructions)
-                    async with sse.connect_sse(scope, receive, send) as streams:
+                    async with sse.connect_sse(scope, receive, sse_send) as streams:
                         await server.run(streams[0], streams[1], server.create_initialization_options())
                 finally:
+                    for sid in captured:
+                        _sse_session_vars.pop(sid, None)
                     _activity_session_close(sess_id)
                 return
             elif path == "/messages":
@@ -5331,6 +5444,7 @@ async def run_sse(port: int):
                 # ClosedResourceError/BrokenResourceError. That's a benign "client
                 # already gone" race, not a server fault — swallow it so it doesn't
                 # surface as an unhandled ASGI exception traceback on every drop.
+                _apply_sse_session_vars(scope)
                 try:
                     await sse.handle_post_message(scope, receive, send)
                 except (anyio.ClosedResourceError, anyio.BrokenResourceError):
@@ -5377,7 +5491,8 @@ async def run_streamable_http(port: int):
     import contextlib
     import uvicorn
 
-    session_manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=True)
+    session_manager = StreamableHTTPSessionManager(
+        app=server, json_response=False, stateless=True, max_request_body_size=_max_request_body_bytes())
 
     @contextlib.asynccontextmanager
     async def lifespan(app):

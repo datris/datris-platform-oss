@@ -27,6 +27,7 @@ import requests
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import server  # noqa: E402
+from mcp.types import CallToolRequestParams  # noqa: E402
 
 ECHO_TOOLS = [
     "restore_catalog",
@@ -107,7 +108,7 @@ def fixed_dests(monkeypatch):
 def _call_tool(monkeypatch, name, body):
     monkeypatch.setattr(server, "_dispatch", lambda n, a: body)
     monkeypatch.setattr(server, "_activity_record", lambda *a, **k: None)
-    return asyncio.run(server.call_tool(name, {}))
+    return asyncio.run(server.call_tool(None, CallToolRequestParams(name=name, arguments={})))
 
 
 # ------------------------------------------------- Acceptance bullet 1: fetch ---
@@ -191,7 +192,7 @@ def test_delete_and_update_tools_echo_environment(monkeypatch, tool):
 
     body = json.dumps({"status": "ok", "name": "thing"})
     res = _call_tool(monkeypatch, tool, body)
-    assert res.isError is False
+    assert res.is_error is False
     assert json.loads(res.content[0].text) == {"status": "ok", "name": "thing", "environment": "qa"}
 
     # Non-JSON bodies come back verbatim.
@@ -201,7 +202,7 @@ def test_delete_and_update_tools_echo_environment(monkeypatch, tool):
     # Error bodies come back verbatim.
     err = json.dumps({"error": "not found"})
     res = _call_tool(monkeypatch, tool, err)
-    assert res.isError is True
+    assert res.is_error is True
     assert res.content[0].text == err
 
     # Unset label: today's output exactly.

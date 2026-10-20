@@ -33,7 +33,7 @@ def _tool(name):
 
 
 def _props(tool):
-    return tool.inputSchema["properties"]
+    return tool.input_schema["properties"]
 
 
 class _Captured:
@@ -92,7 +92,7 @@ def _create(captured, **extra):
 def test_get_pipeline_result_tool_exists_with_exact_params():
     t = _tool("get_pipeline_result")
     assert set(_props(t).keys()) == {"publisher_token", "pipeline_token", "offset", "limit"}
-    assert "required" not in t.inputSchema or t.inputSchema["required"] in ([], None)
+    assert "required" not in t.input_schema or t.input_schema["required"] in ([], None)
 
 
 def test_get_pipeline_result_offset_and_limit_are_integers():

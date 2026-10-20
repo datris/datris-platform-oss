@@ -39,7 +39,7 @@ def _tool(name):
 
 
 def _props(tool):
-    return tool.inputSchema["properties"]
+    return tool.input_schema["properties"]
 
 
 class _Captured:
@@ -210,7 +210,7 @@ def test_objectstore_tool_wording_names_no_engine_or_vendor():
     qo = _tool("query_objectstore")
     strings = {
         "query_objectstore.description": qo.description,
-        **{f"query_objectstore.{k}": v.get("description", "") for k, v in qo.inputSchema["properties"].items()},
+        **{f"query_objectstore.{k}": v.get("description", "") for k, v in qo.input_schema["properties"].items()},
         **{f"create_pipeline.{k}": cp[k]["description"]
            for k in ("bucket", "prefix", "fileFormat", "partitionBy", "writeMode", "deleteBeforeWrite", "provider", "endpoint")},
     }

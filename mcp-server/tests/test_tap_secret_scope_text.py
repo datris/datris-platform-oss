@@ -27,7 +27,7 @@ import server  # noqa: E402
 def _secret_name_description(tool_name):
     for t in server._base_tools():
         if t.name == tool_name:
-            props = (t.inputSchema or {}).get("properties", {})
+            props = (t.input_schema or {}).get("properties", {})
             if "secret_name" not in props:
                 if tool_name == "create_tap":
                     raise AssertionError("create_tap has no secret_name parameter")

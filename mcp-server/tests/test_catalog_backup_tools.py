@@ -40,7 +40,7 @@ def _tool(name):
 
 
 def _props(tool):
-    return tool.inputSchema["properties"]
+    return tool.input_schema["properties"]
 
 
 def _zip_bytes():
@@ -158,9 +158,9 @@ def test_restore_catalog_schema():
     t = _tool("restore_catalog")
     props = _props(t)
     assert {"catalog", "archive_base64", "mode", "confirm"} <= set(props)
-    assert set(t.inputSchema.get("required", [])) >= {"catalog", "archive_base64"}
-    assert "mode" not in t.inputSchema.get("required", [])
-    assert "confirm" not in t.inputSchema.get("required", [])
+    assert set(t.input_schema.get("required", [])) >= {"catalog", "archive_base64"}
+    assert "mode" not in t.input_schema.get("required", [])
+    assert "confirm" not in t.input_schema.get("required", [])
 
 
 # ---------------------------------------------------------- export dispatch ---
@@ -255,11 +255,13 @@ def test_tool_catalog_surfaces_list_both_tools_and_drift_check_passes():
 
 def _call_tool_with(monkeypatch, name, body, label):
     import asyncio
+    from mcp.types import CallToolRequestParams
     monkeypatch.setattr(server, "_environment_label", lambda: label, raising=True)
     monkeypatch.setattr(server, "_dispatch", lambda n, a: body)
     monkeypatch.setattr(server, "_activity_record", lambda *a, **k: None)
     archive = base64.b64encode(_zip_bytes()).decode("ascii")
-    return asyncio.run(server.call_tool(name, {"catalog": "sales_copy", "archive_base64": archive}))
+    return asyncio.run(server.call_tool(None, CallToolRequestParams(
+        name=name, arguments={"catalog": "sales_copy", "archive_base64": archive})))
 
 
 def test_restore_catalog_response_echoes_environment(monkeypatch):
@@ -267,7 +269,7 @@ def test_restore_catalog_response_echoes_environment(monkeypatch):
                "sourceEnvironment": "dev", "targetEnvironment": "qa",
                "warnings": ["archive was exported from `dev`; this install is `qa`"]}
     res = _call_tool_with(monkeypatch, "restore_catalog", json.dumps(payload), "qa")
-    assert res.isError is False
+    assert res.is_error is False
     assert json.loads(res.content[0].text) == dict(payload, environment="qa")
     # Unset label: response unchanged.
     body = json.dumps(payload)
@@ -281,7 +283,7 @@ def test_restore_catalog_response_echoes_environment(monkeypatch):
 def test_restore_catalog_409_body_is_not_decorated(monkeypatch):
     body = json.dumps({"error": "catalog sales_copy already exists", "clashes": ["t"]})
     res = _call_tool_with(monkeypatch, "restore_catalog", body, "qa")
-    assert res.isError is True
+    assert res.is_error is True
     assert res.content[0].text == body
 
 
@@ -305,7 +307,7 @@ def test_restore_catalog_schema_lists_regenerate_scripts():
     props = _props(t)
     assert "regenerate_scripts" in props
     assert props["regenerate_scripts"]["type"] == "boolean"
-    assert "regenerate_scripts" not in t.inputSchema.get("required", [])
+    assert "regenerate_scripts" not in t.input_schema.get("required", [])
     assert "regenerate_scripts" in t.description, "the description says when archived AI scripts are regenerated"
 
 
