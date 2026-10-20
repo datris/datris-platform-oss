@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp[cli]>=2.3,<3",
+    "jsonschema",
     "requests",
     "urllib3>=2.8.0",
     "click",

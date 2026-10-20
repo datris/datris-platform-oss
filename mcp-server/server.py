@@ -37,6 +37,7 @@ from collections import deque
 from typing import Any
 
 import anyio
+import jsonschema
 import requests
 from dotenv import load_dotenv
 from mcp.server import Server
@@ -3786,6 +3787,15 @@ def _is_error_payload(text):
     return len(obj) == 1 or "errorKind" in obj or "clashes" in obj
 
 
+def _tool_input_schema(name: str) -> dict | None:
+    """The input schema call_tool validates arguments against (None for an
+    unknown tool, which keeps _dispatch's own "Unknown tool" path)."""
+    for t in _all_tools():
+        if t.name == name:
+            return t.input_schema
+    return None
+
+
 async def call_tool(ctx: ServerRequestContext | None, params: CallToolRequestParams) -> CallToolResult:
     # Exceptions are caught below and returned as isError results: SDK 2.x
     # would otherwise turn them into JSON-RPC errors.
@@ -3848,6 +3858,28 @@ async def call_tool(ctx: ServerRequestContext | None, params: CallToolRequestPar
 # refresh reaches new sessions.
 # version= makes initialize report serverInfo.version as the datris-mcp-server
 # version; without it the SDK falls back to the `mcp` package version.
+async def validated_call_tool(ctx: ServerRequestContext | None, params: CallToolRequestParams) -> CallToolResult:
+    """The registered tools/call handler. SDK 1.x validated arguments against
+    the tool's inputSchema before call_tool ran; 2.x does not, so this does it
+    first, with the same "Input validation error: " text agents saw on 1.x.
+    The full arguments are validated (`reason` is declared in the mutating
+    tools' schemas). A refused call is recorded in the activity feed as an
+    error and never reaches the Datris API."""
+    started = time.time()
+    arguments = params.arguments or {}
+    try:
+        schema = _tool_input_schema(params.name)
+        if schema is not None:
+            jsonschema.validate(instance=arguments, schema=schema)
+    except jsonschema.ValidationError as e:
+        error_msg = f"Input validation error: {e.message}"
+        latency_ms = int((time.time() - started) * 1000)
+        _activity_record(_session_id.get() or "stdio", params.name, "error", latency_ms, _session_api_key.get(),
+                         arguments, error_msg, error_msg, ctx=ctx)
+        return CallToolResult(content=[TextContent(type="text", text=error_msg)], isError=True)
+    return await call_tool(ctx, params)
+
+
 server = Server(
     "datris",
     version=_mcp_server_version(),
@@ -3855,7 +3887,7 @@ server = Server(
     on_list_resources=list_resources,
     on_read_resource=read_resource,
     on_list_tools=list_tools,
-    on_call_tool=call_tool,
+    on_call_tool=validated_call_tool,
 )
 
 
