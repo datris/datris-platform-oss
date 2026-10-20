@@ -54,3 +54,66 @@ def test_unknown_session_leaves_context_untouched():
         return server._session_api_key.get(), server._session_id.get()
 
     assert contextvars.Context().run(in_post) == ("", "")
+
+
+def test_sse_close_drops_session_vars(monkeypatch):
+    """The /sse branch must forget the session's vars when the connection
+    closes, or every SSE connection leaks an entry for the process lifetime."""
+    import contextlib
+    import mcp.server.sse as sse_mod
+    import mcp.server.streamable_http_manager as shm_mod
+    import uvicorn
+
+    seen_during = {}
+
+    class FakeSse:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        @contextlib.asynccontextmanager
+        async def connect_sse(self, scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body",
+                        "body": f"event: endpoint\r\ndata: /messages?session_id={SID}\r\n\r\n".encode()})
+            yield ("r", "w")
+
+    class FakeMgr:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    apps = []
+
+    class FakeConfig:
+        def __init__(self, app, **kwargs):
+            apps.append(app)
+
+    async def no_serve(self, *a, **k):
+        return None
+
+    async def fake_run(*a, **k):
+        seen_during["vars"] = server._sse_session_vars.get(SID)
+
+    monkeypatch.setattr(sse_mod, "SseServerTransport", FakeSse)
+    monkeypatch.setattr(shm_mod, "StreamableHTTPSessionManager", FakeMgr)
+    monkeypatch.setattr(uvicorn, "Config", FakeConfig)
+    monkeypatch.setattr(uvicorn, "Server", lambda config: type("S", (), {"serve": no_serve})())
+    monkeypatch.setattr(server, "_render_instructions", lambda: "instructions")
+    monkeypatch.setattr(server.server, "run", fake_run)
+
+    asyncio.run(server.run_sse(0))
+    app = apps[0]
+
+    async def send(message):
+        pass
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    scope = {"type": "http", "path": "/sse", "method": "GET", "headers": [(b"x-api-key", b"KEYCLOSE")],
+             "query_string": b""}
+    try:
+        asyncio.run(app(scope, receive, send))
+        assert seen_during["vars"] is not None and seen_during["vars"][0] == "KEYCLOSE", seen_during
+        assert SID not in server._sse_session_vars
+    finally:
+        server._sse_session_vars.pop(SID, None)

@@ -1398,7 +1398,6 @@ Each key/value you pass becomes an env var the script reads:
 
 ```python
 import os
-import re
 start = os.environ.get("DATRIS_TAP_PARAM_start_date", "2026-01-01")  # sensible default for cron
 end   = os.environ.get("DATRIS_TAP_PARAM_end_date")
 ids_json = os.environ.get("DATRIS_TAP_PARAM_ids", "[]")
