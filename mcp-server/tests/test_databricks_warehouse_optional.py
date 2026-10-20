@@ -107,7 +107,7 @@ def test_create_pipeline_description_says_warehouse_optional_and_do_not_ask():
     desc = _tool("create_pipeline").description
     assert "unless the Databricks secret has a `warehouse` field" in desc
     assert "do NOT ask the human for it" in desc
-    wh = _tool("create_pipeline").inputSchema["properties"]["warehouse"]["description"]
+    wh = _tool("create_pipeline").input_schema["properties"]["warehouse"]["description"]
     assert "optional when the Databricks secret has a `warehouse` field" in wh
 
 

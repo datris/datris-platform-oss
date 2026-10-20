@@ -68,7 +68,7 @@ def _full(path, kwargs):
 @pytest.mark.parametrize("name", TOOLS)
 def test_tool_in_base_tools_with_kind_enum(name):
     t = _tool(name)
-    props = t.inputSchema["properties"]
+    props = t.input_schema["properties"]
     assert props["name"]["type"] == "string"
     assert props["kind"]["type"] == "string"
     assert props["kind"]["enum"] == ["dataQuality", "transformation"]
@@ -85,8 +85,8 @@ def test_tool_in_base_tools_with_kind_enum(name):
 )
 def test_required_arguments(name, required):
     t = _tool(name)
-    assert set(t.inputSchema.get("required", [])) == required
-    props = t.inputSchema["properties"]
+    assert set(t.input_schema.get("required", [])) == required
+    props = t.input_schema["properties"]
     for arg in required - {"name", "kind"}:
         assert props[arg]["type"] == "integer", (arg, props[arg])
 
@@ -136,7 +136,7 @@ def test_restore_script_version_is_mutating_and_echoes_the_environment():
         assert read not in server._MUTATING_TOOLS, read
         assert read not in server._ECHO_ENVIRONMENT_TOOLS, read
     decorated = {t.name: t for t in server._all_tools()}["restore_script_version"]
-    assert "reason" in decorated.inputSchema["properties"]
+    assert "reason" in decorated.input_schema["properties"]
     assert "pending_approval" in decorated.description
 
 
@@ -162,7 +162,7 @@ _PROPER_NOUNS = re.compile(
 @pytest.mark.parametrize("name", TOOLS)
 def test_descriptions_name_no_proper_noun_source(name):
     t = _tool(name)
-    texts = [t.description] + [p.get("description", "") for p in t.inputSchema.get("properties", {}).values()]
+    texts = [t.description] + [p.get("description", "") for p in t.input_schema.get("properties", {}).values()]
     hits = [h for txt in texts for h in _PROPER_NOUNS.findall(txt)]
     assert hits == [], hits
 

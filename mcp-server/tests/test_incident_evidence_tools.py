@@ -54,10 +54,10 @@ def captured(monkeypatch):
 
 def test_get_incident_evidence_in_base_tools_with_incident_id_required():
     t = _tool("get_incident_evidence")
-    props = t.inputSchema["properties"]
+    props = t.input_schema["properties"]
     assert "incident_id" in props
     assert props["incident_id"]["type"] == "string"
-    assert t.inputSchema.get("required") == ["incident_id"]
+    assert t.input_schema.get("required") == ["incident_id"]
 
 
 def test_get_incident_evidence_dispatches_get_evidence(captured):
@@ -120,7 +120,7 @@ _PROPER_NOUNS = re.compile(
 @pytest.mark.parametrize("name", ["get_incident_evidence", "get_incident", "list_incidents"])
 def test_incident_tool_descriptions_name_no_proper_noun_source(name):
     t = _tool(name)
-    texts = [t.description] + [p.get("description", "") for p in t.inputSchema.get("properties", {}).values()]
+    texts = [t.description] + [p.get("description", "") for p in t.input_schema.get("properties", {}).values()]
     hits = [h for txt in texts for h in _PROPER_NOUNS.findall(txt)]
     assert hits == [], hits
 

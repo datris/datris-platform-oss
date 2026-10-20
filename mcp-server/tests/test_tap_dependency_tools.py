@@ -35,7 +35,7 @@ def _tool(name):
 
 
 def _props(tool):
-    return tool.inputSchema["properties"]
+    return tool.input_schema["properties"]
 
 
 def _path_only(path):
@@ -72,7 +72,7 @@ def test_enable_order_tool_present_and_read_only():
 def test_enable_order_schema_requires_catalog():
     t = _tool("catalog_enable_order")
     assert "catalog" in _props(t)
-    assert "catalog" in t.inputSchema.get("required", [])
+    assert "catalog" in t.input_schema.get("required", [])
 
 
 def test_enable_order_dispatches_get(capture):
@@ -99,7 +99,7 @@ def test_depends_on_is_an_optional_string_list(tool):
     assert "depends_on" in props, f"{tool} has no depends_on"
     assert props["depends_on"].get("type") == "array"
     assert props["depends_on"].get("items", {}).get("type") == "string"
-    assert "depends_on" not in t.inputSchema.get("required", [])
+    assert "depends_on" not in t.input_schema.get("required", [])
 
 
 def test_update_tap_sends_depends_on_as_dependsOn(capture):
@@ -192,7 +192,7 @@ def test_enable_catalog_ordered_present_mutating_with_reason():
 def test_enable_catalog_ordered_schema_requires_only_catalog():
     t = _tool("enable_catalog_ordered")
     assert "catalog" in _props(t)
-    assert t.inputSchema.get("required", []) == ["catalog"]
+    assert t.input_schema.get("required", []) == ["catalog"]
 
 
 def test_enable_catalog_ordered_description_points_to_progress_and_forbids_run_tap():

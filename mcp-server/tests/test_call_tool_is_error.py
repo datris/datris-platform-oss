@@ -7,12 +7,13 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import server  # noqa: E402
+from mcp.types import CallToolRequestParams  # noqa: E402
 
 
 def _run(dispatch, monkeypatch):
     monkeypatch.setattr(server, "_dispatch", dispatch)
     monkeypatch.setattr(server, "_activity_record", lambda *a, **k: None)
-    return asyncio.run(server.call_tool("list_pipelines", {}))
+    return asyncio.run(server.call_tool(None, CallToolRequestParams(name="list_pipelines", arguments={})))
 
 
 def test_is_error_payload_rules():
@@ -28,13 +29,13 @@ def test_is_error_payload_rules():
 
 def test_rest_error_body_sets_is_error(monkeypatch):
     res = _run(lambda name, args: '{"error":"API key is revoked or invalid"}', monkeypatch)
-    assert res.isError is True
+    assert res.is_error is True
     assert json.loads(res.content[0].text)["error"] == "API key is revoked or invalid"
 
 
 def test_data_result_is_not_error(monkeypatch):
     res = _run(lambda name, args: '{"count":2,"pipelines":[{"name":"a"},{"name":"b"}]}', monkeypatch)
-    assert res.isError is False
+    assert res.is_error is False
     assert json.loads(res.content[0].text)["count"] == 2
 
 
@@ -42,5 +43,5 @@ def test_exception_sets_is_error(monkeypatch):
     def boom(name, args):
         raise RuntimeError("connection refused")
     res = _run(boom, monkeypatch)
-    assert res.isError is True
+    assert res.is_error is True
     assert json.loads(res.content[0].text) == {"error": "connection refused"}

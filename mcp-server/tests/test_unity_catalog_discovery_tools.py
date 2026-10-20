@@ -37,7 +37,7 @@ def _tool(name):
 
 
 def _props(tool):
-    return tool.inputSchema["properties"]
+    return tool.input_schema["properties"]
 
 
 def _read(path):
@@ -72,7 +72,7 @@ def test_browse_unity_catalog_schema_requires_secret_and_offers_optional_filters
     for arg in ("secret", "warehouse", "catalog", "schema", "table"):
         assert arg in props, sorted(props)
         assert props[arg]["type"] == "string", (arg, props[arg])
-    assert t.inputSchema.get("required", []) == ["secret"], t.inputSchema.get("required")
+    assert t.input_schema.get("required", []) == ["secret"], t.input_schema.get("required")
 
 
 def test_browse_unity_catalog_requires_secret_and_forwards_warehouse_catalog_schema_table_as_get_params(captured):
@@ -140,7 +140,7 @@ def test_find_data_schema_has_optional_boolean_include_unity_catalog():
     props = _props(t)
     assert "include_unity_catalog" in props, sorted(props)
     assert props["include_unity_catalog"]["type"] == "boolean"
-    assert "include_unity_catalog" not in t.inputSchema.get("required", [])
+    assert "include_unity_catalog" not in t.input_schema.get("required", [])
 
 
 def test_find_data_include_unity_catalog_true_sends_include_unity_catalog_true(captured):

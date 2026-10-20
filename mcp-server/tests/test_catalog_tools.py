@@ -30,7 +30,7 @@ def _tool(name):
 
 
 def _props(tool):
-    return tool.inputSchema["properties"]
+    return tool.input_schema["properties"]
 
 
 class _Captured:
@@ -84,7 +84,7 @@ def test_rename_catalog_schema():
     t = _tool("rename_catalog")
     props = _props(t)
     assert "catalog" in props and "new_name" in props
-    assert set(t.inputSchema.get("required", [])) >= {"catalog", "new_name"}
+    assert set(t.input_schema.get("required", [])) >= {"catalog", "new_name"}
 
 
 def test_delete_catalog_schema_has_no_mode_argument():
@@ -93,7 +93,7 @@ def test_delete_catalog_schema_has_no_mode_argument():
     assert "catalog" in props
     assert "mode" not in props, "cascade is UI-only; the MCP tool must not expose a mode"
     assert "confirm" not in props
-    assert "catalog" in t.inputSchema.get("required", [])
+    assert "catalog" in t.input_schema.get("required", [])
 
 
 _PROPER_NOUNS = re.compile(

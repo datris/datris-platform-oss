@@ -97,7 +97,7 @@ def _fields(posted):
 
 def test_create_pipeline_schema_has_optional_protect_object():
     tool = _tool("create_pipeline")
-    props = tool.inputSchema["properties"]
+    props = tool.input_schema["properties"]
     assert "protect" in props, sorted(props)
     arg = props["protect"]
     assert arg["type"] == "object", arg
@@ -106,7 +106,7 @@ def test_create_pipeline_schema_has_optional_protect_object():
     assert "method" in policy["properties"], policy
     assert policy.get("required") == ["method"], policy
     assert "OMIT BY DEFAULT" in arg["description"], arg["description"]
-    assert "protect" not in tool.inputSchema.get("required", [])
+    assert "protect" not in tool.input_schema.get("required", [])
 
 
 # ---------------------------------------------------------------- dispatch ---
@@ -247,7 +247,7 @@ def _posts(c):
 
 def test_suggest_tool_is_registered_with_pipeline_and_fields_args():
     tool = _tool("suggest_field_protection")
-    props = tool.inputSchema["properties"]
+    props = tool.input_schema["properties"]
     assert props["pipeline"]["type"] == "string", props
     assert props["fields"]["type"] == "array", props
 
@@ -298,7 +298,7 @@ def test_suggest_rendered_text_has_one_line_per_field_with_its_method(suggest_ca
 
 
 def _method_enum():
-    policy = _tool("create_pipeline").inputSchema["properties"]["protect"]["additionalProperties"]
+    policy = _tool("create_pipeline").input_schema["properties"]["protect"]["additionalProperties"]
     return policy["properties"]["method"]["enum"]
 
 
@@ -319,13 +319,13 @@ def test_encrypt_policy_is_merged_onto_the_schema_field(captured):
 def test_list_tools_has_no_reveal_tool(monkeypatch):
     import asyncio
     monkeypatch.setattr(server, "_allowed_tool_names", lambda: None)
-    tools = asyncio.run(server.list_tools())
+    tools = asyncio.run(server.list_tools(None, None)).tools
     assert tools, "list_tools returned nothing"
     names = [t.name for t in tools]
     assert not [n for n in names if "reveal" in n.lower()], names
     assert not [t.name for t in server._base_tools() if "reveal" in t.name.lower()]
     for t in tools:
-        props = (t.inputSchema or {}).get("properties", {})
+        props = (t.input_schema or {}).get("properties", {})
         assert "/api/v1/protect/reveal" not in (t.description or ""), t.name
         assert "reveal" not in {k.lower() for k in props}, t.name
 
@@ -396,10 +396,10 @@ def preset_captured(monkeypatch):
 
 def test_suggest_tool_has_optional_preset_enum():
     tool = _tool("suggest_field_protection")
-    props = tool.inputSchema["properties"]
+    props = tool.input_schema["properties"]
     assert "preset" in props, sorted(props)
     assert props["preset"].get("enum") == [PRESET], props["preset"]
-    assert "preset" not in tool.inputSchema.get("required", [])
+    assert "preset" not in tool.input_schema.get("required", [])
 
 
 def test_suggest_with_preset_posts_to_the_preset_endpoint_and_renders_classes_unclassified_and_review(preset_captured):
@@ -457,14 +457,14 @@ def test_suggest_without_preset_still_posts_to_suggest(preset_captured):
 
 def test_create_pipeline_schema_has_optional_protect_preset_and_exempt():
     tool = _tool("create_pipeline")
-    props = tool.inputSchema["properties"]
+    props = tool.input_schema["properties"]
     assert "protect_preset" in props, sorted(props)
     assert props["protect_preset"].get("enum") == [PRESET], props["protect_preset"]
     assert "protect_exempt" in props, sorted(props)
     ex = props["protect_exempt"]
     assert ex["type"] == "array", ex
     assert ex["items"]["type"] == "string", ex
-    required = tool.inputSchema.get("required", [])
+    required = tool.input_schema.get("required", [])
     assert "protect_preset" not in required and "protect_exempt" not in required, required
 
 
@@ -489,7 +489,7 @@ def test_create_pipeline_with_protect_preset_only_posts_the_preset(captured):
 
 def test_absent_preset_arguments_post_no_protection_block(captured):
     # The arguments exist on the tool but are optional ...
-    props = _tool("create_pipeline").inputSchema["properties"]
+    props = _tool("create_pipeline").input_schema["properties"]
     assert "protect_preset" in props and "protect_exempt" in props, sorted(props)
     # ... and leaving them out posts no protection block, with or without protect.
     posted = _create(captured)
@@ -523,7 +523,7 @@ def test_server_refusal_for_an_unprotected_identifier_passes_through(monkeypatch
 
 
 def test_protect_preserve_enum_includes_first3():
-    policy = _tool("create_pipeline").inputSchema["properties"]["protect"]["additionalProperties"]
+    policy = _tool("create_pipeline").input_schema["properties"]["protect"]["additionalProperties"]
     enum = policy["properties"]["preserve"]["enum"]
     assert "first3" in enum, enum
     for p in ("last4", "domain", "year"):

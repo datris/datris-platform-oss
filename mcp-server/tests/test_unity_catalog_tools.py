@@ -27,7 +27,7 @@ def _tool(name):
 
 
 def _props(tool):
-    return tool.inputSchema["properties"]
+    return tool.input_schema["properties"]
 
 
 class _Captured:
@@ -93,7 +93,7 @@ def test_create_pipeline_schema_has_boolean_unity_catalog_arg_naming_databricks_
 
 
 def test_unity_catalog_is_optional():
-    required = _tool("create_pipeline").inputSchema.get("required", [])
+    required = _tool("create_pipeline").input_schema.get("required", [])
     assert "unity_catalog" not in required, required
 
 
@@ -145,7 +145,7 @@ def test_create_pipeline_schema_has_optional_unity_catalog_register_string_args(
     for name in ("unity_catalog_secret", "unity_catalog_catalog", "unity_catalog_schema"):
         assert name in props, sorted(props)
         assert props[name]["type"] == "string", props[name]
-        assert name not in tool.inputSchema.get("required", [])
+        assert name not in tool.input_schema.get("required", [])
 
 
 def test_unity_catalog_description_is_no_longer_databricks_only():
@@ -205,7 +205,7 @@ def test_create_pipeline_schema_lists_optional_unity_catalog_mode():
     assert arg["type"] == "string", arg
     # Unity Catalog 7 adds managed (the mode for Databricks Unity Catalog).
     assert arg.get("enum", []) == ["register", "rest", "managed"], arg
-    assert "unity_catalog_mode" not in tool.inputSchema.get("required", [])
+    assert "unity_catalog_mode" not in tool.input_schema.get("required", [])
 
 
 def test_objectstore_unity_catalog_mode_rest_posts_catalog_mode(captured):
