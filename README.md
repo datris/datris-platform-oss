@@ -3,7 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/datris-mcp-server)](https://pypi.org/project/datris-mcp-server/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.datris%2Fdatris-blue)](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris)
 [![Docker Hub](https://img.shields.io/docker/v/datrisai/datris-server?label=Docker%20Hub)](https://hub.docker.com/u/datrisai)
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 [datris.ai](https://datris.ai) · [Documentation](https://docs.datris.ai) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
 
@@ -32,7 +32,7 @@ Your agents already acquire, validate, and load data. Without a control plane, t
 - **Every run recorded** — job state and row counts for every run, provenance on its rows with stamping on; every generated script versioned in git
 - **Durable state** — pipelines and sync bookmarks live in the platform, not the chat, so regenerating a script never loses its place
 - **The operating loop** — Acquire (AI-generated taps) → Validate (plain-English rules) → Land (multi-destination pipelines) → Observe (provenance and job state) → Explain & Repair (AI error explanation), with the same audit trail every time once the audit log is on (see [strict mode](https://docs.datris.ai/audit-log#strict-mode))
-- **Self-host anywhere** — on-prem, any cloud, or your laptop; 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault), AGPL-3.0, no managed service
+- **Self-host anywhere** — on-prem, any cloud, or your laptop; 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault), Apache-2.0, no managed service
 
 ## Quick Start
 
@@ -195,4 +195,4 @@ Full documentation at [docs.datris.ai](https://docs.datris.ai) or locally at `do
 
 ## License
 
-[AGPL-3.0](LICENSE)
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.

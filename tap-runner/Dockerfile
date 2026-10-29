@@ -2,6 +2,7 @@
 # Holds NO platform secrets: no JVM, no Vault, no /datris/.env, no /config, no Docker socket.
 # Pinned by digest (multi-arch manifest list); Dependabot docker sends digest-bump PRs.
 FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 # The Debian packages in the slim image lag behind bookworm-security fixes
 # (libpcre2 CVEs flagged by the weekly Trivy image scan).

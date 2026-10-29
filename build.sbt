@@ -2,6 +2,8 @@ name := "datris-server"
 ThisBuild / organization := "ai.datris"
 ThisBuild / scalaVersion := "2.12.21"
 ThisBuild / version := "1.53.0"
+ThisBuild / licenses := Seq("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0"))
+ThisBuild / homepage := Some(url("https://datris.ai"))
 
 // Match the Docker runtime (eclipse-temurin:17-jre). Without this, javac uses the
 // build host's JDK (e.g. 25), producing class files the runtime can't load.

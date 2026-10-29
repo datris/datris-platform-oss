@@ -12,7 +12,7 @@ Datris ships small releases often — typically several per month — and every 
 | **Security fixes** | Only the latest minor version receives security updates. Upgrade to the current release to pick them up. |
 | **Migration steps** | When a release needs one — a renamed service, a moved secret, a changed volume — it is in the changelog entry for that release. Read the entries between your version and the target before upgrading. |
 | **Data compatibility** | Data lives in Docker volumes and is preserved across upgrades. Releases that change a Vault secret layout keep reading the old layout until you clean it up (see [Stale secrets](#stale-secrets-after-an-upgrade)). |
-| **Long-term support** | An LTS branch with a stated patch window, and help moving between releases on your schedule, are part of a [commercial license](/production/licensing-support). |
+| **Long-term support** | An LTS branch with a stated patch window, and help moving between releases on your schedule, are part of a [commercial support subscription](/production/licensing-support). |
 
 Run the pre-upgrade self-check before every upgrade — it catches the things that turn an upgrade into an outage and prints the fix for each.
 

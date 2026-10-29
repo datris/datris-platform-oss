@@ -1,5 +1,6 @@
 # Pinned by digest (multi-arch manifest list); Dependabot docker sends digest-bump PRs.
 FROM eclipse-temurin:17-jre@sha256:13cc28a6cc72a38ce1f00c906be3580c1a3e604b8984d694f369a96742abc93b
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends python3 python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
 # pebble is a loose (non-dpkg) service-manager binary shipped in the Ubuntu base;
 # nothing here uses it and its bundled Go stdlib trips Trivy, so drop it.
