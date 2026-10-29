@@ -60,7 +60,7 @@ A JSON Schema file stored in MinIO at `{environment}-config/validation-schema/pr
 
 1. The pipeline loads the schema file from the configured path in the environment's config bucket.
 2. The whole file is validated as a single document against the schema. A JSON file containing an array of records therefore needs a schema with `"type": "array"` and `items` describing each record; the example above validates a file that holds a single object.
-3. If any record fails validation, the file is rejected and processing stops.
+3. If the document fails validation, the file is rejected and processing stops — one invalid record in an array therefore rejects the whole file.
 4. Validation errors are logged with details about which fields failed and why.
 
 ## When to Use

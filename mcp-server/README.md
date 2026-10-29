@@ -79,15 +79,15 @@ Add to `.mcp.json` in your project root:
 
 ## Authentication
 
-There is no server-side API key. Each connecting agent authenticates per session by sending an `x-api-key` header; mcp-server forwards that key as-is to the Datris REST API on every tool call. The Datris REST API validates against `oss/api-keys` Vault secret (single-tenant) or `api-key-mappings` (multi-tenant). Manage keys in the Configuration UI's Secrets tab.
+There is no server-side API key. Each connecting agent authenticates per session by sending an `x-api-key` header; mcp-server forwards that key as-is to the Datris REST API on every tool call. The Datris REST API validates against `oss/api-keys` Vault secret (single-tenant) or `api-key-mappings` (multi-tenant). Issue and manage keys from **Configuration → API-Keys** in the UI.
 
 ## Tools
 
-30+ tools across these categories:
+88 tools across these categories:
 
 - **Pipeline Management** — create, list, get, delete pipelines; upload files; monitor jobs
 - **Vector Search** — semantic search across Qdrant, Weaviate, Milvus, Chroma, pgvector
-- **Database Query** — read-only SQL queries (PostgreSQL) and MongoDB queries
+- **Database Query** — read-only SQL queries (PostgreSQL, Snowflake, Databricks), object store queries (S3/MinIO files via DuckDB), and MongoDB queries
 - **Metadata Discovery** — explore databases, schemas, tables, columns, collections
 - **AI** — RAG-powered question answering
 - **System** — health checks, version info

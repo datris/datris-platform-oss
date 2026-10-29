@@ -110,6 +110,8 @@ AZURE_OPENAI_MODEL=gpt-5-2          # your chat deployment's name
 | `oss/codegen` | azure | `{AZURE_OPENAI_ENDPOINT}/openai/v1/chat/completions` | `CODEGEN_MODEL` or same deployment |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
+`oss/embedding` is seeded as `tei` only when `.env` has no `OPENAI_API_KEY` and no `EMBEDDING_PROVIDER`; with an OpenAI key present, `vault-init.sh` seeds the embedding slot against OpenAI instead.
+
 Embeddings default to the bundled service; set `EMBEDDING_PROVIDER=azure` to use an embedding deployment on your resource instead (see [mix-and-match](#mix-and-match-anthropic-chat--openai-embeddings)).
 
 <Tip>
@@ -169,6 +171,8 @@ AWS_SECRET_ACCESS_KEY=...
 | `oss/codegen` | bedrock | *(blank — derived from region)* | `CODEGEN_MODEL` or `anthropic.claude-opus-5-5` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
+`oss/embedding` is seeded as `tei` only when `.env` has no `OPENAI_API_KEY` and no `EMBEDDING_PROVIDER`; with an OpenAI key present, `vault-init.sh` seeds the embedding slot against OpenAI instead.
+
 Notes:
 
 - **Model ids** are Bedrock's `anthropic.`-prefixed forms (e.g. `anthropic.claude-opus-5-5`). Models that aren't on-demand invokable in your region are addressed by their **cross-region inference profile** id (e.g. `us.anthropic.claude-...`). The Configuration UI discovers the invokable list live from your account when its IAM policy allows it.
@@ -195,6 +199,8 @@ XAI_API_KEY=...
 | `oss/ai-primary` | grok | `https://api.x.ai/v1/chat/completions` | `GROK_MODEL` or `grok-4.7` |
 | `oss/codegen` | grok | `https://api.x.ai/v1/chat/completions` | `CODEGEN_MODEL` or `grok-4.7` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
+
+`oss/embedding` is seeded as `tei` only when `.env` has no `OPENAI_API_KEY` and no `EMBEDDING_PROVIDER`; with an OpenAI key present, `vault-init.sh` seeds the embedding slot against OpenAI instead.
 
 Notes:
 
@@ -240,7 +246,7 @@ ANTHROPIC_MODEL=claude-opus-5-5
 OPENAI_MODEL=gpt-5.6-sol
 GROK_MODEL=grok-4.7
 CODEGEN_MODEL=claude-opus-5-5   # or gpt-5.6-sol if using OpenAI, grok-4.7 for Grok
-ANTHROPIC_OVERLOAD_FALLBACK_MODEL=claude-sonnet-5   # used for the current request when an Anthropic Opus call stays overloaded after retries
+ANTHROPIC_OVERLOAD_FALLBACK_MODEL=claude-sonnet-5   # used by the Assistant and the other chat agents for the current request when an Anthropic Opus, Fable or Mythos call stays overloaded after retries
 ```
 
 ### Mix-and-match: Anthropic chat + OpenAI embeddings
@@ -263,9 +269,9 @@ Valid values for `EMBEDDING_PROVIDER`:
 | `tei` | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` (1024-dim) | bundled TEI sidecar running |
 | `ollama` | `http://ollama:11434/v1/embeddings` | `bge-m3` (1024-dim) | optional Ollama service enabled, model pulled |
 
-`EMBEDDING_MODEL` overrides the default model for the chosen provider (e.g. `text-embedding-3-large` for higher quality at 3072-dim). `EMBEDDING_ENDPOINT` overrides the URL for the `tei` or `ollama` providers — useful when running TEI or Ollama on a separate host and pointing at it from inside Docker.
+`EMBEDDING_MODEL` overrides the default model for the chosen provider (e.g. `text-embedding-3-large` for higher quality at 3072-dim). `EMBEDDING_ENDPOINT` overrides the URL for the `tei`, `ollama` or `azure` providers — useful when running TEI or Ollama on a separate host and pointing at it from inside Docker.
 
-When `EMBEDDING_PROVIDER` is unset, embedding follows `AI_PROVIDER`: `anthropic` seeds the bundled TEI; `openai` seeds OpenAI embeddings.
+When `EMBEDDING_PROVIDER` is unset, the embedding seed follows the keys in `.env`, not `AI_PROVIDER`: an `OPENAI_API_KEY` seeds OpenAI embeddings (whichever provider handles chat); no OpenAI key seeds the bundled TEI.
 
 <Warning>
 **Switching providers changes vector dimensions.** `bge-m3` is 1024-dim, `text-embedding-3-small` is 1536-dim, `text-embedding-3-large` is 3072-dim. Existing pgvector / Qdrant / Weaviate / Milvus / Chroma collections built on the previous embedder will fail-fast on the next run with a dimension-mismatch message — drop the destination table or collection and re-ingest.

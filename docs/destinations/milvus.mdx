@@ -43,7 +43,7 @@ Ingest unstructured documents into [Milvus](https://milvus.io), a high-performan
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored as dynamic fields on every chunk. |
 | `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
-| `milvusSecretName` | string | (required) | Vault secret name for Milvus connection. |
+| `milvusSecretName` | string | _server default_ | Vault secret name for the Milvus connection. Only consulted when the server-level `secrets.milvusSecretName` is unset; with the default configuration (`oss/milvus`) the server-level secret is always used and this field is ignored. |
 
 ## Supported File Types
 

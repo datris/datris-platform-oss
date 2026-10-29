@@ -38,7 +38,7 @@ Issue a key dedicated to the CLI from the UI: **Configuration → API-Keys → I
 
 ## JSON Output
 
-Every command supports `--json` to return raw JSON instead of human-readable output. This is useful for scripting and programmatic use.
+Every command except `tap delete` supports `--json` to return raw JSON instead of human-readable output. This is useful for scripting and programmatic use.
 
 ```bash
 datris pipelines --json
@@ -340,7 +340,7 @@ $ datris tap run stock-prices
   Running tap 'stock-prices'...
   ✓ success — 33 records fetched
     → persisted to stock-prices
-    → watch: datris pipeline status --publisher 5b2f4a1d-8c7e-4f0a-9b3d-6e1c2a4f8b9e
+    → watch: datris status stock-prices
 ```
 
 Or if the run succeeded but records weren't persisted (missing target pipeline, test mode, script error, zero records), the CLI tells you exactly why:
@@ -378,6 +378,7 @@ datris tap test <name>
 
 | Option | Description |
 |---|---|
+| `--limit` | Max records to pull for the preview (default: 20; `0` = no cap, streams the whole source) |
 | `--json` | Return raw JSON |
 
 ---
@@ -491,8 +492,8 @@ datris version
 ```
 
 ```
-  Server: {'version': '1.50.0', ..., 'environmentLabel': 'qa', 'mcpServerVersion': '1.50.0'}
-  CLI: 1.50.0
+  Server: {'version': '1.53.0', ..., 'environmentLabel': 'qa', 'mcpServerVersion': '1.53.0'}
+  CLI: 1.53.0
   Environment: qa
 ```
 

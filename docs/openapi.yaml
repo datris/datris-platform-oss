@@ -5,7 +5,7 @@ info:
     REST API for the Datris AI Data Platform. Ingest, validate, transform, store, and retrieve data.
 
     For AI agent integration, use the [MCP Server](https://docs.datris.ai/mcp-server) instead.
-  version: 1.28.0
+  version: 1.53.0
   contact:
     name: Datris
     url: https://datris.ai
@@ -409,6 +409,12 @@ components:
           type: array
           items:
             type: string
+        sourceEnvironment:
+          type: string
+          description: The `DATRIS_ENV` label of the install the archive was exported from. Absent when the exporting install had no label. Informational only; a cross-environment restore is never refused, but it adds a warning.
+        targetEnvironment:
+          type: string
+          description: The `DATRIS_ENV` label of this install. Absent when unset.
         tapsDisabled:
           type: boolean
           description: Always true; restored taps are saved disabled.
@@ -904,9 +910,18 @@ components:
       properties:
         version:
           type: string
+        gitHeadCommit:
+          type: string
+          description: Git commit the running jar was built from
+        builtAtMillis:
+          type: string
+          description: Build time of the running jar, epoch milliseconds
         environment:
           type: string
           description: Environment name (e.g., oss for self-hosted, or tenant prefix for managed hosting)
+        environmentLabel:
+          type: string
+          description: Deployment label from DATRIS_ENV (e.g. dev, qa, prod); present only when set
         multiTenant:
           type: string
           description: Whether the server is running in multi-tenant mode (true/false)
@@ -1034,6 +1049,13 @@ components:
             scriptMissing:
               type: boolean
               description: Present and `true` only when `scriptPath` is set but the storage read returned no object. Omitted otherwise.
+            state:
+              type: object
+              additionalProperties: true
+              description: The tap's current incremental-sync state (the opaque JSON blob the script last committed, see `GET /api/v1/tap/state`). Present only when the tap has committed state.
+            stateUpdatedAt:
+              type: string
+              description: Platform-format timestamp of the run or edit that committed `state`. Present only with `state`.
 
     TapConfig:
       type: object
@@ -1167,6 +1189,31 @@ components:
           type: string
         updatedAt:
           type: string
+        catalog:
+          type: string
+          description: Catalog the tap belongs to (null = Uncataloged)
+        createdByKeyLabel:
+          type: string
+          readOnly: true
+          description: Label of the API key that created the tap; stamped by the server and used for owner-scoped capability checks
+        version:
+          type: integer
+          readOnly: true
+          default: 1
+          description: Monotonic definition version; the live tap is always the latest. Snapshots are listed by `GET /api/v1/tap/versions`
+        lastRunTrigger:
+          type: string
+          enum: [cron, manual]
+          readOnly: true
+          description: What started the last real run. Only cron-triggered failures are retried automatically; a manual run stops the retry ladder. Absent until the first run after the field was introduced
+        lastRunRetrySafe:
+          type: boolean
+          readOnly: true
+          description: True only when the last failed run provably fed nothing downstream (the script errored before any pipeline submission), so an automatic re-run cannot double-write
+        retryCount:
+          type: integer
+          readOnly: true
+          description: Consecutive automatic retries since the last successful run; reset on success or no_records and capped by the cron retry cap
 
     TapRunLog:
       type: object
@@ -1202,6 +1249,18 @@ components:
         scriptCommitSha:
           type: string
           description: Repo-backed taps only — the commit the run's script was read at
+        publisherToken:
+          type: string
+          description: Publisher token the run submitted its data under (`mode=run` only); query `GET /api/v1/pipeline/status?publishertoken=` for the downstream jobs
+        aiSummary:
+          type: string
+          description: One-line headline of the AI fix suggestion, filled in after the automatic retry ladder is exhausted on a cron failure
+        aiDiagnosis:
+          type: string
+          description: The AI's full diagnosis of the failure (with `aiSummary`)
+        aiSuggestion:
+          type: string
+          description: The AI's suggested fix (with `aiSummary`)
 
     CodeRepoConfig:
       type: object
@@ -1244,7 +1303,8 @@ components:
           type: string
         status:
           type: string
-          enum: [success, failure]
+          enum: [success, failure, skipped]
+          description: '`skipped` when a duplicate `mode=run` request arrived inside the per-tap debounce window; nothing ran and `persistedReason` is `debounced`'
         mode:
           type: string
           enum: [run, test]
@@ -1258,7 +1318,7 @@ components:
           description: True iff records were fed into the target pipeline
         persistedReason:
           type: string
-          enum: [test_mode, run_error, no_records, no_target_pipeline]
+          enum: [test_mode, run_error, no_records, no_target_pipeline, debounced]
           description: Present when persisted is false; explains why records did not land in a pipeline
         publisherToken:
           type: string
@@ -1631,6 +1691,13 @@ paths:
         field, any method but `hmac` on a `keyFields` column, or a source that is not
         delimited or JSON). Like every other validator error, the rejection
         returns HTTP 400 with `{"error": "..."}` naming the field.
+      parameters:
+        - name: changeNote
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional note stored as `changeNote` on the version this save creates (see the versions endpoints).
       requestBody:
         required: true
         content:
@@ -1895,6 +1962,8 @@ paths:
           description: 'The catalog holds only its placeholder and the key''s scope does not cover it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
           description: No tap, pipeline or placeholder carries this catalog
+        '409':
+          description: 'An ordered enable of the catalog is running. Body: `{"error": ..., "jobId": ...}`'
         '500':
           description: Error
 
@@ -2037,6 +2106,11 @@ paths:
                   plan:
                     type: object
                     description: The enable order the job walks (`levels` and `cycles`, as in `GET .../enable-order`).
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+                    description: Present only when non-empty, for example when more taps than the per-call cap still need their dependencies analysed (`N taps not yet analysed for dependencies; call again to finish`).
         '400':
           description: Reserved or blank catalog name, or the catalog has no taps
         '403':
@@ -2201,7 +2275,7 @@ paths:
         publish status (`lineage` is `off`, `never`, `published` or `error`;
         lineage failures appear in `lastError` as lines prefixed `uc-lineage:`),
         and the Iceberg register status (`register` is `off`, `never`,
-        `registered`, `stale`, `error`, `rest` or `refused`; register warnings
+        `registered`, `stale`, `error`, `rest`, `managed` or `refused`; register warnings
         appear in `lastError` as lines prefixed `uc-register:`).
       parameters:
         - in: path
@@ -3027,6 +3101,8 @@ paths:
           description: Missing `pipeline`, `field` or `values`, more than 1000 values, unknown pipeline, or a field not protected with `encrypt`
         '403':
           description: The caller lacks `protect:reveal`
+        '500':
+          description: 'The field-protection key could not be read from the secret store (`{"error": "Field protection: could not read ..."}`), or another server error (`{"error": "Reveal failed"}`). No value is revealed'
   /api/v1/protect/keys/rotate:
     post:
       tags: [Pipelines]
@@ -3075,13 +3151,20 @@ paths:
                   description: Optional publisher identifier
       responses:
         '200':
-          description: Pipeline token (uncompressed files, single-file archives, and CSV batch archives) or the text "N file(s) submitted" when each extracted archive entry was submitted as its own job
+          description: >-
+            Pipeline token (uncompressed files, single-file archives, and CSV
+            batch archives) or the text "N file(s) submitted" when each
+            extracted archive entry was submitted as its own job. Note: the
+            response is sent with `Content-Type: application/json` but the body
+            is the bare, unquoted string (for example `pipeline-<uuid>`), not a
+            JSON document — read it as text rather than parsing it as JSON.
           content:
-            text/plain:
+            application/json:
               schema:
                 type: string
+                description: Bare token or message text, not JSON-encoded
         '500':
-          description: Error
+          description: 'Error, including an unregistered pipeline. Body: `{"error": ...}`'
 
   /api/v1/pipeline/generate:
     post:
@@ -3366,6 +3449,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
+        '400':
+          description: '`limit` is not an integer. Body: `{"error": ...}`'
         '500':
           description: Error
 
@@ -3406,6 +3491,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
+        '400':
+          description: '`limit` is not an integer. Body: `{"error": ...}`'
         '500':
           description: Error
 
@@ -4003,8 +4090,8 @@ paths:
               properties:
                 type:
                   type: string
-                  enum: [validation-schema]
-                  description: "Config file type: 'validation-schema' for JSON Schema"
+                  enum: [validation-schema, javascript]
+                  description: "Config file type: 'validation-schema' for JSON Schema. 'javascript' (deprecated — JavaScript row functions are retired) is still accepted and stored under the `javascript/` prefix."
                 file:
                   type: string
                   format: binary
@@ -4130,6 +4217,12 @@ paths:
       responses:
         '200':
           description: Success
+        '400':
+          description: 'Unsafe secret name (could address a different secret path), or an invalid change to the field-protection key secret. Body: `{"error": ...}`'
+        '403':
+          description: 'The key''s `secret:write` scope does not cover this secret (for example a `secret:write:_type=tap` key writing a non-tap secret), the field-protection key material needs `protect:admin`, or AI secrets are locked on a trial. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}` for scope denials'
+        '409':
+          description: 'The change would alter the field-protection key material and orphan existing ciphertexts. Body: `{"error": ...}`'
         '500':
           description: Error
     delete:
@@ -4144,6 +4237,12 @@ paths:
       responses:
         '200':
           description: Success
+        '400':
+          description: 'Unsafe secret name (could address a different secret path). Body: `{"error": ...}`'
+        '403':
+          description: 'The key''s `secret:write` scope does not cover this secret (`{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`), or AI secrets are locked on a trial'
+        '409':
+          description: 'The field-protection key secret cannot be deleted through the API (it would orphan every ciphertext). Body: `{"error": ...}`'
         '500':
           description: Error
 
@@ -4249,6 +4348,13 @@ paths:
         cron, is refused with 409 and nothing is persisted. Remedy: save without
         `cronExpression`, run `POST /api/v1/tap/run` with `mode=test`, then save again
         with the cron.
+      parameters:
+        - name: changeNote
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional note stored as `changeNote` on the version this save creates (see the versions endpoints).
       requestBody:
         required: true
         content:
@@ -4328,7 +4434,24 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/TapRunLog'
+                  allOf:
+                    - $ref: '#/components/schemas/TapRunLog'
+                    - type: object
+                      properties:
+                        pipelineRollup:
+                          type: object
+                          nullable: true
+                          description: Downstream pipeline rollup for the run (`allDone`, `status`, `jobs[]`, the same shape as `rollup` in `GET /api/v1/pipeline/status?withrollup=true`). Null for test runs, runs without a publisher token, runs with no pipeline jobs, or when the rollup could not be loaded. Not included by `GET /api/v1/tap/logs/all`.
+                          properties:
+                            allDone:
+                              type: boolean
+                            status:
+                              type: string
+                              enum: [success, warning, error, processing]
+                            jobs:
+                              type: array
+                              items:
+                                type: object
 
   /api/v1/tap/logs/all:
     get:
@@ -4401,12 +4524,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [description, tapName]
+              required: [description]
               properties:
                 description:
                   type: string
                 tapName:
                   type: string
+                  description: Defaults to `tap-<epoch millis>` when omitted
                 oldScriptPath:
                   type: string
                   description: Path of a previous script to delete after the new one is written
@@ -4434,6 +4558,24 @@ paths:
                       type: string
                   scriptPath:
                     type: string
+                  injectedPrompts:
+                    type: array
+                    items:
+                      type: string
+                    description: Keys of the tap prompt fragments (`GET /api/v1/tap-prompts`) whose triggers matched the description and were injected into the system prompt
+                  provider:
+                    type: string
+                    description: AI provider that generated the script
+                  model:
+                    type: string
+                    description: Model that generated the script
+                  error:
+                    type: string
+                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+        '400':
+          description: 'The named `secretName` may not be used by a tap (a server-managed or unsafe secret name, or a secret not tagged `_type=tap` while tap-secret scoping is enforced). Body: `{"error": ...}`'
+        '500':
+          description: Error (including a missing description)
 
   /api/v1/tap/generate/status:
     get:
@@ -4483,7 +4625,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [tapName, script]
+              required: [script, diagnosis]
               properties:
                 tapName:
                   type: string
@@ -4499,7 +4641,25 @@ paths:
                   type: string
       responses:
         '200':
-          description: Fixed script (same shape as /tap/generate)
+          description: Fixed script
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  script:
+                    type: string
+                  packages:
+                    type: array
+                    items:
+                      type: string
+                  scriptPath:
+                    type: string
+                  error:
+                    type: string
+                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+        '500':
+          description: Error
 
   /api/v1/tap/script:
     post:
@@ -4526,7 +4686,7 @@ paths:
                   description: Python script body to store
                 oldScriptPath:
                   type: string
-                  description: Path of a previous script to delete after the new one is written
+                  description: Ignored. The previous object of an existing tap is replaced from the tap's stored script reference.
                 storage:
                   type: string
                   enum: [minio, github]
@@ -4558,7 +4718,7 @@ paths:
                     type: string
                     nullable: true
         '409':
-          description: The script changed in the repository since `baseCommitSha` — pull the latest, reapply edits, and retry
+          description: The script changed in the repository since `baseCommitSha` (pull the latest, reapply edits, and retry), or the tap has a `cronExpression` and the new script has not passed a `mode=test` run (test-before-cron); nothing is stored
         '500':
           description: Error (including missing tapName or script)
 
@@ -4770,6 +4930,9 @@ paths:
                   rewritten:
                     type: boolean
                     description: True when the AI produced a modified script
+                  error:
+                    type: string
+                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
         '500':
           description: Error (including missing script)
 
@@ -4825,6 +4988,9 @@ paths:
                     type: array
                     items:
                       type: string
+                  error:
+                    type: string
+                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
         '500':
           description: Error (including missing script)
 
@@ -5265,6 +5431,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TapConfig'
+        '400':
+          description: 'The snapshot''s `cronExpression` is invalid, or its `secretName` may not be used by a tap (server-managed or unsafe name, or not tagged `_type=tap` while tap-secret scoping is enforced). Body: `{"error": ...}`'
         '404':
           description: No such version for this tap
         '409':
@@ -5820,6 +5988,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PendingAction'
+        '403':
+          description: 'Agent-initiated request. Body: `{"error": "agents may not decide approvals"}`'
+        '404':
+          description: 'No approval with this id (`{"error": "no approval <id>"}`), or agent policy is disabled (`{"error": "agent policy is disabled", "enabled": false}`)'
         '409':
           description: Stale (resource version moved) or already decided
         '410':
@@ -5853,6 +6025,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PendingAction'
+        '403':
+          description: 'Agent-initiated request. Body: `{"error": "agents may not decide approvals"}`'
+        '404':
+          description: 'No approval with this id (`{"error": "no approval <id>"}`), or agent policy is disabled (`{"error": "agent policy is disabled", "enabled": false}`)'
         '409':
           description: No longer pending
   /api/v1/incidents:
@@ -5945,6 +6121,10 @@ paths:
       responses:
         '200':
           description: The abandoned incident
+        '403':
+          description: 'Agent-initiated request. Body: `{"error": "agents may not abandon incidents"}`'
+        '404':
+          description: 'No incident with this id (`{"error": "no incident <id>"}`), or the recovery agent is off (`{"error": "the recovery agent is disabled", "enabled": false}`)'
         '409':
           description: Already closed
   /api/v1/incidents/{id}/proceed:
@@ -6013,6 +6193,9 @@ paths:
                       properties:
                         label:
                           type: string
+                        keyId:
+                          type: string
+                          description: Stable short identifier (`k_` + 12 hex chars) that audit-log entries reference. Not a secret. Absent on keys issued before identifiers existed
                         capabilities:
                           type: array
                           items:
@@ -6061,6 +6244,9 @@ paths:
                 properties:
                   label:
                     type: string
+                  keyId:
+                    type: string
+                    description: Stable short identifier (`k_` + 12 hex chars) that audit-log entries reference. Not a secret
                   value:
                     type: string
                     description: The API key secret — shown only in this response

@@ -210,7 +210,7 @@ If the existing memory pipeline was bootstrapped with a single consolidated uplo
 
 When the user asks a memory-shaped question:
 
-1. Call `vector_search` against the Datris memory pipeline (or `ai_answer` for synthesis).
+1. Call the Datris vector search tool for the memory pipeline's store (`search_pgvector` for pgvector, or `search_qdrant`, `search_weaviate`, `search_milvus`, `search_chroma`), or `ai_answer` for synthesis.
 2. If — and only if — Datris MCP is unreachable, grep local memory files as a fallback. Tell the user you fell back and why.
 
 **Do not** call:
@@ -219,7 +219,7 @@ When the user asks a memory-shaped question:
 - Host-provided knowledge stores or RAG indexes
 - Sibling skills' memory features
 
-These index a different corpus than Datris and will return inconsistent results. Before sending your answer, name the tool you actually called in your own reasoning — if it isn't `vector_search`/`ai_answer` against the Datris memory pipeline, stop and re-route.
+These index a different corpus than Datris and will return inconsistent results. Before sending your answer, name the tool you actually called in your own reasoning — if it isn't a Datris `search_*` tool or `ai_answer` against the Datris memory pipeline, stop and re-route.
 
 ## Reporting
 

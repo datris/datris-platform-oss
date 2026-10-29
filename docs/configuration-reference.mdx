@@ -413,6 +413,7 @@ The following buckets are created automatically by the `minio-init` container:
 | `{environment}-agent-policy` | The [agent policy](/agent-policy) document (when `USE_AGENT_POLICY=true`) |
 | `{environment}-pending-action` | Agent actions queued for approval; TTL-expired at their own expiry |
 | `{environment}-incident` | Recovery-agent incidents (when `RECOVERY_AGENT_ENABLED=true`) — the operational history behind Activity → Incidents |
+| `{environment}-uc-sync` | One document per pipeline: last Unity Catalog metadata sync (statement-group hashes, last run id, last error) |
 
 ## Container Environment Variables
 

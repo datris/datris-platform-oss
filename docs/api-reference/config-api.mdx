@@ -78,3 +78,5 @@ curl -X POST http://localhost:8080/api/v1/config/generate-schema \
 ```
 
 For `xsd` type, the filename uses `.xsd` extension and the response contains a generated W3C XML Schema.
+
+When `DATRIS_AI_SAMPLE_VALUES=false`, the schema is generated from a value-free skeleton of the sample and the response also carries `"valuesWithheld": true`. See [AI Configuration](/ai-configuration) for the switch.

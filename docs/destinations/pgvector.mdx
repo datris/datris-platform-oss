@@ -47,7 +47,7 @@ pgvector uses your existing PostgreSQL infrastructure — no separate vector dat
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored as columns on every chunk. Use snake_case for column names. |
 | `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
-| `postgresSecretName` | string | (required) | Vault secret name for PostgreSQL connection. |
+| `postgresSecretName` | string | _server default_ | Vault secret name for the PostgreSQL connection. Only consulted when the server-level `secrets.pgvectorSecretName` is unset; with the default configuration (`oss/pgvector`, seeded automatically) the server-level secret is always used and this field is ignored. |
 
 ## Supported File Types
 
@@ -166,7 +166,7 @@ The pgvector extension and table are auto-created on first upsert. Vector dimens
 
 ## Running PostgreSQL with pgvector
 
-The standard PostgreSQL Docker image does not include pgvector. Use the pgvector image:
+The bundled Compose PostgreSQL already runs the `pgvector/pgvector:pg16` image, and `docker/vault-init.sh` seeds `oss/pgvector` to point at it, so no extra server is needed. To run a separate instance instead, note that the standard PostgreSQL Docker image does not include pgvector; use the pgvector image:
 
 ```bash
 docker run -p 5433:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg16

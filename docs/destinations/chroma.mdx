@@ -45,7 +45,7 @@ Chroma is the simplest vector database to set up — a single Docker container w
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored on every chunk. Used for filtered search. |
 | `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
-| `chromaSecretName` | string | (required) | Vault secret name for Chroma connection. |
+| `chromaSecretName` | string | _server default_ | Vault secret name for the Chroma connection. Only consulted when the server-level `secrets.chromaSecretName` is unset; with the default configuration (`oss/chroma`) the server-level secret is always used and this field is ignored. |
 
 ## Supported File Types
 

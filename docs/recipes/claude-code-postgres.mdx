@@ -45,7 +45,7 @@ Open **Configuration → Agent Policy** and click **Use recommended**. That star
 | Action | Mode |
 |--------|------|
 | Create and run pipelines and taps | Auto |
-| Delete a pipeline or tap, kill a job, migrate destination column types | Approve |
+| Delete a pipeline or tap, kill a job, migrate destination column types, regenerate or restore an AI script | Approve |
 | Write secrets, code repositories, or platform configuration | Deny |
 
 Anything not set is Auto. The policy applies within a few seconds of saving. A person clicking in the Datris UI is never gated. They are the approver.
@@ -77,7 +77,7 @@ Other clients and transports are covered in [Configuring Claude](/configuring-cl
 
 > List my Datris pipelines and tell me what's there.
 
-Watch the **Agent Monitor** tab in the Datris UI. The tool call appears there in real time, attributed to `claude-code`.
+Watch the **Activity** page under the **MCP** tab in the Datris UI (titled Agent Monitor). The tool call appears there in real time, attributed to `claude-code`.
 
 ## 5. Load a table
 

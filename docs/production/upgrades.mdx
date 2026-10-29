@@ -81,7 +81,7 @@ Datris occasionally deprecates secret paths between versions (for example, v1.5.
 
 ## Roll back
 
-Every release is also published under its version tag, so rolling back is pinning the four `image:` lines in your Compose file to the version you were on (for example `datrisai/datris-server:v1.28.2`, and likewise `datris-ui`, `datris-mcp-server`, and `datris-tap-runner`), then `docker compose up -d`. Data written by the newer version stays in place; whether the older version reads it depends on what changed — check the changelog entry for the release you are backing out of before rolling back across one that migrated a store.
+Every release is also published under its version tag, so rolling back is pinning the five `image:` lines in your Compose file to the version you were on (for example `datrisai/datris-server:v1.28.2`, and likewise `datris-ui`, `datris-mcp-server`, and `datris-tap-runner` — used by both the `datris-tap-runner` and `datris-codegen-runner` services), then `docker compose up -d`. Data written by the newer version stays in place; whether the older version reads it depends on what changed — check the changelog entry for the release you are backing out of before rolling back across one that migrated a store.
 
 ## Related
 

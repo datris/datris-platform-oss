@@ -40,17 +40,19 @@ laptop, wrong for anything shared. Turn both on for production.
 
 - **API keys (programmatic clients)**: the CLI, MCP agents, and scripts each
   hold their own labeled key, sent as the `x-api-key` header. Keys are issued
-  from the UI, shown once, stored hashed, and revocable individually; a revoked
-  key is rejected immediately. Every key carries an explicit list of
-  capabilities (`resource:action[:scope]`) — a call outside that list returns
-  403, and the MCP tool list an agent sees is filtered to match. Enabled via
-  `USE_API_KEYS=true`.
+  from the UI, shown once (stored in Vault and never returned by the API
+  again), and revocable individually; a revoked key is rejected immediately.
+  Every key carries an explicit list of capabilities (`resource:action[:scope]`)
+  — a call outside that list returns 403, and the MCP tool list an agent sees
+  is filtered to match. Enabled via `USE_API_KEYS=true`.
 - **User accounts (web UI)**: humans log in with a username + password. Passwords
   are hashed with **BCrypt** (cost factor 12) and stored in MongoDB; the platform
   never stores plaintext passwords. The user-auth path is gated by the
   `USE_USER_AUTH` flag (off by default in the OSS build, so existing deployments are
-  unchanged). On first boot a default `admin` account exists with no password and
-  is forced through a set-password flow before it can do anything.
+  unchanged). On first boot a default `admin` account is seeded with a random
+  bootstrap password that is printed once to the server log
+  (`docker compose logs datris | grep "Bootstrap login"`); change it at first
+  login.
 - **Sessions**: successful login issues an opaque, `SecureRandom`-generated token
   stored in a `datris-session` cookie (`HttpOnly`, `SameSite=Strict`, 8-hour TTL).
   Sessions live in MongoDB with a TTL index that auto-purges expired tokens. The
@@ -65,12 +67,17 @@ laptop, wrong for anything shared. Turn both on for production.
 - **Multi-tenancy**: when enabled, tenants are isolated at the **database level**
   (separate Postgres databases, separate object-store buckets). This is
   infrastructure isolation that sits beneath the user/role model above.
-- **MFA, password complexity, account lockout**: not implemented. Passwords have
-  a minimum length only (5 characters).
+- **MFA, password complexity, account lockout**: not implemented for local
+  accounts. Passwords have a minimum length only (5 characters); SSO users get
+  whatever their identity provider enforces.
 
-**OIDC / SSO is not yet implemented** — there is no external identity-provider
-integration today. If you need OIDC/SSO for an enterprise deployment, please open
-a discussion; it's on the roadmap.
+**OIDC / SSO** (`OIDC_ENABLED=true`, requires `USE_USER_AUTH=true`): people can
+sign in through an OpenID Connect provider (authorization code flow with PKCE;
+ID tokens verified with RS256/ES256 only). SSO users become ordinary Datris
+users with one of the three roles; the built-in `admin` account always signs in
+with its password. MFA for SSO users is whatever the identity provider
+enforces. No SAML and no group-to-role mapping yet. See
+[Single sign-on (OIDC)](https://docs.datris.ai/user-auth#single-sign-on-oidc).
 
 ### Agent governance
 - **Agent policy** (`USE_AGENT_POLICY=true`, off by default): an administrator
