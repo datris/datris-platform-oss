@@ -29,6 +29,8 @@ For early-stage ideas, post in [Discussions → Ideas](../../discussions/categor
 
 PRs that touch the public API, MCP tools, or persistence layer should describe backward-compatibility implications.
 
+By submitting a pull request you agree that your contribution is licensed under the Apache License 2.0, per section 5 of the license. No separate CLA is required.
+
 ## Local development
 
 See [docs.datris.ai](https://docs.datris.ai) for the developer setup. The short version:

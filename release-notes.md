@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+**Datris is now licensed under Apache 2.0.** From this release the platform, UI, MCP server, CLI and tap runner are released under the Apache License 2.0 instead of AGPL-3.0. You may run, modify, embed or host Datris without copyleft obligations; keep the LICENSE and NOTICE files with any copy you redistribute. Earlier releases remain under the license they shipped with.
+
 ## v1.53.0 — October 20, 2026
 
 **The MCP server and CLI move to the current MCP SDK, with no change for the agents that use them.**

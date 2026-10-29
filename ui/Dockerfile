@@ -21,6 +21,7 @@ RUN printf '{"version":"%s"}\n' "$APP_VERSION" > /app/dist/pipeline-ui/browser/v
 
 # Stage 2: Serve (non-root nginx, listens on 8080)
 FROM nginxinc/nginx-unprivileged:alpine@sha256:d9083fe47768377ef55dedafd67d4da7c2f2bc2bece7554954f29359deb0dce9
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 # The Alpine packages in the pinned base lag behind alpine-security fixes
 # (libuuid/util-linux, libexpat, curl CVEs flagged by the weekly Trivy image
 # scan). Upgrade as root, then drop back to the unprivileged nginx user.
