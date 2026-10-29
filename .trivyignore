@@ -18,3 +18,11 @@ GHSA-6v7p-g79w-8964
 CVE-2026-97687
 CVE-2026-97688
 CVE-2026-97689
+
+# Same vendored-in-pip set (pip 26.2.2, the newest release as of 2026-10-29,
+# still pins setuptools 70.3.0 and msgpack 1.1.2 in pip/_vendor/vendor.txt).
+# The images' real site-packages setuptools is 84.x; pip's pkg_resources subset
+# never processes untrusted package indexes or msgpack streams at runtime.
+# Re-check when pip bumps its vendor set.
+GHSA-xmj3-9gf7-h52w
+CVE-2026-114613
