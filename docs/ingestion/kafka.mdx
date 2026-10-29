@@ -11,7 +11,7 @@ The pipeline can consume data from Kafka topics in real time. Configure the Kafk
 
 ## Enabling the Kafka Consumer
 
-Set the `kafkaConsumer` block in `application.yaml`:
+Set the `kafkaConsumer` block in `application.yaml`. On Docker Compose that file is `docker/config/application.yaml`, mounted into the `datris` container at `/config`; edit it there and `docker compose restart datris`. The `KAFKA_BOOTSTRAP_SERVERS` variable in `.env` only seeds the Kafka *producer* secret (`oss/kafka-producer`) — it does not enable the consumer.
 
 ```yaml
 kafkaConsumer:

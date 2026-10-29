@@ -39,7 +39,7 @@ Run the bundled MCP server through the [mcp-remote](https://www.npmjs.com/packag
 }
 ```
 
-The underlying connection is SSE to port 3000, so sessions register with the Datris server and the **Agent Monitor** tab in the Datris UI shows live tool-call streaming. `--transport sse-only` pins the protocol so the bridge doesn't try its streamable-HTTP fallback.
+The underlying connection is SSE to port 3000, so sessions register with the Datris server and the **Activity** page under the **MCP** tab in the Datris UI (titled Agent Monitor) shows live tool-call streaming. `--transport sse-only` pins the protocol so the bridge doesn't try its streamable-HTTP fallback.
 
 Requires Node.js on your `PATH` (`brew install node`). On macOS, Claude Desktop is a GUI app and doesn't inherit your shell `PATH`, so use the full path to `npx` (e.g. `/opt/homebrew/bin/npx`) if `npx` alone doesn't resolve.
 
@@ -74,7 +74,7 @@ If you're not running the Docker stack — for example, you only want the MCP se
 Requires `uv` / `uvx` (`brew install uv`). On macOS, Claude Desktop is a GUI app and doesn't inherit your shell PATH, so use the full path to `uvx` (e.g. `/Users/you/.local/bin/uvx`) if `uvx` alone doesn't resolve.
 
 <Note>
-The stdio transport has no header layer, so the API key comes from the environment instead: if your Datris instance has `USE_API_KEYS=true`, add `"DATRIS_API_KEY": "<your-key>"` to the `env` block (or use the mcp-remote option above). With `USE_API_KEYS=false` (single-tenant OSS default), stdio works fine without a key, but tool calls won't appear in the Agent Monitor tab.
+The stdio transport has no header layer, so the API key comes from the environment instead: if your Datris instance has `USE_API_KEYS=true`, add `"DATRIS_API_KEY": "<your-key>"` to the `env` block (or use the mcp-remote option above). With `USE_API_KEYS=false` (single-tenant OSS default), stdio works fine without a key, but tool calls won't appear in the Agent Monitor (MCP → Activity).
 </Note>
 
 ## Configuring Claude Code
@@ -128,7 +128,7 @@ Once the MCP server is configured, just talk to Claude naturally. Claude sees ev
 
 ### First prompts (empty Datris)
 
-If you've just installed Datris and have no data yet, these prompts exercise the full create → query loop without needing files on hand. Watch the **Agent Monitor** tab in the Datris UI as you go — you'll see each tool call stream in real time.
+If you've just installed Datris and have no data yet, these prompts exercise the full create → query loop without needing files on hand. Watch the **Activity** page under the **MCP** tab in the Datris UI (titled Agent Monitor) as you go — you'll see each tool call stream in real time.
 
 **1. Confirm discovery works (returns empty, but proves the round-trip):**
 

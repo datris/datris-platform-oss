@@ -23,7 +23,7 @@ The server-side report is also available at `GET /api/v1/doctor` for scripts. It
 
 | Check | Fires when | Fix it prints |
 |---|---|---|
-| `vault.token_ttl` | The server's Vault token expires within 7 days (error), or a 10-year periodic token was clamped to Vault's default 32-day ceiling (warn) | Raise `max_lease_ttl` in the Vault config, recreate the vault container, restart the server |
+| `vault.token_ttl` | The server's Vault token expires within 7 days (error), or a periodic token's TTL is under a tenth of its period, meaning it was clamped by `max_lease_ttl` — Vault's 768h (32-day) default is the usual cause (warn) | Raise `max_lease_ttl` in the Vault config, recreate the vault container, restart the server |
 | `vault.ai_slots` | An AI slot secret is missing or lacks provider / endpoint / model / key | The exact `vault kv put` or `vault kv patch` |
 | `jdbc.mssql_driver` | A pipeline uses `type: mssql` but the driver is not bundled | Add the driver and rebuild, or change the source type |
 | `objectstore.bucket_overrides` | A pipeline overrides the built-in MinIO bucket and `DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST` is unset (warn), or a stored override falls outside the list you set and will be refused at run time (error) | Set the allowlist, or add the bucket / change the pipeline's `destinationBucketOverride` |

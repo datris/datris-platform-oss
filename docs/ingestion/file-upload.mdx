@@ -48,14 +48,14 @@ When a compressed archive is processed on the per-file path (non-CSV pipelines, 
 
 ## Compressed Files
 
-When the uploaded file has a compressed extension, the archive is extracted **in memory** and processed **synchronously** — nothing is staged to MinIO:
+When the uploaded file has a compressed extension, the archive is unpacked into the server's local staging area and processed **synchronously** — nothing is staged to MinIO:
 
 | Extension | Handling |
 |---|---|
-| `.zip` | Extracted in memory |
-| `.gz` | Decompressed in memory (gunzip only — a `.tar.gz` is not untarred; the inner `.tar` is submitted as a single file) |
-| `.tar` | Extracted in memory |
-| `.jar` | Extracted in memory |
+| `.zip` | Extracted to the staging area |
+| `.gz` | Decompressed to the staging area (gunzip only — a `.tar.gz` is not untarred; the inner `.tar` is submitted as a single file) |
+| `.tar` | Extracted to the staging area |
+| `.jar` | Extracted to the staging area |
 
 Compressed archives may contain multiple data files. Handling depends on the pipeline type:
 
@@ -64,14 +64,14 @@ Compressed archives may contain multiple data files. Handling depends on the pip
 
 ## Uncompressed Files
 
-Files without a recognized compressed extension (e.g., `.csv`, `.json`, `.xml`, `.xls`, `.pdf`, `.docx`, `.txt`, `etc`) are read into memory and submitted directly. They are not staged to MinIO.
+Files without a recognized compressed extension (e.g., `.csv`, `.json`, `.xml`, `.xls`, `.pdf`, `.docx`, `.txt`, `etc`) are streamed to the local staging area and submitted directly. They are not staged to MinIO.
 
 ## Processing Flow
 
 1. The client sends the multipart request.
 2. The endpoint validates that the named `pipeline` is registered.
-3. The file bytes are read into memory and the extension is inspected.
-4. **Compressed path**: the archive is decompressed in memory. For CSV pipelines with multiple inner files, the files are concatenated (headers stripped after the first) and submitted as one job; otherwise each inner file is submitted individually.
+3. The file part is streamed to the local staging area and the extension is inspected.
+4. **Compressed path**: the archive is unpacked in the staging area. For CSV pipelines with multiple inner files, the files are concatenated (headers stripped after the first) and submitted as one job; otherwise each inner file is submitted individually.
 5. **Uncompressed path**: the file contents are passed directly to the ingestion pipeline.
 6. The endpoint returns the pipeline token (or the `"N file(s) submitted"` string).
 

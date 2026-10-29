@@ -68,7 +68,7 @@ Open **Configuration → API-Keys → Issue new key**.
    - **ops** — run any tap or pipeline, kill stuck jobs, no edits
    - **full-access** — legacy `*:*` shape; avoid for agents
 3. Review and create.
-4. **Copy the value immediately** — it's shown once. The platform stores a hashed copy; the plaintext is not retrievable after this modal closes.
+4. **Copy the value immediately** — it's shown once. The value lives in Vault (`oss/api-keys`) and is never returned by the API again after this modal closes.
 5. Paste the value into the agent's MCP client config (or CLI env var, etc.).
 
 Each label is a distinct identity in the [audit log](/audit-log) and can be revoked independently of the others. Every issued key also gets a stable id (shown in the audit log) so a label that is revoked and later re-issued is not confused with its predecessor.
@@ -123,7 +123,7 @@ The fields:
 - `required` — the capability the route needs (see [the capability model](#the-capability-model))
 - `key` — the label of the API key (or `session:<username>` for cookie-authed UI flows)
 - `legacy=true` — the key has full access via the backward-compatibility backstop; `false` means a scoped key
-- `outcome` — `grant`, `would-deny`, `deny`, or `unmapped`
+- `outcome` — `grant`, `would-deny`, `deny`, `unmapped`, or `rejected-key` (the presented key was revoked, unknown, or could not be verified — the request is refused before any capability is considered)
 
 Enforcement is **on by default**: a scoped key calling a route it lacks the capability for gets `outcome=deny` and an HTTP 403. To trial a new scope policy without rejecting traffic — for example, you've issued a new scoped key and want to see what it would have been denied under real workload before pointing a production agent at it — set `CAPABILITY_ENFORCEMENT=log-only` in `.env`. The same calls then succeed and emit `outcome=would-deny` log lines instead of 403s. Flip back to `enforce` (or remove the line) once you've validated the policy.
 

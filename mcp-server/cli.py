@@ -874,7 +874,7 @@ def tap_run(name, json_output):
             pub = result.get("publisherToken")
             click.echo(f"    → persisted to {target}")
             if pub:
-                click.echo(f"    → watch: datris pipeline status --publisher {pub}")
+                click.echo(f"    → watch: datris status {target}")
         elif result.get("persisted") is False:
             reason = result.get("persistedReason", "unknown")
             click.echo(f"    → not persisted ({reason})")

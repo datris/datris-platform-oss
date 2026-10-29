@@ -21,13 +21,13 @@ Set `keyField` to the name of a column whose value should be used as the Kafka m
 
 ## Authentication
 
-The destination authenticates to the Kafka cluster using SASL/PLAIN. Credentials are retrieved from Vault using the secret name specified in `kafkaProducerSecretName`. The secret must contain:
+Connection details are retrieved from Vault using the secret name specified in `kafkaProducerSecretName`. When the secret carries both `username` and `password`, the destination authenticates to the Kafka cluster using SASL/PLAIN (`SASL_PLAINTEXT`); without them it connects unauthenticated. The secret contains:
 
 | Key                | Description                    |
 |--------------------|--------------------------------|
 | `bootstrapServers` | Kafka bootstrap server list    |
-| `username`         | SASL username                  |
-| `password`         | SASL password                  |
+| `username`         | SASL username (optional)       |
+| `password`         | SASL password (optional)       |
 
 ## Bootstrap Server Override
 

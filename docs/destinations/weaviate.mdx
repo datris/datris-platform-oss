@@ -43,7 +43,7 @@ Ingest unstructured documents (PDFs, Word docs, text files, HTML) into [Weaviate
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored on every chunk as Weaviate properties. Used for filtered search. |
 | `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
-| `weaviateSecretName` | string | (required) | Vault secret name for Weaviate connection. |
+| `weaviateSecretName` | string | _server default_ | Vault secret name for the Weaviate connection. Only consulted when the server-level `secrets.weaviateSecretName` is unset; with the default configuration (`oss/weaviate`) the server-level secret is always used and this field is ignored. |
 
 ## Supported File Types
 

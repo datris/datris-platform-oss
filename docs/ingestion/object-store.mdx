@@ -73,7 +73,7 @@ Note that the bundled MinIO setup (`docker/minio-init.sh`) only registers bucket
 ## How It Works
 
 1. A file is placed in a MinIO bucket (via `mc cp`, API, or another system)
-2. MinIO sends an S3-compatible event notification to the ActiveMQ file-notifier queue
+2. MinIO sends an S3-compatible event notification to the server's `/minio-events` webhook, which places it on the ActiveMQ file-notifier queue
 3. The pipeline polls the queue on a configurable schedule (default: every 5 seconds)
 4. The pipeline parses the event, resolves the pipeline, and processes the file
 
@@ -114,4 +114,4 @@ mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.json --
 mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.xml --event put
 ```
 
-Alternatively, ActiveMQ-based notifications can be configured (see MinIO documentation for AMQP notification targets).
+The webhook is the only supported notification path: the `/minio-events` endpoint authenticates the call, writes the audit entry, and places the event on the server's internal ActiveMQ queue (`{environment}-file-notifier`) that the file notifier consumes. Pointing MinIO at ActiveMQ directly (an AMQP target) is not configured by the stack and would bypass that gate.

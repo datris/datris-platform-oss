@@ -17,7 +17,7 @@ Datris sits beside your warehouse and lake; it doesn't replace them. It runs on-
 
 Your agents already acquire, validate, and load data. Without a control plane, they do it badly: credentials scattered across configs and prompts, the chat log as the only record, generated scripts that lose state when regenerated. Datris puts that work behind one governed surface:
 
-- **One MCP door** — 73 capabilities behind a single [MCP server](/mcp-server) (stdio and SSE). Claude, Cursor, OpenClaw, and any MCP-compatible agent learn one interface instead of 73 integrations
+- **One MCP door** — 88 capabilities behind a single [MCP server](/mcp-server) (stdio, SSE, and Streamable HTTP). Claude, Cursor, OpenClaw, and any MCP-compatible agent learn one interface instead of 88 integrations
 - **Vault-brokered credentials** — the agent references a secret by name; it never holds a key. Agent-written code runs in an [isolated container](/tap-execution-isolation) with no keys inside
 - **Every run recorded** — job state and row counts for every run, provenance on its rows with stamping on (see [strict mode](/provenance#strict-mode)); every generated script [versioned in git](/tap-github-storage)
 - **Durable state** — pipelines and [sync bookmarks](/taps) live in the platform, not in the agent's context, so a regenerated script picks up where the old one left off
@@ -39,7 +39,7 @@ Same loop every run, and with the audit log on the same audit trail every time (
 
 Intelligence at every stage — from ingestion to delivery, Datris makes data engineering accessible through natural language.
 
-- **MCP server (AI agent integration)** - Built-in [MCP](https://modelcontextprotocol.io) server lets AI agents (Claude, Cursor, OpenClaw, custom frameworks) natively interact with the pipeline — register pipelines, upload files, trigger jobs, profile data, run semantic searches, and query databases. Supports stdio and SSE transports
+- **MCP server (AI agent integration)** - Built-in [MCP](https://modelcontextprotocol.io) server lets AI agents (Claude, Cursor, OpenClaw, custom frameworks) natively interact with the pipeline — register pipelines, upload files, trigger jobs, profile data, run semantic searches, and query databases. Supports stdio, SSE, and Streamable HTTP transports
 - **AI-powered data quality** - Validate with plain English rules via `aiRule`. Examples:
   - *"Validate that all email addresses are properly formatted and all phone numbers contain 7–15 digits"*
   - *"Ensure price is positive, quantity is a whole number, and discount never exceeds price"*
@@ -134,7 +134,7 @@ Client (AI Agent via MCP / Developer via REST API)
   |
   v
 Interface
-  ├── MCP Server (stdio or SSE)
+  ├── MCP Server (stdio, SSE, or Streamable HTTP)
   └── REST API (POST /api/v1/query/* and /api/v1/search/*)
   |
   v
@@ -188,4 +188,4 @@ Query Source
 - [Query API](/api-reference/query-api) - Query PostgreSQL and MongoDB via REST API
 - [Search API](/api-reference/search-api) - Semantic search across vector databases via REST API
 - [MCP Server](/mcp-server) - AI agent integration via Model Context Protocol
-- [Example Applications](/examples) - Vector store chat, Kafka loader, preprocessor, and more
+- [Example Applications](/examples) - Vector store chat, preprocessor, topic subscriber, and more

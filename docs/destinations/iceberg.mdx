@@ -116,7 +116,7 @@ Deleting the pipeline with its destination data removes the prefix, which drops 
 
 ## Not yet available
 
-- **Catalog registration.** The table is path-based. Registering it in a REST, AWS Glue, or JDBC catalog so that catalog-only engines can query it by name is planned; the data written today does not need to be rewritten when that lands.
+- **Catalog registration beyond Unity Catalog.** The table is path-based. Registering it in Databricks Unity Catalog (or another Iceberg REST catalog) is supported through the pipeline's `unityCatalog` block; see [Register Iceberg tables](/destinations/unity-catalog#register-iceberg-tables). AWS Glue and JDBC catalogs are not supported yet; the data written today does not need to be rewritten when that lands.
 - **Time travel.** Queries read the current snapshot only; reading a table as of an earlier snapshot or timestamp is planned.
 - **Table maintenance.** Expiring old snapshots, compacting small files, and removing orphan files are not yet performed by Datris. Long-lived tables fed by frequent small runs accumulate snapshots and small files; run your engine's maintenance procedures against the path in the meantime.
 - **Partition transforms** such as day, month, or bucket partitions; only identity partitioning is supported.

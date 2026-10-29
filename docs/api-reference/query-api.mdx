@@ -155,9 +155,13 @@ curl -X POST http://localhost:8080/api/v1/query/objectstore \
       "close": 185.92
     }
   ],
-  "count": 1
+  "count": 1,
+  "snapshotId": null,
+  "snapshotTimestamp": null
 }
 ```
+
+`snapshotId` and `snapshotTimestamp` identify the Iceberg snapshot that was read; both are `null` for Parquet and ORC pipelines.
 
 If the pipeline exists but no runs have written data yet, the endpoint returns an empty result (`"count": 0`) rather than an error.
 

@@ -19,11 +19,14 @@ curl http://localhost:8080/api/v1/version
 **Response:** `200 OK`
 ```json
 {
-  "version": "1.28.0",
+  "version": "1.53.0",
+  "gitHeadCommit": "cd6beeff...",
+  "builtAtMillis": "1792000000000",
   "environment": "oss",
   "multiTenant": "false",
   "hosted": "false",
   "useUserAuth": "false",
+  "oidcEnabled": "false",
   "useApiKeys": "false",
   "useAuditLog": "false",
   "useAgentPolicy": "false",
@@ -43,10 +46,14 @@ curl http://localhost:8080/api/v1/version
 | Field | Description |
 |-------|-------------|
 | `version` | Server version |
+| `gitHeadCommit` | Git commit the running jar was built from |
+| `builtAtMillis` | Build time of the running jar, Unix epoch milliseconds |
 | `environment` | Environment name (e.g., `oss` for self-hosted, or tenant prefix for managed hosting) |
+| `environmentLabel` | Only present when `DATRIS_ENV` is set: the label the UI shows for this install |
 | `multiTenant` | Whether the server is running in multi-tenant mode |
 | `hosted` | Whether this is a managed/hosted deployment |
 | `useUserAuth` | Whether user authentication is enabled |
+| `oidcEnabled` | Whether OIDC single sign-on is in effect (user auth on and the OIDC configuration validated at startup) |
 | `useApiKeys` | Whether API key authentication is enabled |
 | `useAuditLog` | Whether the audit log is enabled |
 | `useAgentPolicy` | Whether agent policy enforcement is enabled |

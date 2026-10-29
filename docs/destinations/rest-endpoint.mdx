@@ -19,10 +19,7 @@ The pipeline sends an HTTP POST request with the following JSON payload:
   "data": {
     "size": 100,
     "header": ["order_id", "amount", "region"],
-    "rows": [
-      ["1001", "59.99", "us-east"],
-      ["1002", "24.50", "eu-west"]
-    ],
+    "rows": ["1001,59.99,us-east", "1002,24.50,eu-west"],
     "rawData": null
   }
 }
@@ -34,7 +31,7 @@ The pipeline sends an HTTP POST request with the following JSON payload:
 | `pipelineName`  | Name of the pipeline being sent                                    |
 | `data.size`    | Number of rows in this batch                                      |
 | `data.header`  | Array of column names                                             |
-| `data.rows`    | Array of row arrays, each matching the header order               |
+| `data.rows`    | Array of delimited row strings (the source delimiter), each in header order |
 | `data.rawData` | Raw string content when sending JSON or XML data instead of rows  |
 
 ## Expected Response
@@ -46,10 +43,7 @@ The endpoint must return a JSON response with the following structure:
   "data": {
     "size": 100,
     "header": ["order_id", "status"],
-    "rows": [
-      ["1001", "accepted"],
-      ["1002", "accepted"]
-    ],
+    "rows": ["1001,accepted", "1002,accepted"],
     "rawData": null
   }
 }

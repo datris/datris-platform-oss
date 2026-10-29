@@ -41,7 +41,7 @@ You don't need to write JSON by hand — once you have the Datris Data Platform 
     "aiRule": {
       "instruction": "Amount must be a positive number, all dates must be in YYYY-MM-DD format",
       "onFailureIsError": true
-    },
+    }
   },
   "transformation": {
     "aiTransformation": {
@@ -109,7 +109,7 @@ You don't need to write JSON by hand — once you have the Datris Data Platform 
 |-------|------|-------------|
 | `dbName` | string | Database name associated with this schema (used by some destinations) |
 | `fields` | array | List of `{"name": "...", "type": "..."}` objects |
-| `fields[].protect` | object | Optional. `{"method": "hmac" \| "mask" \| "redact" \| "drop"}`; with `mask`, optional `"preserve": "last4" \| "domain" \| "year" \| "first3"`. Applied before data quality, transformation, and every destination. See [Field Protection](/transformation/field-protection). |
+| `fields[].protect` | object | Optional. `{"method": "hmac" \| "mask" \| "redact" \| "encrypt" \| "drop"}`; with `mask`, optional `"preserve": "last4" \| "domain" \| "year" \| "first3"`. Applied before data quality, transformation, and every destination. See [Field Protection](/transformation/field-protection). |
 | `schemaVersion` | int | Schema version (default `1`) |
 
 Supported types: `boolean`, `int`, `tinyint`, `smallint`, `bigint`, `float`, `double`, `decimal(p,s)`, `string`, `varchar(n)`, `char(n)`, `date`, `timestamp`

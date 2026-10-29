@@ -40,9 +40,13 @@ Returns a single tap configuration plus the Python script body from MinIO.
   "script": "def fetch():\n    ...",
   "packages": ["yfinance"],
   "enabled": true,
-  "tapType": "structured"
+  "tapType": "structured",
+  "state": {"cursor": "2026-04-20"},
+  "stateUpdatedAt": "2026-04-20 14:05:00 UTC"
 }
 ```
+
+`state` and `stateUpdatedAt` appear only once the tap has committed incremental-sync state (see [Incremental Sync](/taps#incremental-sync-state)); they carry the current cursor so a caller can read it without a separate request.
 
 **Response when the stored script is missing from object storage:**
 ```json
@@ -149,7 +153,8 @@ Multi-turn conversational endpoint that helps the user refine a vague tap idea i
 {
   "reply": "Got it. Which earnings data source — yfinance (free), Alpha Vantage, or Polygon.io?",
   "description": "Query the consumer_discretionary_earnings table via /api/v1/query/postgres to get the ticker list. (Source TBD.)",
-  "suggestedEnvVars": []
+  "suggestedEnvVars": [],
+  "injectedPrompts": []
 }
 ```
 
@@ -194,11 +199,13 @@ Uses AI to generate a Python `fetch()` script from a plain-English description. 
   "script": "import requests\n\ndef fetch():\n    ...",
   "packages": ["yfinance"],
   "scriptPath": "tap-scripts/stock-prices-tap_a1b2c3d4.py",
-  "injectedPrompts": ["rate-limits"]
+  "injectedPrompts": ["rate-limits"],
+  "provider": "anthropic",
+  "model": "claude-opus-5-5"
 }
 ```
 
-`injectedPrompts` lists the names of the [tap prompt fragments](#tap-prompt-fragments) that were injected into the generation prompt (empty when none matched).
+`injectedPrompts` lists the names of the [tap prompt fragments](#tap-prompt-fragments) that were injected into the generation prompt (empty when none matched). `provider` and `model` name the AI provider and model that generated the script.
 
 ## Fix Script (AI Diagnosis)
 
@@ -575,7 +582,11 @@ Fragments are per-tenant, stored in MongoDB at `{env}-tap-prompt`, and matched c
 GET /api/v1/tap-prompts
 ```
 
-**Response:** Array of `TapPromptFragment` objects.
+| Parameter | In | Description |
+|---|---|---|
+| `status` | query | Optional. `active` returns person-written or accepted fragments (fragments saved before statuses existed count as active); `suggested` returns fragments the recovery agent proposed from an incident. Omit for all. |
+
+**Response:** Array of `TapPromptFragment` objects. Suggested fragments also carry `status: "suggested"`, `origin: "incident"`, and `incidentId` (the incident whose learn note produced them), and stay `enabled: false` until a person accepts them.
 
 ```json
 [

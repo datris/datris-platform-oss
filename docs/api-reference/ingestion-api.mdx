@@ -89,9 +89,9 @@ curl -X POST http://localhost:8080/api/v1/pipeline/generate \
   },
   "destination": {
     "database": {
-      "dbName": "datris",
-      "schema": "public",
-      "table": "my_pipeline",
+      "dbName": "DATABASE_NAME",
+      "schema": "SCHEMA_NAME",
+      "table": "TABLE_NAME",
       "usePostgres": true
     }
   }
@@ -100,7 +100,7 @@ curl -X POST http://localhost:8080/api/v1/pipeline/generate \
 
 **Inferred types:** `boolean`, `int`, `bigint`, `float`, `double`, `string`, `date`, `timestamp`
 
-**Note:** For CSV files, the AI analyzes the content and infers types. For JSON and XML files, a default config is generated with a single `_json` or `_xml` string field. When `allStrings` is `true`, all fields are set to `string` (used by the MCP server for reliable ingestion). Edit the generated JSON to add your destination configuration before registering it with `POST /pipeline`.
+**Note:** For CSV files, the AI analyzes the content and infers types. For JSON and XML files, a default config is generated with a single `_json` or `_xml` string field. When `allStrings` is `true`, all fields are set to `string` (used by the MCP server for reliable ingestion). The `destination` block carries `DATABASE_NAME` / `SCHEMA_NAME` / `TABLE_NAME` placeholders; replace them before registering the config with `POST /pipeline`.
 
 ---
 
