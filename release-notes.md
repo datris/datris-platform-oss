@@ -1,5 +1,9 @@
 # Release Notes
 
+## vNEXT — unreleased
+
+- **Updated object store image.** The bundled MinIO image moves to the current release with the latest security patches. Run `docker compose pull && docker compose up -d --force-recreate minio minio-init`; buckets and data are kept.
+
 ## v1.54.1 — October 29, 2026
 
 **Security maintenance release.**

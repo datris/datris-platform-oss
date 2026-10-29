@@ -53,7 +53,7 @@ services:
     # what Docker resolves. To bump MinIO: run the mirror-image workflow, then
     # update the tag and digest here, in minio-init below, and in
     # docker-compose.yml (then regenerate docker-compose.standalone.yml).
-    image: datrisai/minio:RELEASE.2026-09-22-r3@sha256:2136d593beacf4461187035eca949fe49abd589d5079735025c711ca58fee0c8
+    image: datrisai/minio:RELEASE.2026-10-23@sha256:e234321fd3abff7fb968b0674056e883b702aa1ad93a0d4d795cb6c21fa46407
     container_name: minio
     # The image runs as uid 65532; existing installs' data dir is root-owned
     # (the previous image ran as root), so keep root to stay writable.
@@ -337,7 +337,7 @@ services:
   minio-init:
     # Same image as the minio service: it bundles mc and bash. (Chainguard's
     # separate minio-client image has no shell, so it cannot run this script.)
-    image: datrisai/minio:RELEASE.2026-09-22-r3@sha256:2136d593beacf4461187035eca949fe49abd589d5079735025c711ca58fee0c8
+    image: datrisai/minio:RELEASE.2026-10-23@sha256:e234321fd3abff7fb968b0674056e883b702aa1ad93a0d4d795cb6c21fa46407
     container_name: minio-init
     depends_on:
       minio:
