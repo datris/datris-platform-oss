@@ -163,7 +163,16 @@ lazy val datrisserver = project
             // MergeStrategy.first dedupe handles the overlap, as it already
             // did before this bump.
             "at.yawk.lz4" % "lz4-java" % "1.11.4",
-            "org.apache.ivy" % "ivy" % "2.5.2"
+            "org.apache.ivy" % "ivy" % "2.5.2",
+            // snappy-java (transitive via Spark + kafka-clients): 1.1.10.9
+            // patches the SnappyInputStream OOB read / unchecked-length
+            // allocation DoS trio (GHSA-q233-g92q-qxp6, GHSA-gwq9-9ffj-mvrv,
+            // GHSA-xqrx-qh46-34m7). Pure patch line, same native ABI.
+            "org.xerial.snappy" % "snappy-java" % "1.1.10.12",
+            // Guava: pinned alongside the direct dependency in allDependencies
+            // (the two move together) so no transitive can drag an older jar
+            // back in. 33.7.2 fixes GHSA-xxph-c9ww-hj94.
+            "com.google.guava" % "guava" % "33.7.2-jre"
         ),
         // gitHeadCommit + builtAtMillis let /api/v1/version say WHICH jar is
         // running — `datris doctor` compares them with the checkout to catch a
@@ -229,7 +238,8 @@ lazy val allDependencies = Seq(
     "com.nimbusds" % "nimbus-jose-jwt" % "10.0.2",
 
     // Google
-    "com.google.guava" % "guava" % "33.0.0-jre",
+    // Same version as the dependencyOverrides pin above; the two move together.
+    "com.google.guava" % "guava" % "33.7.2-jre",
     "com.google.code.gson" % "gson" % "2.11.0",
 
     // Apache commons
