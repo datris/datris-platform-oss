@@ -9,12 +9,24 @@ import ai.datris.model.{DatrisEnvironment, UserContext}
 import ai.datris.util.{SessionStore, UserStore}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.springframework.stereotype.Component
-import org.springframework.web.servlet.HandlerInterceptor
+import org.springframework.web.servlet.AsyncHandlerInterceptor
 
 /** Reads the `datris-session` cookie, looks up the session, and attaches the user
   * to UserContext for the request. Does NOT reject unauthenticated requests on its
   * own — that's `RoleEnforcementInterceptor`'s job, since some endpoints are public
-  * (login, version) and others tolerate either a session or an x-api-key. */
+  * (login, version) and others tolerate either a session or an x-api-key.
+  *
+  * Thread-local hygiene: the chat endpoints return an `SseEmitter`, which puts
+  * the request into Servlet async mode. Spring then does NOT call
+  * `afterCompletion` on the thread that ran `preHandle` — it runs later, on
+  * the async-dispatch thread — so the servlet thread that served the SSE
+  * request would otherwise keep its `UserContext` until an unrelated request
+  * happened to land on it. That request (an x-api-key call, or an anonymous
+  * one) would then be authenticated, role-checked and audited as the browser
+  * user. Hence two guards: `afterConcurrentHandlingStarted` clears the
+  * thread-local the moment async handling begins, and `preHandle` clears any
+  * leftover before it looks at the cookie, so a request's identity can only
+  * ever come from its own cookie. */
 object SessionAuthenticator {
 
     /** Request attribute set when the request carried a session cookie that no
@@ -33,11 +45,13 @@ object SessionAuthenticator {
 }
 
 @Component
-class SessionAuthenticator extends HandlerInterceptor {
+class SessionAuthenticator extends AsyncHandlerInterceptor {
 
     val SessionCookieName = "datris-session"
 
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
+        // Never inherit an identity from whatever this thread served last.
+        UserContext.clear()
         if (!DatrisEnvironment.values.useUserAuth) return true
 
         val token = readCookie(request, SessionCookieName)
@@ -53,6 +67,13 @@ class SessionAuthenticator extends HandlerInterceptor {
     }
 
     override def afterCompletion(request: HttpServletRequest, response: HttpServletResponse, handler: Any, ex: Exception): Unit = {
+        UserContext.clear()
+    }
+
+    /** Called instead of `afterCompletion` on the servlet thread when the
+      * handler started async processing (SseEmitter). The chat controllers
+      * have already captured UserContext for their worker thread by now. */
+    override def afterConcurrentHandlingStarted(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Unit = {
         UserContext.clear()
     }
 
