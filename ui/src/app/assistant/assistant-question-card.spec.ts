@@ -136,12 +136,14 @@ describe('Assistant question cards (ask_user)', () => {
     expect(cards[0].askUser?.questions).toEqual(QUESTIONS);
   });
 
-  it('a card-only turn is sent in history as an assistant message listing the questions and options', () => {
-    askAndFinish('toolu_hist', true);
+  it('a card-only turn is sent in history as an ask_user tool-call record listing the questions and options', () => {
+    const c = askAndFinish('toolu_hist', true);
+    c.askUser.submitted = true; // as submitAskUser does before sending
     state.send('Source: NWS\nSchedule: Hourly');
     const history: any[] = chatSpy.calls.mostRecent().args[0];
     expect(history.map((m: any) => m.role)).toEqual(['user', 'assistant', 'user']);
     const asked: string = history[1].content;
+    expect(asked).toContain('[Tool call: ask_user');
     for (const q of QUESTIONS) {
       expect(asked).toContain(q.header);
       expect(asked).toContain(q.question);
@@ -150,7 +152,21 @@ describe('Assistant question cards (ask_user)', () => {
         expect(asked).toContain(o.description);
       }
     }
+    expect(asked).toContain('submitted the card');
+    expect(asked).not.toContain('replied in chat');
     expect(history[2].content).toBe('Source: NWS\nSchedule: Hourly');
+  });
+
+  it('a skipped card is recorded in history as answered in chat, not as header lines', () => {
+    const c = askAndFinish('toolu_hist_skip', true);
+    state.send('actually skip the tap, just do a live read');
+    expect(c.askUser.skipped).toBeTrue();
+    const history: any[] = chatSpy.calls.mostRecent().args[0];
+    expect(history.map((m: any) => m.role)).toEqual(['user', 'assistant', 'user']);
+    const asked: string = history[1].content;
+    expect(asked).toContain('[Tool call: ask_user');
+    expect(asked).toContain('replied in chat instead of submitting the card');
+    expect(asked).not.toContain('submitted the card;');
   });
 
   // ------------------------------------------------------- formatting ---

@@ -85,15 +85,23 @@ export function askUserAnswer(au: AskUserState, index: number): string {
   return parts.join(', ');
 }
 
-/** How a question card appears in the outbound chat history: the questions
- *  and their options, so the model knows what it asked when the answers
- *  arrive as the next user message. Not shown in the UI. */
-export function describeAskUserForHistory(questions: AskUserQuestion[]): string {
-  const lines = ['\n\n(Asked on a question card; the answers follow as `header: answer` lines.)'];
+/** How a question card appears in the outbound chat history. A card-only
+ *  turn has no text, and without this the model never sees what it asked
+ *  when the answers arrive. Written as a bracketed tool-call record, not as
+ *  prose questions, so the model does not mimic it as text on a later turn
+ *  (it must call ask_user again). `submitted` says whether the next user
+ *  message is the card's `header: answer` lines or a reply typed in chat.
+ *  Not shown in the UI. */
+export function describeAskUserForHistory(questions: AskUserQuestion[], submitted: boolean): string {
+  const lines = ['', '', '[Tool call: ask_user — question card shown to the user; not prose]', '[Card questions:'];
   for (const q of questions || []) {
     const opts = (q.options || []).map(o => o.description ? `${o.label} (${o.description})` : o.label).join('; ');
-    lines.push(`${q.header}: ${q.question} Options: ${opts}${q.multiSelect ? ' [multi-select]' : ''}; or Other.`);
+    lines.push(`  - ${q.header} | ${q.question} | options: ${opts}; Other | ${q.multiSelect ? 'multi-select' : 'single-select'}`);
   }
+  lines.push(']');
+  lines.push(submitted
+    ? '[The user submitted the card; their answers follow as `header: answer` lines.]'
+    : '[The user replied in chat instead of submitting the card; read their reply as prose.]');
   return lines.join('\n') + '\n';
 }
 
@@ -337,7 +345,7 @@ export class AssistantStateService {
         // that it already asked (or what), so it re-asks the same card.
         const visible = t.segments
           .map(s => s.kind === 'text' ? (s as TextSegment).text
-            : (s.kind === 'tool' && s.askUser) ? describeAskUserForHistory(s.askUser.questions)
+            : (s.kind === 'tool' && s.askUser) ? describeAskUserForHistory(s.askUser.questions, s.askUser.submitted)
             : '')
           .join('');
         if (visible.trim().length > 0) {
