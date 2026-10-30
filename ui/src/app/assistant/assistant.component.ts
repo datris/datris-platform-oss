@@ -1,6 +1,6 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, AfterViewChecked, NgZone } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AssistantStateService, AssistantTurn, ToolCard, TextSegment } from './assistant-state.service';
+import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
 import { ApprovalsService, PolicyToolOutcome } from '../approvals.service';
@@ -356,6 +356,7 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     };
 
     switch (name) {
+      case 'ask_user':              return { icon: '❓', label: 'Asking you a few questions' };
       case 'web_search':            return { icon: '🔍', label: 'Searching the web' + (arg('query') ? ` for ${arg('query')}` : '') };
       case 'create_tap':            return { icon: '🛠',  label: 'Creating tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'update_tap':            return { icon: '✏️', label: 'Updating tap' + (arg('name') ? ` ${arg('name')}` : '') };
@@ -576,6 +577,56 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     sr.cancelled = true;
     for (const k of Object.keys(sr.fieldValues)) sr.fieldValues[k] = '';
     this.sendSystemReply(`I'd rather not provide credentials right now — stop here.`);
+  }
+
+  // -------- Inline question card (ask_user) --------
+
+  isAskUserSelected(card: ToolCard, index: number, label: string): boolean {
+    return !!card.askUser && askUserSelected(card.askUser, index).has(label);
+  }
+
+  /** Radio behaviour for single-select questions, checkbox for multi-select. */
+  toggleAskUserOption(card: ToolCard, index: number, label: string): void {
+    const au = card.askUser;
+    if (!au || au.submitted || au.skipped) return;
+    const selected = askUserSelected(au, index);
+    if (au.questions[index]?.multiSelect) {
+      if (selected.has(label)) selected.delete(label); else selected.add(label);
+    } else {
+      const wasOnly = selected.has(label) && selected.size === 1;
+      selected.clear();
+      if (!wasOnly) selected.add(label);
+    }
+  }
+
+  /** Submit is enabled once every question has a selected option or Other text. */
+  askUserComplete(card: ToolCard): boolean {
+    const au = card.askUser;
+    if (!au || au.questions.length === 0) return false;
+    return au.questions.every((_, i) => askUserAnswer(au, i).length > 0);
+  }
+
+  /** Post the answers as the user's next message — the same resume path as
+   *  the credentials form. */
+  submitAskUser(card: ToolCard): void {
+    const au = card.askUser;
+    if (!au || au.submitted || au.skipped || this.state.streaming) return;
+    const text = formatAskUserAnswers(card);
+    au.summary = text;
+    au.submitted = true;
+    this.sendSystemReply(text);
+  }
+
+  /** "Answer in chat instead": collapse the card and hand focus to the composer. */
+  skipAskUser(card: ToolCard): void {
+    const au = card.askUser;
+    if (!au || au.submitted || au.skipped) return;
+    au.skipped = true;
+    requestAnimationFrame(() => this.composerEl?.nativeElement.focus());
+  }
+
+  askUserSummaryLines(card: ToolCard): string[] {
+    return (card.askUser?.summary || '').split('\n').filter(l => l.trim().length > 0);
   }
 
   /** Send a follow-up message on the user's behalf to resume the agent loop.

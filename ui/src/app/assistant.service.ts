@@ -37,6 +37,15 @@ export interface StagedAttachment {
 /** SSE event types streamed back from POST /api/v1/assistant/chat. The agent
  *  loop emits these in order; the component renders each one into the
  *  document-style chat layout. */
+/** One question on an `ask_user` card (validated and normalised server-side:
+ *  header <= 12 chars, 2-4 options, multiSelect defaulted). */
+export interface AskUserQuestion {
+  header: string;
+  question: string;
+  options: { label: string; description: string }[];
+  multiSelect: boolean;
+}
+
 export type AssistantEvent =
   | { type: 'iteration_start' }
   | { type: 'thinking_delta'; text: string }
@@ -51,6 +60,10 @@ export type AssistantEvent =
    *  an inline credentials form on the matching tool card. Values never enter
    *  the chat — they go straight to /api/v1/secrets on submit. */
   | { type: 'secret_request'; id: string; secretName: string; fieldNames: string[]; reason: string }
+  /** Synthetic event: agent called `ask_user`. The UI renders an inline
+   *  question card on the matching tool card; answers are posted as the
+   *  user's next message in `header: answer` lines. Assistant only. */
+  | { type: 'ask_user'; id: string; questions: AskUserQuestion[] }
   /** Configuration chat only: a mutating tool proposed a change. The UI shows
    *  `summary` with Confirm / Cancel; Confirm re-posts with `token`. */
   | { type: 'confirm_request'; id: string; tool: string; summary: string; token: string }

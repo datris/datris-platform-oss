@@ -51,6 +51,87 @@ object AssistantAPIController {
             "- Live Read results are never catalogued or queryable later and expire after the retention window, so read them promptly. Nothing is landed anywhere.\n" +
             "- If the rows turn out to be worth keeping, promote the pipeline later with `update_pipeline` (change the destination from `scratch` to a real one). The tap, its schedule, and its incremental cursor do not move.\n"
 
+    /** Synthetic tool definition for `ask_user` — the Assistant's inline
+      * question card. NOT registered on the MCP server; appended to the tool
+      * catalog only on the Assistant codepath, and AgentLoop intercepts the
+      * call (`AgentLoop.askUserQuestionsOf`). Provider-neutral JSON Schema: it
+      * also reaches OpenAI as `parameters`. On the companion so a spec can
+      * read it (same seam as [[KeepOrScratchRule]]).
+      */
+    private[datris] def syntheticAskUserToolDef(): JsonObject = {
+        def strProp(desc: String): JsonObject = {
+            val o = new JsonObject()
+            o.addProperty("type", "string")
+            o.addProperty("description", desc)
+            o
+        }
+        def required(names: String*): JsonArray = {
+            val a = new JsonArray()
+            names.foreach(n => a.add(n))
+            a
+        }
+        val tool = new JsonObject()
+        tool.addProperty("name", AgentLoop.SyntheticAskUserTool)
+        tool.addProperty(
+            "description",
+            "Ask the user 1-4 closed-choice questions on an inline question card rendered in the chat UI. " +
+                "Use it when the answer is a pick from a small set you can name: which source API, which schedule, which destination, append vs latest, a scope preset. " +
+                "NEVER use it for open-ended answers (names, free-form filters, lists of values) — ask those in prose. " +
+                "NEVER use it for anything the platform can discover on its own (database or schema names, whether a table exists, column names or types) — do not ask the user about those at all. " +
+                "NEVER put a credential on it (API keys, passwords, tokens) — use `request_tap_secret_from_user` for credentials. " +
+                "Each question has a short `header` (12 characters or fewer), the `question`, 2-4 `options` each with a `label` and a one-line `description`, and `multiSelect` when several options may apply. " +
+                "The card always offers an Other free-text answer, so do not add an Other option yourself. " +
+                "Call it at most once per turn and do not also write prose questions in the same turn. " +
+                "The conversation resumes with the user's next message: their answers as `header: answer` lines, or a prose reply instead."
+        )
+        val optionProps = new JsonObject()
+        optionProps.add("label", strProp("Short option label (1-5 words), shown on the button and echoed back in the answer."))
+        optionProps.add("description", strProp("One line explaining the option or its trade-off."))
+        val optionItem = new JsonObject()
+        optionItem.addProperty("type", "object")
+        optionItem.add("properties", optionProps)
+        optionItem.add("required", required("label", "description"))
+        val options = new JsonObject()
+        options.addProperty("type", "array")
+        options.addProperty("minItems", 2)
+        options.addProperty("maxItems", 4)
+        options.add("items", optionItem)
+        options.addProperty("description", "2-4 distinct choices. The UI adds an Other free-text input automatically.")
+
+        val multi = new JsonObject()
+        multi.addProperty("type", "boolean")
+        multi.addProperty("default", false)
+        multi.addProperty("description", "True when the user may pick more than one option. Defaults to false.")
+
+        val header = strProp("Very short label for the question (12 characters or fewer), used as the answer key.")
+        header.addProperty("maxLength", 12)
+        val questionProps = new JsonObject()
+        questionProps.add("header", header)
+        questionProps.add("question", strProp("The full question, ending with a question mark."))
+        questionProps.add("options", options)
+        questionProps.add("multiSelect", multi)
+        val questionItem = new JsonObject()
+        questionItem.addProperty("type", "object")
+        questionItem.add("properties", questionProps)
+        questionItem.add("required", required("header", "question", "options"))
+
+        val questions = new JsonObject()
+        questions.addProperty("type", "array")
+        questions.addProperty("minItems", 1)
+        questions.addProperty("maxItems", 4)
+        questions.add("items", questionItem)
+        questions.addProperty("description", "1-4 questions shown together on one card with a single Submit.")
+
+        val props = new JsonObject()
+        props.add("questions", questions)
+        val schema = new JsonObject()
+        schema.addProperty("type", "object")
+        schema.add("properties", props)
+        schema.add("required", required("questions"))
+        tool.add("input_schema", schema)
+        tool
+    }
+
     /** Prompt-facing display names for the canonical destination names
       * emitted by DestinationAvailabilityUtil. */
     private[datris] val destinationDisplayNames = Map(
@@ -351,8 +432,9 @@ class AssistantAPIController {
         // Append the synthetic `request_tap_secret_from_user` tool. The agent
         // sees it like any other tool, but AgentLoop intercepts the call
         // instead of dispatching to MCP — it emits a SecretRequest SSE event
-        // that the UI renders as an inline credentials form.
-        val toolDefs = MCPClient.listTools(uiKey) :+ syntheticSecretToolDef()
+        // that the UI renders as an inline credentials form. `ask_user` is
+        // intercepted the same way and renders an inline question card.
+        val toolDefs = MCPClient.listTools(uiKey) :+ syntheticSecretToolDef() :+ AssistantAPIController.syntheticAskUserToolDef()
         val workflowReference =
             try MCPClient.readResource("datris://pipeline-config-reference", uiKey)
             catch {
@@ -546,6 +628,9 @@ class AssistantAPIController {
             )
         sb.append(
             "- **Partial answers are not full answers.** If you asked N clarifying questions and the user answered K of them, the remaining N-K are still pending. Repeat the unanswered ones in plain language and wait — do not infer them from context, the user's tone, or the most popular choice in your training data. Only proceed once every open question is closed or the user has explicitly told you to pick a default.\n"
+        )
+        sb.append(
+            "- **Closed choices go on a question card.** When your clarifying questions are closed choices (which source, which schedule, which destination, append vs latest, a scope preset), call `ask_user` instead of writing a numbered list. Keep open-ended questions (names, free-form filters, lists of values) in prose. Do not mix a card with prose questions in the same turn, and show at most one card per turn. The partial-answers rule above applies to card answers too.\n"
         )
         sb.append(
             "- If the user says \"use a sensible default\" or \"you pick,\" choose ONE obviously-placeholder value so they can verify the shape works, and tell them plainly that it's a placeholder. Do not pad the placeholder with a recognizable canonical list.\n"

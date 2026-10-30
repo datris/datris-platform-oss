@@ -201,6 +201,54 @@
                   </div>
                 </ng-container>
 
+                <!-- Inline question card: rendered instead of the generic tool
+                     body when the agent called ask_user. Submit posts the
+                     answers as `Header: answer` lines; the user may also just
+                     type a reply, which collapses the card. -->
+                <ng-container *ngIf="seg.askUser as aq">
+                  <div class="ask-card" *ngIf="!aq.submitted && !aq.skipped">
+                    <div class="ask-question" *ngFor="let q of aq.questions; let qi = index; trackBy: trackByIndex">
+                      <div class="ask-question-head">
+                        <span class="ask-header">{{ q.header }}</span>
+                        <span class="ask-text">{{ q.question }}</span>
+                        <span class="ask-multi" *ngIf="q.multiSelect">pick any</span>
+                      </div>
+                      <div class="ask-options" [attr.role]="q.multiSelect ? 'group' : 'radiogroup'">
+                        <button type="button" class="ask-option"
+                                *ngFor="let o of q.options; trackBy: trackByIndex"
+                                [attr.role]="q.multiSelect ? 'checkbox' : 'radio'"
+                                [attr.aria-checked]="isAskUserSelected(seg, qi, o.label)"
+                                [class.ask-option-selected]="isAskUserSelected(seg, qi, o.label)"
+                                [disabled]="state.streaming"
+                                (click)="toggleAskUserOption(seg, qi, o.label)">
+                          <span class="ask-option-mark">{{ q.multiSelect ? (isAskUserSelected(seg, qi, o.label) ? '☑' : '☐') : (isAskUserSelected(seg, qi, o.label) ? '◉' : '○') }}</span>
+                          <span class="ask-option-body">
+                            <span class="ask-option-label">{{ o.label }}</span>
+                            <span class="ask-option-desc" *ngIf="o.description">{{ o.description }}</span>
+                          </span>
+                        </button>
+                      </div>
+                      <input type="text" class="ask-other"
+                             [(ngModel)]="aq.other[qi]"
+                             [disabled]="state.streaming"
+                             placeholder="Other (type your own answer)"
+                             autocomplete="off">
+                    </div>
+                    <div class="ask-actions">
+                      <button class="secret-btn secret-btn-cancel" (click)="skipAskUser(seg)">Answer in chat instead</button>
+                      <button class="secret-btn secret-btn-save"
+                              (click)="submitAskUser(seg)"
+                              [disabled]="!askUserComplete(seg) || state.streaming">Submit</button>
+                    </div>
+                  </div>
+                  <div class="ask-summary" *ngIf="aq.submitted">
+                    <div class="ask-summary-line" *ngFor="let line of askUserSummaryLines(seg)">{{ line }}</div>
+                  </div>
+                  <div class="secret-form-result secret-form-result-cancelled" *ngIf="aq.skipped && !aq.submitted">
+                    Answered in chat.
+                  </div>
+                </ng-container>
+
                 <!-- Agent-policy outcomes: the call is queued for a person, or
                      was refused by policy. Rendered from the tool result JSON. -->
                 <ng-container *ngIf="policyOutcome(seg) as po">
@@ -221,8 +269,8 @@
                 </ng-container>
 
                 <!-- Generic tool body (input + result JSON). Suppressed for
-                     active secret-request cards since the form replaces it. -->
-                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest">
+                     secret-request and question cards since the form replaces it. -->
+                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest && !seg.askUser">
                   <div class="tool-body-label">Input</div>
                   <pre class="tool-body-pre">{{ formatJson(seg.input) }}</pre>
                   <ng-container *ngIf="seg.status !== 'running'">
