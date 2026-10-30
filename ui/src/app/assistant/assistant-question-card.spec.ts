@@ -260,4 +260,49 @@ describe('Assistant question cards (ask_user)', () => {
     expect(text).toContain('Free, no key needed');
     expect(el.querySelector('.tool-body')).withContext('generic tool body must be hidden for an ask_user card').toBeNull();
   });
+
+  it('a multi-question card shows one tab at a time; picking a single-select answer advances', () => {
+    mount();
+    const c = askAndFinish('toolu_tabs');
+    c.expanded = true;
+    fixture.detectChanges();
+    const tabs = Array.from(el.querySelectorAll('.ask-tab')).map(t => (t.textContent || '').replace(/\s+/g, ' ').trim());
+    expect(tabs).toEqual(['1Source', '2Schedule']);
+    let text = (el.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('Which weather API should the tap call?');
+    expect(text).not.toContain('Which runs do you want?');
+    expect(el.querySelector('.ask-actions .secret-btn-save')?.textContent?.trim()).toBe('Next');
+
+    fixture.componentInstance.toggleAskUserOption(c, 0, 'Open-Meteo');
+    fixture.detectChanges();
+    expect(fixture.componentInstance.askUserActive(c)).toBe(1);
+    text = (el.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('Which runs do you want?');
+    expect(text).not.toContain('Which weather API should the tap call?');
+    const first = el.querySelector('.ask-tab') as HTMLElement;
+    expect(first.classList).toContain('ask-tab-answered');
+    expect(first.querySelector('.ask-tab-mark')?.textContent?.trim()).toBe('✓');
+
+    const submit = Array.from(el.querySelectorAll('.ask-actions button')).find(b => b.textContent?.trim() === 'Submit') as HTMLButtonElement;
+    expect(submit).withContext('Submit shows on the last tab').toBeTruthy();
+    expect(submit.disabled).withContext('Submit stays disabled until every tab is answered').toBeTrue();
+
+    fixture.componentInstance.toggleAskUserOption(c, 1, 'Daily');
+    fixture.detectChanges();
+    expect(fixture.componentInstance.askUserActive(c)).withContext('multi-select does not auto-advance').toBe(1);
+    expect((Array.from(el.querySelectorAll('.ask-actions button')).find(b => b.textContent?.trim() === 'Submit') as HTMLButtonElement).disabled).toBeFalse();
+
+    (el.querySelector('.ask-tab') as HTMLElement).click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.askUserActive(c)).withContext('clicking a chip returns to that tab').toBe(0);
+  });
+
+  it('askUserActive clamps a stale persisted index', () => {
+    mount();
+    const c = askAndFinish('toolu_clamp');
+    c.askUser.active = 99;
+    expect(fixture.componentInstance.askUserActive(c)).toBe(1);
+    c.askUser.active = -3;
+    expect(fixture.componentInstance.askUserActive(c)).toBe(0);
+  });
 });

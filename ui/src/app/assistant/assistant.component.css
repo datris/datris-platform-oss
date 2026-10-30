@@ -415,6 +415,57 @@
   flex-direction: column;
   gap: 14px;
 }
+.ask-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid #2c303a;
+  padding-bottom: 10px;
+}
+.ask-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #16181d;
+  border: 1px solid #2c303a;
+  border-radius: 14px;
+  padding: 4px 10px 4px 6px;
+  color: #a0a4ac;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.ask-tab:hover { border-color: #4a505c; color: #d8dae0; }
+.ask-tab-active {
+  border-color: var(--accent-cyan);
+  color: #f0f1f5;
+  background: #1a2228;
+}
+.ask-tab-answered .ask-tab-mark {
+  background: var(--accent-cyan);
+  color: #16181d;
+}
+.ask-tab-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #2c303a;
+  color: #c0c4cc;
+  font-size: 11px;
+  font-weight: 600;
+}
+.ask-tab-label {
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ask-actions-spacer { flex: 1; }
 .ask-question {
   display: flex;
   flex-direction: column;

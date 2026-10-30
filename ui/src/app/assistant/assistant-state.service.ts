@@ -60,6 +60,9 @@ export interface AskUserState {
   skipped: boolean;
   /** The posted `header: answer` lines, shown read-only once submitted. */
   summary: string;
+  /** Which question tab is showing. Optional so cards persisted before tabs
+   *  existed still load; undefined means the first. */
+  active?: number;
 }
 
 /** Selected labels for one question, tolerating the shape a reload leaves

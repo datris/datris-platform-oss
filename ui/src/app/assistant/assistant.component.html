@@ -207,7 +207,23 @@
                      type a reply, which collapses the card. -->
                 <ng-container *ngIf="seg.askUser as aq">
                   <div class="ask-card" *ngIf="!aq.submitted && !aq.skipped">
-                    <div class="ask-question" *ngFor="let q of aq.questions; let qi = index; trackBy: trackByIndex">
+                    <!-- One tab per question, like the Claude Code question
+                         dialog: the chip strip shows which are answered, one
+                         question is open at a time. -->
+                    <div class="ask-tabs" role="tablist" *ngIf="aq.questions.length > 1">
+                      <button type="button" class="ask-tab"
+                              *ngFor="let q of aq.questions; let qi = index; trackBy: trackByIndex"
+                              role="tab"
+                              [attr.aria-selected]="askUserActive(seg) === qi"
+                              [class.ask-tab-active]="askUserActive(seg) === qi"
+                              [class.ask-tab-answered]="askUserAnswered(seg, qi)"
+                              (click)="setAskUserActive(seg, qi)">
+                        <span class="ask-tab-mark">{{ askUserAnswered(seg, qi) ? '✓' : (qi + 1) }}</span>
+                        <span class="ask-tab-label">{{ q.header }}</span>
+                      </button>
+                    </div>
+                    <ng-container *ngFor="let q of aq.questions; let qi = index; trackBy: trackByIndex">
+                    <div class="ask-question" role="tabpanel" *ngIf="qi === askUserActive(seg)">
                       <div class="ask-question-head">
                         <span class="ask-header">{{ q.header }}</span>
                         <span class="ask-text">{{ q.question }}</span>
@@ -234,9 +250,16 @@
                              placeholder="Other (type your own answer)"
                              autocomplete="off">
                     </div>
+                    </ng-container>
                     <div class="ask-actions">
                       <button class="secret-btn secret-btn-cancel" (click)="skipAskUser(seg)">Answer in chat instead</button>
-                      <button class="secret-btn secret-btn-save"
+                      <span class="ask-actions-spacer"></span>
+                      <button class="secret-btn secret-btn-cancel" *ngIf="askUserActive(seg) > 0"
+                              (click)="setAskUserActive(seg, askUserActive(seg) - 1)">Back</button>
+                      <button class="secret-btn secret-btn-save" *ngIf="askUserActive(seg) < aq.questions.length - 1"
+                              [disabled]="!askUserAnswered(seg, askUserActive(seg))"
+                              (click)="setAskUserActive(seg, askUserActive(seg) + 1)">Next</button>
+                      <button class="secret-btn secret-btn-save" *ngIf="askUserActive(seg) === aq.questions.length - 1"
                               (click)="submitAskUser(seg)"
                               [disabled]="!askUserComplete(seg) || state.streaming">Submit</button>
                     </div>
