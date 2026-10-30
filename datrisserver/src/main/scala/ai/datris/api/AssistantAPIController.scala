@@ -74,14 +74,14 @@ object AssistantAPIController {
         tool.addProperty("name", AgentLoop.SyntheticAskUserTool)
         tool.addProperty(
             "description",
-            "Ask the user 1-4 closed-choice questions on an inline question card rendered in the chat UI. " +
-                "Use it when the answer is a pick from a small set you can name: which source API, which schedule, which destination, append vs latest, a scope preset. " +
-                "NEVER use it for open-ended answers (names, free-form filters, lists of values) — ask those in prose. " +
+            "Ask the user 1-4 clarifying questions on an inline question card rendered in the chat UI. " +
+                "Use it for EVERY clarifying question you need answered before you can proceed: closed choices (which source API, which schedule, which destination, append vs latest, a scope preset) and open-ended ones (names, locations, free-form filters, lists of values). " +
+                "Give a question 2-4 `options` whenever you can name sensible choices — a time of day, a cadence, a region, a size — each with a `label` and a one-line `description`; the card always adds an Other free-text answer, so do not add an Other option yourself. " +
+                "Leave `options` out (or empty) for a genuinely open-ended question such as a list of cities; the card then shows a text box for that question. " +
                 "NEVER use it for anything the platform can discover on its own (database or schema names, whether a table exists, column names or types) — do not ask the user about those at all. " +
                 "NEVER put a credential on it (API keys, passwords, tokens) — use `request_tap_secret_from_user` for credentials. " +
-                "Each question has a short `header` (12 characters or fewer), the `question`, 2-4 `options` each with a `label` and a one-line `description`, and `multiSelect` when several options may apply. " +
-                "The card always offers an Other free-text answer, so do not add an Other option yourself. " +
-                "Call it at most once per turn and do not also write prose questions in the same turn. " +
+                "Each question has a short `header` (12 characters or fewer), the `question`, optional `options`, and `multiSelect` when several options may apply. " +
+                "Call it at most once per turn and do not also write prose questions in the same turn; a plan or summary for the user to confirm may stay in prose. " +
                 "The conversation resumes with the user's next message: their answers as `header: answer` lines, or a prose reply instead."
         )
         val optionProps = new JsonObject()
@@ -96,7 +96,7 @@ object AssistantAPIController {
         options.addProperty("minItems", 2)
         options.addProperty("maxItems", 4)
         options.add("items", optionItem)
-        options.addProperty("description", "2-4 distinct choices. The UI adds an Other free-text input automatically.")
+        options.addProperty("description", "2-4 distinct choices, or omit for a free-text question. The UI adds an Other free-text input automatically.")
 
         val multi = new JsonObject()
         multi.addProperty("type", "boolean")
@@ -113,7 +113,7 @@ object AssistantAPIController {
         val questionItem = new JsonObject()
         questionItem.addProperty("type", "object")
         questionItem.add("properties", questionProps)
-        questionItem.add("required", required("header", "question", "options"))
+        questionItem.add("required", required("header", "question"))
 
         val questions = new JsonObject()
         questions.addProperty("type", "array")
@@ -630,7 +630,7 @@ class AssistantAPIController {
             "- **Partial answers are not full answers.** If you asked N clarifying questions and the user answered K of them, the remaining N-K are still pending. Repeat the unanswered ones in plain language and wait — do not infer them from context, the user's tone, or the most popular choice in your training data. Only proceed once every open question is closed or the user has explicitly told you to pick a default.\n"
         )
         sb.append(
-            "- **Closed choices go on a question card.** When your clarifying questions are closed choices (which source, which schedule, which destination, append vs latest, a scope preset), call `ask_user` instead of writing a numbered list. Keep open-ended questions (names, free-form filters, lists of values) in prose. Do not mix a card with prose questions in the same turn, and show at most one card per turn. The partial-answers rule above applies to card answers too. A `[Tool call: ask_user …]` record in an earlier turn is how a past card appears in the history: for new closed choices call `ask_user` again, never reproduce the record as text.\n"
+            "- **Clarifying questions go on a question card.** Whenever you need answers from the user before proceeding, call `ask_user` instead of writing a numbered list — for closed choices (which source, which schedule, which destination, append vs latest, a scope preset) AND for open-ended ones (names, locations, free-form filters, lists of values). Offer 2-4 options whenever you can name sensible ones (a time of day: 6:00 AM, noon, 6:00 PM; a cadence; a region); leave options out for a genuinely open-ended question so the card shows a text box. Do not mix a card with prose questions in the same turn, and show at most one card per turn; a plan or summary for the user to confirm may stay in prose alongside the card. The partial-answers rule above applies to card answers too. A `[Tool call: ask_user …]` record in an earlier turn is how a past card appears in the history: for new questions call `ask_user` again, never reproduce the record as text.\n"
         )
         sb.append(
             "- If the user says \"use a sensible default\" or \"you pick,\" choose ONE obviously-placeholder value so they can verify the shape works, and tell them plainly that it's a placeholder. Do not pad the placeholder with a recognizable canonical list.\n"

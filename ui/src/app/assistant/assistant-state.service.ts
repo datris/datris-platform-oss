@@ -99,7 +99,9 @@ export function describeAskUserForHistory(questions: AskUserQuestion[], submitte
   const lines = ['', '', '[Tool call: ask_user — question card shown to the user; not prose]', '[Card questions:'];
   for (const q of questions || []) {
     const opts = (q.options || []).map(o => o.description ? `${o.label} (${o.description})` : o.label).join('; ');
-    lines.push(`  - ${q.header} | ${q.question} | options: ${opts}; Other | ${q.multiSelect ? 'multi-select' : 'single-select'}`);
+    lines.push(opts
+      ? `  - ${q.header} | ${q.question} | options: ${opts}; Other | ${q.multiSelect ? 'multi-select' : 'single-select'}`
+      : `  - ${q.header} | ${q.question} | free text`);
   }
   lines.push(']');
   lines.push(submitted

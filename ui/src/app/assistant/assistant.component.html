@@ -229,7 +229,7 @@
                         <span class="ask-text">{{ q.question }}</span>
                         <span class="ask-multi" *ngIf="q.multiSelect">pick any</span>
                       </div>
-                      <div class="ask-options" [attr.role]="q.multiSelect ? 'group' : 'radiogroup'">
+                      <div class="ask-options" *ngIf="q.options?.length" [attr.role]="q.multiSelect ? 'group' : 'radiogroup'">
                         <button type="button" class="ask-option"
                                 *ngFor="let o of q.options; trackBy: trackByIndex"
                                 [attr.role]="q.multiSelect ? 'checkbox' : 'radio'"
@@ -247,7 +247,7 @@
                       <input type="text" class="ask-other"
                              [(ngModel)]="aq.other[qi]"
                              [disabled]="state.streaming"
-                             placeholder="Other (type your own answer)"
+                             [placeholder]="q.options?.length ? 'Other (type your own answer)' : 'Type your answer'"
                              autocomplete="off">
                     </div>
                     </ng-container>

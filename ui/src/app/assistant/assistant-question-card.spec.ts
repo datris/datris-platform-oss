@@ -22,7 +22,7 @@ import { of, Subject } from 'rxjs';
 
 import * as stateModule from './assistant-state.service';
 import { AssistantComponent } from './assistant.component';
-import { AssistantStateService } from './assistant-state.service';
+import { AssistantStateService, describeAskUserForHistory } from './assistant-state.service';
 import { AssistantService } from '../assistant.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
@@ -304,5 +304,30 @@ describe('Assistant question cards (ask_user)', () => {
     expect(fixture.componentInstance.askUserActive(c)).toBe(1);
     c.askUser.active = -3;
     expect(fixture.componentInstance.askUserActive(c)).toBe(0);
+  });
+
+  it('a question without options renders only a text box and is answered by typing', () => {
+    mount();
+    const qs = [
+      QUESTIONS[0],
+      { header: 'Locations', question: 'Which places should it cover?', multiSelect: false, options: [] }
+    ];
+    state.send('I want a tap that pulls weather data');
+    stream.next({ type: 'ask_user', id: 'toolu_free', questions: qs });
+    stream.next({ type: 'done' });
+    stream.complete();
+    const c = card('toolu_free');
+    c.expanded = true;
+    fixture.componentInstance.setAskUserActive(c, 1);
+    fixture.detectChanges();
+    expect(el.querySelector('.ask-options')).withContext('no option buttons for a free-text question').toBeNull();
+    const box = el.querySelector('.ask-other') as HTMLInputElement;
+    expect(box.placeholder).toBe('Type your answer');
+    expect(fixture.componentInstance.askUserAnswered(c, 1)).toBeFalse();
+    c.askUser.other[1] = 'Boston, MA; Denver, CO';
+    expect(fixture.componentInstance.askUserAnswered(c, 1)).toBeTrue();
+    c.askUser.selections[0] = new Set(['NWS']);
+    expect(formatAskUserAnswers(c)).toBe('Source: NWS\nLocations: Boston, MA; Denver, CO');
+    expect(describeAskUserForHistory(qs, true)).toContain('Locations | Which places should it cover? | free text');
   });
 });

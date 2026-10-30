@@ -86,6 +86,17 @@ class AgentLoopAskUserSpec extends AnyFunSuite {
         assert(AgentLoop.askUserQuestionsOf(input(q("Source", nOpts = 1))).isLeft)
     }
 
+    test("no options is Right: a free-text question") {
+        val noOpts = s"""{"header":"Locations","question":"Which places?"}"""
+        val r = AgentLoop.askUserQuestionsOf(input(noOpts))
+        assert(r.isRight)
+        val nq = r.toOption.get.get(0).getAsJsonObject
+        assert(nq.getAsJsonArray("options").size == 0)
+        assert(!nq.get("multiSelect").getAsBoolean)
+        val emptyOpts = s"""{"header":"Locations","question":"Which places?","options":[]}"""
+        assert(AgentLoop.askUserQuestionsOf(input(emptyOpts)).isRight)
+    }
+
     test("five options is Left") {
         assert(AgentLoop.askUserQuestionsOf(input(q("Source", nOpts = 5))).isLeft)
     }
@@ -137,11 +148,12 @@ class AgentLoopAskUserSpec extends AnyFunSuite {
         assert(questions.get("maxItems").getAsInt == 4)
     }
 
-    test("tool def question items require header, question and options (2-4)") {
+    test("tool def question items require header and question; options are optional (2-4 when given)") {
         val item = toolDef.getAsJsonObject("input_schema").getAsJsonObject("properties")
             .getAsJsonObject("questions").getAsJsonObject("items")
         val req = item.getAsJsonArray("required").asScala.map(_.getAsString).toSet
-        assert(Set("header", "question", "options").subsetOf(req))
+        assert(Set("header", "question").subsetOf(req))
+        assert(!req.contains("options"), "options are optional: none means a free-text question")
         assert(!req.contains("multiSelect"), "multiSelect is optional (default false)")
         val props = item.getAsJsonObject("properties")
         assert(props.getAsJsonObject("multiSelect").get("type").getAsString == "boolean")

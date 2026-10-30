@@ -340,11 +340,14 @@ object AgentLoop {
             if (header.isEmpty) return Left(s"question $n is missing a non-empty `header`")
             val question = str(q, "question")
             if (question.isEmpty) return Left(s"question $n is missing a non-empty `question`")
+            // Options are optional: none means a free-text question (the card
+            // shows only the text box). When present there must be 2-4 —
+            // a single option is not a choice.
             val oe = q.get("options")
-            if (oe == null || !oe.isJsonArray) return Left(s"question $n must have an `options` array")
-            val opts = oe.getAsJsonArray
-            if (opts.size < AskUserMinOptions || opts.size > AskUserMaxOptions)
-                return Left(s"question $n must have $AskUserMinOptions-$AskUserMaxOptions options (got ${opts.size})")
+            if (oe != null && !oe.isJsonNull && !oe.isJsonArray) return Left(s"question $n `options` must be an array")
+            val opts = if (oe == null || oe.isJsonNull) new JsonArray() else oe.getAsJsonArray
+            if (opts.size != 0 && (opts.size < AskUserMinOptions || opts.size > AskUserMaxOptions))
+                return Left(s"question $n must have $AskUserMinOptions-$AskUserMaxOptions options, or none for a free-text answer (got ${opts.size})")
             val outOpts = new JsonArray()
             var j = 0
             while (j < opts.size) {
