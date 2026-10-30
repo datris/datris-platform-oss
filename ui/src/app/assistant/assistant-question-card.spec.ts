@@ -136,6 +136,23 @@ describe('Assistant question cards (ask_user)', () => {
     expect(cards[0].askUser?.questions).toEqual(QUESTIONS);
   });
 
+  it('a card-only turn is sent in history as an assistant message listing the questions and options', () => {
+    askAndFinish('toolu_hist', true);
+    state.send('Source: NWS\nSchedule: Hourly');
+    const history: any[] = chatSpy.calls.mostRecent().args[0];
+    expect(history.map((m: any) => m.role)).toEqual(['user', 'assistant', 'user']);
+    const asked: string = history[1].content;
+    for (const q of QUESTIONS) {
+      expect(asked).toContain(q.header);
+      expect(asked).toContain(q.question);
+      for (const o of q.options) {
+        expect(asked).toContain(o.label);
+        expect(asked).toContain(o.description);
+      }
+    }
+    expect(history[2].content).toBe('Source: NWS\nSchedule: Hourly');
+  });
+
   // ------------------------------------------------------- formatting ---
 
   function formCard(selections: Record<number, Set<string>>, other: Record<number, string> = {}): any {

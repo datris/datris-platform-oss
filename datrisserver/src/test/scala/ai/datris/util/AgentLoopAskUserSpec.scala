@@ -111,6 +111,12 @@ class AgentLoopAskUserSpec extends AnyFunSuite {
         assert(h == "DestinationC")
     }
 
+    test("a header clipped at a space carries no trailing space") {
+        val r = AgentLoop.askUserQuestionsOf(input(q("Destination database")))
+        assert(r.isRight, s"a long header is clipped, not rejected: $r")
+        assert(questionsOf(r.toOption.get).head.get("header").getAsString == "Destination")
+    }
+
     // ---------------------------------------------------------- tool def ---
 
     private lazy val toolDef: JsonObject = AssistantAPIController.syntheticAskUserToolDef()

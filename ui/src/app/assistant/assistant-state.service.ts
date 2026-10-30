@@ -85,6 +85,18 @@ export function askUserAnswer(au: AskUserState, index: number): string {
   return parts.join(', ');
 }
 
+/** How a question card appears in the outbound chat history: the questions
+ *  and their options, so the model knows what it asked when the answers
+ *  arrive as the next user message. Not shown in the UI. */
+export function describeAskUserForHistory(questions: AskUserQuestion[]): string {
+  const lines = ['\n\n(Asked on a question card; the answers follow as `header: answer` lines.)'];
+  for (const q of questions || []) {
+    const opts = (q.options || []).map(o => o.description ? `${o.label} (${o.description})` : o.label).join('; ');
+    lines.push(`${q.header}: ${q.question} Options: ${opts}${q.multiSelect ? ' [multi-select]' : ''}; or Other.`);
+  }
+  return lines.join('\n') + '\n';
+}
+
 /** One `Header: answer` line per question — the text posted as the user's
  *  next message when a question card is submitted. */
 export function formatAskUserAnswers(card: ToolCard): string {
@@ -320,9 +332,13 @@ export class AssistantStateService {
       } else if (t === assistantTurn) {
         continue;
       } else {
+        // Text segments, plus a plain description of any question card: a
+        // card-only turn has no text, and without this the model never sees
+        // that it already asked (or what), so it re-asks the same card.
         const visible = t.segments
-          .filter(s => s.kind === 'text')
-          .map(s => (s as TextSegment).text)
+          .map(s => s.kind === 'text' ? (s as TextSegment).text
+            : (s.kind === 'tool' && s.askUser) ? describeAskUserForHistory(s.askUser.questions)
+            : '')
           .join('');
         if (visible.trim().length > 0) {
           messages.push({ role: 'assistant', content: visible });

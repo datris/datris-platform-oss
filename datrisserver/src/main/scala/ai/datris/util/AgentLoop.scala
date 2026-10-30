@@ -242,6 +242,11 @@ object AgentLoop {
                             askUserQuestionsOf(t.input) match {
                                 case Right(questions) =>
                                     sink(LoopEvent.AskUser(t.id, questions))
+                                    // Close the tool card for UIs that predate the
+                                    // ask_user event (they would otherwise show it as
+                                    // still composing); the current UI keeps the card's
+                                    // question state and only takes the ✓.
+                                    sink(LoopEvent.ToolResult(t.id, t.name, AskUserWaitingText, isError = false))
                                     stopAfterBatch = true
                                     AIContentBlock.ToolResultBlock(t.id, AskUserWaitingText, isError = false)
                                 case Left(msg) =>
@@ -310,11 +315,8 @@ object AgentLoop {
         }
     }
 
-    /** A `{"status":"secret_request","secretName":…,"fieldNames":[…],"reason":…}`
-      * tool result becomes a SecretRequest event. Non-JSON and other results:
-      * None. */
     /** Validate and normalise an `ask_user` tool input: 1-4 questions, each
-      * with a non-empty header (clipped to 12 chars), a non-empty question,
+      * with a non-empty header (clipped to 12 chars, then trimmed), a non-empty question,
       * 2-4 options with non-empty labels (description defaults to ""), and
       * `multiSelect` defaulting to false. Left carries the validation message. */
     private[util] def askUserQuestionsOf(input: JsonObject): Either[String, JsonArray] = {
@@ -360,7 +362,7 @@ object AgentLoop {
             val ms = q.get("multiSelect")
             val multi = ms != null && ms.isJsonPrimitive && ms.getAsJsonPrimitive.isBoolean && ms.getAsBoolean
             val nq = new JsonObject()
-            nq.addProperty("header", header.take(AskUserMaxHeader))
+            nq.addProperty("header", header.take(AskUserMaxHeader).trim)
             nq.addProperty("question", question)
             nq.add("options", outOpts)
             nq.addProperty("multiSelect", multi)
@@ -370,6 +372,9 @@ object AgentLoop {
         Right(out)
     }
 
+    /** A `{"status":"secret_request","secretName":…,"fieldNames":[…],"reason":…}`
+      * tool result becomes a SecretRequest event. Non-JSON and other results:
+      * None. */
     private[util] def secretRequestOf(id: String, tool: String, raw: String): Option[LoopEvent.SecretRequest] = {
         if (raw == null || !raw.trim.startsWith("{") || !raw.contains("secret_request")) return None
         try {
