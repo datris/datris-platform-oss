@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import com.google.gson.{JsonObject, JsonParser}
+import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{AIConfig, DatrisException}
 import ai.datris.util.AIUtil.{AIContentBlock, AIStreamEvent, AIToolResponse}
 import org.slf4j.{Logger, LoggerFactory}
@@ -48,6 +48,13 @@ object AgentLoop {
           * resumes the conversation. */
         case class SecretRequest(id: String, secretName: String, fieldNames: List[String], reason: String) extends LoopEvent
 
+        /** Synthetic tool: agent is asking the user 1-4 closed-choice questions.
+          * The UI renders an inline question card on the matching tool card. The
+          * loop ends after this so the user can answer; their next chat message
+          * (`header: answer` lines, or prose) resumes the conversation.
+          * `questions` is already validated and normalised by `askUserQuestionsOf`. */
+        case class AskUser(id: String, questions: JsonArray) extends LoopEvent
+
         /** Transient system message — surfaced to the user as a small inline note,
           * not as part of the assistant's textual response. Currently used to tell
           * the user when the model was downgraded mid-request (e.g., Opus → Sonnet
@@ -66,6 +73,21 @@ object AgentLoop {
     /** The synthetic tool name the agent calls to ask the user for credentials.
       * Handled by AgentLoop directly — NOT dispatched to the MCP server. */
     val SyntheticSecretTool: String = "request_tap_secret_from_user"
+
+    /** The synthetic tool name the Assistant calls to show a question card.
+      * Handled by AgentLoop directly — NOT dispatched to the MCP server. Only
+      * the Assistant registers it. */
+    val SyntheticAskUserTool: String = "ask_user"
+
+    /** What the model sees after a question card is shown; the loop then ends
+      * so the user can answer. */
+    private val AskUserWaitingText: String =
+        "Question card displayed to the user. Their answers arrive as the next user message as `header: answer` lines; they may also reply in prose. Wait for their reply."
+
+    private val AskUserMaxQuestions: Int = 4
+    private val AskUserMinOptions: Int = 2
+    private val AskUserMaxOptions: Int = 4
+    private val AskUserMaxHeader: Int = 12
 
     /** What the model sees after a secret form is shown; the loop then ends so
       * the user can act. */
@@ -212,6 +234,26 @@ object AgentLoop {
                             sink(LoopEvent.SecretRequest(t.id, secretName, fieldNames, reason))
                             stopAfterBatch = true
                             AIContentBlock.ToolResultBlock(t.id, SecretRequestWaitingText, isError = false)
+                        } else if (t.name == SyntheticAskUserTool) {
+                            // Synthetic tool — intercept. A valid call shows the
+                            // question card and ends the loop after this batch; a
+                            // malformed call is an error tool result (no card) and
+                            // the loop continues so the model can fix it.
+                            askUserQuestionsOf(t.input) match {
+                                case Right(questions) =>
+                                    sink(LoopEvent.AskUser(t.id, questions))
+                                    // Close the tool card for UIs that predate the
+                                    // ask_user event (they would otherwise show it as
+                                    // still composing); the current UI keeps the card's
+                                    // question state and only takes the ✓.
+                                    sink(LoopEvent.ToolResult(t.id, t.name, AskUserWaitingText, isError = false))
+                                    stopAfterBatch = true
+                                    AIContentBlock.ToolResultBlock(t.id, AskUserWaitingText, isError = false)
+                                case Left(msg) =>
+                                    val err = s"Invalid ask_user call: $msg"
+                                    sink(LoopEvent.ToolResult(t.id, t.name, err, isError = true))
+                                    AIContentBlock.ToolResultBlock(t.id, err, isError = true)
+                            }
                         } else {
                             try {
                                 // Substitute staged file bytes for an attachmentId before
@@ -271,6 +313,66 @@ object AgentLoop {
                 logger.warn("AgentLoop unexpected error: " + e.getClass.getSimpleName + ": " + e.getMessage)
                 sink(LoopEvent.Error(e.getClass.getSimpleName + ": " + e.getMessage))
         }
+    }
+
+    /** Validate and normalise an `ask_user` tool input: 1-4 questions, each
+      * with a non-empty header (clipped to 12 chars, then trimmed), a non-empty question,
+      * 2-4 options with non-empty labels (description defaults to ""), and
+      * `multiSelect` defaulting to false. Left carries the validation message. */
+    private[util] def askUserQuestionsOf(input: JsonObject): Either[String, JsonArray] = {
+        def str(o: JsonObject, key: String): String = {
+            val e = o.get(key)
+            if (e == null || e.isJsonNull || !e.isJsonPrimitive) "" else e.getAsString.trim
+        }
+        val qe = if (input == null) null else input.get("questions")
+        if (qe == null || !qe.isJsonArray) return Left("`questions` must be an array of 1-4 questions")
+        val qs = qe.getAsJsonArray
+        if (qs.size < 1 || qs.size > AskUserMaxQuestions)
+            return Left(s"`questions` must have 1-$AskUserMaxQuestions items (got ${qs.size})")
+        val out = new JsonArray()
+        var i = 0
+        while (i < qs.size) {
+            val n = i + 1
+            val qEl = qs.get(i)
+            if (!qEl.isJsonObject) return Left(s"question $n must be an object")
+            val q = qEl.getAsJsonObject
+            val header = str(q, "header")
+            if (header.isEmpty) return Left(s"question $n is missing a non-empty `header`")
+            val question = str(q, "question")
+            if (question.isEmpty) return Left(s"question $n is missing a non-empty `question`")
+            // Options are optional: none means a free-text question (the card
+            // shows only the text box). When present there must be 2-4 —
+            // a single option is not a choice.
+            val oe = q.get("options")
+            if (oe != null && !oe.isJsonNull && !oe.isJsonArray) return Left(s"question $n `options` must be an array")
+            val opts = if (oe == null || oe.isJsonNull) new JsonArray() else oe.getAsJsonArray
+            if (opts.size != 0 && (opts.size < AskUserMinOptions || opts.size > AskUserMaxOptions))
+                return Left(s"question $n must have $AskUserMinOptions-$AskUserMaxOptions options, or none for a free-text answer (got ${opts.size})")
+            val outOpts = new JsonArray()
+            var j = 0
+            while (j < opts.size) {
+                val oEl = opts.get(j)
+                if (!oEl.isJsonObject) return Left(s"question $n option ${j + 1} must be an object")
+                val o = oEl.getAsJsonObject
+                val label = str(o, "label")
+                if (label.isEmpty) return Left(s"question $n option ${j + 1} is missing a non-empty `label`")
+                val no = new JsonObject()
+                no.addProperty("label", label)
+                no.addProperty("description", str(o, "description"))
+                outOpts.add(no)
+                j += 1
+            }
+            val ms = q.get("multiSelect")
+            val multi = ms != null && ms.isJsonPrimitive && ms.getAsJsonPrimitive.isBoolean && ms.getAsBoolean
+            val nq = new JsonObject()
+            nq.addProperty("header", header.take(AskUserMaxHeader).trim)
+            nq.addProperty("question", question)
+            nq.add("options", outOpts)
+            nq.addProperty("multiSelect", multi)
+            out.add(nq)
+            i += 1
+        }
+        Right(out)
     }
 
     /** A `{"status":"secret_request","secretName":…,"fieldNames":[…],"reason":…}`

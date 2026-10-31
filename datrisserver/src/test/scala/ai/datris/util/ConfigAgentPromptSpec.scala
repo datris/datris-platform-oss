@@ -144,4 +144,9 @@ class ConfigAgentPromptSpec extends AnyFunSuite {
         for ((label, p) <- both)
             assert(!p.contains("request_tap_secret_from_user"), s"[$label] the Configuration chat must use its own form tools, not the Assistant's")
     }
+
+    test("the prompt does not mention ask_user") {
+        for ((label, p) <- both)
+            assert(!p.contains("ask_user"), s"[$label] ask_user is an Assistant-only tool; the Configuration chat must not be told about it")
+    }
 }

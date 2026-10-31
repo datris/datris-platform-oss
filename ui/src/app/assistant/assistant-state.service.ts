@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { AssistantService, AssistantEvent, AssistantInit, ChatMessage, StagedAttachment } from '../assistant.service';
+import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, StagedAttachment } from '../assistant.service';
 import { loadChatState, saveChatState, clearChatState } from '../shared/chat-persistence';
 
 /** Tool invocation inside an assistant turn. */
@@ -43,6 +43,79 @@ export interface ToolCard {
     cancelled: boolean;
     errorMessage: string;
   };
+  /** Populated when the agent called `ask_user`. The UI renders an inline
+   *  question card; Submit posts `formatAskUserAnswers` as the next user
+   *  message. `selections` are Sets in memory; after a reload (JSON) they
+   *  come back as plain objects, so read them through `askUserSelected`. */
+  askUser?: AskUserState;
+}
+
+export interface AskUserState {
+  questions: AskUserQuestion[];
+  /** Selected option labels per question index. */
+  selections: Record<number, Set<string>>;
+  /** "Other" free text per question index. */
+  other: Record<number, string>;
+  submitted: boolean;
+  skipped: boolean;
+  /** The posted `header: answer` lines, shown read-only once submitted. */
+  summary: string;
+  /** Which question tab is showing. Optional so cards persisted before tabs
+   *  existed still load; undefined means the first. */
+  active?: number;
+}
+
+/** Selected labels for one question, tolerating the shape a reload leaves
+ *  behind (a Set serialises to `{}`; an array is accepted too). */
+export function askUserSelected(au: AskUserState, index: number): Set<string> {
+  const v: any = au.selections ? au.selections[index] : undefined;
+  if (v instanceof Set) return v;
+  const s = new Set<string>(Array.isArray(v) ? v : []);
+  if (au.selections) au.selections[index] = s;
+  return s;
+}
+
+/** The answer for one question: selected labels in option order, then the
+ *  "Other" text when non-empty, joined with ", ". Empty when unanswered. */
+export function askUserAnswer(au: AskUserState, index: number): string {
+  const q = au.questions[index];
+  const selected = askUserSelected(au, index);
+  const parts: string[] = [];
+  for (const o of q?.options || []) if (selected.has(o.label)) parts.push(o.label);
+  for (const l of selected) if (!parts.includes(l)) parts.push(l);
+  const other = ((au.other || {})[index] || '').trim();
+  if (other) parts.push(other);
+  return parts.join(', ');
+}
+
+/** How a question card appears in the outbound chat history. A card-only
+ *  turn has no text, and without this the model never sees what it asked
+ *  when the answers arrive. Written as a bracketed tool-call record, not as
+ *  prose questions, so the model does not mimic it as text on a later turn
+ *  (it must call ask_user again). `submitted` says whether the next user
+ *  message is the card's `header: answer` lines or a reply typed in chat.
+ *  Not shown in the UI. */
+export function describeAskUserForHistory(questions: AskUserQuestion[], submitted: boolean): string {
+  const lines = ['', '', '[Tool call: ask_user — question card shown to the user; not prose]', '[Card questions:'];
+  for (const q of questions || []) {
+    const opts = (q.options || []).map(o => o.description ? `${o.label} (${o.description})` : o.label).join('; ');
+    lines.push(opts
+      ? `  - ${q.header} | ${q.question} | options: ${opts}; Other | ${q.multiSelect ? 'multi-select' : 'single-select'}`
+      : `  - ${q.header} | ${q.question} | free text`);
+  }
+  lines.push(']');
+  lines.push(submitted
+    ? '[The user submitted the card; their answers follow as `header: answer` lines.]'
+    : '[The user replied in chat instead of submitting the card; read their reply as prose.]');
+  return lines.join('\n') + '\n';
+}
+
+/** One `Header: answer` line per question — the text posted as the user's
+ *  next message when a question card is submitted. */
+export function formatAskUserAnswers(card: ToolCard): string {
+  const au = card.askUser;
+  if (!au) return '';
+  return au.questions.map((q, i) => `${q.header}: ${askUserAnswer(au, i)}`).join('\n');
 }
 
 export interface TextSegment {
@@ -217,11 +290,28 @@ export class AssistantStateService {
     this.attachmentError = '';
   }
 
+  /** Mark every pending `ask_user` card skipped. A card's own Submit marks it
+   *  submitted before sending, so it is not affected. */
+  private skipPendingAskUser(): void {
+    for (const t of this.turns) {
+      if (t.role !== 'assistant') continue;
+      for (const s of t.segments) {
+        if (s.kind === 'tool' && s.askUser && !s.askUser.submitted && !s.askUser.skipped) {
+          s.askUser.skipped = true;
+        }
+      }
+    }
+  }
+
   send(text: string): void {
     const trimmed = text.trim();
     // Allow sending a bare file with no text — the attachment carries the intent.
     if (this.streaming) return;
     if (!trimmed && this.activeAttachments.length === 0) return;
+
+    // A question card still waiting for answers is superseded by whatever
+    // the user sends now (a typed reply, or another form's reply): collapse it.
+    this.skipPendingAskUser();
 
     const sentAttachments = this.activeAttachments.slice();
     this.turns.push({ role: 'user', text: trimmed, attachments: sentAttachments.length ? sentAttachments : undefined });
@@ -255,9 +345,13 @@ export class AssistantStateService {
       } else if (t === assistantTurn) {
         continue;
       } else {
+        // Text segments, plus a plain description of any question card: a
+        // card-only turn has no text, and without this the model never sees
+        // that it already asked (or what), so it re-asks the same card.
         const visible = t.segments
-          .filter(s => s.kind === 'text')
-          .map(s => (s as TextSegment).text)
+          .map(s => s.kind === 'text' ? (s as TextSegment).text
+            : (s.kind === 'tool' && s.askUser) ? describeAskUserForHistory(s.askUser.questions, s.askUser.submitted)
+            : '')
           .join('');
         if (visible.trim().length > 0) {
           messages.push({ role: 'assistant', content: visible });
@@ -414,6 +508,34 @@ export class AssistantStateService {
           submitted: false,
           cancelled: false,
           errorMessage: ''
+        };
+        break;
+      }
+      case 'ask_user': {
+        // Same shape as secret_request: synthesize the card if no tool_use
+        // arrived, then attach the question-card state.
+        let card = this.findToolCard(turn, evt.id);
+        if (!card) {
+          card = {
+            kind: 'tool',
+            id: evt.id,
+            name: 'ask_user',
+            input: { questions: evt.questions },
+            result: '',
+            isError: false,
+            status: 'ok',
+            expanded: false
+          };
+          turn.segments.push(card);
+        }
+        card.status = 'ok';
+        card.askUser = {
+          questions: evt.questions || [],
+          selections: {},
+          other: {},
+          submitted: false,
+          skipped: false,
+          summary: ''
         };
         break;
       }

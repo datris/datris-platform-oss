@@ -142,6 +142,12 @@ object AssistantSseSupport {
                 obj.add("fieldNames", fieldsArr)
                 obj.addProperty("reason", reason)
                 sendEvent(emitter, "secret_request", obj)
+            case AgentLoop.LoopEvent.AskUser(id, questions) =>
+                val obj = new JsonObject()
+                obj.addProperty("type", "ask_user")
+                obj.addProperty("id", id)
+                obj.add("questions", questions)
+                sendEvent(emitter, "ask_user", obj)
             case AgentLoop.LoopEvent.ConfirmRequest(id, tool, summary, token) =>
                 val obj = new JsonObject()
                 obj.addProperty("type", "confirm_request")

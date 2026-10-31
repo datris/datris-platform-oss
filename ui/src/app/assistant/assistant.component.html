@@ -201,6 +201,77 @@
                   </div>
                 </ng-container>
 
+                <!-- Inline question card: rendered instead of the generic tool
+                     body when the agent called ask_user. Submit posts the
+                     answers as `Header: answer` lines; the user may also just
+                     type a reply, which collapses the card. -->
+                <ng-container *ngIf="seg.askUser as aq">
+                  <div class="ask-card" *ngIf="!aq.submitted && !aq.skipped">
+                    <!-- One tab per question, like the Claude Code question
+                         dialog: the chip strip shows which are answered, one
+                         question is open at a time. -->
+                    <div class="ask-tabs" role="tablist" *ngIf="aq.questions.length > 1">
+                      <button type="button" class="ask-tab"
+                              *ngFor="let q of aq.questions; let qi = index; trackBy: trackByIndex"
+                              role="tab"
+                              [attr.aria-selected]="askUserActive(seg) === qi"
+                              [class.ask-tab-active]="askUserActive(seg) === qi"
+                              [class.ask-tab-answered]="askUserAnswered(seg, qi)"
+                              (click)="setAskUserActive(seg, qi)">
+                        <span class="ask-tab-mark">{{ askUserAnswered(seg, qi) ? '✓' : (qi + 1) }}</span>
+                        <span class="ask-tab-label">{{ q.header }}</span>
+                      </button>
+                    </div>
+                    <ng-container *ngFor="let q of aq.questions; let qi = index; trackBy: trackByIndex">
+                    <div class="ask-question" role="tabpanel" *ngIf="qi === askUserActive(seg)">
+                      <div class="ask-question-head">
+                        <span class="ask-header">{{ q.header }}</span>
+                        <span class="ask-text">{{ q.question }}</span>
+                        <span class="ask-multi" *ngIf="q.multiSelect">pick any</span>
+                      </div>
+                      <div class="ask-options" *ngIf="q.options?.length" [attr.role]="q.multiSelect ? 'group' : 'radiogroup'">
+                        <button type="button" class="ask-option"
+                                *ngFor="let o of q.options; trackBy: trackByIndex"
+                                [attr.role]="q.multiSelect ? 'checkbox' : 'radio'"
+                                [attr.aria-checked]="isAskUserSelected(seg, qi, o.label)"
+                                [class.ask-option-selected]="isAskUserSelected(seg, qi, o.label)"
+                                [disabled]="state.streaming"
+                                (click)="toggleAskUserOption(seg, qi, o.label)">
+                          <span class="ask-option-mark">{{ q.multiSelect ? (isAskUserSelected(seg, qi, o.label) ? '☑' : '☐') : (isAskUserSelected(seg, qi, o.label) ? '◉' : '○') }}</span>
+                          <span class="ask-option-body">
+                            <span class="ask-option-label">{{ o.label }}</span>
+                            <span class="ask-option-desc" *ngIf="o.description">{{ o.description }}</span>
+                          </span>
+                        </button>
+                      </div>
+                      <input type="text" class="ask-other"
+                             [(ngModel)]="aq.other[qi]"
+                             [disabled]="state.streaming"
+                             [placeholder]="q.options?.length ? 'Other (type your own answer)' : 'Type your answer'"
+                             autocomplete="off">
+                    </div>
+                    </ng-container>
+                    <div class="ask-actions">
+                      <button class="secret-btn secret-btn-cancel" (click)="skipAskUser(seg)">Answer in chat instead</button>
+                      <span class="ask-actions-spacer"></span>
+                      <button class="secret-btn secret-btn-cancel" *ngIf="askUserActive(seg) > 0"
+                              (click)="setAskUserActive(seg, askUserActive(seg) - 1)">Back</button>
+                      <button class="secret-btn secret-btn-save" *ngIf="askUserActive(seg) < aq.questions.length - 1"
+                              [disabled]="!askUserAnswered(seg, askUserActive(seg))"
+                              (click)="setAskUserActive(seg, askUserActive(seg) + 1)">Next</button>
+                      <button class="secret-btn secret-btn-save" *ngIf="askUserActive(seg) === aq.questions.length - 1"
+                              (click)="submitAskUser(seg)"
+                              [disabled]="!askUserComplete(seg) || state.streaming">Submit</button>
+                    </div>
+                  </div>
+                  <div class="ask-summary" *ngIf="aq.submitted">
+                    <div class="ask-summary-line" *ngFor="let line of askUserSummaryLines(seg)">{{ line }}</div>
+                  </div>
+                  <div class="secret-form-result secret-form-result-cancelled" *ngIf="aq.skipped && !aq.submitted">
+                    Answered in chat.
+                  </div>
+                </ng-container>
+
                 <!-- Agent-policy outcomes: the call is queued for a person, or
                      was refused by policy. Rendered from the tool result JSON. -->
                 <ng-container *ngIf="policyOutcome(seg) as po">
@@ -221,8 +292,8 @@
                 </ng-container>
 
                 <!-- Generic tool body (input + result JSON). Suppressed for
-                     active secret-request cards since the form replaces it. -->
-                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest">
+                     secret-request and question cards since the form replaces it. -->
+                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest && !seg.askUser">
                   <div class="tool-body-label">Input</div>
                   <pre class="tool-body-pre">{{ formatJson(seg.input) }}</pre>
                   <ng-container *ngIf="seg.status !== 'running'">
