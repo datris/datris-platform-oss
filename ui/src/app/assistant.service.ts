@@ -42,7 +42,8 @@ export interface StagedAttachment {
 export interface AskUserQuestion {
   header: string;
   question: string;
-  options: { label: string; description: string }[];
+  /** Absent or empty for a free-text question (the card shows a text box). */
+  options?: { label: string; description: string }[];
   multiSelect: boolean;
 }
 
