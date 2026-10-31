@@ -11,7 +11,7 @@ import ai.datris.util.{APIKeyValidator, RevokedKeyException, UserStore}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
-import org.springframework.web.servlet.HandlerInterceptor
+import org.springframework.web.servlet.AsyncHandlerInterceptor
 
 object TenantInterceptor {
 
@@ -37,11 +37,14 @@ object TenantInterceptor {
 }
 
 @Component
-class TenantInterceptor extends HandlerInterceptor {
+class TenantInterceptor extends AsyncHandlerInterceptor {
 
     private val logger = LoggerFactory.getLogger(getClass)
 
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
+        // Never inherit a tenant from whatever this thread served last (see
+        // SessionAuthenticator for why async SSE requests leave it behind).
+        TenantContext.clear()
         val apiKey = request.getHeader("x-api-key")
 
         if (DatrisEnvironment.values.multiTenant) {
@@ -132,6 +135,13 @@ class TenantInterceptor extends HandlerInterceptor {
     }
 
     override def afterCompletion(request: HttpServletRequest, response: HttpServletResponse, handler: Any, ex: Exception): Unit = {
+        TenantContext.clear()
+    }
+
+    /** Called instead of `afterCompletion` on the servlet thread when the
+      * handler started async processing (SseEmitter). Clear here so the
+      * servlet thread does not carry a tenant into its next request. */
+    override def afterConcurrentHandlingStarted(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Unit = {
         TenantContext.clear()
     }
 }
