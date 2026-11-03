@@ -728,3 +728,8 @@ option {
   font-size: 12px;
   white-space: nowrap;
 }
+
+.recovery-row-wrap {
+  margin-bottom: 12px;
+}
+.recovery-row-wrap:empty { display: none; }

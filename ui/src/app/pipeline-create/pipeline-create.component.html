@@ -2,6 +2,10 @@
   <a class="back-link" routerLink="/catalog">&#8592; Back to Catalog</a>
   <h1 class="page-title">{{ isEditMode ? ('Edit Pipeline: ' + pipelineName) : 'Create Pipeline' }}</h1>
 
+  <div class="recovery-row-wrap" *ngIf="isEditMode && editName">
+    <app-recovery-mode-row resourceType="pipeline" [resourceName]="editName"></app-recovery-mode-row>
+  </div>
+
   <!-- Step indicators -->
   <div class="steps">
     <span class="step-dot" [class.active]="step >= 1">1</span>
