@@ -346,3 +346,8 @@
 .primary-btn:hover {
   box-shadow: 0 0 16px rgba(0, 180, 255, 0.3);
 }
+
+.recovery-row-wrap {
+  margin-bottom: 12px;
+}
+.recovery-row-wrap:empty { display: none; }

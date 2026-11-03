@@ -59,6 +59,8 @@ Two rules are not part of the policy and cannot be changed by it: an agent can n
 
 An override tightens the policy for one pipeline or tap: `tap:prices → tap:run = approve` pauses runs of that one tap while every other tap runs freely. Overrides can only make an action stricter, never looser.
 
+An override can also carry a [recovery mode](/incidents) for that resource (the **Recovery** select on each override). Admins can set the same value from the pipeline's page or the tap's test page; a benign volume signal that an incident already triaged is not re-triaged.
+
 ## Approvals
 
 When an agent's request hits an **Approve** rule, the agent receives a `pending_approval` response with an approval id instead of a result. The Assistant will tell you plainly that the action is waiting, and it can poll for the decision. The request itself — method, path and body, with secret-looking values masked — is shown on the approval card so you see exactly what will run.

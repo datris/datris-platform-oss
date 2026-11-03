@@ -64,6 +64,7 @@
       <span class="lineage-detail" *ngIf="f.lastLandedAt">last landed {{ f.lastLandedAt }}<ng-container *ngIf="f.recordCount != null"> · {{ f.recordCount }} records</ng-container></span>
       <span class="lineage-detail" *ngIf="f.cursorUpdatedAt"> · cursor {{ f.cursorUpdatedAt }}</span>
     </div>
+    <app-recovery-mode-row resourceType="pipeline" [resourceName]="name"></app-recovery-mode-row>
     <div class="lineage-row" *ngIf="upstreamNodes().length > 0">
       <span class="lineage-label">Upstream</span>
       <ng-container *ngFor="let n of upstreamNodes()">

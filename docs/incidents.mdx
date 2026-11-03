@@ -35,7 +35,7 @@ Requires the [agent policy](/agent-policy) (`USE_AGENT_POLICY=true`) for its app
 | `propose` | Incidents open and are diagnosed; **every** proposed action queues under Activity → Approvals — nothing executes without a person |
 | `autopilot` | Actions follow your per-action policy matrix (`auto` runs, `approve` queues, `deny` refuses) |
 
-A per-tap or per-pipeline override can put one resource on a different mode — one critical tap on `propose` while everything else runs `autopilot`, or the reverse.
+A per-tap or per-pipeline override can put one resource on a different mode — one critical tap on `propose` while everything else runs `autopilot`, or the reverse. An admin can set it from the pipeline's page or the tap's test page (the **Self-healing** row), or in the Agent Policy override editor. A volume signal with the same record counts as one an incident already triaged and resolved is not opened again, so a single benign spike is diagnosed once rather than on every sweep.
 
 The Agent Policy page shows the current recovery block next to the one recommended for this install's [environment label](/production/environments#recovery-agent-per-environment): `autopilot` with loose thresholds on `dev`, `propose` with strict thresholds on `qa`, `production` and unlabelled installs. An admin can apply the recommendation with one click after a confirmation. Switching to `autopilot` asks you to confirm. The mode never changes on its own.
 

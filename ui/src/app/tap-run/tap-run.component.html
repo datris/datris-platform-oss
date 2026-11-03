@@ -6,6 +6,10 @@
     </button>
   </div>
 
+  <div class="recovery-row-wrap">
+    <app-recovery-mode-row resourceType="tap" [resourceName]="tapName"></app-recovery-mode-row>
+  </div>
+
   <!-- Instruction -->
   <div class="instruction-box" *ngIf="description">
     <span class="instruction-label">Instruction:</span> {{ description }}

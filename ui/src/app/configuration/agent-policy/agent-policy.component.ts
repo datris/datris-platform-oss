@@ -4,7 +4,7 @@ import { filter } from 'rxjs/operators';
 import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import { Router } from '@angular/router';
 import { AuthService } from '../../auth.service';
-import { AgentPolicy, AgentPolicyService, PolicyLimits, PolicyMode, PolicyResponse, RecoveryMode, RecoverySettings, VerifyMode } from './agent-policy.service';
+import { AgentPolicy, AgentPolicyService, PolicyLimits, PolicyMode, PolicyOverrides, PolicyResponse, RecoveryMode, RecoverySettings, VerifyMode, recoveryRemoved } from './agent-policy.service';
 
 /** One row of the action matrix. Sub-actions ("pipeline:update:dest-types")
  *  are indented under their two-part parent and inherit its mode unless set. */
@@ -30,6 +30,9 @@ interface ResourceGroup {
 interface OverrideRow {
   resource: string;
   entries: { action: string; mode: PolicyMode }[];
+  /** Per-resource recovery mode (`overrides[res].recovery`); '' inherits
+   *  the instance default. Kept out of `entries`: it is not an action. */
+  recovery?: RecoveryMode | '';
 }
 
 /** Admin-only Agent Policy sub-tab inside Configuration.
@@ -150,10 +153,14 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
 
   private applyPolicy(p: AgentPolicy | undefined): void {
     this.actions = { ...(p?.actions || {}) };
-    this.overrides = Object.entries(p?.overrides || {}).map(([resource, m]) => ({
-      resource,
-      entries: Object.entries(m || {}).map(([action, mode]) => ({ action, mode }))
-    }));
+    this.overrides = Object.entries(p?.overrides || {}).map(([resource, m]) => {
+      const { recovery, ...actionModes } = (m || {}) as Record<string, string>;
+      return {
+        resource,
+        entries: Object.entries(actionModes).map(([action, mode]) => ({ action, mode: mode as PolicyMode })),
+        recovery: (recovery as RecoveryMode) || ''
+      };
+    });
     this.pendingTtlHours = p?.limits?.pendingTtlHours ?? DEFAULT_LIMITS.pendingTtlHours;
     this.maxPendingPerActor = p?.limits?.maxPendingPerActor ?? DEFAULT_LIMITS.maxPendingPerActor;
     this.applyRecoveryMeta(p);
@@ -203,7 +210,7 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
   // ------- overrides -------
 
   addOverride(): void {
-    this.overrides.push({ resource: '', entries: [{ action: '', mode: 'approve' }] });
+    this.overrides.push({ resource: '', entries: [{ action: '', mode: 'approve' }], recovery: '' });
   }
 
   removeOverride(i: number): void {
@@ -225,16 +232,17 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
 
   // ------- save -------
 
-  private collectOverrides(): Record<string, Record<string, PolicyMode>> {
-    const out: Record<string, Record<string, PolicyMode>> = {};
+  private collectOverrides(): PolicyOverrides {
+    const out: PolicyOverrides = {};
     for (const o of this.overrides) {
       const res = (o.resource || '').trim();
       if (!res) continue;
-      const m: Record<string, PolicyMode> = {};
+      const m: Record<string, PolicyMode | RecoveryMode> = {};
       for (const e of o.entries) {
         const a = (e.action || '').trim();
         if (a) m[a] = e.mode;
       }
+      if (o.recovery) m['recovery'] = o.recovery;
       if (Object.keys(m).length) out[res] = m;
     }
     return out;
@@ -245,13 +253,19 @@ export class AgentPolicyComponent implements OnInit, OnDestroy {
     this.saving = true;
     this.error = '';
     this.success = '';
+    const overrides = this.collectOverrides();
+    const stored = this.status?.policy;
     this.svc.save({
       actions: { ...this.actions },
-      overrides: this.collectOverrides(),
+      overrides,
       limits: {
         pendingTtlHours: Number(this.pendingTtlHours) || 0,
         maxPendingPerActor: Number(this.maxPendingPerActor) || 0
-      }
+      },
+      // The server keeps the stored per-resource recovery modes unless the
+      // body carries `recovery` or an override with one; removing the last
+      // recovery override needs the stored block sent back unchanged.
+      ...(stored?.recovery && recoveryRemoved(stored.overrides, overrides) ? { recovery: { ...stored.recovery } } : {})
     }).subscribe({
       next: (res) => {
         // Keep the stored copy current: Apply recommended builds its body from it.

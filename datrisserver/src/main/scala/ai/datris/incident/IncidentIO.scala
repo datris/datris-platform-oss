@@ -117,6 +117,24 @@ object IncidentIO {
             .flatMap(_.closedAt)
     }
 
+    /** Most recent resolved close of a given kind for a resource. Its stored
+      * `trigger` is the signature of the signal it already triaged. */
+    def lastResolved(resourceType: String, resourceName: String, kind: String): Option[Incident] = {
+        val st = store
+        if (st != null)
+            return st.list(Some(Incident.Resolved), MaxListLimit)
+                .filter(i => i.resourceType == resourceType && i.resourceName == resourceName && i.kind == kind && i.closedAt.isDefined)
+                .sortBy(_.closedAt.get)
+                .lastOption
+        Option(collection().find(Filters.and(
+            Filters.eq("resourceType", resourceType),
+            Filters.eq("resource", resourceName),
+            Filters.eq("kind", kind),
+            Filters.eq("state", Incident.Resolved)
+        )).sort(Sorts.descending("closedAtDate")).first())
+            .map(Incident.fromDocument)
+    }
+
     def list(state: Option[String], limit: Int): List[Incident] = {
         val st = store
         if (st != null) return st.list(state, math.max(1, math.min(limit, MaxListLimit)))
