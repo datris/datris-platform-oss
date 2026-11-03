@@ -230,9 +230,18 @@ object IncidentRunner {
     }
 
     /** True when the latest resolved volume incident for the resource
-      * carries the same current/prior counts as this signal. */
+      * carries the same current/prior counts as this signal and closed
+      * within two signal windows. Inside that bound the prior window cannot
+      * have rolled, so the pair is provably the same spike; an older match
+      * is a new spike that happens to repeat the numbers. */
     private[incident] def benignVolumeRepeat(resourceType: String, resourceName: String, trigger: JsonObject): Boolean =
-        IncidentIO.lastResolved(resourceType, resourceName, Incident.KindVolume).exists(i => sameVolumeSignal(i.trigger, trigger))
+        triagedVolumeMatch(resourceType, resourceName, trigger).isDefined
+
+    private def triagedVolumeMatch(resourceType: String, resourceName: String, trigger: JsonObject): Option[Incident] = {
+        val since = Instant.now().minusMillis(2 * ActivitySignals.DefaultWindowMs)
+        IncidentIO.lastResolved(resourceType, resourceName, Incident.KindVolume)
+            .filter(i => i.closedAt.exists(_.isAfter(since)) && sameVolumeSignal(i.trigger, trigger))
+    }
 
     /** Two volume triggers describe the same signal when `current` and
       * `prior` are present in both and equal. `deltaPct` is derived. */
@@ -285,8 +294,9 @@ object IncidentRunner {
             // A volume signal identical to one a resolved incident already
             // triaged is not re-opened: the same spike would re-match every
             // sweep tick for the whole anomaly window.
-            if (kind == Incident.KindVolume && benignVolumeRepeat(resourceType, resourceName, trigger)) {
-                val prev = IncidentIO.lastResolved(resourceType, resourceName, Incident.KindVolume).map(_.id).getOrElse("")
+            val triaged = if (kind == Incident.KindVolume) triagedVolumeMatch(resourceType, resourceName, trigger) else None
+            if (triaged.isDefined) {
+                val prev = triaged.get.id
                 logger.info("incident not opened for " + resourceType + ":" + resourceName + " — volume signal current=" +
                     longField(trigger, "current").getOrElse("") + " prior=" + longField(trigger, "prior").getOrElse("") +
                     " already triaged by " + prev)

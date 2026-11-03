@@ -2181,6 +2181,20 @@ class IncidentRunnerSpec extends AnyFunSuite {
         }
     }
 
+    test("benignVolumeRepeat is false when the matching resolved incident is older than two windows") {
+        withStore { store =>
+            val id = seedClosed(store, Incident.Resolved, "orders", volumeTrigger(1200, 300, 300))
+            val old = Instant.now().minusMillis(2 * ai.datris.util.ActivitySignals.DefaultWindowMs + 60000L)
+            store.set(id, Seq("closedAt" -> old.toString, "closedAtDate" -> java.util.Date.from(old)))
+            assert(IncidentIO.lastResolved("pipeline", "orders", Incident.KindVolume).map(_.id).contains(id))
+            assert(!IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 300, 300)))
+            // Just inside the bound it still suppresses.
+            val recent = Instant.now().minusMillis(2 * ai.datris.util.ActivitySignals.DefaultWindowMs - 60000L)
+            store.set(id, Seq("closedAt" -> recent.toString, "closedAtDate" -> java.util.Date.from(recent)))
+            assert(IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 300, 300)))
+        }
+    }
+
     test("lastResolved returns the most recently closed resolved incident") {
         withStore { store =>
             val older = seedClosed(store, Incident.Resolved, "orders", volumeTrigger(1200, 300, 300))
