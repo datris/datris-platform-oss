@@ -114,4 +114,25 @@ class RecoveryKeySpec extends AnyFunSuite {
             case other => fail("regenerate route not mapped to a capability: " + other)
         }
     }
+
+    // Story: SQL Server read-back and on-demand typing
+    // (plans/stories/mssql-query-and-typing.md), Step 2 (recovery-key wiring).
+    // The recovery agent reads back every structured destination it can
+    // diagnose, so it holds query:sqlserver and can reach POST /query/sqlserver.
+    test("the recovery key holds query:sqlserver and it reaches POST /api/v1/query/sqlserver") {
+        assert(RecoveryKey.Capabilities.contains("query:sqlserver"), RecoveryKey.Capabilities)
+        val key = ResolvedKey(None, RecoveryKey.Label, Capability.parseList(RecoveryKey.Capabilities), isLegacyFullAccess = false)
+        CapabilityRoutes.lookup("POST", "/api/v1/query/sqlserver") match {
+            case RouteCheck.Require(resource, action) =>
+                assert(resource + ":" + action == "query:sqlserver")
+                assert(key.matchesResourceAction(resource, action), RecoveryKey.Capabilities)
+            case other => fail("query/sqlserver route not mapped to a capability: " + other)
+        }
+    }
+
+    test("a recovery key issued before query:sqlserver existed is widened by exactly that") {
+        val before = RecoveryKey.Capabilities.filterNot(_ == "query:sqlserver")
+        val json = s"""{"capabilities":[${before.map("\"" + _ + "\"").mkString(",")}],"revoked":false,"keyId":"k_1"}"""
+        assert(RecoveryKey.missingCapabilities(json) == Seq("query:sqlserver"), RecoveryKey.missingCapabilities(json))
+    }
 }
