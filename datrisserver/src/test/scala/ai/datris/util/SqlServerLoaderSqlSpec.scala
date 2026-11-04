@@ -155,4 +155,43 @@ class SqlServerLoaderSqlSpec extends AnyFunSuite {
         val merge = SqlServerLoader.mergeSql("dbo.[my-table]", "#s", Seq("id", "unit price"), Seq("id"))
         assert(updateSetClause(merge).contains("[unit price]"), merge)
     }
+
+    // ---- e2e fixes: reserved keywords as names, Postgres-style booleans ----
+
+    test("ident bracket-quotes T-SQL reserved keywords, case-insensitively, and leaves other simple names alone") {
+        Seq("order", "ORDER", "Order", "key", "user", "group", "table", "index", "file", "percent", "plan", "select", "within", "label").foreach { k =>
+            assert(SqlServerConnectionUtil.ident(k) == "[" + k + "]", k)
+        }
+        Seq("orders", "keys", "username", "datris", "_json", "id").foreach { n =>
+            assert(SqlServerConnectionUtil.ident(n) == n, n)
+        }
+    }
+
+    test("the reserved keyword set is Microsoft's documented T-SQL list") {
+        val kw = SqlServerConnectionUtil.ReservedKeywords
+        assert(kw.size == 186, kw.size)
+        Seq("ADD", "AUTHORIZATION", "CURRENT_TIMESTAMP", "IDENTITY_INSERT", "OPENDATASOURCE", "SEMANTICSIMILARITYDETAILSTABLE", "TRY_CONVERT", "WRITETEXT")
+            .foreach(k => assert(kw.contains(k), k))
+        // ODBC / future keywords are not reserved by the parser
+        Seq("ABSOLUTE", "ACTION", "DATE", "NAME").foreach(k => assert(!kw.contains(k), k))
+    }
+
+    test("a reserved-word table and column are bracketed in DDL, qualifiedTable and MERGE") {
+        val kdb = db.copy(schema = "e2e_schema", table = "order")
+        assert(SqlServerConnectionUtil.qualifiedTable(kdb) == "e2e_schema.[order]")
+        val ddl = SqlServerLoader.createTableSql(kdb, Seq(SchemaField("id", "string"), SchemaField("key", "string")))
+        assert("""(?is)CREATE\s+TABLE\s+e2e_schema\.\[order\]""".r.findFirstIn(ddl).isDefined, ddl)
+        assert(ddl.contains("[key] NVARCHAR(MAX)"), ddl)
+        assert(ddl.contains("t.name = N'order'"), ddl)
+        val merge = SqlServerLoader.mergeSql("e2e_schema.[order]", "#s", Seq("id", "key", "user"), Seq("key"))
+        assert(merge.contains("t.[key] = s.[key]"), merge)
+        assert(updateSetClause(merge).contains("t.[user] = s.[user]"), merge)
+        assert("""INSERT \(id, \[key\], \[user\]\)""".r.findFirstIn(merge).isDefined, merge)
+    }
+
+    test("normalizeBoolean maps the Postgres boolean spellings to 1/0 and passes anything else through") {
+        Seq("t", "T", "true", "TRUE", "y", "Y", "yes", "Yes", "on", "ON", "1", " y ").foreach(v => assert(SqlServerLoader.normalizeBoolean(v) == "1", v))
+        Seq("f", "F", "false", "False", "n", "N", "no", "NO", "off", "Off", "0").foreach(v => assert(SqlServerLoader.normalizeBoolean(v) == "0", v))
+        Seq("maybe", "2", "").foreach(v => assert(SqlServerLoader.normalizeBoolean(v) == v, v))
+    }
 }

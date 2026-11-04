@@ -135,6 +135,7 @@ class SqlServerLoader(jobContext: JobContext) {
         val sql = s"INSERT INTO $tableRef (${cols.mkString(", ")}) VALUES (${cols.map(_ => "?").mkString(", ")})"
         statusUtil.info("processing", "Insert command: " + sql)
         val isXml = fields.map(_.name.equalsIgnoreCase("_xml")).toArray
+        val isBool = fields.map(f => !SqlServerLoader.isDocumentColumn(f) && "boolean".equalsIgnoreCase(f.`type`)).toArray
         // The driver's bulk-copy path skips CHECK constraints, which would let
         // a non-JSON document past the _json column's ISJSON check, and its
         // type conversion into an XML column is stricter than a plain INSERT.
@@ -171,7 +172,13 @@ class SqlServerLoader(jobContext: JobContext) {
                     while (i < cols.size) {
                         val v = if (i < rec.size()) rec.get(i) else null
                         if (v == null) ps.setNull(i + 1, java.sql.Types.NVARCHAR)
-                        else ps.setString(i + 1, if (isXml(i)) SqlServerLoader.stripXmlDeclaration(v) else v)
+                        else
+                            ps.setString(
+                                i + 1,
+                                if (isXml(i)) SqlServerLoader.stripXmlDeclaration(v)
+                                else if (isBool(i)) SqlServerLoader.normalizeBoolean(v)
+                                else v
+                            )
                         i += 1
                     }
                     ps.addBatch()
@@ -337,6 +344,21 @@ object SqlServerLoader {
             sb.append("WHEN MATCHED THEN UPDATE SET " + nonKey.map(c => s"t.${ident(c)} = s.${ident(c)}").mkString(", ") + " ")
         sb.append(s"WHEN NOT MATCHED BY TARGET THEN INSERT ($insertCols) VALUES ($insertVals);")
         sb.toString
+    }
+
+    def isDocumentColumn(f: SchemaField): Boolean =
+        f.name.equalsIgnoreCase("_json") || f.name.equalsIgnoreCase("_xml")
+
+    private val TrueWords = Set("t", "true", "y", "yes", "on", "1")
+    private val FalseWords = Set("f", "false", "n", "no", "off", "0")
+
+    /** The boolean spellings Postgres accepts (t/f, true/false, y/n, yes/no,
+     *  on/off, 1/0; case-insensitive, surrounding blanks ignored) as the
+     *  `1` / `0` a BIT column takes. Anything else passes through unchanged so
+     *  SQL Server reports the bad value. NULL (an empty cell) never gets here. */
+    def normalizeBoolean(v: String): String = {
+        val t = v.trim.toLowerCase
+        if (TrueWords.contains(t)) "1" else if (FalseWords.contains(t)) "0" else v
     }
 
     /** SQL Server's XML type rejects an `encoding="UTF-8"` declaration on a
