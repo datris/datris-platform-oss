@@ -66,9 +66,9 @@ export class SearchComponent implements OnInit, OnDestroy {
   osSelectedPipeline = '';
   osLimit = 100;
 
-  // Warehouse (Databricks / Snowflake) fields. Remote warehouses are not in
-  // the health check, so the options are gated on pipelines alone.
-  whPipelines: { name: string; kind: 'databricks' | 'snowflake'; qualified: string }[] = [];
+  // Warehouse (Databricks / Snowflake / SQL Server) fields. Remote warehouses
+  // are not in the health check, so the options are gated on pipelines alone.
+  whPipelines: { name: string; kind: 'databricks' | 'snowflake' | 'sqlserver'; qualified: string }[] = [];
   whSelectedPipeline = '';
   whSql = '';
   whLimit = 100;
@@ -205,20 +205,23 @@ export class SearchComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** Databricks and Snowflake pipelines from the same /pipelines response the
-   * object-store picker uses. Both name their target as dbName.schema.table
-   * (Databricks: dbName is the Unity Catalog catalog). */
+  /** Databricks, Snowflake and SQL Server pipelines from the same /pipelines
+   * response the object-store picker uses. Databricks and Snowflake name their
+   * target as dbName.schema.table (Databricks: dbName is the Unity Catalog
+   * catalog); SQL Server as schema.table (schema defaults to dbo; dbName is
+   * the connection's database, not part of the reference). */
   private setWarehousePipelines(configs: any[]): void {
     this.whPipelines = (configs || [])
       .filter(c => c && c.destination && c.destination.database &&
-        (c.destination.database.useDatabricks || c.destination.database.useSnowflake))
+        (c.destination.database.useDatabricks || c.destination.database.useSnowflake || c.destination.database.useSqlServer))
       .map(c => {
         const db = c.destination.database;
-        return {
-          name: c.name,
-          kind: (db.useDatabricks ? 'databricks' : 'snowflake') as 'databricks' | 'snowflake',
-          qualified: [db.dbName, db.schema, db.table].filter((p: any) => !!p).join('.')
-        };
+        const kind: 'databricks' | 'snowflake' | 'sqlserver' =
+          db.useDatabricks ? 'databricks' : db.useSnowflake ? 'snowflake' : 'sqlserver';
+        const qualified = kind === 'sqlserver'
+          ? [db.schema || 'dbo', db.table].filter((p: any) => !!p).join('.')
+          : [db.dbName, db.schema, db.table].filter((p: any) => !!p).join('.');
+        return { name: c.name, kind, qualified };
       });
     if (this.isWarehouse()) this.ensureWarehousePipelineSelected();
   }
@@ -237,7 +240,16 @@ export class SearchComponent implements OnInit, OnDestroy {
 
   warehouseSqlPlaceholder(): string {
     const meta = this.selectedWarehouseMeta();
+    if (this.queryType === 'sqlserver') {
+      // T-SQL has no LIMIT.
+      return 'SELECT TOP 10 * FROM ' + (meta && meta.qualified ? meta.qualified : 'dbo.table');
+    }
     return 'SELECT * FROM ' + (meta && meta.qualified ? meta.qualified : 'catalog.schema.table') + ' LIMIT 10';
+  }
+
+  /** Display name of a warehouse query kind. */
+  warehouseLabel(kind: string = this.queryType): string {
+    return kind === 'databricks' ? 'Databricks' : kind === 'sqlserver' ? 'SQL Server' : 'Snowflake';
   }
 
   private ensureWarehousePipelineSelected(): void {
@@ -385,7 +397,7 @@ export class SearchComponent implements OnInit, OnDestroy {
   }
 
   isWarehouse(): boolean {
-    return this.queryType === 'databricks' || this.queryType === 'snowflake';
+    return this.queryType === 'databricks' || this.queryType === 'snowflake' || this.queryType === 'sqlserver';
   }
 
   retrieveAllMongo(): void {
@@ -425,7 +437,7 @@ export class SearchComponent implements OnInit, OnDestroy {
       return;
     }
     if (this.isWarehouse() && !this.whSelectedPipeline) {
-      this.error = 'Please select a pipeline with a ' + (this.queryType === 'databricks' ? 'Databricks' : 'Snowflake') + ' destination';
+      this.error = 'Please select a pipeline with a ' + this.warehouseLabel() + ' destination';
       return;
     }
 
@@ -470,6 +482,9 @@ export class SearchComponent implements OnInit, OnDestroy {
         break;
       case 'snowflake':
         request = this.searchService.querySnowflake(this.whSelectedPipeline, this.whSql.trim(), this.whLimit);
+        break;
+      case 'sqlserver':
+        request = this.searchService.querySqlServer(this.whSelectedPipeline, this.whSql.trim(), this.whLimit);
         break;
       default:
         this.loading = false;

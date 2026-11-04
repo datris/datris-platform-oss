@@ -144,6 +144,12 @@ export class McpService {
           ...(params['sql'] && { sql: params['sql'] }),
           ...(params['limit'] && { limit: +params['limit'] })
         });
+      case 'query_sqlserver':
+        return this.http.post<any>('/api/v1/query/sqlserver', {
+          pipeline: params['pipeline'],
+          ...(params['sql'] && { sql: params['sql'] }),
+          ...(params['limit'] && { limit: +params['limit'] })
+        });
       case 'query_natural':
         return this.http.post<any>('/api/v1/query/natural', {
           question: params['question'],

@@ -721,6 +721,17 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'query_sqlserver',
+      description: 'Run a read-only query against the SQL Server or Azure SQL database a pipeline loads into. Pass the pipeline name; the server resolves the host, database, and credentials (any authMethod) from the pipeline\'s config — credentials never leave the server. Only works for pipelines with a SQL Server destination. Allowed statements: SELECT and WITH (CTE) in T-SQL; metadata comes from INFORMATION_SCHEMA views. Rows are capped with TOP, or OFFSET/FETCH when the statement has an ORDER BY — do not add LIMIT. Omit sql to preview the pipeline\'s destination table.',
+      category: 'Database Query',
+      parameters: [
+        { name: 'pipeline', type: 'string', description: 'Pipeline name (from list_pipelines). Must have a SQL Server destination.', required: true, inputType: 'text' },
+        { name: 'sql', type: 'string', description: 'Read-only T-SQL statement: SELECT or WITH. Omit to preview the destination table.', required: false, inputType: 'textarea' },
+        { name: 'limit', type: 'integer', description: 'Maximum rows (default: 100). Pass -1 for unlimited.', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'query_natural',
       description: 'Ask a natural-language question about a PostgreSQL table. The AI generates the SQL from the question and table schema, executes it, and returns results.',
       category: 'Database Query',
