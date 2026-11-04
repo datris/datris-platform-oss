@@ -99,7 +99,9 @@ class RecoveryKeySpec extends AnyFunSuite {
             "config:read"
         )
         val json = s"""{"capabilities":[${issued.map("\"" + _ + "\"").mkString(",")}],"revoked":false,"keyId":"k_1"}"""
-        assert(RecoveryKey.missingCapabilities(json) == Seq("pipeline:update"), RecoveryKey.missingCapabilities(json))
+        // query:sqlserver joined later (mssql-query-and-typing.md), so a key from
+        // that era lacks both, in RecoveryKey.Capabilities order.
+        assert(RecoveryKey.missingCapabilities(json) == Seq("query:sqlserver", "pipeline:update"), RecoveryKey.missingCapabilities(json))
         assert(RecoveryKey.Capabilities.contains("pipeline:update"))
         // Still no deletes, secrets or pipeline definition changes beyond the script route.
         assert(!RecoveryKey.Capabilities.exists(c => c.startsWith("pipeline:delete") || c.startsWith("pipeline:create") || c.startsWith("secret:")))

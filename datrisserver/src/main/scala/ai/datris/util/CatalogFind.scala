@@ -98,6 +98,7 @@ object CatalogFind {
             case "mongodb" => obj("query_mongodb")("collection" -> coords.getOrElse("collection", ""), "limit" -> 20)
             case "snowflake" => obj("query_snowflake")("pipeline" -> pipelineName)
             case "databricks" => obj("query_databricks")("pipeline" -> pipelineName)
+            case "sqlserver" => obj("query_sqlserver")("pipeline" -> pipelineName)
             case "objectstore" => obj("query_objectstore")("pipeline" -> pipelineName, "limit" -> 100)
             case "qdrant" => obj("search_qdrant")("query" -> "<your question>", "collection" -> coords.getOrElse("collection", ""))
             case "weaviate" => obj("search_weaviate")("query" -> "<your question>", "class_name" -> coords.getOrElse("collection", ""))

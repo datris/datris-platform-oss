@@ -460,7 +460,7 @@ object KeysAPIController {
         ("secret", Seq("read", "write"), Seq("_type", "owner")),
         ("document", Seq("upload"), Seq("collection", "destination_kind")),
         ("search", Seq("vector"), Seq("collection")),
-        ("query", Seq("postgres", "mongodb", "objectstore", "snowflake", "databricks", "natural"), Seq("database")),
+        ("query", Seq("postgres", "mongodb", "objectstore", "snowflake", "databricks", "sqlserver", "natural"), Seq("database")),
         ("job", Seq("read", "kill"), Seq("owner")),
         ("metadata", Seq("read"), Seq.empty),
         ("config", Seq("read", "write"), Seq.empty),
@@ -505,6 +505,7 @@ object KeysAPIController {
                 "query:objectstore",
                 "query:snowflake",
                 "query:databricks",
+                "query:sqlserver",
                 "search:vector"
             )
         ),
@@ -540,6 +541,7 @@ object KeysAPIController {
                 "query:objectstore",
                 "query:snowflake",
                 "query:databricks",
+                "query:sqlserver",
                 "search:vector",
                 "metadata:read",
                 "job:read"

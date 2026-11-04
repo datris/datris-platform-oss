@@ -90,6 +90,45 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
         assert(out.toUpperCase(java.util.Locale.ROOT).endsWith("OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY"), out)
     }
 
+    // ---- limit injection: CTEs and nested ORDER BY ----
+
+    test("a WITH statement keeps its CTEs in front and wraps only the final statement") {
+        val out = norm(SqlServerQueryUtil.applyLimit("WITH c AS (SELECT id FROM t) SELECT * FROM c", 10))
+        assert(out == "WITH c AS (SELECT id FROM t) SELECT TOP (10) * FROM (SELECT * FROM c) q", out)
+    }
+
+    test("a WITH statement with several CTEs and a UNION wraps the whole final statement") {
+        val sql = "WITH a AS (SELECT id FROM t), b AS (SELECT id FROM u) SELECT id FROM a UNION ALL SELECT id FROM b"
+        val out = norm(SqlServerQueryUtil.applyLimit(sql, 5))
+        assert(
+            out == "WITH a AS (SELECT id FROM t), b AS (SELECT id FROM u) SELECT TOP (5) * FROM (SELECT id FROM a UNION ALL SELECT id FROM b) q",
+            out
+        )
+    }
+
+    test("a WITH statement with a top-level ORDER BY gets OFFSET/FETCH") {
+        val out = norm(SqlServerQueryUtil.applyLimit("WITH c AS (SELECT id FROM t) SELECT * FROM c ORDER BY id", 7))
+        assert(out == "WITH c AS (SELECT id FROM t) SELECT * FROM c ORDER BY id OFFSET 0 ROWS FETCH NEXT 7 ROWS ONLY", out)
+    }
+
+    test("ORDER BY inside OVER (...) or a CTE body does not count as top-level") {
+        val w = norm(SqlServerQueryUtil.applyLimit("SELECT id, ROW_NUMBER() OVER (ORDER BY id) rn FROM t", 3))
+        assert(w == "SELECT TOP (3) * FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY id) rn FROM t) q", w)
+        val c = norm(SqlServerQueryUtil.applyLimit("WITH c AS (SELECT TOP 5 id FROM t ORDER BY id) SELECT * FROM c", 3))
+        assert(c == "WITH c AS (SELECT TOP 5 id FROM t ORDER BY id) SELECT TOP (3) * FROM (SELECT * FROM c) q", c)
+    }
+
+    test("ORDER BY inside a string literal or bracketed name is ignored; an existing OFFSET is left alone") {
+        val lit = norm(SqlServerQueryUtil.applyLimit("SELECT * FROM t WHERE note = 'order by x'", 2))
+        assert(lit == "SELECT TOP (2) * FROM (SELECT * FROM t WHERE note = 'order by x') q", lit)
+        val paged = "SELECT id FROM t ORDER BY id OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY"
+        assert(norm(SqlServerQueryUtil.applyLimit(paged, 100)) == paged)
+    }
+
+    test("a trailing semicolon is dropped before the limit is applied") {
+        assert(norm(SqlServerQueryUtil.applyLimit("SELECT * FROM t;", 4)) == "SELECT TOP (4) * FROM (SELECT * FROM t) q")
+    }
+
     // ---- default query (no sql) ----
 
     test("with no sql, the default query previews the pipeline's destination table") {

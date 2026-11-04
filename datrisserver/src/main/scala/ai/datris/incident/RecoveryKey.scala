@@ -47,6 +47,7 @@ object RecoveryKey {
         "query:mongodb",
         "query:snowflake",
         "query:databricks",
+        "query:sqlserver",
         "query:objectstore",
         "policy:read",
         "approval:read:owner=self",

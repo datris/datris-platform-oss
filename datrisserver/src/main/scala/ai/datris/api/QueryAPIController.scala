@@ -17,7 +17,8 @@ import ai.datris.util.{
     PostgresQueryUtil,
     MongoDBQueryUtil,
     SecretsRetrieverUtil,
-    SnowflakeQueryUtil
+    SnowflakeQueryUtil,
+    SqlServerQueryUtil
 }
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -168,6 +169,46 @@ class QueryAPIController {
                 // server stack in the message: answer with a short message.
                 logger.error("query/snowflake: " + Throwables.getStackTraceAsString(e))
                 val (status, body) = QueryAPIController.snowflakeQueryError(e)
+                ResponseEntity.status(status).body[String](body)
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    @PostMapping(path = Array("/query/sqlserver"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def querySqlServer(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /query/sqlserver called")
+            APIKeyValidator.validate(apiKey)
+
+            val pipelineName = Option(body.get("pipeline")).map(_.toString)
+                .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
+            val sql = Option(body.get("sql")).map(_.toString)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
+
+            val result = SqlServerQueryUtil.query(pipelineName, sql, limit)
+
+            val gson = new GsonBuilder().serializeNulls().create()
+            val response = new java.util.LinkedHashMap[String, Any]()
+            response.put("pipeline", pipelineName)
+            response.put("sql", result.sql)
+            response.put("results", result.results)
+            response.put("count", result.results.size())
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("querySqlServer: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
+            case e: DatrisException =>
+                logger.warn("query/sqlserver: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
+            case e: Exception if QueryAPIController.isSqlFailure(e) =>
+                logger.error("query/sqlserver: " + Throwables.getStackTraceAsString(e))
+                val (status, body) = QueryAPIController.sqlServerQueryError(e)
                 ResponseEntity.status(status).body[String](body)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -393,6 +434,23 @@ object QueryAPIController {
         // Compilation/access/missing-object errors are the caller's to fix (400);
         // anything else (transport, suspended warehouse) is upstream (502).
         val status = if (SnowflakeQueryErrorRe.findFirstIn(text).isDefined) 400 else 502
+        (status, jsonError(message))
+    }
+
+    private val SqlServerQueryErrorRe =
+        """(?i)Invalid object name|Invalid column name|Incorrect syntax|permission was denied|Ambiguous column name|could not be bound|Conversion failed""".r
+
+    /** Status and `{"error": ...}` body for a SQLException failure of
+      *  `POST /query/sqlserver`: the driver message before any stack frame,
+      *  lines joined, capped like the other warehouses. 400 for errors in the
+      *  caller's SQL (unknown object/column, syntax, permission, conversion),
+      *  else 502 (transport, server-side failure). */
+    private[api] def sqlServerQueryError(e: Throwable): (Int, String) = {
+        val text = if (e == null) "" else DatabricksErrorText.fullText(e)
+        val joined = DatabricksErrorText.stripStack(text).linesIterator.map(_.trim).filter(_.nonEmpty).mkString(" ")
+        val message = if (joined.nonEmpty) DatabricksErrorText.cap(joined)
+        else if (e == null) "SQL Server query failed" else e.getClass.getSimpleName
+        val status = if (SqlServerQueryErrorRe.findFirstIn(text).isDefined) 400 else 502
         (status, jsonError(message))
     }
 
