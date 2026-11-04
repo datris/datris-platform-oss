@@ -58,7 +58,14 @@ object SqlServerQueryUtil {
         "KILL",
         "RECONFIGURE",
         "WAITFOR",
-        "DECLARE"
+        "DECLARE",
+        // T-SQL needs no `;` between statements, so `SELECT 1 DISABLE TRIGGER ...`
+        // is two statements: block the verbs that could ride along that way.
+        "TRIGGER",
+        "SETUSER",
+        "REVERT",
+        "WRITETEXT",
+        "UPDATETEXT"
     )
 
     /** SQL Server errors raised when the derived-table wrapper itself is the
@@ -181,10 +188,11 @@ object SqlServerQueryUtil {
 
     /** Cap the rows `sql` returns.
      *
-     *  - With a top-level `ORDER BY` (and no `OFFSET` yet):
+     *  - With a top-level `ORDER BY` (and no `OFFSET` or `TOP` yet):
      *    `... ORDER BY x OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY`.
      *  - With a top-level `OFFSET` already: unchanged (the caller paged it).
-     *  - Otherwise the statement is wrapped:
+     *  - Otherwise (including `SELECT TOP ... ORDER BY`, since SQL Server
+     *    refuses TOP and OFFSET in one query) the statement is wrapped:
      *    `SELECT TOP (<limit>) * FROM (<sql>) q`. For a `WITH` statement the
      *    CTE definitions stay in front and only the final statement is
      *    wrapped: `WITH c AS (...) SELECT TOP (<limit>) * FROM (<final>) q`
@@ -199,9 +207,11 @@ object SqlServerQueryUtil {
         val upperWords = words.map { case (w, _) => w.toUpperCase(Locale.ROOT) }
         val hasOrderBy = upperWords.sliding(2).exists(p => p.size == 2 && p(0) == "ORDER" && p(1) == "BY")
         val hasOffset = upperWords.contains("OFFSET")
+        // TOP in the final statement's select list: before its first top-level FROM.
+        val hasTop = upperWords.takeWhile(_ != "FROM").contains("TOP")
 
         if (hasOffset) normalized
-        else if (hasOrderBy) normalized + " OFFSET 0 ROWS FETCH NEXT " + limit + " ROWS ONLY"
+        else if (hasOrderBy && !hasTop) normalized + " OFFSET 0 ROWS FETCH NEXT " + limit + " ROWS ONLY"
         else if (upperWords.headOption.contains("WITH")) {
             // The final statement starts at the first top-level SELECT: every
             // CTE body sits inside parentheses.

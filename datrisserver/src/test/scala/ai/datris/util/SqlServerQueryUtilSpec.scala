@@ -129,6 +129,40 @@ class SqlServerQueryUtilSpec extends AnyFunSuite {
         assert(norm(SqlServerQueryUtil.applyLimit("SELECT * FROM t;", 4)) == "SELECT TOP (4) * FROM (SELECT * FROM t) q")
     }
 
+    // ---- review fixes ----
+
+    test("SELECT TOP ... ORDER BY is wrapped, not given OFFSET/FETCH (TOP and OFFSET cannot mix)") {
+        val out = norm(SqlServerQueryUtil.applyLimit("SELECT TOP 10 * FROM t ORDER BY id", 100))
+        assert(out == "SELECT TOP (100) * FROM (SELECT TOP 10 * FROM t ORDER BY id) q", out)
+        val cte = norm(SqlServerQueryUtil.applyLimit("WITH c AS (SELECT id FROM t) SELECT TOP 5 id FROM c ORDER BY id", 3))
+        assert(cte == "WITH c AS (SELECT id FROM t) SELECT TOP (3) * FROM (SELECT TOP 5 id FROM c ORDER BY id) q", cte)
+    }
+
+    test("a second statement stacked without a semicolon is rejected") {
+        Seq(
+            "SELECT 1 DISABLE TRIGGER ALL ON dbo.orders",
+            "SELECT 1 ENABLE TRIGGER ALL ON dbo.orders",
+            "SELECT 1 SETUSER 'dbo'",
+            "SELECT 1 REVERT",
+            "SELECT 1 WRITETEXT t.c @p 'x'",
+            "SELECT 1 UPDATETEXT t.c @p 0 NULL 'x'",
+            "SELECT 1 DELETE FROM t"
+        ).foreach { sql =>
+            assertThrows[DatrisException](SqlServerQueryUtil.validateQuery(sql))
+        }
+    }
+
+    test("T-SQL-specific blocked words are rejected") {
+        Seq(
+            "SELECT 1 WAITFOR DELAY '00:00:05'",
+            "SELECT * FROM OPENROWSET('SQLNCLI', 'Server=x', 'SELECT 1') r",
+            "WITH c AS (SELECT 1 AS a) SELECT * FROM c DECLARE @x INT"
+        ).foreach { sql =>
+            val e = intercept[DatrisException](SqlServerQueryUtil.validateQuery(sql))
+            assert(e.getMessage.contains("blocked keyword"), e.getMessage)
+        }
+    }
+
     // ---- default query (no sql) ----
 
     test("with no sql, the default query previews the pipeline's destination table") {
