@@ -2709,7 +2709,7 @@ paths:
       description: >-
         Agent-created pipelines store every destination column as text. This
         stateless call samples up to 1000 rows that already landed in the
-        destination (postgres, snowflake, or databricks), infers real column
+        destination (postgres, snowflake, databricks, or sqlserver), infers real column
         types deterministically, and returns them with per-column evidence:
         a few distinct sample values, and — for columns kept as string by a
         dirty value — the offending value and the type it blocked. Nothing is
@@ -2773,8 +2773,11 @@ paths:
       description: >-
         Applies column types to an all-string destination. Destination-first:
         if data has already landed the table is migrated before the config
-        changes — postgres retypes in place, snowflake/databricks validate
-        every landed value with TRY_CAST and then swap the table. Any landed
+        changes — postgres retypes in place; sqlserver validates every landed
+        value with TRY_CONVERT and then retypes in place with ALTER COLUMN in
+        one transaction (its `_json` / `_xml` document columns are never
+        retyped); snowflake/databricks validate every landed value with
+        TRY_CAST and then swap the table. Any landed
         value that will not cast fails the whole apply with the column named
         and nothing changed. On success the pipeline definition is updated as
         a new version. The migration locks or replaces the table — do not
@@ -3606,6 +3609,61 @@ paths:
                     type: string
         '500':
           description: Error
+
+  /api/v1/query/sqlserver:
+    post:
+      tags: [Query]
+      summary: Query SQL Server
+      description: Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline's configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q`. Requires the `query:sqlserver` capability.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipeline]
+              properties:
+                pipeline:
+                  type: string
+                  description: Name of a pipeline with a SQL Server destination
+                sql:
+                  type: string
+                  description: Read-only T-SQL to execute (SELECT or WITH, no semicolons or comments). Omit to preview the pipeline's destination table.
+                limit:
+                  type: integer
+                  default: 100
+                  description: Maximum rows to return. Pass -1 for unlimited (also disables the 30-second query timeout).
+      responses:
+        '200':
+          description: Query results including the SQL that was executed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  sql:
+                    type: string
+                  results:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+        '400':
+          description: User-actionable error (e.g. unknown pipeline, no SQL Server destination, a statement outside the SELECT/WITH allowlist, an unknown table or column)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '500':
+          description: Error
+        '502':
+          description: SQL Server failed for a reason outside the query (transport, server-side error)
 
   /api/v1/query/databricks:
     post:

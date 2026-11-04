@@ -188,7 +188,7 @@ Simple identifiers (letters, digits, underscores) are passed unquoted and resolv
 
 ## Table management
 
-When `manageTableManually` is `false` (the default), the pipeline creates the schema if it is missing and the table if it is missing (checked through `sys.tables`), with a `PRIMARY KEY` on `keyFields` when set. Schema changes are additive: new columns in the pipeline schema are added with `ALTER TABLE ... ADD`; columns are never dropped or retyped.
+When `manageTableManually` is `false` (the default), the pipeline creates the schema if it is missing and the table if it is missing (checked through `sys.tables`), with a `PRIMARY KEY` on `keyFields` when set. Schema changes are additive: new columns in the pipeline schema are added with `ALTER TABLE ... ADD`; a run never drops or retypes a column (to retype text columns, see [Column types after load](#column-types-after-load)).
 
 ## Type mapping
 
@@ -220,6 +220,18 @@ Specify one or more columns in `keyFields` to define the natural key. When set (
 Upsert semantics match the PostgreSQL destination: on match, non-key columns are overwritten in full, including `NULL`s. If one batch holds the same key twice, SQL Server rejects the `MERGE`; deduplicate upstream.
 
 When `keyFields` is empty, rows are inserted straight into the table.
+
+## Querying from Datris
+
+The Assistant (and any MCP client) can read the destination back with the `query_sqlserver` tool, and the Search tab lists SQL Server pipelines under **Warehouse**. Use it to check that a load landed or to answer questions over the data without leaving Datris. Queries are pipeline-scoped: the tool takes a pipeline name, and the server connects with that pipeline's credentials secret, for any `authMethod`. Credentials never leave the server.
+
+Only read-only T-SQL runs: `SELECT` and `WITH`. Metadata comes from `INFORMATION_SCHEMA` views, for example `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo'`. Rows are capped with `TOP`, or with `OFFSET ... FETCH` when the statement has an `ORDER BY`; do not add `LIMIT`. Leave the query out to preview the pipeline's table. The REST endpoint is `POST /api/v1/query/sqlserver` ([Query API](/api-reference/query-api#query-sql-server)); a key needs the `query:sqlserver` capability.
+
+The login only needs `SELECT` on the table to read it back; the grants above already include it.
+
+## Column types after load
+
+Pipelines created by an agent store every column as `NVARCHAR(MAX)`. The Catalog marks such a pipeline with a "text" badge. Click it (or use `get_dest_types` / `apply_dest_types`) to see proposed types inferred from up to 1000 landed rows and apply them. Applying validates every landed value with `TRY_CONVERT`, turns empty strings into `NULL`, and retypes the columns in place with `ALTER TABLE ... ALTER COLUMN`, all in one transaction: a value that will not convert fails the whole apply with the column named and nothing changed. The table, its grants and its primary key stay (a retyped key column keeps the key, rebuilt under the same name). A `_json` or `_xml` document column is never retyped and does not count toward the badge. Do not apply while a run is in flight.
 
 ## Deleting a pipeline
 
