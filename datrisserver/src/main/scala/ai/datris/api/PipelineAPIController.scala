@@ -745,6 +745,27 @@ class PipelineAPIController {
             }
         }
 
+        // SQL Server — DROP TABLE in the external database, connecting with the
+        // pipeline's own credentialsSecret (the loader login created the table,
+        // so it owns it and may drop it).
+        if (dest.database != null && dest.database.useSqlServer) {
+            try {
+                SqlServerConnectionUtil.withConnection(dest.database) { conn =>
+                    val stmt = conn.createStatement()
+                    try {
+                        stmt.execute("DROP TABLE IF EXISTS " + SqlServerConnectionUtil.qualifiedTable(dest.database))
+                        logger.info(
+                            "Dropped SQL Server table: " + dest.database.dbName + "." + SqlServerConnectionUtil.schemaName(dest.database) + "." + dest.database.table
+                        )
+                    } finally {
+                        stmt.close()
+                    }
+                }
+            } catch {
+                case e: Exception => logger.warn("Failed to drop SQL Server table: " + e.getMessage)
+            }
+        }
+
         // Databricks — DROP TABLE in the external workspace, connecting with
         // the pipeline's own credentialsSecret/warehouse (the service principal
         // owns the tables it created, so it is allowed to drop them). The

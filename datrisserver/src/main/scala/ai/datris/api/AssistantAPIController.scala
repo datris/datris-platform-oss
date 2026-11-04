@@ -140,6 +140,7 @@ object AssistantAPIController {
         "objectstore" -> "object store",
         "snowflake" -> "Snowflake",
         "databricks" -> "Databricks",
+        "sqlserver" -> "SQL Server",
         "scratch" -> "Live Read"
     )
 
@@ -151,6 +152,7 @@ object AssistantAPIController {
         "objectstore" -> "**object store** (Parquet, ORC, or an Iceberg table)",
         "snowflake" -> "**Snowflake** (loads the user's own Snowflake account)",
         "databricks" -> "**Databricks** (loads a Unity Catalog managed Delta table in the user's own workspace)",
+        "sqlserver" -> "**SQL Server** (loads the user's own SQL Server or Azure SQL database)",
         "scratch" -> "**Live Read** (hands the rows back once through data quality and transformation; nothing is landed or catalogued, the result expires; promote to a real destination later without touching the tap or its schedule)"
     )
 
@@ -203,6 +205,10 @@ object AssistantAPIController {
         if (structuredDests.contains("databricks"))
             sb.append(
                 " Databricks requires a `credentialsSecret` platform secret (host, plus clientId/clientSecret or token) plus a SQL warehouse ID (`warehouse`) and Unity Catalog catalog (`database`): same flow — discover the secret via `list_platform_secrets`, ask for the rest, never require any of it up front. If the secret already has a `warehouse` field, omit `warehouse` and do not ask for it."
+            )
+        if (structuredDests.contains("sqlserver"))
+            sb.append(
+                " SQL Server requires a `credentialsSecret` platform secret (host plus the fields its `authMethod` needs) and a database (`database`); `schema` defaults to `dbo`: same flow — discover the secret via `list_platform_secrets`, ask for the database, never require any of it up front. JSON and XML sources can land there too (as one document column)."
             )
         if (offerLiveRead) {
             sb.append(" Also name ").append(destinationBlurbs("scratch"))
@@ -522,7 +528,7 @@ class AssistantAPIController {
             "- **Reuse existing tap secrets before creating new ones.** ALWAYS call `list_tap_secrets` before asking the user for credentials. If a candidate already exists, call `get_tap_secret_fields` to confirm it has the keys your tap script needs (field names only — values are never returned to you). When a matching secret exists, just pass its name as `secret_name` to `create_tap` and move on.\n"
         )
         sb.append(
-            "- **Platform secrets (destination credentials) are read-only for agents.** Some destinations reference a `credentialsSecret` that holds destination credentials — NOT a tap secret. Examples: `objectStore` with `provider=s3` (fields `accessKey`, `secretKey`, `region`), a `database` with `useSnowflake=true` (fields `account`, `user`, and `privateKey` for key-pair auth or `password` as a fallback), and a `database` with `useDatabricks=true` (fields `host`, plus `clientId`/`clientSecret` for service-principal OAuth or `token` for a personal access token). These live on the Platform tab and are owned by the user, not the agent. Use `list_platform_secrets` to discover what's available and `get_platform_secret_fields` to verify a candidate has the required keys. The agent CANNOT create, update, or delete platform secrets — if nothing suitable exists, tell the user plainly: \"You'll need to create a secret on the Configuration → Secrets → Platform tab with fields <list the keys>; then give me the name and I'll wire it into the pipeline.\" Do NOT try `create_tap_secret` for destination credentials — that would tag the secret `_type=tap` and the destination resolver would not find it.\n"
+            "- **Platform secrets (destination credentials) are read-only for agents.** Some destinations reference a `credentialsSecret` that holds destination credentials — NOT a tap secret. Examples: `objectStore` with `provider=s3` (fields `accessKey`, `secretKey`, `region`), a `database` with `useSnowflake=true` (fields `account`, `user`, and `privateKey` for key-pair auth or `password` as a fallback), a `database` with `useDatabricks=true` (fields `host`, plus `clientId`/`clientSecret` for service-principal OAuth or `token` for a personal access token), and a `database` with `useSqlServer=true` (field `host`, optional `port`, and `authMethod` — `sql` (default): `user`, `password`; `entraServicePrincipal`: `clientId`, `clientSecret`, `tenantId`; `entraPassword`: `user`, `password`; `entraManagedIdentity`: optional `managedIdentityClientId`; `kerberos`: `principal`, `password`). These live on the Platform tab and are owned by the user, not the agent. Use `list_platform_secrets` to discover what's available and `get_platform_secret_fields` to verify a candidate has the required keys. The agent CANNOT create, update, or delete platform secrets — if nothing suitable exists, tell the user plainly: \"You'll need to create a secret on the Configuration → Secrets → Platform tab with fields <list the keys>; then give me the name and I'll wire it into the pipeline.\" Do NOT try `create_tap_secret` for destination credentials — that would tag the secret `_type=tap` and the destination resolver would not find it.\n"
         )
         sb.append(
             "- **When no existing secret fits, ask the user via the credentials form.** Call `request_tap_secret_from_user` with the proposed secret name, the list of required field NAMES (not values), and a one-sentence reason. The UI will render a credentials form inline — the user fills it in (or picks an existing secret from a dropdown), the values go straight to Vault, and the conversation resumes via the user's next message. Do NOT type credential prompts in plain text and ask the user to paste values into chat — credential values must never enter the chat content. Do NOT call `create_tap_secret` with values you don't have.\n"

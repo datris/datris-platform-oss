@@ -153,6 +153,7 @@ object LineageService {
             if (db.useMongoDB) out += DatasetRef("mongodb", List("database" -> db.dbName, "collection" -> db.table))
             if (db.useSnowflake) out += DatasetRef("snowflake", coords)
             if (db.useDatabricks) out += DatasetRef("databricks", coords)
+            if (db.useSqlServer) out += DatasetRef("sqlserver", coords)
         }
         if (d.objectStore != null) {
             val os = d.objectStore

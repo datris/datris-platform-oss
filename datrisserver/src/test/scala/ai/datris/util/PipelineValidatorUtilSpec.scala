@@ -1290,7 +1290,6 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         }
     }
 
-
     // --- SQL Server destination (plans/stories/mssql-destination.md, Acceptance 1) ---
     // `Database.useSqlServer` joins the exactly-one-engine count and requires a
     // credentialsSecret; database destinations have no source-type gate, so a
@@ -1299,7 +1298,11 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
     // lookup, so a complete config validates cleanly offline. Today Gson drops
     // the unknown key, so these cases fail on the zero-engines message.
 
-    private def sqlServerConfig(database: String, fileAttributes: String = """"csvAttributes":{}""", fields: String = """[{"name":"id","type":"string"}]"""): PipelineConfig =
+    private def sqlServerConfig(
+        database: String,
+        fileAttributes: String = """"csvAttributes":{}""",
+        fields: String = """[{"name":"id","type":"string"}]"""
+    ): PipelineConfig =
         parse(
             s"""{"name":"p",
                |"source":{"fileAttributes":{$fileAttributes},"schemaProperties":{"fields":$fields}},

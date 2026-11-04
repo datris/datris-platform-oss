@@ -267,6 +267,9 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                 if (config.destination.database != null && config.destination.database.useDatabricks)
                     Some("databricks" -> runLoader("DatabricksLoader")(new DatabricksLoader(jobContextStamped).process()))
                 else None,
+                if (config.destination.database != null && config.destination.database.useSqlServer)
+                    Some("sqlserver" -> runLoader("SqlServerLoader")(new SqlServerLoader(jobContextStamped).process()))
+                else None,
                 if (config.destination.restEndpoint != null)
                     Some("rest" -> runLoader("RestEndpointRunner")(new RestEndpointRunner(
                         jobContextStamped,

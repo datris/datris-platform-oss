@@ -205,8 +205,9 @@ case class Destination(
     // (see PipelineValidatorUtil), never catalogued, never a lineage dataset.
     scratch: ScratchConfig = null,
     // Which destination kind is the golden copy when a pipeline lands into more
-    // than one (postgres | mongodb | snowflake | databricks | objectstore | kafka
-    // | activemq | qdrant | weaviate | pgvector | milvus | chroma).
+    // than one (postgres | mongodb | snowflake | databricks | sqlserver |
+    // objectstore | kafka | activemq | qdrant | weaviate | pgvector | milvus |
+    // chroma).
     // Ignored for a single destination (implicitly authoritative); absent with
     // several ⇒ all "undeclared" in lineage until a human decides. Never
     // inferred. `scratch` is not a valid value: it is always the sole
@@ -432,9 +433,11 @@ case class Database(
     useMongoDB: Boolean = false,
     useSnowflake: Boolean = false,
     useDatabricks: Boolean = false, // dbName = Unity Catalog catalog
+    useSqlServer: Boolean = false, // Microsoft SQL Server / Azure SQL; dbName goes in the JDBC URL, schema defaults to dbo
     warehouse: String = null, // Snowflake virtual warehouse name, or Databricks SQL warehouse ID
     role: String = null, // Snowflake role to assume (optional)
-    credentialsSecret: String = null, // names a Platform-tab secret holding account/user/auth (Snowflake) or host + clientId/clientSecret or token (Databricks)
+    credentialsSecret: String =
+        null, // names a Platform-tab secret holding account/user/auth (Snowflake) or host + clientId/clientSecret or token (Databricks) or host + authMethod fields (SQL Server)
     options: java.util.List[String] = null
 )
 

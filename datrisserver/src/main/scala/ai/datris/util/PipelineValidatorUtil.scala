@@ -603,11 +603,12 @@ object PipelineValidatorUtil {
                 config.destination.database.usePostgres,
                 config.destination.database.useMongoDB,
                 config.destination.database.useSnowflake,
-                config.destination.database.useDatabricks
+                config.destination.database.useDatabricks,
+                config.destination.database.useSqlServer
             ).count(identity)
             if (engineFlags != 1) {
                 throw new DatrisException(
-                    "For the 'destination.database' section, you must select exactly one of usePostgres, useMongoDB, useSnowflake, or useDatabricks" +
+                    "For the 'destination.database' section, you must select exactly one of usePostgres, useMongoDB, useSnowflake, useDatabricks, or useSqlServer" +
                         (if (engineFlags > 1) " — multiple are currently set" else "")
                 )
             }
@@ -631,6 +632,17 @@ object PipelineValidatorUtil {
                 // 'warehouse' is optional: when blank it resolves at connection time
                 // from the secret's 'warehouse' field (DatabricksWarehouse.effective).
                 // Validation never reads Vault, so a missing value surfaces there.
+            }
+
+            // SQL Server: no source-type gate (JSON/XML land as one _json/_xml
+            // column, as with Postgres). Which fields the secret needs depends
+            // on its authMethod; validation never reads Vault, so an incomplete
+            // secret surfaces at connection time (CredentialResolver).
+            if (config.destination.database.useSqlServer) {
+                if (config.destination.database.credentialsSecret == null || config.destination.database.credentialsSecret.trim.isEmpty)
+                    throw new DatrisException(
+                        "When 'destination.database.useSqlServer' is true, 'credentialsSecret' is required — the name of a Platform secret holding 'host' plus the fields its 'authMethod' needs (sql, the default: 'user' and 'password'). Create it on Configuration → Secrets → Platform"
+                    )
             }
         }
 

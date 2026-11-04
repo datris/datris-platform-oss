@@ -265,6 +265,22 @@ lazy val allDependencies = Seq(
     // shaded under com.databricks.jdbc.internal.*, so it can't collide with
     // Spark's arrow/netty. Used by DatabricksLoader / DatabricksQueryUtil.
     "com.databricks" % "databricks-jdbc" % "3.4.1",
+    // Microsoft SQL Server / Azure SQL destination (SqlServerLoader). The
+    // driver declares its Entra ID jars as <optional> (12.8.1.jre11 POM:
+    // msal4j 1.15.1 for ActiveDirectoryPassword / ActiveDirectoryServicePrincipal,
+    // azure-identity 1.12.2 for ActiveDirectoryManagedIdentity), so they are
+    // not pulled in by this line. Both are already on the classpath at newer,
+    // API-compatible versions: azure-identity 1.18.4 is a direct dependency
+    // below (Azure OpenAI keyless auth) and brings msal4j 1.23.1. Pinning the
+    // POM's older versions would only be evicted by coursier (latest wins) or,
+    // for azure-identity, downgrade a patched jar. msal4j is declared directly
+    // at the version azure-identity already resolves, so SQL Server Entra auth
+    // keeps it even if azure-identity is ever dropped; the two move together.
+    // Kerberos (authenticationScheme=JavaKerberos) needs no extra jar: the
+    // driver uses the JDK's GSS/JAAS. The driver itself has no transitive
+    // dependencies, so no netty/reactor exclusions are needed.
+    "com.microsoft.sqlserver" % "mssql-jdbc" % "12.8.1.jre11",
+    "com.microsoft.azure" % "msal4j" % "1.23.1",
 
     // Kafka
     "org.apache.kafka" % "kafka-clients" % "3.9.2",
