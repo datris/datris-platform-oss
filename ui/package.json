@@ -48,12 +48,12 @@
     "echarts": "^6.1.0",
     "ngx-echarts": "^21.0.0",
     "rxjs": "~7.8.0",
-    "tslib": "^2.3.0",
+    "tslib": "^2.9.1",
     "zone.js": "~0.16.2"
   },
   "devDependencies": {
-    "@angular-devkit/build-angular": "21.2.26",
-    "@angular/cli": "21.2.26",
+    "@angular-devkit/build-angular": "21.2.29",
+    "@angular/cli": "21.2.29",
     "@angular/compiler-cli": "21.2.25",
     "@types/jasmine": "~5.1.0",
     "jasmine-core": "~5.13.0",
