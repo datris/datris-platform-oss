@@ -258,6 +258,7 @@ def pipelines(json_output):
             elif d.get("database", {}).get("useMongoDB"): dest = "→ MongoDB"
             elif d.get("database", {}).get("useSnowflake"): dest = "→ Snowflake"
             elif d.get("database", {}).get("useDatabricks"): dest = "→ Databricks"
+            elif d.get("database", {}).get("useSqlServer"): dest = "→ SQL Server"
             elif d.get("pgvector"): dest = "→ pgvector"
             elif d.get("qdrant"): dest = "→ Qdrant"
             elif d.get("weaviate"): dest = "→ Weaviate"
@@ -496,13 +497,13 @@ def _run_analyze(question, table, dest, json_output, top_k=5, pipeline=None):
         answer = answer_result.get("answer", answer_result.get("text", str(answer_result)))
         click.echo(f"\n  {answer}")
 
-    elif dest in ("snowflake", "databricks"):
+    elif dest in ("snowflake", "databricks", "sqlserver"):
         # Pipeline-scoped query tools — the pipeline config carries the
         # connection (credentials never leave the server).
         if not pipeline:
             click.echo(f"  Error: --pipeline is required to analyze a {dest} destination (the pipeline selects the connection)")
             return
-        tool = "query_snowflake" if dest == "snowflake" else "query_databricks"
+        tool = {"snowflake": "query_snowflake", "databricks": "query_databricks", "sqlserver": "query_sqlserver"}[dest]
         query_result = mcp(tool, {"pipeline": pipeline, "limit": 100})
         if json_output:
             click.echo(json.dumps(query_result, indent=2))
@@ -561,8 +562,8 @@ def _run_analyze(question, table, dest, json_output, top_k=5, pipeline=None):
 @cli.command()
 @click.argument("question")
 @click.option("--table", "-t", required=True, help="Table/collection name")
-@click.option("--dest", "-d", default="postgres", type=click.Choice(["postgres", "mongodb", "snowflake", "databricks", "qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Data source type")
-@click.option("--pipeline", "-p", default=None, help="Pipeline name (required for snowflake/databricks — the pipeline selects the connection)")
+@click.option("--dest", "-d", default="postgres", type=click.Choice(["postgres", "mongodb", "snowflake", "databricks", "sqlserver", "qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Data source type")
+@click.option("--pipeline", "-p", default=None, help="Pipeline name (required for snowflake/databricks/sqlserver — the pipeline selects the connection)")
 @click.option("--top-k", "-k", default=5, help="Number of search results (vector stores only)")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON instead of AI narrative")
 def analyze(question, table, dest, pipeline, top_k, json_output):
