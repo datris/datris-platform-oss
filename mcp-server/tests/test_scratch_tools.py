@@ -173,7 +173,7 @@ def test_dispatch_offset_limit_forwarded_when_supplied(captured):
 def test_create_pipeline_destination_enum_offers_scratch():
     enum = _props(_tool("create_pipeline"))["destination"]["enum"]
     assert "scratch" in enum
-    assert {"postgres", "mongodb", "snowflake", "databricks", "objectstore",
+    assert {"postgres", "mongodb", "snowflake", "databricks", "sqlserver", "objectstore",
             "qdrant", "weaviate", "milvus", "chroma", "pgvector"} <= set(enum)
 
 
@@ -243,9 +243,15 @@ def test_rendered_instructions_contain_keep_or_read_live_rule():
         server._INSTRUCTIONS_TEMPLATE, list(server.ALL_STRUCTURED_DESTINATIONS))
 
 
-def test_all_structured_destinations_still_the_five_names():
+def test_all_structured_destinations_is_the_six_names_ending_in_sqlserver():
+    # Story mssql-destination: SQL Server is the sixth structured destination.
     assert tuple(server.ALL_STRUCTURED_DESTINATIONS) == (
-        "postgres", "mongodb", "objectstore", "snowflake", "databricks")
+        "postgres", "mongodb", "objectstore", "snowflake", "databricks", "sqlserver")
+
+
+def test_create_pipeline_destination_enum_includes_sqlserver():
+    # Story mssql-destination, Acceptance bullet 7.
+    assert "sqlserver" in _props(_tool("create_pipeline"))["destination"]["enum"]
 
 
 def _offering_rule_text():
