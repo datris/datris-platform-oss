@@ -204,7 +204,7 @@ When `manageTableManually` is `false` (the default), the pipeline creates the sc
 | `_json`                                  | `NVARCHAR(MAX)` with `CHECK (ISJSON(_json) = 1)` |
 | `_xml`                                   | `XML`           |
 
-Other types (`decimal(p,s)`, `varchar(n)`) pass through as-is. A string key column is `NVARCHAR(450)` because SQL Server cannot index an `NVARCHAR(MAX)` column. A JSON document that is not valid JSON fails the load on the `ISJSON` check. An XML document's `<?xml ...?>` declaration is dropped before the insert, because the `XML` type does not keep it.
+A `boolean` value may be written `true`/`false`, `t`/`f`, `yes`/`no`, `y`/`n`, `on`/`off` or `1`/`0` (any case) and lands as `1`/`0`; an empty cell is `NULL`, and any other value fails the run with an error naming the column and the value. Other types (`decimal(p,s)`, `varchar(n)`) pass through as-is. A string key column is `NVARCHAR(450)` because SQL Server cannot index an `NVARCHAR(MAX)` column. A JSON document that is not valid JSON fails the load on the `ISJSON` check. An XML document's `<?xml ...?>` declaration is dropped before the insert, because the `XML` type does not keep it.
 
 ## Truncate before write
 
