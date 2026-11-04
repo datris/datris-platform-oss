@@ -61,7 +61,7 @@ if [ -n "${KAFKA_BOOTSTRAP_SERVERS:-}" ]; then
   seed_if_absent secret/oss/kafka-producer bootstrapServers="${KAFKA_BOOTSTRAP_SERVERS}"
 fi
 
-# Snowflake / Databricks destination credentials — seeded as ordinary
+# Snowflake / Databricks / SQL Server destination credentials — seeded as ordinary
 # (non-tap) secrets, so they appear as human-owned Platform secrets that
 # pipelines reference via credentialsSecret (agents can discover but never
 # modify them). Seeded only when the anchor field is present; field names
@@ -80,6 +80,21 @@ if [ -n "${DATABRICKS_HOST:-}" ]; then
     clientId="${DATABRICKS_CLIENT_ID:-}" \
     clientSecret="${DATABRICKS_CLIENT_SECRET:-}" \
     token="${DATABRICKS_TOKEN:-}"
+fi
+# SQL Server: seeded when SQLSERVER_HOST is set. Only the fields the
+# authMethod uses are written (empty values are left out), with the field
+# names CredentialResolver.resolveSqlServer reads. Database/schema are
+# per-pipeline settings and deliberately NOT stored here.
+if [ -n "${SQLSERVER_HOST:-}" ]; then
+  set -- host="${SQLSERVER_HOST}" port="${SQLSERVER_PORT:-1433}" authMethod="${SQLSERVER_AUTH_METHOD:-sql}"
+  [ -n "${SQLSERVER_USER:-}" ] && set -- "$@" user="${SQLSERVER_USER}"
+  [ -n "${SQLSERVER_PASSWORD:-}" ] && set -- "$@" password="${SQLSERVER_PASSWORD}"
+  [ -n "${SQLSERVER_CLIENT_ID:-}" ] && set -- "$@" clientId="${SQLSERVER_CLIENT_ID}"
+  [ -n "${SQLSERVER_CLIENT_SECRET:-}" ] && set -- "$@" clientSecret="${SQLSERVER_CLIENT_SECRET}"
+  [ -n "${SQLSERVER_TENANT_ID:-}" ] && set -- "$@" tenantId="${SQLSERVER_TENANT_ID}"
+  [ -n "${SQLSERVER_PRINCIPAL:-}" ] && set -- "$@" principal="${SQLSERVER_PRINCIPAL}"
+  [ -n "${SQLSERVER_MANAGED_IDENTITY_CLIENT_ID:-}" ] && set -- "$@" managedIdentityClientId="${SQLSERVER_MANAGED_IDENTITY_CLIENT_ID}"
+  seed_if_absent secret/oss/sqlserver "$@"
 fi
 
 # AI configuration — three independent, self-describing secrets.

@@ -230,6 +230,16 @@ services:
       DATABRICKS_CLIENT_ID: ${DATABRICKS_CLIENT_ID:-}
       DATABRICKS_CLIENT_SECRET: ${DATABRICKS_CLIENT_SECRET:-}
       DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
+      SQLSERVER_HOST: ${SQLSERVER_HOST:-}
+      SQLSERVER_PORT: ${SQLSERVER_PORT:-}
+      SQLSERVER_AUTH_METHOD: ${SQLSERVER_AUTH_METHOD:-}
+      SQLSERVER_USER: ${SQLSERVER_USER:-}
+      SQLSERVER_PASSWORD: ${SQLSERVER_PASSWORD:-}
+      SQLSERVER_CLIENT_ID: ${SQLSERVER_CLIENT_ID:-}
+      SQLSERVER_CLIENT_SECRET: ${SQLSERVER_CLIENT_SECRET:-}
+      SQLSERVER_TENANT_ID: ${SQLSERVER_TENANT_ID:-}
+      SQLSERVER_PRINCIPAL: ${SQLSERVER_PRINCIPAL:-}
+      SQLSERVER_MANAGED_IDENTITY_CLIENT_ID: ${SQLSERVER_MANAGED_IDENTITY_CLIENT_ID:-}
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
     volumes:
       # Shares vault-data so bootstrap can read/write the init file (unseal key
@@ -462,6 +472,12 @@ services:
       # 4 GB Docker memory allocation; the full stack with the bundled TEI
       # embedder needs about 8 GB. Raise -Xmx in .env on larger hosts
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) if you hit OutOfMemoryError.
+      # SQL Server Kerberos (authMethod kerberos, opt-in): put krb5.conf (and a
+      # keytab plus jaas.conf, if the secret names a jaasConfigurationName) in
+      # docker/config/, which this file mounts at /config (the standalone file
+      # needs that bind mount added), and add the JVM flags, e.g.
+      #   JAVA_OPTS=-Xms512m -Xmx2g -Djava.security.krb5.conf=/config/krb5.conf
+      # (+ -Djava.security.auth.login.config=/config/jaas.conf for a keytab).
       JAVA_OPTS: "${JAVA_OPTS:--Xms512m -Xmx2g}"
       # Tap execution isolation (Phase 3). Compose/prod default ON: tap fetch()
       # runs in the datris-tap-runner sidecar. Set USE_TAP_RUNNER=false for
