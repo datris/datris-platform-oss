@@ -1,10 +1,11 @@
 # Release Notes
 
-## v1.55.0 — October 31, 2026
+## v1.56.0 — November 3, 2026
 
-**The Assistant asks its questions on a card.**
+**Self-healing stops re-checking the same benign volume spike, and recovery mode is set where you manage the pipeline.**
 
-- **Question cards in the Assistant.** When the Assistant needs answers before it can build something (which source, how often to run, where the data should land, which locations to cover), it now shows an inline question card instead of a numbered list. Each question gets its own tab: choices come with a one-line description and an **Other** box for your own answer, and open-ended questions show a text box. Picking a single choice moves to the next tab; **Submit** on the last tab posts the answers as your next message and the Assistant carries on. You can still ignore the card and type a reply, or click **Answer in chat instead**. The Ops, Configuration, Search and Catalog chats, the MCP server and the CLI are unchanged.
-- **Security hardening of request authentication.** Request identity handling in the server was tightened so that a request is only ever authenticated by the credentials it presents. All users should upgrade.
+- **No more repeat triage of a benign volume signal.** When the recovery agent has already looked at a pipeline's volume change and closed it as benign, the incident sweep no longer re-opens an incident for that same signal every few minutes. A genuinely new change in volume still opens one. On an instance where one pipeline's feed kept tripping the volume check, this removes hundreds of unnecessary AI calls a day.
+- **Prompt caching for Anthropic.** Chat and agent requests sent directly to Anthropic now mark the system prompt and tool list for prompt caching, so repeat calls in a session reuse the cached prefix at a fraction of the input cost. The server log shows the cache token counts for each call. Bedrock, OpenAI, Azure and Grok requests are unchanged.
+- **Set self-healing per pipeline or tap from its page.** The pipeline page, the pipeline edit page and the tap run page now show a **Self-healing** row with the effective recovery mode and where it comes from (instance default or override). Admins can switch it to Off, Propose or Autopilot right there, or send it back to the instance default. The Agent Policy page's override editor shows these recovery entries properly instead of a blank row.
 
 **Upgrading:** `docker compose pull && docker compose up -d`; the server and UI images changed. No configuration changes are required. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
