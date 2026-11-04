@@ -160,7 +160,7 @@ object SqlServerConnectionUtil {
         if (isSimpleIdent(identifier) && !isReservedKeyword(identifier)) identifier
         else "[" + identifier.replace("]", "]]") + "]"
     def isSimpleIdent(s: String): Boolean = s != null && s.matches("[A-Za-z_][A-Za-z0-9_]*")
-    def isReservedKeyword(s: String): Boolean = s != null && ReservedKeywords.contains(s.toUpperCase)
+    def isReservedKeyword(s: String): Boolean = s != null && ReservedKeywords.contains(s.toUpperCase(java.util.Locale.ROOT))
 
     /** Microsoft's documented Transact-SQL reserved keywords ("Reserved
      *  Keywords (Transact-SQL)": the SQL Server / Azure Synapse table, the

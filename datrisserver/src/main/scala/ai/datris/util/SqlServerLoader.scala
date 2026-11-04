@@ -357,7 +357,7 @@ object SqlServerLoader {
      *  `1` / `0` a BIT column takes. Anything else passes through unchanged so
      *  SQL Server reports the bad value. NULL (an empty cell) never gets here. */
     def normalizeBoolean(v: String): String = {
-        val t = v.trim.toLowerCase
+        val t = v.trim.toLowerCase(java.util.Locale.ROOT)
         if (TrueWords.contains(t)) "1" else if (FalseWords.contains(t)) "0" else v
     }
 
