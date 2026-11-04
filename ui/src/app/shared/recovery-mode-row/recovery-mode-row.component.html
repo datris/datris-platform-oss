@@ -1,0 +1,18 @@
+<div class="lineage-row recovery-mode-row" *ngIf="loaded">
+  <span class="lineage-label">Self-healing</span>
+  <ng-container *ngIf="enabled; else disabledTpl">
+    <span class="mode-chip" [class.off]="effectiveMode === 'off'" [class.autopilot]="effectiveMode === 'autopilot'">{{ effectiveMode }}</span>
+    <span class="lineage-detail">· {{ source }}</span>
+    <select *ngIf="isAdmin" name="recoveryOverride" [(ngModel)]="selected" (ngModelChange)="onSelect($event)"
+            [disabled]="saving" title="Recovery mode for this {{ resourceType }}">
+      <option value="">Use instance default</option>
+      <option value="off">Off</option>
+      <option value="propose">Propose</option>
+      <option value="autopilot">Autopilot</option>
+    </select>
+    <span class="row-error" *ngIf="error">{{ error }}</span>
+  </ng-container>
+  <ng-template #disabledTpl>
+    <span class="lineage-detail">agent policy disabled</span>
+  </ng-template>
+</div>

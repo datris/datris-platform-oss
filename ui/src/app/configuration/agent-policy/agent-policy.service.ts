@@ -4,8 +4,9 @@ import { Observable } from 'rxjs';
 
 export type PolicyMode = 'auto' | 'approve' | 'deny';
 
-/** Per-resource override: `pipeline:<name>` / `tap:<name>` → action → mode. */
-export type PolicyOverrides = Record<string, Record<string, PolicyMode>>;
+/** Per-resource override: `pipeline:<name>` / `tap:<name>` → action → mode.
+ *  The reserved key `recovery` holds the resource's recovery mode instead. */
+export type PolicyOverrides = Record<string, Record<string, PolicyMode | RecoveryMode | string>>;
 
 export interface PolicyLimits {
   pendingTtlHours: number;
@@ -65,6 +66,16 @@ export interface PolicyUpdate {
   /** When present the server also replaces the per-resource recovery modes
    *  from `overrides` — send them back inside `overrides`. */
   recovery?: RecoverySettings;
+}
+
+/** True when `next` drops a recovery override that `stored` had (the key
+ *  lost its `recovery` entry or disappeared) and no override in `next`
+ *  still carries `recovery`. `PUT /api/v1/policy` keeps the stored recovery
+ *  overrides in that case unless the body also sends the `recovery` block. */
+export function recoveryRemoved(stored: PolicyOverrides | undefined, next: PolicyOverrides): boolean {
+  const hasRecovery = (m: Record<string, unknown> | undefined) => !!m && Object.prototype.hasOwnProperty.call(m, 'recovery');
+  if (Object.values(next || {}).some(m => hasRecovery(m))) return false;
+  return Object.values(stored || {}).some(m => hasRecovery(m));
 }
 
 @Injectable({ providedIn: 'root' })

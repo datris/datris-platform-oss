@@ -58,6 +58,8 @@ const STRING_ONLY_METHODS = ['hmac', 'mask', 'redact', 'encrypt'];
 })
 export class PipelineCreateComponent implements OnInit {
   isEditMode = false;
+  /** Route name of the pipeline being edited; '' on create. */
+  editName = '';
   step = 1;
   error = '';
   creating = false;
@@ -362,6 +364,7 @@ export class PipelineCreateComponent implements OnInit {
     const editName = this.route.snapshot.paramMap.get('name');
     if (editName) {
       this.isEditMode = true;
+      this.editName = editName;
       this.pipelineService.getPipeline(editName).subscribe({
         next: (config) => this.loadFromConfig(config),
         error: (err) => this.error = 'Failed to load dataset: ' + httpErrorText(err)

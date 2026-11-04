@@ -119,6 +119,15 @@
           </button>
         </div>
         <button class="link-btn" (click)="addOverrideEntry(o)">+ add action</button>
+        <div class="override-recovery">
+          <label for="override-recovery-{{ i }}">Recovery</label>
+          <select [(ngModel)]="o.recovery" id="override-recovery-{{ i }}" [name]="'override-recovery-' + i" [attr.name]="'override-recovery-' + i" title="Recovery mode for this resource">
+            <option value="">Inherit instance default</option>
+            <option value="off">Off</option>
+            <option value="propose">Propose</option>
+            <option value="autopilot">Autopilot</option>
+          </select>
+        </div>
       </div>
     </section>
 

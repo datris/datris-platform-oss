@@ -280,6 +280,18 @@
 
 .override-entry select:first-child { flex: 1; min-width: 0; }
 
+.override-recovery {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.override-recovery label {
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+}
+
 .icon-btn {
   background: transparent;
   border: none;

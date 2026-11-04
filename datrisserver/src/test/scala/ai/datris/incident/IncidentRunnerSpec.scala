@@ -2092,4 +2092,118 @@ class IncidentRunnerSpec extends AnyFunSuite {
             assert(IncidentIO.lastClosedAt("tap", "prices").isDefined)
         } finally IncidentIO.store = saved
     }
+
+    // ------------------------------------------------------------------
+    // Benign volume repeats (plans/stories/self-healing-cost-loop.md)
+    // ------------------------------------------------------------------
+
+    private def volumeTrigger(current: Long, prior: Long, deltaPct: Long): JsonObject = {
+        val t = new JsonObject()
+        t.addProperty("current", current)
+        t.addProperty("prior", prior)
+        t.addProperty("deltaPct", deltaPct)
+        t
+    }
+
+    /** Seed a closed incident for `pipeline:<name>` and return its id. */
+    private def seedClosed(store: FakeStore, state: String, name: String, trigger: JsonObject, kind: String = Incident.KindVolume): String = {
+        val id = Incident.newId()
+        store.insert(Incident(
+            id = id,
+            kind = kind,
+            resourceType = "pipeline",
+            resourceName = name,
+            openedAt = Instant.now(),
+            state = Incident.Open,
+            trigger = trigger
+        ))
+        assert(store.transition(id, Incident.OpenStates, state, Nil))
+        id
+    }
+
+    private def withStore[T](body: FakeStore => T): T = {
+        val store = new FakeStore
+        val saved = IncidentIO.store
+        IncidentIO.store = store
+        try body(store)
+        finally IncidentIO.store = saved
+    }
+
+    test("sameVolumeSignal is true only when current and prior both match") {
+        val base = volumeTrigger(1200, 300, 300)
+        assert(IncidentRunner.sameVolumeSignal(base, volumeTrigger(1200, 300, 300)))
+        // deltaPct is derived; only current/prior are the signature.
+        assert(IncidentRunner.sameVolumeSignal(base, volumeTrigger(1200, 300, 299)))
+        assert(!IncidentRunner.sameVolumeSignal(base, volumeTrigger(1201, 300, 300)))
+        assert(!IncidentRunner.sameVolumeSignal(base, volumeTrigger(1200, 301, 300)))
+        assert(!IncidentRunner.sameVolumeSignal(base, volumeTrigger(300, 1200, 300)))
+        // Missing fields on either side never match.
+        val noPrior = new JsonObject()
+        noPrior.addProperty("current", 1200L)
+        assert(!IncidentRunner.sameVolumeSignal(base, noPrior))
+        assert(!IncidentRunner.sameVolumeSignal(noPrior, base))
+        assert(!IncidentRunner.sameVolumeSignal(new JsonObject(), new JsonObject()))
+    }
+
+    test("benignVolumeRepeat is true when the latest resolved volume incident for the pipeline carries the same current/prior") {
+        withStore { store =>
+            seedClosed(store, Incident.Resolved, "orders", volumeTrigger(1200, 300, 300))
+            assert(IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 300, 300)))
+            val latest = IncidentIO.lastResolved("pipeline", "orders", Incident.KindVolume)
+            assert(latest.map(_.state).contains(Incident.Resolved), latest)
+        }
+    }
+
+    test("benignVolumeRepeat is false when the numbers differ, when the latest matching incident is failed/abandoned, or when it is for another pipeline") {
+        // Numbers differ: a new spike still opens.
+        withStore { store =>
+            seedClosed(store, Incident.Resolved, "orders", volumeTrigger(1200, 300, 300))
+            assert(!IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(2400, 300, 700)))
+            assert(!IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 600, 100)))
+        }
+        // Same numbers, but the only matching incident failed or was abandoned.
+        Seq(Incident.Failed, Incident.Abandoned).foreach { st =>
+            withStore { store =>
+                seedClosed(store, st, "orders", volumeTrigger(1200, 300, 300))
+                assert(!IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 300, 300)), st)
+                assert(IncidentIO.lastResolved("pipeline", "orders", Incident.KindVolume).isEmpty, st)
+            }
+        }
+        // Same numbers on another pipeline.
+        withStore { store =>
+            seedClosed(store, Incident.Resolved, "customers", volumeTrigger(1200, 300, 300))
+            assert(!IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 300, 300)))
+        }
+        // Same numbers on a resolved incident of another kind.
+        withStore { store =>
+            seedClosed(store, Incident.Resolved, "orders", volumeTrigger(1200, 300, 300), kind = Incident.KindTapFailure)
+            assert(!IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 300, 300)))
+        }
+    }
+
+    test("benignVolumeRepeat is false when the matching resolved incident is older than two windows") {
+        withStore { store =>
+            val id = seedClosed(store, Incident.Resolved, "orders", volumeTrigger(1200, 300, 300))
+            val old = Instant.now().minusMillis(2 * ai.datris.util.ActivitySignals.DefaultWindowMs + 60000L)
+            store.set(id, Seq("closedAt" -> old.toString, "closedAtDate" -> java.util.Date.from(old)))
+            assert(IncidentIO.lastResolved("pipeline", "orders", Incident.KindVolume).map(_.id).contains(id))
+            assert(!IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 300, 300)))
+            // Just inside the bound it still suppresses.
+            val recent = Instant.now().minusMillis(2 * ai.datris.util.ActivitySignals.DefaultWindowMs - 60000L)
+            store.set(id, Seq("closedAt" -> recent.toString, "closedAtDate" -> java.util.Date.from(recent)))
+            assert(IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 300, 300)))
+        }
+    }
+
+    test("lastResolved returns the most recently closed resolved incident") {
+        withStore { store =>
+            val older = seedClosed(store, Incident.Resolved, "orders", volumeTrigger(1200, 300, 300))
+            Thread.sleep(5)
+            val newer = seedClosed(store, Incident.Resolved, "orders", volumeTrigger(5000, 300, 1566))
+            assert(IncidentIO.lastResolved("pipeline", "orders", Incident.KindVolume).map(_.id).contains(newer))
+            // The latest resolved one carries different numbers, so the old signal is not a repeat.
+            assert(!IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(1200, 300, 300)), older)
+            assert(IncidentRunner.benignVolumeRepeat("pipeline", "orders", volumeTrigger(5000, 300, 1566)))
+        }
+    }
 }

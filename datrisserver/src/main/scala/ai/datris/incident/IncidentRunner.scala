@@ -229,6 +229,38 @@ object IncidentRunner {
         v != null && v.recoveryAgentEnabled && PolicyIO.enabled
     }
 
+    /** True when the latest resolved volume incident for the resource
+      * carries the same current/prior counts as this signal and closed
+      * within two signal windows. Inside that bound the prior window cannot
+      * have rolled, so the pair is provably the same spike; an older match
+      * is a new spike that happens to repeat the numbers. */
+    private[incident] def benignVolumeRepeat(resourceType: String, resourceName: String, trigger: JsonObject): Boolean =
+        triagedVolumeMatch(resourceType, resourceName, trigger).isDefined
+
+    private def triagedVolumeMatch(resourceType: String, resourceName: String, trigger: JsonObject): Option[Incident] = {
+        val since = Instant.now().minusMillis(2 * ActivitySignals.DefaultWindowMs)
+        IncidentIO.lastResolved(resourceType, resourceName, Incident.KindVolume)
+            .filter(i => i.closedAt.exists(_.isAfter(since)) && sameVolumeSignal(i.trigger, trigger))
+    }
+
+    /** Two volume triggers describe the same signal when `current` and
+      * `prior` are present in both and equal. `deltaPct` is derived. */
+    private[incident] def sameVolumeSignal(prev: JsonObject, next: JsonObject): Boolean = {
+        val keys = Seq("current", "prior")
+        keys.forall { k =>
+            (longField(prev, k), longField(next, k)) match {
+                case (Some(a), Some(b)) => a == b
+                case _ => false
+            }
+        }
+    }
+
+    private def longField(o: JsonObject, key: String): Option[Long] =
+        try {
+            if (o == null || !o.has(key) || !o.get(key).isJsonPrimitive) None
+            else Some(o.get(key).getAsLong)
+        } catch { case _: Exception => None }
+
     private[incident] def settings: RecoverySettings = {
         val o = settingsOverride
         if (o != null) o
@@ -257,6 +289,18 @@ object IncidentRunner {
                     IncidentIO.appendStep(existing.id, IncidentStep(Instant.now(), "open", "signal repeated: " + kind, Some(trigger.toString.take(500))))
                     return None
                 case None =>
+            }
+
+            // A volume signal identical to one a resolved incident already
+            // triaged is not re-opened: the same spike would re-match every
+            // sweep tick for the whole anomaly window.
+            val triaged = if (kind == Incident.KindVolume) triagedVolumeMatch(resourceType, resourceName, trigger) else None
+            if (triaged.isDefined) {
+                val prev = triaged.get.id
+                logger.info("incident not opened for " + resourceType + ":" + resourceName + " — volume signal current=" +
+                    longField(trigger, "current").getOrElse("") + " prior=" + longField(trigger, "prior").getOrElse("") +
+                    " already triaged by " + prev)
+                return None
             }
 
             // Cooldown after a failed/abandoned attempt so the loop cannot thrash.

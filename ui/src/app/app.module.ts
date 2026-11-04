@@ -3,6 +3,7 @@ import { BrowserModule } from '@angular/platform-browser';
 import { FormsModule } from '@angular/forms';
 import { AppComponent } from './app.component';
 import { ResizableColumnsDirective } from './shared/resizable-columns.directive';
+import { RecoveryModeRowComponent } from './shared/recovery-mode-row/recovery-mode-row.component';
 import { PipelinesComponent } from './pipelines/pipelines.component';
 import { PipelineCreateComponent } from './pipeline-create/pipeline-create.component';
 import { PipelineEditComponent } from './pipeline-edit/pipeline-edit.component';
@@ -73,6 +74,7 @@ import { NgxEchartsModule } from 'ngx-echarts';
     TapsComponent,
     TapCreateComponent,
     TapRunComponent,
+    RecoveryModeRowComponent,
     DataCatalogComponent,
     LineageGraphComponent,
     AgentMonitorComponent,

@@ -261,6 +261,8 @@ object AIStreaming {
             // No thinking field at all.
         }
 
+        applyPromptCaching(req)
+
         val jsonBody = req.toString
         val client = sslClient
         val httpPost = buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint)
@@ -280,6 +282,42 @@ object AIStreaming {
         } finally {
             response.close()
         }
+    }
+
+    /** Mark the stable prefix of an Anthropic request (system prompt, then
+      * tool list) for prompt caching: a string `system` becomes one text
+      * block with an ephemeral `cache_control`, and the LAST tool gets one.
+      * A system already sent as an array is left alone. The last tool is
+      * copied before marking so the caller's tool objects are not mutated.
+      * Idempotent; returns the same (mutated) request. */
+    private[aiutil] def applyPromptCaching(req: JsonObject): JsonObject = {
+        def ephemeral: JsonObject = {
+            val cc = new JsonObject()
+            cc.addProperty("type", "ephemeral")
+            cc
+        }
+        val sys = req.get("system")
+        if (sys != null && sys.isJsonPrimitive && sys.getAsJsonPrimitive.isString) {
+            val block = new JsonObject()
+            block.addProperty("type", "text")
+            block.addProperty("text", sys.getAsString)
+            block.add("cache_control", ephemeral)
+            val arr = new JsonArray()
+            arr.add(block)
+            req.add("system", arr)
+        }
+        val tools = req.get("tools")
+        if (tools != null && tools.isJsonArray && tools.getAsJsonArray.size() > 0) {
+            val arr = tools.getAsJsonArray
+            val lastIdx = arr.size() - 1
+            val last = arr.get(lastIdx)
+            if (last.isJsonObject) {
+                val copy = last.getAsJsonObject.deepCopy()
+                copy.add("cache_control", ephemeral)
+                arr.set(lastIdx, copy)
+            }
+        }
+        req
     }
 
     /** Convert our message tuples back into Anthropic's JSON message format.
@@ -348,6 +386,14 @@ object AIStreaming {
         // Per-block accumulators, keyed by Anthropic's `index` field.
         val builders = scala.collection.mutable.Map.empty[Int, AnthropicBlockBuilder]
         var stopReason: String = ""
+        // Token usage, reported in message_start (input + cache) and
+        // message_delta (output). Absent fields stay 0.
+        var inputTokens = 0L
+        var cacheReadTokens = 0L
+        var cacheCreationTokens = 0L
+        var outputTokens = 0L
+        def usageLong(u: JsonObject, key: String): Option[Long] =
+            if (u != null && u.has(key) && u.get(key).isJsonPrimitive) Some(u.get(key).getAsLong) else None
 
         // Cancellation check up front — short-circuit before we touch the stream.
         // After that, check between Anthropic SSE lines so we stop consuming tokens
@@ -430,10 +476,20 @@ object AIStreaming {
                                     }
                                 }
 
+                            case "message_start" =>
+                                val msg = evt.getAsJsonObject("message")
+                                val usage = if (msg != null && msg.has("usage") && msg.get("usage").isJsonObject) msg.getAsJsonObject("usage") else null
+                                usageLong(usage, "input_tokens").foreach(inputTokens = _)
+                                usageLong(usage, "cache_read_input_tokens").foreach(cacheReadTokens = _)
+                                usageLong(usage, "cache_creation_input_tokens").foreach(cacheCreationTokens = _)
+                                usageLong(usage, "output_tokens").foreach(outputTokens = _)
+
                             case "message_delta" =>
                                 val delta = evt.getAsJsonObject("delta")
-                                if (delta != null && delta.has("stop_reason"))
+                                if (delta != null && delta.has("stop_reason") && !delta.get("stop_reason").isJsonNull)
                                     stopReason = delta.get("stop_reason").getAsString
+                                val usage = if (evt.has("usage") && evt.get("usage").isJsonObject) evt.getAsJsonObject("usage") else null
+                                usageLong(usage, "output_tokens").foreach(outputTokens = _)
 
                             case "message_stop" => // handled by loop exit
                             case "error" =>
@@ -441,7 +497,7 @@ object AIStreaming {
                                 sink(AIStreamEvent.Error(err))
                                 throw new DatrisException("Anthropic streaming error: " + err)
 
-                            case _ => // ping, message_start — ignore
+                            case _ => // ping — ignore
                         }
                     } catch {
                         case e: DatrisException => throw e
@@ -452,6 +508,9 @@ object AIStreaming {
             }
             line = reader.readLine()
         }
+
+        logger.info("Assistant: Anthropic usage input_tokens=" + inputTokens + " cache_read_input_tokens=" + cacheReadTokens +
+            " cache_creation_input_tokens=" + cacheCreationTokens + " output_tokens=" + outputTokens)
 
         // Materialize blocks in index order.
         val content = builders.toSeq.sortBy(_._1).map { case (_, b) =>
