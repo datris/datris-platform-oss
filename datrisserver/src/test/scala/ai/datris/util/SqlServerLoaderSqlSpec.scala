@@ -189,9 +189,22 @@ class SqlServerLoaderSqlSpec extends AnyFunSuite {
         assert("""INSERT \(id, \[key\], \[user\]\)""".r.findFirstIn(merge).isDefined, merge)
     }
 
-    test("normalizeBoolean maps the Postgres boolean spellings to 1/0 and passes anything else through") {
-        Seq("t", "T", "true", "TRUE", "y", "Y", "yes", "Yes", "on", "ON", "1", " y ").foreach(v => assert(SqlServerLoader.normalizeBoolean(v) == "1", v))
-        Seq("f", "F", "false", "False", "n", "N", "no", "NO", "off", "Off", "0").foreach(v => assert(SqlServerLoader.normalizeBoolean(v) == "0", v))
-        Seq("maybe", "2", "").foreach(v => assert(SqlServerLoader.normalizeBoolean(v) == v, v))
+    test("normalizeBoolean maps the Postgres boolean spellings to 1/0") {
+        Seq("t", "T", "true", "TRUE", "y", "Y", "yes", "Yes", "on", "ON", "1", " y ").foreach(v =>
+            assert(SqlServerLoader.normalizeBoolean(v, "flag") == "1", v)
+        )
+        Seq("f", "F", "false", "False", "n", "N", "no", "NO", "off", "Off", "0").foreach(v => assert(SqlServerLoader.normalizeBoolean(v, "flag") == "0", v))
+    }
+
+    test("normalizeBoolean rejects an unknown spelling with an error naming the column and value") {
+        Seq("maybe", "2", "", " ", "yess").foreach { v =>
+            val e = intercept[ai.datris.model.DatrisException](SqlServerLoader.normalizeBoolean(v, "flag", 2L))
+            assert(e.getMessage.contains("'" + v + "'"), e.getMessage)
+            assert(e.getMessage.contains("column 'flag'"), e.getMessage)
+            assert(e.getMessage.contains("data row 2"), e.getMessage)
+            assert(e.getMessage.contains("true/false") && e.getMessage.contains("y/n") && e.getMessage.contains("1/0"), e.getMessage)
+        }
+        val noRow = intercept[ai.datris.model.DatrisException](SqlServerLoader.normalizeBoolean("maybe", "flag"))
+        assert(!noRow.getMessage.contains("data row"), noRow.getMessage)
     }
 }

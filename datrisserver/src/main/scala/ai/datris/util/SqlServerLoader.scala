@@ -176,7 +176,7 @@ class SqlServerLoader(jobContext: JobContext) {
                             ps.setString(
                                 i + 1,
                                 if (isXml(i)) SqlServerLoader.stripXmlDeclaration(v)
-                                else if (isBool(i)) SqlServerLoader.normalizeBoolean(v)
+                                else if (isBool(i)) SqlServerLoader.normalizeBoolean(v, fields(i).name, rows + 1)
                                 else v
                             )
                         i += 1
@@ -354,11 +354,21 @@ object SqlServerLoader {
 
     /** The boolean spellings Postgres accepts (t/f, true/false, y/n, yes/no,
      *  on/off, 1/0; case-insensitive, surrounding blanks ignored) as the
-     *  `1` / `0` a BIT column takes. Anything else passes through unchanged so
-     *  SQL Server reports the bad value. NULL (an empty cell) never gets here. */
-    def normalizeBoolean(v: String): String = {
+     *  `1` / `0` a BIT column takes. Any other value fails the load with an
+     *  error naming the column, the value and the accepted spellings: the
+     *  driver's bulk-copy path would otherwise convert it to 0 itself, so SQL
+     *  Server never sees (or rejects) it. NULL (an empty cell) never gets here.
+     *  `row` is the 1-based data row, named in the error when known. */
+    def normalizeBoolean(v: String, column: String, row: Long = -1L): String = {
         val t = v.trim.toLowerCase(java.util.Locale.ROOT)
-        if (TrueWords.contains(t)) "1" else if (FalseWords.contains(t)) "0" else v
+        if (TrueWords.contains(t)) "1"
+        else if (FalseWords.contains(t)) "0"
+        else
+            throw new DatrisException(
+                "Invalid boolean value '" + v + "' in column '" + column + "'" + (if (row > 0) " (data row " + row + ")" else "") +
+                    ". Accepted values (case-insensitive): true/false, t/f, yes/no, y/n, on/off, 1/0; leave the cell empty for NULL. " +
+                    "Fix the source value, or change the column's type in the destination schema."
+            )
     }
 
     /** SQL Server's XML type rejects an `encoding="UTF-8"` declaration on a
