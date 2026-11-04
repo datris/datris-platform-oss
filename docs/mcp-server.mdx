@@ -1,7 +1,7 @@
 ---
 title: "MCP server for data ingestion and ETL"
 sidebarTitle: "MCP Server"
-description: "Give Claude, Cursor, or any MCP client a governed way to create pipelines, run taps, load data into Postgres, Snowflake, Databricks, S3, or a vector store, and verify it landed."
+description: "Give Claude, Cursor, or any MCP client a governed way to create pipelines, run taps, load data into Postgres, Snowflake, Databricks, SQL Server, S3, or a vector store, and verify it landed."
 ---
 
 The pipeline includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that lets AI agents interact with the platform natively. Any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, or custom agentic frameworks — can discover database metadata, create and manage pipelines, upload files, monitor jobs, profile data, search vector databases, query structured data, answer questions with AI-powered RAG, and upload configuration files — all without custom integration code.
@@ -29,7 +29,7 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 |------|-------------|
 | `list_pipelines` | List all registered pipeline configurations |
 | `get_pipeline` | Get a specific pipeline configuration by name |
-| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Supports three destination categories: structured (postgres, mongodb, snowflake, databricks), object store (Parquet files, ORC files, or an Iceberg table in MinIO / AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). For S3, set `provider: "s3"` and reference a Platform-tab `credentialsSecret`; Snowflake and Databricks likewise take a Platform-tab `credentialsSecret` plus a warehouse and database/catalog. Optional `catalog` to group related pipelines. |
+| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Supports three destination categories: structured (postgres, mongodb, snowflake, databricks, sqlserver), object store (Parquet files, ORC files, or an Iceberg table in MinIO / AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). For S3, set `provider: "s3"` and reference a Platform-tab `credentialsSecret`; Snowflake and Databricks likewise take a Platform-tab `credentialsSecret` plus a warehouse and database/catalog; SQL Server takes a Platform-tab `credentialsSecret` plus a database, and also accepts a JSON or XML sample. Optional `catalog` to group related pipelines. |
 | `delete_pipeline` | Delete a pipeline and its destination data |
 | `list_pipeline_versions` | List a pipeline's definition-change history (newest first): `version`, `createdAt`, `createdBy`, `changeNote`. An **empty** result means it hasn't been edited since versioning was enabled — not that it has no version; the current number is the `version` field on `list_pipelines` / `get_pipeline` (≥ 1 for every pipeline) |
 | `get_pipeline_version` | View one historical snapshot of a pipeline's definition — the full config as it was at that version. Read-only |

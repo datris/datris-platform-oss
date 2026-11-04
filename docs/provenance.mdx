@@ -34,7 +34,7 @@ From the next run on, when stamping succeeds, every row the pipeline lands carri
 
 How the fields land depends on the destination:
 
-- **PostgreSQL, Snowflake, Databricks** — columns, auto-added as text to existing tables on the first stamped run (the same additive schema evolution new CSV columns already get).
+- **PostgreSQL, Snowflake, Databricks, SQL Server** — columns, auto-added as text to existing tables on the first stamped run (the same additive schema evolution new CSV columns already get).
 - **MongoDB and JSON data** — keys on each document. XML data is not stamped: an XML source always loads unstamped, in strict mode too.
 - **Object store (CSV/Parquet)** — columns in the written files, from the first stamped run on.
 - **Kafka / ActiveMQ** — fields in each message; consumers that ignore unknown fields are unaffected.

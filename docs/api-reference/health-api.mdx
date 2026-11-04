@@ -73,12 +73,12 @@ Returns the structured destinations that are usable in this deployment, as a JSO
 Two availability semantics are used on purpose:
 
 - **Self-hosted destinations** (`mongodb`, `postgres`, `objectstore`) are **live-probed** — a destination is listed only if the service is actually reachable. The presence of a Vault secret alone is not enough, because the compose stack seeds secrets even when a service is disabled.
-- **External SaaS destinations** (`snowflake`, `databricks`) have no local service to probe, so they are listed when any Platform secret contains a complete set of credentials for that destination. Credential secret names are user-chosen per pipeline, so every Platform secret is scanned rather than a fixed name looked up.
+- **External destinations** (`snowflake`, `databricks`, `sqlserver`) have no local service to probe, so they are listed when any Platform secret contains a complete set of credentials for that destination. For `sqlserver` that is `host` plus every field its `authMethod` needs (`sql`, the default: `user` and `password`; `entraServicePrincipal`: `clientId`, `clientSecret` and `tenantId`; `entraPassword`: `user` and `password`; `entraManagedIdentity`: nothing more; `kerberos`: `principal` and `password`). Credential secret names are user-chosen per pipeline, so every Platform secret is scanned rather than a fixed name looked up.
 
 ### Response
 
 ```json
-["mongodb", "postgres", "objectstore", "snowflake"]
+["mongodb", "postgres", "objectstore", "snowflake", "sqlserver"]
 ```
 
 ### Example

@@ -1741,7 +1741,7 @@ paths:
                   description: |
                     Destination configuration (database, objectStore, kafka, activeMQ, restEndpoint, qdrant, weaviate, milvus, chroma, pgvector).
 
-                    The database destination selects its engine with exactly one of `usePostgres`, `useMongoDB`, `useSnowflake`, or `useDatabricks`. Snowflake and Databricks additionally take `credentialsSecret` (a Platform secret) and `warehouse` (Snowflake warehouse name / Databricks SQL warehouse ID); for Databricks, `dbName` names the Unity Catalog catalog. For Databricks, `warehouse` may be omitted when the credentials secret has a `warehouse` field (aliases `httpPath`, `http_path`, `DATABRICKS_WAREHOUSE`).
+                    The database destination selects its engine with exactly one of `usePostgres`, `useMongoDB`, `useSnowflake`, `useDatabricks`, or `useSqlServer` (boolean, default `false`). Snowflake and Databricks additionally take `credentialsSecret` (a Platform secret) and `warehouse` (Snowflake warehouse name / Databricks SQL warehouse ID); for Databricks, `dbName` names the Unity Catalog catalog. For Databricks, `warehouse` may be omitted when the credentials secret has a `warehouse` field (aliases `httpPath`, `http_path`, `DATABRICKS_WAREHOUSE`). `useSqlServer` loads a Microsoft SQL Server or Azure SQL database and requires `credentialsSecret` (a Platform secret with `host`, optional `port`, and `authMethod` — `sql` (default): `user`, `password`; `entraServicePrincipal`: `clientId`, `clientSecret`, `tenantId`; `entraPassword`: `user`, `password`; `entraManagedIdentity`: optional `managedIdentityClientId`; `kerberos`: `principal`, `password`); `dbName` is the database on that server and `schema` is usually `dbo`. It accepts CSV, JSON (single `_json` field) and XML (single `_xml` field) sources.
 
                     objectStore supports two providers via the `provider` field: `minio` (default, uses the built-in MinIO credentials) and `s3` (AWS S3). For `provider: s3`, set `destinationBucketOverride` (required), `credentialsSecret` (Vault secret with `accessKey`/`secretKey`/`region` and optional `sessionToken`), and optionally `endpoint` (must be https://). Region lives in the credentials secret, not on the objectStore config.
 
@@ -5297,14 +5297,15 @@ paths:
       summary: List usable structured destinations
       description: >-
         Returns the subset of `[mongodb, postgres, objectstore, snowflake,
-        databricks]` usable in this deployment. Drives the pipeline wizard's and
+        databricks, sqlserver]` usable in this deployment. Drives the pipeline wizard's and
         Assistant's destination picker. Two availability semantics on purpose:
         the self-hosted destinations (mongodb, postgres, objectstore) are
         live-probed — secret presence alone isn't a reliable signal because the
         compose stack seeds their secrets even when a service is disabled; the
-        external SaaS destinations (snowflake, databricks) have no local service
-        to probe, so they are included when any Platform secret carries a
-        complete credential set for them.
+        external destinations (snowflake, databricks, sqlserver) have no local
+        service to probe, so they are included when any Platform secret carries
+        a complete credential set for them. For sqlserver that is `host` plus
+        every field its `authMethod` needs (any of the five methods counts).
       responses:
         '200':
           description: Available destinations
