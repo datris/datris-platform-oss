@@ -136,10 +136,22 @@ class SqlServerLoader(jobContext: JobContext) {
         statusUtil.info("processing", "Insert command: " + sql)
         val isXml = fields.map(_.name.equalsIgnoreCase("_xml")).toArray
         // The driver's bulk-copy path skips CHECK constraints, which would let
-        // a non-JSON document past the _json column's ISJSON check. A JSON
-        // source is one row (the whole document), so plain inserts cost nothing.
-        if (fields.exists(_.name.equalsIgnoreCase("_json")))
-            Try(conn.unwrap(classOf[ISQLServerConnection]).setUseBulkCopyForBatchInsert(false))
+        // a non-JSON document past the _json column's ISJSON check, and its
+        // type conversion into an XML column is stricter than a plain INSERT.
+        // A JSON or XML source is one row (the whole document), so plain
+        // inserts cost nothing. Failing to switch bulk copy off fails the
+        // load rather than silently skipping the ISJSON check.
+        if (fields.exists(f => f.name.equalsIgnoreCase("_json") || f.name.equalsIgnoreCase("_xml"))) {
+            try conn.unwrap(classOf[ISQLServerConnection]).setUseBulkCopyForBatchInsert(false)
+            catch {
+                case e: Exception =>
+                    val failure = new DatrisException(
+                        "Could not switch off bulk copy for a JSON/XML document load on SQL Server (needed so the _json ISJSON check is enforced): " + e.getMessage
+                    )
+                    failure.initCause(e)
+                    throw failure
+            }
+        }
 
         val input = new StagedRows.TextChunkInputStream(DestSchemaProjector.csvBody(jobContext))
         val reader: Reader = new InputStreamReader(input, StandardCharsets.UTF_8)
