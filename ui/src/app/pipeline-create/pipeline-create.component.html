@@ -564,6 +564,7 @@
             <option value="mongodb" *ngIf="sourceType !== 'xml'" [disabled]="!isDestAvailable('mongodb')">MongoDB{{ isDestAvailable('mongodb') ? '' : ' — Not installed' }}</option>
             <option value="snowflake" *ngIf="sourceType === 'csv' || sourceType === 'xml'" [disabled]="!isDestAvailable('snowflake')">Snowflake{{ isDestAvailable('snowflake') ? '' : ' — Not installed' }}</option>
             <option value="databricks" *ngIf="sourceType === 'csv' || sourceType === 'xml'" [disabled]="!isDestAvailable('databricks')">Databricks{{ isDestAvailable('databricks') ? '' : ' — Not installed' }}</option>
+            <option value="sqlserver" *ngIf="sourceType === 'csv' || sourceType === 'json' || sourceType === 'xml'" [disabled]="!isDestAvailable('sqlserver')">SQL Server{{ isDestAvailable('sqlserver') ? '' : ' — Not installed' }}</option>
           </optgroup>
           <optgroup label="Storage & Messaging" *ngIf="sourceType !== 'unstructured' && sourceType !== 'xml'">
             <option value="objectstore" *ngIf="sourceType === 'csv'" [disabled]="!isDestAvailable('objectstore')">Object Store (MinIO or S3){{ isDestAvailable('objectstore') ? '' : ' — Not installed' }}</option>
@@ -727,6 +728,44 @@
             <span>Truncate before write</span>
           </label>
           <p class="form-hint">When enabled, the table contents are replaced atomically on each ingestion run (INSERT OVERWRITE — a failed run leaves the previous data intact). Use this for full snapshot replacements.</p>
+        </div>
+      </ng-container>
+
+      <!-- SQL Server / Azure SQL -->
+      <ng-container *ngIf="destType === 'sqlserver'">
+        <div class="form-row">
+          <label class="form-label">Credentials Secret</label>
+          <input class="form-input" [(ngModel)]="mssqlCredentialsSecret" placeholder="e.g. sqlserver">
+          <p class="form-hint">Name of a Platform-tab secret containing <code>host</code> (optional <code>port</code>, default 1433) and the fields its <code>authMethod</code> needs: <code>sql</code> (default) — <code>user</code>, <code>password</code>; <code>entraServicePrincipal</code> — <code>clientId</code>, <code>clientSecret</code>, <code>tenantId</code>; <code>entraPassword</code> — <code>user</code>, <code>password</code>; <code>entraManagedIdentity</code> — optional <code>managedIdentityClientId</code>; <code>kerberos</code> — <code>principal</code>, <code>password</code>. Create it on Configuration → Secrets → Platform if it doesn't exist yet.</p>
+        </div>
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Database</label>
+            <input class="form-input" [(ngModel)]="mssqlDbName" placeholder="e.g. analytics">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Schema</label>
+            <input class="form-input" [(ngModel)]="mssqlSchema" placeholder="e.g. dbo">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Table</label>
+            <input class="form-input" [(ngModel)]="mssqlTable" placeholder="e.g. sales">
+          </div>
+        </div>
+        <p class="form-hint" *ngIf="sourceType === 'json' || sourceType === 'xml'">A {{ sourceType === 'json' ? 'JSON' : 'XML' }} source lands as one document column ({{ sourceType === 'json' ? '_json, NVARCHAR(MAX) checked with ISJSON' : '_xml, XML' }}).</p>
+        <div class="form-row" *ngIf="destSchemaFields.length > 0 && destSchemaFields[0].name">
+          <label class="form-label">Key Fields (optional)</label>
+          <p class="form-hint">Select one or more destination columns that uniquely identify a row. Used for upserts (MERGE). Hold Cmd/Ctrl to select multiple.</p>
+          <select class="form-input" multiple [(ngModel)]="mssqlKeyFields" size="6">
+            <option *ngFor="let f of keyFieldCandidates" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" [(ngModel)]="dbTruncateBeforeWrite">
+            <span>Truncate before write</span>
+          </label>
+          <p class="form-hint">When enabled, the destination table is emptied before each ingestion run (DELETE inside the load transaction, so a failed run leaves the previous rows). Use this for full snapshot replacements.</p>
         </div>
       </ng-container>
 
