@@ -87,7 +87,7 @@ There is no server-side API key. Each connecting agent authenticates per session
 
 - **Pipeline Management** — create, list, get, delete pipelines (PostgreSQL, MongoDB, Snowflake, Databricks, Microsoft SQL Server / Azure SQL, object store, vector stores); upload files; monitor jobs
 - **Vector Search** — semantic search across Qdrant, Weaviate, Milvus, Chroma, pgvector
-- **Database Query** — read-only SQL queries (PostgreSQL, Snowflake, Databricks), object store queries (S3/MinIO files via DuckDB), and MongoDB queries
+- **Database Query** — read-only SQL queries (PostgreSQL, Snowflake, Databricks, SQL Server), object store queries (S3/MinIO files via DuckDB), and MongoDB queries
 - **Metadata Discovery** — explore databases, schemas, tables, columns, collections
 - **AI** — RAG-powered question answering
 - **System** — health checks, version info

@@ -6,7 +6,7 @@ description: "Load CSV, JSON and XML into SQL Server or Azure SQL with MERGE ups
 
 Use this destination when you want an agent or a scheduled pipeline to land validated data in a Microsoft SQL Server or Azure SQL database you already run, without handing the agent database credentials. Each pipeline references its own secret, and every load is audited and lineage-tracked.
 
-The SQL Server destination works the way the [PostgreSQL destination](/destinations/postgres) does: the table is created from the destination schema on the first run, new columns are added on later runs, `keyFields` upserts with `MERGE`, `truncateBeforeWrite` replaces the rows, and the load runs in one transaction. Rows go through the driver's bulk-copy batch insert. JSON and XML sources land as a single document column, exactly as they do on PostgreSQL.
+The SQL Server destination works the way the [PostgreSQL destination](/destinations/postgres) does: the table is created from the destination schema on the first run, new columns are added on later runs, `keyFields` upserts with `MERGE`, `truncateBeforeWrite` replaces the rows, and the load runs in one transaction. CSV rows go through the driver's bulk-copy batch insert. JSON and XML sources land as a single document column, exactly as they do on PostgreSQL; those loads use plain inserts so the `ISJSON` check on the `_json` column is enforced.
 
 Unlike the bundled PostgreSQL and MongoDB destinations, SQL Server is an external target: credentials are per-pipeline, referenced by name through `credentialsSecret`, the same model as the [Snowflake](/destinations/snowflake) and [S3](/destinations/s3) destinations. Different pipelines can write to different servers. Datris never starts a SQL Server for you.
 
@@ -124,14 +124,14 @@ On **Configuration → Secrets → Platform**, create a secret (for example `sql
 | `user`, `password`        | `sql`, `entraPassword`                  | The SQL login, or the Microsoft Entra user (`loader@example.com`) |
 | `clientId`, `clientSecret`, `tenantId` | `entraServicePrincipal`    | From the app registration |
 | `managedIdentityClientId` | `entraManagedIdentity` (optional)       | Only for a user-assigned identity |
-| `principal`, `password`   | `kerberos`                              | e.g. `svc_datris@CORP.EXAMPLE.COM` |
-| `jaasConfigurationName`   | `kerberos` (optional)                   | Entry in a mounted JAAS file, for a keytab instead of a password |
-| `encrypt`                 | every method (optional)                 | Default `true` |
+| `principal`, `password`   | `kerberos`                              | e.g. `svc_datris@CORP.EXAMPLE.COM`. Both are required, even with a keytab |
+| `jaasConfigurationName`   | `kerberos` (optional)                   | Entry in a mounted JAAS file, to sign in with a keytab |
+| `encrypt`                 | every method (optional)                 | Default `true`. Takes `true`/`false` (also `yes`/`no`, `1`/`0`) |
 | `trustServerCertificate`  | every method (optional)                 | Default `false`. Set `true` only for a test server with a self-signed certificate |
 
-The database name is not in the secret: each pipeline names it in `dbName`, so one secret can serve several databases on the same server. If a required field is missing, the load fails with an error naming the secret, the field and the auth method. A secret with any complete auth method makes SQL Server appear in the pipeline wizard and in the Assistant's destination question.
+The database name is not in the secret: each pipeline names it in `dbName`, so one secret can serve several databases on the same server. `authMethod` is matched case-insensitively; any other value fails with an error listing the five methods. If a required field is missing, the load fails with an error naming the secret, the field and the auth method. A secret with any complete auth method makes SQL Server appear in the pipeline wizard and in the Assistant's destination question.
 
-The installer can create this secret for you: answer yes to "SQL Server destination — configure credentials now?", or for a headless install export `SQLSERVER_HOST`, `SQLSERVER_AUTH_METHOD` and that method's fields (`SQLSERVER_USER`, `SQLSERVER_PASSWORD`, `SQLSERVER_CLIENT_ID`, `SQLSERVER_CLIENT_SECRET`, `SQLSERVER_TENANT_ID`, `SQLSERVER_PRINCIPAL`, `SQLSERVER_MANAGED_IDENTITY_CLIENT_ID`) before running it. The secret is seeded once, as `sqlserver`, and never overwritten afterwards.
+The installer can create this secret for you: answer yes to "SQL Server destination — configure credentials now?", or for a headless install export `SQLSERVER_HOST`, optionally `SQLSERVER_PORT` (default `1433`), `SQLSERVER_AUTH_METHOD` (default `sql`) and that method's fields (`SQLSERVER_USER`, `SQLSERVER_PASSWORD`, `SQLSERVER_CLIENT_ID`, `SQLSERVER_CLIENT_SECRET`, `SQLSERVER_TENANT_ID`, `SQLSERVER_PRINCIPAL`, `SQLSERVER_MANAGED_IDENTITY_CLIENT_ID`) before running it. The secret is seeded once, as `sqlserver`, and never overwritten afterwards.
 
 ## Kerberos container setup
 
@@ -142,7 +142,7 @@ The Datris server runs on Linux, so Kerberos uses the JDK's own Kerberos client,
    ```bash
    JAVA_OPTS=-Xms512m -Xmx2g -Djava.security.krb5.conf=/config/krb5.conf
    ```
-3. With `principal` and `password` in the secret nothing else is needed. To use a keytab instead, put the keytab and a JAAS file in `docker/config/`, add `-Djava.security.auth.login.config=/config/jaas.conf` to `JAVA_OPTS`, and set the secret's `jaasConfigurationName` to the entry name:
+3. With `principal` and `password` in the secret nothing else is needed. To sign in with a keytab, put the keytab and a JAAS file in `docker/config/`, add `-Djava.security.auth.login.config=/config/jaas.conf` to `JAVA_OPTS`, and set the secret's `jaasConfigurationName` to the entry name. The secret still needs a `password` field, because every `kerberos` secret is checked for `principal` and `password`:
    ```
    DatrisKeytab {
      com.sun.security.auth.module.Krb5LoginModule required
@@ -152,7 +152,7 @@ The Datris server runs on Linux, so Kerberos uses the JDK's own Kerberos client,
    ```
 4. Recreate the container: `docker compose up -d datris`.
 
-The standalone compose file has no `docker/config` bind mount; add one to the `datris` service to use Kerberos there.
+The standalone compose file mounts only `application.yaml` into `/config`. To use Kerberos there, add a bind mount for each file to the `datris` service, for example `./krb5.conf:/config/krb5.conf:ro` (and the keytab and `jaas.conf` if you use them).
 
 ## Configuration
 
@@ -212,7 +212,7 @@ An XML source is the same with `xmlAttributes` and a single `_xml` field.
 | `keyFields`           | no       |         | Natural-key columns; switches the load to a `MERGE` upsert |
 | `useTransaction`      | no       | `true`  | Run the load in one transaction |
 
-Simple identifiers (letters, digits, underscores) are passed unquoted and resolve the way SQL Server always does (case-insensitive under the default collation). Other names are bracket-quoted, for example `[order details]`.
+`dbName`, `schema`, `table` and column names may use letters, digits and underscores only; the pipeline is rejected on save otherwise. They are passed unquoted and resolve the way SQL Server always does (case-insensitive under the default collation). A T-SQL reserved keyword such as `order`, `key` or `user`, or a name starting with a digit, is bracket-quoted (`[order]`), so a column named `order` works. Bracketing does not change how SQL Server resolves the name.
 
 ## Table management
 
@@ -253,13 +253,17 @@ When `keyFields` is empty, rows are inserted straight into the table.
 
 The Assistant (and any MCP client) can read the destination back with the `query_sqlserver` tool, and the Search tab lists SQL Server pipelines under **Warehouse**. Use it to check that a load landed or to answer questions over the data without leaving Datris. Queries are pipeline-scoped: the tool takes a pipeline name, and the server connects with that pipeline's credentials secret, for any `authMethod`. Credentials never leave the server.
 
-Only read-only T-SQL runs: `SELECT` and `WITH`. Metadata comes from `INFORMATION_SCHEMA` views, for example `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo'`. Rows are capped with `TOP`, or with `OFFSET ... FETCH` when the statement has an `ORDER BY`; do not add `LIMIT`. Leave the query out to preview the pipeline's table. The REST endpoint is `POST /api/v1/query/sqlserver` ([Query API](/api-reference/query-api#query-sql-server)); a key needs the `query:sqlserver` capability.
+Only read-only T-SQL runs: a statement must start with `SELECT` or `WITH`, with no semicolons or comments. Metadata comes from `INFORMATION_SCHEMA` views, for example `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo'`. Write and session keywords (`INSERT`, `UPDATE`, `DELETE`, `INTO`, `EXEC`, `USE`, `OPENROWSET` and others; full list in the [Query API](/api-reference/query-api#query-sql-server)) are rejected anywhere in the statement, including inside string literals, so `WHERE note = 'please delete'` is refused too.
+
+Leave the query out to preview the pipeline's table. Rows are capped at `limit` (default 100): a statement with a top-level `ORDER BY` and no `TOP` gets `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY`, a statement that already has `OFFSET` runs as written, and anything else is wrapped as `SELECT TOP (<limit>) * FROM (<sql>) q` (for a `WITH` statement only the final `SELECT` is wrapped). Do not add `LIMIT`. If SQL Server rejects the wrapper (an unnamed column such as `COUNT(*)`, two columns with the same name, or `FOR JSON` / `FOR XML`), the query runs unwrapped with the same row cap. Queries time out after 30 seconds. There is no server-side maximum on `limit`, and `-1` returns every row with no timeout, so keep it for queries you know are small.
+
+The REST endpoint is `POST /api/v1/query/sqlserver` ([Query API](/api-reference/query-api#query-sql-server)). A key needs the `query:sqlserver` capability. The `read-only` and `reporting` key templates and the editor and viewer roles include it. A key issued before this capability existed keeps its explicit capability list, so add `query:sqlserver` to it or issue a new key. Keys with full access (`*:*`) need nothing.
 
 The login only needs `SELECT` on the table to read it back; the grants above already include it.
 
 ## Column types after load
 
-Pipelines created by an agent store every column as `NVARCHAR(MAX)`. The Catalog marks such a pipeline with a "text" badge. Click it (or use `get_dest_types` / `apply_dest_types`) to see proposed types inferred from up to 1000 landed rows and apply them. Applying validates every landed value with `TRY_CONVERT`, turns empty strings into `NULL`, and retypes the columns in place with `ALTER TABLE ... ALTER COLUMN`, all in one transaction: a value that will not convert fails the whole apply with the column named and nothing changed. The table, its grants and its primary key stay (a retyped key column keeps the key, rebuilt under the same name). A `_json` or `_xml` document column is never retyped and does not count toward the badge. Do not apply while a run is in flight.
+Pipelines created by an agent store every column as text (`NVARCHAR(MAX)`, or `NVARCHAR(450)` for a key column). The Catalog marks such a pipeline with a "text" badge. Click it (or use `get_dest_types` / `apply_dest_types`) to see proposed types inferred from up to 1000 landed rows and apply them. Applying validates every landed value with `TRY_CONVERT`, turns empty strings into `NULL`, and retypes the columns in place with `ALTER TABLE ... ALTER COLUMN`, all in one transaction: a value that will not convert fails the whole apply with the column named, the transaction rolls back and nothing changes. The table, its grants and its primary key stay (a retyped key column keeps the key, rebuilt under the same name). A key column with an empty value cannot become `NULL`, so it fails the apply. A `_json` or `_xml` document column is never retyped and does not count toward the badge; a pipeline with only a document column gets no badge. Do not apply while a run is in flight.
 
 ## Deleting a pipeline
 

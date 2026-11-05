@@ -3614,7 +3614,7 @@ paths:
     post:
       tags: [Query]
       summary: Query SQL Server
-      description: Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline's configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q`. Requires the `query:sqlserver` capability.
+      description: Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline's configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY and no TOP, left as written when it already has OFFSET, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q` (for a WITH statement only the final SELECT is wrapped). When SQL Server rejects the wrapper (an unnamed or duplicate column name, FOR JSON / FOR XML) the query runs unwrapped with the same row cap. Write, exec and session keywords (INSERT, UPDATE, DELETE, INTO, EXEC, USE, OPENROWSET and others) are rejected anywhere in the statement, string literals included. Requires the `query:sqlserver` capability.
       requestBody:
         required: true
         content:
@@ -3632,7 +3632,7 @@ paths:
                 limit:
                   type: integer
                   default: 100
-                  description: Maximum rows to return. Pass -1 for unlimited (also disables the 30-second query timeout).
+                  description: Maximum rows to return. 0 means the default; there is no upper bound. Pass -1 for unlimited (also disables the 30-second query timeout).
       responses:
         '200':
           description: Query results including the SQL that was executed
@@ -3652,7 +3652,7 @@ paths:
                   count:
                     type: integer
         '400':
-          description: User-actionable error (e.g. unknown pipeline, no SQL Server destination, a statement outside the SELECT/WITH allowlist, an unknown table or column)
+          description: User-actionable error (e.g. unknown pipeline, no SQL Server destination, a statement outside the SELECT/WITH allowlist or with a blocked keyword, an unknown table or column, a refused connection or login, whose message names the auth method and the fix)
           content:
             application/json:
               schema:

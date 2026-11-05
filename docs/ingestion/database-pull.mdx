@@ -14,7 +14,7 @@ The pipeline can pull data directly from relational databases on a schedule. Con
 | MSSQL | `com.microsoft.sqlserver.jdbc.SQLServerDriver` |
 
 <Note>
-The PostgreSQL and MySQL drivers ship with the server. The Microsoft SQL Server JDBC driver is not bundled — to use an MSSQL source, add the `mssql-jdbc` jar to the server classpath (for example by adding it to `build.sbt` and rebuilding the image).
+The PostgreSQL, MySQL and Microsoft SQL Server drivers all ship with the server. An MSSQL source connects with the `jdbcUrl`, `username` and `password` in its secret, the same as the other two. (Loading *into* SQL Server is a separate feature: see the [SQL Server destination](/destinations/sql-server).)
 </Note>
 
 ## Configuration

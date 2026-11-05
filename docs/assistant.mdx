@@ -20,7 +20,7 @@ The Assistant is open-ended. Some examples:
 - *"Pull current weather data from a public API and create a pipeline for it."*
 - *"Ingest the most recent NYC taxi trip data into a pipeline."*
 - *"List the taps that are currently scheduled and tell me which haven't run in over a week."*
-- *"Show me the rows in the `weather` pipeline."* (works for MongoDB, PostgreSQL, Snowflake, Databricks, **Object Store (Parquet / ORC)**, or vector destinations — the agent picks the right query tool for the destination)
+- *"Show me the rows in the `weather` pipeline."* (works for MongoDB, PostgreSQL, Snowflake, Databricks, SQL Server, **Object Store (Parquet / ORC)**, or vector destinations — the agent picks the right query tool for the destination)
 
 The agent will reach for tools as it needs them: web search to find a source,
 `list_taps` / `list_pipelines` to check for existing work, `create_tap_secret`
@@ -69,8 +69,10 @@ Three live layers in every assistant turn:
 When the agent needs answers from you (which source, how often to run, where
 the data should land, which locations to cover), it asks on a **question
 card** instead of a numbered list. The card has one tab per question. A
-question with choices shows them with a one-line description and an
-**Other** box for your own answer; an open-ended question shows a text box.
+question with choices shows up to eight of them, each with a one-line
+description, plus an **Other** box for your own answer; an open-ended question
+shows a text box. When the agent asks where the data should land, every
+destination available on your install is its own choice.
 Picking a single choice moves to the next tab. Click **Submit** on the last
 tab; the answers are posted as your next message and the agent carries on.
 You can also ignore the card and type a reply, or click **Answer in chat
