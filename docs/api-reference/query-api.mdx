@@ -3,9 +3,9 @@ title: "Query API"
 description: "Query data endpoints"
 ---
 
-The Query API provides REST endpoints for querying every structured destination — PostgreSQL, MongoDB, object store, Snowflake, and Databricks — plus natural language queries and AI-powered answers. These endpoints mirror the MCP tools, making the same retrieval capabilities available via HTTP.
+The Query API provides REST endpoints for querying every structured destination — PostgreSQL, MongoDB, object store, Snowflake, Databricks, and SQL Server — plus natural language queries and AI-powered answers. These endpoints mirror the MCP tools, making the same retrieval capabilities available via HTTP.
 
-In the web UI, the Search tab's Traditional mode can also query Databricks and Snowflake pipelines: pick the pipeline and run read-only SQL against its destination table through the pipeline's own warehouse and credentials.
+In the web UI, the Search tab's Traditional mode can also query Databricks, Snowflake and SQL Server pipelines (under **Warehouse**): pick the pipeline and run read-only SQL against its destination table through the pipeline's own warehouse or server and credentials.
 
 ## Query PostgreSQL
 
@@ -302,6 +302,84 @@ Returns `400 Bad Request` with `{"error": "..."}` when:
 - The pipeline is not found
 - The pipeline does not have a Databricks destination
 - The SQL fails validation (allowlist, blocklist, semicolons, comments)
+
+---
+
+## Query SQL Server
+
+Execute a read-only T-SQL query against the SQL Server or Azure SQL database a pipeline loads into. The pipeline name selects the credentials secret, host, database, and schema — credentials never leave the server, and every `authMethod` the destination supports works here. Requires the `query:sqlserver` capability. The `read-only` and `reporting` key templates and the editor and viewer roles include it; a key issued before this capability existed keeps its explicit list, so add `query:sqlserver` to it or issue a new key.
+
+```
+POST /api/v1/query/sqlserver
+```
+
+### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with a SQL Server destination. |
+| `sql` | string | No | `SELECT * FROM {schema}.{table}` | T-SQL to execute. When omitted, previews the pipeline's destination table. |
+| `limit` | integer | No | 100 | Maximum rows to return. `0` means the default; there is no upper bound. Pass `-1` for unlimited (also disables the query timeout). |
+
+### Example
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query/sqlserver \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pipeline": "sales_data",
+    "sql": "SELECT symbol, [close] FROM dbo.stock_price WHERE volume > 1000000",
+    "limit": 10
+  }'
+```
+
+### Response
+
+```json
+{
+  "pipeline": "sales_data",
+  "sql": "SELECT TOP (10) * FROM (SELECT symbol, [close] FROM dbo.stock_price WHERE volume > 1000000) q",
+  "results": [
+    {
+      "symbol": "AAPL",
+      "close": 185.92
+    }
+  ],
+  "count": 1
+}
+```
+
+The `sql` field echoes the query that actually ran, including the row cap.
+
+### Row cap
+
+T-SQL has no `LIMIT`, so the server caps rows one of two ways:
+
+- **Top-level `ORDER BY`, no `TOP`** — `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` is appended, keeping the order. An `ORDER BY` inside parentheses (a subquery or `OVER (...)`) does not count.
+- **Anything else** (including `SELECT TOP n ... ORDER BY`, since SQL Server does not allow `TOP` and `OFFSET` together) — the statement is wrapped: `SELECT TOP (<limit>) * FROM (<sql>) q`. For a `WITH` statement the CTEs stay in front and only the final statement is wrapped.
+- A statement that already has `OFFSET ... FETCH` runs as written.
+
+When SQL Server rejects the wrapper itself (a result column without a name such as `COUNT(*)`, two columns with the same name from a join, or `FOR JSON` / `FOR XML`), the query runs unwrapped with the same row cap applied by the driver. Give computed columns an alias (`COUNT(*) AS n`) to see the wrapped form.
+
+### Safety
+
+- **Read-only allowlist** — queries must start with `SELECT` or `WITH`. For metadata, select from `INFORMATION_SCHEMA` views, for example `SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES` or `SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'orders'`.
+- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `DENY`, `EXEC`, `EXECUTE`, `MERGE`, `INTO` (so `SELECT ... INTO` cannot create a table), `USE`, `BULK`, `OPENROWSET`, `OPENDATASOURCE`, `OPENQUERY`, `DBCC`, `BACKUP`, `RESTORE`, `SHUTDOWN`, `KILL`, `RECONFIGURE`, `WAITFOR`, `DECLARE`, `TRIGGER`, `SETUSER`, `REVERT`, `WRITETEXT` or `UPDATETEXT` are rejected. The check covers the whole statement, string literals included, so `WHERE note = 'please delete'` is rejected too
+- **No stacked queries** — semicolons are not allowed
+- **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
+- **Query timeout** — 30 seconds. Not applied when `limit: -1`.
+
+### Error Cases
+
+Returns `400 Bad Request` with `{"error": "..."}` when:
+
+- The pipeline is not found
+- The pipeline does not have a SQL Server destination
+- The SQL fails validation (allowlist, blocklist, semicolons, comments)
+- SQL Server rejects the query (unknown table or column, ambiguous column, syntax error, permission denied, a value that will not convert)
+- The connection is refused (the message names the auth method and the fix, as for loads)
+
+Returns `502 Bad Gateway` when SQL Server fails for a reason outside the query.
 
 ---
 

@@ -1289,4 +1289,71 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
             PipelineValidatorUtil.validateProvenance(provenanceConfig(xmlAttrs, ""))
         }
     }
+
+    // --- SQL Server destination (plans/stories/mssql-destination.md, Acceptance 1) ---
+    // `Database.useSqlServer` joins the exactly-one-engine count and requires a
+    // credentialsSecret; database destinations have no source-type gate, so a
+    // JSON (`_json`) or XML (`_xml`) source with useSqlServer validates like
+    // Postgres does. The database branch never reaches the existing-pipeline
+    // lookup, so a complete config validates cleanly offline. Today Gson drops
+    // the unknown key, so these cases fail on the zero-engines message.
+
+    private def sqlServerConfig(
+        database: String,
+        fileAttributes: String = """"csvAttributes":{}""",
+        fields: String = """[{"name":"id","type":"string"}]"""
+    ): PipelineConfig =
+        parse(
+            s"""{"name":"p",
+               |"source":{"fileAttributes":{$fileAttributes},"schemaProperties":{"fields":$fields}},
+               |"destination":{"database":{"dbName":"datris","schema":"dbo","table":"t",$database}}}""".stripMargin
+        )
+
+    test("useSqlServer without credentialsSecret is rejected with the Platform-tab message") {
+        val err = validationError(sqlServerConfig(""""useSqlServer":true"""))
+        assert(
+            err.exists(m => m.contains("useSqlServer") && m.contains("'credentialsSecret' is required") && m.contains("Configuration → Secrets → Platform")),
+            s"expected the useSqlServer credentialsSecret message, got: $err"
+        )
+    }
+
+    test("useSqlServer with credentialsSecret on a CSV source validates") {
+        val cfg = sqlServerConfig(""""useSqlServer":true,"credentialsSecret":"mssql"""")
+        assert(validationError(cfg).isEmpty, s"CSV + useSqlServer must validate, got: ${validationError(cfg)}")
+    }
+
+    test("useSqlServer plus usePostgres is rejected as multiple are currently set") {
+        val err = validationError(sqlServerConfig(""""useSqlServer":true,"usePostgres":true,"credentialsSecret":"mssql""""))
+        assert(err.exists(_.contains("multiple are currently set")), s"expected the multiple-engines message, got: $err")
+    }
+
+    test("the exactly-one-engine message names useSqlServer") {
+        val err = validationError(sqlServerConfig(""""credentialsSecret":"mssql""""))
+        assert(err.exists(m => m.contains("exactly one of") && m.contains("useSqlServer")), s"got: $err")
+    }
+
+    test("a JSON source (single _json field) with useSqlServer validates") {
+        val cfg = sqlServerConfig(
+            """"useSqlServer":true,"credentialsSecret":"mssql"""",
+            fileAttributes = """"jsonAttributes":{}""",
+            fields = """[{"name":"_json","type":"string"}]"""
+        )
+        assert(validationError(cfg).isEmpty, s"JSON + useSqlServer must validate, got: ${validationError(cfg)}")
+    }
+
+    test("an XML source (single _xml field) with useSqlServer validates") {
+        val cfg = sqlServerConfig(
+            """"useSqlServer":true,"credentialsSecret":"mssql"""",
+            fileAttributes = """"xmlAttributes":{}""",
+            fields = """[{"name":"_xml","type":"string"}]"""
+        )
+        assert(validationError(cfg).isEmpty, s"XML + useSqlServer must validate, got: ${validationError(cfg)}")
+    }
+
+    test("stored configs without useSqlServer still validate (backward compat)") {
+        val pg = sqlServerConfig(""""usePostgres":true""")
+        assert(validationError(pg).isEmpty, s"postgres config must still validate, got: ${validationError(pg)}")
+        val pgJson = sqlServerConfig(""""usePostgres":true""", fileAttributes = """"jsonAttributes":{}""", fields = """[{"name":"_json","type":"string"}]""")
+        assert(validationError(pgJson).isEmpty, s"postgres JSON config must still validate, got: ${validationError(pgJson)}")
+    }
 }

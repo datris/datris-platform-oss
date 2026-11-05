@@ -63,7 +63,7 @@ Every run that writes rows produces exactly one new snapshot. Readers see either
 | `ignore` | Does nothing if the table already exists |
 | `errorifexists` | Fails the run if the table already exists |
 
-`merge` is a true upsert: all non-key columns of the incoming row overwrite the existing row, including nulls. This matches `keyFields` on the PostgreSQL, MongoDB, Snowflake and Databricks destinations, so an agent that already knows the concept can reuse it here. If your source emits partial rows, coalesce them upstream.
+`merge` is a true upsert: all non-key columns of the incoming row overwrite the existing row, including nulls. This matches `keyFields` on the PostgreSQL, MongoDB, Snowflake, Databricks and SQL Server destinations, so an agent that already knows the concept can reuse it here. If your source emits partial rows, coalesce them upstream.
 
 ## Partitioning
 

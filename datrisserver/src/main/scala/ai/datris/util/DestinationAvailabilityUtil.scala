@@ -33,8 +33,8 @@ import org.slf4j.{Logger, LoggerFactory}
  *  (HealthCheckAPIController): the self-hosted destinations (mongodb,
  *  postgres, objectstore) are live-probed — the compose stack seeds their
  *  Vault secrets even when a service is disabled, so "secret is present" is
- *  not a reliable signal; the external SaaS destinations (snowflake,
- *  databricks) have no local service to probe, so presence of complete
+ *  not a reliable signal; the external destinations (snowflake,
+ *  databricks, sqlserver) have no local service to probe, so presence of complete
  *  credentials in some Platform secret is the signal.
  */
 object DestinationAvailabilityUtil {
@@ -42,7 +42,7 @@ object DestinationAvailabilityUtil {
 
     /** Canonical order of the full structured-destination set; also the
      *  fail-open fallback. */
-    val AllStructuredDestinations: Seq[String] = Seq("mongodb", "postgres", "objectstore", "snowflake", "databricks")
+    val AllStructuredDestinations: Seq[String] = Seq("mongodb", "postgres", "objectstore", "snowflake", "databricks", "sqlserver")
 
     // Probes hit Mongo/Postgres/MinIO plus a Vault scan, so a fresh compute
     // costs a few seconds. Prompt assembly runs per chat request — cache the
@@ -67,9 +67,10 @@ object DestinationAvailabilityUtil {
             if (postgresUp()) builder += "postgres"
             if (minioUp()) builder += "objectstore"
 
-            val (snowflake, databricks) = externalSaasAvailability()
+            val (snowflake, databricks, sqlserver) = externalSaasAvailability()
             if (snowflake) builder += "snowflake"
             if (databricks) builder += "databricks"
+            if (sqlserver) builder += "sqlserver"
 
             val names = builder.result()
             if (names.isEmpty) {
@@ -143,20 +144,21 @@ object DestinationAvailabilityUtil {
         }
     }
 
-    /** (snowflakeAvailable, databricksAvailable) via the Platform-secret
-     *  credential scan. The scan failing is an "availability unknown" error,
-     *  not a "nothing configured" answer — fail open for both. */
-    private def externalSaasAvailability(): (Boolean, Boolean) = {
+    /** (snowflakeAvailable, databricksAvailable, sqlServerAvailable) via the
+     *  Platform-secret credential scan. The scan failing is an "availability
+     *  unknown" error, not a "nothing configured" answer — fail open for all. */
+    private def externalSaasAvailability(): (Boolean, Boolean, Boolean) = {
         try {
             val secrets = SecretsRetrieverUtil.platformSecrets()
             (
                 secrets.exists { case (_, fields) => CredentialResolver.hasSnowflakeCredentials(fields) },
-                secrets.exists { case (_, fields) => CredentialResolver.hasDatabricksCredentials(fields) }
+                secrets.exists { case (_, fields) => CredentialResolver.hasDatabricksCredentials(fields) },
+                secrets.exists { case (_, fields) => CredentialResolver.hasSqlServerCredentials(fields) }
             )
         } catch {
             case e: Exception =>
-                logger.warn("Platform-secret scan failed — failing open for snowflake/databricks: " + e.getMessage)
-                (true, true)
+                logger.warn("Platform-secret scan failed — failing open for snowflake/databricks/sqlserver: " + e.getMessage)
+                (true, true, true)
         }
     }
 }

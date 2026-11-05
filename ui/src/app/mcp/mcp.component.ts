@@ -337,22 +337,22 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'create_pipeline',
-      description: 'Create OR UPDATE a pipeline. Schema is auto-detected from a sample file for structured destinations. Upserts by name — calling again with the same name replaces the config in place without dropping the destination data, so you can change knobs (keyFields, truncate, codegen_rule, objectstore settings) without delete-then-recreate. Supports three destination categories: structured (postgres, mongodb, snowflake, databricks), objectstore (Parquet files, ORC files, or an Iceberg table in MinIO or AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). Snowflake and Databricks additionally require credentialsSecret, warehouse, and database — warehouse is required for Snowflake; for Databricks, optional when the secret has a `warehouse` field.',
+      description: 'Create OR UPDATE a pipeline. Schema is auto-detected from a sample file for structured destinations. Upserts by name — calling again with the same name replaces the config in place without dropping the destination data, so you can change knobs (keyFields, truncate, codegen_rule, objectstore settings) without delete-then-recreate. Supports three destination categories: structured (postgres, mongodb, snowflake, databricks, sqlserver), objectstore (Parquet files, ORC files, or an Iceberg table in MinIO or AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). Snowflake and Databricks additionally require credentialsSecret, warehouse, and database — warehouse is required for Snowflake; for Databricks, optional when the secret has a `warehouse` field. SQL Server requires credentialsSecret and database, and also takes a JSON or XML sample.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'content', type: 'string', description: 'Base64-encoded sample data. Required for structured destinations AND objectstore; omit for vector destinations.', required: false, inputType: 'textarea' },
         { name: 'filename', type: 'string', description: 'Filename (e.g., data.csv). Required for structured destinations and objectstore.', required: false, inputType: 'text' },
         { name: 'pipeline', type: 'string', description: 'Pipeline name', required: true, inputType: 'text' },
-        { name: 'destination', type: 'string', description: 'Destination: postgres, mongodb, snowflake, databricks, objectstore, qdrant, weaviate, milvus, chroma, pgvector', required: false, inputType: 'text' },
+        { name: 'destination', type: 'string', description: 'Destination: postgres, mongodb, snowflake, databricks, sqlserver, objectstore, qdrant, weaviate, milvus, chroma, pgvector', required: false, inputType: 'text' },
         { name: 'table', type: 'string', description: 'Table/collection name (default: pipeline name). Ignored for objectstore.', required: false, inputType: 'text' },
-        { name: 'database', type: 'string', description: 'Database name (default: datris). Ignored for objectstore. REQUIRED for snowflake (the Snowflake database) and databricks (the Unity Catalog name).', required: false, inputType: 'text' },
-        { name: 'schema', type: 'string', description: 'Destination schema. Applies to snowflake (default: PUBLIC) and databricks (default: default).', required: false, inputType: 'text' },
+        { name: 'database', type: 'string', description: 'Database name (default: datris). Ignored for objectstore. REQUIRED for snowflake (the Snowflake database), databricks (the Unity Catalog name) and sqlserver (the database on the server).', required: false, inputType: 'text' },
+        { name: 'schema', type: 'string', description: 'Destination schema. Applies to snowflake (default: PUBLIC), databricks (default: default) and sqlserver (default: dbo).', required: false, inputType: 'text' },
         { name: 'warehouse', type: 'string', description: 'Snowflake virtual warehouse NAME, or Databricks SQL warehouse ID (the trailing segment of the HTTP path in Connection details). Required for Snowflake; for Databricks, optional when the secret has a `warehouse` field.', required: false, inputType: 'text' },
         { name: 'role', type: 'string', description: 'Optional Snowflake role to assume. Snowflake only.', required: false, inputType: 'text' },
         { name: 'delimiter', type: 'string', description: 'CSV delimiter (default: comma)', required: false, inputType: 'text' },
         { name: 'header', type: 'boolean', description: 'Whether CSV has a header row (default: true)', required: false, inputType: 'text' },
-        { name: 'keyFields', type: 'array', description: 'Optional natural-key columns used to dedupe / upsert rows on every run (postgres, mongodb, snowflake, databricks).', required: false, inputType: 'text' },
-        { name: 'truncate', type: 'boolean', description: 'Optional. Wipe destination table/collection before each run (postgres, mongodb, snowflake, databricks — atomic replace on Databricks). Default false.', required: false, inputType: 'text' },
+        { name: 'keyFields', type: 'array', description: 'Optional natural-key columns used to dedupe / upsert rows on every run (postgres, mongodb, snowflake, databricks, sqlserver).', required: false, inputType: 'text' },
+        { name: 'truncate', type: 'boolean', description: 'Optional. Wipe destination table/collection before each run (postgres, mongodb, snowflake, databricks, sqlserver — atomic replace on Databricks). Default false.', required: false, inputType: 'text' },
         { name: 'bucket', type: 'string', description: 'Object-store bucket. Optional for MinIO (default: {environment}-data). REQUIRED when provider=s3.', required: false, inputType: 'text' },
         { name: 'prefix', type: 'string', description: 'Object-store key prefix under the bucket (e.g. "events/orders"). REQUIRED for destination=objectstore.', required: false, inputType: 'text' },
         { name: 'fileFormat', type: 'string', description: 'Object-store file format: parquet (default) or orc.', required: false, inputType: 'text' },
@@ -361,7 +361,7 @@ export class McpComponent implements OnInit {
         { name: 'deleteBeforeWrite', type: 'boolean', description: 'Object-store only. When true, delete existing objects under the prefix before writing. Default false.', required: false, inputType: 'text' },
         { name: 'provider', type: 'string', description: 'Object-store provider: minio (default, built-in) or s3 (AWS S3). When s3, bucket and credentialsSecret are required.', required: false, inputType: 'text' },
         { name: 'endpoint', type: 'string', description: 'S3 endpoint URL override (objectstore + provider=s3 only). Must use https://. Leave unset for the AWS regional default.', required: false, inputType: 'text' },
-        { name: 'credentialsSecret', type: 'string', description: 'PLATFORM secret holding destination credentials. For objectstore + provider=s3: accessKey, secretKey, region (optional sessionToken); required unless Datris runs on an EC2 instance role. For snowflake: account, user, privateKey (or password); always required. For databricks: host, plus clientId/clientSecret or token; always required. Discover via list_platform_secrets.', required: false, inputType: 'text' },
+        { name: 'credentialsSecret', type: 'string', description: 'PLATFORM secret holding destination credentials. For objectstore + provider=s3: accessKey, secretKey, region (optional sessionToken); required unless Datris runs on an EC2 instance role. For snowflake: account, user, privateKey (or password); always required. For databricks: host, plus clientId/clientSecret or token; always required. For sqlserver: host plus the fields its authMethod needs (sql, the default: user, password); always required. Discover via list_platform_secrets.', required: false, inputType: 'text' },
         { name: 'codegen_rule', type: 'string', description: 'Optional plain-English data quality validation rule. Datris generates a Python validation script from it and runs it against ingested data. Only add when the user explicitly asks for validation.', required: false, inputType: 'textarea' },
         { name: 'codegen_transform', type: 'string', description: 'Optional plain-English transformation instruction. Datris generates a Python script and runs it against ingested data. Only add when the user explicitly asks for a transformation.', required: false, inputType: 'textarea' },
         { name: 'catalog', type: 'string', description: 'Optional catalog label to group this pipeline with related ones. Omit by default.', required: false, inputType: 'text' },
@@ -716,6 +716,17 @@ export class McpComponent implements OnInit {
       parameters: [
         { name: 'pipeline', type: 'string', description: 'Pipeline name (from list_pipelines). Must have a Databricks destination.', required: true, inputType: 'text' },
         { name: 'sql', type: 'string', description: 'Read-only statement: SELECT/WITH, SHOW, or DESCRIBE. Omit to preview the destination table.', required: false, inputType: 'textarea' },
+        { name: 'limit', type: 'integer', description: 'Maximum rows (default: 100). Pass -1 for unlimited.', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'query_sqlserver',
+      description: 'Run a read-only query against the SQL Server or Azure SQL database a pipeline loads into. Pass the pipeline name; the server resolves the host, database, and credentials (any authMethod) from the pipeline\'s config — credentials never leave the server. Only works for pipelines with a SQL Server destination. Allowed statements: SELECT and WITH (CTE) in T-SQL; metadata comes from INFORMATION_SCHEMA views. Rows are capped with TOP, or OFFSET/FETCH when the statement has an ORDER BY — do not add LIMIT. Omit sql to preview the pipeline\'s destination table.',
+      category: 'Database Query',
+      parameters: [
+        { name: 'pipeline', type: 'string', description: 'Pipeline name (from list_pipelines). Must have a SQL Server destination.', required: true, inputType: 'text' },
+        { name: 'sql', type: 'string', description: 'Read-only T-SQL statement: SELECT or WITH. Omit to preview the destination table.', required: false, inputType: 'textarea' },
         { name: 'limit', type: 'integer', description: 'Maximum rows (default: 100). Pass -1 for unlimited.', required: false, inputType: 'number' }
       ],
       playgroundEnabled: true

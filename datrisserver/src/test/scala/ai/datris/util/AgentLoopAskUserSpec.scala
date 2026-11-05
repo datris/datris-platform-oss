@@ -15,7 +15,7 @@ import scala.collection.JavaConverters._
   * Steps 1-2 and 8.
   *
   *  `AgentLoop.askUserQuestionsOf(input)` validates and normalises an `ask_user`
-  *  call: 1-4 questions, 2-4 options each, non-empty header/question/label,
+  *  call: 1-4 questions, 2-8 options each, non-empty header/question/label,
   *  header clipped to 12 chars, `multiSelect` defaulting to false. A malformed
   *  call is a `Left` (error tool result, no card).
   *
@@ -97,8 +97,17 @@ class AgentLoopAskUserSpec extends AnyFunSuite {
         assert(AgentLoop.askUserQuestionsOf(input(emptyOpts)).isRight)
     }
 
-    test("five options is Left") {
-        assert(AgentLoop.askUserQuestionsOf(input(q("Source", nOpts = 5))).isLeft)
+    test("seven and eight options are Right: every destination fits on one card") {
+        val r7 = AgentLoop.askUserQuestionsOf(input(q("Destination", nOpts = 7)))
+        assert(r7.isRight, s"expected Right, got $r7")
+        assert(questionsOf(r7.toOption.get).head.getAsJsonArray("options").size == 7)
+        assert(AgentLoop.askUserQuestionsOf(input(q("Destination", nOpts = 8))).isRight)
+    }
+
+    test("nine options is Left and the message names 2-8") {
+        val r = AgentLoop.askUserQuestionsOf(input(q("Source", nOpts = 9)))
+        assert(r.isLeft, s"expected Left, got $r")
+        assert(r.left.toOption.get.contains("2-8"), s"message must name 2-8: $r")
     }
 
     test("a missing header is Left") {
@@ -148,7 +157,7 @@ class AgentLoopAskUserSpec extends AnyFunSuite {
         assert(questions.get("maxItems").getAsInt == 4)
     }
 
-    test("tool def question items require header and question; options are optional (2-4 when given)") {
+    test("tool def question items require header and question; options are optional (2-8 when given)") {
         val item = toolDef.getAsJsonObject("input_schema").getAsJsonObject("properties")
             .getAsJsonObject("questions").getAsJsonObject("items")
         val req = item.getAsJsonArray("required").asScala.map(_.getAsString).toSet
@@ -159,7 +168,8 @@ class AgentLoopAskUserSpec extends AnyFunSuite {
         assert(props.getAsJsonObject("multiSelect").get("type").getAsString == "boolean")
         val options = props.getAsJsonObject("options")
         assert(options.get("minItems").getAsInt == 2)
-        assert(options.get("maxItems").getAsInt == 4)
+        assert(options.get("maxItems").getAsInt == 8)
+        assert(options.get("description").getAsString.startsWith("2-8 "), "options description must say 2-8")
         val optProps = options.getAsJsonObject("items").getAsJsonObject("properties")
         assert(optProps.has("label") && optProps.has("description"))
     }

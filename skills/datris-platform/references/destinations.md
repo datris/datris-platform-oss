@@ -22,6 +22,7 @@ Offer all of these when the user has not chosen; do not default silently.
 | MongoDB | Document-shaped or ragged records | Nothing extra on the Docker stack |
 | Snowflake | The project's warehouse is Snowflake | A platform `credentialsSecret`, warehouse, database |
 | Databricks | The project's lakehouse is Databricks | A platform `credentialsSecret`, SQL warehouse optional, catalog. Unity Catalog metadata push is available. |
+| SQL Server | The project runs Microsoft SQL Server or Azure SQL | A platform `credentialsSecret` (`host` plus the fields its `authMethod` needs: SQL login, Microsoft Entra ID or Kerberos), database; schema defaults to `dbo`. Also takes JSON or XML sources, landed as one document column. |
 | Object store | Files in a lake: Parquet, ORC, or an Iceberg table, in MinIO (bundled) or S3 | For S3, `provider: "s3"` and a platform `credentialsSecret` holding `accessKey`, `secretKey`, `region` |
 
 Column types: a pipeline created from a sample may land every column as text. `get_dest_types` proposes real types from landed rows; `apply_dest_types` migrates with the user's explicit approval.

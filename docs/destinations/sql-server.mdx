@@ -1,0 +1,286 @@
+---
+title: "Load data into Microsoft SQL Server or Azure SQL from an AI agent or pipeline"
+sidebarTitle: "SQL Server"
+description: "Load CSV, JSON and XML into SQL Server or Azure SQL with MERGE upserts, additive columns, and SQL login, Microsoft Entra ID or Kerberos credentials."
+---
+
+Use this destination when you want an agent or a scheduled pipeline to land validated data in a Microsoft SQL Server or Azure SQL database you already run, without handing the agent database credentials. Each pipeline references its own secret, and every load is audited and lineage-tracked.
+
+The SQL Server destination works the way the [PostgreSQL destination](/destinations/postgres) does: the table is created from the destination schema on the first run, new columns are added on later runs, `keyFields` upserts with `MERGE`, `truncateBeforeWrite` replaces the rows, and the load runs in one transaction. CSV rows go through the driver's bulk-copy batch insert. JSON and XML sources land as a single document column, exactly as they do on PostgreSQL; those loads use plain inserts so the `ISJSON` check on the `_json` column is enforced.
+
+Unlike the bundled PostgreSQL and MongoDB destinations, SQL Server is an external target: credentials are per-pipeline, referenced by name through `credentialsSecret`, the same model as the [Snowflake](/destinations/snowflake) and [S3](/destinations/s3) destinations. Different pipelines can write to different servers. Datris never starts a SQL Server for you.
+
+## One-time SQL Server setup
+
+Give Datris its own principal with only the rights it needs: create tables in one schema and read and write the rows in them. Run the statements in the database the pipelines load into (`USE <database>;` first). The examples use the database `datris` and the default schema `dbo`.
+
+### SQL login (`authMethod: sql`)
+
+The server must allow SQL Server authentication (mixed mode). Azure SQL always does.
+
+```sql
+-- In master (on Azure SQL: connected to the master database)
+CREATE LOGIN datris_loader WITH PASSWORD = '<strong password>';
+
+-- In the target database
+USE datris;
+CREATE USER datris_loader FOR LOGIN datris_loader;
+```
+
+### Microsoft Entra service principal (`authMethod: entraServicePrincipal`)
+
+Register an app in Microsoft Entra ID, create a client secret for it, and make the app a contained user of the database. The server must have a Microsoft Entra admin set.
+
+```sql
+-- Connected to the target database as the Microsoft Entra admin
+CREATE USER [datris-loader-app] FROM EXTERNAL PROVIDER;
+```
+
+`datris-loader-app` is the app registration's display name.
+
+### Microsoft Entra user and password (`authMethod: entraPassword`)
+
+A Microsoft Entra user signs in with a password. The account cannot require MFA, so prefer a service principal for unattended loads.
+
+```sql
+CREATE USER [loader@example.com] FROM EXTERNAL PROVIDER;
+```
+
+### Managed identity (`authMethod: entraManagedIdentity`)
+
+Only works when the Datris server runs on Azure (a VM, Container Apps or AKS) with a managed identity attached. No password or client secret is stored anywhere.
+
+```sql
+-- The identity's name: the VM / container app name for a system-assigned
+-- identity, or the user-assigned identity's resource name
+CREATE USER [datris-vm] FROM EXTERNAL PROVIDER;
+```
+
+For a user-assigned identity, put its client ID in the secret's `managedIdentityClientId`.
+
+### Kerberos (`authMethod: kerberos`)
+
+For an on-premises SQL Server joined to Active Directory. The server needs an SPN for `MSSQLSvc/<host>:<port>`, and the Datris principal needs a Windows login.
+
+```sql
+CREATE LOGIN [CORP\svc_datris] FROM WINDOWS;
+USE datris;
+CREATE USER [CORP\svc_datris] FOR LOGIN [CORP\svc_datris];
+```
+
+See [Kerberos container setup](#kerberos-container-setup) for the files the Datris container needs.
+
+### Grants (every method)
+
+Replace `datris_loader` with the user created above.
+
+```sql
+USE datris;
+GRANT CREATE TABLE TO datris_loader;
+GRANT ALTER, SELECT, INSERT, UPDATE, DELETE ON SCHEMA::dbo TO datris_loader;
+-- Only if pipelines name a schema that does not exist yet:
+GRANT CREATE SCHEMA TO datris_loader;
+```
+
+`ALTER` on the schema covers creating tables in it, adding columns on later runs, `TRUNCATE`, and dropping the table when a pipeline is deleted with its data. If you manage tables yourself (`manageTableManually: true`), `SELECT, INSERT, UPDATE, DELETE` on those tables is enough.
+
+### Least-privilege login
+
+Never point the platform secret at `sa` or any other member of `sysadmin`. The read-back query (`query_sqlserver`, the Search tab, `POST /api/v1/query/sqlserver`) connects with the same login the loader uses. It accepts only `SELECT` and `WITH`, but a `SELECT` can name other databases with three-part names such as `otherdb.dbo.customers` or `master.sys.sql_logins`. Anything the login can read, an agent with `query:sqlserver` can read too. Only the login's grants limit cross-database reads, so give Datris a login that can see nothing outside its own database:
+
+```sql
+-- In master (on Azure SQL: connected to the master database)
+CREATE LOGIN datris_loader WITH PASSWORD = '<strong password>';
+-- Not a member of sysadmin, securityadmin or any other server role,
+-- and no CONTROL SERVER / VIEW ANY DEFINITION / VIEW SERVER STATE grants.
+
+-- In the one database the pipelines load into
+USE datris;
+CREATE USER datris_loader FOR LOGIN datris_loader;
+GRANT CREATE TABLE TO datris_loader;
+GRANT ALTER, SELECT, INSERT, UPDATE, DELETE ON SCHEMA::dbo TO datris_loader;
+```
+
+That is the narrowest grant: one schema in one database. If pipelines load several schemas of the database, the fixed database roles are a simpler alternative. They still cover only that database:
+
+```sql
+USE datris;
+ALTER ROLE db_ddladmin ADD MEMBER datris_loader;
+ALTER ROLE db_datawriter ADD MEMBER datris_loader;
+ALTER ROLE db_datareader ADD MEMBER datris_loader;
+```
+
+Do not create a user for this login in any other database. A login with no user in another database cannot read that database's tables through a three-part name. The read-back and typing features need nothing beyond these grants: `SELECT` covers queries and `ALTER` on the schema covers retyping columns after load. On Azure SQL, a contained database user (`CREATE USER datris_loader WITH PASSWORD = '...'` in the user database, no server login) keeps the principal inside one database entirely.
+
+## Create the platform secret in Datris
+
+On **Configuration → Secrets → Platform**, create a secret (for example `sqlserver`). `host` is always required; `authMethod` selects the other fields.
+
+| Field                     | Used by                                 | Notes |
+|---------------------------|-----------------------------------------|-------|
+| `host`                    | every method                            | Server name, e.g. `sql01.example.com` or `myserver.database.windows.net` |
+| `port`                    | every method (optional)                 | Default `1433` |
+| `authMethod`              | every method (optional)                 | `sql` (default), `entraServicePrincipal`, `entraPassword`, `entraManagedIdentity` or `kerberos` |
+| `user`, `password`        | `sql`, `entraPassword`                  | The SQL login, or the Microsoft Entra user (`loader@example.com`) |
+| `clientId`, `clientSecret`, `tenantId` | `entraServicePrincipal`    | From the app registration |
+| `managedIdentityClientId` | `entraManagedIdentity` (optional)       | Only for a user-assigned identity |
+| `principal`, `password`   | `kerberos`                              | e.g. `svc_datris@CORP.EXAMPLE.COM`. `password` is not needed with `jaasConfigurationName` |
+| `jaasConfigurationName`   | `kerberos` (optional)                   | Entry in a mounted JAAS file, for a keytab instead of a password |
+| `encrypt`                 | every method (optional)                 | Default `true`. Takes `true`/`false` (also `yes`/`no`, `1`/`0`) |
+| `trustServerCertificate`  | every method (optional)                 | Default `false`. Set `true` only for a test server with a self-signed certificate |
+
+The database name is not in the secret: each pipeline names it in `dbName`, so one secret can serve several databases on the same server. `authMethod` is matched case-insensitively; any other value fails with an error listing the five methods. If a required field is missing, the load fails with an error naming the secret, the field and the auth method. A secret with any complete auth method makes SQL Server appear in the pipeline wizard and in the Assistant's destination question.
+
+The installer can create this secret for you: answer yes to "SQL Server destination — configure credentials now?", or for a headless install export `SQLSERVER_HOST`, optionally `SQLSERVER_PORT` (default `1433`), `SQLSERVER_AUTH_METHOD` (default `sql`) and that method's fields (`SQLSERVER_USER`, `SQLSERVER_PASSWORD`, `SQLSERVER_CLIENT_ID`, `SQLSERVER_CLIENT_SECRET`, `SQLSERVER_TENANT_ID`, `SQLSERVER_PRINCIPAL`, `SQLSERVER_MANAGED_IDENTITY_CLIENT_ID`) before running it. The secret is seeded once, as `sqlserver`, and never overwritten afterwards. The installer seeds password-based Kerberos only; create a keytab secret (with `jaasConfigurationName`) under **Configuration → Secrets → Platform**.
+
+## Kerberos container setup
+
+The Datris server runs on Linux, so Kerberos uses the JDK's own Kerberos client, not Windows integrated security.
+
+1. Put your `krb5.conf` in `docker/config/`. The compose file mounts that folder at `/config` in the `datris` container.
+2. Add the JVM flag in `.env`, keeping your heap settings:
+   ```bash
+   JAVA_OPTS=-Xms512m -Xmx2g -Djava.security.krb5.conf=/config/krb5.conf
+   ```
+3. With `principal` and `password` in the secret nothing else is needed. To use a keytab instead, put the keytab and a JAAS file in `docker/config/`, add `-Djava.security.auth.login.config=/config/jaas.conf` to `JAVA_OPTS`, and set the secret's `jaasConfigurationName` to the entry name. The secret then needs only `host`, `principal` and `jaasConfigurationName`: no password is stored, and none is sent to the server even if the secret has one:
+   ```
+   DatrisKeytab {
+     com.sun.security.auth.module.Krb5LoginModule required
+       useKeyTab=true keyTab="/config/datris.keytab"
+       principal="svc_datris@CORP.EXAMPLE.COM" doNotPrompt=true;
+   };
+   ```
+4. Recreate the container: `docker compose up -d datris`.
+
+The standalone compose file mounts only `application.yaml` into `/config`. To use Kerberos there, add a bind mount for each file to the `datris` service, for example `./krb5.conf:/config/krb5.conf:ro` (and the keytab and `jaas.conf` if you use them).
+
+## Configuration
+
+A CSV source:
+
+```json
+{
+  "name": "orders_pipeline",
+  "source": { "..." : "..." },
+  "destination": {
+    "database": {
+      "useSqlServer": true,
+      "credentialsSecret": "sqlserver",
+      "dbName": "datris",
+      "schema": "dbo",
+      "table": "orders",
+      "keyFields": ["order_id"]
+    }
+  }
+}
+```
+
+A JSON source. The schema is the single `_json` field, and every document lands whole in it:
+
+```json
+{
+  "name": "events_pipeline",
+  "source": {
+    "fileAttributes": { "jsonAttributes": {} },
+    "schemaProperties": { "fields": [{ "name": "_json", "type": "string" }] }
+  },
+  "destination": {
+    "database": {
+      "useSqlServer": true,
+      "credentialsSecret": "sqlserver",
+      "dbName": "datris",
+      "schema": "dbo",
+      "table": "events"
+    }
+  }
+}
+```
+
+An XML source is the same with `xmlAttributes` and a single `_xml` field.
+
+### Field reference
+
+| Field                 | Required | Default | Description |
+|-----------------------|----------|---------|-------------|
+| `useSqlServer`        | yes      | `false` | Must be `true` to enable the SQL Server destination |
+| `credentialsSecret`   | yes      |         | Name of the Platform secret holding `host` and the auth fields |
+| `dbName`              | yes      |         | Target database on the server |
+| `schema`              | yes      | `dbo`   | Target schema (the wizard and MCP server fill in `dbo`) |
+| `table`               | yes      |         | Target table |
+| `manageTableManually` | no       | `false` | If `true`, skip creating the schema and table and adding columns |
+| `truncateBeforeWrite` | no       | `false` | Empty the table before loading (see below) |
+| `keyFields`           | no       |         | Natural-key columns; switches the load to a `MERGE` upsert |
+| `useTransaction`      | no       | `true`  | Run the load in one transaction |
+
+`dbName`, `schema`, `table` and column names may use letters, digits and underscores only; the pipeline is rejected on save otherwise. They are passed unquoted and resolve the way SQL Server always does (case-insensitive under the default collation). A T-SQL reserved keyword such as `order`, `key` or `user`, or a name starting with a digit, is bracket-quoted (`[order]`), so a column named `order` works. Bracketing does not change how SQL Server resolves the name.
+
+## Table management
+
+When `manageTableManually` is `false` (the default), the pipeline creates the schema if it is missing and the table if it is missing (checked through `sys.tables`), with a `PRIMARY KEY` on `keyFields` when set. Schema changes are additive: new columns in the pipeline schema are added with `ALTER TABLE ... ADD`; a run never drops or retypes a column (to retype text columns, see [Column types after load](#column-types-after-load)).
+
+## Type mapping
+
+| Source type                              | SQL Server type |
+|------------------------------------------|-----------------|
+| `string`                                 | `NVARCHAR(MAX)` (`NVARCHAR(450)` for a key column) |
+| `int` / `integer` / `smallint` / `tinyint` | `INT`         |
+| `bigint`                                 | `BIGINT`        |
+| `float` / `double`                       | `FLOAT`         |
+| `boolean`                                | `BIT`           |
+| `date`                                   | `DATE`          |
+| `timestamp`                              | `DATETIME2`     |
+| `_json`                                  | `NVARCHAR(MAX)` with `CHECK (ISJSON(_json) = 1)` |
+| `_xml`                                   | `XML`           |
+
+A `boolean` value may be written `true`/`false`, `t`/`f`, `yes`/`no`, `y`/`n`, `on`/`off` or `1`/`0` (any case) and lands as `1`/`0`; an empty cell is `NULL`, and any other value fails the run with an error naming the column and the value. Other types (`decimal(p,s)`, `varchar(n)`) pass through as-is. A string key column is `NVARCHAR(450)` because SQL Server cannot index an `NVARCHAR(MAX)` column. A JSON document that is not valid JSON fails the load on the `ISJSON` check. An XML document's `<?xml ...?>` declaration is dropped before the insert, because the `XML` type does not keep it.
+
+## Truncate before write
+
+Set `truncateBeforeWrite` to `true` to replace the full table contents on each run:
+
+- **`useTransaction: true` (default):** rows are removed with `DELETE FROM` inside the load transaction. If the load fails, the delete rolls back and the previous rows survive.
+- **`useTransaction: false`:** rows are removed with `TRUNCATE TABLE`, which is faster on large tables; a failure after it leaves the table empty until the next successful run.
+
+## Primary key and upsert
+
+Specify one or more columns in `keyFields` to define the natural key. When set (and `truncateBeforeWrite` is `false`), the loader inserts the batch into a session temp table (`#DATRIS_STG_<id>`) and runs a `MERGE` on the key columns: matched rows are updated, unmatched rows are inserted. The same rows can be loaded across runs without duplicates.
+
+Upsert semantics match the PostgreSQL destination: on match, non-key columns are overwritten in full, including `NULL`s. If one batch holds the same key twice, SQL Server rejects the `MERGE`; deduplicate upstream.
+
+When `keyFields` is empty, rows are inserted straight into the table.
+
+## Querying from Datris
+
+The Assistant (and any MCP client) can read the destination back with the `query_sqlserver` tool, and the Search tab lists SQL Server pipelines under **Warehouse**. Use it to check that a load landed or to answer questions over the data without leaving Datris. Queries are pipeline-scoped: the tool takes a pipeline name, and the server connects with that pipeline's credentials secret, for any `authMethod`. Credentials never leave the server.
+
+Only read-only T-SQL runs: a statement must start with `SELECT` or `WITH`, with no semicolons or comments. Metadata comes from `INFORMATION_SCHEMA` views, for example `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo'`. Write and session keywords (`INSERT`, `UPDATE`, `DELETE`, `INTO`, `EXEC`, `USE`, `OPENROWSET` and others; full list in the [Query API](/api-reference/query-api#query-sql-server)) are rejected anywhere in the statement, including inside string literals, so `WHERE note = 'please delete'` is refused too.
+
+Leave the query out to preview the pipeline's table. Rows are capped at `limit` (default 100): a statement with a top-level `ORDER BY` and no `TOP` gets `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY`, a statement that already has `OFFSET` runs as written, and anything else is wrapped as `SELECT TOP (<limit>) * FROM (<sql>) q` (for a `WITH` statement only the final `SELECT` is wrapped). Do not add `LIMIT`. If SQL Server rejects the wrapper (an unnamed column such as `COUNT(*)`, two columns with the same name, or `FOR JSON` / `FOR XML`), the query runs unwrapped with the same row cap. Queries time out after 30 seconds. There is no server-side maximum on `limit`, and `-1` returns every row with no timeout, so keep it for queries you know are small.
+
+The REST endpoint is `POST /api/v1/query/sqlserver` ([Query API](/api-reference/query-api#query-sql-server)). A key needs the `query:sqlserver` capability. The `read-only` and `reporting` key templates and the editor and viewer roles include it. A key issued before this capability existed keeps its explicit capability list, so add `query:sqlserver` to it or issue a new key. Keys with full access (`*:*`) need nothing.
+
+The login only needs `SELECT` on the table to read it back; the grants above already include it.
+
+## Column types after load
+
+Pipelines created by an agent store every column as text (`NVARCHAR(MAX)`, or `NVARCHAR(450)` for a key column). The Catalog marks such a pipeline with a "text" badge. Click it (or use `get_dest_types` / `apply_dest_types`) to see proposed types inferred from up to 1000 landed rows and apply them. Applying validates every landed value with `TRY_CONVERT`, turns empty strings into `NULL`, and retypes the columns in place with `ALTER TABLE ... ALTER COLUMN`, all in one transaction: a value that will not convert fails the whole apply with the column named, the transaction rolls back and nothing changes. The table, its grants and its primary key stay (a retyped key column keeps the key, rebuilt under the same name). A key column with an empty value cannot become `NULL`, so it fails the apply. A `_json` or `_xml` document column is never retyped and does not count toward the badge; a pipeline with only a document column gets no badge. Do not apply while a run is in flight.
+
+## Deleting a pipeline
+
+Deleting a pipeline with its data drops the table (`DROP TABLE IF EXISTS`), connecting with the pipeline's own credentials secret.
+
+## Errors
+
+Connection failures name the auth method and the fix: a rejected login points at the secret's fields for that method, `Cannot open database` at the database name and the user mapping, an unreachable host at `host`, `port` and the firewall, and a Kerberos failure at `krb5.conf` and `JAVA_OPTS`. The run status names `SqlServerLoader` as the failing step.
+
+## Manual checks before relying on Entra ID or Kerberos
+
+The unit tests cover how each auth method's connection settings are built. A real sign-in needs a real directory, so check these once by hand:
+
+- **Service principal:** create the secret with `authMethod: entraServicePrincipal` against an Azure SQL database, run a small CSV pipeline, and confirm the rows land.
+- **Managed identity:** run Datris on an Azure VM or container with the identity attached, create a secret with only `host` and `authMethod: entraManagedIdentity`, and run the same pipeline.
+- **Kerberos:** against a domain-joined SQL Server, with `krb5.conf` mounted and `JAVA_OPTS` set as above, run the pipeline with `principal` and `password` in the secret.
+
+## Completion notification
+
+A pipeline notification is published to ActiveMQ on completion, with `destination` set to `sqlserver`. See [Notifications](/notifications) for details.

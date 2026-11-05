@@ -54,6 +54,13 @@ export class SearchService {
     return this.http.post<QueryResponse>('/api/v1/query/snowflake', { pipeline, sql, limit });
   }
 
+  /** Read-only T-SQL (SELECT / WITH) against the SQL Server database the
+   *  pipeline loads into. An empty `sql` makes the server preview the
+   *  pipeline's destination table. */
+  querySqlServer(pipeline: string, sql: string, limit: number): Observable<QueryResponse> {
+    return this.http.post<QueryResponse>('/api/v1/query/sqlserver', { pipeline, sql, limit });
+  }
+
   /** Field-protection reveal (at most 1000 values per call; the server audits
    *  each call and enforces protect:reveal). */
   reveal(pipeline: string, field: string, values: string[]): Observable<RevealResponse> {

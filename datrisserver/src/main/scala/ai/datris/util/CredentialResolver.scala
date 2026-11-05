@@ -8,6 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.model.{DatrisEnvironment, DatrisException, ObjectStore}
 
 import scala.collection.JavaConverters._
+import scala.util.Try
 
 case class ResolvedObjectStoreCredentials(
     accessKey: Option[String],
@@ -41,6 +42,34 @@ case class ResolvedDatabricksCredentials(
     // Every raw field of the secret (e.g. icebergRestPath / icebergRestPrefix
     // for the Iceberg register); empty when built by hand.
     extra: Map[String, String] = Map.empty
+)
+
+/** Microsoft SQL Server / Azure SQL destination credentials, resolved from a
+ *  Platform-tab secret named by `Database.credentialsSecret`. `host` lives in
+ *  the secret (bound to the credential, same call Snowflake makes for
+ *  `account`); the database name is per pipeline (`Database.dbName`) and goes
+ *  in the JDBC URL. `authMethod` (default `sql`) selects which of the optional
+ *  fields are set:
+ *    sql                    user, password
+ *    entraServicePrincipal  clientId, clientSecret, tenantId
+ *    entraPassword          user, password
+ *    entraManagedIdentity   managedIdentityClientId (only for a user-assigned identity)
+ *    kerberos               principal, plus password OR jaasConfigurationName (a keytab entry in a
+ *                           mounted JAAS file; then no password is needed or bound) */
+case class ResolvedSqlServerCredentials(
+    host: String,
+    port: Int,
+    authMethod: String,
+    user: Option[String] = None,
+    password: Option[String] = None,
+    clientId: Option[String] = None,
+    clientSecret: Option[String] = None,
+    tenantId: Option[String] = None,
+    managedIdentityClientId: Option[String] = None,
+    principal: Option[String] = None,
+    jaasConfigurationName: Option[String] = None,
+    encrypt: Boolean = true,
+    trustServerCertificate: Boolean = false
 )
 
 object CredentialResolver {
@@ -77,6 +106,70 @@ object CredentialResolver {
             secretField(secret, "clientSecret", "client_secret", "client-secret", "DATABRICKS_CLIENT_SECRET").isDefined) ||
             secretField(secret, "token", "pat", "personalAccessToken", "personal_access_token", "access_token", "DATABRICKS_TOKEN").isDefined)
     }
+
+    /** SQL Server `authMethod` values and the secret fields each one requires
+     *  (beyond `host`, which every method needs). Canonical spellings; the
+     *  lookup itself is case/underscore-insensitive via [[secretField]].
+     *  Kerberos drops `password` when the secret names a
+     *  `jaasConfigurationName` (keytab sign-in); see [[sqlServerRequiredFields]]. */
+    val SqlServerAuthMethods: Seq[(String, Seq[String])] = Seq(
+        "sql" -> Seq("user", "password"),
+        "entraServicePrincipal" -> Seq("clientId", "clientSecret", "tenantId"),
+        "entraPassword" -> Seq("user", "password"),
+        "entraManagedIdentity" -> Seq.empty,
+        "kerberos" -> Seq("principal", "password")
+    )
+
+    private val SqlServerFieldAliases: Map[String, Seq[String]] = Map(
+        "host" -> Seq("server", "hostname", "SQLSERVER_HOST"),
+        "port" -> Seq("SQLSERVER_PORT"),
+        "authMethod" -> Seq("auth_method", "SQLSERVER_AUTH_METHOD"),
+        "user" -> Seq("username", "SQLSERVER_USER"),
+        "password" -> Seq("SQLSERVER_PASSWORD"),
+        "clientId" -> Seq("client_id", "client-id", "SQLSERVER_CLIENT_ID"),
+        "clientSecret" -> Seq("client_secret", "client-secret", "SQLSERVER_CLIENT_SECRET"),
+        "tenantId" -> Seq("tenant_id", "tenant-id", "SQLSERVER_TENANT_ID"),
+        "managedIdentityClientId" -> Seq("managed_identity_client_id", "msiClientId", "SQLSERVER_MANAGED_IDENTITY_CLIENT_ID"),
+        "principal" -> Seq("SQLSERVER_PRINCIPAL"),
+        "jaasConfigurationName" -> Seq("jaas_configuration_name"),
+        "encrypt" -> Seq("SQLSERVER_ENCRYPT"),
+        "trustServerCertificate" -> Seq("trust_server_certificate", "SQLSERVER_TRUST_SERVER_CERTIFICATE")
+    )
+
+    private def sqlServerField(secret: java.util.Map[String, String], canonical: String): Option[String] =
+        secretField(secret, canonical, SqlServerFieldAliases.getOrElse(canonical, Seq.empty): _*).map(_.trim).filter(_.nonEmpty)
+
+    /** True when a kerberos secret signs in through a keytab entry in a
+     *  mounted JAAS file (`jaasConfigurationName` set) instead of a password. */
+    private def sqlServerUsesKeytab(method: String, secret: java.util.Map[String, String]): Boolean =
+        method == "kerberos" && sqlServerField(secret, "jaasConfigurationName").isDefined
+
+    /** Fields `method` requires in `secret` beyond `host`: the
+     *  [[SqlServerAuthMethods]] list, minus `password` for a keytab kerberos
+     *  secret. */
+    private def sqlServerRequiredFields(method: String, secret: java.util.Map[String, String]): Seq[String] = {
+        val base = SqlServerAuthMethods.find(_._1 == method).get._2
+        if (sqlServerUsesKeytab(method, secret)) base.filterNot(_ == "password") else base
+    }
+
+    /** The canonical `authMethod` for a secret (absent ⇒ `sql`), or the raw
+     *  value when it names no supported method. Case-insensitive. */
+    private def sqlServerAuthMethod(secret: java.util.Map[String, String]): Either[String, String] = {
+        val raw = sqlServerField(secret, "authMethod").getOrElse("sql")
+        SqlServerAuthMethods.map(_._1).find(_.equalsIgnoreCase(raw)).toRight(raw)
+    }
+
+    /** True when `secret` holds a complete set of SQL Server credentials for
+     *  its `authMethod` (absent ⇒ `sql`): `host` plus every field that method
+     *  requires. Unknown methods are never complete. Presence check only; same
+     *  Platform-secret scan rationale as hasSnowflakeCredentials. */
+    def hasSqlServerCredentials(secret: java.util.Map[String, String]): Boolean =
+        sqlServerAuthMethod(secret) match {
+            case Right(method) =>
+                sqlServerField(secret, "host").isDefined &&
+                sqlServerRequiredFields(method, secret).forall(f => sqlServerField(secret, f).isDefined)
+            case Left(_) => false
+        }
 
     def resolve(objectStore: ObjectStore): ResolvedObjectStoreCredentials = {
         val provider = Option(objectStore.provider).getOrElse("minio").toLowerCase
@@ -221,6 +314,82 @@ object CredentialResolver {
             clientSecret = clientSecret,
             token = token,
             extra = secret.asScala.toMap
+        )
+    }
+
+    /** Resolve SQL Server destination credentials from the Platform-tab secret
+     *  named by `Database.credentialsSecret`. Mirrors resolveSnowflake: same
+     *  env-prefixed Vault path and actionable errors pointing at
+     *  Configuration → Secrets → Platform; the field validation is
+     *  [[resolveSqlServerFromSecret]]. */
+    def resolveSqlServer(secretName: String): ResolvedSqlServerCredentials = {
+        if (secretName == null || secretName.trim.isEmpty)
+            throw new DatrisException(
+                "SQL Server destination requires a credentialsSecret naming a Platform-tab secret (with field host, plus the fields its authMethod needs — sql: user, password). Create it on Configuration → Secrets → Platform, then set it on the destination."
+            )
+
+        SecretNames.requireNotServerManaged(secretName)
+        val secretPath = DatrisEnvironment.current.environment + "/" + secretName
+        val secret = SecretsUtil.getSecretMap(secretPath)
+            .getOrElse(throw new DatrisException(
+                "SQL Server credentialsSecret not found in Secrets Manager at path '" + secretPath + "' (looked up by name '" + secretName + "'). Create it on Configuration → Secrets → Platform."
+            ))
+        resolveSqlServerFromSecret(secretName, secret)
+    }
+
+    /** Validate and resolve an already-read SQL Server secret. Names the
+     *  missing field and the auth method in every error. */
+    def resolveSqlServerFromSecret(secretName: String, secret: java.util.Map[String, String]): ResolvedSqlServerCredentials = {
+        val methods = SqlServerAuthMethods.map(_._1).mkString(", ")
+        val method = sqlServerAuthMethod(secret) match {
+            case Right(m) => m
+            case Left(raw) =>
+                throw new DatrisException(
+                    "SQL Server credentialsSecret '" + secretName + "' has unsupported authMethod '" + raw + "'. Use one of: " + methods +
+                        " (absent means sql). Update it on Configuration → Secrets → Platform."
+                )
+        }
+        val required = "host" +: sqlServerRequiredFields(method, secret)
+        def field(name: String): Option[String] = sqlServerField(secret, name)
+        def need(name: String): String =
+            field(name).getOrElse(throw new DatrisException(
+                "SQL Server credentialsSecret '" + secretName + "' is missing required field '" + name + "' for authMethod '" + method +
+                    "' (" + method + " needs: " + required.mkString(", ") + "). Add it on Configuration → Secrets → Platform."
+            ))
+        required.foreach(need)
+
+        val port = field("port") match {
+            case None => 1433
+            case Some(p) =>
+                Try(p.toInt).toOption.filter(n => n > 0 && n < 65536).getOrElse(throw new DatrisException(
+                    "SQL Server credentialsSecret '" + secretName + "' has an invalid 'port' value '" + p + "' — expected a TCP port number such as 1433."
+                ))
+        }
+        def bool(name: String, default: Boolean): Boolean = field(name) match {
+            case None => default
+            case Some(v) if v.equalsIgnoreCase("true") || v.equalsIgnoreCase("yes") || v == "1" => true
+            case Some(v) if v.equalsIgnoreCase("false") || v.equalsIgnoreCase("no") || v == "0" => false
+            case Some(v) =>
+                throw new DatrisException(
+                    "SQL Server credentialsSecret '" + secretName + "' has an invalid '" + name + "' value '" + v + "' — expected true or false."
+                )
+        }
+        val usesUserPassword = method == "sql" || method == "entraPassword"
+
+        ResolvedSqlServerCredentials(
+            host = need("host"),
+            port = port,
+            authMethod = method,
+            user = if (usesUserPassword) field("user") else None,
+            password = if (usesUserPassword || (method == "kerberos" && !sqlServerUsesKeytab(method, secret))) field("password") else None,
+            clientId = if (method == "entraServicePrincipal") field("clientId") else None,
+            clientSecret = if (method == "entraServicePrincipal") field("clientSecret") else None,
+            tenantId = if (method == "entraServicePrincipal") field("tenantId") else None,
+            managedIdentityClientId = if (method == "entraManagedIdentity") field("managedIdentityClientId") else None,
+            principal = if (method == "kerberos") field("principal") else None,
+            jaasConfigurationName = if (method == "kerberos") field("jaasConfigurationName") else None,
+            encrypt = bool("encrypt", default = true),
+            trustServerCertificate = bool("trustServerCertificate", default = false)
         )
     }
 }

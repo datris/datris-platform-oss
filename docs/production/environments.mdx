@@ -50,7 +50,7 @@ A [catalog archive](/data-catalog#what-an-archive-contains) restores cleanly on 
 | What differs per environment | Put it in | Referenced as (see [Pipeline Configuration](/pipeline-configuration)) |
 |---|---|---|
 | Source database host, port, user, password | Platform secret | `postgresSecretsName`, `mysqlSecretsName`, `mssqlSecretsName` |
-| Snowflake account, Databricks workspace | Platform secret | `destination.database.credentialsSecret` |
+| Snowflake account, Databricks workspace, SQL Server host and login | Platform secret | `destination.database.credentialsSecret` |
 | S3 keys and region | Platform secret | `destination.objectStore.credentialsSecret` |
 | Vector store connection | Platform secret | `qdrantSecretName`, `weaviateSecretName`, `milvusSecretName`, `chromaSecretName`, `postgresSecretName` (pgvector) |
 | Source API tokens for taps | Tap secret (`_type=tap`) | the tap's `secretName` |

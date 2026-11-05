@@ -78,8 +78,9 @@ for a standard install:
    - **Vector stores** — pgvector by default (included with Postgres, no
      extra container); optionally add qdrant, weaviate, or chroma
    - **Kafka** — local test broker or external (default: none)
-   - **Snowflake / Databricks** — optionally store destination credentials
-     now so pipelines can use them on day one
+   - **Snowflake / Databricks / SQL Server** — optionally store destination
+     credentials now so pipelines can use them on day one (SQL Server: a SQL
+     login, Microsoft Entra ID, or Kerberos)
 
 It prints an install summary, starts the stack, and then checks every store
 you configured — a mistyped external hostname or credential shows up right
@@ -266,7 +267,7 @@ Where `{env}` is the environment name (default: `oss`). See [Configuration Refer
 
 ### Vault
 
-On first boot, the `vault-init` container seeds Vault with default secrets for the bundled services (MinIO, ActiveMQ, MongoDB, PostgreSQL) plus your AI provider API keys and any external-store credentials (Kafka, vector stores, Snowflake, Databricks) from `.env`. Vault uses durable file storage on the `vault-data` volume, so secrets — including any you add later in the Configuration tab or via taps — **persist across restarts and rebuilds**. `.env` is the first-boot seed only; after that the Configuration tab is the source of truth. See [How Configuration Persists](/ai-configuration#how-configuration-persists) for details and the clean-reset path.
+On first boot, the `vault-init` container seeds Vault with default secrets for the bundled services (MinIO, ActiveMQ, MongoDB, PostgreSQL) plus your AI provider API keys and any external-store credentials (Kafka, vector stores, Snowflake, Databricks, SQL Server) from `.env`. Vault uses durable file storage on the `vault-data` volume, so secrets — including any you add later in the Configuration tab or via taps — **persist across restarts and rebuilds**. `.env` is the first-boot seed only; after that the Configuration tab is the source of truth. See [How Configuration Persists](/ai-configuration#how-configuration-persists) for details and the clean-reset path.
 
 ### Vector Databases
 
@@ -281,7 +282,7 @@ Combine profiles with commas: `COMPOSE_PROFILES=qdrant,kafka`. To use a managed/
 
 ### External databases and stores
 
-Every optional store can point at infrastructure you already run instead of a bundled container — the installer asks, or set the variables in `.env` before first boot: `POSTGRES_JDBC_URL`/`POSTGRES_USER`/`POSTGRES_PASSWORD` (with `POSTGRES_ENABLED=0`), `KAFKA_BOOTSTRAP_SERVERS`, vector-store `*_HOST` variables, and `SNOWFLAKE_*` / `DATABRICKS_*` destination credentials. These are **first-boot seeds**: vault-init writes them into Vault create-if-absent, and from then on Configuration → Secrets is the source of truth. The platform's availability probes treat external stores exactly like bundled ones — the pipeline wizard and the Assistant offer whatever is actually reachable.
+Every optional store can point at infrastructure you already run instead of a bundled container — the installer asks, or set the variables in `.env` before first boot: `POSTGRES_JDBC_URL`/`POSTGRES_USER`/`POSTGRES_PASSWORD` (with `POSTGRES_ENABLED=0`), `KAFKA_BOOTSTRAP_SERVERS`, vector-store `*_HOST` variables, and `SNOWFLAKE_*` / `DATABRICKS_*` / `SQLSERVER_*` destination credentials (see [SQL Server](/destinations/sql-server#create-the-platform-secret-in-datris) for the `SQLSERVER_*` names per auth method; the installer seeds password-based Kerberos only, so create a keytab Kerberos secret under **Configuration → Secrets → Platform**). These are **first-boot seeds**: vault-init writes them into Vault create-if-absent, and from then on Configuration → Secrets is the source of truth. The platform's availability probes treat external stores exactly like bundled ones — the pipeline wizard and the Assistant offer whatever is actually reachable.
 
 ## Configuration
 

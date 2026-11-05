@@ -53,7 +53,13 @@
 #                       no key); written to .env. A preset host wins over the
 #                       same store named in DATRIS_PROFILES.
 #   KAFKA_BOOTSTRAP_SERVERS, SNOWFLAKE_ACCOUNT/USER/PRIVATE_KEY/PASSWORD,
-#   DATABRICKS_HOST/CLIENT_ID/CLIENT_SECRET/TOKEN — external store credentials
+#   DATABRICKS_HOST/CLIENT_ID/CLIENT_SECRET/TOKEN,
+#   SQLSERVER_HOST/PORT/AUTH_METHOD/USER/PASSWORD,
+#   SQLSERVER_CLIENT_ID/CLIENT_SECRET/TENANT_ID/PRINCIPAL,
+#   SQLSERVER_MANAGED_IDENTITY_CLIENT_ID — external store credentials.
+#                       The SQL Server auth method is sql (default),
+#                       entraServicePrincipal, entraPassword,
+#                       entraManagedIdentity or kerberos
 #   DATRIS_GOVERNED=1   switch on the governance controls for production on a
 #                       fresh install: writes USE_USER_AUTH, USE_API_KEYS,
 #                       USE_AUDIT_LOG and USE_AGENT_POLICY as true. Unset, an
@@ -832,6 +838,76 @@ else
     add_summary databricks external "$DBX_DONE (credentials secret)"
   else
     add_summary databricks "-" "not configured"
+  fi
+
+  # SQL Server / Azure SQL — external-only credentials, skippable. The
+  # database and schema are per-pipeline settings, never stored here.
+  MSSQL_DONE=""
+  if [ -n "${SQLSERVER_HOST:-}" ]; then
+    set_env SQLSERVER_HOST "${SQLSERVER_HOST}"
+    set_env SQLSERVER_PORT "${SQLSERVER_PORT:-1433}"
+    set_env SQLSERVER_AUTH_METHOD "${SQLSERVER_AUTH_METHOD:-sql}"
+    for _v in SQLSERVER_USER SQLSERVER_PASSWORD SQLSERVER_CLIENT_ID SQLSERVER_CLIENT_SECRET \
+              SQLSERVER_TENANT_ID SQLSERVER_PRINCIPAL SQLSERVER_MANAGED_IDENTITY_CLIENT_ID; do
+      eval "_val=\${$_v:-}"
+      [ -n "$_val" ] && set_env "$_v" "$_val"
+    done
+    MSSQL_DONE="${SQLSERVER_HOST}"
+  elif [ -n "$TTY" ]; then
+    ask "  SQL Server destination — configure credentials now? [y/N]: "
+    case "$ANS" in
+      y*|Y*)
+        ask "    Host (sql01.example.com / myserver.database.windows.net): "; MS_HOST="$ANS"
+        ask "    Port [1433]: "; MS_PORT="${ANS:-1433}"
+        ask "    Auth — [S]QL login, Entra service [p]rincipal, Entra pass[w]ord, Entra [m]anaged identity, or [k]erberos: "
+        MS_USER=""; MS_PW=""; MS_CID=""; MS_CSEC=""; MS_TEN=""; MS_PRIN=""; MS_MI=""
+        case "$ANS" in
+          p*|P*)
+            MS_AUTH=entraServicePrincipal
+            ask "    Client ID: "; MS_CID="$ANS"
+            ask_hidden "    Client secret (input hidden): "; MS_CSEC="$ANS"
+            ask "    Tenant ID: "; MS_TEN="$ANS"
+            ;;
+          w*|W*)
+            MS_AUTH=entraPassword
+            ask "    Entra user (user@example.com): "; MS_USER="$ANS"
+            ask_hidden "    Password (input hidden): "; MS_PW="$ANS"
+            ;;
+          m*|M*)
+            MS_AUTH=entraManagedIdentity
+            ask "    Client ID of a user-assigned identity, or Enter for the system-assigned one: "; MS_MI="$ANS"
+            ;;
+          k*|K*)
+            MS_AUTH=kerberos
+            ask "    Kerberos principal (svc_datris@EXAMPLE.COM): "; MS_PRIN="$ANS"
+            ask_hidden "    Password (input hidden): "; MS_PW="$ANS"
+            ;;
+          *)
+            MS_AUTH=sql
+            ask "    SQL login: "; MS_USER="$ANS"
+            ask_hidden "    Password (input hidden): "; MS_PW="$ANS"
+            ;;
+        esac
+        if [ -n "$MS_HOST" ]; then
+          set_env SQLSERVER_HOST "$MS_HOST"
+          set_env SQLSERVER_PORT "$MS_PORT"
+          set_env SQLSERVER_AUTH_METHOD "$MS_AUTH"
+          [ -n "$MS_USER" ] && set_env SQLSERVER_USER "$MS_USER"
+          [ -n "$MS_PW" ] && set_env SQLSERVER_PASSWORD "$MS_PW"
+          [ -n "$MS_CID" ] && set_env SQLSERVER_CLIENT_ID "$MS_CID"
+          [ -n "$MS_CSEC" ] && set_env SQLSERVER_CLIENT_SECRET "$MS_CSEC"
+          [ -n "$MS_TEN" ] && set_env SQLSERVER_TENANT_ID "$MS_TEN"
+          [ -n "$MS_PRIN" ] && set_env SQLSERVER_PRINCIPAL "$MS_PRIN"
+          [ -n "$MS_MI" ] && set_env SQLSERVER_MANAGED_IDENTITY_CLIENT_ID "$MS_MI"
+          MSSQL_DONE="$MS_HOST"
+        fi
+        ;;
+    esac
+  fi
+  if [ -n "$MSSQL_DONE" ]; then
+    add_summary sqlserver external "$MSSQL_DONE (credentials secret)"
+  else
+    add_summary sqlserver "-" "not configured"
   fi
 
   [ -n "$PROFILES" ] && set_env COMPOSE_PROFILES "$PROFILES"

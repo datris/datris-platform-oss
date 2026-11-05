@@ -70,7 +70,7 @@ class AssistantPromptScratchSpec extends AnyFunSuite {
         assert(rule.contains("destination: {\"scratch\": {}}"))
     }
 
-    private val allFive = Seq("mongodb", "postgres", "objectstore", "snowflake", "databricks")
+    private val allSix = Seq("mongodb", "postgres", "objectstore", "snowflake", "databricks", "sqlserver")
     private val withObjectStore = Seq("mongodb", "postgres", "objectstore")
     private val withoutObjectStore = Seq("mongodb", "postgres")
 
@@ -85,7 +85,7 @@ class AssistantPromptScratchSpec extends AnyFunSuite {
             text.contains("Do not offer Live Read when the user has asked for a schedule."),
             s"schedule exclusion missing:\n$text"
         )
-        assert(AssistantAPIController.destinationDefaultsRule(allFive).contains("Live Read"))
+        assert(AssistantAPIController.destinationDefaultsRule(allSix).contains("Live Read"))
     }
 
     test("destinationDefaultsRule does not name Live Read without objectstore") {
@@ -113,7 +113,7 @@ class AssistantPromptScratchSpec extends AnyFunSuite {
     }
 
     private val vendorOrDomain =
-        """(?i)\b(snowflake|databricks|bigquery|redshift|salesforce|stripe|shopify|github|twitter|reddit|nasdaq|bloomberg|weather|crypto|bitcoin|stock)\b""".r
+        """(?i)\b(snowflake|databricks|sqlserver|sql server|bigquery|redshift|salesforce|stripe|shopify|github|twitter|reddit|nasdaq|bloomberg|weather|crypto|bitcoin|stock)\b""".r
     private val cron = """(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)""".r
 
     test("rule carries no vendor/domain proper noun or cron expression") {
@@ -123,12 +123,54 @@ class AssistantPromptScratchSpec extends AnyFunSuite {
     }
 
     test("destinationDefaultsRule carries no vendor/domain proper noun or cron expression") {
-        // Snowflake / Databricks are real destination names, so sweep sets without them.
+        // Snowflake / Databricks / SQL Server are real destination names, so sweep sets without them.
         for (dests <- Seq(withObjectStore, withoutObjectStore, Seq("objectstore"))) {
             val text = AssistantAPIController.destinationDefaultsRule(dests)
             val hits = vendorOrDomain.findAllIn(text).toList
             assert(hits.isEmpty, s"domain bias in destinationDefaultsRule($dests): $hits")
             assert(cron.findFirstIn(text).isEmpty, s"cron expression in destinationDefaultsRule($dests)")
         }
+    }
+
+    // --- Story: mssql-destination (plans/stories/mssql-destination.md, Acceptance 4) ---
+    // SQL Server joins the canonical structured set as its sixth name; the
+    // rendered literal example (which the model mimics) names it, and it is
+    // never offered when availability leaves it out.
+
+    test("AllStructuredDestinations is the six-name set ending in sqlserver") {
+        assert(ai.datris.util.DestinationAvailabilityUtil.AllStructuredDestinations == allSix)
+    }
+
+    test("destinationDefaultsRule with all six names SQL Server in the literal example, and omits it when sqlserver is absent") {
+        val text = AssistantAPIController.destinationDefaultsRule(allSix)
+        assert(
+            text.contains("MongoDB by default; PostgreSQL, object store, Snowflake, Databricks, or SQL Server also available"),
+            s"literal example must name SQL Server last:\n$text"
+        )
+        assert(text.contains("**SQL Server** (loads the user's own SQL Server or Azure SQL database)"), s"SQL Server blurb missing:\n$text")
+        assert(text.contains("list_platform_secrets"), text)
+
+        val withoutSqlServer = AssistantAPIController.destinationDefaultsRule(allSix.filterNot(_ == "sqlserver"))
+        assert(!withoutSqlServer.contains("SQL Server"), s"SQL Server offered while unavailable:\n$withoutSqlServer")
+        assert(!withoutSqlServer.toLowerCase.contains("sqlserver"), withoutSqlServer)
+    }
+
+    // --- Story: question-card-option-cap (plans/stories/question-card-option-cap.md) ---
+    // Every destination (and Live Read) is its own card option, never folded
+    // into another option's description.
+
+    test("destinationDefaultsRule with all six and Live Read makes each destination its own card option") {
+        val text = AssistantAPIController.destinationDefaultsRule(allSix)
+        assert(
+            text.contains(
+                "On a question card, each of these destinations and Live Read is its own option — never fold one into another option's description."
+            ),
+            s"own-option card sentence missing:\n$text"
+        )
+        val noLive = AssistantAPIController.destinationDefaultsRule(withoutObjectStore)
+        assert(
+            noLive.contains("On a question card, each of these destinations is its own option — never fold one into another option's description."),
+            s"own-option card sentence missing without objectstore:\n$noLive"
+        )
     }
 }

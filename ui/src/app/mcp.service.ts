@@ -46,6 +46,7 @@ export class McpService {
               else if (destType === 'mongodb') dest.database = { dbName: db, table, useMongoDB: true };
               else if (destType === 'snowflake') dest.database = { dbName: db, schema: params['schema'] || 'PUBLIC', table, useSnowflake: true, credentialsSecret: params['credentialsSecret'], warehouse: params['warehouse'], ...(params['role'] ? { role: params['role'] } : {}) };
               else if (destType === 'databricks') dest.database = { dbName: db, schema: params['schema'] || 'default', table, useDatabricks: true, credentialsSecret: params['credentialsSecret'], warehouse: params['warehouse'] };
+              else if (destType === 'sqlserver') dest.database = { dbName: db, schema: params['schema'] || 'dbo', table, useSqlServer: true, credentialsSecret: params['credentialsSecret'] };
               else dest.database = { dbName: db, schema: 'public', table, usePostgres: true };
               config.destination = dest;
               this.http.post<any>('/api/v1/pipeline', config).subscribe({
@@ -139,6 +140,12 @@ export class McpService {
         });
       case 'query_databricks':
         return this.http.post<any>('/api/v1/query/databricks', {
+          pipeline: params['pipeline'],
+          ...(params['sql'] && { sql: params['sql'] }),
+          ...(params['limit'] && { limit: +params['limit'] })
+        });
+      case 'query_sqlserver':
+        return this.http.post<any>('/api/v1/query/sqlserver', {
           pipeline: params['pipeline'],
           ...(params['sql'] && { sql: params['sql'] }),
           ...(params['limit'] && { limit: +params['limit'] })

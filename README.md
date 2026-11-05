@@ -144,7 +144,7 @@ Source (Tap / File Upload / MinIO Event / Database Pull / Kafka)
   → Data Quality (AI rules, header validation, schema validation)
   → Transformation (AI transformation, destination schema)
   → Destinations (in parallel):
-      PostgreSQL, MongoDB, Snowflake, Databricks,
+      PostgreSQL, MongoDB, Snowflake, Databricks, Microsoft SQL Server / Azure SQL,
       MinIO / S3 (Parquet, ORC, Apache Iceberg), Kafka, ActiveMQ,
       REST Endpoint, Qdrant, Weaviate, Milvus, Chroma, pgvector
   → Notifications (ActiveMQ topic)

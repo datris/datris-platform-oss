@@ -248,6 +248,11 @@ export class PipelineCreateComponent implements OnInit {
   dbxSchema = 'default';
   dbxTable = '';
   dbxKeyFields: string[] = [];
+  mssqlCredentialsSecret = '';
+  mssqlDbName = '';
+  mssqlSchema = 'dbo';
+  mssqlTable = '';
+  mssqlKeyFields: string[] = [];
   mongoKeyFields: string[] = [];
   kafkaTopic = '';
   amqQueue = '';
@@ -509,6 +514,14 @@ export class PipelineCreateComponent implements OnInit {
       this.checkDbxSecretWarehouse();
       this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
       this.dbxKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
+    } else if (dest?.database?.useSqlServer) {
+      this.destType = 'sqlserver';
+      this.mssqlDbName = dest.database.dbName || '';
+      this.mssqlSchema = dest.database.schema || 'dbo';
+      this.mssqlTable = dest.database.table || '';
+      this.mssqlCredentialsSecret = dest.database.credentialsSecret || '';
+      this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
+      this.mssqlKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
     } else if (dest?.objectStore) {
       this.destType = 'objectstore';
       this.osPrefix = dest.objectStore.prefixKey || '';
@@ -646,7 +659,7 @@ export class PipelineCreateComponent implements OnInit {
 
   /** True when the structured destination is installed on this instance.
    *  FAIL-OPEN: an unknown availability list (call pending or failed) enables
-   *  everything — a blip must never hide options. Only the five structured
+   *  everything — a blip must never hide options. Only the six structured
    *  destinations are gated; other types always return true. Scratch is never
    *  advertised by /api/v1/destinations/available — it writes to the built-in
    *  object store, the same store the objectstore probe checks — so it follows
@@ -654,7 +667,7 @@ export class PipelineCreateComponent implements OnInit {
   isDestAvailable(name: string): boolean {
     if (this.availableDestinations === null) return true;
     if (name === 'scratch') return this.availableDestinations.includes('objectstore');
-    const structured = ['mongodb', 'postgres', 'objectstore', 'snowflake', 'databricks'];
+    const structured = ['mongodb', 'postgres', 'objectstore', 'snowflake', 'databricks', 'sqlserver'];
     if (!structured.includes(name)) return true;
     return this.availableDestinations.includes(name);
   }
@@ -683,6 +696,7 @@ export class PipelineCreateComponent implements OnInit {
     if (this.sourceType === 'json') {
       this.schemaFields = [wizardField({ name: '_json' })];
       // JSON can't go to PostgreSQL, Snowflake, Databricks, or Object Store
+      // (SQL Server takes it: the document lands in one _json column)
       if (this.destType === 'postgres' || this.destType === 'snowflake' || this.destType === 'databricks' || this.destType === 'objectstore') {
         this.destType = 'mongodb';
       }
@@ -809,6 +823,7 @@ export class PipelineCreateComponent implements OnInit {
       case 'mongodb': return this.mongoKeyFields;
       case 'snowflake': return this.sfKeyFields;
       case 'databricks': return this.dbxKeyFields;
+      case 'sqlserver': return this.mssqlKeyFields;
       case 'objectstore': return this.osFormat === 'iceberg' && this.osWriteMode === 'merge' ? this.osKeyFields : [];
       default: return [];
     }
@@ -1490,6 +1505,11 @@ export class PipelineCreateComponent implements OnInit {
         if (!this.dbxCatalog.trim()) { this.error = 'Catalog is required'; return; }
         if (!this.dbxSchema.trim()) { this.error = 'Schema is required'; return; }
         if (!this.dbxTable.trim()) { this.error = 'Table name is required'; return; }
+      } else if (this.destType === 'sqlserver') {
+        if (!this.mssqlCredentialsSecret.trim()) { this.error = 'Credentials secret is required for SQL Server'; return; }
+        if (!this.mssqlDbName.trim()) { this.error = 'Database name is required'; return; }
+        if (!this.mssqlSchema.trim()) { this.error = 'Schema is required'; return; }
+        if (!this.mssqlTable.trim()) { this.error = 'Table name is required'; return; }
       } else if (this.destType === 'objectstore') {
         if (!this.osPrefix.trim()) { this.error = 'Key is required'; return; }
         if (this.osFormat === 'iceberg' && this.osWriteMode === 'merge' && this.osKeyFields.filter(k => k && k.trim()).length === 0) {
@@ -1791,6 +1811,20 @@ export class PipelineCreateComponent implements OnInit {
       const dbxKeys = this.dbxKeyFields.filter(k => k && k.trim());
       if (dbxKeys.length > 0) dbxDb.keyFields = dbxKeys;
       config.destination.database = dbxDb;
+    } else if (this.destType === 'sqlserver') {
+      // Preserve case — SQL Server bracket-quotes non-simple identifiers;
+      // sanitizeIdentifier would lowercase them.
+      const mssqlDb: any = {
+        dbName: this.mssqlDbName.trim(),
+        schema: this.mssqlSchema.trim() || 'dbo',
+        table: this.mssqlTable.trim(),
+        credentialsSecret: this.mssqlCredentialsSecret.trim(),
+        useSqlServer: true,
+        truncateBeforeWrite: this.dbTruncateBeforeWrite
+      };
+      const mssqlKeys = this.mssqlKeyFields.filter(k => k && k.trim());
+      if (mssqlKeys.length > 0) mssqlDb.keyFields = mssqlKeys;
+      config.destination.database = mssqlDb;
     } else if (this.destType === 'scratch') {
       // Nothing is landed: no table, database, key fields or truncate flag.
       // schemaProperties stays — the server requires the sample for the typed header.

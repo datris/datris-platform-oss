@@ -76,7 +76,7 @@ object AssistantAPIController {
             "description",
             "Ask the user 1-4 clarifying questions on an inline question card rendered in the chat UI. " +
                 "Use it for EVERY clarifying question you need answered before you can proceed: closed choices (which source API, which schedule, which destination, append vs latest, a scope preset) and open-ended ones (names, locations, free-form filters, lists of values). " +
-                "Give a question 2-4 `options` whenever you can name sensible choices — a time of day, a cadence, a region, a size — each with a `label` and a one-line `description`; the card always adds an Other free-text answer, so do not add an Other option yourself. " +
+                "Give a question 2-8 `options` whenever you can name sensible choices — a time of day, a cadence, a region, a size — each with a `label` and a one-line `description`; the card always adds an Other free-text answer, so do not add an Other option yourself. " +
                 "Leave `options` out (or empty) for a genuinely open-ended question such as a list of cities; the card then shows a text box for that question. " +
                 "NEVER use it for anything the platform can discover on its own (database or schema names, whether a table exists, column names or types) — do not ask the user about those at all. " +
                 "NEVER put a credential on it (API keys, passwords, tokens) — use `request_tap_secret_from_user` for credentials. " +
@@ -94,9 +94,9 @@ object AssistantAPIController {
         val options = new JsonObject()
         options.addProperty("type", "array")
         options.addProperty("minItems", 2)
-        options.addProperty("maxItems", 4)
+        options.addProperty("maxItems", 8)
         options.add("items", optionItem)
-        options.addProperty("description", "2-4 distinct choices, or omit for a free-text question. The UI adds an Other free-text input automatically.")
+        options.addProperty("description", "2-8 distinct choices, or omit for a free-text question. The UI adds an Other free-text input automatically.")
 
         val multi = new JsonObject()
         multi.addProperty("type", "boolean")
@@ -140,6 +140,7 @@ object AssistantAPIController {
         "objectstore" -> "object store",
         "snowflake" -> "Snowflake",
         "databricks" -> "Databricks",
+        "sqlserver" -> "SQL Server",
         "scratch" -> "Live Read"
     )
 
@@ -151,6 +152,7 @@ object AssistantAPIController {
         "objectstore" -> "**object store** (Parquet, ORC, or an Iceberg table)",
         "snowflake" -> "**Snowflake** (loads the user's own Snowflake account)",
         "databricks" -> "**Databricks** (loads a Unity Catalog managed Delta table in the user's own workspace)",
+        "sqlserver" -> "**SQL Server** (loads the user's own SQL Server or Azure SQL database)",
         "scratch" -> "**Live Read** (hands the rows back once through data quality and transformation; nothing is landed or catalogued, the result expires; promote to a real destination later without touching the tap or its schedule)"
     )
 
@@ -193,6 +195,11 @@ object AssistantAPIController {
             sb.append(" Do not silently default to ")
             sb.append(destinationDisplayNames(defaultDest))
             sb.append(" without mentioning the alternatives — the user may not know the other options exist.")
+            sb.append(
+                if (offerLiveRead)
+                    " On a question card, each of these destinations and Live Read is its own option — never fold one into another option's description."
+                else " On a question card, each of these destinations is its own option — never fold one into another option's description."
+            )
         } else {
             sb.append(" It is the only structured destination configured in this deployment, so there are no alternatives to offer.")
         }
@@ -203,6 +210,10 @@ object AssistantAPIController {
         if (structuredDests.contains("databricks"))
             sb.append(
                 " Databricks requires a `credentialsSecret` platform secret (host, plus clientId/clientSecret or token) plus a SQL warehouse ID (`warehouse`) and Unity Catalog catalog (`database`): same flow — discover the secret via `list_platform_secrets`, ask for the rest, never require any of it up front. If the secret already has a `warehouse` field, omit `warehouse` and do not ask for it."
+            )
+        if (structuredDests.contains("sqlserver"))
+            sb.append(
+                " SQL Server requires a `credentialsSecret` platform secret (host plus the fields its `authMethod` needs) and a database (`database`); `schema` defaults to `dbo`: same flow — discover the secret via `list_platform_secrets`, ask for the database, never require any of it up front. JSON and XML sources can land there too (as one document column)."
             )
         if (offerLiveRead) {
             sb.append(" Also name ").append(destinationBlurbs("scratch"))
@@ -522,7 +533,7 @@ class AssistantAPIController {
             "- **Reuse existing tap secrets before creating new ones.** ALWAYS call `list_tap_secrets` before asking the user for credentials. If a candidate already exists, call `get_tap_secret_fields` to confirm it has the keys your tap script needs (field names only — values are never returned to you). When a matching secret exists, just pass its name as `secret_name` to `create_tap` and move on.\n"
         )
         sb.append(
-            "- **Platform secrets (destination credentials) are read-only for agents.** Some destinations reference a `credentialsSecret` that holds destination credentials — NOT a tap secret. Examples: `objectStore` with `provider=s3` (fields `accessKey`, `secretKey`, `region`), a `database` with `useSnowflake=true` (fields `account`, `user`, and `privateKey` for key-pair auth or `password` as a fallback), and a `database` with `useDatabricks=true` (fields `host`, plus `clientId`/`clientSecret` for service-principal OAuth or `token` for a personal access token). These live on the Platform tab and are owned by the user, not the agent. Use `list_platform_secrets` to discover what's available and `get_platform_secret_fields` to verify a candidate has the required keys. The agent CANNOT create, update, or delete platform secrets — if nothing suitable exists, tell the user plainly: \"You'll need to create a secret on the Configuration → Secrets → Platform tab with fields <list the keys>; then give me the name and I'll wire it into the pipeline.\" Do NOT try `create_tap_secret` for destination credentials — that would tag the secret `_type=tap` and the destination resolver would not find it.\n"
+            "- **Platform secrets (destination credentials) are read-only for agents.** Some destinations reference a `credentialsSecret` that holds destination credentials — NOT a tap secret. Examples: `objectStore` with `provider=s3` (fields `accessKey`, `secretKey`, `region`), a `database` with `useSnowflake=true` (fields `account`, `user`, and `privateKey` for key-pair auth or `password` as a fallback), a `database` with `useDatabricks=true` (fields `host`, plus `clientId`/`clientSecret` for service-principal OAuth or `token` for a personal access token), and a `database` with `useSqlServer=true` (field `host`, optional `port`, and `authMethod` — `sql` (default): `user`, `password`; `entraServicePrincipal`: `clientId`, `clientSecret`, `tenantId`; `entraPassword`: `user`, `password`; `entraManagedIdentity`: optional `managedIdentityClientId`; `kerberos`: `principal`, `password`). These live on the Platform tab and are owned by the user, not the agent. Use `list_platform_secrets` to discover what's available and `get_platform_secret_fields` to verify a candidate has the required keys. The agent CANNOT create, update, or delete platform secrets — if nothing suitable exists, tell the user plainly: \"You'll need to create a secret on the Configuration → Secrets → Platform tab with fields <list the keys>; then give me the name and I'll wire it into the pipeline.\" Do NOT try `create_tap_secret` for destination credentials — that would tag the secret `_type=tap` and the destination resolver would not find it.\n"
         )
         sb.append(
             "- **When no existing secret fits, ask the user via the credentials form.** Call `request_tap_secret_from_user` with the proposed secret name, the list of required field NAMES (not values), and a one-sentence reason. The UI will render a credentials form inline — the user fills it in (or picks an existing secret from a dropdown), the values go straight to Vault, and the conversation resumes via the user's next message. Do NOT type credential prompts in plain text and ask the user to paste values into chat — credential values must never enter the chat content. Do NOT call `create_tap_secret` with values you don't have.\n"
@@ -630,7 +641,7 @@ class AssistantAPIController {
             "- **Partial answers are not full answers.** If you asked N clarifying questions and the user answered K of them, the remaining N-K are still pending. Repeat the unanswered ones on a new `ask_user` card and wait — do not infer them from context, the user's tone, or the most popular choice in your training data. Only proceed once every open question is closed or the user has explicitly told you to pick a default.\n"
         )
         sb.append(
-            "- **Clarifying questions go on a question card.** Whenever you need answers from the user before proceeding, call `ask_user` instead of writing a numbered list — for closed choices (which source, which schedule, which destination, append vs latest, a scope preset) AND for open-ended ones (names, locations, free-form filters, lists of values). Offer 2-4 options whenever you can name sensible ones (a time of day: 6:00 AM, noon, 6:00 PM; a cadence; a region); leave options out for a genuinely open-ended question so the card shows a text box. Do not mix a card with prose questions in the same turn, and show at most one card per turn; a plan or summary for the user to confirm may stay in prose alongside the card. The partial-answers rule above applies to card answers too. A `[Tool call: ask_user …]` record in an earlier turn is how a past card appears in the history: for new questions call `ask_user` again, never reproduce the record as text.\n"
+            "- **Clarifying questions go on a question card.** Whenever you need answers from the user before proceeding, call `ask_user` instead of writing a numbered list — for closed choices (which source, which schedule, which destination, append vs latest, a scope preset) AND for open-ended ones (names, locations, free-form filters, lists of values). Offer 2-8 options whenever you can name sensible ones (a time of day: 6:00 AM, noon, 6:00 PM; a cadence; a region); leave options out for a genuinely open-ended question so the card shows a text box. Do not mix a card with prose questions in the same turn, and show at most one card per turn; a plan or summary for the user to confirm may stay in prose alongside the card. The partial-answers rule above applies to card answers too. A `[Tool call: ask_user …]` record in an earlier turn is how a past card appears in the history: for new questions call `ask_user` again, never reproduce the record as text.\n"
         )
         sb.append(
             "- If the user says \"use a sensible default\" or \"you pick,\" choose ONE obviously-placeholder value so they can verify the shape works, and tell them plainly that it's a placeholder. Do not pad the placeholder with a recognizable canonical list.\n"

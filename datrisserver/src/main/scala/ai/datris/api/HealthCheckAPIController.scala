@@ -66,9 +66,9 @@ class HealthCheckAPIController {
      * purpose: the self-hosted destinations (mongodb, postgres, objectstore)
      * are live-probed — the compose stack seeds their Vault secrets even when
      * a service is disabled, so "secret is present" is not a reliable signal;
-     * the external SaaS destinations (snowflake, databricks) have no local
+     * the external destinations (snowflake, databricks, sqlserver) have no local
      * service to probe, so presence of complete credentials in some Platform
-     * secret is the signal. Snowflake/Databricks credentialsSecret names are
+     * secret is the signal. Snowflake/Databricks/SQL Server credentialsSecret names are
      * user-chosen per pipeline, so we scan every Platform secret rather than
      * look up a fixed name.
      */
@@ -89,6 +89,10 @@ class HealthCheckAPIController {
                 available.add("snowflake")
             if (platformSecrets.exists { case (_, fields) => CredentialResolver.hasDatabricksCredentials(fields) })
                 available.add("databricks")
+            // Any complete authMethod counts (sql, entraServicePrincipal,
+            // entraPassword, entraManagedIdentity, kerberos).
+            if (platformSecrets.exists { case (_, fields) => CredentialResolver.hasSqlServerCredentials(fields) })
+                available.add("sqlserver")
 
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(available), HttpStatus.OK)

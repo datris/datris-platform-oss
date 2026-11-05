@@ -27,7 +27,7 @@ The OpenAPI document is at `docs/openapi.yaml` in the Datris repository and at h
 | Push a file into a pipeline | `POST /api/v1/pipeline/upload` | multipart form: `file`, `pipeline`, optional `publishertoken`. Returns the pipeline token as text. |
 | Watch a load | `GET /api/v1/pipeline/status` | By pipeline or publisher token. Poll until the rollup is done. |
 | Read Live Read rows | `GET /api/v1/pipeline/result` | Scratch pipelines only; paged by offset and limit. |
-| SQL against landed data | `POST /api/v1/query/postgres`, `/query/snowflake`, `/query/databricks`, `/query/objectstore` | Read-only. |
+| SQL against landed data | `POST /api/v1/query/postgres`, `/query/snowflake`, `/query/databricks`, `/query/sqlserver`, `/query/objectstore` | Read-only. |
 | Document query | `POST /api/v1/query/mongodb` | Filter and projection. |
 | Natural-language query | `POST /api/v1/query/natural` | The platform writes the SQL. |
 | Semantic search | `POST /api/v1/search/{store}` | `store` is pgvector, qdrant, weaviate, milvus or chroma. |

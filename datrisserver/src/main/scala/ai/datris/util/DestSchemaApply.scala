@@ -40,7 +40,7 @@ case class DestTypesApplied(
   * won't cast fails the whole apply naming the column, with config and data
   * untouched.
   *
-  * v1 scope is postgres, snowflake, and databricks; objectstore is deferred
+  * Scope is postgres, snowflake, databricks, and sqlserver; objectstore is deferred
   * (its migration is a non-atomic background rewrite that would need stored
   * status). Mongo is schemaless and vector destinations have no field schema —
   * neither applies. */
@@ -59,6 +59,7 @@ object DestSchemaApply {
         else if (config.destination.database != null && config.destination.database.usePostgres) Some("postgres")
         else if (config.destination.database != null && config.destination.database.useSnowflake) Some("snowflake")
         else if (config.destination.database != null && config.destination.database.useDatabricks) Some("databricks")
+        else if (config.destination.database != null && config.destination.database.useSqlServer) Some("sqlserver")
         else None
     }
 
@@ -67,6 +68,21 @@ object DestSchemaApply {
     private def effectiveFields(config: PipelineConfig): java.util.List[SchemaField] =
         if (config.destination.schemaProperties == null) null
         else config.destination.schemaProperties.fields
+
+    /** SQL Server's `_json` / `_xml` document columns (JSON/XML-sourced
+      * pipelines) keep their native NVARCHAR(MAX)+ISJSON / XML type: they are
+      * never retyped and do not count toward the all-text test. */
+    private def isDocumentColumn(destKind: String, f: SchemaField): Boolean =
+        destKind == "sqlserver" && f != null && f.name != null &&
+            (f.name.equalsIgnoreCase("_json") || f.name.equalsIgnoreCase("_xml"))
+
+    /** The fields the all-text test looks at: every effective dest field,
+      * minus SQL Server document columns. */
+    private def typeableFields(destKind: String, config: PipelineConfig): java.util.List[SchemaField] = {
+        val fields = effectiveFields(config)
+        if (fields == null) null
+        else fields.asScala.filterNot(isDocumentColumn(destKind, _)).asJava
+    }
 
     // ------------------------------------------------------------------
     // Propose: sample landed rows, infer with evidence. Stateless.
@@ -81,10 +97,10 @@ object DestSchemaApply {
             return ineligible(
                 pipelineName,
                 ReasonNotSupported,
-                "This pipeline's destination does not support on-demand typing (postgres, snowflake, databricks only)"
+                "This pipeline's destination does not support on-demand typing (postgres, snowflake, databricks, sqlserver only)"
             )
         )
-        if (!DestTypeInference.allString(effectiveFields(config)))
+        if (!DestTypeInference.allString(typeableFields(destKind, config)))
             return ineligible(pipelineName, ReasonAlreadyTyped, "Destination fields already carry types")
 
         val rows: Seq[Map[String, Any]] = sampleLanded(config, destKind).getOrElse(
@@ -127,6 +143,16 @@ object DestSchemaApply {
                 }
                 if (!exists) return None
                 DatabricksQueryUtil.query(config.name, None, limit).results.asScala.map(_.asScala.toMap).toSeq
+            case "sqlserver" =>
+                // SqlServerQueryUtil's default query previews the table with
+                // SELECT TOP (limit).
+                val exists = SqlServerConnectionUtil.withConnection(config.destination.database) { conn =>
+                    val statement = conn.createStatement()
+                    try sqlServerTableExists(statement, config)
+                    finally Try(statement.close())
+                }
+                if (!exists) return None
+                SqlServerQueryUtil.query(config.name, None, limit).results.asScala.map(_.asScala.toMap).toSeq
             case _ => return None
         }
         if (rows.isEmpty) None else Some(rows)
@@ -142,13 +168,15 @@ object DestSchemaApply {
             throw new DatrisException("Pipeline not found: " + pipelineName)
 
         val destKind = inScopeDest(config).getOrElse(
-            throw new DatrisException("Pipeline '" + pipelineName + "' destination does not support on-demand typing (postgres, snowflake, databricks only)")
+            throw new DatrisException(
+                "Pipeline '" + pipelineName + "' destination does not support on-demand typing (postgres, snowflake, databricks, sqlserver only)"
+            )
         )
-        if (!DestTypeInference.allString(effectiveFields(config)))
+        if (!DestTypeInference.allString(typeableFields(destKind, config)))
             throw new DatrisException("Destination fields for pipeline '" + pipelineName + "' already carry types — edit the pipeline to change them")
 
-        val resolved = validateFields(config, fields)
-        if (!DestTypeInference.hasTypedField(resolved))
+        val resolved = validateFields(config, preserveDocumentColumns(destKind, config, fields))
+        if (!DestTypeInference.hasTypedField(resolved.asScala.filterNot(isDocumentColumn(destKind, _)).asJava))
             throw new DatrisException("All fields are string — nothing to apply")
 
         val migrated = destKind match {
@@ -174,6 +202,15 @@ object DestSchemaApply {
                         exists
                     } finally Try(statement.close())
                 }
+            case "sqlserver" =>
+                SqlServerConnectionUtil.withConnection(config.destination.database) { conn =>
+                    val statement = conn.createStatement()
+                    try {
+                        val exists = sqlServerTableExists(statement, config)
+                        if (exists) migrateSqlServer(statement, config, resolved)
+                        exists
+                    } finally Try(statement.close())
+                }
         }
 
         // Destination-first ordering succeeded — now the config write.
@@ -188,6 +225,23 @@ object DestSchemaApply {
         DestTypesApplied(pipelineName, resolved, migrated, versioned.version)
     }
 
+    /** SQL Server document columns are never retyped: whatever the caller sent
+      * for `_json` / `_xml` is replaced by the column as configured, so the
+      * written config keeps it unchanged. Other destinations pass through. */
+    private def preserveDocumentColumns(
+        destKind: String,
+        config: PipelineConfig,
+        fields: java.util.List[SchemaField]
+    ): java.util.List[SchemaField] = {
+        if (destKind != "sqlserver" || fields == null || effectiveFields(config) == null) fields
+        else {
+            val current = effectiveFields(config).asScala.map(f => f.name.toLowerCase -> f).toMap
+            fields.asScala.map { f =>
+                if (isDocumentColumn(destKind, f)) current.getOrElse(f.name.toLowerCase, f) else f
+            }.asJava
+        }
+    }
+
     /** Applied fields must cover exactly the effective dest field names —
       * types are the only thing apply may change. */
     private[util] def validateFields(config: PipelineConfig, fields: java.util.List[SchemaField]): java.util.List[SchemaField] = {
@@ -199,7 +253,7 @@ object DestSchemaApply {
             throw new DatrisException("Applied fields must have the same names as the destination columns: expected [" +
                 effectiveFields(config).asScala.map(_.name).mkString(", ") + "]")
         val supported = Set("string", "boolean", "int", "bigint", "float", "double", "date", "timestamp")
-        fields.asScala.foreach { f =>
+        fields.asScala.filterNot(isDocumentColumn(inScopeDest(config).orNull, _)).foreach { f =>
             if (f.`type` == null || !supported.contains(f.`type`.toLowerCase))
                 throw new DatrisException("Unsupported type '" + f.`type` + "' for field '" + f.name + "'. Supported: " + supported.mkString(", "))
         }
@@ -354,6 +408,139 @@ object DestSchemaApply {
         case "date" => "DATE"
         case "timestamp" => "TIMESTAMP"
         case other => other
+    }
+
+    // ------------------------------------------------------------------
+    // SQL Server: TRY_CONVERT-validate, then ALTER TABLE ... ALTER COLUMN in
+    // place, all in one transaction (SQL Server DDL is transactional). Unlike
+    // Snowflake/Databricks the table, its grants and its constraints stay.
+    // ------------------------------------------------------------------
+
+    private def sqlServerTableExists(statement: Statement, config: PipelineConfig): Boolean = {
+        val db = config.destination.database
+        val rs = statement.executeQuery(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = " +
+                SqlServerConnectionUtil.nLiteral(SqlServerConnectionUtil.schemaName(db)) +
+                " AND TABLE_NAME = " + SqlServerConnectionUtil.nLiteral(db.table)
+        )
+        try { rs.next() && rs.getLong(1) > 0 }
+        finally Try(rs.close())
+    }
+
+    private[util] def sqlServerType(t: String): String = t.toLowerCase match {
+        case "int" | "integer" | "tinyint" | "smallint" => "INT"
+        case "bigint" => "BIGINT"
+        case "float" | "double" => "FLOAT"
+        case "boolean" => "BIT"
+        case "date" => "DATE"
+        case "timestamp" => "DATETIME2"
+        case other => other
+    }
+
+    /** The statements [[migrateSqlServer]] runs after validation, in order,
+      * for the non-string, non-document `typed` fields. `keyFields` are the
+      * table's PRIMARY KEY columns and `pkName` its constraint name (None when
+      * the table has no primary key).
+      *
+      *   1. `UPDATE ... SET col = NULL WHERE col = ''` per typed non-key column:
+      *      ALTER COLUMN would turn an empty string into 0 / 1900-01-01, where
+      *      the other destinations land NULL.
+      *   2. When a typed column is in the primary key, drop the constraint
+      *      (ALTER COLUMN refuses a column an index depends on).
+      *   3. `ALTER TABLE ... ALTER COLUMN col TYPE [NOT NULL]` per typed column;
+      *      key columns stay NOT NULL.
+      *   4. Re-add the primary key under the same name and column order. */
+    private[util] def sqlServerMigrationStatements(
+        table: String,
+        typed: Seq[SchemaField],
+        keyFields: Seq[String],
+        pkName: Option[String]
+    ): Seq[String] = {
+        import SqlServerConnectionUtil.ident
+        val keySet = keyFields.map(_.toLowerCase).toSet
+        val isKey = (f: SchemaField) => keySet.contains(f.name.toLowerCase)
+        val nulls = typed.filterNot(isKey).map(f => "UPDATE " + table + " SET " + ident(f.name) + " = NULL WHERE " + ident(f.name) + " = N''")
+        val touchesPk = pkName.isDefined && typed.exists(isKey)
+        val dropPk = if (touchesPk) Seq("ALTER TABLE " + table + " DROP CONSTRAINT " + ident(pkName.get)) else Nil
+        val alters = typed.map { f =>
+            "ALTER TABLE " + table + " ALTER COLUMN " + ident(f.name) + " " + sqlServerType(f.`type`) +
+                (if (isKey(f)) " NOT NULL" else " NULL")
+        }
+        val addPk =
+            if (touchesPk) Seq("ALTER TABLE " + table + " ADD CONSTRAINT " + ident(pkName.get) + " PRIMARY KEY (" + keyFields.map(ident).mkString(", ") + ")")
+            else Nil
+        nulls ++ dropPk ++ alters ++ addPk
+    }
+
+    /** Primary-key constraint name and its columns in key order, if any. */
+    private def sqlServerPrimaryKey(statement: Statement, config: PipelineConfig): (Option[String], Seq[String]) = {
+        val db = config.destination.database
+        val rs = statement.executeQuery(
+            "SELECT kc.name, c.name FROM sys.key_constraints kc" +
+                " JOIN sys.tables t ON kc.parent_object_id = t.object_id" +
+                " JOIN sys.schemas s ON t.schema_id = s.schema_id" +
+                " JOIN sys.index_columns ic ON ic.object_id = t.object_id AND ic.index_id = kc.unique_index_id" +
+                " JOIN sys.columns c ON c.object_id = t.object_id AND c.column_id = ic.column_id" +
+                " WHERE kc.type = 'PK' AND s.name = " + SqlServerConnectionUtil.nLiteral(SqlServerConnectionUtil.schemaName(db)) +
+                " AND t.name = " + SqlServerConnectionUtil.nLiteral(db.table) +
+                " ORDER BY ic.key_ordinal"
+        )
+        try {
+            var name: Option[String] = None
+            val cols = Seq.newBuilder[String]
+            while (rs.next()) {
+                name = Some(rs.getString(1))
+                cols += rs.getString(2)
+            }
+            (name, cols.result())
+        } finally Try(rs.close())
+    }
+
+    private def migrateSqlServer(statement: Statement, config: PipelineConfig, fields: java.util.List[SchemaField]): Unit = {
+        import SqlServerConnectionUtil.ident
+        val table = SqlServerConnectionUtil.qualifiedTable(config.destination.database)
+        val typed = fields.asScala.filter(f => !f.`type`.equalsIgnoreCase("string") && !isDocumentColumn("sqlserver", f)).toList
+        if (typed.isEmpty) return
+        val conn = statement.getConnection
+        conn.setAutoCommit(false)
+        try {
+            // Inside the transaction so the checked rows are the migrated rows:
+            // the ALTERs below take a schema-modification lock and would also
+            // fail (and roll back) on any value TRY_CONVERT missed.
+            validateCasts(
+                statement,
+                table + " WITH (TABLOCK, HOLDLOCK)",
+                typed.asJava,
+                ident,
+                (col, t) => "TRY_CONVERT(" + sqlServerType(t) + ", NULLIF(" + ident(col) + ", N''))"
+            )
+            val (pkName, pkCols) = sqlServerPrimaryKey(statement, config)
+            pkCols.foreach { k =>
+                typed.find(_.name.equalsIgnoreCase(k)).foreach { f =>
+                    val rs = statement.executeQuery("SELECT COUNT(*) FROM " + table + " WHERE " + ident(k) + " = N''")
+                    val empties =
+                        try { if (rs.next()) rs.getLong(1) else 0L }
+                        finally Try(rs.close())
+                    if (empties > 0)
+                        throw new DatrisException("Cannot apply type '" + f.`type` + "' for key column '" + f.name + "': " + empties +
+                            " landed row(s) have an empty key value, which cannot become NULL in a primary key. No changes were applied.")
+                }
+            }
+            sqlServerMigrationStatements(table, typed, pkCols, pkName).foreach { sql =>
+                logger.info("Dest-types migration (sqlserver): " + sql)
+                statement.execute(sql)
+            }
+            conn.commit()
+        } catch {
+            case e: DatrisException =>
+                Try(conn.rollback())
+                throw e
+            case e: Exception =>
+                Try(conn.rollback())
+                throw new DatrisException("SQL Server migration failed — no changes were applied: " + e.getMessage)
+        } finally {
+            Try(conn.setAutoCommit(true))
+        }
     }
 
     /** One validation query for all typed columns: per column, count non-empty

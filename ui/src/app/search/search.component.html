@@ -30,9 +30,10 @@
         <optgroup label="Object Store">
           <option value="objectstore" *ngIf="healthService.isAvailable('minio')">Object Store (MinIO / S3 — Parquet, ORC, or Iceberg)</option>
         </optgroup>
-        <optgroup label="Warehouse" *ngIf="hasWarehousePipelines('databricks') || hasWarehousePipelines('snowflake')">
+        <optgroup label="Warehouse" *ngIf="hasWarehousePipelines('databricks') || hasWarehousePipelines('snowflake') || hasWarehousePipelines('sqlserver')">
           <option value="databricks" *ngIf="hasWarehousePipelines('databricks')">Databricks</option>
           <option value="snowflake" *ngIf="hasWarehousePipelines('snowflake')">Snowflake</option>
+          <option value="sqlserver" *ngIf="hasWarehousePipelines('sqlserver')">SQL Server</option>
         </optgroup>
         <optgroup label="Vector Search">
           <option value="qdrant" *ngIf="healthService.isAvailable('qdrant')">Qdrant</option>
@@ -137,7 +138,7 @@
       </div>
     </ng-container>
 
-    <!-- Warehouse (Databricks / Snowflake) fields -->
+    <!-- Warehouse (Databricks / Snowflake / SQL Server) fields -->
     <ng-container *ngIf="isWarehouse()">
       <div class="form-row-inline">
         <div class="form-field" style="flex: 3">
@@ -155,13 +156,14 @@
       <div class="form-row" *ngIf="selectedWarehouseMeta() as meta">
         <p class="form-hint">
           Querying <code>{{ meta.qualified }}</code>
-          ({{ meta.kind === 'databricks' ? 'Databricks' : 'Snowflake' }}).
+          ({{ warehouseLabel(meta.kind) }}).
         </p>
       </div>
       <div class="form-row">
         <label class="form-label">SQL Query</label>
         <textarea class="form-input form-textarea" [(ngModel)]="whSql" [placeholder]="warehouseSqlPlaceholder()" rows="4"></textarea>
-        <p class="form-hint">Read-only: queries must start with SELECT, WITH, SHOW, or DESCRIBE, without semicolons or comments. Runs on the pipeline's warehouse with its credentials. Leave empty to preview the destination table up to the limit.</p>
+        <p class="form-hint" *ngIf="queryType !== 'sqlserver'">Read-only: queries must start with SELECT, WITH, SHOW, or DESCRIBE, without semicolons or comments. Runs on the pipeline's warehouse with its credentials. Leave empty to preview the destination table up to the limit.</p>
+        <p class="form-hint" *ngIf="queryType === 'sqlserver'">Read-only T-SQL: queries must start with SELECT or WITH, without semicolons or comments; for metadata, select from INFORMATION_SCHEMA views. Rows are capped at the limit with TOP (or OFFSET/FETCH after an ORDER BY), so leave out LIMIT. Runs on the pipeline's SQL Server with its credentials. Leave empty to preview the destination table up to the limit.</p>
       </div>
     </ng-container>
 

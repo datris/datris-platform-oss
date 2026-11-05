@@ -33,6 +33,12 @@ class DestSchemaApplySpec extends AnyFunSuite {
         assert(DestSchemaApply.inScopeDest(config(Database(useDatabricks = true))) == Some("databricks"))
     }
 
+    // Story: SQL Server read-back and on-demand typing
+    // (plans/stories/mssql-query-and-typing.md), Acceptance bullet 2.
+    test("sqlserver destinations are in scope") {
+        assert(DestSchemaApply.inScopeDest(config(Database(useSqlServer = true))) == Some("sqlserver"))
+    }
+
     test("mongo, destination-less, and null configs are out of scope") {
         assert(DestSchemaApply.inScopeDest(config(Database(useMongoDB = true))) == None)
         assert(DestSchemaApply.inScopeDest(PipelineConfig(name = "p")) == None)

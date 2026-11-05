@@ -183,8 +183,8 @@ datris analyze <QUESTION> --table <TABLE> [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--table, -t` | Table/collection name (required) |
-| `--dest, -d` | Data source type: `postgres`, `mongodb`, `snowflake`, `databricks`, `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector` (default: `postgres`) |
-| `--pipeline, -p` | Pipeline name (required for `snowflake`/`databricks` — the pipeline selects the connection) |
+| `--dest, -d` | Data source type: `postgres`, `mongodb`, `snowflake`, `databricks`, `sqlserver`, `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector` (default: `postgres`) |
+| `--pipeline, -p` | Pipeline name (required for `snowflake`/`databricks`/`sqlserver` — the pipeline selects the connection) |
 | `--top-k, -k` | Number of search results for vector stores (default: 5) |
 | `--json` | Return raw JSON instead of AI narrative |
 
@@ -197,7 +197,7 @@ datris analyze "What are the top 5 stocks by volume?" --table trades
 # Analyze MongoDB data
 datris analyze "How many events occurred in March?" --table events --dest mongodb
 
-# Analyze a Snowflake or Databricks destination — pipeline selects the connection
+# Analyze a Snowflake, Databricks or SQL Server destination — pipeline selects the connection
 datris analyze "Which region had the most sales?" --table sales --dest snowflake --pipeline sales
 
 # Analyze vector store data (RAG) — semantic search + AI answer
@@ -212,7 +212,7 @@ datris analyze "top 5 stocks" --table trades --json
 
 - **PostgreSQL** — AI generates a SQL query from your question, executes it, then summarizes the results in a natural language answer
 - **MongoDB** — fetches documents from the collection, then AI answers the question based on the data
-- **Snowflake / Databricks** — previews rows from the pipeline's destination table (connection and credentials resolved server-side from the pipeline config), then AI answers the question based on the data
+- **Snowflake / Databricks / SQL Server** — previews up to 100 rows from the pipeline's destination table (connection and credentials resolved server-side from the pipeline config), then AI answers the question based on the data
 - **Vector stores** — performs semantic search to find relevant chunks, then AI generates an answer from the retrieved context
 
 ---

@@ -86,6 +86,7 @@ object MCPToolRoutes {
         "query_objectstore" -> Mapped("POST", "/api/v1/query/objectstore"),
         "query_snowflake" -> Mapped("POST", "/api/v1/query/snowflake"),
         "query_databricks" -> Mapped("POST", "/api/v1/query/databricks"),
+        "query_sqlserver" -> Mapped("POST", "/api/v1/query/sqlserver"),
         "query_mongodb" -> Mapped("POST", "/api/v1/query/mongodb"),
         "query_natural" -> Mapped("POST", "/api/v1/query/natural"),
 

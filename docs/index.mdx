@@ -75,7 +75,7 @@ Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any
 - **Multiple ingestion methods** - MCP, data upload API, MinIO bucket events, database polling, Kafka streaming
 - **Data quality** - AI rules (LLM-generated), and/or JSON/XML schema validation
 - **Transformations** - AI transformations (LLM-generated), destination schema (drop/rename/retype columns) for structure data
-- **Multiple destinations** - Write to PostgreSQL, MongoDB, Snowflake, Databricks, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, pgvector, or MinIO/S3 (Parquet, ORC, or Apache Iceberg tables) in parallel
+- **Multiple destinations** - Write to PostgreSQL, MongoDB, Snowflake, Databricks, Microsoft SQL Server / Azure SQL, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, pgvector, or MinIO/S3 (Parquet, ORC, or Apache Iceberg tables) in parallel
 - **Event notifications** - Subscribe to pipeline processing events via ActiveMQ topics
 
 ## Architecture
@@ -114,6 +114,7 @@ Destinations (executed in parallel)
   ├── MongoDB (document upsert)
   ├── Snowflake (PUT + COPY INTO / MERGE into the user's account)
   ├── Databricks (Unity Catalog managed Delta tables via SQL warehouse)
+  ├── SQL Server / Azure SQL (bulk-copy insert / MERGE into the user's database)
   ├── Kafka (topic producer)
   ├── ActiveMQ (queue)
   ├── REST Endpoint (HTTP POST)
@@ -143,6 +144,7 @@ Query Source
   ├── MongoDB (document queries with filters and projections)
   ├── Snowflake (pipeline-scoped read-only SQL: SELECT, SHOW, DESCRIBE)
   ├── Databricks (pipeline-scoped read-only SQL: SELECT, SHOW, DESCRIBE)
+  ├── SQL Server / Azure SQL (pipeline-scoped read-only T-SQL: SELECT, WITH)
   ├── Qdrant (semantic search)
   ├── Weaviate (semantic search)
   ├── Milvus (semantic search)
