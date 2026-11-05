@@ -266,7 +266,7 @@ lazy val allDependencies = Seq(
     // Spark's arrow/netty. Used by DatabricksLoader / DatabricksQueryUtil.
     "com.databricks" % "databricks-jdbc" % "3.4.1",
     // Microsoft SQL Server / Azure SQL destination (SqlServerLoader). The
-    // driver declares its Entra ID jars as <optional> (12.8.1.jre11 POM:
+    // driver declares its Entra ID jars as <optional> (12.8.2.jre11 POM:
     // msal4j 1.15.1 for ActiveDirectoryPassword / ActiveDirectoryServicePrincipal,
     // azure-identity 1.12.2 for ActiveDirectoryManagedIdentity), so they are
     // not pulled in by this line. Both are already on the classpath at newer,
@@ -279,7 +279,7 @@ lazy val allDependencies = Seq(
     // Kerberos (authenticationScheme=JavaKerberos) needs no extra jar: the
     // driver uses the JDK's GSS/JAAS. The driver itself has no transitive
     // dependencies, so no netty/reactor exclusions are needed.
-    "com.microsoft.sqlserver" % "mssql-jdbc" % "12.8.1.jre11",
+    "com.microsoft.sqlserver" % "mssql-jdbc" % "12.8.2.jre11",
     "com.microsoft.azure" % "msal4j" % "1.23.1",
 
     // Kafka
@@ -353,8 +353,8 @@ lazy val allDependencies = Seq(
     "io.github.jopenlibs" % "vault-java-driver" % "6.2.1",
 
     // Queue + notifications: ActiveMQ
-    "org.apache.activemq" % "activemq-client" % "5.19.4",
-    "org.apache.activemq" % "activemq-pool" % "5.19.4",
+    "org.apache.activemq" % "activemq-client" % "5.19.8",
+    "org.apache.activemq" % "activemq-pool" % "5.19.8",
 
     // NoSQL: MongoDB
     "org.mongodb" % "mongodb-driver-sync" % "4.11.4",
