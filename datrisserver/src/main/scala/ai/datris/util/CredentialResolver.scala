@@ -54,7 +54,8 @@ case class ResolvedDatabricksCredentials(
  *    entraServicePrincipal  clientId, clientSecret, tenantId
  *    entraPassword          user, password
  *    entraManagedIdentity   managedIdentityClientId (only for a user-assigned identity)
- *    kerberos               principal, password, jaasConfigurationName (optional keytab entry) */
+ *    kerberos               principal, plus password OR jaasConfigurationName (a keytab entry in a
+ *                           mounted JAAS file; then no password is needed or bound) */
 case class ResolvedSqlServerCredentials(
     host: String,
     port: Int,
@@ -108,7 +109,9 @@ object CredentialResolver {
 
     /** SQL Server `authMethod` values and the secret fields each one requires
      *  (beyond `host`, which every method needs). Canonical spellings; the
-     *  lookup itself is case/underscore-insensitive via [[secretField]]. */
+     *  lookup itself is case/underscore-insensitive via [[secretField]].
+     *  Kerberos drops `password` when the secret names a
+     *  `jaasConfigurationName` (keytab sign-in); see [[sqlServerRequiredFields]]. */
     val SqlServerAuthMethods: Seq[(String, Seq[String])] = Seq(
         "sql" -> Seq("user", "password"),
         "entraServicePrincipal" -> Seq("clientId", "clientSecret", "tenantId"),
@@ -136,6 +139,19 @@ object CredentialResolver {
     private def sqlServerField(secret: java.util.Map[String, String], canonical: String): Option[String] =
         secretField(secret, canonical, SqlServerFieldAliases.getOrElse(canonical, Seq.empty): _*).map(_.trim).filter(_.nonEmpty)
 
+    /** True when a kerberos secret signs in through a keytab entry in a
+     *  mounted JAAS file (`jaasConfigurationName` set) instead of a password. */
+    private def sqlServerUsesKeytab(method: String, secret: java.util.Map[String, String]): Boolean =
+        method == "kerberos" && sqlServerField(secret, "jaasConfigurationName").isDefined
+
+    /** Fields `method` requires in `secret` beyond `host`: the
+     *  [[SqlServerAuthMethods]] list, minus `password` for a keytab kerberos
+     *  secret. */
+    private def sqlServerRequiredFields(method: String, secret: java.util.Map[String, String]): Seq[String] = {
+        val base = SqlServerAuthMethods.find(_._1 == method).get._2
+        if (sqlServerUsesKeytab(method, secret)) base.filterNot(_ == "password") else base
+    }
+
     /** The canonical `authMethod` for a secret (absent ⇒ `sql`), or the raw
      *  value when it names no supported method. Case-insensitive. */
     private def sqlServerAuthMethod(secret: java.util.Map[String, String]): Either[String, String] = {
@@ -151,7 +167,7 @@ object CredentialResolver {
         sqlServerAuthMethod(secret) match {
             case Right(method) =>
                 sqlServerField(secret, "host").isDefined &&
-                SqlServerAuthMethods.find(_._1 == method).get._2.forall(f => sqlServerField(secret, f).isDefined)
+                sqlServerRequiredFields(method, secret).forall(f => sqlServerField(secret, f).isDefined)
             case Left(_) => false
         }
 
@@ -333,7 +349,7 @@ object CredentialResolver {
                         " (absent means sql). Update it on Configuration → Secrets → Platform."
                 )
         }
-        val required = "host" +: SqlServerAuthMethods.find(_._1 == method).get._2
+        val required = "host" +: sqlServerRequiredFields(method, secret)
         def field(name: String): Option[String] = sqlServerField(secret, name)
         def need(name: String): String =
             field(name).getOrElse(throw new DatrisException(
@@ -365,7 +381,7 @@ object CredentialResolver {
             port = port,
             authMethod = method,
             user = if (usesUserPassword) field("user") else None,
-            password = if (usesUserPassword || method == "kerberos") field("password") else None,
+            password = if (usesUserPassword || (method == "kerberos" && !sqlServerUsesKeytab(method, secret))) field("password") else None,
             clientId = if (method == "entraServicePrincipal") field("clientId") else None,
             clientSecret = if (method == "entraServicePrincipal") field("clientSecret") else None,
             tenantId = if (method == "entraServicePrincipal") field("tenantId") else None,

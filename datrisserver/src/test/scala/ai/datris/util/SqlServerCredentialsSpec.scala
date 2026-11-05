@@ -39,7 +39,7 @@ import scala.collection.JavaConverters._
   *   entraServicePrincipal host, clientId, clientSecret, tenantId
   *   entraPassword         host, user, password
   *   entraManagedIdentity  host (+ optional managedIdentityClientId)
-  *   kerberos              host, principal, password
+  *   kerberos              host, principal, password (or jaasConfigurationName for a keytab, no password)
   */
 class SqlServerCredentialsSpec extends AnyFunSuite {
 
@@ -204,5 +204,45 @@ class SqlServerCredentialsSpec extends AnyFunSuite {
 
         val (url2, props2) = assemble(secretFor("kerberos", "jaasConfigurationName" -> "DatrisKeytab"))
         assert(setting(url2, props2, "jaasConfigurationName").contains("DatrisKeytab"))
+        assert(setting(url2, props2, "password").isEmpty, "a keytab entry must not be sent with a password")
+    }
+
+    // ---- kerberos keytab: password not required ----------------------------
+
+    private val keytabSecret =
+        m(
+            "authMethod" -> "kerberos",
+            "host" -> "sql01.corp.example.com",
+            "principal" -> "svc_datris@CORP.EXAMPLE.COM",
+            "jaasConfigurationName" -> "DatrisKeytab"
+        )
+
+    test("kerberos with jaasConfigurationName and no password is complete and binds no password") {
+        assert(CredentialResolver.hasSqlServerCredentials(keytabSecret))
+        val c = CredentialResolver.resolveSqlServerFromSecret("mssql-krb", keytabSecret)
+        assert(c.authMethod == "kerberos")
+        assert(c.password.isEmpty)
+        assert(c.jaasConfigurationName.contains("DatrisKeytab"))
+        val (url, props) = assemble(keytabSecret)
+        assert(setting(url, props, "authenticationScheme").contains("JavaKerberos"))
+        assert(setting(url, props, "user").contains("svc_datris@CORP.EXAMPLE.COM"))
+        assert(setting(url, props, "jaasConfigurationName").contains("DatrisKeytab"))
+        assert(setting(url, props, "password").isEmpty)
+        assert(!props.containsKey("password"), "no password property at all, not even an empty one")
+    }
+
+    test("kerberos with neither password nor jaasConfigurationName is incomplete and the error names password") {
+        val secret = m("authMethod" -> "kerberos", "host" -> "sql01", "principal" -> "svc_datris@CORP.EXAMPLE.COM")
+        assert(!CredentialResolver.hasSqlServerCredentials(secret))
+        val e = intercept[DatrisException](CredentialResolver.resolveSqlServerFromSecret("mssql-krb", secret))
+        assert(e.getMessage.contains("'password'"), e.getMessage)
+        assert(e.getMessage.contains("kerberos"), e.getMessage)
+    }
+
+    test("kerberos with jaasConfigurationName still requires principal") {
+        val secret = m("authMethod" -> "kerberos", "host" -> "sql01", "jaasConfigurationName" -> "DatrisKeytab")
+        assert(!CredentialResolver.hasSqlServerCredentials(secret))
+        val e = intercept[DatrisException](CredentialResolver.resolveSqlServerFromSecret("mssql-krb", secret))
+        assert(e.getMessage.contains("'principal'"), e.getMessage)
     }
 }

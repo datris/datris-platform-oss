@@ -124,8 +124,8 @@ On **Configuration → Secrets → Platform**, create a secret (for example `sql
 | `user`, `password`        | `sql`, `entraPassword`                  | The SQL login, or the Microsoft Entra user (`loader@example.com`) |
 | `clientId`, `clientSecret`, `tenantId` | `entraServicePrincipal`    | From the app registration |
 | `managedIdentityClientId` | `entraManagedIdentity` (optional)       | Only for a user-assigned identity |
-| `principal`, `password`   | `kerberos`                              | e.g. `svc_datris@CORP.EXAMPLE.COM`. Both are required, even with a keytab |
-| `jaasConfigurationName`   | `kerberos` (optional)                   | Entry in a mounted JAAS file, to sign in with a keytab |
+| `principal`, `password`   | `kerberos`                              | e.g. `svc_datris@CORP.EXAMPLE.COM`. `password` is not needed with `jaasConfigurationName` |
+| `jaasConfigurationName`   | `kerberos` (optional)                   | Entry in a mounted JAAS file, for a keytab instead of a password |
 | `encrypt`                 | every method (optional)                 | Default `true`. Takes `true`/`false` (also `yes`/`no`, `1`/`0`) |
 | `trustServerCertificate`  | every method (optional)                 | Default `false`. Set `true` only for a test server with a self-signed certificate |
 
@@ -142,7 +142,7 @@ The Datris server runs on Linux, so Kerberos uses the JDK's own Kerberos client,
    ```bash
    JAVA_OPTS=-Xms512m -Xmx2g -Djava.security.krb5.conf=/config/krb5.conf
    ```
-3. With `principal` and `password` in the secret nothing else is needed. To sign in with a keytab, put the keytab and a JAAS file in `docker/config/`, add `-Djava.security.auth.login.config=/config/jaas.conf` to `JAVA_OPTS`, and set the secret's `jaasConfigurationName` to the entry name. The secret still needs a `password` field, because every `kerberos` secret is checked for `principal` and `password`:
+3. With `principal` and `password` in the secret nothing else is needed. To use a keytab instead, put the keytab and a JAAS file in `docker/config/`, add `-Djava.security.auth.login.config=/config/jaas.conf` to `JAVA_OPTS`, and set the secret's `jaasConfigurationName` to the entry name. The secret then needs only `host`, `principal` and `jaasConfigurationName`: no password is stored, and none is sent to the server even if the secret has one:
    ```
    DatrisKeytab {
      com.sun.security.auth.module.Krb5LoginModule required

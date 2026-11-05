@@ -70,7 +70,8 @@ object SqlServerConnectionUtil {
      *    entraPassword          authentication=ActiveDirectoryPassword, user, password
      *    entraManagedIdentity   authentication=ActiveDirectoryManagedIdentity (+ msiClientId for a user-assigned identity)
      *    kerberos               authenticationScheme=JavaKerberos, integratedSecurity=true, user=principal, password
-     *                           (+ jaasConfigurationName for a keytab entry in a mounted JAAS file)
+     *                           (or, with no password, jaasConfigurationName for a keytab entry in a
+     *                           mounted JAAS file)
      *  Every method batches inserts through the bulk-copy API. */
     def connectionProperties(creds: ResolvedSqlServerCredentials): Properties = {
         val p = new Properties()
@@ -99,7 +100,8 @@ object SqlServerConnectionUtil {
                 p.setProperty("integratedSecurity", "true")
                 p.setProperty("authenticationScheme", "JavaKerberos")
                 set("user", creds.principal)
-                set("password", creds.password)
+                // A keytab entry signs in on its own: never send a password with it.
+                if (creds.jaasConfigurationName.isEmpty) set("password", creds.password)
                 set("jaasConfigurationName", creds.jaasConfigurationName)
             case other =>
                 throw new DatrisException("Unsupported SQL Server authMethod '" + other + "'")
