@@ -27,10 +27,13 @@ object SqlServerQueryUtil {
     // Not applied when the caller explicitly asks for unlimited (limit < 0).
     private val QUERY_TIMEOUT_SECONDS = 30
 
-    // Write/DDL/exec verbs plus T-SQL statements that read or write outside
-    // the pipeline's database or change the session. INTO blocks
-    // `SELECT ... INTO`, which creates a table; USE would re-point the session
-    // at another database than the pipeline's config.
+    // Write/DDL/exec verbs, ad hoc remote-server access (OPENROWSET,
+    // OPENDATASOURCE, OPENQUERY) and statements that change the session. INTO
+    // blocks `SELECT ... INTO`, which creates a table; USE would re-point the
+    // session's default database. Three-part names (`otherdb.dbo.t`,
+    // `master.sys.sql_logins`) are NOT blocked: what a query can read beyond the
+    // pipeline's database is bounded only by the login's grants, which is why
+    // the destination docs call for a least-privilege login.
     private val BLOCKED_KEYWORDS = Seq(
         "INSERT",
         "UPDATE",

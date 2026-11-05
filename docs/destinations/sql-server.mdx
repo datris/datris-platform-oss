@@ -84,6 +84,34 @@ GRANT CREATE SCHEMA TO datris_loader;
 
 `ALTER` on the schema covers creating tables in it, adding columns on later runs, `TRUNCATE`, and dropping the table when a pipeline is deleted with its data. If you manage tables yourself (`manageTableManually: true`), `SELECT, INSERT, UPDATE, DELETE` on those tables is enough.
 
+### Least-privilege login
+
+Never point the platform secret at `sa` or any other member of `sysadmin`. The read-back query (`query_sqlserver`, the Search tab, `POST /api/v1/query/sqlserver`) connects with the same login the loader uses. It accepts only `SELECT` and `WITH`, but a `SELECT` can name other databases with three-part names such as `otherdb.dbo.customers` or `master.sys.sql_logins`. Anything the login can read, an agent with `query:sqlserver` can read too. Only the login's grants limit cross-database reads, so give Datris a login that can see nothing outside its own database:
+
+```sql
+-- In master (on Azure SQL: connected to the master database)
+CREATE LOGIN datris_loader WITH PASSWORD = '<strong password>';
+-- Not a member of sysadmin, securityadmin or any other server role,
+-- and no CONTROL SERVER / VIEW ANY DEFINITION / VIEW SERVER STATE grants.
+
+-- In the one database the pipelines load into
+USE datris;
+CREATE USER datris_loader FOR LOGIN datris_loader;
+GRANT CREATE TABLE TO datris_loader;
+GRANT ALTER, SELECT, INSERT, UPDATE, DELETE ON SCHEMA::dbo TO datris_loader;
+```
+
+That is the narrowest grant: one schema in one database. If pipelines load several schemas of the database, the fixed database roles are a simpler alternative. They still cover only that database:
+
+```sql
+USE datris;
+ALTER ROLE db_ddladmin ADD MEMBER datris_loader;
+ALTER ROLE db_datawriter ADD MEMBER datris_loader;
+ALTER ROLE db_datareader ADD MEMBER datris_loader;
+```
+
+Do not create a user for this login in any other database. A login with no user in another database cannot read that database's tables through a three-part name. The read-back and typing features need nothing beyond these grants: `SELECT` covers queries and `ALTER` on the schema covers retyping columns after load. On Azure SQL, a contained database user (`CREATE USER datris_loader WITH PASSWORD = '...'` in the user database, no server login) keeps the principal inside one database entirely.
+
 ## Create the platform secret in Datris
 
 On **Configuration → Secrets → Platform**, create a secret (for example `sqlserver`). `host` is always required; `authMethod` selects the other fields.
