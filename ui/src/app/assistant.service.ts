@@ -20,6 +20,12 @@ export interface AssistantInit {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  /** Assistant only: the question card shown on that turn. The server replays
+   *  it as the `ask_user` tool call and result the model saw live, so a past
+   *  card is never represented as prose the model could copy as text.
+   *  `submitted` says whether the next user message is the card's
+   *  `header: answer` lines or a reply typed in chat. */
+  askUser?: { questions: AskUserQuestion[]; submitted: boolean };
 }
 
 /** Metadata for a file staged via POST /api/v1/assistant/attachment. The raw

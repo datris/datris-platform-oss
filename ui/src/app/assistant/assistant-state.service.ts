@@ -88,26 +88,15 @@ export function askUserAnswer(au: AskUserState, index: number): string {
   return parts.join(', ');
 }
 
-/** How a question card appears in the outbound chat history. A card-only
- *  turn has no text, and without this the model never sees what it asked
- *  when the answers arrive. Written as a bracketed tool-call record, not as
- *  prose questions, so the model does not mimic it as text on a later turn
- *  (it must call ask_user again). `submitted` says whether the next user
- *  message is the card's `header: answer` lines or a reply typed in chat.
- *  Not shown in the UI. */
-export function describeAskUserForHistory(questions: AskUserQuestion[], submitted: boolean): string {
-  const lines = ['', '', '[Tool call: ask_user — question card shown to the user; not prose]', '[Card questions:'];
-  for (const q of questions || []) {
-    const opts = (q.options || []).map(o => o.description ? `${o.label} (${o.description})` : o.label).join('; ');
-    lines.push(opts
-      ? `  - ${q.header} | ${q.question} | options: ${opts}; Other | ${q.multiSelect ? 'multi-select' : 'single-select'}`
-      : `  - ${q.header} | ${q.question} | free text`);
-  }
-  lines.push(']');
-  lines.push(submitted
-    ? '[The user submitted the card; their answers follow as `header: answer` lines.]'
-    : '[The user replied in chat instead of submitting the card; read their reply as prose.]');
-  return lines.join('\n') + '\n';
+/** How a question card travels in the outbound chat history: as data on the
+ *  assistant message (`ChatMessage.askUser`), which the server replays as the
+ *  `ask_user` tool call and result the model saw live. A card-only turn has
+ *  no text, and without this the model never sees what it asked when the
+ *  answers arrive. It used to be a bracketed text record; the model copied
+ *  that record back as prose on later turns instead of calling the tool, so
+ *  the card is never shown to the model as text. Not shown in the UI. */
+export function askUserForHistory(au: AskUserState): { questions: AskUserQuestion[]; submitted: boolean } {
+  return { questions: au.questions, submitted: !!au.submitted };
 }
 
 /** One `Header: answer` line per question — the text posted as the user's
@@ -345,15 +334,17 @@ export class AssistantStateService {
       } else if (t === assistantTurn) {
         continue;
       } else {
-        // Text segments, plus a plain description of any question card: a
+        // Text segments, plus any question card as structured data: a
         // card-only turn has no text, and without this the model never sees
-        // that it already asked (or what), so it re-asks the same card.
+        // that it already asked (or what), so it re-asks the same card. The
+        // server replays the card as the tool call it was, never as text.
         const visible = t.segments
-          .map(s => s.kind === 'text' ? (s as TextSegment).text
-            : (s.kind === 'tool' && s.askUser) ? describeAskUserForHistory(s.askUser.questions, s.askUser.submitted)
-            : '')
+          .map(s => s.kind === 'text' ? (s as TextSegment).text : '')
           .join('');
-        if (visible.trim().length > 0) {
+        const card = t.segments.find(s => s.kind === 'tool' && !!(s as ToolCard).askUser) as ToolCard | undefined;
+        if (card?.askUser) {
+          messages.push({ role: 'assistant', content: visible, askUser: askUserForHistory(card.askUser) });
+        } else if (visible.trim().length > 0) {
           messages.push({ role: 'assistant', content: visible });
         }
       }

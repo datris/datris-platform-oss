@@ -81,7 +81,7 @@ object AgentLoop {
 
     /** What the model sees after a question card is shown; the loop then ends
       * so the user can answer. */
-    private val AskUserWaitingText: String =
+    private[datris] val AskUserWaitingText: String =
         "Question card displayed to the user. Their answers arrive as the next user message as `header: answer` lines; they may also reply in prose. Wait for their reply."
 
     private val AskUserMaxQuestions: Int = 4
@@ -132,7 +132,8 @@ object AgentLoop {
         cancelled: () => Boolean,
         sink: LoopEvent => Unit,
         attachments: Map[String, (String, Array[Byte])] = Map.empty,
-        execute: (String, JsonObject) => String = null
+        execute: (String, JsonObject) => String = null,
+        messageBlocks: List[(String, List[AIContentBlock])] = null
     ): Unit = {
         // Tool dispatch. Defaults to the MCP catalog; the Configuration chat
         // passes its own executor (Datris-defined tools, confirmation tokens).
@@ -141,9 +142,14 @@ object AgentLoop {
 
         // Materialize the initial message list as content-block messages. We
         // grow it as iterations produce assistant turns + tool_result user turns.
-        var messages: List[(String, List[AIContentBlock])] = userMessages.toList.map {
-            case (role, text) => (role, List(AIContentBlock.TextBlock(text)))
-        }
+        // A caller that already has content blocks (the Assistant replays past
+        // question cards as tool_use/tool_result pairs) passes `messageBlocks`
+        // and they are used as-is.
+        var messages: List[(String, List[AIContentBlock])] =
+            if (messageBlocks != null) messageBlocks
+            else userMessages.toList.map {
+                case (role, text) => (role, List(AIContentBlock.TextBlock(text)))
+            }
 
         // Convert MCP tool definitions to Anthropic's {name, description, input_schema}
         // shape. MCP already uses inputSchema (camelCase) — we just rename to input_schema
@@ -319,7 +325,7 @@ object AgentLoop {
       * with a non-empty header (clipped to 12 chars, then trimmed), a non-empty question,
       * 2-8 options with non-empty labels (description defaults to ""), and
       * `multiSelect` defaulting to false. Left carries the validation message. */
-    private[util] def askUserQuestionsOf(input: JsonObject): Either[String, JsonArray] = {
+    private[datris] def askUserQuestionsOf(input: JsonObject): Either[String, JsonArray] = {
         def str(o: JsonObject, key: String): String = {
             val e = o.get(key)
             if (e == null || e.isJsonNull || !e.isJsonPrimitive) "" else e.getAsString.trim

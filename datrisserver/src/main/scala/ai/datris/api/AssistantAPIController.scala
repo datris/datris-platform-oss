@@ -8,6 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
 import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, DestinationAvailabilityUtil, MCPClient, SecretsUtil, TapBudgets, TapPromptInjector}
+import ai.datris.util.aiutil.AIStreaming.AIContentBlock
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -58,6 +59,63 @@ object AssistantAPIController {
       * also reaches OpenAI as `parameters`. On the companion so a spec can
       * read it (same seam as [[KeepOrScratchRule]]).
       */
+    /** Turn the UI's chat history into content-block messages. A plain message
+      * is one text block. An assistant message carrying `askUser` — the question
+      * card shown on that turn, as `{questions, submitted}` — is replayed as the
+      * `ask_user` tool_use block the model emitted, followed by the tool_result
+      * the live loop recorded, merged into the next user message so the
+      * tool_use/tool_result pairing holds. The model then sees a past card the
+      * same way it saw it when it called the tool, not as prose it could copy
+      * into a later turn as text. A malformed `askUser` falls back to the text
+      * alone. */
+    private[datris] def historyToBlocks(messagesArr: JsonArray): List[(String, List[AIContentBlock])] = {
+        val out = scala.collection.mutable.ListBuffer.empty[(String, List[AIContentBlock])]
+        var pendingResult: Option[AIContentBlock] = None
+        messagesArr.asScala.zipWithIndex.foreach { case (el, i) =>
+            val m = el.getAsJsonObject
+            val role = if (m.has("role") && !m.get("role").isJsonNull) m.get("role").getAsString else "user"
+            val content = if (m.has("content") && !m.get("content").isJsonNull) m.get("content").getAsString else ""
+            if (role == "assistant") {
+                // Two assistant turns in a row cannot happen, but if a card went
+                // unanswered keep the pairing well-formed rather than drop it.
+                pendingResult.foreach(r => out += (("user", List(r))))
+                pendingResult = None
+                val card: Option[(JsonArray, Boolean)] =
+                    if (m.has("askUser") && m.get("askUser").isJsonObject) {
+                        val au = m.getAsJsonObject("askUser")
+                        val submitted = au.has("submitted") && !au.get("submitted").isJsonNull &&
+                            au.get("submitted").isJsonPrimitive && au.get("submitted").getAsBoolean
+                        AgentLoop.askUserQuestionsOf(au) match {
+                            case Right(questions) => Some((questions, submitted))
+                            case Left(msg) =>
+                                LoggerFactory.getLogger(classOf[AssistantAPIController]).warn("Ignoring malformed askUser on history message " + i + ": " + msg)
+                                None
+                        }
+                    } else None
+                card match {
+                    case Some((questions, submitted)) =>
+                        val id = "ask_user_history_" + i
+                        val input = new JsonObject()
+                        input.add("questions", questions)
+                        val text: List[AIContentBlock] =
+                            if (content.trim.nonEmpty) List(AIContentBlock.TextBlock(content)) else Nil
+                        out += (("assistant", text :+ AIContentBlock.ToolUseBlock(id, AgentLoop.SyntheticAskUserTool, input)))
+                        val note =
+                            if (submitted) "The user submitted the card; their answers follow as `header: answer` lines."
+                            else "The user replied in chat instead of submitting the card; read their reply as prose."
+                        pendingResult = Some(AIContentBlock.ToolResultBlock(id, AgentLoop.AskUserWaitingText + " " + note, isError = false))
+                    case None =>
+                        out += (("assistant", List[AIContentBlock](AIContentBlock.TextBlock(content))))
+                }
+            } else {
+                out += (("user", pendingResult.toList :+ AIContentBlock.TextBlock(content)))
+                pendingResult = None
+            }
+        }
+        pendingResult.foreach(r => out += (("user", List(r))))
+        out.toList
+    }
+
     private[datris] def syntheticAskUserToolDef(): JsonObject = {
         def strProp(desc: String): JsonObject = {
             val o = new JsonObject()
@@ -391,18 +449,15 @@ class AssistantAPIController {
     }
 
     private def runChat(apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
-        // Parse request body: { messages: [{role, content}], maxIterations?: Int }.
+        // Parse request body: { messages: [{role, content, askUser?}], maxIterations?: Int }.
         val req = JsonParser.parseString(body).getAsJsonObject
         val messagesArr = req.getAsJsonArray("messages")
         if (messagesArr == null || messagesArr.size() == 0)
             throw new DatrisException("Request body must include a non-empty `messages` array")
 
-        val userMessages: List[(String, String)] = messagesArr.asScala.toList.map { el =>
-            val m = el.getAsJsonObject
-            val role = if (m.has("role")) m.get("role").getAsString else "user"
-            val content = if (m.has("content")) m.get("content").getAsString else ""
-            (role, content)
-        }
+        // Content-block history: plain text per message, and each past question
+        // card replayed as the `ask_user` tool call the model made on that turn.
+        val historyMessages: List[(String, List[AIContentBlock])] = AssistantAPIController.historyToBlocks(messagesArr)
 
         // Resolve any files the user dropped into this turn. The UI staged the
         // bytes server-side and sends just the handles here; we look each one
@@ -421,9 +476,9 @@ class AssistantAPIController {
             attachmentIds.flatMap(id => AttachmentStore.get(id, tenantEnv))
         val attachmentMap: Map[String, (String, Array[Byte])] =
             resolvedAttachments.map(a => a.id -> (a.filename, a.bytes)).toMap
-        val effectiveMessages: List[(String, String)] =
-            if (resolvedAttachments.isEmpty) userMessages
-            else appendAttachmentDescriptor(userMessages, buildAttachmentDescriptor(resolvedAttachments))
+        val effectiveMessages: List[(String, List[AIContentBlock])] =
+            if (resolvedAttachments.isEmpty) historyMessages
+            else appendAttachmentDescriptor(historyMessages, buildAttachmentDescriptor(resolvedAttachments))
 
         val maxIterations: Int =
             if (req.has("maxIterations") && !req.get("maxIterations").isJsonNull) req.get("maxIterations").getAsInt
@@ -466,7 +521,8 @@ class AssistantAPIController {
         try AgentLoop.run(
                 aiConfig = aiConfig,
                 system = systemPrompt,
-                userMessages = effectiveMessages,
+                userMessages = Nil,
+                messageBlocks = effectiveMessages,
                 toolDefs = toolDefs,
                 apiKey = uiKey,
                 enableThinking = env.extendedThinking,
@@ -641,7 +697,7 @@ class AssistantAPIController {
             "- **Partial answers are not full answers.** If you asked N clarifying questions and the user answered K of them, the remaining N-K are still pending. Repeat the unanswered ones on a new `ask_user` card and wait — do not infer them from context, the user's tone, or the most popular choice in your training data. Only proceed once every open question is closed or the user has explicitly told you to pick a default.\n"
         )
         sb.append(
-            "- **Clarifying questions go on a question card.** Whenever you need answers from the user before proceeding, call `ask_user` instead of writing a numbered list — for closed choices (which source, which schedule, which destination, append vs latest, a scope preset) AND for open-ended ones (names, locations, free-form filters, lists of values). Offer 2-8 options whenever you can name sensible ones (a time of day: 6:00 AM, noon, 6:00 PM; a cadence; a region); leave options out for a genuinely open-ended question so the card shows a text box. Do not mix a card with prose questions in the same turn, and show at most one card per turn; a plan or summary for the user to confirm may stay in prose alongside the card. The partial-answers rule above applies to card answers too. A `[Tool call: ask_user …]` record in an earlier turn is how a past card appears in the history: for new questions call `ask_user` again, never reproduce the record as text.\n"
+            "- **Clarifying questions go on a question card.** Whenever you need answers from the user before proceeding, call `ask_user` instead of writing a numbered list — for closed choices (which source, which schedule, which destination, append vs latest, a scope preset) AND for open-ended ones (names, locations, free-form filters, lists of values). Offer 2-8 options whenever you can name sensible ones (a time of day: 6:00 AM, noon, 6:00 PM; a cadence; a region); leave options out for a genuinely open-ended question so the card shows a text box. Do not mix a card with prose questions in the same turn, and show at most one card per turn; a plan or summary for the user to confirm may stay in prose alongside the card. The partial-answers rule above applies to card answers too. Earlier cards appear in the history as your own `ask_user` tool calls and their results; for new questions call `ask_user` again.\n"
         )
         sb.append(
             "- If the user says \"use a sensible default\" or \"you pick,\" choose ONE obviously-placeholder value so they can verify the shape works, and tell them plainly that it's a placeholder. Do not pad the placeholder with a recognizable canonical list.\n"
@@ -757,10 +813,13 @@ class AssistantAPIController {
     /** Append the attachment descriptor to the user's latest message so the
       * model sees the dropped file(s) in context. Falls back to a fresh user
       * turn if (unexpectedly) the conversation doesn't end on a user message. */
-    private def appendAttachmentDescriptor(msgs: List[(String, String)], descriptor: String): List[(String, String)] = {
+    private def appendAttachmentDescriptor(
+        msgs: List[(String, List[AIContentBlock])],
+        descriptor: String
+    ): List[(String, List[AIContentBlock])] = {
         msgs.lastIndexWhere(_._1 == "user") match {
-            case -1 => msgs :+ ("user", descriptor)
-            case i => msgs.updated(i, (msgs(i)._1, msgs(i)._2 + "\n\n" + descriptor))
+            case -1 => msgs :+ (("user", List[AIContentBlock](AIContentBlock.TextBlock(descriptor))))
+            case i => msgs.updated(i, (msgs(i)._1, msgs(i)._2 :+ AIContentBlock.TextBlock("\n\n" + descriptor)))
         }
     }
 
