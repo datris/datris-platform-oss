@@ -86,7 +86,7 @@ object AgentLoop {
 
     private val AskUserMaxQuestions: Int = 4
     private val AskUserMinOptions: Int = 2
-    private val AskUserMaxOptions: Int = 4
+    private val AskUserMaxOptions: Int = 8
     private val AskUserMaxHeader: Int = 12
 
     /** What the model sees after a secret form is shown; the loop then ends so
@@ -317,7 +317,7 @@ object AgentLoop {
 
     /** Validate and normalise an `ask_user` tool input: 1-4 questions, each
       * with a non-empty header (clipped to 12 chars, then trimmed), a non-empty question,
-      * 2-4 options with non-empty labels (description defaults to ""), and
+      * 2-8 options with non-empty labels (description defaults to ""), and
       * `multiSelect` defaulting to false. Left carries the validation message. */
     private[util] def askUserQuestionsOf(input: JsonObject): Either[String, JsonArray] = {
         def str(o: JsonObject, key: String): String = {
@@ -341,7 +341,7 @@ object AgentLoop {
             val question = str(q, "question")
             if (question.isEmpty) return Left(s"question $n is missing a non-empty `question`")
             // Options are optional: none means a free-text question (the card
-            // shows only the text box). When present there must be 2-4 —
+            // shows only the text box). When present there must be 2-8 —
             // a single option is not a choice.
             val oe = q.get("options")
             if (oe != null && !oe.isJsonNull && !oe.isJsonArray) return Left(s"question $n `options` must be an array")

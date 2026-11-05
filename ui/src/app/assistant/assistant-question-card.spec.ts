@@ -330,4 +330,24 @@ describe('Assistant question cards (ask_user)', () => {
     expect(formatAskUserAnswers(c)).toBe('Source: NWS\nLocations: Boston, MA; Denver, CO');
     expect(describeAskUserForHistory(qs, true)).toContain('Locations | Which places should it cover? | free text');
   });
+
+  it('a seven-option question renders seven option rows plus the Other input', () => {
+    mount();
+    const labels = ['MongoDB', 'PostgreSQL', 'Object store', 'Snowflake', 'Databricks', 'SQL Server', 'Live Read'];
+    const qs = [{
+      header: 'Destination', question: 'Where should the rows land?', multiSelect: false,
+      options: labels.map(label => ({ label, description: 'd' }))
+    }];
+    state.send('I want a pipeline from a CSV');
+    stream.next({ type: 'ask_user', id: 'toolu_seven', questions: qs });
+    stream.next({ type: 'done' });
+    stream.complete();
+    const c = card('toolu_seven');
+    c.expanded = true;
+    fixture.detectChanges();
+    const rows = Array.from(el.querySelectorAll('.ask-options .ask-option'));
+    expect(rows.length).withContext('every option is its own row').toBe(7);
+    expect(rows.map(r => (r.querySelector('.ask-option-label')?.textContent || '').trim())).toEqual(labels);
+    expect(el.querySelectorAll('.ask-other').length).withContext('the Other input is still shown').toBe(1);
+  });
 });

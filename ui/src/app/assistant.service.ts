@@ -38,7 +38,7 @@ export interface StagedAttachment {
  *  loop emits these in order; the component renders each one into the
  *  document-style chat layout. */
 /** One question on an `ask_user` card (validated and normalised server-side:
- *  header <= 12 chars, 2-4 options, multiSelect defaulted). */
+ *  header <= 12 chars, 2-8 options, multiSelect defaulted). */
 export interface AskUserQuestion {
   header: string;
   question: string;

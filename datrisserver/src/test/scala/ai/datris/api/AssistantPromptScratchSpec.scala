@@ -154,4 +154,23 @@ class AssistantPromptScratchSpec extends AnyFunSuite {
         assert(!withoutSqlServer.contains("SQL Server"), s"SQL Server offered while unavailable:\n$withoutSqlServer")
         assert(!withoutSqlServer.toLowerCase.contains("sqlserver"), withoutSqlServer)
     }
+
+    // --- Story: question-card-option-cap (plans/stories/question-card-option-cap.md) ---
+    // Every destination (and Live Read) is its own card option, never folded
+    // into another option's description.
+
+    test("destinationDefaultsRule with all six and Live Read makes each destination its own card option") {
+        val text = AssistantAPIController.destinationDefaultsRule(allSix)
+        assert(
+            text.contains(
+                "On a question card, each of these destinations and Live Read is its own option — never fold one into another option's description."
+            ),
+            s"own-option card sentence missing:\n$text"
+        )
+        val noLive = AssistantAPIController.destinationDefaultsRule(withoutObjectStore)
+        assert(
+            noLive.contains("On a question card, each of these destinations is its own option — never fold one into another option's description."),
+            s"own-option card sentence missing without objectstore:\n$noLive"
+        )
+    }
 }
