@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.57.1" description="November 6, 2026">
+  **Security maintenance, and the Assistant's question cards stay cards.**
+
+  - **Security updates.** Two of the server's bundled libraries were updated to patched versions, clearing the open vulnerability reports against the published server image. No behaviour change.
+  - **Question cards no longer turn into text.** In longer Assistant conversations, a follow-up set of clarifying questions could come out as a typed-out description of a card instead of the card itself. The Assistant now remembers earlier cards the same way it remembers its other tool calls, so every set of questions renders as a card you can answer.
+
+  **Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. No configuration changes are required. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
+</Update>
+
 <Update label="v1.57.0" description="November 4, 2026">
   **Microsoft SQL Server joins the structured destinations, with read-back and on-demand typing.**
 
