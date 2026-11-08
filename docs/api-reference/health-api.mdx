@@ -110,3 +110,52 @@ Each candidate store (`qdrant`, `weaviate`, `pgvector`, `milvus`, `chroma`) is a
 ```bash
 curl http://localhost:8080/api/v1/vector-stores/available
 ```
+
+## Doctor Report
+
+```
+GET /api/v1/doctor
+```
+
+Runs the server-side configuration and connectivity checks that [`datris doctor`](/doctor) reports and returns them as JSON. This is the endpoint the `datris doctor` CLI, the Configuration → Doctor page and the `run_doctor` MCP tool call. It is authenticated: the report names environment keys, Vault paths and model ids, so when [API keys](/api-keys) are on the calling key must hold the `config:read` capability. Host-side checks (Docker volumes, container env drift) are only in the CLI.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `mode` | string | `full` | `quick` runs only the cheap, startup-safe checks |
+| `probes` | string | | Comma-separated opt-in probe groups. Currently `ai`, which sends a minimal request through each AI slot (spends a model call) |
+| `cli`, `mcp`, `ui` | string | | Version of the calling client, echoed under `surface.<name>` and compared with the server for the version-skew check |
+
+### Response
+
+```json
+{
+  "doctorVersion": 1,
+  "ranAt": "2026-11-08T14:05:00Z",
+  "mode": "full",
+  "surface": {"server": "1.57.1", "cli": "1.57.1"},
+  "summary": {"ok": 11, "warn": 1, "error": 0, "skip": 2},
+  "checks": [
+    {
+      "id": "vault.token_ttl",
+      "status": "warn",
+      "severity": "warn",
+      "detail": "Periodic token TTL 720h is under a tenth of its period",
+      "remediation": "Raise max_lease_ttl in the Vault config, recreate the vault container, restart the server",
+      "surface": "server",
+      "ms": 12
+    }
+  ]
+}
+```
+
+`status` is one of `ok`, `warn`, `error`, `skip`. The check ids and what fixes each one are listed in [Doctor → The checks](/doctor#the-checks).
+
+### Example
+
+```bash
+curl -H "x-api-key: $DATRIS_API_KEY" "http://localhost:8080/api/v1/doctor?mode=quick"
+```
+
+**Errors:** `401` when the API key is missing or rejected (`{"error": ...}`); `403` when the key lacks `config:read`.

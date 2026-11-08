@@ -64,9 +64,14 @@ Returns a single tap configuration plus the Python script body from MinIO.
 ## Create or Update Tap
 
 ```
-POST /api/v1/tap
+POST /api/v1/tap?changeNote={note}
 Content-Type: application/json
 ```
+
+**Query parameters:**
+| Parameter | Type | Description |
+|---|---|---|
+| `changeNote` | query | Optional. Free-text note stored as `changeNote` on the definition version this save creates. Shown in `GET /api/v1/tap/versions` and in the Versions panel of the UI. |
 
 **Body:**
 ```json
@@ -207,6 +212,42 @@ Uses AI to generate a Python `fetch()` script from a plain-English description. 
 
 `injectedPrompts` lists the names of the [tap prompt fragments](#tap-prompt-fragments) that were injected into the generation prompt (empty when none matched). `provider` and `model` name the AI provider and model that generated the script.
 
+## Generation Progress
+
+```
+GET /api/v1/tap/generate/status?tap={tapName}
+```
+
+Reports what a blocking `POST /api/v1/tap/generate` call for this tap is currently doing, so a client can show real progress during the 1–3 minute wait. Poll every few seconds while a generate request is in flight.
+
+**Parameters:**
+| Parameter | Type | Description |
+|---|---|---|
+| `tap` | query | Tap name the generate call was made for (required) |
+
+**Response (generation in flight):**
+```json
+{
+  "active": true,
+  "phase": "calling-model",
+  "attempt": 1,
+  "elapsedSeconds": 42,
+  "phaseElapsedSeconds": 42,
+  "provider": "anthropic",
+  "model": "claude-opus-5-5"
+}
+```
+
+| Field | Description |
+|---|---|
+| `active` | `false` when no generation is running for this tap; the other fields are then omitted |
+| `phase` | `calling-model`, `retrying-format` (the model's output failed the format check and is being re-requested) or `storing` |
+| `attempt` | 1-based attempt counter |
+| `elapsedSeconds`, `phaseElapsedSeconds` | Seconds since the generation started, and since the current phase started |
+| `provider`, `model` | The AI provider and model handling the generation |
+
+**Response (idle):** `{"active": false}`
+
 ## Fix Script (AI Diagnosis)
 
 ```
@@ -229,6 +270,116 @@ Uses AI to fix a script based on a diagnosis of what went wrong.
 ```
 
 **Response:** Same format as Generate Script.
+
+## Store Script
+
+```
+POST /api/v1/tap/script
+Content-Type: application/json
+```
+
+Stores a (typically hand-edited) Python script and, when the tap already exists, repoints the tap at it. The storage backend is resolved in order: an explicit `storage` in the body, else the existing tap's current backend (an existing tap never switches silently), else the tenant default — the [code repository](/tap-github-storage) when one is enabled, built-in object storage otherwise.
+
+**Body:**
+```json
+{
+  "tapName": "stock-prices-tap",
+  "script": "import requests\n\ndef fetch():\n    ...",
+  "storage": "github",
+  "baseCommitSha": "9fceb02a1c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tapName` | string | Yes | Tap identifier. The tap does not have to exist yet; storing for a new name only writes the script and returns its reference. |
+| `script` | string | Yes | Python script body to store. |
+| `storage` | string | No | Explicit backend: `minio` (built-in object storage) or `github` (code repository). |
+| `baseCommitSha` | string | No | Repository storage only — the commit the editor loaded the script at. If the file changed in the repository since, the write is refused with **HTTP 409** instead of overwriting it. |
+| `oldScriptPath` | string | No | Ignored. An existing tap's previous object is replaced from the tap's stored script reference. |
+
+**Response:**
+```json
+{
+  "scriptPath": null,
+  "storage": "github",
+  "scriptRepoPath": "taps/stock-prices-tap.py",
+  "scriptCommitSha": "b7e23ec29af22b0b4e41da31e868d57226121c84"
+}
+```
+
+`scriptPath` is set for built-in storage; `scriptRepoPath` and `scriptCommitSha` for the repository. Replacing an existing tap's script is a definition edit and lands as a new definition version (`GET /api/v1/tap/versions`) naming who made it; storing identical bytes is a plain write.
+
+**Errors:** **HTTP 409** when `baseCommitSha` is stale (pull the latest, reapply the edit, retry), or when the tap carries a `cronExpression` and the new bytes have not passed a `mode=test` run — the test-before-cron rule, evaluated before anything is written (see [Create or Update Tap](#create-or-update-tap)). **HTTP 500** when `tapName` or `script` is missing.
+
+## Pull Script from Repository
+
+```
+POST /api/v1/tap/script/pull
+Content-Type: application/json
+```
+
+For a repository-backed tap, re-reads the script file at the configured branch head and reports whether it differs from the content at the tap's pinned commit. Drift is decided by comparing the file's content, not the commit shas — another tap's save moves the shared branch head without touching this file. With `apply: "true"`, a drifted tap is advanced to the head commit as a versioned edit (`pulled external repo edits (<sha>)`).
+
+**Body:**
+```json
+{
+  "tapName": "stock-prices-tap",
+  "apply": "true"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tapName` | string | Yes | Tap identifier. Must store its script in the code repository. |
+| `apply` | string | No | `"true"` to move the tap's pinned commit to the branch head when drifted. Anything else only reports. |
+
+**Response:**
+```json
+{
+  "found": true,
+  "drifted": true,
+  "headCommitSha": "0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d",
+  "pinnedCommitSha": "b7e23ec29af22b0b4e41da31e868d57226121c84",
+  "script": "import requests\n\ndef fetch():\n    ...",
+  "applied": true
+}
+```
+
+| Field | Description |
+|---|---|
+| `found` | `false` when the file no longer exists at the branch head (then `drifted` is `false` and nothing else is returned) |
+| `drifted` | The branch-head content differs from the pinned commit's content. An unreadable pin counts as drifted so the caller still gets a runnable copy |
+| `script` | Present only when drifted — the branch-head source |
+| `applied` | Present only when drifted and `apply` was `"true"` |
+
+**Errors:** **HTTP 500** with `{"error": ...}` when the tap does not exist or does not store its script in a code repository.
+
+## Migrate Script Storage
+
+```
+POST /api/v1/tap/migrate-storage
+Content-Type: application/json
+```
+
+Moves a tap's script between backends: reads it from the current backend, writes it to the target, and saves the tap as a versioned edit (`moved script storage to <target>`). Idempotent — a tap already on the target is returned unchanged. Built-in objects are never deleted on migrate-out, because version snapshots still pin them.
+
+**Body:**
+```json
+{
+  "tapName": "stock-prices-tap",
+  "target": "github"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tapName` | string | Yes | Tap identifier. |
+| `target` | string | Yes | `github` (code repository) or `minio` (built-in object storage). |
+
+**Response:** The migrated tap configuration (same shape as [Get Tap](#get-tap), without `script`), with `scriptStorage`, `scriptPath`, `scriptRepoPath` and `scriptCommitSha` updated.
+
+**Errors:** **HTTP 400** with `{"error": ...}` for an unknown tap, an invalid `target`, or a tap whose current script cannot be read.
 
 ## Test Tap
 
@@ -506,6 +657,22 @@ Returns the last 50 run log entries for a tap, sorted by most recent first.
 | `scriptCommitSha` | Repo-backed taps only — the commit the run's script was read at; `null` for MinIO-stored scripts |
 | `pipelineRollup` | Downstream pipeline job rollup (same shape as `rollup` in the [Status API](/api-reference/status-api)) for runs that have a `publisherToken`; `null` otherwise |
 
+## Run History (All Taps)
+
+```
+GET /api/v1/tap/logs/all?since={epochMillis}&limit={n}
+```
+
+Returns run log entries across every tap, newest window first. This feeds the Ops activity dashboard's tiles and charts; for one tap's history use [Run History](#run-history).
+
+**Parameters:**
+| Parameter | Type | Description |
+|---|---|---|
+| `since` | query | Optional. Epoch milliseconds; only runs created at or after this instant are returned. Default: now minus 30 days. |
+| `limit` | query | Optional. Maximum entries. Default 2000; values above 5000 are clamped to 5000, and `0` or a negative value means the default. |
+
+**Response:** JSON array of run log entries in the same shape as [Run History](#run-history), except that `pipelineRollup` is not included (the rollup is only loaded for the per-tap view). Malformed rows are skipped rather than failing the request.
+
 ## Document Ledger
 
 Document taps track which files they've already processed in a **ledger** — a MongoDB collection keyed by `{tapName}|{uri}`. See [Document Taps → The Document Ledger](/taps#the-document-ledger) for the concept; these endpoints manage it.
@@ -554,6 +721,71 @@ Removes every entry for the tap plus all staged MinIO objects. The next run re-i
 Also triggered automatically when:
 - The tap is deleted (`DELETE /api/v1/tap`).
 - The target pipeline's data is cleared (`DELETE /api/v1/pipeline?pipeline=X&deleteData=true`). Without this, the tap would skip docs it already "processed" and the pipeline would stay empty.
+
+## Incremental-Sync State
+
+Incremental taps save a bookmark (cursor, high-water mark, page token) after each successful run; the next run receives it in the `DATRIS_TAP_STATE` environment variable. See [Incremental Sync](/taps#incremental-sync-state) for the concept and the script-side contract; these endpoints read, overwrite and reset the stored object. Its shape is defined by the tap's own script, and committed state is capped at 64 KB.
+
+### Read state
+
+```
+GET /api/v1/tap/state?name={tapName}
+```
+
+**Response:**
+```json
+{
+  "tap": "stock-prices-tap",
+  "state": {"cursor": "2026-04-20"},
+  "updatedAt": "2026-04-20 14:05:00 UTC",
+  "updatedBy": "stock-prices-tap|2026-04-20 14:05:00 UTC"
+}
+```
+
+`state` is `null` (and `updatedAt` / `updatedBy` are omitted) when the tap has never committed state — a non-incremental tap, or no successful run yet. `updatedBy` is the committing run's key (`tapName|runTime`), or `manual` for an API or UI override.
+
+### Overwrite state
+
+```
+POST /api/v1/tap/state
+Content-Type: application/json
+```
+
+Sets the object the next run receives — for example, rewind a cursor so a window is re-fetched. `{}` is a valid "reset to first-run" value; to remove the state entirely use the DELETE below.
+
+**Body:**
+```json
+{
+  "name": "stock-prices-tap",
+  "state": {"cursor": "2026-04-01"}
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | Yes | Tap name. |
+| `state` | object | Yes | Must be a JSON object. |
+
+**Response:**
+```json
+{
+  "tap": "stock-prices-tap",
+  "state": {"cursor": "2026-04-01"},
+  "message": "State saved. The next run receives it via DATRIS_TAP_STATE."
+}
+```
+
+**Errors:** **HTTP 404** `{"error":"Tap: <name> not found"}`; **HTTP 500** when `name` is missing, `state` is absent, or `state` is not a JSON object.
+
+### Reset state
+
+```
+DELETE /api/v1/tap/state?name={tapName}
+```
+
+Deletes the stored state. The next run sees no `DATRIS_TAP_STATE` and performs a full first-run fetch.
+
+**Response:** `{"message": "State reset for tap: <name>. The next run starts from scratch (full fetch)."}`
 
 ## Available Vector Stores
 

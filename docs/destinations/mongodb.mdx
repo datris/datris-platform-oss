@@ -67,6 +67,23 @@ MongoDB connection credentials are configured globally in `application.yaml` via
 | `truncateBeforeWrite` | no       | `false` | Delete all documents before writing                  |
 | `useTransaction`      | no       | `true`  | Wrap all writes in a MongoDB transaction             |
 
+## Querying from Datris
+
+The Assistant (and any MCP client) can read a MongoDB destination back without leaving Datris. Queries are find-style: a filter and an optional projection, never a write.
+
+| Tool | Purpose |
+|------|---------|
+| `query_mongodb` | Query a collection (`collection`, optional `filter`, `projection`, `limit`, default 20; `-1` returns every document) |
+| `list_mongodb_databases`, `list_mongodb_collections` | Discover databases and collections before querying |
+
+The REST endpoint is `POST /api/v1/query/mongodb` ([Query API](/api-reference/query-api#query-mongodb)); a key needs the `query:mongodb` capability (included in the `read-only` and `reporting` templates). The CLI equivalent is `datris query-mongo <collection> --filter '{...}' --limit 20`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query/mongodb \
+  -H "x-api-key: $DATRIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"collection": "customers", "filter": {"country": "US"}, "limit": 10}'
+```
+
 ## Completion Notification
 
 A pipeline notification is published to ActiveMQ on completion. See [Notifications](/notifications) for details.

@@ -17,7 +17,7 @@ Datris sits beside your warehouse and lake; it doesn't replace them. It runs on-
 
 Your agents already acquire, validate, and load data. Without a control plane, they do it badly: credentials scattered across configs and prompts, the chat log as the only record, generated scripts that lose state when regenerated. Datris puts that work behind one governed surface:
 
-- **One MCP door** — 88 capabilities behind a single [MCP server](/mcp-server) (stdio, SSE, and Streamable HTTP). Claude, Cursor, OpenClaw, and any MCP-compatible agent learn one interface instead of 88 integrations
+- **One MCP door** — 89 capabilities behind a single [MCP server](/mcp-server) (stdio, SSE, and Streamable HTTP). Claude, Cursor, OpenClaw, and any MCP-compatible agent learn one interface instead of 89 integrations
 - **Vault-brokered credentials** — the agent references a secret by name; it never holds a key. Agent-written code runs in an [isolated container](/tap-execution-isolation) with no keys inside
 - **Every run recorded** — job state and row counts for every run, provenance on its rows with stamping on (see [strict mode](/provenance#strict-mode)); every generated script [versioned in git](/tap-github-storage)
 - **Durable state** — pipelines and [sync bookmarks](/taps) live in the platform, not in the agent's context, so a regenerated script picks up where the old one left off
@@ -87,29 +87,37 @@ Self-hosted on proven open-source infrastructure — no proprietary services, no
 | Service | Purpose |
 |---------|---------|
 | **MinIO** | S3-compatible object store for file staging and data output |
+| **PostgreSQL** | Default structured destination, also hosts pgvector for RAG |
 | **MongoDB** | Configuration store, job status tracking, metadata |
 | **ActiveMQ** | File notification queue, pipeline event notifications |
 | **HashiCorp Vault** | Secrets management (database credentials, API keys) |
+| **TEI** | Text Embeddings Inference sidecar (BAAI/bge-m3) — local vector embeddings when you're not using OpenAI embeddings |
 | **Apache Kafka** | Optional streaming source and destination |
-| **Apache Spark** | Local Spark for writing Parquet, ORC, and Iceberg tables to MinIO |
+| **Apache Spark** | Local Spark for writing Parquet, ORC, and Iceberg tables to MinIO / S3 |
+| **Tap runner** | Isolated container that runs AI-generated tap scripts with no platform credentials and no route to internal services |
+| **CodeGen runner** | Second isolated container, built from the same image, that runs AI-generated data-quality and transformation scripts |
+| **MCP server** | Bundled MCP endpoint (SSE on port 3000) for AI agents |
 
 ## Processing Flow
 
 ```
-Source (Data Upload / MinIO Event / Database Pull / Kafka)
+Source (Tap / Data Upload / MinIO Event / Database Pull / Kafka)
   |
   v
 Preprocessor (optional REST endpoint)
   |
   v
+Field Protection (pseudonymize, mask, redact, encrypt, or drop sensitive fields)
+  |
+  v
 Data Quality (AI rules, header validation, schema validation)
   |
   v
-Transformation (AI transformations)
+Transformation (AI transformations, destination schema)
   |
   v
 Destinations (executed in parallel)
-  ├── Object Store (MinIO or AWS S3 - Parquet, ORC)
+  ├── Object Store (MinIO or AWS S3 - Parquet, ORC, Apache Iceberg)
   ├── PostgreSQL (COPY bulk insert)
   ├── MongoDB (document upsert)
   ├── Snowflake (PUT + COPY INTO / MERGE into the user's account)

@@ -14,7 +14,7 @@ When any pipeline stage (data quality, transformation, destination loading) thro
 3. The AI returns a concise explanation of what went wrong and how to fix it
 4. The explanation is written as a separate status entry (`AI Suggested Fix: ...`, with `Diagnosis:` and `Suggested fix:` lines) and logged to the pipeline logs
 
-If the AI call itself fails (rate limit, timeout, etc.), the explanation is skipped with a server log warning — it never causes a secondary failure.
+If the AI call itself fails (rate limit, timeout, a reply that is not the expected JSON), the explanation is skipped: the server logs a warning (`Failed to get AI fix suggestion (best-effort, continuing without it)`, with the exception), no `AI Suggested Fix` entry is written, and the run's error status — already recorded before the suggestion is requested — stands unchanged. The job's outcome is never affected by the suggestion step. When AI is disabled, the step is skipped silently with no warning.
 
 ## Example
 

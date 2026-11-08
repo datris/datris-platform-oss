@@ -45,12 +45,12 @@ object CapabilityInterceptor {
   *
   * Two operating modes, selected by the `CAPABILITY_ENFORCEMENT` env var:
   *
-  *   - `log-only` (default in Phase 1) — never denies. Emits a structured
+  *   - `log-only` — never denies. Emits a structured
   *     log line for every check: `grant`, `would-deny`, `unmapped`, or
   *     `no-key`. The point is to surface what *would* be denied without
   *     breaking traffic, so we can fix mappings before flipping to enforce.
   *
-  *   - `enforce` (Phase 2) — denies disallowed requests with HTTP 403.
+  *   - `enforce` (the default) — denies disallowed requests with HTTP 403.
   *     Existing keys carry the legacy `*:*` capability bundle so nothing
   *     breaks; only keys explicitly issued with scoped capabilities are
   *     constrained.

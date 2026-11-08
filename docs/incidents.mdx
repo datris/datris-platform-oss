@@ -49,6 +49,8 @@ The Agent Policy page shows the current recovery block next to the one recommend
 | Volume anomaly | A pipeline's records in the current 24-hour window are ±60 % vs the previous 24-hour window (with at least 3 runs in that prior window) |
 | Schema drift | A scheduled tap run succeeds but returns a different set of columns than the run before it (added, removed or renamed columns); manual runs never open one |
 
+A failed pipeline job or an exhausted tap retry ladder opens its incident at the moment the run ends. Everything else runs on a periodic **sweep every 5 minutes** (`schedule.incidentSweep`, `300000` ms in `application.yaml` — see the [Scheduling table](/configuration-reference#scheduling)): the sweep raises the stale-tap and volume signals and resumes actions you approved. A signal is therefore noticed within one sweep interval, not instantly.
+
 Guards, all enforced in code: one open incident per resource; a resource whose latest run is healthy never gets one; a cooldown (default 6 h) after a failed or abandoned attempt; a cap on simultaneous open incidents. Volume and schema-drift incidents are **diagnosis-only** by default: the value is the triage, not an action (see [Schema drift incidents](#schema-drift-incidents)).
 
 ## What the agent may do

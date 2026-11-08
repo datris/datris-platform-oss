@@ -7,6 +7,8 @@ The Query API provides REST endpoints for querying every structured destination 
 
 In the web UI, the Search tab's Traditional mode can also query Databricks, Snowflake and SQL Server pipelines (under **Warehouse**): pick the pipeline and run read-only SQL against its destination table through the pipeline's own warehouse or server and credentials.
 
+The two AI endpoints are documented with the Search API, next to the vector search they are usually paired with: [`POST /api/v1/query/natural`](/api-reference/search-api#natural-language-query) turns a plain-English question into SQL and runs it against PostgreSQL, and [`POST /api/v1/ai/answer`](/api-reference/search-api#ai-answer-rag) generates an answer from context you pass in (typically retrieved chunks). This page covers the direct, read-only SQL and document queries against each destination.
+
 ## Query PostgreSQL
 
 Execute a read-only SQL SELECT query against PostgreSQL.

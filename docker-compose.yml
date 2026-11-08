@@ -625,24 +625,9 @@ services:
       # Mirrors the server's USEAPIKEYS: when keys are on, MCP sessions
       # without an x-api-key are rejected instead of silently connecting.
       REQUIRE_API_KEY: ${USE_API_KEYS:-false}
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-http://host.docker.internal:11434}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      QDRANT_HOST: host.docker.internal
-      QDRANT_PORT: "6333"
-      WEAVIATE_HOST: host.docker.internal
-      WEAVIATE_PORT: "8079"
-      WEAVIATE_GRPC_PORT: "50051"
-      MILVUS_HOST: host.docker.internal
-      MILVUS_PORT: "19530"
-      PG_HOST: postgres
-      PG_PORT: "5432"
-      PG_DATABASE: datris
-      PG_USER: postgres
-      PG_PASSWORD: postgres
-      MONGO_URI: mongodb://mongodb:27017
-      MONGO_DATABASE: oss
+      # The MCP server talks only to the Datris REST API; every store is
+      # reached through the server, so it needs no database or vector-store
+      # settings of its own.
     depends_on:
       - datris
     networks:

@@ -43,7 +43,7 @@ Each Vault secret carries its full configuration inline:
 |-------|----------|-------|
 | `provider` | Yes | `anthropic`, `openai`, `azure`, `bedrock`, `grok`, or `ollama` |
 | `endpoint` | Yes (blank OK for bedrock) | API endpoint URL. Azure has no default — use your resource URL, e.g. `https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions`. Bedrock derives its endpoint from the AWS region when blank |
-| `model` | Yes | Model identifier. For Azure this is your **deployment name**; for Bedrock an invokable model id (e.g. `anthropic.claude-sonnet-5`) |
+| `model` | Yes | Model identifier. For Azure this is your **deployment name**; for Bedrock an invokable model id (e.g. `anthropic.claude-opus-5-5`) |
 | `apiKey` | No (not used by ollama or bedrock) | Inline provider API key. The [shared API key store](#shared-api-key-store) is checked first and takes precedence when set. Bedrock authenticates with AWS credentials instead — see the [Bedrock path](#amazon-bedrock-path) |
 | `version` | Optional | API version (Anthropic uses `2023-06-01`) |
 
@@ -279,7 +279,9 @@ When `EMBEDDING_PROVIDER` is unset, the embedding seed follows the keys in `.env
 
 ## Hot Reload
 
-When you save AI configuration from the Configuration UI, the server reloads the `ai-primary` and `codegen` configs from Vault immediately — **no restart required**. The next AI call uses the updated provider, model, and endpoint. The `embedding` config is read from Vault on each request and also requires no restart.
+When you save AI configuration from the Configuration UI, the server reloads the `ai-primary`, `codegen` and `web-search` configs from Vault immediately — **no restart required**. The next AI call uses the updated provider, model, and endpoint. The `embedding` config is read from Vault on each request and also requires no restart.
+
+To confirm which model a save took effect on, open the Assistant: its panel shows the chat provider and model currently in use, read from the `ai-primary` slot when the panel loads (`GET /api/v1/assistant/init` returns `provider`, `model` and `extendedThinking`), for example `Anthropic · claude-opus-5-5 · extended thinking on`. The line is empty when no model is configured, and for an `admin` (or when user auth is off) it links to the Configuration tab.
 
 ## How Configuration Persists
 
@@ -362,7 +364,7 @@ Web search is its own independent service — same model as Embedding. Pick a pr
 | `enabled` | Yes | `true` or `false` |
 | `provider` | Yes | `anthropic` or `openai` (Ollama has no native web search) |
 | `endpoint` | Yes | Provider endpoint — Anthropic Messages or OpenAI Responses |
-| `model` | Yes | Model that runs the search call |
+| `model` | No | Model that runs the search call. Blank uses a fast summarization model for the provider: `claude-sonnet-4-6` for Anthropic, `gpt-5.5` for OpenAI |
 | `apiKey` | Yes | Own key, copied from the right-hand panel based on the chosen provider (mirrors Embedding) |
 | `version` | Optional | API version (Anthropic uses `2023-06-01`) |
 | `maxUses` | Optional | Maximum searches per AI call (default 3) |

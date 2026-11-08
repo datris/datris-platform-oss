@@ -35,8 +35,10 @@ When auto-creating tables, source schema types are mapped to PostgreSQL types as
 | `float`     | `float4`        |
 | `double`    | `float8`        |
 | `string`    | `text`          |
-| `_json`     | `json`          |
-| `_xml`      | `xml`           |
+| field named `_json` \* | `json`  |
+| field named `_xml` \*  | `xml`   |
+
+\* Matched on the field **name**, not its declared type: a field named `_json` or `_xml` (declared `string`, as the JSON and XML ingestion modes produce) always lands as the document column shown, whatever type it declares.
 
 All other types (`int`, `bigint`, `boolean`, `date`, `timestamp`, `decimal(p,s)`, `varchar(n)`, `char(n)`) are passed through to PostgreSQL as-is.
 
@@ -107,6 +109,23 @@ Connection credentials are configured globally in `application.yaml` via `secret
 | `keyFields`           | no       |          | Array of column names for the natural key. Sets a `PRIMARY KEY` constraint on auto-created tables AND switches the load strategy to upsert (`INSERT ... ON CONFLICT DO UPDATE`) when `truncateBeforeWrite` is `false`. See [Primary Key and Upsert](#primary-key-and-upsert). |
 | `useTransaction`      | no       | `true`   | Wrap the COPY in a database transaction          |
 | `options`             | no       |          | Array of additional COPY option strings          |
+
+## Querying from Datris
+
+The Assistant (and any MCP client) can read a PostgreSQL destination back without leaving Datris. Queries run on a read-only connection, so statements that write are rejected by PostgreSQL, and a `LIMIT` is appended when the query has none (unless `limit` is `-1`).
+
+| Tool | Purpose |
+|------|---------|
+| `query_postgres` | Run a `SELECT` (`sql`, optional `limit`, default 100; `-1` returns every row) |
+| `list_postgres_databases`, `list_postgres_schemas`, `list_postgres_tables`, `list_postgres_columns` | Discover databases, schemas, tables and columns before writing a query |
+
+The REST endpoint is `POST /api/v1/query/postgres` ([Query API](/api-reference/query-api#query-postgresql)); a key needs the `query:postgres` capability (included in the `read-only` and `reporting` templates). The CLI equivalent is `datris query "SELECT ..." --limit 100`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query/postgres \
+  -H "x-api-key: $DATRIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM public.customers", "limit": 10}'
+```
 
 ## Completion Notification
 

@@ -56,8 +56,9 @@ laptop, wrong for anything shared. Turn both on for production.
 - **Sessions**: successful login issues an opaque, `SecureRandom`-generated token
   stored in a `datris-session` cookie (`HttpOnly`, `SameSite=Strict`, 8-hour TTL).
   Sessions live in MongoDB with a TTL index that auto-purges expired tokens. The
-  cookie's `Secure` flag is off in the container because TLS is terminated at the
-  nginx edge — keep that reverse proxy in front in production.
+  cookie's `Secure` flag is off by default because TLS is terminated at the
+  reverse proxy; set `SESSION_COOKIE_SECURE=true` in the `datris` service
+  environment when that proxy serves HTTPS, and keep it in front in production.
 - **Authorization / RBAC**: when `USE_USER_AUTH` is enabled, three roles are
   enforced — **admin**, **editor**, **viewer**. The default rule is: any
   logged-in role may read (GET); writes (POST/PUT/PATCH/DELETE) require admin or

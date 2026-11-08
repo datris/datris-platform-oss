@@ -36,8 +36,8 @@ Installing for production? Add `DATRIS_GOVERNED=1` (`curl -fsSL https://get.datr
 
 Trying Datris on a laptop? The default stack runs about ten containers and
 the bundled embedding server (TEI) downloads a 2.2 GB model on first boot.
-None of that is required. Three settings cut it to eight small containers,
-no model download, and roughly 3.5 GB of memory:
+None of that is required. Three settings cut it to nine small containers,
+no model download, and roughly 3 GB of memory at idle:
 
 ```bash
 # .env — or export before `docker compose up`
@@ -170,7 +170,7 @@ docker compose down -v
 docker compose up -d
 ```
 
-**Warning:** `docker compose down -v` is destructive. The `-v` flag removes every Docker volume the project owns (both named volumes and the anonymous volumes the data services create automatically). You will lose:
+**Warning:** `docker compose down -v` is destructive. The `-v` flag removes every Docker volume the project owns (all of them are named volumes; see [Volumes](#volumes)). You will lose:
 
 - **All your pipelines, runs, taps, and metadata** (MongoDB internal `oss` database) and **all data landed in Postgres** (`datris` database)
 - **All Vault secrets** — API keys, database credentials, AI configuration (will be re-seeded from your `.env` on next start, but only the defaults — any UI-edited overrides are gone)
@@ -178,13 +178,13 @@ docker compose up -d
 - **MongoDB destination data**
 - **Queued messages and offsets** in Kafka, Zookeeper, ActiveMQ
 - **The bundled `bge-m3` embedding model** in the `tei-data` volume (will re-download ~2.2 GB on first start)
-- **Cached pip wheels** in the `pip-cache` volume (taps that need extras like `yfinance` will re-download on first run)
+- **Cached pip wheels** in the `pip-cache` volume (used only when taps run in-process with `USE_TAP_RUNNER=false`)
 
 Only run `down -v` if you are certain none of the above matters, e.g. on a brand-new dev machine, after exporting anything you needed, or on a CI runner. **Never run `down -v` on a production or shared instance.**
 
 After `docker compose up -d`, `vault-init.sh` re-seeds the AI configuration secrets from your `.env`, MinIO buckets are recreated, Postgres starts empty, and the bundled embedding service re-downloads `bge-m3` (a few minutes one-time).
 
-> **Note for production deployments:** the `deploy/docker-compose.prod.yml` file used by dedicated production installs uses bind mounts to host directories under `/data/*` instead of Docker volumes, so `docker compose -f docker-compose.prod.yml down -v` does **not** wipe the data — the host directories survive. To reset a prod install, you'd need to also delete the relevant `/data/*` directories on the host, which is a much riskier operation and not recommended outside of disaster recovery.
+> **Note for production deployments:** the optional `deploy/docker-compose.prod.yml` layout uses bind mounts to host directories under `/data/*` instead of Docker volumes, so `docker compose -f docker-compose.prod.yml down -v` does **not** wipe the data — the host directories survive. To reset a prod install, you'd need to also delete the relevant `/data/*` directories on the host, which is a much riskier operation and not recommended outside of disaster recovery.
 
 ## Volumes
 
@@ -197,11 +197,11 @@ All stateful services use named Docker volumes, created automatically by `docker
 | `minio-data` | minio `/data` | Object storage — uploads, configs, pipeline output |
 | `vault-data` | vault `/vault/file` | Secrets (persist across restarts) |
 | `tei-data` | tei `/data` | The bundled embedding model (~2.2 GB) |
-| `pip-cache` | datris `/root/.cache/pip` | Caches downloaded pip wheel files so tap-installed packages don't have to be re-downloaded |
+| `pip-cache` | datris `/root/.cache/pip` | Caches pip wheels for tap extras when taps run in-process (`USE_TAP_RUNNER=false`); the isolated tap runner does not use it |
 
 Because these are **named** volumes, they re-attach whenever a container is recreated or a store is disabled (`POSTGRES_ENABLED=0`) and later re-enabled — disable → re-enable is lossless. If you upgraded from a version where the data services used anonymous volumes, the first `up -d` after this change starts the stores on fresh named volumes; the installer-era data lives on in the old anonymous volumes (visible via `docker volume ls -f dangling=true`) and can be copied across with `docker run --rm -v <old>:/src:ro -v <new>:/dst alpine cp -a /src/. /dst/`.
 
-Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`, `boto3`, `google-cloud-storage`, `azure-storage-blob`, `openpyxl`, `pyyaml`, `python-dateutil`, `pytz`) are baked into the image. When a tap needs something extra (e.g. `yfinance`), pip downloads it on first run (~30 seconds) and caches the wheel in `pip-cache`. Subsequent container restarts re-run `pip install` for those extras, but the install is near-instant because the wheel is already cached locally.
+Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`, `boto3`, `google-cloud-storage`, `azure-storage-blob`, `openpyxl`, `pyyaml`, `python-dateutil`, `pytz`) are baked into the image. When a tap needs something extra (e.g. `yfinance`), the isolated tap runner (the Compose default) installs it into a throwaway environment for that run — see [Tap Execution & Isolation](/tap-execution-isolation). With `USE_TAP_RUNNER=false` the in-process path installs it on first run (~30 seconds) and caches the wheel in `pip-cache`, so later installs are near-instant.
 
 ## Services
 
@@ -210,16 +210,18 @@ Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedpar
 | Pipeline Server | 8080 | REST API and data processing |
 | Pipeline UI | 4200 | Web dashboard |
 | MCP Server | 3000 | AI agent integration (MCP protocol) |
-| MinIO | 9000 (API), 9001 (Console) | Object storage |
-| MongoDB | 27017 | Configuration and status store |
+| MinIO | 9000 (API), 9001 (Console) — localhost only | Object storage |
+| MongoDB | 27017 — localhost only | Configuration and status store |
 | ActiveMQ | 61616 (broker), 8161 (console) | Message queue and notifications |
-| Vault | 8200 | Secrets management |
-| PostgreSQL | 5432 | Database destination + pgvector — **optional** (`POSTGRES_ENABLED=0` to disable, or point at an external Postgres) |
+| Vault | 8200 — localhost only | Secrets management |
+| PostgreSQL | 5432 — localhost only | Database destination + pgvector — **optional** (`POSTGRES_ENABLED=0` to disable, or point at an external Postgres) |
 | TEI | 11434 | Bundled embedding server — **optional** (`TEI_ENABLED=0` to disable; recommended alternative: OpenAI embeddings) |
 | Qdrant | 6333/6334 | Vector store — **opt-in** (`COMPOSE_PROFILES=qdrant`) |
 | Weaviate | 8079, 50051 | Vector store — **opt-in** (`COMPOSE_PROFILES=weaviate`) |
 | Chroma | 8000 | Vector store — **opt-in** (`COMPOSE_PROFILES=chroma`) |
 | Kafka | 9092 | Streaming — **opt-in** (`COMPOSE_PROFILES=kafka`; includes Zookeeper on 2181 and Kafka UI on 8085) |
+
+Ports marked **localhost only** are bound to `127.0.0.1` in `docker-compose.yml`, so MinIO, MongoDB, PostgreSQL and Vault are reachable from the Docker host but not from other machines. Every other port listed binds to all interfaces.
 
 <Note>
 **Optional vs opt-in.** Services that ship enabled (Postgres, TEI) are disabled with an explicit `*_ENABLED=0` in `.env` — an `.env` without these lines keeps them running, so upgrades never silently drop a service you were using. Brand-new services (vector stores, Kafka) activate via `COMPOSE_PROFILES`. Datris bundles `kafka-clients`, so pipelines that talk to an **external** Kafka don't need the local broker at all — set `KAFKA_BOOTSTRAP_SERVERS` in `.env` instead. One teardown nuance: `docker compose down` ignores inactive profiles, so for a full teardown use `docker compose --profile "*" down`.
@@ -298,15 +300,17 @@ The `datris` service runs a Spring Boot JVM. Its heap is governed by the `JAVA_O
 JAVA_OPTS=-Xms512m -Xmx2g   # default
 ```
 
-That default is the same for every install size. What changes the memory footprint is which optional services run alongside it, measured on a live stack:
+That default is the same for every install size. What changes the memory footprint is which optional services run alongside it:
 
-| Install | Running services | Memory (approx.) |
-|---|---|---|
-| [Minimal](#minimal-install) (`TEI_ENABLED=0`, `POSTGRES_ENABLED=0`) | datris, MongoDB, MinIO, ActiveMQ, Vault, UI, MCP server, tap runner | 3.5 GB |
-| Default | minimal + Postgres | 4 GB |
-| Default + bundled TEI embedder | the full stack; TEI alone uses about 3 GB | 7 GB |
+| Install | Running services | Configured limits | Measured (idle) |
+|---|---|---|---|
+| [Minimal](#minimal-install) (`TEI_ENABLED=0`, `POSTGRES_ENABLED=0`) | datris, MongoDB, MinIO, ActiveMQ, Vault, UI, MCP server, tap runner, CodeGen runner | 5 GB | 3 GB |
+| Default | minimal + Postgres | 5 GB | 3 GB |
+| Default + bundled TEI embedder | the full stack | 5 GB + TEI (unlimited) | 8 GB (TEI alone about 5 GB) |
 
-So plan on **4 GB of Docker memory** for a minimal or default install without TEI, and **8 GB** when the bundled embedding server runs. Override `JAVA_OPTS` in your `.env` file on larger hosts if you hit `OutOfMemoryError` during heavy ingestion, embedding batches, or large query results. Suggested sizings:
+**Configured limits** is the sum of the memory ceilings set in `docker-compose.yml` — the datris JVM heap (`-Xmx2g`), `datris-tap-runner` (`mem_limit` 2 GB) and `datris-codegen-runner` (`mem_limit` 1 GB); every other service runs without a limit, so it is not a hard cap on the stack. **Measured** is `docker stats` resident memory of an idle stack (datris about 1.4 GB, Vault 0.4, MongoDB 0.4, ActiveMQ 0.3, MinIO 0.2, UI + MCP server 0.1, the two runners under 0.1 between them, Postgres under 0.1, TEI about 5 GB); actual use sits between the two, since the runners only approach their limits while scripts run.
+
+So plan on **4 GB of Docker memory** for a minimal or default install without TEI (the measured 3 GB plus room for the JVM to fill its 2 GB heap), and **at least 8 GB** when the bundled embedding server runs. Override `JAVA_OPTS` in your `.env` file on larger hosts if you hit `OutOfMemoryError` during heavy ingestion, embedding batches, or large query results. Suggested sizings:
 
 | Host RAM | Suggested `-Xmx` |
 |---|---|
@@ -352,7 +356,7 @@ For development or contributing:
 
 ### Prerequisites
 
-- Java 17+
+- JDK 17 (the build targets `--release 17`; newer JDKs are not tested)
 - [SBT](https://www.scala-sbt.org/download.html)
 
 ### Build and run

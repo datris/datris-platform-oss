@@ -58,6 +58,7 @@ __pycache__/
 # local secrets
 .env
 docs/config/
+notes/
 
 # terraform
 .terraform
@@ -94,7 +95,6 @@ mcp-server/.venv/
 
 # docs
 docs/config/commands.mdx
-docs/config/ec2-ollama.mdx
 docs/config/mcp-registry.mdx
 docs/config/hosted-datris-plan.md
 plans/

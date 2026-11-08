@@ -174,6 +174,23 @@ docker run -p 8079:8080 -p 50051:50051 cr.weaviate.io/semitechnologies/weaviate:
 
 Or install from [weaviate.io/developers/weaviate/installation](https://weaviate.io/developers/weaviate/installation).
 
+## Searching from Datris
+
+The Assistant (and any MCP client) can search this store semantically without leaving Datris: the server embeds the query with the configured embedding provider and returns the closest chunks with scores.
+
+| Tool | Purpose |
+|------|---------|
+| `search_weaviate` | Semantic search (`query`, optional `class_name`, `top_k`, default 5) |
+| `list_weaviate_classes` | Discover available classes before searching |
+
+The REST endpoint is `POST /api/v1/search/weaviate` ([Search API](/api-reference/search-api#weaviate)); a key needs the `search:vector` capability (included in the `read-only`, `reporting` and `rag-builder` templates). The CLI equivalent is `datris search "question" --store weaviate --collection FinancialDocuments --top-k 5`. The REST body names the class as `className`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/search/weaviate \
+  -H "x-api-key: $DATRIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"query": "quarterly revenue growth", "className": "FinancialDocuments", "topK": 5}'
+```
+
 ## Verifying
 
 ```bash
