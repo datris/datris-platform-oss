@@ -153,7 +153,7 @@ For a quick evaluation you can skip the service principal: generate a PAT (**Set
 
 Note that `dbName` names the Unity Catalog **catalog** — Databricks uses three-level names (`catalog.schema.table`), and `dbName`/`schema`/`table` map onto them in order.
 
-Identifiers follow Unity Catalog's normal resolution rules: names are case-insensitive and stored lowercase, so `Orders` and `orders` are the same table. Names containing characters beyond letters, digits, and underscores are backtick-quoted automatically; prefer simple underscore names.
+`dbName`, `schema`, `table` and `warehouse` may use letters, digits and underscores only; the pipeline is rejected on save otherwise. Identifiers follow Unity Catalog's normal resolution rules: names are case-insensitive and stored lowercase, so `Orders` and `orders` are the same table. A name that starts with a digit is backtick-quoted automatically; prefer simple underscore names.
 
 ### Unity Catalog metadata
 
@@ -209,8 +209,10 @@ When `manageTableManually` is `false` (the default), the pipeline auto-creates t
 | `boolean`            | `BOOLEAN`       |
 | `date`               | `DATE`          |
 | `timestamp`          | `TIMESTAMP`     |
-| `_json`              | `VARIANT`       |
-| `_xml`               | `STRING`        |
+| field named `_json` \* | `VARIANT`    |
+| field named `_xml` \*  | `STRING`     |
+
+\* Matched on the field **name**, not its declared type: a field named `_json` or `_xml` (declared `string`, as the JSON and XML ingestion modes produce) always lands as the document column shown, whatever type it declares.
 
 Other types (`decimal(p,s)`) pass through as-is. Semi-structured `_json` columns land as `VARIANT` (parsed with `PARSE_JSON` during the load), so JSON payloads are natively queryable with Databricks' `:` path syntax rather than stored as text.
 

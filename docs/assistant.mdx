@@ -56,15 +56,17 @@ no manual schema entry — just drop it in and confirm.
 
 Three live layers in every assistant turn:
 
-1. **💭 Thinking** — the model's chain-of-thought, streaming character-by-character.
-   Anthropic tenants see the full reasoning; OpenAI tenants see a high-level
-   summary instead. Click the block to expand.
+1. **💭 Thinking** — the model's chain-of-thought. On Anthropic it streams
+   character-by-character; other providers deliver it at the end of each turn
+   (see the provider table below). Anthropic and Bedrock show the full
+   reasoning; OpenAI shows a high-level summary instead. Click the block to expand.
 2. **Tool cards** — inline within the response. Each card shows a human-friendly
    label (*"🔍 Searching the web for SEC EDGAR API…"*, *"🛠 Creating tap sec-edgar…"*)
    with a spinner while running, then a ✓ or ✕. Click to expand the raw input
    and result.
-3. **Streaming prose** — the response text appears as the model writes it, with
-   tool calls inlined where the model invoked them.
+3. **Streaming prose** — the response text appears as the model writes it on
+   Anthropic, and at the end of each turn on other providers, with tool calls
+   inlined where the model invoked them.
 
 When the agent needs answers from you (which source, how often to run, where
 the data should land, which locations to cover), it asks on a **question
@@ -135,11 +137,11 @@ The Assistant names the chat provider and model it is using (for example *Anthro
 | Provider | Streaming text | Tool cards | Reasoning block |
 |----------|---------------|------------|-----------------|
 | Anthropic Claude (Opus 5.5, Fable 5.1) | ✅ | ✅ | Full chain-of-thought (extended thinking) |
-| OpenAI GPT-5.x / GPT-6 Astra | ✅ | ✅ | Reasoning summary |
-| Azure OpenAI | ✅ | ✅ | None (reasoning happens server-side but isn't surfaced) |
+| OpenAI GPT-5.x / GPT-6 Astra | ✅ (the turn's text arrives at the end of each turn rather than token by token) | ✅ | Reasoning summary (on reasoning-capable models) |
+| Azure OpenAI | ✅ (arrives at the end of each turn) | ✅ | None (reasoning happens server-side but isn't surfaced) |
 | Claude via Amazon Bedrock | ✅ | ✅ | Full thinking blocks (same as direct Anthropic; responses arrive at the end of each turn rather than streaming) |
-| Grok (xAI) | ✅ | ✅ | None (reasoning happens server-side but isn't surfaced) |
-| Ollama / Llama | ✅ | If the model supports tool calling | None |
+| Grok (xAI) | ✅ (arrives at the end of each turn) | ✅ | None (reasoning happens server-side but isn't surfaced) |
+| Ollama / Llama | Not available — the Assistant does not yet run on Ollama (it is supported for the CodeGen provider; chat support is planned). Setting it as the AI Primary provider returns an error in the chat | — | — |
 
 Set `ai.extendedThinking: "false"` in `application.yaml` to disable the
 reasoning block platform-wide. Default is on. Extended thinking adds roughly

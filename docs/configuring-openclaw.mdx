@@ -14,7 +14,7 @@ This isn't a "no memory vs. memory" comparison. OpenClaw already has memory. It'
 The short version:
 
 1. **OpenClaw's built-in memory is best-effort** — the model decides when to save and when to look — so long sessions, restarts, and context compaction quietly erode recall. Datris moves memory out of the prompt and enforces it at the system layer, so your agent stops forgetting.
-2. **The same MCP connection that gives OpenClaw enforced semantic memory also exposes 70+ Datris tools** — pipelines, ingestion, SQL, vector search — so you're not bolting on a memory product, you're handing your agent a full data platform.
+2. **The same MCP connection that gives OpenClaw enforced semantic memory also exposes 80+ Datris tools** — pipelines, ingestion, SQL, vector search — so you're not bolting on a memory product, you're handing your agent a full data platform.
 
 ### vs. OpenClaw's default memory (best-effort, not enforced)
 
@@ -39,7 +39,7 @@ Datris is a memory layer exposed over MCP. OpenClaw stays OpenClaw. Your agent l
 Indexing local memory files into Datris gives you the best of both worlds — markdown stays human-editable and version-controllable, while Datris handles retrieval at scale.
 
 - **Agent-runtime-agnostic.** Datris exposes memory through MCP, so OpenClaw, Claude Desktop, Cursor, or any custom MCP client can point at the same instance and share the same memory. No bespoke integration per agent, no rewriting your agent loop to match someone else's runtime.
-- **Tool-rich, not just retrieval.** The same MCP connection that gives OpenClaw memory also exposes pipeline management, ingestion, and SQL and vector query tools — over 70 in total. Memory-only products stop at recall; Datris hands the agent the rest of a data platform on the same connection.
+- **Tool-rich, not just retrieval.** The same MCP connection that gives OpenClaw memory also exposes pipeline management, ingestion, and SQL and vector query tools — nearly 90 in total. Memory-only products stop at recall; Datris hands the agent the rest of a data platform on the same connection.
 - **Auditable.** The **Agent Monitor** tab in the Datris UI shows OpenClaw's memory tool calls as they happen, so you can see exactly what the agent searched for, what came back, and what it stored.
 - **Semantic recall, not substring search.** Ask in natural language and get the right snippet back even when the wording doesn't match — *"what did we decide about the pipeline architecture?"* finds the note filed under "ingestion topology."
 - **Scales past the context window.** Large memory corpora that would never fit into a single prompt become retrievable on demand. The agent pulls only what's relevant for the current turn.

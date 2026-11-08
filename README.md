@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/ba3de886-1413-4d92-92bb-99018cfaff38
 
 Your agents already acquire, validate, and load data. Without a control plane, they do it badly. Datris puts that work behind one governed surface:
 
-- **One MCP door** — 88 tools behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 88 integrations
+- **One MCP door** — 89 tools behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 89 integrations
 - **Vault-brokered credentials** — the agent references a secret by name and never holds a key; agent-written code runs in an isolated container with no keys inside
 - **Scoped keys, approval gates, audit log** — each agent gets its own API key limited to the capabilities you grant; an [agent policy](https://docs.datris.ai/agent-policy) decides per action whether an agent runs it, waits for a person to approve, or is refused; an [audit log](https://docs.datris.ai/audit-log), once you turn it on (`USE_AUDIT_LOG=true`), records who did what, best effort by default and without loss in [strict mode](https://docs.datris.ai/audit-log#strict-mode)
 - **Every run recorded** — job state and row counts for every run, provenance on its rows with stamping on; every generated script versioned in git
@@ -49,7 +49,7 @@ Installing from a coding agent or a CI job with no terminal attached? Export the
 
 **Minimal install (laptop-friendly).** The default stack runs about ten
 containers and the bundled embedding server downloads a 2.2 GB model on first
-boot. None of that is required. Three settings in `.env` cut it to eight small
+boot. None of that is required. Three settings in `.env` cut it to nine small
 containers, no download, and roughly 3.5 GB of memory (4 GB of Docker memory
 is enough; the full stack wants 8 GB):
 
@@ -154,7 +154,7 @@ Source (Tap / File Upload / MinIO Event / Database Pull / Kafka)
 
 | Feature | Description |
 |---------|-------------|
-| **MCP Server** | 88 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps, catalogs, provenance |
+| **MCP Server** | 89 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps, catalogs, provenance |
 | **Taps** | Describe a source in plain English — AI generates a Python script that fetches it on demand or on a schedule, run in an isolated container |
 | **Assistant** | Conversational tap and pipeline creation, operations, and configuration in the UI |
 | **AI Data Quality** | Plain English validation rules — AI generates and runs a validation script |
@@ -187,6 +187,7 @@ Anthropic Claude (Opus 5.5 default for chat and CodeGen) · OpenAI (GPT-5.6 Sol 
 | **Apache Kafka** | Optional streaming source and destination |
 | **Apache Spark** | Local Spark for writing Parquet, ORC, and Iceberg tables to MinIO / S3 |
 | **Tap runner** | Isolated container that runs AI-generated tap scripts with no platform credentials and no route to internal services |
+| **CodeGen runner** | Second isolated container, built from the same image, that runs AI-generated data-quality and transformation scripts |
 | **MCP server** | Bundled MCP endpoint (SSE on port 3000) for AI agents |
 
 ## Documentation

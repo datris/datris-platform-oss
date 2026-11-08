@@ -120,6 +120,7 @@ The `timeoutMs` field controls the maximum time in milliseconds the pipeline wil
 | `bearerToken`    | no       |         | Bearer token added as `Authorization: Bearer` header  |
 | `apiKey`         | no       |         | API key sent as an `x-api-key` header                 |
 | `timeoutMs`      | no       | `300000`| Response (sync) or callback (async) timeout in milliseconds |
+| `timeoutSeconds` | no       | `0`     | **Legacy.** Timeout in seconds, used only when `timeoutMs` is `0` or unset. Prefer `timeoutMs`. |
 | `batchSize`      | no       | `0`     | Rows per call for row-based payloads. `0` = one call with every row (the default behaviour); `> 0` adds `batch` / `ofBatches` to each request |
 
 ## Completion Notification

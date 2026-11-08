@@ -81,7 +81,7 @@ vault kv put secret/oss/chroma \
 | `host` | Chroma server hostname. Use `host.docker.internal` for local Chroma. |
 | `port` | REST API port (default 8000). |
 
-Chroma does not require authentication by default. For Chroma Cloud or authenticated instances, add token-based auth to the loader as needed.
+The loader reads only `host` and `port` from the secret and sends no authentication header, so Chroma auth tokens are not currently supported: the Chroma endpoint must be reachable without authentication (Chroma's default). Chroma Cloud and token-protected instances are not supported.
 
 ### Embedding API
 
@@ -174,6 +174,23 @@ docker run -d --name chroma -p 8000:8000 chromadb/chroma:latest
 ```
 
 Either way there are no external dependencies like etcd or MinIO — Chroma is the simplest vector database to run.
+
+## Searching from Datris
+
+The Assistant (and any MCP client) can search this store semantically without leaving Datris: the server embeds the query with the configured embedding provider and returns the closest chunks with scores.
+
+| Tool | Purpose |
+|------|---------|
+| `search_chroma` | Semantic search (`query`, optional `collection`, `top_k`, default 5) |
+| `list_chroma_collections` | Discover available collections before searching |
+
+The REST endpoint is `POST /api/v1/search/chroma` ([Search API](/api-reference/search-api#chroma)); a key needs the `search:vector` capability (included in the `read-only`, `reporting` and `rag-builder` templates). The CLI equivalent is `datris search "question" --store chroma --collection financial_documents --top-k 5`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/search/chroma \
+  -H "x-api-key: $DATRIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"query": "quarterly revenue growth", "collection": "financial_documents", "topK": 5}'
+```
 
 ## Verifying
 

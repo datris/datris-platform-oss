@@ -13,7 +13,7 @@ This page takes an agent, or a CI job, from an empty machine to a connected MCP 
 - **A POSIX shell on macOS or Linux.** The installer is a `sh` script. On Windows, use the [single-file Compose](#single-file-compose-alternative) path instead.
 - **Memory:** 4 GB available to Docker for a minimal install, about 8 GB for the full stack with the bundled embedding server. See [Installation → Minimal install](/installation#minimal-install).
 - **At least one AI provider key** in the environment: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, the Azure OpenAI trio, or `AI_PROVIDER=bedrock`. See [Without an AI key](#without-an-ai-key) for why.
-- **Free host ports.** The stack publishes 8080 (API), 4200 (UI), 3000 (MCP server), 61616 and 8161 (ActiveMQ), 9000 and 9001 (MinIO), 27017 (MongoDB) and 8200 (Vault); also 5432 (Postgres) unless `DATRIS_POSTGRES` is `external` or `none`, and 11434 (bundled embedding server) unless `DATRIS_EMBEDDING` is `openai` or `none`. Opt-in profiles publish more. See [Installation → Services](/installation#services).
+- **Free host ports.** The stack publishes 8080 (API), 4200 (UI), 3000 (MCP server), 61616 and 8161 (ActiveMQ), 9000 and 9001 (MinIO, localhost only), 27017 (MongoDB, localhost only) and 8200 (Vault, localhost only); also 5432 (Postgres, localhost only) unless `DATRIS_POSTGRES` is `external` or `none`, and 11434 (bundled embedding server) unless `DATRIS_EMBEDDING` is `openai` or `none`. Opt-in profiles publish more. See [Installation → Services](/installation#services).
 
 ## Install without a terminal
 

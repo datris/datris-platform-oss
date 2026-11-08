@@ -75,15 +75,16 @@ Add to `.mcp.json` in your project root:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATRIS_API_URL` | `http://localhost:8080` | Datris REST API server URL |
-| `REQUIRE_API_KEY` | `false` | Reject SSE/HTTP sessions that connect without `x-api-key` |
+| `REQUIRE_API_KEY` | `false` | Reject SSE/HTTP sessions that connect without `x-api-key` (and stdio sessions started without `DATRIS_API_KEY`) |
+| `DATRIS_API_KEY` | — | stdio transport only: the API key forwarded as `x-api-key` on every tool call (stdio has no request headers) |
 
 ## Authentication
 
-There is no server-side API key. Each connecting agent authenticates per session by sending an `x-api-key` header; mcp-server forwards that key as-is to the Datris REST API on every tool call. The Datris REST API validates against `oss/api-keys` Vault secret (single-tenant) or `api-key-mappings` (multi-tenant). Issue and manage keys from **Configuration → API-Keys** in the UI.
+There is no server-side API key. Each connecting agent authenticates per session by sending an `x-api-key` header; mcp-server forwards that key as-is to the Datris REST API on every tool call. The Datris REST API validates it against the `oss/api-keys` Vault secret. Issue and manage keys from **Configuration → API-Keys** in the UI.
 
 ## Tools
 
-88 tools across these categories:
+89 tools across these categories:
 
 - **Pipeline Management** — create, list, get, delete pipelines (PostgreSQL, MongoDB, Snowflake, Databricks, Microsoft SQL Server / Azure SQL, object store, vector stores); upload files; monitor jobs
 - **Vector Search** — semantic search across Qdrant, Weaviate, Milvus, Chroma, pgvector

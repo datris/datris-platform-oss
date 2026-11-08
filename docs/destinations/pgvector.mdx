@@ -179,6 +179,23 @@ To add pgvector to an existing PostgreSQL instance:
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
+## Searching from Datris
+
+The Assistant (and any MCP client) can search this store semantically without leaving Datris: the server embeds the query with the configured embedding provider and returns the closest chunks with scores.
+
+| Tool | Purpose |
+|------|---------|
+| `search_pgvector` | Semantic search (`query`, optional `table`, `top_k`, default 5) |
+| `list_pgvector_collections` | Discover available pgvector tables before searching |
+
+The REST endpoint is `POST /api/v1/search/pgvector` ([Search API](/api-reference/search-api#pgvector)); a key needs the `search:vector` capability (included in the `read-only`, `reporting` and `rag-builder` templates). The CLI equivalent is `datris search "question" --store pgvector --collection financial_documents --top-k 5`. The MCP tool and REST body also take an optional `schema` (default `public`).
+
+```bash
+curl -X POST http://localhost:8080/api/v1/search/pgvector \
+  -H "x-api-key: $DATRIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"query": "quarterly revenue growth", "table": "financial_documents", "topK": 5}'
+```
+
 ## Verifying
 
 ```bash

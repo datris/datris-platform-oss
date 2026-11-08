@@ -81,6 +81,18 @@ These behave the same as the MinIO destination — see the [Object Store Destina
 
 To make an Iceberg table written to S3 findable by name in Databricks, register it in Unity Catalog; see [Register Iceberg tables](/destinations/unity-catalog#register-iceberg-tables).
 
+## Querying from Datris
+
+The Assistant (and any MCP client) can read an S3 destination back with the `query_objectstore` tool. It is pipeline-scoped: pass the pipeline name and the server resolves the bucket, prefix, format (Parquet, ORC or Iceberg) and credentials from the pipeline config, the same path the writer uses. `limit` defaults to 100 (a value of 0 or less also falls back to 100) and is capped at 10,000. A pipeline with no successful run yet returns 0 rows, not an error. On-demand typing (`get_dest_types` / `apply_dest_types`) does not apply to object store destinations.
+
+The REST endpoint is `POST /api/v1/query/objectstore` ([Query API](/api-reference/query-api#query-object-store)); a key needs the `query:objectstore` capability (included in the `read-only` and `reporting` templates).
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query/objectstore \
+  -H "x-api-key: $DATRIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"pipeline": "sales_parquet", "limit": 10}'
+```
+
 ## Multiple S3 destinations
 
 Per-bucket credential isolation means two pipelines can write to different S3 buckets using different IAM keys in the same deployment. Each pipeline references its own `credentialsSecret`; the credentials are applied to that specific bucket only.

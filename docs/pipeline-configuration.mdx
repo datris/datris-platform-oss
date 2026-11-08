@@ -93,6 +93,7 @@ You don't need to write JSON by hand — once you have the Datris Data Platform 
 | `protection.preset` | string | No | `hipaa-safe-harbor` recognises HIPAA Safe Harbor identifiers from field names: saving is refused while a recognised field has no `protect` (unless exempted), and a recognised column added later by schema evolution is protected in the same run. Delimited (CSV) pipelines only; refused on JSON, XML and unstructured sources. An aid, not a certification. See [HIPAA Safe Harbor preset](/transformation/field-protection#hipaa-safe-harbor-preset). |
 | `protection.presetExempt` | array | No | Field names the preset recognises that you keep unprotected on purpose (case-insensitive). Only read when `protection.preset` is set. |
 | `destination.authoritative` | string | No | For pipelines with several destinations only: which destination kind (`postgres`, `mongodb`, `snowflake`, `databricks`, `sqlserver`, …) is the golden copy. Without it, all of them show as *undeclared* in lineage until you decide. |
+| `unityCatalog` | object | No | `{ "enabled": true }` on a Databricks destination pushes table/column comments, tags, run properties and lineage to Unity Catalog after each load (`comments`, `tags`, `properties`, `lineage` default on; set one to `false` to drop that group); a Databricks pipeline with no block follows the install default `DATRIS_UNITY_CATALOG_DEFAULT`. On an object-store Iceberg destination it registers the table (`credentialsSecret`, `catalog`, `schema`, `catalogMode`). See [Unity Catalog](/destinations/unity-catalog). |
 
 ### Source
 
@@ -157,6 +158,12 @@ Supported types: `boolean`, `int`, `tinyint`, `smallint`, `bigint`, `float`, `do
 }
 ```
 
+**Other `fileAttributes` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `readOptions` | map (string → string) | null | Accepted and stored with the pipeline, but **not read by any current stage**: CSV, JSON, XML and Excel files are parsed by the platform's own readers, which take their settings from the `*Attributes` blocks above. Reserved for reader options; setting it has no effect today. |
+
 ### Source > Database Attributes
 
 | Field | Type | Required | Description |
@@ -181,7 +188,9 @@ Supported types: `boolean`, `int`, `tinyint`, `smallint`, `bigint`, `float`, `do
 | `endpoint` | string | Required | URL of the preprocessing service |
 | `async` | boolean | `false` | If true, returns immediately |
 | `bearerToken` | string | null | Authorization bearer token |
+| `apiKey` | string | null | API key sent to the endpoint as an `x-api-key` header |
 | `timeoutMs` | int | 300000 | Request timeout (milliseconds) |
+| `timeoutSeconds` | int | 0 | Legacy timeout in seconds; used only when `timeoutMs` is `0` or omitted (then `0` here means the 300000 ms default). Prefer `timeoutMs` |
 | `batchSize` | int | 0 | Rows per call for row-based payloads; `0` sends every row in one call. When `> 0`, each request also carries `batch` and `ofBatches`, and every response's `data.rows` are stitched in call order. See [Preprocessor](/preprocessor#batching) |
 
 ### Data Quality
@@ -202,6 +211,14 @@ See [AI Transformation](/transformation/ai-transformation) for detailed document
 |-------|------|-------------|
 | `aiTransformation` | object | AI transformation — plain-English transformation instruction |
 
+**Deprecated fields.** Three older fields are still accepted and still applied; nothing warns when they are set, but use `aiTransformation` for new pipelines — a generated transformation streams the staged payload, while the in-heap ones below are capped by `PIPELINE_MATERIALIZE_MAX_MB`.
+
+| Field | Type | Default | Behaviour today |
+|-------|------|---------|-----------------|
+| `trimColumnWhitespace` | boolean | `false` | Still applied while CSV rows are read (both the file and streaming paths): every column value is trimmed. Replace with an `aiTransformation` instruction such as "trim whitespace from every column". |
+| `deduplicate` | boolean | `false` | Still applied, first in the transformation stage: exact-duplicate rows are removed and the count is reported in the run status. Reads the whole payload into memory, so a run above `PIPELINE_MATERIALIZE_MAX_MB` fails naming `Deduplication (transformation.deduplicate)`. Replace with an `aiTransformation` instruction. |
+| `rowFunctions` | array | null | Still applied after deduplication; each entry is `{"function": "javascript" \| "restEndpoint", "parameters": [...]}` (save rejects any other function name or empty parameters). `javascript` reads the whole payload into memory (gated by `PIPELINE_MATERIALIZE_MAX_MB`), parses typed columns with `decimal` as a double, and runs under the standalone Nashorn engine (`javax.script` "JavaScript"); `restEndpoint` POSTs rows to an endpoint (in-memory when unbatched). Replace with an `aiTransformation`, or a [REST preprocessor](/preprocessor) for external calls. |
+
 ### Destination > Object Store
 
 The object store destination writes Parquet files, ORC files, or an [Apache Iceberg table](/destinations/iceberg) to either the built-in MinIO (default) or to AWS S3. The provider is selected by the `provider` field; everything else is shared across both.
@@ -209,12 +226,12 @@ The object store destination writes Parquet files, ORC files, or an [Apache Iceb
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `prefixKey` | string | Required | Path prefix for output files under the bucket |
-| `fileFormat` | string | `parquet` | Output format: `parquet`, `orc`, or `iceberg` (a table at the prefix with atomic commits, `merge` upserts, and schema evolution) |
+| `fileFormat` | string | `parquet` (applied by the writer when unset) | Output format: `parquet`, `orc`, or `iceberg` (a table at the prefix with atomic commits, `merge` upserts, and schema evolution) |
 | `partitionBy` | array | null | Column names for partitioning |
 | `destinationBucketOverride` | string | null | Custom bucket (default: `{environment}-data` for MinIO; **required** for S3) |
 | `deleteBeforeWrite` | boolean | false | Delete existing data at path before writing |
 | `writeToTemporaryLocation` | boolean | false | Write to temp location first |
-| `writeMode` | string | `append` | `append`, `overwrite`, `ignore`, `errorifexists`, or `merge` (`iceberg` only; requires `keyFields`) |
+| `writeMode` | string | `append` (applied by the writer when unset) | `append`, `overwrite`, `ignore`, `errorifexists`, or `merge` (`iceberg` only; requires `keyFields`) |
 | `keyFields` | array | null | Natural-key columns for `writeMode: merge` on an Iceberg table. Each must be a destination schema column; rejected with any other write mode |
 | `provider` | string | `minio` | `minio` (built-in, default) or `s3` (AWS S3) |
 | `endpoint` | string | null | S3 endpoint URL override. Must use `https://`. Leave unset for the AWS regional default. Ignored for `minio`. |

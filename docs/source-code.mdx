@@ -13,11 +13,18 @@ Datris is fully open source. The complete platform — server, MCP server, CLI, 
 |-----------|-------------|
 | `datrisserver/` | Scala/Spring Boot pipeline server — ingestion, data quality, transformation, destinations |
 | `mcp-server/` | Python MCP server and CLI (`server.py`, `cli.py`) |
+| `tap-runner/` | Python sidecar (`app.py`, `rlimit_exec.py`, Dockerfile, tests) that runs AI-generated tap and CodeGen scripts in isolation — the image behind both `datris-tap-runner` and `datris-codegen-runner` |
 | `ui/` | Angular web dashboard — pipeline management, ingestion monitoring, search, secrets |
+| `skills/` | The `datris-platform` agent skill (`SKILL.md` plus reference files) for Claude Code, Codex and similar coding agents |
 | `docker/` | Vault and MinIO init scripts, Vault config, and the Compose-time server `application.yaml` override |
+| `deploy/` | Single-host production deployment — `deploy.sh`, production Compose override, nginx and systemd configs, Vault bootstrap, backup script |
+| `scripts/` | `install.sh` (the `get.datris.ai` one-command installer), the standalone Compose generator, Docker Hub/source toggles, and drift guards for the MCP tool catalog, CodeGen isolation and the MinIO mirror |
+| `project/` | sbt build plugins (`plugins.sbt`, `assembly.sbt`) for the pipeline server |
 | `docs/` | Mintlify documentation (what you're reading now) |
+| `release-notes/` | Archived release notes, one file per version (the latest is `release-notes.md` at the root) |
 | `examples/` | Example applications — RAG chat, preprocessor, topic subscriber, Airflow DAGs, market/macro agent |
-| `test-data/` | Test data files and scripts |
+| `test-data/` | Sample CSV and document files for trying ingestion, search and vector stores |
+| `.github/` | GitHub Actions workflows (CI, Docker publish, MCP Registry publish, security scan, image mirror, standalone-Compose check), Dependabot config, issue templates |
 
 ## Key Files
 

@@ -5,7 +5,7 @@ info:
     REST API for the Datris AI Data Platform. Ingest, validate, transform, store, and retrieve data.
 
     For AI agent integration, use the [MCP Server](https://docs.datris.ai/mcp-server) instead.
-  version: 1.53.0
+  version: 1.57.1
   contact:
     name: Datris
     url: https://datris.ai
@@ -26,6 +26,13 @@ components:
       in: header
       name: x-api-key
       description: Optional API key for authentication (enabled via application.yaml)
+    MinioWebhookToken:
+      type: http
+      scheme: bearer
+      description: >-
+        Shared secret for the `POST /minio-events` callback only — the value of
+        `MINIO_WEBHOOK_TOKEN`, which MinIO sends as its notify_webhook
+        `auth_token`. Not an API key.
 
   schemas:
     CodegenScript:
@@ -3883,6 +3890,108 @@ paths:
         '500':
           description: Error
 
+  /api/v1/doctor:
+    get:
+      tags: [Health]
+      summary: Server-side doctor report
+      description: >-
+        The configuration and connectivity checks `datris doctor` runs,
+        as JSON. This is the endpoint the `datris doctor` CLI, the
+        Configuration → Doctor page and the `run_doctor` MCP tool call. It is
+        authenticated: the report names environment keys, Vault paths and
+        model ids, so when API keys are on the calling key must hold the
+        `config:read` capability (401/403 otherwise).
+      parameters:
+        - name: mode
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [full, quick]
+            default: full
+          description: '`quick` runs only the cheap startup-safe checks'
+        - name: probes
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated opt-in probe groups to include (currently `ai`, which spends a model call)
+        - name: cli
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Version of the calling CLI, echoed under `surface.cli` and compared with the server
+        - name: mcp
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Version of the calling MCP server, echoed under `surface.mcp`
+        - name: ui
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Version of the calling UI, echoed under `surface.ui`
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  doctorVersion:
+                    type: integer
+                  ranAt:
+                    type: string
+                    description: ISO-8601 instant
+                  mode:
+                    type: string
+                    enum: [full, quick]
+                  surface:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: Versions by surface (`server` always; `cli`, `mcp`, `ui` when passed)
+                  summary:
+                    type: object
+                    properties:
+                      ok:
+                        type: integer
+                      warn:
+                        type: integer
+                      error:
+                        type: integer
+                      skip:
+                        type: integer
+                  checks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        status:
+                          type: string
+                          enum: [ok, warn, error, skip]
+                        severity:
+                          type: string
+                        detail:
+                          type: string
+                        remediation:
+                          type: string
+                        surface:
+                          type: string
+                        ms:
+                          type: integer
+                          format: int64
+        '401':
+          description: 'API key missing or rejected. Body: `{"error": ...}`'
+        '500':
+          description: Error
+
   # ── Metadata Discovery ────────────────────────────────────
 
   /api/v1/metadata/postgres/databases:
@@ -4669,6 +4778,12 @@ paths:
                     type: integer
                   phaseElapsedSeconds:
                     type: integer
+                  provider:
+                    type: string
+                    description: AI provider handling the generation (present while `active`)
+                  model:
+                    type: string
+                    description: Model id handling the generation (present while `active`)
         '500':
           description: Error
 
@@ -6124,6 +6239,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Incident'
+        '400':
+          description: '`state` is neither `open` nor a known state name. Body: `{"error": "state must be open or one of ..."}`'
   /api/v1/incidents/{id}:
     get:
       tags: [Recovery Agent]
@@ -6228,6 +6345,235 @@ paths:
       responses:
         '200':
           description: Signals for the window
+
+  # ── Audit Log ──────────────────────────────────────────────
+
+  /api/v1/audit-log:
+    get:
+      tags: [Audit Log]
+      summary: Query the audit log (admin)
+      description: >-
+        Admin-only. Audit entries matching the filter, newest first, one
+        page at a time. 404 with `{"enabled": false, "error": ...}` while
+        USE_AUDIT_LOG is off. API keys need the `audit:read` capability.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Earliest entry, as an ISO-8601 instant or epoch milliseconds
+        - name: until
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Latest entry, as an ISO-8601 instant or epoch milliseconds
+        - name: category
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: actor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Actor label
+        - name: actorType
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: outcome
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: resource
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Resource name (substring match)
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+          description: Page size (values above 1000 are clamped)
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: '`nextCursor` from the previous page'
+      responses:
+        '200':
+          description: One page of entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      description: An audit entry (`id`, `ts`, `actor`, `category`, `action`, `resource`, `outcome`, `httpStatus`, `durationMs`, `request`, `errorMessage`, ...)
+                  nextCursor:
+                    type: string
+                    description: Present when more entries match
+        '400':
+          description: '`since` or `until` is not an ISO-8601 instant or epoch millis. Body: `{"error": ...}`'
+        '404':
+          description: 'The audit log is not enabled. Body: `{"enabled": false, "error": ...}`'
+        '500':
+          description: Error
+
+  /api/v1/audit-log/facets:
+    get:
+      tags: [Audit Log]
+      summary: Audit log filter values (admin)
+      description: Admin-only. Distinct categories, actions, actors and actor types seen in the last 30 days, for filter dropdowns. Cached for 60 seconds.
+      responses:
+        '200':
+          description: Facets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      type: string
+                  actions:
+                    type: array
+                    items:
+                      type: string
+                  actors:
+                    type: array
+                    items:
+                      type: string
+                  actorTypes:
+                    type: array
+                    items:
+                      type: string
+                  windowDays:
+                    type: integer
+        '404':
+          description: The audit log is not enabled
+        '500':
+          description: Error
+
+  /api/v1/audit-log/status:
+    get:
+      tags: [Audit Log]
+      summary: Audit log operational status (admin)
+      description: Admin-only. Whether auditing is on and how the write queue is doing. Answers 200 whether or not the audit log is enabled, and is never refused by the strict-mode gate.
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  retentionDays:
+                    type: integer
+                  logReads:
+                    type: boolean
+                  emitLogLine:
+                    type: boolean
+                  dropped:
+                    type: integer
+                    format: int64
+                    description: Entries dropped under backpressure since startup
+                  queueDepth:
+                    type: integer
+                  strict:
+                    type: boolean
+                    description: AUDIT_LOG_STRICT in effect
+                  unrecorded:
+                    type: integer
+                    format: int64
+                    description: Entries that could not be queued (strict mode)
+                  acceptingWrites:
+                    type: boolean
+                    description: '`false` while audited requests are being refused'
+
+  /api/v1/audit-log/export:
+    get:
+      tags: [Audit Log]
+      summary: Export the audit log as CSV (admin)
+      description: >-
+        Admin-only. CSV of the entries matching the same filters as
+        `GET /api/v1/audit-log` (no `limit`/`cursor`), newest first, capped at
+        50,000 rows. The export itself is recorded as an audit event.
+        `Content-Disposition` is `attachment; filename="datris-audit-log.csv"`.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: until
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: category
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: actor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: actorType
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: outcome
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: resource
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'CSV with header `ts,actorType,actor,keyLabel,keyId,username,category,action,resourceType,resource,outcome,httpStatus,durationMs,ip,method,path,errorMessage`'
+          content:
+            text/csv:
+              schema:
+                type: string
+        '404':
+          description: 'The audit log is not enabled. Body: `{"enabled": false, "error": ...}`'
+
   /api/v1/keys:
     get:
       tags: [API Keys]
@@ -6726,6 +7072,34 @@ paths:
         '502':
           description: MCP server unreachable or returned an error
 
+  /api/v1/mcp/tools:
+    get:
+      tags: [MCP]
+      summary: MCP tools the calling key may use
+      description: >-
+        The MCP tool names the calling API key's capabilities allow. A legacy
+        full-access key (`*:*`, including the anonymous identity when API keys
+        are off) sees the whole catalog with `filtered: false`.
+      responses:
+        '200':
+          description: Tool names
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  filtered:
+                    type: boolean
+                    description: '`true` when the list was narrowed to the key''s capabilities'
+                  tools:
+                    type: array
+                    items:
+                      type: string
+        '401':
+          description: 'API keys are required and this one is missing or invalid. Body: `{"error": "Authentication required"}`'
+        '500':
+          description: Error
+
   # ── AI Model Catalog ───────────────────────────────────────
 
   /api/v1/ai/model-catalog:
@@ -7058,7 +7432,7 @@ paths:
                               type: integer
                             windowDays:
                               type: integer
-  /api/v1/lineage/{type}/{name}:
+  /api/v1/lineage/{nodeType}/{name}:
     get:
       tags: [Provenance]
       summary: One node's lineage neighborhood
@@ -7069,7 +7443,7 @@ paths:
         read and wrote, per destination.
       parameters:
         - in: path
-          name: type
+          name: nodeType
           required: true
           schema:
             type: string
@@ -7500,3 +7874,130 @@ paths:
             latter as denied)
         '502':
           description: Warehouse connection or metadata query failed
+
+  # ── Internal callbacks (not a client API) ─────────────────────────────────
+  # Endpoints the platform exposes for other systems to call back INTO Datris.
+  # Clients never call these; they are listed so the full surface is known.
+
+  /api/v1/restendpoint/callback:
+    post:
+      tags: [Internal callbacks]
+      summary: Async REST endpoint callback (internal)
+      description: >-
+        Internal callback, not a client API. When a pipeline's REST preprocessor
+        or REST destination is configured with `async: true`, Datris POSTs the
+        payload to that endpoint (carrying `pipelineToken`, `pipelineName` and
+        `data`) and then blocks the run until the endpoint calls back here with
+        the same `pipelineToken`. The callback body is handed to the waiting run
+        verbatim: for a preprocessor it is parsed like a synchronous response
+        (`data.header` / `data.rows`, or `{"error": ...}` to fail the run); for a
+        destination only an `error` field is inspected. A callback whose token
+        has no waiting run is accepted and discarded. The run fails with a
+        timeout if no callback arrives within the endpoint's `timeoutMs`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipelineToken, pipelineName]
+              properties:
+                pipelineToken:
+                  type: string
+                  description: The token Datris sent in the outbound request; identifies the waiting run
+                pipelineName:
+                  type: string
+                  description: The pipeline name Datris sent in the outbound request
+                data:
+                  type: object
+                  description: Preprocessor role — the processed payload, same shape as the outbound `data`
+                  properties:
+                    header:
+                      type: array
+                      items:
+                        type: string
+                    rows:
+                      type: array
+                      items:
+                        type: string
+                error:
+                  type: string
+                  description: Report a failure instead of data; the run stops with this message
+      responses:
+        '200':
+          description: Accepted (`OK`, text/plain)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+        '400':
+          description: '`Missing pipelineToken` or `Missing pipelineName` (text/plain)'
+
+  /minio-events:
+    post:
+      tags: [Internal callbacks]
+      summary: MinIO bucket notification webhook (internal)
+      description: >-
+        Internal callback, not a client API. MinIO's `notify_webhook` target
+        posts an S3-style bucket event here when an object lands; Datris
+        enqueues the event for the file notifier, which starts ingestion, and
+        writes one collapsed `ingest-trigger` audit record per bucket per
+        minute. The path is outside `/api/**`, so the API-key, capability and
+        session interceptors do not apply; instead the request must carry
+        `Authorization: Bearer <MINIO_WEBHOOK_TOKEN>` (compared in constant
+        time). When `MINIO_WEBHOOK_TOKEN` is unset the endpoint still accepts
+        events but logs a warning on every call — set the token (and MinIO's
+        matching `auth_token`) in any reachable deployment. Under
+        `AUDIT_LOG_STRICT`, while the audit log is not accepting entries the
+        event is refused with 503 + `Retry-After: 5` so MinIO redelivers it.
+      security:
+        - MinioWebhookToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: S3 bucket notification event as MinIO emits it; only `Records[0].s3.bucket.name` is read for the audit record, the whole payload is passed to the file notifier
+              properties:
+                EventName:
+                  type: string
+                  example: s3:ObjectCreated:Put
+                Key:
+                  type: string
+                  example: datris/incoming/stock-prices.csv
+                Records:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      eventName:
+                        type: string
+                      s3:
+                        type: object
+                        properties:
+                          bucket:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                          object:
+                            type: object
+                            properties:
+                              key:
+                                type: string
+                              size:
+                                type: integer
+      responses:
+        '200':
+          description: Event queued (`OK`, text/plain)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+        '401':
+          description: '`MINIO_WEBHOOK_TOKEN` is set and the bearer token is missing or wrong (`Unauthorized`, text/plain)'
+        '503':
+          description: 'Audit log not accepting entries under `AUDIT_LOG_STRICT`; `Retry-After: 5` is set and MinIO retries the delivery'

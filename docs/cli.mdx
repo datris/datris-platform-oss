@@ -246,6 +246,31 @@ datris status my_pipeline
 
 ---
 
+### `datris pipeline result`
+
+Read the rows a [Live Read](/destinations/live-read) pipeline (the `scratch` destination) produced. `TOKEN` is the pipeline token returned when the pipeline ran. Only Live Read pipelines have a result; results expire after the retention window, after which the command says to run the pipeline again.
+
+```bash
+datris pipeline result <TOKEN> [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--offset` | Row offset to start from (default 0) |
+| `--limit` | Rows per page (server default and cap apply; the server clamps it, so page with the `--offset` the output suggests) |
+| `--out FILE` | Write every row as one JSON object per line to this file, paging until the result is exhausted |
+| `--json` | Return raw JSON |
+
+```bash
+datris pipeline result <token>                   # first page, with "showing N of M, expires at ..."
+datris pipeline result <token> --offset 100      # next page
+datris pipeline result <token> --out rows.jsonl  # everything, as JSON Lines
+```
+
+Exits 1 on an error, including a non-Live-Read pipeline or an expired result.
+
+---
+
 ### `datris delete`
 
 Delete a pipeline configuration together with its destination data.

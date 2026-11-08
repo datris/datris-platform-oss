@@ -17,7 +17,7 @@ description: "Operational self-check for a Datris deployment"
 | Periodic run | The server-side checks on a timer, posting flips to error to the incident webhook | Opt-in: `DOCTOR_INTERVAL_MINUTES` |
 | Recovery agent | Holds `run_doctor` as one of its read-only diagnosis tools | When an incident looks like the platform, not the tap |
 
-The server-side report is also available at `GET /api/v1/doctor` for scripts. It is not a public endpoint — it names environment keys, Vault paths and model ids — so an API key with `config:read` is required when [API keys](/api-keys) are on.
+The server-side report is also available as JSON at `GET /api/v1/doctor` — the same endpoint the `datris doctor` CLI, the Configuration → Doctor page and the `run_doctor` tool call. It is an authenticated endpoint: the report names environment keys, Vault paths and model ids, so when [API keys](/api-keys) are on the calling key must hold the `config:read` capability (the server answers 401 or 403 otherwise). Parameters and the response shape are in the [Health API reference](/api-reference/health-api#doctor-report).
 
 ## The checks
 
@@ -42,7 +42,7 @@ The server-side report is also available at `GET /api/v1/doctor` for scripts. It
 | `version.skew` | Server, UI, MCP server and CLI differ in major.minor, or the UI image carries no version stamp | Pull all images; upgrade the CLI |
 | `env.seen` | Never — reports which hardening variables reached the server | — |
 | `env.label` | Never — reports this install's environment label, for example `environment label: qa (DATRIS_ENV)`, or `environment label: unset` | Set `DATRIS_ENV` in `.env` and recreate datris. See [Dev, QA and production](/production/environments) |
-| `volumes.anonymous` | A stateful service (postgres, mongodb, minio, vault, tei, kafka) stores data on an anonymous volume that `docker compose down` will orphan | Add a named volume and copy the data across |
+| `volumes.anonymous` | A stateful service (postgres, mongodb, minio, vault, tei, zookeeper, kafka) stores data on an anonymous volume that `docker compose down` will orphan | Add a named volume and copy the data across |
 | `volumes.dangling` | A dangling anonymous volume holds a recognizable Postgres / MongoDB / MinIO data directory — data left behind by a container recreate | Inspect before pruning; copy into the named volume to recover |
 | `vault.hcl_drift` | `docker/vault.hcl` changed after the vault container started (Vault reads its config only at start) | `docker compose up -d --force-recreate vault` |
 | `env.not_forwarded` | `.env` sets a key that no service in the compose file references, so the value never reaches a container | Add it to the service's `environment:` block |
@@ -50,6 +50,9 @@ The server-side report is also available at `GET /api/v1/doctor` for scripts. It
 | `compose.orphans` | Containers from a previous compose file are still present and may hold ports | `docker compose up -d --remove-orphans` |
 | `build.stale_jar` | Building from source, and the running server's git commit or build time is behind the checkout | Rebuild with `--no-cache` |
 | `mcp.reachable` | The MCP server's SSE endpoint doesn't answer within 3 s | Check the `mcp-server` container |
+| `server.reachable` | CLI only. The Datris server at `DATRIS_URL` cannot be reached, so the server-side checks were skipped (exit code 3) | `docker compose ps datris`, then `docker compose logs datris`; set `DATRIS_URL` if the server is elsewhere |
+| `server.auth` | CLI only. The server answered `GET /api/v1/doctor` with 401 or 403 | Set `DATRIS_API_KEY` to a key holding `config:read` (Configuration → API-Keys) and re-run |
+| `server.doctor` | CLI only. The server answered `GET /api/v1/doctor` with another non-200 status, usually a release without the doctor endpoint | Upgrade the server |
 | `version.update` | Never errors. Warns when datris.ai reports a newer release than the running server; ok when current. Skipped when switched off (`DATRIS_UPDATE_CHECK=0`), when the server version is unknown (nothing is sent), or when datris.ai cannot be reached within 3 s. Not run by `--pre-upgrade` | `datris doctor --pre-upgrade && docker compose pull && docker compose up -d --remove-orphans`. See [Upgrading](/production/upgrades) |
 
 Checks below the line run only from the CLI on the machine running Docker; the UI and MCP surfaces report them as not applicable. Secret values never appear in any output — only key names.

@@ -140,7 +140,7 @@ For a quick evaluation you can skip the key pair: generate a PAT in Snowsight (*
 
 `warehouse` and `role` are per-pipeline on purpose: a light feed can run on an extra-small warehouse while a wide table gets a larger one, without touching the credential.
 
-Identifiers follow Snowflake's normal resolution rules: simple names (letters, digits, underscores) are passed unquoted, so `datris` and `DATRIS` both resolve to the uppercase `DATRIS` database — the same behavior as every other Snowflake tool. Names containing other characters (hyphens, spaces) are quoted and matched case-sensitively.
+`dbName`, `schema`, `table` and `warehouse` may use letters, digits and underscores only; the pipeline is rejected on save otherwise. Identifiers follow Snowflake's normal resolution rules: simple names (not starting with a digit) are passed unquoted, so `datris` and `DATRIS` both resolve to the uppercase `DATRIS` database — the same behavior as every other Snowflake tool. A name that starts with a digit is quoted and matched case-sensitively.
 
 ## Table Management
 
@@ -156,8 +156,10 @@ When `manageTableManually` is `false` (the default), the pipeline auto-creates t
 | `boolean`            | `BOOLEAN`       |
 | `date`               | `DATE`          |
 | `timestamp`          | `TIMESTAMP_NTZ` |
-| `_json`              | `VARIANT`       |
-| `_xml`               | `VARCHAR`       |
+| field named `_json` \* | `VARIANT`    |
+| field named `_xml` \*  | `VARCHAR`    |
+
+\* Matched on the field **name**, not its declared type: a field named `_json` or `_xml` (declared `string`, as the JSON and XML ingestion modes produce) always lands as the document column shown, whatever type it declares.
 
 Other types (`decimal(p,s)`, `varchar(n)`, `char(n)`) pass through as-is. Semi-structured `_json` columns land as `VARIANT` (parsed with `PARSE_JSON` during the `COPY`), so JSON payloads are natively queryable in Snowflake rather than stored as text.
 

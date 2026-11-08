@@ -188,6 +188,23 @@ docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 
 Or install natively from [qdrant.tech/documentation/quick-start](https://qdrant.tech/documentation/quick-start/).
 
+## Searching from Datris
+
+The Assistant (and any MCP client) can search this store semantically without leaving Datris: the server embeds the query with the configured embedding provider and returns the closest chunks with scores.
+
+| Tool | Purpose |
+|------|---------|
+| `search_qdrant` | Semantic search (`query`, optional `collection`, `top_k`, default 5) |
+| `list_qdrant_collections` | Discover available collections before searching |
+
+The REST endpoint is `POST /api/v1/search/qdrant` ([Search API](/api-reference/search-api#qdrant)); a key needs the `search:vector` capability (included in the `read-only`, `reporting` and `rag-builder` templates). The CLI equivalent is `datris search "question" --store qdrant --collection financial_documents --top-k 5`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/search/qdrant \
+  -H "x-api-key: $DATRIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"query": "quarterly revenue growth", "collection": "financial_documents", "topK": 5}'
+```
+
 ## Verifying
 
 ```bash

@@ -40,6 +40,10 @@ Examples:
 | `decimal(10,0)` | Up to 10 integer digits, no fractional part | 9999999999 |
 | `decimal(18,6)` | 18 total digits, 6 fractional | 999999999999.999999 |
 
+<Warning>
+A pipeline that uses the deprecated `transformation.rowFunctions` (JavaScript or REST row functions) converts every `decimal` column to a 64-bit double on the way into the function and writes the result back as text, so digits beyond IEEE double precision (about 15–17 significant digits) are lost before the value reaches the destination, whatever `(p,s)` declares. Pipelines without row functions are not affected: values stay as the text that was ingested until the destination casts them (Spark/object store uses `DecimalType(p,s)`; PostgreSQL `COPY`, Snowflake, Databricks and SQL Server receive the declared `decimal(p,s)` type). If you need exact values above that precision and must keep a row function, declare the field as `string` — it lands as `text` in PostgreSQL, `VARCHAR` in Snowflake and `NVARCHAR` in SQL Server — and cast it downstream.
+</Warning>
+
 ## Integer Type Selection
 
 Choose the narrowest integer type that fits your data to reduce storage and improve Spark performance:
