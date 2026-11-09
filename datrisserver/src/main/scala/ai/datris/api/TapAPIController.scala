@@ -171,6 +171,18 @@ object TapAPIController {
     // fidelity, and prevents large taps from bloating agent context.
     private val testRecordSampleSize = 20
 
+    /** Ceiling on the `records` a test response carries when the caller asks
+      * for a larger preview (propose_pipeline_schema "pull more rows"): keeps
+      * the body bounded however high `testLimit` goes. */
+    private[datris] val maxTestPreviewRecords = 500
+
+    /** How many staged records a test response returns: the requested
+      * `testLimit` when positive (clamped to [[maxTestPreviewRecords]]),
+      * else the default [[testRecordSampleSize]] — an unlimited test
+      * (`testLimit` 0) still previews only the default 20. */
+    private[datris] def testPreviewSize(testLimit: Int): Int =
+        if (testLimit > 0) math.min(testLimit, maxTestPreviewRecords) else testRecordSampleSize
+
     // Server-side debounce for /tap/run with mode=run. Prevents duplicate pushes when
     // an agent emits parallel tool_use blocks, when a UI button is rapidly clicked,
     // or when MCP transport retries fire concurrent requests. Keyed by tenant + tap
@@ -1350,11 +1362,11 @@ class TapAPIController {
             val result = TapRunner.run(tapConfig, mode = "test", testLimit = testLimitInt)
             val testDurationMs = System.currentTimeMillis() - testStartMs
             val gson = new Gson
-            // Preview off the staged file (Phase 4): the first testRecordSampleSize
+            // Preview off the staged file (Phase 4): the first testPreviewSize(testLimit)
             // records plus `recordsTruncated` when there were more. The staged
             // file is released once the preview is built.
             val (recordsJson, recordsTruncated) =
-                try TapRunner.preview(result.staged, TapAPIController.testRecordSampleSize)
+                try TapRunner.preview(result.staged, TapAPIController.testPreviewSize(testLimitInt))
                 finally TapRunner.release(result)
             val response = new java.util.HashMap[String, Any]()
             response.put("records", recordsJson)
@@ -1511,12 +1523,13 @@ class TapAPIController {
                 //     `recordCount` is enough to summarize what was submitted. (TapRunner
                 //     already released the tap's staging directory.)
                 //   - mode=test: include records as a preview read off the staged file,
-                //     capped at TapAPIController.testRecordSampleSize; `recordsTruncated=true`
+                //     capped at TapAPIController.testPreviewSize(testLimit) (the requested
+                //     limit up to 500, else 20); `recordsTruncated=true`
                 //     when we trimmed it. The staged file is released after the preview.
                 val (recordsToReturn, recordsTruncated): (com.google.gson.JsonElement, Boolean) =
                     if (mode == "run") (null, false)
                     else
-                        try TapRunner.preview(result.staged, TapAPIController.testRecordSampleSize)
+                        try TapRunner.preview(result.staged, TapAPIController.testPreviewSize(effectiveTestLimit))
                         finally TapRunner.release(result)
 
                 val hasTargetPipeline = tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty

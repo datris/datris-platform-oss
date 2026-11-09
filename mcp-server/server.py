@@ -4001,16 +4001,31 @@ _SCHEMA_FIELD_TYPES = ("string", "boolean", "int", "bigint", "float", "double", 
 _VECTOR_DESTINATIONS = ("pgvector", "qdrant", "weaviate", "milvus", "chroma")
 
 
-def _validate_schema_fields(value):
+def _csv_delimiter_char(delimiter):
+    """The literal delimiter character /pipeline/generate splits on."""
+    d = delimiter or ","
+    return "\t" if d == "\\t" else d
+
+
+def _validate_schema_fields(value, delimiter=","):
     """(normalised [{name, type}], None) or (None, error). Types are matched
-    case-insensitively against _SCHEMA_FIELD_TYPES."""
+    case-insensitively against _SCHEMA_FIELD_TYPES. A name holding the
+    delimiter, a quote or a line break is refused: /pipeline/generate reads
+    the header by splitting on the raw delimiter and stripping quotes
+    (AISchemaUtil.buildCsvConfigAllStrings), so such a name could never match
+    a generated column."""
     supported = ", ".join(_SCHEMA_FIELD_TYPES)
+    delim = _csv_delimiter_char(delimiter)
     if not isinstance(value, list):
         return None, "schema_fields must be an array of {name, type} objects"
     out = []
     for item in value:
         if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
             return None, "schema_fields entries must be objects with a non-empty 'name' and a 'type'"
+        bad_chars = [c for c in (delim, '"', "'", "\n", "\r") if c and c in item["name"]]
+        if bad_chars:
+            shown = ", ".join(repr(c) for c in bad_chars)
+            return None, f"schema_fields: column name {item['name']!r} contains {shown}; names may not contain the delimiter, quotes or line breaks (rename the column in the tap's output)"
         raw_type = item.get("type")
         t = raw_type.strip().lower() if isinstance(raw_type, str) else ""
         if t not in _SCHEMA_FIELD_TYPES:
@@ -4020,12 +4035,10 @@ def _validate_schema_fields(value):
 
 
 def _csv_header_line(names, delimiter=","):
-    """One CSV header line (quoted only where needed) for the given names."""
-    import csv
-    import io
-    buf = io.StringIO()
-    csv.writer(buf, delimiter=delimiter, lineterminator="\n").writerow(names)
-    return buf.getvalue()
+    """One header line for /pipeline/generate. Names were validated by
+    _validate_schema_fields (no delimiter, quotes or line breaks), so a plain
+    join is exactly what the server's header split reads back."""
+    return _csv_delimiter_char(delimiter).join(names) + "\n"
 
 
 _PROPOSE_SCHEMA_NEXT = (
@@ -4261,7 +4274,7 @@ def _dispatch(name: str, args: dict) -> str:
         # any HTTP call so a bad list never reaches /generate or the save.
         schema_fields = args.get("schema_fields")
         if schema_fields is not None:
-            schema_fields, sf_err = _validate_schema_fields(schema_fields)
+            schema_fields, sf_err = _validate_schema_fields(schema_fields, args.get("delimiter") or ",")
             if sf_err:
                 return json.dumps({"error": sf_err})
             if is_vector and schema_fields:

@@ -5253,8 +5253,8 @@ paths:
       summary: Test a tap
       description: |
         Executes the tap script without sending data to a pipeline. Returns a preview of the
-        records (the first 20 of a record list, with `recordsTruncated: true` when there were
-        more), logs, and an AI-generated diagnosis if errors or zero records are detected.
+        records (the first `testLimit` of a record list, up to 500, or the first 20 when
+        `testLimit` is absent or 0, with `recordsTruncated: true` when there were more), logs, and an AI-generated diagnosis if errors or zero records are detected.
       parameters:
         - name: testLimit
           in: query
@@ -5278,7 +5278,7 @@ paths:
                 properties:
                   records:
                     type: array
-                    description: Preview of the fetched records, capped at the first 20 of a record list.
+                    description: Preview of the fetched records, capped at `testLimit` (up to 500), or at 20 when `testLimit` is absent or 0.
                     items:
                       type: object
                   recordsTruncated:
@@ -5328,8 +5328,10 @@ paths:
                     injects DATRIS_TAP_TEST_LIMIT and stops pulling from a generator
                     fetch() after that many records, so a test's recordCount is a
                     preview size, not what a run produces. 0 (or a negative value)
-                    disables the cap and streams the whole source. Ignored for
-                    mode=run, which always reads every row.
+                    disables the cap and streams the whole source. The response's
+                    `records` preview follows the same limit (up to 500 rows); an
+                    uncapped test previews the first 20. Ignored for mode=run,
+                    which always reads every row.
                   example: 20
                 params:
                   type: object
