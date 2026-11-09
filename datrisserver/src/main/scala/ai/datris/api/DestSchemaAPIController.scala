@@ -15,6 +15,8 @@ import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 
+import scala.collection.JavaConverters._
+
 /** Destination-side typing, pull-based (plans/destination-schema-after-load.md):
   * GET infers a typed proposal on demand from landed rows; POST applies the
   * (possibly edited) types — migrating the landed table first, then writing
@@ -45,6 +47,50 @@ class DestSchemaAPIController {
         } catch {
             case e: DatrisException =>
                 logger.warn("Dest-types proposal refused: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
+
+    /** Propose destination column types from preview rows (e.g. a tap's
+      * `test_tap` records) before any pipeline exists. Body:
+      * {"columns": ["..."]?, "records": [{...}, ...]}. Stateless — nothing is
+      * read or stored. Conservative: a column needs
+      * [[DestSchemaApply.MinVotes]] typed values to be typed; fewer stays
+      * `string` with a `note`. 400 when `records` is empty. */
+    @PostMapping(
+        path = Array("/pipeline/propose-schema"),
+        consumes = Array(MediaType.APPLICATION_JSON_VALUE),
+        produces = Array(MediaType.APPLICATION_JSON_VALUE)
+    )
+    def proposeFromRecords(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: ProposeSchemaRequest
+    ): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /pipeline/propose-schema called")
+            APIKeyValidator.validate(apiKey)
+            val javaRecords: Seq[java.util.Map[String, Object]] =
+                if (body == null || body.records == null) Seq.empty
+                else body.records.asScala.toSeq.filter(_ != null)
+            // Column order: explicit list, else the union of record keys in
+            // first-seen order (read from the ordered JSON maps, before
+            // conversion to Scala maps loses key order).
+            val columns: List[String] =
+                if (body != null && body.columns != null && !body.columns.isEmpty) body.columns.asScala.toList
+                else {
+                    val seen = new java.util.LinkedHashSet[String]()
+                    javaRecords.foreach(r => r.keySet().asScala.foreach(seen.add))
+                    seen.asScala.toList
+                }
+            val records: Seq[Map[String, Any]] = javaRecords.map(_.asScala.toMap[String, Any])
+            val proposal = DestSchemaApply.proposeFromRecords(columns, records)
+            new ResponseEntity[String](new Gson().toJson(proposal), HttpStatus.OK)
+        } catch {
+            case e: DatrisException =>
+                logger.warn("Propose-schema refused: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -89,4 +135,11 @@ class DestSchemaAPIController {
 case class ApplyDestTypesRequest(
     pipeline: String = null,
     fields: java.util.List[SchemaField] = null
+)
+
+/** Request body for propose-schema: preview rows plus an optional column
+  * order (defaults to the union of record keys in first-seen order). */
+case class ProposeSchemaRequest(
+    columns: java.util.List[String] = null,
+    records: java.util.List[java.util.Map[String, Object]] = null
 )

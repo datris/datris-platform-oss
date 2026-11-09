@@ -114,6 +114,30 @@ object DestSchemaApply {
         DestTypesProposal(pipelineName, eligible = true, reason = null, message = null, fields, rows.size)
     }
 
+    /** Typed-vote threshold for preview rows: a column needs at least this many
+      * non-null typed values before a proposal types it (fewer stays `string`
+      * with a thin-evidence note). Landed-data `propose` uses no threshold. */
+    val MinVotes = 5
+
+    /** Propose destination column types from a tap's preview rows (nothing has
+      * landed yet). Stateless and destination-agnostic: the caller decides
+      * whether a type grid applies. `columns` null → the union of record keys
+      * in first-seen order. Conservative via [[MinVotes]]. */
+    def proposeFromRecords(columns: List[String], records: Seq[Map[String, Any]]): DestTypesProposal = {
+        if (records == null || records.isEmpty)
+            throw new DatrisException("No preview rows to infer from")
+        val names: List[String] =
+            if (columns != null) columns
+            else {
+                val seen = new java.util.LinkedHashSet[String]()
+                records.foreach(r => if (r != null) r.keys.foreach(seen.add))
+                seen.asScala.toList
+            }
+        val fields = DestTypeInference.inferFieldsFromRecords(names, records.filter(_ != null), MinVotes)
+        logger.info("Preview schema proposal: inferred " + fields.size + " columns from " + records.size + " preview rows")
+        DestTypesProposal(pipeline = null, eligible = true, reason = null, message = null, fields, records.size)
+    }
+
     private def ineligible(pipelineName: String, reason: String, message: String): DestTypesProposal =
         DestTypesProposal(pipelineName, eligible = false, reason, message, fields = null, sampleRowCount = 0)
 

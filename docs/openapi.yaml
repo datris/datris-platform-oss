@@ -2709,6 +2709,86 @@ paths:
             or script contract than the pipeline has now; nothing was changed.
         '502':
           description: The script could not be stored; the current script is unchanged
+  /api/v1/pipeline/propose-schema:
+    post:
+      tags: [Pipelines]
+      summary: Propose destination column types from preview rows
+      description: >-
+        Stateless type inference over rows you post, typically a tap's test
+        preview, before any pipeline exists. Uses the same deterministic
+        inference as GET /api/v1/pipeline/dest-types but is more cautious: a
+        column needs at least 5 non-null typed values to be typed. Below that,
+        or when every value is null, the column stays string and carries a
+        `note` (for example "2 non-null values in 20 rows; would be int").
+        A dirty value keeps the column string and reports it in `stringReason`.
+        Nothing is read from a destination and nothing is stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [records]
+              properties:
+                columns:
+                  type: array
+                  description: >-
+                    Column order for the proposal. Defaults to the union of the
+                    record keys in first-seen order.
+                  items:
+                    type: string
+                records:
+                  type: array
+                  description: Preview rows as name-to-value objects. Names match case-insensitively.
+                  items:
+                    type: object
+                    additionalProperties: true
+      responses:
+        '200':
+          description: The proposal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  eligible:
+                    type: boolean
+                    description: Always true for this endpoint.
+                  sampleRowCount:
+                    type: integer
+                    description: Number of rows the proposal was inferred from.
+                  fields:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        type:
+                          type: string
+                          enum: [string, boolean, int, bigint, double, date, timestamp]
+                        samples:
+                          type: array
+                          description: Up to 5 distinct values, truncated.
+                          items:
+                            type: string
+                        stringReason:
+                          type: object
+                          description: Why the column stayed string, when a dirty value blocked a type.
+                          properties:
+                            value:
+                              type: string
+                            blocked:
+                              type: string
+                        note:
+                          type: string
+                          description: >-
+                            Why the column stayed string when too few values
+                            were present to type it.
+        '400':
+          description: No preview rows (empty `records`)
+        '500':
+          description: Error
   /api/v1/pipeline/dest-types:
     get:
       tags: [Pipelines]

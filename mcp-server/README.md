@@ -84,7 +84,7 @@ There is no server-side API key. Each connecting agent authenticates per session
 
 ## Tools
 
-89 tools across these categories:
+90 tools across these categories:
 
 - **Pipeline Management** — create, list, get, delete pipelines (PostgreSQL, MongoDB, Snowflake, Databricks, Microsoft SQL Server / Azure SQL, object store, vector stores); upload files; monitor jobs
 - **Vector Search** — semantic search across Qdrant, Weaviate, Milvus, Chroma, pgvector

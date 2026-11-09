@@ -24,8 +24,39 @@ The Assistant is open-ended. Some examples:
 
 The agent will reach for tools as it needs them: web search to find a source,
 `list_taps` / `list_pipelines` to check for existing work, `create_tap_secret`
-when credentials are needed, `create_tap`, `test_tap`, `create_pipeline`, and
+when credentials are needed, `create_tap`, `test_tap`, `propose_pipeline_schema`, `create_pipeline`, and
 so on.
+
+## Preview and confirm the schema
+
+When the Assistant builds a tap and a pipeline together, it builds the tap
+first and takes the pipeline's column types from rows the tap actually
+returned:
+
+1. **Creates and tests the tap.** The test pulls a short preview (20 rows by
+   default) and lands nothing.
+2. **Shows the proposed schema.** Each column gets a recommended type with its
+   evidence: sample values, plus a reason when it stays text. Recommendations
+   are cautious. A column with fewer than 5 values, only empty values, or a
+   value that doesn't fit a type (such as `N/A` in a number column) stays text
+   and says why.
+3. **Asks you to confirm.** Accept the types, change any of them ("make that
+   column an integer"), or ask for more rows to get more evidence.
+4. **Asks one follow-up question.** It offers data-quality checks,
+   transformations, and field protection for the confirmed columns. "None" is a
+   fine answer.
+5. **Creates the pipeline with the confirmed types and attaches the tap.** On
+   Postgres, Snowflake, Databricks, SQL Server, and object store destinations,
+   the first run lands typed columns, not text.
+
+That is two questions in total. The destination, key columns, and schedule
+are still agreed in the plan the Assistant states up front. Vector-store
+destinations have no column types, so you only see the preview.
+
+Pipelines built from a dropped file or from rows you paste into the chat still
+use a small sample, and their columns are stored as text. To type those columns
+after the first load, click the **text** badge next to the pipeline's
+destination on the Pipelines tab.
 
 ## Drop a file to build a pipeline
 

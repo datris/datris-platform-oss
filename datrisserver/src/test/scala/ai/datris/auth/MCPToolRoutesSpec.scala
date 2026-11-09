@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 89) // +query_sqlserver (mssql-query-and-typing.md)
+        assert(MCPToolRoutes.allToolNames.size == 90) // +propose_pipeline_schema (assistant-preview-confirm-schema.md)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 
@@ -140,6 +140,15 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(CapabilityRoutes.lookup("POST", "/api/v1/pipeline/protect/suggest") == RouteCheck.Require("pipeline", "read"))
         assert(MCPToolRoutes.allowedTools(key("pipeline:read")).contains("suggest_field_protection"))
         assert(!MCPToolRoutes.allowedTools(key("job:read")).contains("suggest_field_protection"))
+    }
+
+    // Story: Assistant preview-and-confirm schema (plans/stories/assistant-preview-confirm-schema.md).
+    // Primary route is the capped test run; the secondary propose-schema call is a pipeline read.
+    test("propose_pipeline_schema is mapped to the test run; propose-schema is a pipeline:read route") {
+        assert(MCPToolRoutes.tools.toMap.get("propose_pipeline_schema") == Some(MCPToolRoutes.Mapped("POST", "/api/v1/tap/run")))
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/pipeline/propose-schema") == RouteCheck.Require("pipeline", "read"))
+        assert(MCPToolRoutes.allowedTools(key("tap:run")).contains("propose_pipeline_schema"))
+        assert(!MCPToolRoutes.allowedTools(key("pipeline:read")).contains("propose_pipeline_schema"))
     }
 
     test("get_pipeline_result is a job:read tool mapped to GET /api/v1/pipeline/result") {

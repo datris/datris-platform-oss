@@ -214,6 +214,17 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'propose_pipeline_schema',
+      description: 'Preview a tested tap\'s rows and recommend a destination type per column before the pipeline exists. Runs a capped test, then infers conservatively (thin, all-null or mixed columns stay string with a reason). Pass the confirmed list as schema_fields on create_pipeline. Vector destinations get a preview only.',
+      category: 'Taps',
+      parameters: [
+        { name: 'tap', type: 'string', description: 'Name of the tested tap', required: true, inputType: 'text' },
+        { name: 'destination', type: 'string', description: 'Destination the pipeline will use (e.g. postgres, mongodb, objectstore, pgvector)', required: true, inputType: 'text' },
+        { name: 'limit', type: 'integer', description: 'Rows to preview and infer from (default 20)', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: false
+    },
+    {
       name: 'update_tap',
       description: 'Update a tap\'s CONFIG (schedule, target pipeline, enabled flag, description) without touching the script. To change the SCRIPT itself, call create_tap again with the same name — it upserts and replaces the script.',
       category: 'Taps',
