@@ -415,11 +415,7 @@
             </div>
 
             <!-- Error message -->
-            <div class="assistant-error" *ngIf="turn.errorMessage && !turn.retried">
-              <span class="assistant-error-text">{{ turn.errorMessage }}</span>
-              <button class="assistant-retry" *ngIf="state.canRetry(turn)" (click)="state.retryLast()">Retry</button>
-            </div>
-            <div class="assistant-error-retried" *ngIf="turn.errorMessage && turn.retried">Interrupted by an error; retried below.</div>
+            <div class="assistant-error" *ngIf="turn.errorMessage">{{ turn.errorMessage }}</div>
           </div>
 
         </ng-container>

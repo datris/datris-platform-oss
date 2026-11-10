@@ -84,6 +84,14 @@ object AgentLoop {
           * token bound to the exact input; the UI renders Confirm / Cancel on
           * the matching tool card. Emitted before that call's ToolResult. */
         case class ConfirmRequest(id: String, tool: String, summary: String, token: String) extends LoopEvent
+
+        /** The model call failed and is being retried (`attempt` of `max`).
+          * Whatever the failed attempt streamed this iteration — text,
+          * thinking, tool_use cards — is void: the UI drops it back to the
+          * iteration's start and shows a transient "retrying" status that the
+          * retried stream replaces. No tool from the failed attempt ran (tools
+          * only execute after a complete response; see `run`). */
+        case class Retrying(attempt: Int, max: Int, reason: String) extends LoopEvent
         case object Done extends LoopEvent
         case class Error(message: String) extends LoopEvent
     }
@@ -198,6 +206,11 @@ object AgentLoop {
                 iter += 1
                 sink(LoopEvent.IterationStart)
 
+                // Tools execute only below, after this call has returned a
+                // COMPLETE response. A call that fails mid-stream (and is
+                // retried inside callWithRetryAndFallback) has run no tool:
+                // its streamed tool_use blocks were only shown, never
+                // dispatched, so a retry cannot run a tool twice.
                 val response: AIToolResponse = callWithRetryAndFallback(
                     aiConfig = aiConfig,
                     system = system,
@@ -207,7 +220,8 @@ object AgentLoop {
                     maxTokens = maxTokensPerCall,
                     sink = streamSinkAdapter(sink),
                     cancelled = cancelled,
-                    notice = (msg: String) => sink(LoopEvent.Notice(msg))
+                    notice = (msg: String) => sink(LoopEvent.Notice(msg)),
+                    retrying = (a: Int, m: Int, r: String) => sink(LoopEvent.Retrying(a, m, r))
                 )
 
                 if (cancelled()) {
@@ -622,10 +636,9 @@ object AgentLoop {
       *    X — Y was overloaded".
       *  - Transient transport / provider-side errors ([[isTransientTransportError]]:
       *    TLS faults, connection resets and timeouts, HTTP 5xx): retried on the
-      *    same schedule, but ONLY while nothing from this call has reached the
-      *    sink yet — a retry after partial output would duplicate it on
-      *    screen. No model fallback; once retries are exhausted the last
-      *    error propagates.
+      *    same schedule, also after partial output — `retrying` fires before
+      *    each retry so the UI drops the failed attempt's output. No model
+      *    fallback; once retries are exhausted the last error propagates.
       *
       * Error events from failed attempts are swallowed — the user only sees the
       * successful attempt's stream. Other errors propagate immediately (no
@@ -640,7 +653,8 @@ object AgentLoop {
         maxTokens: Int,
         sink: AIStreamEvent => Unit,
         cancelled: () => Boolean,
-        notice: String => Unit
+        notice: String => Unit,
+        retrying: (Int, Int, String) => Unit
     ): AIToolResponse =
         callWithRetry(
             call = (cfg: AIConfig, s: AIStreamEvent => Unit) =>
@@ -657,7 +671,8 @@ object AgentLoop {
             aiConfig = aiConfig,
             sink = sink,
             cancelled = cancelled,
-            notice = notice
+            notice = notice,
+            retrying = retrying
         )
 
     /** The retry policy of [[callWithRetryAndFallback]], with the provider call
@@ -668,51 +683,63 @@ object AgentLoop {
         sink: AIStreamEvent => Unit,
         cancelled: () => Boolean,
         notice: String => Unit,
+        retrying: (Int, Int, String) => Unit = (_: Int, _: Int, _: String) => (),
         sleep: Long => Unit = (ms: Long) => Thread.sleep(ms)
     ): AIToolResponse = {
         var emitStreamErrors = false
-        // Whether the current attempt has forwarded any content to the sink.
-        var streamed = false
         val gatedSink: AIStreamEvent => Unit = {
             case AIStreamEvent.Error(_) if !emitStreamErrors => ()
-            case AIStreamEvent.IterationStart => sink(AIStreamEvent.IterationStart)
-            case other =>
-                streamed = true
-                sink(other)
+            case other => sink(other)
         }
+        val maxRetries = OverloadBackoffMs.length
 
         var lastOverloadError: Throwable = null
 
-        // Attempt 0 = original call; attempts 1..N = retries with backoff.
-        var attempt = 0
-        var reason = ""
-        while (attempt <= OverloadBackoffMs.length) {
+        // Separate budgets: overload retries and transient retries each get
+        // the full OverloadBackoffMs schedule, so a transient fault does not
+        // eat into the overload retries before the Sonnet fallback.
+        var overloadAttempts = 0
+        var transientAttempts = 0
+        // The retry about to run: (attempt number, log reason, UI reason).
+        var pending: Option[(Int, String, String)] = None
+        while (overloadAttempts <= maxRetries) {
             if (cancelled()) throw new DatrisException("Cancelled by user")
-            if (attempt > 0) {
-                val sleepMs = OverloadBackoffMs(attempt - 1)
-                logger.warn(
-                    "AgentLoop: " + reason + "; retrying in " + sleepMs +
-                        "ms (retry " + attempt + " of " + OverloadBackoffMs.length + ")"
-                )
-                try sleep(sleepMs)
-                catch { case _: InterruptedException => throw new DatrisException("Cancelled by user") }
-                if (cancelled()) throw new DatrisException("Cancelled by user")
+            pending.foreach {
+                case (attempt, reason, shortReason) =>
+                    val sleepMs = OverloadBackoffMs(attempt - 1)
+                    logger.warn(
+                        "AgentLoop: " + reason + "; retrying in " + sleepMs +
+                            "ms (retry " + attempt + " of " + maxRetries + ")"
+                    )
+                    // Tell the UI first: it discards what the failed attempt
+                    // streamed and shows a "retrying" status until the retry streams.
+                    retrying(attempt, maxRetries, shortReason)
+                    try sleep(sleepMs)
+                    catch { case _: InterruptedException => throw new DatrisException("Cancelled by user") }
+                    if (cancelled()) throw new DatrisException("Cancelled by user")
             }
-            streamed = false
+            pending = None
             try {
                 return call(aiConfig, gatedSink)
             } catch {
                 case e: DatrisException if isOverloadedError(e) =>
                     lastOverloadError = e
-                    reason = "Anthropic overloaded"
-                    attempt += 1
+                    overloadAttempts += 1
+                    if (overloadAttempts <= maxRetries)
+                        pending = Some((overloadAttempts, "Anthropic overloaded", "provider overloaded"))
+                // Transient errors are retried even when the attempt already
+                // streamed output: no tool from it ran (see `run`), and the
+                // `retrying` callback tells the UI to drop that output.
                 case e: Exception
-                    if !streamed && !cancelled() && isTransientTransportError(e) &&
-                        attempt < OverloadBackoffMs.length =>
-                    reason = "transient AI provider error " + e.getClass.getName + ": " + e.getMessage
-                    attempt += 1
-                // Anything else — and a transient error once output has
-                // streamed or the retries are spent — propagates.
+                    if !cancelled() && isTransientTransportError(e) && transientAttempts < maxRetries =>
+                    transientAttempts += 1
+                    pending = Some((
+                        transientAttempts,
+                        "transient AI provider error " + e.getClass.getName + ": " + e.getMessage,
+                        "connection problem"
+                    ))
+                // Anything else, and a transient error once its retries are
+                // spent, propagates.
             }
         }
 

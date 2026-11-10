@@ -4,6 +4,7 @@ import { ChatMessage, AssistantEvent } from '../../assistant.service';
 import { SearchChatService } from './search-chat.service';
 import { SearchChatContextService } from './search-chat-context.service';
 import { loadChatState, saveChatState, clearChatState } from '../../shared/chat-persistence';
+import { handleRetryEvent } from '../../shared/chat-retry';
 
 export interface ToolCard {
   kind: 'tool';
@@ -165,6 +166,8 @@ export class SearchChatStateService {
   }
 
   private handleEvent(evt: AssistantEvent, turn: AssistantTurn): void {
+    // Automatic retry of a failed model call (shared/chat-retry.ts).
+    if (handleRetryEvent(evt, turn)) return;
     switch (evt.type) {
       case 'iteration_start':
         break;

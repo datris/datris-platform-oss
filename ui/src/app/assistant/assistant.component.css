@@ -742,9 +742,6 @@
 .action-link:hover { color: #b3d1ff; text-decoration: underline; }
 
 .assistant-error {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
   margin-top: 10px;
   padding: 8px 12px;
   background: rgba(255, 60, 60, 0.1);
@@ -1114,27 +1111,6 @@
   color: #6ad88a;
 }
 .schema-pull-hint {
-  font-size: 12px;
-  color: #8a8f99;
-}
-.assistant-error-text {
-  flex: 1;
-}
-.assistant-retry {
-  flex: none;
-  padding: 3px 12px;
-  font-size: 12.5px;
-  border: 1px solid rgba(255, 144, 144, 0.5);
-  border-radius: 6px;
-  background: transparent;
-  color: #ffb0b0;
-  cursor: pointer;
-}
-.assistant-retry:hover {
-  background: rgba(255, 60, 60, 0.15);
-}
-.assistant-error-retried {
-  margin-top: 8px;
   font-size: 12px;
   color: #8a8f99;
 }

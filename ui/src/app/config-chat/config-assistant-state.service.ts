@@ -3,6 +3,7 @@ import { Subscription, Subject, Observable } from 'rxjs';
 import { ChatMessage, AssistantEvent } from '../assistant.service';
 import { ConfigAssistantService } from './config-assistant.service';
 import { ConfigChatContextService } from './config-chat-context.service';
+import { handleRetryEvent } from '../shared/chat-retry';
 
 /** A mutating tool the server wants the user to approve. The card shows the
  *  summary with Confirm / Cancel; `decide()` settles it exactly once. */
@@ -290,6 +291,8 @@ export class ConfigAssistantStateService {
   }
 
   private handleEvent(evt: AssistantEvent, turn: AssistantTurn): void {
+    // Automatic retry of a failed model call (shared/chat-retry.ts).
+    if (handleRetryEvent(evt, turn)) return;
     switch (evt.type) {
       case 'iteration_start':
         break;

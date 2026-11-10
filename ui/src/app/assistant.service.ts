@@ -95,6 +95,10 @@ export type AssistantEvent =
    *  of the assistant's textual response. Currently used when the model is
    *  downgraded mid-request (e.g. Opus → Sonnet after sustained overload). */
   | { type: 'notice'; message: string }
+  /** The model call failed transiently and the server is retrying it
+   *  (`attempt` of `max`): drop what the failed attempt streamed this
+   *  iteration and show a status until the retry streams. */
+  | { type: 'retrying'; attempt: number; max: number; reason: string }
   | { type: 'done' }
   | { type: 'error'; message: string };
 

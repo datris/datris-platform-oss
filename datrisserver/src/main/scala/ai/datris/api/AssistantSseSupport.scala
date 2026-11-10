@@ -175,6 +175,13 @@ object AssistantSseSupport {
                 obj.addProperty("summary", summary)
                 obj.addProperty("token", token)
                 sendEvent(emitter, "confirm_request", obj)
+            case AgentLoop.LoopEvent.Retrying(attempt, max, reason) =>
+                val obj = new JsonObject()
+                obj.addProperty("type", "retrying")
+                obj.addProperty("attempt", attempt)
+                obj.addProperty("max", max)
+                obj.addProperty("reason", reason)
+                sendEvent(emitter, "retrying", obj)
             case AgentLoop.LoopEvent.Notice(msg) =>
                 sendEvent(emitter, "notice", makeEvent("notice", "message", msg))
             case AgentLoop.LoopEvent.Done =>
