@@ -320,7 +320,7 @@
                                 <span class="schema-changed" *ngIf="f.type !== f.recommended">changed</span>
                               </td>
                               <td class="schema-samples">{{ schemaSamples(f) }}</td>
-                              <td class="schema-reason">{{ f.stringReason || f.note || '' }}</td>
+                              <td class="schema-reason">{{ schemaReason(f) }}</td>
                             </tr>
                           </tbody>
                         </table>

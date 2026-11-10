@@ -362,6 +362,7 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
       case 'web_search':            return { icon: '🔍', label: 'Searching the web' + (arg('query') ? ` for ${arg('query')}` : '') };
       case 'create_tap':            return { icon: '🛠',  label: 'Creating tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'update_tap':            return { icon: '✏️', label: 'Updating tap' + (arg('name') ? ` ${arg('name')}` : '') };
+      case 'propose_pipeline_schema': return { icon: '🧮', label: 'Proposing column types' + (arg('tap') ? ` for ${arg('tap')}` : '') };
       case 'test_tap':              return { icon: '▶️', label: 'Testing tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'run_tap':               return { icon: '▶️', label: 'Running tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'create_pipeline':       return { icon: '🛠',  label: 'Creating pipeline' + (arg('name') ? ` ${arg('name')}` : '') };
@@ -689,6 +690,18 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     const s = typeof value === 'object' ? JSON.stringify(value) : String(value);
     const max = AssistantComponent.SCHEMA_CELL_MAX;
     return s.length <= max ? s : s.substring(0, max) + '…';
+  }
+
+  /** The grid's reason cell: why the column stayed text (`stringReason` is
+   *  `{value, blocked}` from the server), else the thin-evidence `note`. */
+  schemaReason(f: { stringReason?: any; note?: string | null }): string {
+    const r = f.stringReason;
+    if (r && typeof r === 'object') {
+      const value = this.schemaCell(r.value);
+      return r.blocked ? `stayed text — found '${value}', would be ${r.blocked}` : `stayed text — found '${value}'`;
+    }
+    if (typeof r === 'string' && r.trim()) return r;
+    return f.note || '';
   }
 
   schemaSamples(f: { samples?: any[] }): string {

@@ -58,8 +58,9 @@ export interface SchemaProposalField {
   name: string;
   type: string;
   samples?: string[];
-  /** Why the column stayed `string` (a value blocked a type). */
-  stringReason?: string | null;
+  /** Why the column stayed `string`: the server sends the value that blocked
+   *  a type, `{value, blocked}`. A plain string is tolerated too. */
+  stringReason?: { value: string; blocked: string } | string | null;
   /** Thin-evidence note (too few values to type it). */
   note?: string | null;
 }

@@ -40,7 +40,7 @@ const LONG_VALUE = 'L'.repeat(200);
 function fields(): any[] {
   return [
     { name: 'id', type: 'int', samples: ['1', '2'], stringReason: null, note: null },
-    { name: 'price', type: 'string', samples: ['9.99', 'N/A'], stringReason: "stayed text — found 'N/A', would be double", note: null },
+    { name: 'price', type: 'string', samples: ['9.99', 'N/A'], stringReason: { value: 'N/A', blocked: 'double' }, note: null },
     { name: 'qty', type: 'string', samples: ['3'], stringReason: null, note: 'only 1 typed value' }
   ];
 }
@@ -364,7 +364,7 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
       sampleRowCount: 100,
       fields: [
         { name: 'id', type: 'bigint', samples: ['1', '100'], stringReason: null, note: null },
-        { name: 'price', type: 'string', samples: ['9.99', 'N/A', 'n/a'], stringReason: "stayed text — found 'n/a', would be double", note: null },
+        { name: 'price', type: 'string', samples: ['9.99', 'N/A', 'n/a'], stringReason: { value: 'n/a', blocked: 'double' }, note: null },
         { name: 'qty', type: 'int', samples: ['3', '4'], stringReason: null, note: null }
       ]
     }));
@@ -391,7 +391,7 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     expect(types['price']).withContext('the type the user changed survives the refresh').toBe('double');
     expect(types['id']).withContext('an untouched column takes the new recommendation').toBe('bigint');
     expect(types['qty']).toBe('int');
-    expect(sp.fields.find((f: any) => f.name === 'price').stringReason).toContain("found 'n/a'");
+    expect(sp.fields.find((f: any) => f.name === 'price').stringReason).toEqual({ value: 'n/a', blocked: 'double' });
     expect(sp.preview.length).toBeLessThanOrEqual(5);
     expect(sp.preview[0]).toEqual(records[0]);
     expect(text()).toContain("found 'n/a', would be double");
@@ -529,6 +529,28 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     (fixture.componentInstance as any).confirmSchemaGrid(c);
     expect(sendSpy.calls.mostRecent().args[0])
       .toBe('Confirmed schema for tap `prices_tap` (20 rows reviewed): `first name` string, qty int');
+  });
+
+  it('the reason cell formats the server\'s {value, blocked} stringReason, never [object Object]', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_reason', true, {
+      fields: [
+        { name: 'qty', type: 'string', samples: ['0', '2'], stringReason: { value: 'N/A', blocked: 'int' }, note: null },
+        { name: 'id', type: 'int', samples: ['1'], stringReason: null, note: null }
+      ]
+    });
+    c.expanded = true;
+    await render();
+    const t = text();
+    expect(t).toContain("stayed text — found 'N/A', would be int");
+    expect(t).not.toContain('[object Object]');
+  });
+
+  it('the tool header names the tap being typed', async () => {
+    await mount();
+    proposeAndFinish();
+    await render();
+    expect(text()).toContain('Proposing column types for prices_tap');
   });
 
   it('the pull-more-rows limit starts from the rows the proposal used', () => {
