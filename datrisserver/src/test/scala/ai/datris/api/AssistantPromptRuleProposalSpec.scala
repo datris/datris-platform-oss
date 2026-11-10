@@ -104,4 +104,13 @@ class AssistantPromptRuleProposalSpec extends AnyFunSuite {
         )
         assert(b.contains("(on failure: warn only)"), s"DQ bullet must give the warn-only reply shape:\n$b")
     }
+
+    // Story: Assistant cards: Clear all on rule proposals, exclusive "None" on
+    // multi-select questions (plans/stories/assistant-card-clear-all-exclusive-option.md),
+    // Acceptance bullet 5. The new `exclusive` wording must stay domain-neutral.
+    test("the ask_user tool def carries no vendor/domain proper noun") {
+        val text = AssistantAPIController.syntheticAskUserToolDef().toString
+        val hits = vendorOrDomain.findAllIn(text).toList
+        assert(hits.isEmpty, s"domain bias in ask_user tool def: $hits")
+    }
 }

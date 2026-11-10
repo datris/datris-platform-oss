@@ -342,4 +342,126 @@ describe('Assistant question cards (ask_user)', () => {
     expect(rows.map(r => (r.querySelector('.ask-option-label')?.textContent || '').trim())).toEqual(labels);
     expect(el.querySelectorAll('.ask-other').length).withContext('the Other input is still shown').toBe(1);
   });
+
+  // -------------------------------------------------------------------
+  // Story: Assistant cards: Clear all on rule proposals, exclusive "None" on
+  // multi-select questions (plans/stories/assistant-card-clear-all-exclusive-option.md),
+  // Acceptance bullets 2-3. On a multiSelect question an option flagged
+  // `exclusive: true` (or, without the flag, a label matching the narrow
+  // None/Skip/No change regex) clears the others when ticked and is cleared
+  // when another is ticked. `isExclusiveAskOption(question, option)` is an
+  // exported pure helper in assistant-state.service.
+
+  function extrasQuestion(multiSelect: boolean, flag: boolean, firstLabel = 'None'): any {
+    const first: any = { label: firstLabel, description: 'Nothing extra' };
+    if (flag) first.exclusive = true;
+    return {
+      header: 'Extras', question: 'Which extras do you want?', multiSelect,
+      options: [first, { label: 'A', description: 'a' }, { label: 'B', description: 'b' }, { label: 'C', description: 'c' }]
+    };
+  }
+
+  function askWith(id: string, qs: any[]): any {
+    state.send('I want a pipeline from a CSV');
+    stream.next({ type: 'ask_user', id, questions: qs });
+    stream.next({ type: 'done' });
+    stream.complete();
+    return card(id);
+  }
+
+  function selectedOf(c: any, index = 0): string[] {
+    return Array.from(stateModule.askUserSelected(c.askUser, index)).sort();
+  }
+
+  function pick(c: any, index: number, ...labels: string[]): void {
+    for (const l of labels) fixture.componentInstance.toggleAskUserOption(c, index, l);
+  }
+
+  it('exclusive: A then None (flagged) leaves only None', () => {
+    mount();
+    const c = askWith('toolu_ex1', [extrasQuestion(true, true)]);
+    pick(c, 0, 'A', 'None');
+    expect(selectedOf(c)).toEqual(['None']);
+  });
+
+  it('exclusive: None (flagged) then B leaves only B', () => {
+    mount();
+    const c = askWith('toolu_ex2', [extrasQuestion(true, true)]);
+    pick(c, 0, 'None', 'B');
+    expect(selectedOf(c)).toEqual(['B']);
+  });
+
+  it('exclusive: A then B still combine', () => {
+    mount();
+    const c = askWith('toolu_ex3', [extrasQuestion(true, true)]);
+    pick(c, 0, 'A', 'B');
+    expect(selectedOf(c)).toEqual(['A', 'B']);
+  });
+
+  it('exclusive: label "None" without the flag behaves the same (label fallback)', () => {
+    mount();
+    const c = askWith('toolu_ex4', [extrasQuestion(true, false)]);
+    pick(c, 0, 'A', 'None');
+    expect(selectedOf(c)).withContext('A then None').toEqual(['None']);
+    pick(c, 0, 'B');
+    expect(selectedOf(c)).withContext('None then B').toEqual(['B']);
+    pick(c, 0, 'C');
+    expect(selectedOf(c)).withContext('B then C combine').toEqual(['B', 'C']);
+  });
+
+  it('exclusive: a label "No schedule" without the flag is not exclusive', () => {
+    mount();
+    const c = askWith('toolu_ex5', [extrasQuestion(true, false, 'No schedule')]);
+    pick(c, 0, 'A', 'No schedule');
+    expect(selectedOf(c)).toEqual(['A', 'No schedule']);
+    pick(c, 0, 'B');
+    expect(selectedOf(c)).toEqual(['A', 'B', 'No schedule']);
+  });
+
+  it('exclusive: the same options on a single-select question keep radio behaviour (one selection, auto-advance)', () => {
+    mount();
+    const c = askWith('toolu_ex6', [extrasQuestion(false, true), QUESTIONS[1]]);
+    pick(c, 0, 'A');
+    expect(selectedOf(c)).toEqual(['A']);
+    expect(fixture.componentInstance.askUserActive(c)).withContext('a single-select pick advances').toBe(1);
+    pick(c, 0, 'None');
+    expect(selectedOf(c)).toEqual(['None']);
+    pick(c, 0, 'B');
+    expect(selectedOf(c)).toEqual(['B']);
+  });
+
+  it('exclusive: the submitted answer line after A then None is "Extras: None"', () => {
+    mount();
+    const c = askWith('toolu_ex7', [extrasQuestion(true, true)]);
+    pick(c, 0, 'A', 'None');
+    const sendSpy = spyOn(state, 'send');
+    (fixture.componentInstance as any).submitAskUser(c);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy.calls.mostRecent().args[0]).toBe('Extras: None');
+  });
+
+  function isExclusiveAskOption(q: any, o: any): boolean {
+    const exportName = 'isExclusiveAskOption';
+    const fn = (stateModule as any)[exportName];
+    expect(typeof fn).withContext('isExclusiveAskOption must be exported from assistant-state.service').toBe('function');
+    return typeof fn === 'function' ? fn(q, o) : (undefined as any);
+  }
+
+  it('isExclusiveAskOption: flag true is exclusive on multiSelect only', () => {
+    const multi = { header: 'H', question: 'Q?', multiSelect: true, options: [] };
+    const single = { header: 'H', question: 'Q?', multiSelect: false, options: [] };
+    expect(isExclusiveAskOption(multi, { label: 'Leave it', description: '', exclusive: true })).toBe(true);
+    expect(isExclusiveAskOption(single, { label: 'Leave it', description: '', exclusive: true })).toBe(false);
+    expect(isExclusiveAskOption(single, { label: 'None', description: '' })).withContext('label fallback is multi-select only').toBe(false);
+  });
+
+  it('isExclusiveAskOption: label fallback matches the narrow none/skip/no change set only', () => {
+    const multi = { header: 'H', question: 'Q?', multiSelect: true, options: [] };
+    for (const label of ['none', 'None of the above', 'Skip', 'No change', 'no thanks', '  None  ']) {
+      expect(isExclusiveAskOption(multi, { label, description: '' })).withContext(`"${label}" is exclusive`).toBe(true);
+    }
+    for (const label of ['No schedule', 'Nonexistent', 'Skip weekends']) {
+      expect(isExclusiveAskOption(multi, { label, description: '' })).withContext(`"${label}" is not exclusive`).toBe(false);
+    }
+  });
 });

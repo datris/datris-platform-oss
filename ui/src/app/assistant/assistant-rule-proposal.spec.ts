@@ -602,4 +602,126 @@ describe('Assistant rule-proposal card (rule_proposal)', () => {
     (fixture.componentInstance as any).confirmRules(c);
     expect(sendSpy.calls.mostRecent().args[0]).toBe(ALL_CONFIRMED);
   });
+
+  // -------------------------------------------------------------------
+  // Story: Assistant cards: Clear all on rule proposals, exclusive "None" on
+  // multi-select questions (plans/stories/assistant-card-clear-all-exclusive-option.md),
+  // Acceptance bullet 1. One toggle button in the rule card's
+  // `.schema-actions` row, reading "Clear all" while any row is ticked and
+  // "Select all" when none is; `AssistantComponent.toggleAllRules(card)` and
+  // `anyRuleTicked(rp)`. Rows are never removed.
+
+  it('clear all: a card with three ticked rows shows Clear all; it unticks every row, disables Confirm and becomes Select all', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.expanded = true;
+    await render();
+    expect(checkboxes().length).toBe(3);
+    expect(checkboxes().every(b => b.checked)).toBeTrue();
+    const clear = buttonNamed('Clear all');
+    expect(clear).withContext('a Clear all button on the rule card').toBeTruthy();
+    expect(ruleCard()!.contains(clear!)).withContext('Clear all lives inside .rule-card').toBeTrue();
+    expect(buttonNamed('Select all')).withContext('no Select all while rows are ticked').toBeUndefined();
+    clear!.click();
+    await render();
+    expect(checkboxes().length).withContext('rows stay after Clear all').toBe(3);
+    expect(checkboxes().every(b => !b.checked)).withContext('every checkbox unticked').toBeTrue();
+    expect(c.ruleProposal.items.every((i: any) => i.enabled === false)).toBeTrue();
+    expect(c.ruleProposal.items.map((i: any) => i.text)).toEqual(items().map(i => i.text));
+    expect(buttonNamed('Confirm')!.disabled).withContext('Confirm disabled with nothing ticked').toBeTrue();
+    expect(buttonNamed('Clear all')).toBeUndefined();
+    const select = buttonNamed('Select all');
+    expect(select).withContext('the button now reads Select all').toBeTruthy();
+    select!.click();
+    await render();
+    expect(checkboxes().length).toBe(3);
+    expect(checkboxes().every(b => b.checked)).withContext('Select all ticks every row').toBeTrue();
+    expect(c.ruleProposal.items.every((i: any) => i.enabled === true)).toBeTrue();
+    expect(buttonNamed('Confirm')!.disabled).withContext('Confirm enabled again').toBeFalse();
+    expect(buttonNamed('Clear all')).withContext('and the button reads Clear all again').toBeTruthy();
+  });
+
+  it('clear all: after Clear all, ticking one row and Confirm sends only that row', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.expanded = true;
+    await render();
+    const clear = buttonNamed('Clear all');
+    expect(clear).withContext('Clear all button').toBeTruthy();
+    clear!.click();
+    await render();
+    checkboxes()[1].click();
+    await render();
+    const sendSpy = spyOn(state, 'send');
+    const confirm = buttonNamed('Confirm')!;
+    expect(confirm.disabled).toBeFalse();
+    confirm.click();
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy.calls.mostRecent().args[0]).toBe(
+      'Confirmed data-quality checks for pipeline `sales_daily` (on failure: reject the run): 1. created_at parses as a date');
+  });
+
+  it('clear all: after Clear all, Add rule then typing enables Confirm and the reply carries the new row only', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.expanded = true;
+    await render();
+    const clear = buttonNamed('Clear all');
+    expect(clear).withContext('Clear all button').toBeTruthy();
+    clear!.click();
+    await render();
+    expect(buttonNamed('Confirm')!.disabled).toBeTrue();
+    buttonNamed('Add rule')!.click();
+    await render();
+    expect(c.ruleProposal.items.length).toBe(4);
+    const added = textInputs()[3];
+    expect(added).withContext('the added row has a text input').toBeTruthy();
+    added.value = 'qty is a whole number';
+    added.dispatchEvent(new Event('input'));
+    await render();
+    const confirm = buttonNamed('Confirm')!;
+    expect(confirm.disabled).withContext('typing into the added row enables Confirm').toBeFalse();
+    const sendSpy = spyOn(state, 'send');
+    confirm.click();
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy.calls.mostRecent().args[0]).toBe(
+      'Confirmed data-quality checks for pipeline `sales_daily` (on failure: reject the run): 1. qty is a whole number');
+  });
+
+  it('clear all: the transformations card has the same button', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_tr_clear', true, { kind: 'transformation', items: [{ text: 'trim whitespace', column: 'name' }] });
+    c.expanded = true;
+    await render();
+    expect(buttonNamed('Clear all')).withContext('Clear all on the transformations card').toBeTruthy();
+  });
+
+  it('clear all: toggleAllRules while streaming, on a submitted card and on a skipped card changes no enabled flag', async () => {
+    await mount();
+    const comp: any = fixture.componentInstance;
+    const flags = (c: any) => c.ruleProposal.items.map((i: any) => i.enabled);
+
+    const c = proposeAndFinish();
+    expect(typeof comp.toggleAllRules).withContext('AssistantComponent.toggleAllRules').toBe('function');
+    // Sanity: the method does work on an open card.
+    comp.toggleAllRules(c);
+    expect(flags(c)).withContext('toggleAllRules on an open card clears every row').toEqual([false, false, false]);
+    comp.toggleAllRules(c);
+    expect(flags(c)).toEqual([true, true, true]);
+
+    state.streaming = true;
+    comp.toggleAllRules(c);
+    state.streaming = false;
+    expect(flags(c)).withContext('streaming: no change').toEqual([true, true, true]);
+
+    comp.confirmRules(c);
+    expect(c.ruleProposal.submitted).toBeTrue();
+    comp.toggleAllRules(c);
+    expect(flags(c)).withContext('submitted: no change').toEqual([true, true, true]);
+
+    const s = proposeAndFinish('toolu_rp_skip');
+    s.ruleProposal.skipped = true;
+    comp.toggleAllRules(s);
+    expect(flags(s)).withContext('skipped: no change').toEqual([true, true, true]);
+  });
 });

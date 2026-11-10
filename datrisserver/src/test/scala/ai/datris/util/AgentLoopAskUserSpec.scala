@@ -173,4 +173,56 @@ class AgentLoopAskUserSpec extends AnyFunSuite {
         val optProps = options.getAsJsonObject("items").getAsJsonObject("properties")
         assert(optProps.has("label") && optProps.has("description"))
     }
+
+    // -------------------------------------------------------------------
+    // Story: Assistant cards: Clear all on rule proposals, exclusive "None"
+    // on multi-select questions (plans/stories/assistant-card-clear-all-exclusive-option.md),
+    // Acceptance bullet 4. `askUserQuestionsOf` carries `exclusive` through
+    // only when it is boolean `true`; the tool def gains an optional boolean
+    // `exclusive` option property and the description says so.
+
+    private def exclusiveOpts(exclusiveJson: Option[String]): List[JsonObject] = {
+        val ex = exclusiveJson.map(v => s""","exclusive":$v""").getOrElse("")
+        val qj = s"""{"header":"Extras","question":"Which extras?","multiSelect":true,"options":[""" +
+            s"""{"label":"None","description":"d"$ex},${opt("A")},${opt("B")}]}"""
+        val r = AgentLoop.askUserQuestionsOf(input(qj))
+        assert(r.isRight, s"expected Right, got $r")
+        questionsOf(r.toOption.get).head.getAsJsonArray("options").asScala.map(_.getAsJsonObject).toList
+    }
+
+    test("exclusive: an option with exclusive true comes out with exclusive true") {
+        val opts = exclusiveOpts(Some("true"))
+        val none = opts.head
+        assert(none.has("exclusive"), s"exclusive must be carried through: $none")
+        val e = none.get("exclusive")
+        assert(e.isJsonPrimitive && e.getAsJsonPrimitive.isBoolean && e.getAsBoolean, s"exclusive must be boolean true: $none")
+        assert(!opts(1).has("exclusive") && !opts(2).has("exclusive"), s"other options carry no exclusive key: $opts")
+    }
+
+    test("exclusive: false, the string \"true\", null or no key comes out without the key") {
+        for (v <- List(Some("false"), Some("\"true\""), Some("null"), None)) {
+            val none = exclusiveOpts(v).head
+            assert(!none.has("exclusive"), s"exclusive=$v must be dropped: $none")
+            assert(none.get("label").getAsString == "None")
+        }
+    }
+
+    private def optionItemSchema: JsonObject =
+        toolDef.getAsJsonObject("input_schema").getAsJsonObject("properties")
+            .getAsJsonObject("questions").getAsJsonObject("items")
+            .getAsJsonObject("properties").getAsJsonObject("options").getAsJsonObject("items")
+
+    test("exclusive: tool def option properties include exclusive of type boolean, not required") {
+        val props = optionItemSchema.getAsJsonObject("properties")
+        assert(props.has("exclusive"), s"option properties must include exclusive: $props")
+        assert(props.getAsJsonObject("exclusive").get("type").getAsString == "boolean")
+        val req = optionItemSchema.getAsJsonArray("required").asScala.map(_.getAsString).toSet
+        assert(!req.contains("exclusive"), s"exclusive must not be required: $req")
+        assert(Set("label", "description").subsetOf(req), "label and description stay required")
+    }
+
+    test("exclusive: the tool description mentions exclusive") {
+        val d = toolDef.get("description").getAsString
+        assert(d.contains("exclusive"), s"tool description must contain exclusive:\n$d")
+    }
 }
