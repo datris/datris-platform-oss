@@ -136,3 +136,44 @@ def test_pipeline_config_reference_data_quality_asks_warn_or_reject_with_the_con
 def test_codegen_rule_description_names_codegen_rule_on_failure():
     desc = _property_description("codegen_rule")
     assert "codegen_rule_on_failure" in desc, f"codegen_rule description must name its companion arg: {desc}"
+
+
+# ---------------------------------------------------------------------------
+# Story: Assistant: vector destinations skip checkpoint 2
+# (plans/stories/assistant-vector-skip-checkpoint-2.md), Acceptance bullet 3.
+
+_SKIP_CP2 = re.compile(r"(?i)skip checkpoint 2|no checkpoint 2|skips? (both|the follow-up)")
+
+
+def _assert_vector_skips_checkpoint_2(text, where):
+    for m in _SKIP_CP2.finditer(text):
+        if "vector" in text[max(0, m.start() - 400): m.start()].lower():
+            return
+    raise AssertionError(
+        f"{where}: 'vector' must appear within 400 chars before a skip-checkpoint-2 phrase "
+        f"(skip checkpoint 2 / no checkpoint 2 / skip both / skip the follow-up)"
+    )
+
+
+def test_tap_workflow_vector_skips_checkpoint_2():
+    _assert_vector_skips_checkpoint_2(_tap_workflow(), "MCP instructions Tap workflow")
+
+
+def test_tap_workflow_reference_vector_skips_checkpoint_2():
+    _assert_vector_skips_checkpoint_2(_tap_workflow_reference(), "datris://tap-workflow-reference")
+
+
+def test_pipeline_config_reference_vector_skips_checkpoint_2():
+    _assert_vector_skips_checkpoint_2(_pipeline_config_reference(), "datris://pipeline-config-reference")
+
+
+@pytest.mark.parametrize("heading,end", [("## Data Quality", "\n## Transformation"), ("## Transformation", "\n## ")])
+def test_pipeline_config_reference_dq_and_transform_not_for_vector(heading, end):
+    section = _between(_pipeline_config_reference(), heading, end)
+    assert "Not for vector destinations" in section, f"{heading} section must say 'Not for vector destinations':\n{section}"
+
+
+def test_propose_pipeline_schema_description_names_checks_transformations_or_protection():
+    src = _read(SERVER_PY)
+    block = _between(src, 'name="propose_pipeline_schema"', "inputSchema=")
+    assert "checks, transformations or protection" in block, block

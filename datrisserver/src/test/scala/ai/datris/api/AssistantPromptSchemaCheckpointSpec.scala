@@ -68,4 +68,52 @@ class AssistantPromptSchemaCheckpointSpec extends AnyFunSuite {
         val hits = vendorOrDomain.findAllIn(rule).toList
         assert(hits.isEmpty, s"domain bias in SchemaCheckpointRule: $hits")
     }
+
+    // Story: Assistant: vector destinations skip checkpoint 2
+    // (plans/stories/assistant-vector-skip-checkpoint-2.md), Acceptance bullet 1.
+
+    /** Bullets ("- " lines) that start strictly after the card bullet and before "Checkpoint 2:". */
+    private def vectorBullet: String = {
+        val card = idx("In this chat the proposal is a card")
+        val cp2 = idx("Checkpoint 2:")
+        val bullets = rule.split("\n").toList
+        var pos = 0
+        val between = bullets.flatMap { line =>
+            val start = pos
+            pos += line.length + 1
+            if (start > card && start + line.length < cp2 && line.startsWith("- ")) Some(line) else None
+        }
+        val hit = between.find(b => b.toLowerCase.contains("vector") && b.toLowerCase.contains("checkpoint 2"))
+        assert(hit.isDefined,
+            s"a bullet naming 'vector' and 'checkpoint 2' must sit between the card bullet and 'Checkpoint 2:'; between were: $between\n$rule")
+        hit.get
+    }
+
+    test("vector bullet naming checkpoint 2 sits between the card bullet and Checkpoint 2") {
+        val b = vectorBullet
+        assert(b.contains("create_pipeline"), s"vector bullet must name create_pipeline:\n$b")
+        assert(b.contains("update_tap"), s"vector bullet must name update_tap:\n$b")
+    }
+
+    test("vector bullet says propose_pipeline_rules is never called") {
+        val b = vectorBullet
+        val i = b.indexOf("propose_pipeline_rules")
+        assert(i >= 0, s"vector bullet must name propose_pipeline_rules:\n$b")
+        val before = b.substring(math.max(0, i - 120), i).toLowerCase
+        assert(before.contains("never") || before.contains("do not") || before.contains("don't"),
+            s"vector bullet must say propose_pipeline_rules is never called:\n$b")
+    }
+
+    test("vector bullet names mongodb as keeping checkpoint 2") {
+        val b = vectorBullet
+        val m = b.indexOf("mongodb")
+        assert(m >= 0, s"vector bullet must name `mongodb`:\n$b")
+        assert(b.toLowerCase.indexOf("keeps checkpoint 2", m) > m || b.toLowerCase.indexOf("keep checkpoint 2", m) > m,
+            s"vector bullet must say mongodb keeps checkpoint 2:\n$b")
+    }
+
+    test("'At most two checkpoints' replaces 'Two checkpoints, no more'") {
+        assert(rule.contains("At most two checkpoints"), rule)
+        assert(!rule.contains("Two checkpoints, no more"), rule)
+    }
 }

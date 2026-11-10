@@ -184,3 +184,37 @@ def test_older_server_404_returns_the_compat_error(monkeypatch):
     assert "server too old" in out["error"], out
     assert "content_text" in out["error"], out
     assert "schema_proposal" not in raw, raw
+
+
+# ---------------------------------------------------------------------------
+# Story: Assistant: vector destinations skip checkpoint 2
+# (plans/stories/assistant-vector-skip-checkpoint-2.md), Acceptance bullet 2.
+# The vector result gains a `next` hint: create_pipeline with name and
+# destination only, no checks / transformations / protection question.
+
+_MONGODB_NEXT_BEFORE = (
+    "MongoDB stores each record as a document as-is, so there are no column types to confirm: show "
+    "the preview rows only, then call create_pipeline with destination mongodb and content_text set "
+    "to a few of these rows as JSON (filename ending in .json). Do not pass schema_fields."
+)
+
+
+@pytest.mark.parametrize("dest", VECTOR)
+def test_vector_destination_next_goes_straight_to_create_pipeline(monkeypatch, dest):
+    _install(monkeypatch, _Server())
+    out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": dest}))
+    nxt = out.get("next")
+    assert isinstance(nxt, str) and nxt, f"vector result must carry a `next` hint: {out}"
+    assert "create_pipeline" in nxt, nxt
+    assert "update_tap" in nxt, nxt
+    assert "transformations" in nxt, nxt
+    stripped = nxt.replace("no schema_fields", "")
+    assert "schema_fields" not in stripped, f"`next` may name schema_fields only as 'no schema_fields': {nxt}"
+    assert set(out) == {"status", "typeGrid", "tap", "destination", "preview", "sampleRowCount", "next"}, sorted(out)
+
+
+def test_mongodb_next_is_unchanged(monkeypatch):
+    _install(monkeypatch, _Server())
+    out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "mongodb"}))
+    assert out.get("next") == _MONGODB_NEXT_BEFORE, out
+    assert out.get("typeGrid") is False, out
