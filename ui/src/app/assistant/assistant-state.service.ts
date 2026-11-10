@@ -205,6 +205,18 @@ export function askUserSelected(au: AskUserState, index: number): Set<string> {
   return s;
 }
 
+/** Labels that mean "nothing" on a pick-any question when the model sent no
+ *  `exclusive` flag. Narrow on purpose: "No schedule" is a real choice. */
+const EXCLUSIVE_ASK_LABEL = /^(none|nothing|skip|no|no (change|changes|thanks)|none of (these|those|the above))$/i;
+
+/** An option that cannot be combined with the others on a multiSelect
+ *  question: the `exclusive` flag first, then the label fallback. Always
+ *  false on single-select questions (radio behaviour already applies). */
+export function isExclusiveAskOption(q: AskUserQuestion, o: { label: string; exclusive?: boolean }): boolean {
+  if (!q || !q.multiSelect || !o) return false;
+  return o.exclusive === true || EXCLUSIVE_ASK_LABEL.test((o.label || '').trim());
+}
+
 /** The answer for one question: selected labels in option order, then the
  *  "Other" text when non-empty, joined with ", ". Empty when unanswered. */
 export function askUserAnswer(au: AskUserState, index: number): string {

@@ -270,12 +270,21 @@ object AssistantAPIController {
                 "NEVER use it for anything the platform can discover on its own (database or schema names, whether a table exists, column names or types) — do not ask the user about those at all. " +
                 "NEVER put a credential on it (API keys, passwords, tokens) — use `request_tap_secret_from_user` for credentials. " +
                 "Each question has a short `header` (12 characters or fewer), the `question`, optional `options`, and `multiSelect` when several options may apply. " +
+                "In a `multiSelect` question mark an option that means none / no change / skip with `exclusive: true` so it cannot be combined with the others. " +
                 "Call it at most once per turn and do not also write prose questions in the same turn; a plan or summary for the user to confirm may stay in prose. " +
                 "The conversation resumes with the user's next message: their answers as `header: answer` lines, or a prose reply instead."
         )
         val optionProps = new JsonObject()
         optionProps.add("label", strProp("Short option label (1-5 words), shown on the button and echoed back in the answer."))
         optionProps.add("description", strProp("One line explaining the option or its trade-off."))
+        val exclusive = new JsonObject()
+        exclusive.addProperty("type", "boolean")
+        exclusive.addProperty("default", false)
+        exclusive.addProperty(
+            "description",
+            "true for a None / no change / skip option in a multiSelect question: picking it clears the other options and picking any other option clears it. Leave out otherwise."
+        )
+        optionProps.add("exclusive", exclusive)
         val optionItem = new JsonObject()
         optionItem.addProperty("type", "object")
         optionItem.add("properties", optionProps)

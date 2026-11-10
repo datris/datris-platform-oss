@@ -462,6 +462,9 @@ object AgentLoop {
                 val no = new JsonObject()
                 no.addProperty("label", label)
                 no.addProperty("description", str(o, "description"))
+                val ex = o.get("exclusive")
+                if (ex != null && ex.isJsonPrimitive && ex.getAsJsonPrimitive.isBoolean && ex.getAsBoolean)
+                    no.addProperty("exclusive", true)
                 outOpts.add(no)
                 j += 1
             }

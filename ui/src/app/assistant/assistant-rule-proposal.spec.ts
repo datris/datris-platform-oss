@@ -719,6 +719,8 @@ describe('Assistant rule-proposal card (rule_proposal)', () => {
     comp.toggleAllRules(c);
     expect(flags(c)).withContext('submitted: no change').toEqual([true, true, true]);
 
+    // The first turn completed the shared stream; the second needs a fresh one.
+    stream = new Subject<any>();
     const s = proposeAndFinish('toolu_rp_skip');
     s.ruleProposal.skipped = true;
     comp.toggleAllRules(s);

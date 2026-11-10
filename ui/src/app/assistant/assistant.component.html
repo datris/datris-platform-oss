@@ -395,6 +395,7 @@
                       </div>
                       <div class="schema-actions">
                         <button class="secret-btn secret-btn-cancel" (click)="addRule(seg)" [disabled]="state.streaming">Add rule</button>
+                        <button class="secret-btn secret-btn-cancel" *ngIf="rp.items.length > 0" (click)="toggleAllRules(seg)" [disabled]="state.streaming">{{ anyRuleTicked(rp) ? 'Clear all' : 'Select all' }}</button>
                         <span class="ask-actions-spacer"></span>
                         <button class="secret-btn secret-btn-cancel" (click)="skipRules(seg)" [disabled]="state.streaming">Skip</button>
                         <button class="secret-btn secret-btn-save" (click)="confirmRules(seg)" [disabled]="state.streaming || !hasRuleText(rp)">Confirm</button>

@@ -1,6 +1,6 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, AfterViewChecked, NgZone } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers, schemaProposalRows, schemaReplyName, SchemaProposalState, SCHEMA_PREVIEW_RENDER_CAP, RuleProposalState, ruleReplyItems, ruleReplyText, ruleSkipText } from './assistant-state.service';
+import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, isExclusiveAskOption, formatAskUserAnswers, schemaProposalRows, schemaReplyName, SchemaProposalState, SCHEMA_PREVIEW_RENDER_CAP, RuleProposalState, ruleReplyItems, ruleReplyText, ruleSkipText } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
@@ -616,7 +616,24 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     if (!au || au.submitted || au.skipped) return;
     const selected = askUserSelected(au, index);
     if (au.questions[index]?.multiSelect) {
-      if (selected.has(label)) selected.delete(label); else selected.add(label);
+      if (selected.has(label)) {
+        selected.delete(label);
+      } else {
+        // An exclusive option (None / no change / skip) cannot be combined:
+        // ticking it clears the others, ticking another clears it.
+        const q = au.questions[index];
+        const opts = q.options || [];
+        const exclusive = (l: string) => {
+          const o = opts.find(x => x.label === l);
+          return !!o && isExclusiveAskOption(q, o);
+        };
+        if (exclusive(label)) {
+          selected.clear();
+        } else {
+          for (const l of Array.from(selected)) if (exclusive(l)) selected.delete(l);
+        }
+        selected.add(label);
+      }
     } else {
       const wasOnly = selected.has(label) && selected.size === 1;
       selected.clear();
@@ -827,6 +844,20 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
   /** At least one ticked row has text, so Confirm has something to send. */
   hasRuleText(rp: RuleProposalState): boolean {
     return ruleReplyItems(rp).length > 0;
+  }
+
+  /** At least one row is ticked: the toggle button reads Clear all. */
+  anyRuleTicked(rp: RuleProposalState): boolean {
+    return !!rp && rp.items.some(i => i.enabled);
+  }
+
+  /** Clear all / Select all: untick every row when any is ticked, else tick
+   *  every row. Rows are never removed or reordered. */
+  toggleAllRules(card: ToolCard): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp) return;
+    const enabled = !this.anyRuleTicked(rp);
+    for (const item of rp.items) item.enabled = enabled;
   }
 
   toggleRule(card: ToolCard, index: number): void {

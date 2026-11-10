@@ -75,7 +75,9 @@ When you choose data-quality checks or transformations at the follow-up
 question, the Assistant shows what it proposes as a second card: one row per
 check (or transformation), each with a checkbox, an editable text box, and the
 column it covers. Untick a row to leave it out, edit its wording, or click
-**Add rule** to add your own. Click **Confirm** to build with exactly the
+**Add rule** to add your own. Click **Clear all** to untick every row at once
+(it becomes **Select all** when nothing is ticked); the rows stay for you to
+re-tick or edit. Click **Confirm** to build with exactly the
 ticked rows, or **Skip** to build without them. The data-quality card also
 asks what a failing row does: **Reject** fails the run (the default), **Warn
 only** logs the failing rows and keeps loading. If you chose both, the
@@ -139,7 +141,9 @@ question with choices shows up to eight of them, each with a one-line
 description, plus an **Other** box for your own answer; an open-ended question
 shows a text box. When the agent asks where the data should land, every
 destination available on your install is its own choice.
-Picking a single choice moves to the next tab. Click **Submit** on the last
+Picking a single choice moves to the next tab. On a pick-any question, an
+option that means none or no change cannot be combined with the others:
+ticking it clears them, and ticking another clears it. Click **Submit** on the last
 tab; the answers are posted as your next message and the agent carries on.
 You can also ignore the card and type a reply, or click **Answer in chat
 instead**.

@@ -68,7 +68,9 @@ export interface AskUserQuestion {
   header: string;
   question: string;
   /** Absent or empty for a free-text question (the card shows a text box). */
-  options?: { label: string; description: string }[];
+  /** `exclusive`: a None / no change / skip option on a multiSelect question;
+   *  picking it clears the others and picking another clears it. */
+  options?: { label: string; description: string; exclusive?: boolean }[];
   multiSelect: boolean;
 }
 
