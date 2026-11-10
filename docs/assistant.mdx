@@ -53,6 +53,19 @@ That is two questions in total. The destination, key columns, and schedule
 are still agreed in the plan the Assistant states up front. Vector-store
 destinations have no column types, so you only see the preview.
 
+In the Assistant tab the proposal appears as a card in the chat, not as a
+table in the reply. The card shows the first few preview rows, then one line per
+column with the recommended type in a dropdown, sample values, and the reason a
+column stayed text. Change any type in its dropdown, then click
+**Confirm types**, or click **Keep all as text**. **Pull more rows** runs the
+tap test again with five times as many rows (up to 500) and updates the samples
+and recommendations on the card without a new reply from the Assistant. Any type
+you already changed stays as you set it. Your choice goes back to the
+Assistant as your next message, and the card shrinks to a one-line summary. For
+a vector-store destination the card shows the preview and a single
+**Looks right** button. Other MCP clients, such as Claude Desktop, work as
+before: the agent shows the proposal as a table and you answer in chat.
+
 Pipelines built from a dropped file or from rows you paste into the chat still
 use a small sample, and their columns are stored as text. To type those columns
 after the first load, click the **text** badge next to the pipeline's

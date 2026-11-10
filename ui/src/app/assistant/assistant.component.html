@@ -272,6 +272,79 @@
                   </div>
                 </ng-container>
 
+                <!-- Inline schema-proposal card: rendered instead of the generic
+                     tool body when propose_pipeline_schema returned a proposal.
+                     Preview rows, then the type grid (column | type | samples |
+                     reason). Confirm / Keep all as text post the next user
+                     message; Pull more rows refreshes in place, no model turn.
+                     A vector-store proposal (typeGrid false) is preview only. -->
+                <ng-container *ngIf="seg.schemaProposal as sp">
+                  <div class="schema-card" *ngIf="!sp.submitted">
+                    <div class="schema-card-head">
+                      <span class="schema-card-title">Proposed schema for <code>{{ sp.tap }}</code></span>
+                      <span class="schema-card-count">{{ sp.sampleRowCount }} rows reviewed</span>
+                    </div>
+
+                    <div class="schema-section-label">Preview</div>
+                    <div class="schema-table-wrap" *ngIf="schemaPreviewRows(seg).length; else schemaNoPreview">
+                      <table class="schema-table schema-preview-table">
+                        <thead>
+                          <tr><th *ngFor="let c of schemaPreviewColumns(seg); trackBy: trackByIndex">{{ c }}</th></tr>
+                        </thead>
+                        <tbody>
+                          <tr *ngFor="let row of schemaPreviewRows(seg); trackBy: trackByIndex">
+                            <td *ngFor="let c of schemaPreviewColumns(seg); trackBy: trackByIndex" class="schema-cell">{{ schemaCell(row[c]) }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <ng-template #schemaNoPreview>
+                      <div class="schema-empty">No preview rows.</div>
+                    </ng-template>
+
+                    <ng-container *ngIf="sp.typeGrid">
+                      <div class="schema-section-label">Column types</div>
+                      <div class="schema-table-wrap">
+                        <table class="schema-table schema-grid">
+                          <thead>
+                            <tr><th>Column</th><th>Type</th><th>Samples</th><th>Reason</th></tr>
+                          </thead>
+                          <tbody>
+                            <tr *ngFor="let f of sp.fields; trackBy: trackByIndex">
+                              <td class="schema-col-name">{{ f.name }}</td>
+                              <td>
+                                <select class="schema-type-select" [(ngModel)]="f.type" [disabled]="sp.loading"
+                                        [attr.aria-label]="'Type for ' + f.name">
+                                  <option *ngFor="let t of schemaTypes" [value]="t">{{ t }}</option>
+                                </select>
+                                <span class="schema-changed" *ngIf="f.type !== f.recommended">changed</span>
+                              </td>
+                              <td class="schema-samples">{{ schemaSamples(f) }}</td>
+                              <td class="schema-reason">{{ f.stringReason || f.note || '' }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </ng-container>
+
+                    <div class="secret-form-error" *ngIf="sp.errorMessage">{{ sp.errorMessage }}</div>
+
+                    <div class="schema-actions" *ngIf="sp.typeGrid">
+                      <button class="secret-btn secret-btn-cancel" (click)="pullMoreRows(seg)" [disabled]="sp.loading || state.streaming || sp.limit >= 500">{{ sp.loading ? 'Pulling rows…' : 'Pull more rows' }}</button>
+                      <span class="ask-actions-spacer"></span>
+                      <button class="secret-btn secret-btn-cancel" (click)="keepAllStrings(seg)" [disabled]="sp.loading || state.streaming">Keep all as text</button>
+                      <button class="secret-btn secret-btn-save" (click)="confirmSchemaGrid(seg)" [disabled]="sp.loading || state.streaming">Confirm types</button>
+                    </div>
+                    <div class="schema-actions" *ngIf="!sp.typeGrid">
+                      <span class="ask-actions-spacer"></span>
+                      <button class="secret-btn secret-btn-save" (click)="confirmSchemaGrid(seg)" [disabled]="state.streaming">Looks right</button>
+                    </div>
+                  </div>
+                  <div class="secret-form-result" *ngIf="sp.submitted">
+                    ✓ {{ sp.typeGrid ? sp.summary : 'Preview of ' + sp.tap + ' looks right.' }}
+                  </div>
+                </ng-container>
+
                 <!-- Agent-policy outcomes: the call is queued for a person, or
                      was refused by policy. Rendered from the tool result JSON. -->
                 <ng-container *ngIf="policyOutcome(seg) as po">
@@ -292,8 +365,8 @@
                 </ng-container>
 
                 <!-- Generic tool body (input + result JSON). Suppressed for
-                     secret-request and question cards since the form replaces it. -->
-                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest && !seg.askUser">
+                     secret-request, question and schema-proposal cards since the form replaces it. -->
+                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest && !seg.askUser && !seg.schemaProposal">
                   <div class="tool-body-label">Input</div>
                   <pre class="tool-body-pre">{{ formatJson(seg.input) }}</pre>
                   <ng-container *ngIf="seg.status !== 'running'">

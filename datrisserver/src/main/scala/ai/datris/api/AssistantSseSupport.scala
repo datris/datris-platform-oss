@@ -148,6 +148,24 @@ object AssistantSseSupport {
                 obj.addProperty("id", id)
                 obj.add("questions", questions)
                 sendEvent(emitter, "ask_user", obj)
+            case AgentLoop.LoopEvent.SchemaProposal(id, tap, typeGrid, sampleRowCount, fields, preview) =>
+                val obj = new JsonObject()
+                obj.addProperty("type", "schema_proposal")
+                obj.addProperty("id", id)
+                obj.addProperty("tap", tap)
+                obj.addProperty("typeGrid", typeGrid)
+                obj.addProperty("sampleRowCount", sampleRowCount)
+                obj.add("fields", if (fields == null) new JsonArray() else fields)
+                val rows = new JsonArray()
+                if (preview != null) {
+                    var i = 0
+                    while (i < preview.size && i < AgentLoop.SchemaProposalPreviewRows) {
+                        rows.add(preview.get(i))
+                        i += 1
+                    }
+                }
+                obj.add("preview", rows)
+                sendEvent(emitter, "schema_proposal", obj)
             case AgentLoop.LoopEvent.ConfirmRequest(id, tool, summary, token) =>
                 val obj = new JsonObject()
                 obj.addProperty("type", "confirm_request")

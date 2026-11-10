@@ -1,8 +1,9 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, AfterViewChecked, NgZone } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers } from './assistant-state.service';
+import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers, schemaProposalRows, SCHEMA_PREVIEW_ROWS } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
+import { PipelineService } from '../pipeline.service';
 import { ApprovalsService, PolicyToolOutcome } from '../approvals.service';
 import { httpErrorText } from '../shared/http-error';
 import { providerDisplayName } from '../shared/provider-label';
@@ -51,6 +52,7 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     public state: AssistantStateService,
     private secretsService: SecretsService,
     private tapService: TapService,
+    private pipelineService: PipelineService,
     private route: ActivatedRoute,
     private router: Router,
     private zone: NgZone,
@@ -652,6 +654,115 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
 
   askUserSummaryLines(card: ToolCard): string[] {
     return (card.askUser?.summary || '').split('\n').filter(l => l.trim().length > 0);
+  }
+
+  // -------- Schema-proposal card (propose_pipeline_schema) --------
+
+  /** Destination types offered in the grid dropdown. Copied from
+   *  DestTypesDialogComponent.types (the source of truth); keep in sync. */
+  readonly schemaTypes = ['string', 'boolean', 'int', 'bigint', 'float', 'double', 'date', 'timestamp'];
+
+  /** Preview cell text is clipped like DestTypeInference.maxSampleLength. */
+  private static readonly SCHEMA_CELL_MAX = 80;
+  /** "Pull more rows" multiplies the limit by this, up to SCHEMA_LIMIT_CAP
+   *  (the server's maxTestPreviewRecords). */
+  private static readonly SCHEMA_LIMIT_STEP = 5;
+  private static readonly SCHEMA_LIMIT_CAP = 500;
+
+  /** Preview columns: the union of the preview rows' keys, in first-seen order. */
+  schemaPreviewColumns(card: ToolCard): string[] {
+    const cols: string[] = [];
+    for (const row of card.schemaProposal?.preview || []) {
+      if (!row || typeof row !== 'object') continue;
+      for (const k of Object.keys(row)) if (!cols.includes(k)) cols.push(k);
+    }
+    return cols;
+  }
+
+  schemaPreviewRows(card: ToolCard): any[] {
+    return (card.schemaProposal?.preview || []).slice(0, SCHEMA_PREVIEW_ROWS);
+  }
+
+  /** One preview / sample value as clipped display text. */
+  schemaCell(value: any): string {
+    if (value === null || value === undefined) return '';
+    const s = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const max = AssistantComponent.SCHEMA_CELL_MAX;
+    return s.length <= max ? s : s.substring(0, max) + '…';
+  }
+
+  schemaSamples(f: { samples?: any[] }): string {
+    return (f.samples || []).map(v => this.schemaCell(v)).join(', ');
+  }
+
+  /** Confirm types (or Looks right on a vector card): post the grid as the
+   *  next user message in the fixed shape the prompt rule expects. */
+  confirmSchemaGrid(card: ToolCard): void {
+    const sp = card.schemaProposal;
+    if (!sp || sp.submitted || sp.loading) return;
+    const text = sp.typeGrid
+      ? `Confirmed schema for tap \`${sp.tap}\` (${sp.sampleRowCount} rows reviewed): ` +
+        sp.fields.map(f => `${f.name} ${f.type}`).join(', ')
+      : 'Preview looks right.';
+    this.submitSchemaReply(card, text);
+  }
+
+  /** Keep all as text: every column stays `string`. */
+  keepAllStrings(card: ToolCard): void {
+    const sp = card.schemaProposal;
+    if (!sp || sp.submitted || sp.loading) return;
+    this.submitSchemaReply(card, `Keep every column as string for tap \`${sp.tap}\`.`);
+  }
+
+  private submitSchemaReply(card: ToolCard, text: string): void {
+    const sp = card.schemaProposal!;
+    sp.submitted = true;
+    sp.errorMessage = '';
+    sp.summary = text;
+    this.sendSystemReply(text);
+  }
+
+  /** Pull more rows: re-run the tap test at a higher limit and re-propose from
+   *  those rows, refreshing the card in place. No model turn. A type the user
+   *  already changed is kept; untouched columns take the new recommendation. */
+  pullMoreRows(card: ToolCard): void {
+    const sp = card.schemaProposal;
+    if (!sp || sp.submitted || sp.loading || !sp.typeGrid) return;
+    const limit = Math.min((sp.limit || 20) * AssistantComponent.SCHEMA_LIMIT_STEP, AssistantComponent.SCHEMA_LIMIT_CAP);
+    sp.loading = true;
+    sp.errorMessage = '';
+    const fail = (msg: string) => {
+      sp.loading = false;
+      sp.errorMessage = msg;
+    };
+    this.tapService.runTap(sp.tap, 'test', limit).subscribe({
+      next: (res: any) => {
+        if (!res || res.status !== 'success') {
+          fail('Tap test failed: ' + (res?.error || res?.message || 'no rows returned'));
+          return;
+        }
+        const records: any[] = Array.isArray(res.records) ? res.records : [];
+        this.pipelineService.proposeSchema(records, res.columns).subscribe({
+          next: (proposal: any) => {
+            const userTypes = new Map<string, string>();
+            for (const f of sp.fields) if (f.type !== f.recommended) userTypes.set(f.name, f.type);
+            const rows = schemaProposalRows(proposal?.fields);
+            for (const r of rows) {
+              const kept = userTypes.get(r.name);
+              if (kept) r.type = kept;
+            }
+            sp.fields = rows;
+            const preview = Array.isArray(proposal?.preview) ? proposal.preview : records;
+            sp.preview = preview.slice(0, SCHEMA_PREVIEW_ROWS);
+            sp.sampleRowCount = typeof proposal?.sampleRowCount === 'number' ? proposal.sampleRowCount : records.length;
+            sp.limit = limit;
+            sp.loading = false;
+          },
+          error: (err) => fail('Could not re-propose types: ' + httpErrorText(err, 'unknown'))
+        });
+      },
+      error: (err) => fail('Tap test failed: ' + httpErrorText(err, 'unknown'))
+    });
   }
 
   /** Send a follow-up message on the user's behalf to resume the agent loop.

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, StagedAttachment } from '../assistant.service';
+import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, SchemaProposalField, StagedAttachment } from '../assistant.service';
 import { loadChatState, saveChatState, clearChatState } from '../shared/chat-persistence';
 
 /** Tool invocation inside an assistant turn. */
@@ -48,6 +48,45 @@ export interface ToolCard {
    *  message. `selections` are Sets in memory; after a reload (JSON) they
    *  come back as plain objects, so read them through `askUserSelected`. */
   askUser?: AskUserState;
+  /** Populated when `propose_pipeline_schema` returned a proposal. The UI
+   *  renders the preview rows and an editable type grid; Confirm posts the
+   *  grid as the next user message (same resume path as the credentials form). */
+  schemaProposal?: SchemaProposalState;
+}
+
+/** One editable grid row: the proposed field plus the type the server
+ *  recommended, so a refresh can tell a user-changed type from an untouched one. */
+export interface SchemaProposalRow extends SchemaProposalField {
+  recommended: string;
+}
+
+export interface SchemaProposalState {
+  tap: string;
+  typeGrid: boolean;
+  sampleRowCount: number;
+  /** At most SCHEMA_PREVIEW_ROWS rows. */
+  preview: any[];
+  /** Editable copies; never the event payload itself. */
+  fields: SchemaProposalRow[];
+  /** Tap-test row limit the proposal came from; "Pull more rows" multiplies it. */
+  limit: number;
+  loading: boolean;
+  submitted: boolean;
+  /** The reply that was posted, shown as a one-line summary once submitted. */
+  summary?: string;
+  errorMessage: string;
+}
+
+/** Preview rows a schema-proposal card shows. */
+export const SCHEMA_PREVIEW_ROWS = 5;
+
+/** Editable copies of proposed fields (samples copied too). */
+export function schemaProposalRows(fields: SchemaProposalField[] | null | undefined): SchemaProposalRow[] {
+  return (fields || []).map(f => ({
+    ...f,
+    samples: Array.isArray(f.samples) ? [...f.samples] : [],
+    recommended: f.type
+  }));
 }
 
 export interface AskUserState {
@@ -527,6 +566,38 @@ export class AssistantStateService {
           submitted: false,
           skipped: false,
           summary: ''
+        };
+        break;
+      }
+      case 'schema_proposal': {
+        // Same shape as secret_request: synthesize the card if no tool_use
+        // arrived, then attach the proposal state. A later tool_result only
+        // closes the card; the proposal state stays.
+        let card = this.findToolCard(turn, evt.id);
+        if (!card) {
+          card = {
+            kind: 'tool',
+            id: evt.id,
+            name: 'propose_pipeline_schema',
+            input: { tap: evt.tap },
+            result: '',
+            isError: false,
+            status: 'ok',
+            expanded: false
+          };
+          turn.segments.push(card);
+        }
+        card.status = 'ok';
+        card.schemaProposal = {
+          tap: evt.tap,
+          typeGrid: evt.typeGrid !== false,
+          sampleRowCount: evt.sampleRowCount || 0,
+          preview: (evt.preview || []).slice(0, SCHEMA_PREVIEW_ROWS).map(r => ({ ...r })),
+          fields: schemaProposalRows(evt.fields),
+          limit: 20,
+          loading: false,
+          submitted: false,
+          errorMessage: ''
         };
         break;
       }

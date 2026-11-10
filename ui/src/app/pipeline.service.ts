@@ -137,6 +137,13 @@ export class PipelineService {
     return this.http.get<any>('/api/v1/pipeline/dest-types?pipeline=' + encodeURIComponent(name));
   }
 
+  /** Recommend destination types from preview rows (no pipeline needed):
+   *  the Assistant schema card's "Pull more rows". Response:
+   *  {sampleRowCount, fields: [{name, type, samples, stringReason, note}], ...}. */
+  proposeSchema(records: any[], columns?: string[]): Observable<any> {
+    return this.http.post<any>('/api/v1/pipeline/propose-schema', { records, columns });
+  }
+
   applyDestTypes(name: string, fields: Array<{name: string, type: string}>): Observable<any> {
     return this.http.post<any>('/api/v1/pipeline/dest-types', { pipeline: name, fields });
   }

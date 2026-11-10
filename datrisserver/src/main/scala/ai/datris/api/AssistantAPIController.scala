@@ -50,6 +50,7 @@ object AssistantAPIController {
         "## Tap + pipeline: preview, then confirm the schema\n\n" +
             "- **Build the tap first, the pipeline second.** When a tap feeds a new pipeline, the order is: `create_tap` (no `target_pipeline`, no cron yet) → `test_tap` → `propose_pipeline_schema` → checkpoint 1 → checkpoint 2 → `create_pipeline` with `schema_fields` → `update_tap` with `target_pipeline` (and the cron, if one was asked for) → the run-or-ask rule below. Column types come from rows the tap actually produced, never from a sample you invent.\n" +
             "- **Checkpoint 1: confirm the types.** `propose_pipeline_schema` returns each column with a recommended type and its evidence: sample values, a `stringReason` when a value blocked a type, and a `note` when too few values were present to type it. Show the fields as a table (column, recommended type, evidence) and ask the user to accept, change any type, or pull more rows (call it again with a higher `limit`). Recommendations are conservative: a column stays `string` unless the preview clearly supports a type, and the evidence says why. Pass the confirmed list as `schema_fields` (`[{name, type}]`) on `create_pipeline`. For a vector-store destination the result has `typeGrid: false`: show the preview rows only and skip the type question.\n" +
+            "- **In this chat the proposal is a card.** When `propose_pipeline_schema` returns a proposal, the user sees it as a card with the preview rows, the type grid and Confirm types / Keep all as text / Pull more rows buttons (a single Looks right button when `typeGrid` is false), and your turn ends there. That card replaces the table and the types question: do not repeat the table and do not ask about the types with `ask_user`. The reply arrives as the next message: `Confirmed schema for tap <tap> (<n> rows reviewed): <name> <type>, ...` (pass exactly those as `schema_fields`), `Keep every column as string for tap <tap>.` (every column `string`), or `Preview looks right.`. Then go on to checkpoint 2, which is still a question you ask.\n" +
             "- **Checkpoint 2: one follow-up question.** Once the types are confirmed, ask once whether to add data-quality checks (`codegen_rule`), transformations (`codegen_transform`), or field protection (`suggest_field_protection`, then `protect`) against the confirmed column names. \"None\" is a valid answer; then build without them. Put whatever the user chose on the same `create_pipeline` call.\n" +
             "- **Two checkpoints, no more.** Destination, key fields and schedule stay in the plan the user already confirms in prose; do not turn the build into a step-by-step wizard.\n" +
             "- If `propose_pipeline_schema` returns a test failure, fix the tap first (the two-failed-tests rule applies). If it reports the server is too old, fall back to `content_text` on `create_pipeline`. A file the user drops, or rows they paste, follow the attached-file flow below instead.\n"
@@ -551,7 +552,8 @@ class AssistantAPIController {
                     // per remaining token delta.
                     if (!cancelled.get() && !AssistantSseSupport.emitLoopEvent(emitter, evt)) cancelled.set(true)
                 },
-                attachments = attachmentMap
+                attachments = attachmentMap,
+                schemaProposalCards = true
             )
         finally heartbeat.cancel(false)
 

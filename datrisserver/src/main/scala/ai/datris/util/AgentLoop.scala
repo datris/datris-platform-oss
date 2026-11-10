@@ -55,6 +55,21 @@ object AgentLoop {
           * `questions` is already validated and normalised by `askUserQuestionsOf`. */
         case class AskUser(id: String, questions: JsonArray) extends LoopEvent
 
+        /** `propose_pipeline_schema` returned a schema proposal. The Assistant UI
+          * renders it as an inline card (preview rows, then a type grid unless
+          * `typeGrid` is false) on the matching tool card. The loop ends after
+          * this so the user can confirm; their confirmation arrives as the next
+          * chat message. `fields` is empty for a vector-store proposal and
+          * `preview` carries at most [[SchemaProposalPreviewRows]] rows. */
+        case class SchemaProposal(
+            id: String,
+            tap: String,
+            typeGrid: Boolean,
+            sampleRowCount: Int,
+            fields: JsonArray,
+            preview: JsonArray
+        ) extends LoopEvent
+
         /** Transient system message — surfaced to the user as a small inline note,
           * not as part of the assistant's textual response. Currently used to tell
           * the user when the model was downgraded mid-request (e.g., Opus → Sonnet
@@ -83,6 +98,18 @@ object AgentLoop {
       * so the user can answer. */
     private[datris] val AskUserWaitingText: String =
         "Question card displayed to the user. Their answers arrive as the next user message as `header: answer` lines; they may also reply in prose. Wait for their reply."
+
+    /** The MCP tool whose `schema_proposal` result the Assistant shows as an
+      * inline type-grid card. */
+    val SchemaProposalTool: String = "propose_pipeline_schema"
+
+    /** Most preview rows a schema-proposal card carries. */
+    val SchemaProposalPreviewRows: Int = 5
+
+    /** What the model sees after a schema-proposal card is shown; the loop then
+      * ends so the user can confirm. */
+    private[datris] val SchemaProposalWaitingText: String =
+        "The proposal is shown to the user as a type grid; their confirmation arrives as the next message. Wait for their reply."
 
     private val AskUserMaxQuestions: Int = 4
     private val AskUserMinOptions: Int = 2
@@ -133,7 +160,8 @@ object AgentLoop {
         sink: LoopEvent => Unit,
         attachments: Map[String, (String, Array[Byte])] = Map.empty,
         execute: (String, JsonObject) => String = null,
-        messageBlocks: List[(String, List[AIContentBlock])] = null
+        messageBlocks: List[(String, List[AIContentBlock])] = null,
+        schemaProposalCards: Boolean = false
     ): Unit = {
         // Tool dispatch. Defaults to the MCP catalog; the Configuration chat
         // passes its own executor (Datris-defined tools, confirmation tokens).
@@ -273,7 +301,21 @@ object AgentLoop {
                                 // tokens or secret forms; MCP results pass through
                                 // unexamined.
                                 val secretRequest = if (execute != null) secretRequestOf(t.id, t.name, raw) else None
-                                secretRequest match {
+                                // A schema proposal becomes an inline type-grid
+                                // card, only for a caller whose UI renders it
+                                // (the Assistant); other chats see the raw result.
+                                val schemaProposal =
+                                    if (schemaProposalCards && secretRequest.isEmpty) schemaProposalOf(t.id, t.name, raw) else None
+                                if (schemaProposal.isDefined) {
+                                    sink(schemaProposal.get)
+                                    // Close the tool card with the raw proposal for
+                                    // UIs that predate the schema_proposal event
+                                    // (they keep the JSON tool card); the current
+                                    // UI keeps the card's proposal state.
+                                    sink(LoopEvent.ToolResult(t.id, t.name, raw, isError = false))
+                                    stopAfterBatch = true
+                                    AIContentBlock.ToolResultBlock(t.id, SchemaProposalWaitingText, isError = false)
+                                } else secretRequest match {
                                     case Some(req) =>
                                         // Same as the synthetic secret tool: show the
                                         // form and end the loop after this batch.
@@ -408,6 +450,44 @@ object AgentLoop {
                             } else Nil
                         LoopEvent.SecretRequest(id, name, fields, s("reason").getOrElse(""))
                     }
+            }
+        } catch {
+            case _: Exception => None
+        }
+    }
+
+    /** A `{"status":"schema_proposal", ...}` result from `propose_pipeline_schema`
+      * becomes a SchemaProposal event (preview clipped to
+      * [[SchemaProposalPreviewRows]] rows; `fields` empty when absent, as for a
+      * vector-store proposal). Any other tool, an error result, another status
+      * or malformed JSON: None. */
+    private[util] def schemaProposalOf(id: String, tool: String, raw: String): Option[LoopEvent.SchemaProposal] = {
+        if (tool != SchemaProposalTool) return None
+        if (raw == null || !raw.trim.startsWith("{") || !raw.contains("schema_proposal")) return None
+        try {
+            val el = JsonParser.parseString(raw)
+            if (!el.isJsonObject) None
+            else {
+                val o = el.getAsJsonObject
+                def prim(k: String): Option[com.google.gson.JsonPrimitive] =
+                    if (o.has(k) && o.get(k).isJsonPrimitive) Some(o.getAsJsonPrimitive(k)) else None
+                def arr(k: String): JsonArray =
+                    if (o.has(k) && o.get(k).isJsonArray) o.getAsJsonArray(k) else new JsonArray()
+                if (!prim("status").map(_.getAsString).contains("schema_proposal")) None
+                else {
+                    val fields = arr("fields")
+                    val allRows = arr("preview")
+                    val preview = new JsonArray()
+                    var i = 0
+                    while (i < allRows.size && i < SchemaProposalPreviewRows) {
+                        preview.add(allRows.get(i))
+                        i += 1
+                    }
+                    val typeGrid = prim("typeGrid").filter(_.isBoolean).map(_.getAsBoolean).getOrElse(fields.size > 0)
+                    val sampleRowCount = prim("sampleRowCount").filter(_.isNumber).map(_.getAsInt).getOrElse(allRows.size)
+                    val tap = prim("tap").map(_.getAsString).getOrElse("")
+                    Some(LoopEvent.SchemaProposal(id, tap, typeGrid, sampleRowCount, fields, preview))
+                }
             }
         } catch {
             case _: Exception => None

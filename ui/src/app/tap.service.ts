@@ -61,8 +61,12 @@ export class TapService {
     return this.http.post<any>(url, config);
   }
 
-  runTap(name: string, mode: 'run' | 'test' = 'test'): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/run', { name, mode });
+  /** `testLimit` (mode=test only) asks for a larger preview; omitted, the
+   *  body is unchanged and the server previews its default row count. */
+  runTap(name: string, mode: 'run' | 'test' = 'test', testLimit?: number): Observable<any> {
+    const body: any = { name, mode };
+    if (testLimit !== undefined && testLimit !== null) body.testLimit = testLimit;
+    return this.http.post<any>('/api/v1/tap/run', body);
   }
 
   fixScript(tapName: string, script: string, diagnosis: string, logs: string, error: string, oldScriptPath?: string, priorIterations?: any[]): Observable<any> {
