@@ -282,6 +282,18 @@ describe('Assistant rule-proposal card (rule_proposal)', () => {
     expect(sendSpy.calls.mostRecent().args[0]).toBe(ALL_CONFIRMED);
   });
 
+  it('confirmRules does not prefix a column the text names mid-sentence (any case)', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_mid', true, {
+      kind: 'transformation',
+      items: [{ text: 'Format the Created_At value as a date', column: 'created_at' }, { text: 'round to 2 places', column: 'amount' }]
+    });
+    const sendSpy = spyOn(state, 'send');
+    (fixture.componentInstance as any).confirmRules(c);
+    expect(sendSpy.calls.mostRecent().args[0]).toBe(
+      'Confirmed transformations for pipeline `sales_daily`: 1. Format the Created_At value as a date; 2. amount: round to 2 places');
+  });
+
   it('a transformation card confirms as "Confirmed transformations for pipeline ..."', async () => {
     await mount();
     const c = proposeAndFinish('toolu_tr2', true, { kind: 'transformation', items: [{ text: 'trim whitespace', column: 'name' }, { text: 'lowercase the email column' }] });

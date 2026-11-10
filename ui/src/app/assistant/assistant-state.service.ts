@@ -88,14 +88,15 @@ export function ruleProposalRows(items: RuleProposalItem[] | null | undefined): 
 }
 
 /** The ticked, non-blank rows of a rule-proposal card, each prefixed with
- *  its column ("<column>: ") unless the text already starts with it. */
+ *  its column ("<column>: ") unless the text already names it anywhere
+ *  (case-insensitive). */
 export function ruleReplyItems(state: RuleProposalState): string[] {
   return (state.items || [])
     .filter(r => r.enabled && (r.text || '').trim())
     .map(r => {
       const text = r.text.trim();
       const column = (r.column || '').trim();
-      return column && !text.startsWith(column) ? `${column}: ${text}` : text;
+      return column && !text.toLowerCase().includes(column.toLowerCase()) ? `${column}: ${text}` : text;
     });
 }
 
