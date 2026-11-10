@@ -835,6 +835,15 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     rp.items[index].enabled = !rp.items[index].enabled;
   }
 
+  /** Data-quality card: what a failing row does ('error' rejects the run,
+   *  'warn' logs it and keeps loading). Ignored once answered or mid-turn. */
+  setRuleOnFailure(card: ToolCard, value: 'error' | 'warn'): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp || rp.kind !== 'data_quality') return;
+    if (value !== 'error' && value !== 'warn') return;
+    rp.onFailure = value;
+  }
+
   /** Add rule: append an enabled empty row for the user to type into. */
   addRule(card: ToolCard): void {
     const rp = this.ruleCardOpen(card);

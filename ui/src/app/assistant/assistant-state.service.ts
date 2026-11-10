@@ -76,6 +76,10 @@ export interface RuleProposalState {
   skipped?: boolean;
   /** The reply that was posted, shown as a one-line summary once submitted. */
   summary?: string;
+  /** data_quality only: what a failing row does, 'error' (reject the run,
+   *  the default) or 'warn' (log it, keep loading). Missing reads as 'error'
+   *  (a card persisted before this field existed). */
+  onFailure?: 'error' | 'warn';
 }
 
 /** Editable copies of proposed items, every row ticked. */
@@ -106,12 +110,16 @@ export function ruleReplyItems(state: RuleProposalState): string[] {
 }
 
 /** The reply a rule-proposal card's Confirm posts, in the fixed shape the
- *  prompt rule expects: "Confirmed data-quality checks for pipeline `<p>`:
- *  1. <text>; 2. <text>" (or "Confirmed transformations ..."). */
+ *  prompt rule expects: "Confirmed data-quality checks for pipeline `<p>`
+ *  (on failure: reject the run|warn only): 1. <text>; 2. <text>" (or
+ *  "Confirmed transformations for pipeline `<p>`: ..."). */
 export function ruleReplyText(state: RuleProposalState): string {
-  const head = state.kind === 'transformation' ? 'Confirmed transformations' : 'Confirmed data-quality checks';
   const items = ruleReplyItems(state).map((t, i) => `${i + 1}. ${t}`).join('; ');
-  return `${head} for pipeline \`${state.pipeline}\`: ${items}`;
+  if (state.kind === 'transformation') {
+    return `Confirmed transformations for pipeline \`${state.pipeline}\`: ${items}`;
+  }
+  const onFailure = state.onFailure === 'warn' ? 'warn only' : 'reject the run';
+  return `Confirmed data-quality checks for pipeline \`${state.pipeline}\` (on failure: ${onFailure}): ${items}`;
 }
 
 /** The reply a rule-proposal card's Skip posts. */
@@ -906,13 +914,15 @@ export class AssistantStateService {
           turn.segments.push(card);
         }
         card.status = 'ok';
+        const ruleKind: RuleProposalState['kind'] = evt.kind === 'transformation' ? 'transformation' : 'data_quality';
         card.ruleProposal = {
-          kind: evt.kind === 'transformation' ? 'transformation' : 'data_quality',
+          kind: ruleKind,
           pipeline: evt.pipeline || '',
           items: ruleProposalRows(evt.items),
           submitted: false,
           skipped: false,
-          summary: ''
+          summary: '',
+          ...(ruleKind === 'data_quality' ? { onFailure: 'error' as const } : {})
         };
         break;
       }

@@ -98,8 +98,10 @@ class AssistantPromptRuleProposalSpec extends AnyFunSuite {
 
     test("the data-quality bullet gives both on-failure reply shapes") {
         val b = dqBullet
-        assert(b.contains("Confirmed data-quality checks for pipeline `<name>` (on failure: reject the run):"),
-            s"DQ bullet must give the reject reply shape:\n$b")
+        assert(
+            b.contains("Confirmed data-quality checks for pipeline `<name>` (on failure: reject the run):"),
+            s"DQ bullet must give the reject reply shape:\n$b"
+        )
         assert(b.contains("(on failure: warn only)"), s"DQ bullet must give the warn-only reply shape:\n$b")
     }
 }

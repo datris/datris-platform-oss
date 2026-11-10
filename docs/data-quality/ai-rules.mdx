@@ -13,6 +13,8 @@ Define the AI rule in the `aiRule` field within the `dataQuality` block of the p
 | `instruction` | string | A natural language description of all validation criteria. Multiple checks can be combined in one instruction. |
 | `onFailureIsError` | boolean | If `true`, failures abort processing. If `false`, failures are logged as warnings. |
 
+Pipelines built by the Assistant or an MCP agent choose this on the data-quality card (`codegen_rule_on_failure`).
+
 ---
 
 ## How it works

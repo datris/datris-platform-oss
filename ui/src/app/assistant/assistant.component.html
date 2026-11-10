@@ -378,6 +378,21 @@
                                 (click)="removeRule(seg, i)" (keydown.enter)="removeRule(seg, i)">&times;</span>
                         </div>
                       </div>
+                      <div class="rule-on-failure" *ngIf="rp.kind === 'data_quality'">
+                        <span class="rule-on-failure-label">On failure</span>
+                        <label class="secret-mode-option rule-on-failure-option">
+                          <input type="radio" name="ruleOnFailure-{{ seg.id }}" value="error"
+                                 [checked]="rp.onFailure !== 'warn'" [disabled]="state.streaming"
+                                 (change)="setRuleOnFailure(seg, 'error')">
+                          <span>Reject: fail the run on any failing row</span>
+                        </label>
+                        <label class="secret-mode-option rule-on-failure-option">
+                          <input type="radio" name="ruleOnFailure-{{ seg.id }}" value="warn"
+                                 [checked]="rp.onFailure === 'warn'" [disabled]="state.streaming"
+                                 (change)="setRuleOnFailure(seg, 'warn')">
+                          <span>Warn only: log failing rows, keep loading</span>
+                        </label>
+                      </div>
                       <div class="schema-actions">
                         <button class="secret-btn secret-btn-cancel" (click)="addRule(seg)" [disabled]="state.streaming">Add rule</button>
                         <span class="ask-actions-spacer"></span>

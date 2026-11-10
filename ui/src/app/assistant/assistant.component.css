@@ -986,6 +986,19 @@
   flex-direction: column;
   gap: 8px;
 }
+.rule-on-failure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+.rule-on-failure-label {
+  color: #9aa0ab;
+}
+.rule-on-failure-option {
+  font-size: 12px;
+}
 .rule-card-head {
   display: flex;
   align-items: baseline;

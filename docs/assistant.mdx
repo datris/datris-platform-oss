@@ -76,12 +76,15 @@ question, the Assistant shows what it proposes as a second card: one row per
 check (or transformation), each with a checkbox, an editable text box, and the
 column it covers. Untick a row to leave it out, edit its wording, or click
 **Add rule** to add your own. Click **Confirm** to build with exactly the
-ticked rows, or **Skip** to build without them. If you chose both, the
+ticked rows, or **Skip** to build without them. The data-quality card also
+asks what a failing row does: **Reject** fails the run (the default), **Warn
+only** logs the failing rows and keeps loading. If you chose both, the
 data-quality card comes first and the transformations card follows once you
 answer it. Nothing you did not confirm is added, and field protection is still
 handled as before. You can also ignore the card and reply in your own words.
 Other MCP clients list the proposed checks in the chat and ask you to confirm
-them before the pipeline is created.
+them, and whether a failing row should warn only or reject the run, before the
+pipeline is created.
 
 Pipelines built from a dropped file or from rows you paste into the chat still
 use a small sample, and their columns are stored as text. To type those columns
