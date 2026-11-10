@@ -104,10 +104,14 @@ object AssistantAPIController {
       * The model then sees past calls the same way it saw them when it made
       * them, so it does not repeat discovery or re-create what it built. A
       * malformed `toolCalls` entry is skipped with a warning; a non-array
-      * `toolCalls` or malformed `askUser` falls back to the text alone. */
+      * `toolCalls` or malformed `askUser` falls back to the text alone. An
+      * assistant message left with nothing to replay (blank text, no surviving
+      * call, no card) is dropped, and the user messages either side of it are
+      * merged; no empty text block is ever emitted. */
     private[datris] def historyToBlocks(messagesArr: JsonArray): List[(String, List[AIContentBlock])] = {
         val out = scala.collection.mutable.ListBuffer.empty[(String, List[AIContentBlock])]
         var pendingResults: List[AIContentBlock] = Nil
+        var dropped = false
         messagesArr.asScala.zipWithIndex.foreach { case (el, i) =>
             val m = el.getAsJsonObject
             val role = if (m.has("role") && !m.get("role").isJsonNull) m.get("role").getAsString else "user"
@@ -147,13 +151,30 @@ object AssistantAPIController {
                     case None if uses.nonEmpty =>
                         out += (("assistant", text ++ uses))
                         pendingResults = results
+                    case None if text.nonEmpty =>
+                        out += (("assistant", text))
                     case None =>
-                        out += (("assistant", List[AIContentBlock](AIContentBlock.TextBlock(content))))
+                        // Nothing left to replay (no text, no tool call survived,
+                        // no card): providers reject an empty text block, so the
+                        // message is dropped and the next user message is merged
+                        // into the previous one to keep the roles alternating.
+                        dropped = true
                 }
             } else {
-                out += (("user", pendingResults :+ AIContentBlock.TextBlock(content)))
+                val blocks = pendingResults :+ AIContentBlock.TextBlock(content)
+                if (dropped && out.nonEmpty && out.last._1 == "user") {
+                    // One text block per message, so the chat-completions shaper
+                    // (which concatenates text blocks) keeps a paragraph break.
+                    val merged = (out.last._2.lastOption, blocks.headOption) match {
+                        case (Some(AIContentBlock.TextBlock(a)), Some(AIContentBlock.TextBlock(b))) =>
+                            out.last._2.init ++ (AIContentBlock.TextBlock(a + "\n\n" + b) :: blocks.tail)
+                        case _ => out.last._2 ++ blocks
+                    }
+                    out(out.size - 1) = (("user", merged))
+                } else out += (("user", blocks))
                 pendingResults = Nil
             }
+            if (role != "assistant") dropped = false
         }
         if (pendingResults.nonEmpty) out += (("user", pendingResults))
         out.toList
