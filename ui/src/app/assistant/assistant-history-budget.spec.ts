@@ -115,6 +115,26 @@ describe('Assistant history: replay budgets and redaction', () => {
     expect(input.password).withContext('the card itself is not changed').toBe('p@ss');
   });
 
+  it('secret references and job handles survive; secret values are redacted', () => {
+    const r = redactForHistory({
+      destination: { postgres: { credentialsSecret: 'pg_main' } },
+      unityCatalog: { credentialsSecret: 'uc_ws' },
+      unity_catalog_secret: 'uc_main',
+      secret: 'dbx_main',
+      pipeline_token: 'p1', publisher_token: 'p2', pipelineToken: 'p3', publisherToken: 'p4',
+      fields: { clientSecret: 'x' },
+      preprocessor: { bearerToken: 'b', apiKey: 'k' }
+    });
+    expect(r.destination.postgres.credentialsSecret).toBe('pg_main');
+    expect(r.unityCatalog.credentialsSecret).toBe('uc_ws');
+    expect(r.unity_catalog_secret).toBe('uc_main');
+    expect(r.secret).toBe('dbx_main');
+    expect([r.pipeline_token, r.publisher_token, r.pipelineToken, r.publisherToken]).toEqual(['p1', 'p2', 'p3', 'p4']);
+    expect(r.fields.clientSecret).toBe(HISTORY_REDACTED);
+    expect(r.preprocessor.bearerToken).toBe(HISTORY_REDACTED);
+    expect(r.preprocessor.apiKey).toBe(HISTORY_REDACTED);
+  });
+
   it('replayed inputs are redacted, including inside a truncated input', () => {
     const calls = toolCallsForHistory(assistantTurn([
       tool('t1', 'create_secret', { name: 's', values: { token: 'abc123' } }, 'ok'),

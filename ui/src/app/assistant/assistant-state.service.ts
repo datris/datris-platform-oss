@@ -180,9 +180,18 @@ export const HISTORY_TOTAL_CAP = 32768;
 
 /** Input keys whose values are never replayed: a credential the model passed
  *  live is not re-sent on every later turn. Keys naming something
- *  (`name`, `secret_name`, `field_names`) are kept. */
+ *  (`name`, `secret_name`, `field_names`) and the reference keys in
+ *  HISTORY_REF_KEY are kept. */
 const HISTORY_REDACT_KEY = /secret|password|passwd|token|api[_-]?key|private[_-]?key|credential/i;
 const HISTORY_NAME_KEY = /(^|_)names?$|[a-z]Names?$/;
+/** Keys that match HISTORY_REDACT_KEY but hold a reference, not a value:
+ *  the name of a platform secret (`credentialsSecret` in destination and
+ *  `unityCatalog` blocks, `unity_catalog_secret` on create_pipeline, `secret`
+ *  on browse_unity_catalog) or a job handle the model polls with
+ *  (`pipeline_token` / `publisher_token` and their camelCase forms). Listed
+ *  one by one: a `*Secret` suffix rule would also keep values such as
+ *  `clientSecret`. */
+const HISTORY_REF_KEY = /^(secret|credentialsSecret|unity_catalog_secret|pipeline_token|publisher_token|pipelineToken|publisherToken)$/;
 export const HISTORY_REDACTED = '[redacted]';
 
 /** A deep copy of a tool input with credential-like keys' values replaced by
@@ -192,7 +201,7 @@ export function redactForHistory(v: any): any {
   if (v && typeof v === 'object') {
     const out: any = {};
     for (const k of Object.keys(v)) {
-      out[k] = HISTORY_REDACT_KEY.test(k) && !HISTORY_NAME_KEY.test(k) && v[k] !== null && v[k] !== undefined
+      out[k] = HISTORY_REDACT_KEY.test(k) && !HISTORY_NAME_KEY.test(k) && !HISTORY_REF_KEY.test(k) && v[k] !== null && v[k] !== undefined
         ? HISTORY_REDACTED
         : redactForHistory(v[k]);
     }
