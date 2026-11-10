@@ -208,7 +208,7 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
 
   // ---------------------------------------------------------- template ---
 
-  it('a pending card renders preview rows and a grid of column, type dropdown, samples and reason; the generic tool body is hidden', async () => {
+  it('a pending card renders preview rows and a grid of column, type dropdown (with its reason hint) and samples; the generic tool body is hidden', async () => {
     await mount();
     const c = proposeAndFinish();
     c.expanded = true;
@@ -546,6 +546,35 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     const t = text();
     expect(t).toContain("stayed text — found 'N/A', would be int");
     expect(t).not.toContain('[object Object]');
+  });
+
+  it('the grid has no Reason column; a reason is a hint under that row\'s type dropdown only', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.expanded = true;
+    await render();
+    const headers = Array.from(el.querySelectorAll('.schema-grid th')).map(h => (h.textContent || '').trim());
+    expect(headers).toEqual(['Column', 'Type', 'Samples']);
+    const rows = Array.from(el.querySelectorAll('.schema-grid tbody tr'));
+    expect(rows.length).toBe(3);
+    const typeCell = (r: Element) => r.querySelectorAll('td')[1];
+    expect(typeCell(rows[0]).querySelector('.schema-reason')).withContext('no hint for a column with no reason').toBeNull();
+    expect(typeCell(rows[1]).querySelector('.schema-reason')?.textContent).toContain("stayed text — found 'N/A', would be double");
+    expect(typeCell(rows[2]).querySelector('.schema-reason')?.textContent).toContain('only 1 typed value');
+  });
+
+  it('with no reasons at all the grid shows no hints', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_noreason', true, {
+      fields: [
+        { name: 'id', type: 'int', samples: ['1'], stringReason: null, note: null },
+        { name: 'qty', type: 'int', samples: ['2'], stringReason: null, note: null }
+      ]
+    });
+    c.expanded = true;
+    await render();
+    expect(el.querySelectorAll('.schema-reason').length).toBe(0);
+    expect(Array.from(el.querySelectorAll('.schema-grid th')).map(h => (h.textContent || '').trim())).toEqual(['Column', 'Type', 'Samples']);
   });
 
   it('the tool header names the tap being typed', async () => {

@@ -274,8 +274,8 @@
 
                 <!-- Inline schema-proposal card: rendered instead of the generic
                      tool body when propose_pipeline_schema returned a proposal.
-                     Preview rows, then the type grid (column | type | samples |
-                     reason). Confirm / Keep all as text post the next user
+                     Preview rows, then the type grid (column | type | samples);
+                     a column's reason, if any, is a hint under its type. Confirm / Keep all as text post the next user
                      message; Pull more rows refreshes in place, no model turn.
                      A vector-store proposal (typeGrid false) is preview only. -->
                 <ng-container *ngIf="seg.schemaProposal as sp">
@@ -308,7 +308,7 @@
                       <div class="schema-table-wrap">
                         <table class="schema-table schema-grid">
                           <thead>
-                            <tr><th>Column</th><th>Type</th><th>Samples</th><th>Reason</th></tr>
+                            <tr><th>Column</th><th>Type</th><th>Samples</th></tr>
                           </thead>
                           <tbody>
                             <tr *ngFor="let f of sp.fields; trackBy: trackByIndex">
@@ -319,9 +319,9 @@
                                   <option *ngFor="let t of schemaTypes" [value]="t">{{ t }}</option>
                                 </select>
                                 <span class="schema-changed" *ngIf="f.type !== f.recommended">changed</span>
+                                <div class="schema-reason" *ngIf="schemaReason(f) as why">{{ why }}</div>
                               </td>
                               <td class="schema-samples">{{ schemaSamples(f) }}</td>
-                              <td class="schema-reason">{{ schemaReason(f) }}</td>
                             </tr>
                           </tbody>
                         </table>
