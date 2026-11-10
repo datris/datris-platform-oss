@@ -157,6 +157,9 @@ export function askUserForHistory(au: AskUserState): { questions: AskUserQuestio
   return { questions: au.questions, submitted: !!au.submitted };
 }
 
+/** Shown on a turn the model ended with no text and no tool call. */
+export const EMPTY_REPLY_MESSAGE = 'The model returned an empty reply. Send your message again or rephrase it.';
+
 /** Most chars of one tool result sent in the outbound history. */
 export const HISTORY_RESULT_CAP = 1024;
 /** Result cap for the discovery listings: their pretty-printed JSON runs to
@@ -811,6 +814,12 @@ export class AssistantStateService {
         break;
       case 'done':
         turn.done = true;
+        // A turn that ends with no text, no tool call and no error would
+        // otherwise show as a blank bubble; say what happened instead.
+        if (!turn.errorMessage && !turn.segments.some(s =>
+          s.kind === 'tool' || (s.kind === 'text' && (s as TextSegment).text.trim().length > 0))) {
+          turn.errorMessage = EMPTY_REPLY_MESSAGE;
+        }
         break;
       case 'error':
         turn.errorMessage = evt.message;
