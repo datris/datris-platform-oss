@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, SchemaProposalField, StagedAttachment } from '../assistant.service';
+import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, HistoryToolCall, SchemaProposalField, StagedAttachment } from '../assistant.service';
 import { loadChatState, saveChatState, clearChatState } from '../shared/chat-persistence';
 import { handleRetryEvent, AttemptMark } from '../shared/chat-retry';
 
@@ -93,19 +93,6 @@ export function schemaReplyName(name: string): string {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : '`' + name + '`';
 }
 
-/** How a schema-proposal card travels in the outbound history: one line of
- *  plain prose on the assistant message, so a card-only turn still shows the
- *  model that it proposed (and what) when the user's confirmation arrives.
- *  Plain prose, not a bracketed tool-call record: the model copied such
- *  records back as text (see askUserForHistory). Not shown in the UI. */
-export function schemaProposalForHistory(sp: SchemaProposalState): string {
-  if (!sp.typeGrid) {
-    return `I showed you a preview of ${sp.sampleRowCount} rows from tap \`${sp.tap}\` on a schema card.`;
-  }
-  const cols = sp.fields.map(f => `${schemaReplyName(f.name)} ${f.recommended || f.type}`).join(', ');
-  return `I proposed column types for tap \`${sp.tap}\` from ${sp.sampleRowCount} preview rows and showed them to you on a schema card: ${cols}.`;
-}
-
 /** Most preview rows a schema-proposal card renders; the box scrolls. */
 export const SCHEMA_PREVIEW_RENDER_CAP = 200;
 
@@ -168,6 +155,51 @@ export function askUserAnswer(au: AskUserState, index: number): string {
  *  the card is never shown to the model as text. Not shown in the UI. */
 export function askUserForHistory(au: AskUserState): { questions: AskUserQuestion[]; submitted: boolean } {
   return { questions: au.questions, submitted: !!au.submitted };
+}
+
+/** Most chars of one tool result sent in the outbound history. */
+export const HISTORY_RESULT_CAP = 1024;
+/** Most chars of one tool input (as JSON) sent in the outbound history. */
+export const HISTORY_INPUT_CAP = 2048;
+/** Most result chars sent for all of one turn's tool calls together. */
+export const HISTORY_TURN_CAP = 8192;
+
+/** How a turn's tool cards travel in the outbound history
+ *  (`ChatMessage.toolCalls`), which the server replays as the tool calls the
+ *  model made, so a later turn does not repeat discovery or re-create what it
+ *  built. Finished cards with an input only, in segment order; `ask_user`
+ *  cards travel as `askUser` instead. Results are cut to HISTORY_RESULT_CAP
+ *  and, once the turn has used HISTORY_TURN_CAP, sent empty; either way they
+ *  are marked `truncated`. A schema-proposal or secret-request card is sent
+ *  as `synthetic` with no result: the model saw waiting text live, not the
+ *  payload. Undefined when nothing qualifies. */
+export function toolCallsForHistory(turn: AssistantTurn): HistoryToolCall[] | undefined {
+  const calls: HistoryToolCall[] = [];
+  let used = 0;
+  for (const s of turn.segments || []) {
+    if (s.kind !== 'tool') continue;
+    const c = s as ToolCard;
+    if (c.status === 'running' || c.input === undefined || c.input === null || c.askUser) continue;
+    let input: any = c.input;
+    const json = JSON.stringify(input) ?? '';
+    if (json.length > HISTORY_INPUT_CAP) input = { _truncatedInput: json.slice(0, HISTORY_INPUT_CAP) };
+    const call: HistoryToolCall = { id: c.id, name: c.name, input, result: '', isError: !!c.isError };
+    if (c.schemaProposal || c.secretRequest) {
+      call.synthetic = true;
+    } else {
+      const full = typeof c.result === 'string' ? c.result : (c.result == null ? '' : String(c.result));
+      const room = Math.max(0, Math.min(HISTORY_RESULT_CAP, HISTORY_TURN_CAP - used));
+      if (full.length > room) {
+        call.result = full.slice(0, room);
+        call.truncated = true;
+      } else {
+        call.result = full;
+      }
+      used += call.result.length;
+    }
+    calls.push(call);
+  }
+  return calls.length ? calls : undefined;
 }
 
 /** One `Header: answer` line per question — the text posted as the user's
@@ -424,9 +456,11 @@ export class AssistantStateService {
     this.persist();
 
     // Build outbound history. Skip the in-progress assistant turn; flatten
-    // each prior assistant turn's text segments into one string. Tool calls
-    // don't go in the conversation log on the client side — the agent loop
-    // preserves them server-side for continuity within a single run.
+    // each prior assistant turn's text segments into one string and send its
+    // finished tool calls (`toolCalls`) and question card (`askUser`) as
+    // data. The server replays both as the tool_use / tool_result pairs the
+    // model saw live, so a later turn remembers what it already listed,
+    // created and tested.
     const messages: ChatMessage[] = [];
     for (const t of this.turns) {
       if (t.role === 'user') {
@@ -439,24 +473,19 @@ export class AssistantStateService {
       } else if (t === assistantTurn) {
         continue;
       } else {
-        // Text segments, plus any question card as structured data: a
-        // card-only turn has no text, and without this the model never sees
-        // that it already asked (or what), so it re-asks the same card. The
-        // server replays the card as the tool call it was, never as text.
-        const visible = t.segments
+        // Text segments, plus the turn's tool calls and any question card as
+        // structured data: a tool-only or card-only turn has no text, and
+        // without this the model never sees what it already did or asked.
+        const content = t.segments
           .map(s => s.kind === 'text' ? (s as TextSegment).text : '')
           .join('');
-        // A schema-proposal card adds one prose line, so a card-only turn
-        // still tells the model what it proposed before the reply arrives.
-        const proposals = t.segments
-          .filter(s => s.kind === 'tool' && !!(s as ToolCard).schemaProposal)
-          .map(s => schemaProposalForHistory((s as ToolCard).schemaProposal!));
-        const content = [visible, ...proposals].filter(x => x.trim().length > 0).join('\n\n');
         const card = t.segments.find(s => s.kind === 'tool' && !!(s as ToolCard).askUser) as ToolCard | undefined;
-        if (card?.askUser) {
-          messages.push({ role: 'assistant', content, askUser: askUserForHistory(card.askUser) });
-        } else if (content.trim().length > 0) {
-          messages.push({ role: 'assistant', content });
+        const toolCalls = toolCallsForHistory(t);
+        if (content.trim().length > 0 || card?.askUser || toolCalls) {
+          const m: ChatMessage = { role: 'assistant', content };
+          if (card?.askUser) m.askUser = askUserForHistory(card.askUser);
+          if (toolCalls) m.toolCalls = toolCalls;
+          messages.push(m);
         }
       }
     }

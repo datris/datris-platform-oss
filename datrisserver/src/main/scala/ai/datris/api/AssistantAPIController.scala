@@ -55,6 +55,16 @@ object AssistantAPIController {
             "- **Two checkpoints, no more.** Destination, key fields and schedule stay in the plan the user already confirms in prose; do not turn the build into a step-by-step wizard.\n" +
             "- If `propose_pipeline_schema` returns a test failure, fix the tap first (the two-failed-tests rule applies). If it reports the server is too old, fall back to `content_text` on `create_pipeline`. A file the user drops, or rows they paste, follow the attached-file flow below instead.\n"
 
+    /** Tool-call continuity rule (plans/stories/assistant-tool-call-continuity.md):
+      * earlier turns' tool calls are replayed in the history (see
+      * [[historyToBlocks]]), so the model must not re-run discovery or re-create
+      * what it already built. Lifted out of `buildSystemPrompt` so a spec can
+      * read the wording directly (same seam as [[SchemaCheckpointRule]]). No
+      * domains or proper nouns.
+      */
+    private[datris] val ContinuityRule: String =
+        "- **Earlier turns' tool calls are in this conversation.** Your own past `list_pipelines`, `list_taps`, `create_tap`, `test_tap` and other calls and their results appear in the history exactly as you made them. Do not repeat a discovery call whose result you already have in this conversation unless the user asks for a refresh or something was created or changed since; reuse a tap or pipeline you already created instead of creating it again.\n"
+
     /** KEEP-OR-READ-LIVE rule (plans/fetch-only-taps.md §5, renamed by
       * plans/live-read-naming.md), the same fork the MCP
       * server instructions carry. Lifted out of `buildSystemPrompt` so a spec can
@@ -77,17 +87,27 @@ object AssistantAPIController {
       * read it (same seam as [[KeepOrScratchRule]]).
       */
     /** Turn the UI's chat history into content-block messages. A plain message
-      * is one text block. An assistant message carrying `askUser` — the question
-      * card shown on that turn, as `{questions, submitted}` — is replayed as the
-      * `ask_user` tool_use block the model emitted, followed by the tool_result
-      * the live loop recorded, merged into the next user message so the
-      * tool_use/tool_result pairing holds. The model then sees a past card the
-      * same way it saw it when it called the tool, not as prose it could copy
-      * into a later turn as text. A malformed `askUser` falls back to the text
-      * alone. */
+      * is one text block. An assistant message may carry two kinds of replayed
+      * tool calls, both rebuilt as the tool_use / tool_result pairs the model saw
+      * live (results merged into the next user message so the pairing holds):
+      *
+      *  - `toolCalls` — the turn's finished tool cards, as
+      *    `[{id, name, input, result, isError, truncated?, synthetic?}]`. Each
+      *    becomes a ToolUseBlock (id prefixed `hist_<i>_` so it never clashes
+      *    with a live id or another turn's) and a ToolResultBlock in the same
+      *    order. A `synthetic` schema proposal or secret request replays the
+      *    waiting text the loop recorded; a `truncated` result carries a note
+      *    telling the model to call the tool again for the full output.
+      *  - `askUser` — the question card shown on that turn, as
+      *    `{questions, submitted}`, replayed last as the `ask_user` call.
+      *
+      * The model then sees past calls the same way it saw them when it made
+      * them, so it does not repeat discovery or re-create what it built. A
+      * malformed `toolCalls` entry is skipped with a warning; a non-array
+      * `toolCalls` or malformed `askUser` falls back to the text alone. */
     private[datris] def historyToBlocks(messagesArr: JsonArray): List[(String, List[AIContentBlock])] = {
         val out = scala.collection.mutable.ListBuffer.empty[(String, List[AIContentBlock])]
-        var pendingResult: Option[AIContentBlock] = None
+        var pendingResults: List[AIContentBlock] = Nil
         messagesArr.asScala.zipWithIndex.foreach { case (el, i) =>
             val m = el.getAsJsonObject
             val role = if (m.has("role") && !m.get("role").isJsonNull) m.get("role").getAsString else "user"
@@ -95,8 +115,8 @@ object AssistantAPIController {
             if (role == "assistant") {
                 // Two assistant turns in a row cannot happen, but if a card went
                 // unanswered keep the pairing well-formed rather than drop it.
-                pendingResult.foreach(r => out += (("user", List(r))))
-                pendingResult = None
+                if (pendingResults.nonEmpty) out += (("user", pendingResults))
+                pendingResults = Nil
                 val card: Option[(JsonArray, Boolean)] =
                     if (m.has("askUser") && m.get("askUser").isJsonObject) {
                         val au = m.getAsJsonObject("askUser")
@@ -109,28 +129,97 @@ object AssistantAPIController {
                                 None
                         }
                     } else None
+                val calls = historyToolCallsOf(m, i)
+                val text: List[AIContentBlock] =
+                    if (content.trim.nonEmpty) List(AIContentBlock.TextBlock(content)) else Nil
+                val uses: List[AIContentBlock] = calls.map(_._1)
+                val results: List[AIContentBlock] = calls.map(_._2)
                 card match {
                     case Some((questions, submitted)) =>
                         val id = "ask_user_history_" + i
                         val input = new JsonObject()
                         input.add("questions", questions)
-                        val text: List[AIContentBlock] =
-                            if (content.trim.nonEmpty) List(AIContentBlock.TextBlock(content)) else Nil
-                        out += (("assistant", text :+ AIContentBlock.ToolUseBlock(id, AgentLoop.SyntheticAskUserTool, input)))
+                        out += (("assistant", (text ++ uses) :+ AIContentBlock.ToolUseBlock(id, AgentLoop.SyntheticAskUserTool, input)))
                         val note =
                             if (submitted) "The user submitted the card; their answers follow as `header: answer` lines."
                             else "The user replied in chat instead of submitting the card; read their reply as prose."
-                        pendingResult = Some(AIContentBlock.ToolResultBlock(id, AgentLoop.AskUserWaitingText + " " + note, isError = false))
+                        pendingResults = results :+ AIContentBlock.ToolResultBlock(id, AgentLoop.AskUserWaitingText + " " + note, isError = false)
+                    case None if uses.nonEmpty =>
+                        out += (("assistant", text ++ uses))
+                        pendingResults = results
                     case None =>
                         out += (("assistant", List[AIContentBlock](AIContentBlock.TextBlock(content))))
                 }
             } else {
-                out += (("user", pendingResult.toList :+ AIContentBlock.TextBlock(content)))
-                pendingResult = None
+                out += (("user", pendingResults :+ AIContentBlock.TextBlock(content)))
+                pendingResults = Nil
             }
         }
-        pendingResult.foreach(r => out += (("user", List(r))))
+        if (pendingResults.nonEmpty) out += (("user", pendingResults))
         out.toList
+    }
+
+    /** Appended to a replayed tool result the UI shortened for history. */
+    private[datris] val HistoryShortenedNote: String =
+        " [result shortened for history; call the tool again if you need the full output]"
+
+    /** Replayed tool_use id: `hist_<message>_<entry>_<client id>`. The prefix
+      * keeps it unique across turns and entries; the client id is reduced to
+      * `[A-Za-z0-9_-]` (Anthropic's id pattern) and the whole id kept within
+      * 40 chars (the chat-completions `tool_calls[].id` limit), dropping the
+      * front of the client id when it is too long. */
+    private def historyToolId(i: Int, j: Int, clientId: String): String = {
+        val prefix = "hist_" + i + "_" + j + "_"
+        val clean = clientId.replaceAll("[^A-Za-z0-9_-]", "_")
+        val room = math.max(0, 40 - prefix.length)
+        prefix + (if (clean.length > room) clean.substring(clean.length - room) else clean)
+    }
+
+    /** Parse an assistant history message's `toolCalls` into (tool_use,
+      * tool_result) pairs, in order. Not an array → none. A malformed entry
+      * (missing id/name, non-object input) is skipped with a warning naming
+      * the message index. */
+    private def historyToolCallsOf(m: JsonObject, i: Int): List[(AIContentBlock.ToolUseBlock, AIContentBlock.ToolResultBlock)] = {
+        if (!m.has("toolCalls") || !m.get("toolCalls").isJsonArray) return Nil
+        val log = LoggerFactory.getLogger(classOf[AssistantAPIController])
+        def str(o: JsonObject, k: String): Option[String] =
+            if (o.has(k) && o.get(k).isJsonPrimitive && o.get(k).getAsJsonPrimitive.isString) Some(o.get(k).getAsString) else None
+        def bool(o: JsonObject, k: String): Boolean =
+            o.has(k) && o.get(k).isJsonPrimitive && o.get(k).getAsJsonPrimitive.isBoolean && o.get(k).getAsBoolean
+        m.getAsJsonArray("toolCalls").asScala.zipWithIndex.toList.flatMap { case (el, j) =>
+            val parsed: Either[String, (AIContentBlock.ToolUseBlock, AIContentBlock.ToolResultBlock)] =
+                if (!el.isJsonObject) Left("entry is not an object")
+                else {
+                    val o = el.getAsJsonObject
+                    (str(o, "id").filter(_.nonEmpty), str(o, "name").filter(_.nonEmpty)) match {
+                        case (None, _) => Left("missing id")
+                        case (_, None) => Left("missing name")
+                        case (Some(id), Some(name)) =>
+                            if (!o.has("input") || !o.get("input").isJsonObject) Left("input is not an object")
+                            else {
+                                val histId = historyToolId(i, j, id)
+                                val sent = str(o, "result").getOrElse("")
+                                val base =
+                                    if (bool(o, "synthetic") && name == AgentLoop.SchemaProposalTool) AgentLoop.SchemaProposalWaitingText
+                                    else if (bool(o, "synthetic") && name == AgentLoop.SyntheticSecretTool) AgentLoop.SecretRequestWaitingText
+                                    else sent
+                                val resultText = if (bool(o, "truncated")) base + HistoryShortenedNote else base
+                                Right(
+                                    (
+                                        AIContentBlock.ToolUseBlock(histId, name, o.getAsJsonObject("input")),
+                                        AIContentBlock.ToolResultBlock(histId, resultText, isError = bool(o, "isError"))
+                                    )
+                                )
+                            }
+                    }
+                }
+            parsed match {
+                case Right(pair) => List(pair)
+                case Left(why) =>
+                    log.warn("Skipping malformed toolCalls entry " + j + " on history message " + i + ": " + why)
+                    Nil
+            }
+        }
     }
 
     private[datris] def syntheticAskUserToolDef(): JsonObject = {
@@ -585,7 +674,7 @@ class AssistantAPIController {
         )
         sb.append("## Behavior rules\n\n")
         sb.append(
-            "- **Check existing platform state FIRST — before any recommendation, before listing external sources, before asking clarifying scope questions.** On the first turn of any data-related request (anything that sounds like \"I'm looking for X\", \"can you get me Y\", \"do you have Z\", \"I want to ingest...\"), call `list_pipelines` AND `list_taps` BEFORE generating any text reply. Then anchor your response in what already exists: `\"There's already a `records` pipeline pulling from a public REST API — does that cover what you need, or do you want to extend it / add ids / pick a different source?\"`. Do NOT enumerate external API options until you've confirmed nothing in the platform already covers the ask. The user almost always cares more about what's already running than about a generic options menu drawn from your training data.\n"
+            "- **Check existing platform state FIRST — before any recommendation, before listing external sources, before asking clarifying scope questions.** On the first data-related ask of a conversation (anything that sounds like \"I'm looking for X\", \"can you get me Y\", \"do you have Z\", \"I want to ingest...\"), call `list_pipelines` AND `list_taps` BEFORE generating any text reply. Then anchor your response in what already exists: `\"There's already a `records` pipeline pulling from a public REST API — does that cover what you need, or do you want to extend it / add ids / pick a different source?\"`. Do NOT enumerate external API options until you've confirmed nothing in the platform already covers the ask. The user almost always cares more about what's already running than about a generic options menu drawn from your training data.\n"
         )
         sb.append(
             "- When existing pipelines/taps DO partially cover the request, name them specifically and ask whether to extend, modify, or build alongside. When nothing covers it, then — and only then — propose external sources or ask scope questions.\n"
@@ -594,6 +683,7 @@ class AssistantAPIController {
             "- When the user asks for data from an external source AND no existing pipeline/tap covers it, find a suitable source (web_search if available, or your own knowledge), then create the tap and pipeline that delivers that data. Don't just describe what to do — do it.\n"
         )
         sb.append("- Always check existing taps/pipelines first via `list_taps` and `list_pipelines` before creating new ones.\n")
+        sb.append(AssistantAPIController.ContinuityRule)
         sb.append(
             "- **Set expectations before slow tools.** Calling `create_tap` with an `instruction` triggers server-side AI script generation that typically takes 1–3 minutes with no intermediate output. In the same message that announces the call, tell the user what to expect: \"Generating the tap script with AI — this usually takes a minute or two.\" Same for `create_pipeline` on a large file. Never let a multi-minute tool run start without having told the user roughly how long it takes.\n"
         )
@@ -716,7 +806,7 @@ class AssistantAPIController {
             "- **Partial answers are not full answers.** If you asked N clarifying questions and the user answered K of them, the remaining N-K are still pending. Repeat the unanswered ones on a new `ask_user` card and wait — do not infer them from context, the user's tone, or the most popular choice in your training data. Only proceed once every open question is closed or the user has explicitly told you to pick a default.\n"
         )
         sb.append(
-            "- **Clarifying questions go on a question card.** Whenever you need answers from the user before proceeding, call `ask_user` instead of writing a numbered list — for closed choices (which source, which schedule, which destination, append vs latest, a scope preset) AND for open-ended ones (names, locations, free-form filters, lists of values). Offer 2-8 options whenever you can name sensible ones (a time of day: 6:00 AM, noon, 6:00 PM; a cadence; a region); leave options out for a genuinely open-ended question so the card shows a text box. Do not mix a card with prose questions in the same turn, and show at most one card per turn; a plan or summary for the user to confirm may stay in prose alongside the card. The partial-answers rule above applies to card answers too. Earlier cards appear in the history as your own `ask_user` tool calls and their results; for new questions call `ask_user` again.\n"
+            "- **Clarifying questions go on a question card.** Whenever you need answers from the user before proceeding, call `ask_user` instead of writing a numbered list — for closed choices (which source, which schedule, which destination, append vs latest, a scope preset) AND for open-ended ones (names, locations, free-form filters, lists of values). Offer 2-8 options whenever you can name sensible ones (a time of day: 6:00 AM, noon, 6:00 PM; a cadence; a region); leave options out for a genuinely open-ended question so the card shows a text box. Do not mix a card with prose questions in the same turn, and show at most one card per turn; a plan or summary for the user to confirm may stay in prose alongside the card. The partial-answers rule above applies to card answers too. Earlier cards appear in the history as your own `ask_user` tool calls and their results, the same way your other earlier tool calls do; for new questions call `ask_user` again.\n"
         )
         sb.append(
             "- If the user says \"use a sensible default\" or \"you pick,\" choose ONE obviously-placeholder value so they can verify the shape works, and tell them plainly that it's a placeholder. Do not pad the placeholder with a recognizable canonical list.\n"

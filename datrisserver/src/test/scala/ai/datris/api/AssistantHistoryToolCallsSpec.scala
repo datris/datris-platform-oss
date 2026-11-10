@@ -129,7 +129,8 @@ class AssistantHistoryToolCallsSpec extends AnyFunSuite {
 
     test("synthetic propose_pipeline_schema replays SchemaProposalWaitingText") {
         val calls = s"""[{"id":"t1","name":"${AgentLoop.SchemaProposalTool}","input":{"tap":"t"},"result":"","isError":false,"synthetic":true}]"""
-        val out = history(s"""[{"role":"user","content":"a"},{"role":"assistant","content":"","toolCalls":$calls},{"role":"user","content":"Confirmed schema"}]""")
+        val out =
+            history(s"""[{"role":"user","content":"a"},{"role":"assistant","content":"","toolCalls":$calls},{"role":"user","content":"Confirmed schema"}]""")
         val uses = toolUses(out(1)._2)
         assert(uses.map(_.name) == List("propose_pipeline_schema"))
         val tr = toolResults(out(2)._2).head
@@ -138,7 +139,8 @@ class AssistantHistoryToolCallsSpec extends AnyFunSuite {
     }
 
     test("synthetic request_tap_secret_from_user replays SecretRequestWaitingText") {
-        val calls = s"""[{"id":"t1","name":"${AgentLoop.SyntheticSecretTool}","input":{"secret_name":"s","field_names":["k"]},"result":"","isError":false,"synthetic":true}]"""
+        val calls =
+            s"""[{"id":"t1","name":"${AgentLoop.SyntheticSecretTool}","input":{"secret_name":"s","field_names":["k"]},"result":"","isError":false,"synthetic":true}]"""
         val out = history(s"""[{"role":"user","content":"a"},{"role":"assistant","content":"","toolCalls":$calls},{"role":"user","content":"I provided it"}]""")
         val tr = toolResults(out(2)._2).head
         assert(tr.content == AgentLoop.SecretRequestWaitingText)

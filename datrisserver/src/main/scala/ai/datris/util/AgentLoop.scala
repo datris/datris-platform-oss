@@ -129,7 +129,7 @@ object AgentLoop {
 
     /** What the model sees after a secret form is shown; the loop then ends so
       * the user can act. */
-    private val SecretRequestWaitingText: String =
+    private[datris] val SecretRequestWaitingText: String =
         "Credentials request displayed to the user. The user's next message will tell you whether they provided a new secret, picked an existing one, or declined. Wait for their reply before continuing."
 
     /** Tools whose `content` (base64 file bytes) we resolve from a staged

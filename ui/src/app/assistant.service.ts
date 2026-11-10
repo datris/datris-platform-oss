@@ -26,6 +26,25 @@ export interface ChatMessage {
    *  `submitted` says whether the next user message is the card's
    *  `header: answer` lines or a reply typed in chat. */
   askUser?: { questions: AskUserQuestion[]; submitted: boolean };
+  /** Assistant only: the turn's finished tool calls, in order. Replayed by the
+   *  server as the tool_use / tool_result pairs the model saw live, so later
+   *  turns know what was already listed, created or tested. Never rendered. */
+  toolCalls?: HistoryToolCall[];
+}
+
+/** One prior tool call as it travels in the outbound history. `truncated`
+ *  says the result was shortened for history (the server tells the model to
+ *  call the tool again for the full output); `synthetic` marks a card the
+ *  model saw as waiting text live (schema proposal, secret request), which
+ *  the server replays instead of `result`. */
+export interface HistoryToolCall {
+  id: string;
+  name: string;
+  input: any;
+  result: string;
+  isError: boolean;
+  truncated?: boolean;
+  synthetic?: boolean;
 }
 
 /** Metadata for a file staged via POST /api/v1/assistant/attachment. The raw
