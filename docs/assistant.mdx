@@ -53,7 +53,9 @@ returned:
 
 That is two questions in total. The destination, key columns, and schedule
 are still agreed in the plan the Assistant states up front. Vector-store
-destinations have no column types, so you only see the preview.
+destinations have no column types, so you only see the preview and the
+follow-up question is skipped: the pipeline chunks and embeds documents as
+they load, so there are no checks, transformations or protection to choose.
 
 In the Assistant tab the proposal appears as a card in the chat, not as a
 table in the reply. The card shows the first few preview rows, then one line per
