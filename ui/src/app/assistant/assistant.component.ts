@@ -1,6 +1,6 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, AfterViewChecked, NgZone } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers, schemaProposalRows, schemaReplyName, SCHEMA_PREVIEW_ROWS } from './assistant-state.service';
+import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers, schemaProposalRows, schemaReplyName, SchemaProposalState, SCHEMA_PREVIEW_RENDER_CAP } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
@@ -681,7 +681,32 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
   }
 
   schemaPreviewRows(card: ToolCard): any[] {
-    return (card.schemaProposal?.preview || []).slice(0, SCHEMA_PREVIEW_ROWS);
+    return (card.schemaProposal?.preview || []).slice(0, SCHEMA_PREVIEW_RENDER_CAP);
+  }
+
+  /** Footer under the preview: how many of the reviewed rows are on screen. */
+  schemaPreviewFooter(card: ToolCard): string {
+    const sp = card.schemaProposal;
+    if (!sp) return '';
+    const shown = this.schemaPreviewRows(card).length;
+    const total = Math.max(sp.sampleRowCount || 0, shown);
+    if (total === 0) return '';
+    return shown < total ? `Showing ${shown} of ${total} rows` : `${total} ${total === 1 ? 'row' : 'rows'}`;
+  }
+
+  /** Why "Pull more rows" is disabled, or '' when it is usable. Never
+   *  disabled silently: the card shows this next to the button. */
+  schemaPullBlocked(sp: SchemaProposalState): string {
+    if (sp.loading) return '';
+    if (sp.exhausted) return `All ${sp.sampleRowCount} ${sp.sampleRowCount === 1 ? 'row' : 'rows'} pulled`;
+    if ((sp.limit || 0) >= AssistantComponent.SCHEMA_LIMIT_CAP) return `Maximum ${AssistantComponent.SCHEMA_LIMIT_CAP} rows`;
+    if (this.state.streaming) return 'Wait for the Assistant to finish';
+    return '';
+  }
+
+  /** The row limit the next "Pull more rows" asks for. */
+  schemaNextLimit(sp: SchemaProposalState): number {
+    return Math.min((sp.limit || 20) * AssistantComponent.SCHEMA_LIMIT_STEP, AssistantComponent.SCHEMA_LIMIT_CAP);
   }
 
   /** One preview / sample value as clipped display text. */
@@ -740,10 +765,12 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
    *  already changed is kept; untouched columns take the new recommendation. */
   pullMoreRows(card: ToolCard): void {
     const sp = card.schemaProposal;
-    if (!sp || sp.submitted || sp.skipped || sp.loading || !sp.typeGrid) return;
-    const limit = Math.min((sp.limit || 20) * AssistantComponent.SCHEMA_LIMIT_STEP, AssistantComponent.SCHEMA_LIMIT_CAP);
+    if (!sp || sp.submitted || sp.skipped || sp.loading || !sp.typeGrid || sp.exhausted) return;
+    if ((sp.limit || 0) >= AssistantComponent.SCHEMA_LIMIT_CAP) return;
+    const limit = this.schemaNextLimit(sp);
     sp.loading = true;
     sp.errorMessage = '';
+    sp.statusMessage = '';
     const fail = (msg: string) => {
       sp.loading = false;
       sp.errorMessage = msg;
@@ -767,10 +794,16 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
               if (kept) r.type = kept;
             }
             sp.fields = rows;
-            const preview = Array.isArray(proposal?.preview) ? proposal.preview : records;
-            sp.preview = preview.slice(0, SCHEMA_PREVIEW_ROWS);
+            // The preview shows every pulled record (render-capped; the box scrolls).
+            sp.preview = records.slice(0, SCHEMA_PREVIEW_RENDER_CAP);
             sp.sampleRowCount = typeof proposal?.sampleRowCount === 'number' ? proposal.sampleRowCount : records.length;
             sp.limit = limit;
+            // Fewer rows than asked for, none cut off: the tap has no more.
+            const produced = typeof res.recordCount === 'number' ? res.recordCount : records.length;
+            sp.exhausted = !res.recordsTruncated && produced < limit;
+            const n = sp.sampleRowCount;
+            sp.statusMessage = `Pulled ${n} ${n === 1 ? 'row' : 'rows'}` +
+              (sp.exhausted ? ' (all the tap returned)' : '') + '; types re-checked.';
             sp.loading = false;
           },
           error: (err) => fail('Could not re-propose types: ' + httpErrorText(err, 'unknown'))

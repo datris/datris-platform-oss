@@ -1090,3 +1090,24 @@
   gap: 8px;
   margin-top: 4px;
 }
+.schema-preview-wrap {
+  max-height: 240px;
+}
+.schema-preview-footer {
+  font-size: 11px;
+  color: #8a8f99;
+}
+.schema-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #c0c4cc;
+}
+.schema-status-done {
+  color: #6ad88a;
+}
+.schema-pull-hint {
+  font-size: 12px;
+  color: #8a8f99;
+}

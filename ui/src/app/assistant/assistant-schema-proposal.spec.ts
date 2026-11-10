@@ -229,15 +229,17 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     expect(el.querySelector('.tool-body')).withContext('generic tool body must be hidden for a schema-proposal card').toBeNull();
   });
 
-  it('the preview table shows at most 5 rows', async () => {
+  // Requirement change (user, 2026-11-10): the preview shows every row of the
+  // latest tap test (render cap 200, scrollable), not just 5.
+  it('the preview table shows every row the event carries, with a showing-N-of-M footer', async () => {
     await mount();
     const c = proposeAndFinish('toolu_rows', true, { preview: previewRows(7) });
     c.expanded = true;
     await render();
     const t = text();
     expect(t).toContain('row5price');
-    expect(t).not.toContain('row6price');
-    expect(t).not.toContain('row7price');
+    expect(t).toContain('row7price');
+    expect(t).toContain('Showing 7 of 20 rows');
   });
 
   it('a long preview cell is clipped, not rendered in full', async () => {
@@ -392,7 +394,7 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     expect(types['id']).withContext('an untouched column takes the new recommendation').toBe('bigint');
     expect(types['qty']).toBe('int');
     expect(sp.fields.find((f: any) => f.name === 'price').stringReason).toEqual({ value: 'n/a', blocked: 'double' });
-    expect(sp.preview.length).toBeLessThanOrEqual(5);
+    expect(sp.preview.length).withContext('the preview shows every pulled row').toBe(100);
     expect(sp.preview[0]).toEqual(records[0]);
     expect(text()).toContain("found 'n/a', would be double");
 
@@ -551,6 +553,101 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     proposeAndFinish();
     await render();
     expect(text()).toContain('Proposing column types for prices_tap');
+  });
+
+  // ------------------------------------------- live feedback 2026-11-10 ---
+
+  it('the initial card shows the 5 event rows of 20 reviewed in the footer', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_f5', true, { preview: previewRows(5), sampleRowCount: 20 });
+    c.expanded = true;
+    await render();
+    expect(text()).toContain('Showing 5 of 20 rows');
+  });
+
+  it('Pull more rows shows a pulling status while it runs and a result line when done', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    await render();
+    const tapResult = new Subject<any>();
+    runTapSpy.and.returnValue(tapResult.asObservable());
+    proposeSpy.and.returnValue(of({ sampleRowCount: 100, fields: fields() }));
+    buttonNamed('Pull more rows')!.click();
+    await render();
+    expect(text()).toContain('Pulling up to 100 rows');
+    expect(buttonNamed('Pull more rows')?.disabled).toBeTrue();
+    tapResult.next({ status: 'success', records: previewRows(100), columns: ['id', 'price', 'qty'] });
+    tapResult.complete();
+    await render();
+    expect(text()).not.toContain('Pulling up to');
+    expect(text()).toContain('Pulled 100 rows; types re-checked.');
+    expect(text()).toContain('100 rows');
+    expect(text()).toContain('row100price');
+    expect(buttonNamed('Pull more rows')?.disabled).toBeFalse();
+  });
+
+  it('a pull of more than 200 rows renders 200 and says so', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.schemaProposal.limit = 100;
+    runTapSpy.and.returnValue(of({ status: 'success', records: previewRows(300), recordsTruncated: true, columns: ['id', 'price', 'qty'] }));
+    proposeSpy.and.returnValue(of({ sampleRowCount: 300, fields: fields() }));
+    (fixture.componentInstance as any).pullMoreRows(c);
+    await render();
+    expect(c.schemaProposal.preview.length).toBe(200);
+    expect(text()).toContain('Showing 200 of 300 rows');
+    expect(text()).toContain('row200price');
+    expect(text()).not.toContain('row201price');
+  });
+
+  it('a tap with fewer rows than the default test has nothing to pull, and the card says why', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_few', true, { preview: previewRows(5), sampleRowCount: 5 });
+    await render();
+    expect(c.schemaProposal.exhausted).toBeTrue();
+    expect(buttonNamed('Pull more rows')?.disabled).toBeTrue();
+    expect(text()).toContain('All 5 rows pulled');
+    (fixture.componentInstance as any).pullMoreRows(c);
+    expect(runTapSpy).not.toHaveBeenCalled();
+  });
+
+  it('recordsTruncated on the event keeps Pull more rows available even with few rows', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_trunc', true, { preview: previewRows(5), sampleRowCount: 5, recordsTruncated: true });
+    await render();
+    expect(c.schemaProposal.exhausted).toBeFalsy();
+    expect(buttonNamed('Pull more rows')?.disabled).toBeFalse();
+  });
+
+  it('a pull that returns fewer rows than asked for marks the tap exhausted', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    runTapSpy.and.returnValue(of({ status: 'success', records: previewRows(7), recordCount: 7, columns: ['id', 'price', 'qty'] }));
+    proposeSpy.and.returnValue(of({ sampleRowCount: 7, fields: fields() }));
+    (fixture.componentInstance as any).pullMoreRows(c);
+    await render();
+    expect(text()).toContain('Pulled 7 rows (all the tap returned); types re-checked.');
+    expect(text()).toContain('All 7 rows pulled');
+    expect(buttonNamed('Pull more rows')?.disabled).toBeTrue();
+  });
+
+  it('at the 500-row cap the button is disabled and says Maximum 500 rows', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.schemaProposal.limit = 500;
+    await render();
+    expect(buttonNamed('Pull more rows')?.disabled).toBeTrue();
+    expect(text()).toContain('Maximum 500 rows');
+  });
+
+  it('while a turn is streaming the button is disabled and says why', async () => {
+    await mount();
+    proposeAndFinish();
+    state.streaming = true;
+    await render();
+    expect(buttonNamed('Pull more rows')?.disabled).toBeTrue();
+    expect(text()).toContain('Wait for the Assistant to finish');
+    state.streaming = false;
   });
 
   it('the pull-more-rows limit starts from the rows the proposal used', () => {

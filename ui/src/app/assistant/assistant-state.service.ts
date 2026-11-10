@@ -64,8 +64,14 @@ export interface SchemaProposalState {
   tap: string;
   typeGrid: boolean;
   sampleRowCount: number;
-  /** At most SCHEMA_PREVIEW_ROWS rows. */
+  /** Rows from the latest tap test, at most SCHEMA_PREVIEW_RENDER_CAP: the
+   *  event's preview rows at first, every pulled record after a pull. */
   preview: any[];
+  /** Every row the latest test returned has been pulled: the tap has no more,
+   *  so "Pull more rows" is disabled and says so. */
+  exhausted?: boolean;
+  /** One-line result of the last "Pull more rows" ("Pulled 100 rows; ..."). */
+  statusMessage?: string;
   /** Editable copies; never the event payload itself. */
   fields: SchemaProposalRow[];
   /** Tap-test row limit the proposal came from; "Pull more rows" multiplies it. */
@@ -99,8 +105,11 @@ export function schemaProposalForHistory(sp: SchemaProposalState): string {
   return `I proposed column types for tap \`${sp.tap}\` from ${sp.sampleRowCount} preview rows and showed them to you on a schema card: ${cols}.`;
 }
 
-/** Preview rows a schema-proposal card shows. */
-export const SCHEMA_PREVIEW_ROWS = 5;
+/** Most preview rows a schema-proposal card renders; the box scrolls. */
+export const SCHEMA_PREVIEW_RENDER_CAP = 200;
+
+/** Rows a tap test returns when the agent passed no `limit`. */
+export const SCHEMA_DEFAULT_TEST_ROWS = 20;
 
 /** Editable copies of proposed fields (samples copied too). */
 export function schemaProposalRows(fields: SchemaProposalField[] | null | undefined): SchemaProposalRow[] {
@@ -650,10 +659,14 @@ export class AssistantStateService {
           tap: evt.tap,
           typeGrid: evt.typeGrid !== false,
           sampleRowCount: evt.sampleRowCount || 0,
-          preview: (evt.preview || []).slice(0, SCHEMA_PREVIEW_ROWS).map(r => ({ ...r })),
+          preview: (evt.preview || []).slice(0, SCHEMA_PREVIEW_RENDER_CAP).map(r => ({ ...r })),
+          // Fewer rows than even the default test size, and none cut off:
+          // the tap has nothing more to pull.
+          exhausted: !evt.recordsTruncated && (evt.sampleRowCount || 0) < SCHEMA_DEFAULT_TEST_ROWS,
+          statusMessage: '',
           fields: schemaProposalRows(evt.fields),
           // The agent may have proposed from more than the default 20 rows.
-          limit: Math.max(20, evt.sampleRowCount || 0),
+          limit: Math.max(SCHEMA_DEFAULT_TEST_ROWS, evt.sampleRowCount || 0),
           loading: false,
           submitted: false,
           errorMessage: ''

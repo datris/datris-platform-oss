@@ -84,9 +84,10 @@ export type AssistantEvent =
    *  user's next message in `header: answer` lines. Assistant only. */
   | { type: 'ask_user'; id: string; questions: AskUserQuestion[] }
   /** `propose_pipeline_schema` returned a proposal. The Assistant renders an
-   *  inline card on the matching tool card: preview rows (at most 5), then a
+   *  inline card on the matching tool card: preview rows (the server sends at
+   *  most 5; `recordsTruncated` means the tap produced more), then a
    *  type grid unless `typeGrid` is false (vector store: preview only). */
-  | { type: 'schema_proposal'; id: string; tap: string; typeGrid: boolean; sampleRowCount: number; fields: SchemaProposalField[]; preview: any[] }
+  | { type: 'schema_proposal'; id: string; tap: string; typeGrid: boolean; sampleRowCount: number; fields: SchemaProposalField[]; preview: any[]; recordsTruncated?: boolean }
   /** Configuration chat only: a mutating tool proposed a change. The UI shows
    *  `summary` with Confirm / Cancel; Confirm re-posts with `token`. */
   | { type: 'confirm_request'; id: string; tool: string; summary: string; token: string }

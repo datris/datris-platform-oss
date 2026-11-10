@@ -286,7 +286,7 @@
                     </div>
 
                     <div class="schema-section-label">Preview</div>
-                    <div class="schema-table-wrap" *ngIf="schemaPreviewRows(seg).length; else schemaNoPreview">
+                    <div class="schema-table-wrap schema-preview-wrap" *ngIf="schemaPreviewRows(seg).length; else schemaNoPreview">
                       <table class="schema-table schema-preview-table">
                         <thead>
                           <tr><th *ngFor="let c of schemaPreviewColumns(seg); trackBy: trackByIndex">{{ c }}</th></tr>
@@ -298,6 +298,7 @@
                         </tbody>
                       </table>
                     </div>
+                    <div class="schema-preview-footer" *ngIf="schemaPreviewRows(seg).length">{{ schemaPreviewFooter(seg) }}</div>
                     <ng-template #schemaNoPreview>
                       <div class="schema-empty">No preview rows.</div>
                     </ng-template>
@@ -327,10 +328,16 @@
                       </div>
                     </ng-container>
 
+                    <div class="schema-status" *ngIf="sp.loading" role="status">
+                      <span class="dots-mini"><span></span><span></span><span></span></span>
+                      <span>Pulling up to {{ schemaNextLimit(sp) }} rows…</span>
+                    </div>
+                    <div class="schema-status schema-status-done" *ngIf="!sp.loading && sp.statusMessage" role="status">✓ {{ sp.statusMessage }}</div>
                     <div class="secret-form-error" *ngIf="sp.errorMessage">{{ sp.errorMessage }}</div>
 
                     <div class="schema-actions" *ngIf="sp.typeGrid">
-                      <button class="secret-btn secret-btn-cancel" (click)="pullMoreRows(seg)" [disabled]="sp.loading || state.streaming || sp.limit >= 500">{{ sp.loading ? 'Pulling rows…' : 'Pull more rows' }}</button>
+                      <button class="secret-btn secret-btn-cancel" (click)="pullMoreRows(seg)" [disabled]="sp.loading || !!schemaPullBlocked(sp)">Pull more rows</button>
+                      <span class="schema-pull-hint" *ngIf="schemaPullBlocked(sp) as why">{{ why }}</span>
                       <span class="ask-actions-spacer"></span>
                       <button class="secret-btn secret-btn-cancel" (click)="keepAllStrings(seg)" [disabled]="sp.loading || state.streaming">Keep all as text</button>
                       <button class="secret-btn secret-btn-save" (click)="confirmSchemaGrid(seg)" [disabled]="sp.loading || state.streaming">Confirm types</button>

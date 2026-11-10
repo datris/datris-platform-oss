@@ -60,14 +60,17 @@ object AgentLoop {
           * `typeGrid` is false) on the matching tool card. The loop ends after
           * this so the user can confirm; their confirmation arrives as the next
           * chat message. `fields` is empty for a vector-store proposal and
-          * `preview` carries at most [[SchemaProposalPreviewRows]] rows. */
+          * `preview` carries at most [[SchemaProposalPreviewRows]] rows.
+          * `recordsTruncated`: the tap produced more rows than the test
+          * returned, so the card's "Pull more rows" has more to fetch. */
         case class SchemaProposal(
             id: String,
             tap: String,
             typeGrid: Boolean,
             sampleRowCount: Int,
             fields: JsonArray,
-            preview: JsonArray
+            preview: JsonArray,
+            recordsTruncated: Boolean = false
         ) extends LoopEvent
 
         /** Transient system message — surfaced to the user as a small inline note,
@@ -461,7 +464,7 @@ object AgentLoop {
       * [[SchemaProposalPreviewRows]] rows; `fields` empty when absent, as for a
       * vector-store proposal). Any other tool, an error result, another status
       * or malformed JSON: None. */
-    private[util] def schemaProposalOf(id: String, tool: String, raw: String): Option[LoopEvent.SchemaProposal] = {
+    private[datris] def schemaProposalOf(id: String, tool: String, raw: String): Option[LoopEvent.SchemaProposal] = {
         if (tool != SchemaProposalTool) return None
         if (raw == null || !raw.trim.startsWith("{") || !raw.contains("schema_proposal")) return None
         try {
@@ -486,7 +489,8 @@ object AgentLoop {
                     val typeGrid = prim("typeGrid").filter(_.isBoolean).map(_.getAsBoolean).getOrElse(fields.size > 0)
                     val sampleRowCount = prim("sampleRowCount").filter(_.isNumber).map(_.getAsInt).getOrElse(allRows.size)
                     val tap = prim("tap").map(_.getAsString).getOrElse("")
-                    Some(LoopEvent.SchemaProposal(id, tap, typeGrid, sampleRowCount, fields, preview))
+                    val truncated = prim("recordsTruncated").filter(_.isBoolean).exists(_.getAsBoolean)
+                    Some(LoopEvent.SchemaProposal(id, tap, typeGrid, sampleRowCount, fields, preview, truncated))
                 }
             }
         } catch {

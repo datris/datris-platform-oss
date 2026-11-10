@@ -65,4 +65,14 @@ class AssistantSseSchemaProposalSpec extends AnyFunSuite {
         assert(o.getAsJsonArray("fields").size == 0)
         assert(o.getAsJsonArray("preview").size == 2)
     }
+
+    test("recordsTruncated is parsed from the tool result and carried on the wire (default false)") {
+        val raw =
+            s"""{"status":"schema_proposal","typeGrid":true,"tap":"t","sampleRowCount":20,"recordsTruncated":true,"fields":$fieldsJson,"preview":${rows(2)}}"""
+        val evt = AgentLoop.schemaProposalOf("toolu_t", "propose_pipeline_schema", raw)
+        assert(evt.exists(_.recordsTruncated))
+        assert(emit(evt.get).get("recordsTruncated").getAsBoolean)
+        val plain = emit(AgentLoop.LoopEvent.SchemaProposal("toolu_f", "t", true, 5, new JsonArray(), JsonParser.parseString(rows(2)).getAsJsonArray))
+        assert(!plain.get("recordsTruncated").getAsBoolean)
+    }
 }

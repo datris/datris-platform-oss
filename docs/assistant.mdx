@@ -58,9 +58,11 @@ table in the reply. The card shows the first few preview rows, then one line per
 column with the recommended type in a dropdown, sample values, and the reason a
 column stayed text. Change any type in its dropdown, then click
 **Confirm types**, or click **Keep all as text**. **Pull more rows** runs the
-tap test again with five times as many rows (up to 500) and updates the samples
-and recommendations on the card without a new reply from the Assistant. Any type
-you already changed stays as you set it. Your choice goes back to the
+tap test again with five times as many rows (up to 500), shows the rows it
+fetched in the preview, and updates the samples and recommendations on the card
+without a new reply from the Assistant. Any type you already changed stays as
+you set it. When the tap has no more rows to give, or the 500-row limit is
+reached, the card says so next to the button. Your choice goes back to the
 Assistant as your next message, and the card shrinks to a one-line summary. For
 a vector-store destination the card shows the preview and a single
 **Looks right** button. Other MCP clients, such as Claude Desktop, work as
