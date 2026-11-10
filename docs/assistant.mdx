@@ -44,7 +44,9 @@ returned:
    column an integer"), or ask for more rows to get more evidence.
 4. **Asks one follow-up question.** It offers data-quality checks,
    transformations, and field protection for the confirmed columns. "None" is a
-   fine answer.
+   fine answer. If you pick data-quality checks or transformations, the
+   Assistant proposes a short list of them for you to review before it builds
+   anything.
 5. **Creates the pipeline with the confirmed types and attaches the tap.** On
    Postgres, Snowflake, Databricks, SQL Server, and object store destinations,
    the first run lands typed columns, not text.
@@ -68,6 +70,18 @@ Assistant as your next message, and the card shrinks to a one-line summary. For
 a vector-store destination the card shows the preview and a single
 **Looks right** button. Other MCP clients, such as Claude Desktop, work as
 before: the agent shows the proposal as a table and you answer in chat.
+
+When you choose data-quality checks or transformations at the follow-up
+question, the Assistant shows what it proposes as a second card: one row per
+check (or transformation), each with a checkbox, an editable text box, and the
+column it covers. Untick a row to leave it out, edit its wording, or click
+**Add rule** to add your own. Click **Confirm** to build with exactly the
+ticked rows, or **Skip** to build without them. If you chose both, the
+data-quality card comes first and the transformations card follows once you
+answer it. Nothing you did not confirm is added, and field protection is still
+handled as before. You can also ignore the card and reply in your own words.
+Other MCP clients list the proposed checks in the chat and ask you to confirm
+them before the pipeline is created.
 
 Pipelines built from a dropped file or from rows you paste into the chat still
 use a small sample, and their columns are stored as text. To type those columns

@@ -55,6 +55,15 @@ object AgentLoop {
           * `questions` is already validated and normalised by `askUserQuestionsOf`. */
         case class AskUser(id: String, questions: JsonArray) extends LoopEvent
 
+        /** Synthetic tool: the Assistant proposes data-quality checks or
+          * transformations for the user to confirm before `create_pipeline`.
+          * The UI renders an editable list card on the matching tool card. The
+          * loop ends after this so the user can confirm; their confirmed list
+          * (numbered lines, or prose) arrives as the next chat message.
+          * `kind` is `data_quality` or `transformation`; `items` is already
+          * validated and normalised by `ruleProposalOf` (`{text, column?}`). */
+        case class RuleProposal(id: String, kind: String, pipeline: String, items: JsonArray) extends LoopEvent
+
         /** `propose_pipeline_schema` returned a schema proposal. The Assistant UI
           * renders it as an inline card (preview rows, then a type grid unless
           * `typeGrid` is false) on the matching tool card. The loop ends after
@@ -109,6 +118,19 @@ object AgentLoop {
       * so the user can answer. */
     private[datris] val AskUserWaitingText: String =
         "Question card displayed to the user. Their answers arrive as the next user message as `header: answer` lines; they may also reply in prose. Wait for their reply."
+
+    /** The synthetic tool name the Assistant calls to show a data-quality /
+      * transformation proposal card. Handled by AgentLoop directly — NOT
+      * dispatched to the MCP server. Only the Assistant registers it. */
+    val SyntheticRuleProposalTool: String = "propose_pipeline_rules"
+
+    /** What the model sees after a rule-proposal card is shown; the loop then
+      * ends so the user can confirm. */
+    private[datris] val RuleProposalWaitingText: String =
+        "Proposal card displayed to the user. Their confirmed list arrives as the next user message as numbered lines, or they may reply in prose. Wait for their reply."
+
+    private val RuleProposalKinds: Set[String] = Set("data_quality", "transformation")
+    private val RuleProposalMaxItems: Int = 20
 
     /** The MCP tool whose `schema_proposal` result the Assistant shows as an
       * inline type-grid card. */
@@ -305,6 +327,22 @@ object AgentLoop {
                                     sink(LoopEvent.ToolResult(t.id, t.name, err, isError = true))
                                     AIContentBlock.ToolResultBlock(t.id, err, isError = true)
                             }
+                        } else if (t.name == SyntheticRuleProposalTool) {
+                            // Synthetic tool — intercept, same shape as ask_user:
+                            // a valid call shows the proposal card and ends the
+                            // loop after this batch; a malformed call is an error
+                            // tool result and the loop continues.
+                            ruleProposalOf(t.input) match {
+                                case Right(proposal) =>
+                                    sink(proposal.copy(id = t.id))
+                                    sink(LoopEvent.ToolResult(t.id, t.name, RuleProposalWaitingText, isError = false))
+                                    stopAfterBatch = true
+                                    AIContentBlock.ToolResultBlock(t.id, RuleProposalWaitingText, isError = false)
+                                case Left(msg) =>
+                                    val err = s"Invalid propose_pipeline_rules call: $msg"
+                                    sink(LoopEvent.ToolResult(t.id, t.name, err, isError = true))
+                                    AIContentBlock.ToolResultBlock(t.id, err, isError = true)
+                            }
                         } else {
                             try {
                                 // Substitute staged file bytes for an attachmentId before
@@ -438,6 +476,48 @@ object AgentLoop {
             i += 1
         }
         Right(out)
+    }
+
+    /** Validate and normalise a `propose_pipeline_rules` tool input: `kind`
+      * in {data_quality, transformation}, a non-empty `pipeline`, and `items`
+      * of 1-20 objects each with a non-empty `text` and an optional string
+      * `column`. Left carries the validation message, naming the bad field.
+      * The returned event's `id` is empty; the loop fills in the tool_use id. */
+    private[datris] def ruleProposalOf(input: JsonObject): Either[String, LoopEvent.RuleProposal] = {
+        def str(o: JsonObject, key: String): String = {
+            val e = if (o == null) null else o.get(key)
+            if (e == null || e.isJsonNull || !e.isJsonPrimitive) "" else e.getAsString.trim
+        }
+        val kind = str(input, "kind")
+        if (!RuleProposalKinds.contains(kind))
+            return Left(s"`kind` must be one of data_quality, transformation (got '${kind}')")
+        val pipeline = str(input, "pipeline")
+        if (pipeline.isEmpty) return Left("`pipeline` must be a non-empty pipeline name")
+        val ie = if (input == null) null else input.get("items")
+        if (ie == null || !ie.isJsonArray) return Left(s"`items` must be an array of 1-$RuleProposalMaxItems items")
+        val items = ie.getAsJsonArray
+        if (items.size < 1 || items.size > RuleProposalMaxItems)
+            return Left(s"`items` must have 1-$RuleProposalMaxItems items (got ${items.size})")
+        val out = new JsonArray()
+        var i = 0
+        while (i < items.size) {
+            val n = i + 1
+            val el = items.get(i)
+            if (!el.isJsonObject) return Left(s"`items` entry $n must be an object")
+            val o = el.getAsJsonObject
+            val text = str(o, "text")
+            if (text.isEmpty) return Left(s"`items` entry $n is missing a non-empty `text`")
+            val ce = o.get("column")
+            if (ce != null && !ce.isJsonNull && !(ce.isJsonPrimitive && ce.getAsJsonPrimitive.isString))
+                return Left(s"`items` entry $n `column` must be a string")
+            val column = str(o, "column")
+            val no = new JsonObject()
+            no.addProperty("text", text)
+            if (column.nonEmpty) no.addProperty("column", column)
+            out.add(no)
+            i += 1
+        }
+        Right(LoopEvent.RuleProposal("", kind, pipeline, out))
     }
 
     /** A `{"status":"secret_request","secretName":…,"fieldNames":[…],"reason":…}`

@@ -355,6 +355,43 @@
                   </div>
                 </ng-container>
 
+                <!-- Inline rule-proposal card: rendered instead of the generic
+                     tool body when the agent called propose_pipeline_rules
+                     (checkpoint 2). One editable row per proposed check or
+                     transformation; Confirm / Skip post the next user message. -->
+                <ng-container *ngIf="seg.ruleProposal as rp">
+                  <div class="rule-card">
+                    <ng-container *ngIf="!rp.submitted && !rp.skipped">
+                      <div class="rule-card-head">
+                        <span class="rule-card-title">{{ ruleCardTitle(rp) }} <code>{{ rp.pipeline }}</code></span>
+                      </div>
+                      <div class="rule-rows">
+                        <div class="rule-row" *ngFor="let item of rp.items; let i = index; trackBy: trackByIndex"
+                             [class.rule-row-off]="!item.enabled">
+                          <input type="checkbox" class="rule-check" [checked]="item.enabled"
+                                 (change)="toggleRule(seg, i)" [disabled]="state.streaming"
+                                 [attr.aria-label]="'Include rule ' + (i + 1)">
+                          <input type="text" class="rule-text" [(ngModel)]="item.text" [ngModelOptions]="{ standalone: true }"
+                                 [disabled]="state.streaming" [attr.aria-label]="'Rule ' + (i + 1)">
+                          <span class="rule-column" *ngIf="item.column">{{ item.column }}</span>
+                          <span class="rule-remove" role="button" tabindex="0" title="Remove"
+                                (click)="removeRule(seg, i)" (keydown.enter)="removeRule(seg, i)">&times;</span>
+                        </div>
+                      </div>
+                      <div class="schema-actions">
+                        <button class="secret-btn secret-btn-cancel" (click)="addRule(seg)" [disabled]="state.streaming">Add rule</button>
+                        <span class="ask-actions-spacer"></span>
+                        <button class="secret-btn secret-btn-cancel" (click)="skipRules(seg)" [disabled]="state.streaming">Skip</button>
+                        <button class="secret-btn secret-btn-save" (click)="confirmRules(seg)" [disabled]="state.streaming || !hasRuleText(rp)">Confirm</button>
+                      </div>
+                    </ng-container>
+                    <div class="secret-form-result" *ngIf="rp.submitted">✓ {{ rp.summary }}</div>
+                    <div class="secret-form-result secret-form-result-cancelled" *ngIf="rp.skipped && !rp.submitted">
+                      {{ rp.kind === 'transformation' ? 'Transformations' : 'Data-quality checks' }} for {{ rp.pipeline }} answered in chat.
+                    </div>
+                  </div>
+                </ng-container>
+
                 <!-- Agent-policy outcomes: the call is queued for a person, or
                      was refused by policy. Rendered from the tool result JSON. -->
                 <ng-container *ngIf="policyOutcome(seg) as po">
@@ -375,8 +412,8 @@
                 </ng-container>
 
                 <!-- Generic tool body (input + result JSON). Suppressed for
-                     secret-request, question and schema-proposal cards since the form replaces it. -->
-                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest && !seg.askUser && !seg.schemaProposal">
+                     secret-request, question, schema- and rule-proposal cards since the form replaces it. -->
+                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest && !seg.askUser && !seg.schemaProposal && !seg.ruleProposal">
                   <div class="tool-body-label">Input</div>
                   <pre class="tool-body-pre">{{ formatJson(seg.input) }}</pre>
                   <ng-container *ngIf="seg.status !== 'running'">

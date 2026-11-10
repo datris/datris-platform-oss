@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, HistoryToolCall, SchemaProposalField, StagedAttachment } from '../assistant.service';
+import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, HistoryToolCall, RuleProposalItem, SchemaProposalField, StagedAttachment } from '../assistant.service';
 import { loadChatState, saveChatState, clearChatState } from '../shared/chat-persistence';
 import { handleRetryEvent, AttemptMark } from '../shared/chat-retry';
 
@@ -53,6 +53,64 @@ export interface ToolCard {
    *  renders the preview rows and an editable type grid; Confirm posts the
    *  grid as the next user message (same resume path as the credentials form). */
   schemaProposal?: SchemaProposalState;
+  /** Populated when the agent called `propose_pipeline_rules`. The UI renders
+   *  one editable row per proposed check or transformation; Confirm posts
+   *  `ruleReplyText` as the next user message. */
+  ruleProposal?: RuleProposalState;
+}
+
+/** One editable row on a rule-proposal card. */
+export interface RuleProposalRow {
+  text: string;
+  column: string;
+  enabled: boolean;
+}
+
+export interface RuleProposalState {
+  kind: 'data_quality' | 'transformation';
+  pipeline: string;
+  /** Editable copies; never the event payload itself. */
+  items: RuleProposalRow[];
+  submitted: boolean;
+  /** The user typed a reply instead of using the card. */
+  skipped?: boolean;
+  /** The reply that was posted, shown as a one-line summary once submitted. */
+  summary?: string;
+}
+
+/** Editable copies of proposed items, every row ticked. */
+export function ruleProposalRows(items: RuleProposalItem[] | null | undefined): RuleProposalRow[] {
+  return (items || []).map(i => ({
+    text: typeof i?.text === 'string' ? i.text : '',
+    column: typeof i?.column === 'string' ? i.column : '',
+    enabled: true
+  }));
+}
+
+/** The ticked, non-blank rows of a rule-proposal card, each prefixed with
+ *  its column ("<column>: ") unless the text already starts with it. */
+export function ruleReplyItems(state: RuleProposalState): string[] {
+  return (state.items || [])
+    .filter(r => r.enabled && (r.text || '').trim())
+    .map(r => {
+      const text = r.text.trim();
+      const column = (r.column || '').trim();
+      return column && !text.startsWith(column) ? `${column}: ${text}` : text;
+    });
+}
+
+/** The reply a rule-proposal card's Confirm posts, in the fixed shape the
+ *  prompt rule expects: "Confirmed data-quality checks for pipeline `<p>`:
+ *  1. <text>; 2. <text>" (or "Confirmed transformations ..."). */
+export function ruleReplyText(state: RuleProposalState): string {
+  const head = state.kind === 'transformation' ? 'Confirmed transformations' : 'Confirmed data-quality checks';
+  const items = ruleReplyItems(state).map((t, i) => `${i + 1}. ${t}`).join('; ');
+  return `${head} for pipeline \`${state.pipeline}\`: ${items}`;
+}
+
+/** The reply a rule-proposal card's Skip posts. */
+export function ruleSkipText(state: RuleProposalState): string {
+  return state.kind === 'transformation' ? 'No transformations.' : 'No data-quality checks.';
 }
 
 /** One editable grid row: the proposed field plus the type the server
@@ -231,7 +289,7 @@ function cutForHistory(full: string, room: number): string {
  *  used HISTORY_TURN_INPUT_CAP). Results are cut to HISTORY_RESULT_CAP
  *  (HISTORY_LIST_RESULT_CAP for the listings) and, once the turn has used
  *  HISTORY_TURN_CAP, sent empty; either way they are marked `truncated`. A
- *  schema-proposal or secret-request card is sent as `synthetic` with no
+ *  schema-proposal, secret-request or rule-proposal card is sent as `synthetic` with no
  *  result: the model saw waiting text live, not the payload. Undefined when
  *  nothing qualifies. The cross-turn HISTORY_TOTAL_CAP is applied by
  *  `capHistoryToolCalls`. */
@@ -255,7 +313,7 @@ export function toolCallsForHistory(turn: AssistantTurn): HistoryToolCall[] | un
     }
     inputUsed += json.length;
     const call: HistoryToolCall = { id: c.id, name: c.name, input, result: '', isError: !!c.isError };
-    if (c.schemaProposal || c.secretRequest) {
+    if (c.schemaProposal || c.secretRequest || c.ruleProposal) {
       call.synthetic = true;
     } else {
       const full = typeof c.result === 'string' ? c.result : (c.result == null ? '' : String(c.result));
@@ -512,6 +570,19 @@ export class AssistantStateService {
     }
   }
 
+  /** Mark every pending rule-proposal card skipped (the user typed a reply
+   *  instead). A card's own buttons mark it submitted before sending. */
+  private skipPendingRuleProposals(): void {
+    for (const t of this.turns) {
+      if (t.role !== 'assistant') continue;
+      for (const s of t.segments) {
+        if (s.kind === 'tool' && s.ruleProposal && !s.ruleProposal.submitted && !s.ruleProposal.skipped) {
+          s.ruleProposal.skipped = true;
+        }
+      }
+    }
+  }
+
   /** Mark every pending `ask_user` card skipped. A card's own Submit marks it
    *  submitted before sending, so it is not affected. */
   private skipPendingAskUser(): void {
@@ -535,6 +606,7 @@ export class AssistantStateService {
     // the user sends now (a typed reply, or another form's reply): collapse it.
     this.skipPendingAskUser();
     this.skipPendingSchemaProposals();
+    this.skipPendingRuleProposals();
 
     const sentAttachments = this.activeAttachments.slice();
     this.turns.push({ role: 'user', text: trimmed, attachments: sentAttachments.length ? sentAttachments : undefined });
@@ -806,6 +878,35 @@ export class AssistantStateService {
           loading: false,
           submitted: false,
           errorMessage: ''
+        };
+        break;
+      }
+      case 'rule_proposal': {
+        // Same shape as ask_user: synthesize the card if no tool_use arrived,
+        // then attach the proposal state. A later tool_result only closes the
+        // card; the proposal state stays.
+        let card = this.findToolCard(turn, evt.id);
+        if (!card) {
+          card = {
+            kind: 'tool',
+            id: evt.id,
+            name: 'propose_pipeline_rules',
+            input: { kind: evt.kind, pipeline: evt.pipeline, items: (evt.items || []).map(i => ({ ...i })) },
+            result: '',
+            isError: false,
+            status: 'ok',
+            expanded: false
+          };
+          turn.segments.push(card);
+        }
+        card.status = 'ok';
+        card.ruleProposal = {
+          kind: evt.kind === 'transformation' ? 'transformation' : 'data_quality',
+          pipeline: evt.pipeline || '',
+          items: ruleProposalRows(evt.items),
+          submitted: false,
+          skipped: false,
+          summary: ''
         };
         break;
       }

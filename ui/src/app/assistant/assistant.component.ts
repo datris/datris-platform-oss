@@ -1,6 +1,6 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, AfterViewChecked, NgZone } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers, schemaProposalRows, schemaReplyName, SchemaProposalState, SCHEMA_PREVIEW_RENDER_CAP } from './assistant-state.service';
+import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers, schemaProposalRows, schemaReplyName, SchemaProposalState, SCHEMA_PREVIEW_RENDER_CAP, RuleProposalState, ruleReplyItems, ruleReplyText, ruleSkipText } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
@@ -811,6 +811,62 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
       },
       error: (err) => fail('Tap test failed: ' + httpErrorText(err, 'unknown'))
     });
+  }
+
+  /** Rule-proposal card is still open for edits (not answered, no turn running). */
+  private ruleCardOpen(card: ToolCard): RuleProposalState | null {
+    const rp = card.ruleProposal;
+    if (!rp || rp.submitted || rp.skipped || this.state.streaming) return null;
+    return rp;
+  }
+
+  ruleCardTitle(rp: RuleProposalState): string {
+    return rp.kind === 'transformation' ? 'Proposed transformations for' : 'Proposed data-quality checks for';
+  }
+
+  /** At least one ticked row has text, so Confirm has something to send. */
+  hasRuleText(rp: RuleProposalState): boolean {
+    return ruleReplyItems(rp).length > 0;
+  }
+
+  toggleRule(card: ToolCard, index: number): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp || !rp.items[index]) return;
+    rp.items[index].enabled = !rp.items[index].enabled;
+  }
+
+  /** Add rule: append an enabled empty row for the user to type into. */
+  addRule(card: ToolCard): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp) return;
+    rp.items.push({ text: '', column: '', enabled: true });
+  }
+
+  removeRule(card: ToolCard, index: number): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp) return;
+    rp.items.splice(index, 1);
+  }
+
+  /** Confirm: post the ticked, non-blank rows renumbered 1..n in the fixed
+   *  shape the prompt rule expects. */
+  confirmRules(card: ToolCard): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp || !this.hasRuleText(rp)) return;
+    this.submitRuleReply(rp, ruleReplyText(rp));
+  }
+
+  /** Skip: no checks (or no transformations) for this pipeline. */
+  skipRules(card: ToolCard): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp) return;
+    this.submitRuleReply(rp, ruleSkipText(rp));
+  }
+
+  private submitRuleReply(rp: RuleProposalState, text: string): void {
+    rp.submitted = true;
+    rp.summary = text;
+    this.sendSystemReply(text);
   }
 
   /** Send a follow-up message on the user's behalf to resume the agent loop.

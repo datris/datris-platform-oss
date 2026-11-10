@@ -84,6 +84,13 @@ export interface SchemaProposalField {
   note?: string | null;
 }
 
+/** One item on a `rule_proposal` card: a data-quality check or a
+ *  transformation in plain words, and the confirmed column it covers. */
+export interface RuleProposalItem {
+  text: string;
+  column?: string;
+}
+
 export type AssistantEvent =
   | { type: 'iteration_start' }
   | { type: 'thinking_delta'; text: string }
@@ -107,6 +114,10 @@ export type AssistantEvent =
    *  most 5; `recordsTruncated` means the tap produced more), then a
    *  type grid unless `typeGrid` is false (vector store: preview only). */
   | { type: 'schema_proposal'; id: string; tap: string; typeGrid: boolean; sampleRowCount: number; fields: SchemaProposalField[]; preview: any[]; recordsTruncated?: boolean }
+  /** Synthetic event: agent called `propose_pipeline_rules` (checkpoint 2).
+   *  The Assistant renders an editable list card on the matching tool card;
+   *  Confirm posts the ticked items as the next user message. Assistant only. */
+  | { type: 'rule_proposal'; id: string; kind: 'data_quality' | 'transformation'; pipeline: string; items: RuleProposalItem[] }
   /** Configuration chat only: a mutating tool proposed a change. The UI shows
    *  `summary` with Confirm / Cancel; Confirm re-posts with `token`. */
   | { type: 'confirm_request'; id: string; tool: string; summary: string; token: string }

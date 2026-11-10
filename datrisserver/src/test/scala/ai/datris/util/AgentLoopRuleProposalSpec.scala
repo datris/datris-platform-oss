@@ -75,8 +75,10 @@ class AgentLoopRuleProposalSpec extends AnyFunSuite {
             List("amount is never negative", "created_at parses as a date", "no two rows share the same id"))
         assert(got(0).get("column").getAsString == "amount")
         assert(got(1).get("column").getAsString == "created_at")
-        assert(!got(2).has("column") || got(2).get("column").isJsonNull || got(2).get("column").getAsString.isEmpty,
-            s"an item with no column stays without one: ${got(2)}")
+        assert(
+            !got(2).has("column") || got(2).get("column").isJsonNull || got(2).get("column").getAsString.isEmpty,
+            s"an item with no column stays without one: ${got(2)}"
+        )
     }
 
     test("a valid transformation input is Right") {

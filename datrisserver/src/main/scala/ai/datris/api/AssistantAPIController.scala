@@ -52,6 +52,9 @@ object AssistantAPIController {
             "- **Checkpoint 1: confirm the types.** `propose_pipeline_schema` returns each column with a recommended type and its evidence: sample values, a `stringReason` when a value blocked a type, and a `note` when too few values were present to type it. Show the fields as a table (column, recommended type, evidence) and ask the user to accept, change any type, or pull more rows (call it again with a higher `limit`). Recommendations are conservative: a column stays `string` unless the preview clearly supports a type, and the evidence says why. Pass the confirmed list as `schema_fields` (`[{name, type}]`) on `create_pipeline`. For a vector-store or `mongodb` destination the result has `typeGrid: false`: show the preview rows only and skip the type question. MongoDB stores each record as a document as-is, so it takes no column types: create its pipeline with a few of the preview rows as a JSON `content_text` sample (filename ending in .json), never `schema_fields`.\n" +
             "- **In this chat the proposal is a card.** When `propose_pipeline_schema` returns a proposal, the user sees it as a card with the preview rows, the type grid and Confirm types / Keep all as text / Pull more rows buttons (a single Looks right button when `typeGrid` is false), and your turn ends there. That card replaces the table and the types question: do not repeat the table and do not ask about the types with `ask_user`. The reply arrives as the next message in one of three shapes: \"Confirmed schema for tap `<tap>` (<n> rows reviewed): <name> <type>, <name> <type>, ...\" (pass exactly those names and types as `schema_fields`; a name with spaces or punctuation is wrapped in backticks, which are not part of the name), \"Keep every column as string for tap `<tap>`.\" (every column `string`), or \"Preview looks right.\". Then go on to checkpoint 2, which is still a question you ask.\n" +
             "- **Checkpoint 2: one follow-up question.** Once the types are confirmed, ask once whether to add data-quality checks (`codegen_rule`), transformations (`codegen_transform`), or field protection (`suggest_field_protection`, then `protect`) against the confirmed column names. \"None\" is a valid answer; then build without them. Put whatever the user chose on the same `create_pipeline` call.\n" +
+            "- **Data quality is proposed on a card, then confirmed.** When the answer includes data quality, call `propose_pipeline_rules` with `kind: \"data_quality\"`, the pipeline name and concrete, conservative items written against the confirmed column names (one check per item, each naming its column), and end your turn. The reply arrives as \"Confirmed data-quality checks for pipeline `<name>`: 1. <text>; 2. <text>; ...\" or \"No data-quality checks.\". Pass exactly the confirmed items as `codegen_rule`, one numbered line per item, with nothing added; after \"No data-quality checks.\" leave `codegen_rule` out.\n" +
+            "- **Then transformations, the same way.** When the answer includes transformations, call `propose_pipeline_rules` with `kind: \"transformation\"` next (in its own turn, after the data-quality reply) and end your turn. The reply arrives as \"Confirmed transformations for pipeline `<name>`: 1. <text>; 2. <text>; ...\" or \"No transformations.\". Pass exactly the confirmed items as `codegen_transform`, one numbered line per item; after \"No transformations.\" leave it out. Then call `create_pipeline`.\n" +
+            "- **One proposal card per turn.** Call `propose_pipeline_rules` at most once per turn. Do not restate the proposed list in prose, and do not re-ask about it with `ask_user`. A prose reply instead of the card is fine: apply what the user said. Field protection is never on this card.\n" +
             "- **Two checkpoints, no more.** Destination, key fields and schedule stay in the plan the user already confirms in prose; do not turn the build into a step-by-step wizard.\n" +
             "- If `propose_pipeline_schema` returns a test failure, fix the tap first (the two-failed-tests rule applies). If it reports the server is too old, fall back to `content_text` on `create_pipeline`. A file the user drops, or rows they paste, follow the attached-file flow below instead.\n"
 
@@ -223,6 +226,7 @@ object AssistantAPIController {
                                 val base =
                                     if (bool(o, "synthetic") && name == AgentLoop.SchemaProposalTool) AgentLoop.SchemaProposalWaitingText
                                     else if (bool(o, "synthetic") && name == AgentLoop.SyntheticSecretTool) AgentLoop.SecretRequestWaitingText
+                                    else if (bool(o, "synthetic") && name == AgentLoop.SyntheticRuleProposalTool) AgentLoop.RuleProposalWaitingText
                                     else sent
                                 val resultText = if (bool(o, "truncated")) base + HistoryShortenedNote else base
                                 Right(
@@ -313,6 +317,69 @@ object AssistantAPIController {
         schema.addProperty("type", "object")
         schema.add("properties", props)
         schema.add("required", required("questions"))
+        tool.add("input_schema", schema)
+        tool
+    }
+
+    /** Synthetic tool definition for `propose_pipeline_rules` — the
+      * Assistant's checkpoint-2 proposal card for data-quality checks or
+      * transformations (plans/stories/assistant-rule-proposal-cards.md). NOT
+      * registered on the MCP server; AgentLoop intercepts the call
+      * (`AgentLoop.ruleProposalOf`). Examples stay generic: no domains,
+      * proper nouns or literal column names.
+      */
+    private[datris] def syntheticRuleProposalToolDef(): JsonObject = {
+        def strProp(desc: String): JsonObject = {
+            val o = new JsonObject()
+            o.addProperty("type", "string")
+            o.addProperty("description", desc)
+            o
+        }
+        def required(names: String*): JsonArray = {
+            val a = new JsonArray()
+            names.foreach(n => a.add(n))
+            a
+        }
+        val tool = new JsonObject()
+        tool.addProperty("name", AgentLoop.SyntheticRuleProposalTool)
+        tool.addProperty(
+            "description",
+            "Propose data-quality checks or transformations on an inline card for the user to confirm before `create_pipeline`. " +
+                "Use it after checkpoint 2 when the user chose data quality (`kind: \"data_quality\"`) or transformations (`kind: \"transformation\"`). " +
+                "Give one item per check or transformation, each naming the confirmed column it covers in `column`, written in plain words (for example: a numeric column is never negative; a date column parses as a date). " +
+                "Propose only what the preview rows and the user's request support, no more than needed. " +
+                "The user can untick, edit or add rows, then Confirm or Skip; the conversation resumes with their confirmed list as numbered lines, or a prose reply. " +
+                "Call it at most once per turn, and do not restate the list in prose or ask about it with `ask_user`. " +
+                "NEVER use it for field protection; that stays `suggest_field_protection` then `protect`."
+        )
+        val kind = strProp("`data_quality` for checks (becomes `codegen_rule`) or `transformation` (becomes `codegen_transform`).")
+        val kinds = new JsonArray()
+        kinds.add("data_quality")
+        kinds.add("transformation")
+        kind.add("enum", kinds)
+
+        val itemProps = new JsonObject()
+        itemProps.add("text", strProp("The check or transformation in plain words, one rule."))
+        itemProps.add("column", strProp("The confirmed column name the item covers. Omit when it spans several columns."))
+        val item = new JsonObject()
+        item.addProperty("type", "object")
+        item.add("properties", itemProps)
+        item.add("required", required("text"))
+        val items = new JsonObject()
+        items.addProperty("type", "array")
+        items.addProperty("minItems", 1)
+        items.addProperty("maxItems", 20)
+        items.add("items", item)
+        items.addProperty("description", "1-20 proposed items, shown as editable rows on one card.")
+
+        val props = new JsonObject()
+        props.add("kind", kind)
+        props.add("pipeline", strProp("The name of the pipeline being built."))
+        props.add("items", items)
+        val schema = new JsonObject()
+        schema.addProperty("type", "object")
+        schema.add("properties", props)
+        schema.add("required", required("kind", "pipeline", "items"))
         tool.add("input_schema", schema)
         tool
     }
@@ -627,7 +694,9 @@ class AssistantAPIController {
         // instead of dispatching to MCP — it emits a SecretRequest SSE event
         // that the UI renders as an inline credentials form. `ask_user` is
         // intercepted the same way and renders an inline question card.
-        val toolDefs = MCPClient.listTools(uiKey) :+ syntheticSecretToolDef() :+ AssistantAPIController.syntheticAskUserToolDef()
+        // `propose_pipeline_rules` likewise renders the checkpoint-2 proposal card.
+        val toolDefs = MCPClient.listTools(uiKey) :+ syntheticSecretToolDef() :+ AssistantAPIController.syntheticAskUserToolDef() :+
+            AssistantAPIController.syntheticRuleProposalToolDef()
         val workflowReference =
             try MCPClient.readResource("datris://pipeline-config-reference", uiKey)
             catch {

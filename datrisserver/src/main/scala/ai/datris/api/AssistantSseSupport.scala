@@ -148,6 +148,14 @@ object AssistantSseSupport {
                 obj.addProperty("id", id)
                 obj.add("questions", questions)
                 sendEvent(emitter, "ask_user", obj)
+            case AgentLoop.LoopEvent.RuleProposal(id, kind, pipeline, items) =>
+                val obj = new JsonObject()
+                obj.addProperty("type", "rule_proposal")
+                obj.addProperty("id", id)
+                obj.addProperty("kind", kind)
+                obj.addProperty("pipeline", pipeline)
+                obj.add("items", items)
+                sendEvent(emitter, "rule_proposal", obj)
             case AgentLoop.LoopEvent.SchemaProposal(id, tap, typeGrid, sampleRowCount, fields, preview, recordsTruncated) =>
                 val obj = new JsonObject()
                 obj.addProperty("type", "schema_proposal")
