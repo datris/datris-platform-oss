@@ -480,16 +480,22 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     expect(c.schemaProposal.skipped).toBeFalsy();
   });
 
-  it('a card-only turn still tells the model what it proposed in the outbound history', async () => {
+  it('a card-only turn sends the proposal as a synthetic propose_pipeline_schema tool call, not prose', async () => {
+    // plans/stories/assistant-tool-call-continuity.md, Acceptance 9: the card
+    // is replayed server-side as the real call with its waiting text.
     await mount();
     const c = proposeAndFinish('toolu_hist');
     (fixture.componentInstance as any).confirmSchemaGrid(c);
     const messages: any[] = chatSpy.calls.mostRecent().args[0];
     const roles = messages.map(m => m.role);
     expect(roles).withContext('user / assistant / user, never two user turns in a row').toEqual(['user', 'assistant', 'user']);
-    const proposed: string = messages[1].content;
-    expect(proposed).toContain('tap `prices_tap`');
-    expect(proposed).toContain('id int, price string, qty string');
+    const toolCalls: any[] = messages[1].toolCalls || [];
+    expect(toolCalls.length).withContext('the proposal travels as a toolCalls entry').toBeGreaterThan(0);
+    expect(toolCalls[0].name).toBe('propose_pipeline_schema');
+    expect(toolCalls[0].synthetic).toBeTrue();
+    expect(toolCalls[0].input).toEqual({ tap: 'prices_tap', destination: 'postgres' });
+    const proposed: string = messages[1].content || '';
+    expect(proposed).not.toContain('I proposed column types');
     expect(proposed).not.toContain('[Tool call');
     expect(messages[2].content.startsWith('Confirmed schema for tap `prices_tap`')).toBeTrue();
   });
