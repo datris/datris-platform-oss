@@ -96,7 +96,9 @@ describe('Assistant history: prior tool calls travel as toolCalls', () => {
     const big = 'r'.repeat(3000);
     const history = sendWith([
       { role: 'user', text: 'a' },
-      assistantTurn([tool('t1', 'list_taps', {}, big), tool('t2', 'list_pipelines', {}, 'short')])
+      // test_tap, not list_taps: the listings get the larger HISTORY_LIST_RESULT_CAP
+      // (review round 1); the 1024 cut is checked on an ordinary tool.
+      assistantTurn([tool('t1', 'test_tap', {}, big), tool('t2', 'list_pipelines', {}, 'short')])
     ]);
     const calls = history[1].toolCalls;
     expect(calls[0].result.length).toBe(1024);

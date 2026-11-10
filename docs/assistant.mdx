@@ -242,9 +242,12 @@ the full capability model.
 - **Earlier tool calls travel with each message.** Every new message sends the
   tool calls from earlier turns in the same chat (name, input and a shortened
   result), so the Assistant remembers what it already listed, created and
-  tested instead of starting over. Long results are cut to about 1 KB each and
-  8 KB per turn; the Assistant calls the tool again when it needs the full
-  output.
+  tested instead of starting over. Long results are cut to about 1 KB each
+  (4 KB for pipeline and tap listings) and 8 KB per turn, and all earlier
+  turns together share a 32 KB budget, newest first; older turns keep only the
+  names of the tools called. Passwords, tokens, keys and other credential
+  fields in tool inputs are replaced with `[redacted]` before they are re-sent.
+  The Assistant calls a tool again when it needs the full output.
 - **32K output tokens per LLM call.** Sufficient for thinking + reasoning +
   tool selection on every public model we support.
 

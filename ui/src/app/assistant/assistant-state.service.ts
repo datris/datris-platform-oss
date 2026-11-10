@@ -159,38 +159,98 @@ export function askUserForHistory(au: AskUserState): { questions: AskUserQuestio
 
 /** Most chars of one tool result sent in the outbound history. */
 export const HISTORY_RESULT_CAP = 1024;
+/** Result cap for the discovery listings: their pretty-printed JSON runs to
+ *  a few hundred chars per entry, and a listing cut short invites the model
+ *  to list again, which is what the replay exists to stop. */
+export const HISTORY_LIST_RESULT_CAP = 4096;
+/** Tools whose results get HISTORY_LIST_RESULT_CAP instead. */
+export const HISTORY_LIST_TOOLS: ReadonlySet<string> = new Set(['list_pipelines', 'list_taps']);
 /** Most chars of one tool input (as JSON) sent in the outbound history. */
 export const HISTORY_INPUT_CAP = 2048;
 /** Most result chars sent for all of one turn's tool calls together. */
 export const HISTORY_TURN_CAP = 8192;
+/** Most input chars (as JSON) sent for all of one turn's tool calls
+ *  together; later inputs go as `{ _inputOmitted: true }`. */
+export const HISTORY_TURN_INPUT_CAP = 8192;
+/** Most result + input chars sent for every prior turn's tool calls
+ *  together, spent newest turn first. Older turns past it keep only the
+ *  call's id and name (`input: {}`, `result: ''`, `truncated: true`), so the
+ *  pairing and what was done survive but the bytes do not. */
+export const HISTORY_TOTAL_CAP = 32768;
+
+/** Input keys whose values are never replayed: a credential the model passed
+ *  live is not re-sent on every later turn. Keys naming something
+ *  (`name`, `secret_name`, `field_names`) are kept. */
+const HISTORY_REDACT_KEY = /secret|password|passwd|token|api[_-]?key|private[_-]?key|credential/i;
+const HISTORY_NAME_KEY = /(^|_)names?$|[a-z]Names?$/;
+export const HISTORY_REDACTED = '[redacted]';
+
+/** A deep copy of a tool input with credential-like keys' values replaced by
+ *  HISTORY_REDACTED, at any depth (objects and arrays). */
+export function redactForHistory(v: any): any {
+  if (Array.isArray(v)) return v.map(redactForHistory);
+  if (v && typeof v === 'object') {
+    const out: any = {};
+    for (const k of Object.keys(v)) {
+      out[k] = HISTORY_REDACT_KEY.test(k) && !HISTORY_NAME_KEY.test(k) && v[k] !== null && v[k] !== undefined
+        ? HISTORY_REDACTED
+        : redactForHistory(v[k]);
+    }
+    return out;
+  }
+  return v;
+}
+
+/** `full` cut to `room` chars, ending at the last line break when one falls
+ *  in the window's last 20%, so a pretty-printed JSON prefix ends on a whole
+ *  line instead of mid-value. */
+function cutForHistory(full: string, room: number): string {
+  const cut = full.slice(0, room);
+  const nl = cut.lastIndexOf('\n');
+  return room > 0 && nl >= Math.ceil(room * 0.8) ? cut.slice(0, nl) : cut;
+}
 
 /** How a turn's tool cards travel in the outbound history
  *  (`ChatMessage.toolCalls`), which the server replays as the tool calls the
  *  model made, so a later turn does not repeat discovery or re-create what it
  *  built. Finished cards with an input only, in segment order; `ask_user`
- *  cards travel as `askUser` instead. Results are cut to HISTORY_RESULT_CAP
- *  and, once the turn has used HISTORY_TURN_CAP, sent empty; either way they
- *  are marked `truncated`. A schema-proposal or secret-request card is sent
- *  as `synthetic` with no result: the model saw waiting text live, not the
- *  payload. Undefined when nothing qualifies. */
+ *  cards travel as `askUser` instead. Inputs have credential-like keys
+ *  redacted and are cut to HISTORY_INPUT_CAP (and omitted once the turn has
+ *  used HISTORY_TURN_INPUT_CAP). Results are cut to HISTORY_RESULT_CAP
+ *  (HISTORY_LIST_RESULT_CAP for the listings) and, once the turn has used
+ *  HISTORY_TURN_CAP, sent empty; either way they are marked `truncated`. A
+ *  schema-proposal or secret-request card is sent as `synthetic` with no
+ *  result: the model saw waiting text live, not the payload. Undefined when
+ *  nothing qualifies. The cross-turn HISTORY_TOTAL_CAP is applied by
+ *  `capHistoryToolCalls`. */
 export function toolCallsForHistory(turn: AssistantTurn): HistoryToolCall[] | undefined {
   const calls: HistoryToolCall[] = [];
   let used = 0;
+  let inputUsed = 0;
   for (const s of turn.segments || []) {
     if (s.kind !== 'tool') continue;
     const c = s as ToolCard;
     if (c.status === 'running' || c.input === undefined || c.input === null || c.askUser) continue;
-    let input: any = c.input;
-    const json = JSON.stringify(input) ?? '';
-    if (json.length > HISTORY_INPUT_CAP) input = { _truncatedInput: json.slice(0, HISTORY_INPUT_CAP) };
+    let input: any = redactForHistory(c.input);
+    let json = JSON.stringify(input) ?? '';
+    if (json.length > HISTORY_INPUT_CAP) {
+      input = { _truncatedInput: json.slice(0, HISTORY_INPUT_CAP) };
+      json = JSON.stringify(input);
+    }
+    if (inputUsed + json.length > HISTORY_TURN_INPUT_CAP) {
+      input = { _inputOmitted: true };
+      json = JSON.stringify(input);
+    }
+    inputUsed += json.length;
     const call: HistoryToolCall = { id: c.id, name: c.name, input, result: '', isError: !!c.isError };
     if (c.schemaProposal || c.secretRequest) {
       call.synthetic = true;
     } else {
       const full = typeof c.result === 'string' ? c.result : (c.result == null ? '' : String(c.result));
-      const room = Math.max(0, Math.min(HISTORY_RESULT_CAP, HISTORY_TURN_CAP - used));
+      const cap = HISTORY_LIST_TOOLS.has(c.name) ? HISTORY_LIST_RESULT_CAP : HISTORY_RESULT_CAP;
+      const room = Math.max(0, Math.min(cap, HISTORY_TURN_CAP - used));
       if (full.length > room) {
-        call.result = full.slice(0, room);
+        call.result = cutForHistory(full, room);
         call.truncated = true;
       } else {
         call.result = full;
@@ -200,6 +260,31 @@ export function toolCallsForHistory(turn: AssistantTurn): HistoryToolCall[] | un
     calls.push(call);
   }
   return calls.length ? calls : undefined;
+}
+
+/** Apply HISTORY_TOTAL_CAP across turns, newest first: each turn's calls
+ *  (result + input JSON chars) are kept while they fit; from the first turn
+ *  that does not fit, it and every older turn keep only id, name, isError
+ *  and `synthetic` (`input: {}`, `result: ''`, `truncated: true`). `perTurn`
+ *  is oldest first; it is changed in place. */
+export function capHistoryToolCalls(perTurn: (HistoryToolCall[] | undefined)[]): void {
+  let used = 0;
+  let over = false;
+  for (let i = perTurn.length - 1; i >= 0; i--) {
+    const calls = perTurn[i];
+    if (!calls) continue;
+    const size = calls.reduce((n, c) => n + c.result.length + (JSON.stringify(c.input) ?? '').length, 0);
+    if (!over && used + size <= HISTORY_TOTAL_CAP) {
+      used += size;
+      continue;
+    }
+    over = true;
+    perTurn[i] = calls.map(c => {
+      const d: HistoryToolCall = { id: c.id, name: c.name, input: {}, result: '', isError: c.isError, truncated: true };
+      if (c.synthetic) d.synthetic = true;
+      return d;
+    });
+  }
 }
 
 /** One `Header: answer` line per question — the text posted as the user's
@@ -461,8 +546,11 @@ export class AssistantStateService {
     // data. The server replays both as the tool_use / tool_result pairs the
     // model saw live, so a later turn remembers what it already listed,
     // created and tested.
+    const priorToolCalls = this.turns.map(t =>
+      t.role === 'assistant' && t !== assistantTurn ? toolCallsForHistory(t as AssistantTurn) : undefined);
+    capHistoryToolCalls(priorToolCalls);
     const messages: ChatMessage[] = [];
-    for (const t of this.turns) {
+    for (const [ti, t] of this.turns.entries()) {
       if (t.role === 'user') {
         // An attachment-only turn has empty text; send a short non-empty
         // placeholder so the wire content is never an empty string (which can
@@ -480,7 +568,7 @@ export class AssistantStateService {
           .map(s => s.kind === 'text' ? (s as TextSegment).text : '')
           .join('');
         const card = t.segments.find(s => s.kind === 'tool' && !!(s as ToolCard).askUser) as ToolCard | undefined;
-        const toolCalls = toolCallsForHistory(t);
+        const toolCalls = priorToolCalls[ti];
         if (content.trim().length > 0 || card?.askUser || toolCalls) {
           const m: ChatMessage = { role: 'assistant', content };
           if (card?.askUser) m.askUser = askUserForHistory(card.askUser);
