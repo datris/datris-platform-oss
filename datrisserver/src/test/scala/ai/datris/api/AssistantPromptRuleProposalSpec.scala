@@ -73,4 +73,33 @@ class AssistantPromptRuleProposalSpec extends AnyFunSuite {
         val hits = vendorOrDomain.findAllIn(text).toList
         assert(hits.isEmpty, s"domain bias in propose_pipeline_rules tool def: $hits")
     }
+
+    // Story: Assistant data-quality card: the user chooses warn-only vs reject
+    // on failure (plans/stories/assistant-dq-card-on-failure.md), Acceptance
+    // bullet 3. The DQ bullet reads the severity from the confirmed reply and
+    // passes it as `codegen_rule_on_failure`; all of it before the
+    // transformation `kind`.
+
+    /** The data-quality bullet: from `data_quality` after Checkpoint 2 up to the
+      * first `kind` transformation after it. */
+    private def dqBullet: String = {
+        val cp2 = idx("Checkpoint 2")
+        val dq = idx("data_quality", cp2)
+        val tr = TransformationKind.findFirstMatchIn(rule.substring(dq)).map(_.start + dq).getOrElse(rule.length)
+        rule.substring(dq, tr)
+    }
+
+    test("the data-quality bullet names codegen_rule_on_failure with both \"warn\" and \"error\"") {
+        val b = dqBullet
+        assert(b.contains("codegen_rule_on_failure"), s"DQ bullet must name codegen_rule_on_failure:\n$b")
+        assert(b.contains("\"warn\""), s"DQ bullet must name the quoted value warn:\n$b")
+        assert(b.contains("\"error\""), s"DQ bullet must name the quoted value error:\n$b")
+    }
+
+    test("the data-quality bullet gives both on-failure reply shapes") {
+        val b = dqBullet
+        assert(b.contains("Confirmed data-quality checks for pipeline `<name>` (on failure: reject the run):"),
+            s"DQ bullet must give the reject reply shape:\n$b")
+        assert(b.contains("(on failure: warn only)"), s"DQ bullet must give the warn-only reply shape:\n$b")
+    }
 }

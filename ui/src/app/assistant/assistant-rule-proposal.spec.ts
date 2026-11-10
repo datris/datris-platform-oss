@@ -24,6 +24,7 @@ import { of, Subject } from 'rxjs';
 
 import { AssistantComponent } from './assistant.component';
 import { AssistantStateService } from './assistant-state.service';
+import * as stateModule from './assistant-state.service';
 import { AssistantService } from '../assistant.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
@@ -45,8 +46,10 @@ function proposalEvent(id: string, overrides: any = {}): any {
   return { type: 'rule_proposal', id, kind: 'data_quality', pipeline: 'sales_daily', items: items(), ...overrides };
 }
 
+// Story assistant-dq-card-on-failure: a data-quality Confirm carries the
+// on-failure choice; the card defaults to Reject.
 const ALL_CONFIRMED =
-  'Confirmed data-quality checks for pipeline `sales_daily`: ' +
+  'Confirmed data-quality checks for pipeline `sales_daily` (on failure: reject the run): ' +
   '1. amount: is never negative; 2. created_at parses as a date; 3. no two rows share the same id';
 
 const INIT = {
@@ -137,7 +140,7 @@ describe('Assistant rule-proposal card (rule_proposal)', () => {
   function textInputs(): HTMLInputElement[] {
     const root = ruleCard();
     return root
-      ? Array.from(root.querySelectorAll('input:not([type="checkbox"]), textarea')) as HTMLInputElement[]
+      ? Array.from(root.querySelectorAll('input:not([type="checkbox"]):not([type="radio"]), textarea')) as HTMLInputElement[]
       : [];
   }
 
@@ -266,7 +269,7 @@ describe('Assistant rule-proposal card (rule_proposal)', () => {
     buttonNamed('Confirm')!.click();
     expect(sendSpy).toHaveBeenCalledTimes(1);
     expect(sendSpy.calls.mostRecent().args[0]).toBe(
-      'Confirmed data-quality checks for pipeline `sales_daily`: ' +
+      'Confirmed data-quality checks for pipeline `sales_daily` (on failure: reject the run): ' +
       '1. amount: is never below zero; 2. no two rows share the same id; 3. qty is a whole number');
   });
 
@@ -306,7 +309,7 @@ describe('Assistant rule-proposal card (rule_proposal)', () => {
     const sendSpy = spyOn(state, 'send');
     (fixture.componentInstance as any).confirmRules(c);
     expect(sendSpy.calls.mostRecent().args[0]).toBe(
-      'Confirmed data-quality checks for pipeline `sales_daily`: ' +
+      'Confirmed data-quality checks for pipeline `sales_daily` (on failure: reject the run): ' +
       '1. id: Validate that it is unique; 2. date: Update the value to uppercase; 3. never empty');
   });
 
@@ -434,5 +437,169 @@ describe('Assistant rule-proposal card (rule_proposal)', () => {
     expect(rc.ruleProposal.items.length).toBe(3);
     expect(rc.ruleProposal.items[0].text).toBe('is never below zero');
     expect(rc.ruleProposal.items.every((i: any) => i.enabled === true)).toBeTrue();
+  });
+  // -------------------------------------------------------------------
+  // Story: Assistant data-quality card: the user chooses warn-only vs
+  // reject on failure (plans/stories/assistant-dq-card-on-failure.md),
+  // Acceptance bullet 4. A `.rule-on-failure` radio pair (Reject = 'error',
+  // checked by default; Warn only = 'warn') on data_quality cards only;
+  // `RuleProposalState.onFailure`; `AssistantComponent.setRuleOnFailure`.
+
+  const WARN_CONFIRMED =
+    'Confirmed data-quality checks for pipeline `sales_daily` (on failure: warn only): ' +
+    '1. amount: is never negative; 2. created_at parses as a date; 3. no two rows share the same id';
+
+  function radios(): HTMLInputElement[] {
+    const root = ruleCard();
+    return root ? Array.from(root.querySelectorAll('input[type="radio"]')) as HTMLInputElement[] : [];
+  }
+
+  function radioFor(value: 'error' | 'warn'): HTMLInputElement | undefined {
+    return radios().find(r => r.value === value);
+  }
+
+  function restoredCard(id = 'toolu_rp'): any {
+    const restored = new AssistantStateService(TestBed.inject(AssistantService));
+    const turn: any = restored.turns[restored.turns.length - 1];
+    return turn.segments.find((s: any) => s.kind === 'tool' && s.id === id);
+  }
+
+  it('on failure: a data_quality card starts with onFailure "error"', () => {
+    const c = proposeAndFinish();
+    expect(c.ruleProposal.onFailure).withContext('RuleProposalState.onFailure defaults to error').toBe('error');
+  });
+
+  it('on failure: a data_quality card renders the two radios in .rule-on-failure with Reject checked', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.expanded = true;
+    await render();
+    const block = el.querySelector('.rule-card .rule-on-failure');
+    expect(block).withContext('a .rule-on-failure block on the data-quality card').toBeTruthy();
+    expect(radios().length).withContext('two radios').toBe(2);
+    const reject = radioFor('error');
+    const warn = radioFor('warn');
+    expect(reject).withContext("a radio with value 'error'").toBeTruthy();
+    expect(warn).withContext("a radio with value 'warn'").toBeTruthy();
+    expect(reject!.checked).withContext('Reject is checked by default').toBeTrue();
+    expect(warn!.checked).toBeFalse();
+    expect(reject!.name).toBe('ruleOnFailure-toolu_rp');
+    expect(warn!.name).toBe('ruleOnFailure-toolu_rp');
+    const t = (block!.textContent || '').replace(/\s+/g, ' ');
+    expect(t).toContain('On failure');
+    expect(t).toContain('Reject');
+    expect(t).toContain('Warn only');
+  });
+
+  it('on failure: a transformation card renders no on-failure radios', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_tr_of', true, { kind: 'transformation', items: [{ text: 'trim whitespace', column: 'name' }] });
+    c.expanded = true;
+    await render();
+    expect(ruleCard()).toBeTruthy();
+    expect(radios().length).toBe(0);
+    expect(el.querySelector('.rule-on-failure')).toBeNull();
+  });
+
+  it('on failure: Confirm with the default sends "(on failure: reject the run)"', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.expanded = true;
+    await render();
+    const sendSpy = spyOn(state, 'send');
+    buttonNamed('Confirm')!.click();
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy.calls.mostRecent().args[0]).toBe(ALL_CONFIRMED);
+  });
+
+  it('on failure: choosing Warn only sends "(on failure: warn only)"', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.expanded = true;
+    await render();
+    const warn = radioFor('warn');
+    expect(warn).withContext("a radio with value 'warn'").toBeTruthy();
+    warn!.click();
+    await render();
+    expect(c.ruleProposal.onFailure).toBe('warn');
+    const sendSpy = spyOn(state, 'send');
+    buttonNamed('Confirm')!.click();
+    expect(sendSpy.calls.mostRecent().args[0]).toBe(WARN_CONFIRMED);
+  });
+
+  it('on failure: setRuleOnFailure("warn") then confirmRules sends the warn-only shape', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    const comp: any = fixture.componentInstance;
+    expect(typeof comp.setRuleOnFailure).withContext('AssistantComponent.setRuleOnFailure').toBe('function');
+    comp.setRuleOnFailure(c, 'warn');
+    const sendSpy = spyOn(state, 'send');
+    comp.confirmRules(c);
+    expect(sendSpy.calls.mostRecent().args[0]).toBe(WARN_CONFIRMED);
+  });
+
+  it('on failure: a transformation Confirm shape is unchanged (no parenthetical)', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_tr_of2', true, { kind: 'transformation', items: [{ text: 'trim whitespace', column: 'name' }] });
+    const sendSpy = spyOn(state, 'send');
+    (fixture.componentInstance as any).confirmRules(c);
+    expect(sendSpy.calls.mostRecent().args[0]).toBe('Confirmed transformations for pipeline `sales_daily`: 1. name: trim whitespace');
+    expect(c.ruleProposal.onFailure).withContext('transformation cards carry no onFailure').toBeUndefined();
+  });
+
+  it('on failure: the Warn only choice survives persist() and a new service instance', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    const comp: any = fixture.componentInstance;
+    expect(typeof comp.setRuleOnFailure).withContext('AssistantComponent.setRuleOnFailure').toBe('function');
+    comp.setRuleOnFailure(c, 'warn');
+    (state as any).persist();
+    const rc = restoredCard();
+    expect(rc?.ruleProposal).toBeTruthy();
+    expect(rc.ruleProposal.submitted).toBeFalse();
+    expect(rc.ruleProposal.onFailure).toBe('warn');
+    expect((stateModule as any).ruleReplyText(rc.ruleProposal)).toBe(WARN_CONFIRMED);
+  });
+
+  it('on failure: after Confirm the radios are gone and setRuleOnFailure on the submitted card changes nothing', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.expanded = true;
+    await render();
+    expect(radios().length).withContext('radios before Confirm').toBe(2);
+    const comp: any = fixture.componentInstance;
+    comp.confirmRules(c);
+    await render();
+    expect(c.ruleProposal.submitted).toBeTrue();
+    expect(radios().length).withContext('radios hidden once submitted').toBe(0);
+    expect(typeof comp.setRuleOnFailure).withContext('AssistantComponent.setRuleOnFailure').toBe('function');
+    comp.setRuleOnFailure(c, 'warn');
+    expect(c.ruleProposal.onFailure).toBe('error');
+    expect(c.ruleProposal.summary).toBe(ALL_CONFIRMED);
+  });
+
+  it('on failure: setRuleOnFailure while streaming changes nothing', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    const comp: any = fixture.componentInstance;
+    expect(typeof comp.setRuleOnFailure).withContext('AssistantComponent.setRuleOnFailure').toBe('function');
+    state.streaming = true;
+    comp.setRuleOnFailure(c, 'warn');
+    state.streaming = false;
+    expect(c.ruleProposal.onFailure).toBe('error');
+  });
+
+  it('on failure: a restored card with no onFailure confirms as reject', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    delete c.ruleProposal.onFailure; // a card persisted before this change
+    (state as any).persist();
+    const rc = restoredCard();
+    expect(rc?.ruleProposal).toBeTruthy();
+    expect((stateModule as any).ruleReplyText(rc.ruleProposal)).toBe(ALL_CONFIRMED);
+    // And through the component on the live card.
+    const sendSpy = spyOn(state, 'send');
+    (fixture.componentInstance as any).confirmRules(c);
+    expect(sendSpy.calls.mostRecent().args[0]).toBe(ALL_CONFIRMED);
   });
 });

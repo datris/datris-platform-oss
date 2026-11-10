@@ -99,3 +99,40 @@ def test_codegen_descriptions_carry_no_quoted_example_instruction(prop):
     desc = _property_description(prop)
     assert "Example: 'Validate" not in desc, f"{prop} description still carries the 'Validate ...' example: {desc}"
     assert "Example: '" not in desc, f"{prop} description still carries a quoted free-form example instruction: {desc}"
+
+
+# ---------------------------------------------------------------------------
+# Story: Assistant data-quality card: the user chooses warn-only vs reject on
+# failure (plans/stories/assistant-dq-card-on-failure.md), Acceptance bullet 2.
+# In the sentence that asks the user to confirm the list, external MCP clients
+# are also told to ask warn-only vs reject and pass `codegen_rule_on_failure`.
+
+_WARN = re.compile(r"\bwarn", re.IGNORECASE)
+
+
+def _assert_on_failure_after_confirm(text, where):
+    m = _LIST.search(text)
+    assert m, f"{where} must have the confirm-the-list sentence"
+    window = text[m.start(): m.end() + 600]
+    assert "codegen_rule_on_failure" in window, (
+        f"{where} must name codegen_rule_on_failure within 600 chars after the confirm-the-list sentence:\n{window}"
+    )
+    assert _WARN.search(window), f"{where} must say warn (warn only vs reject) next to the confirmation:\n{window}"
+
+
+def test_tap_workflow_asks_warn_or_reject_with_the_confirmation():
+    _assert_on_failure_after_confirm(_tap_workflow(), "MCP instructions Tap workflow")
+
+
+def test_tap_workflow_reference_asks_warn_or_reject_with_the_confirmation():
+    _assert_on_failure_after_confirm(_tap_workflow_reference(), "datris://tap-workflow-reference")
+
+
+def test_pipeline_config_reference_data_quality_asks_warn_or_reject_with_the_confirmation():
+    dq = _between(_pipeline_config_reference(), "## Data Quality", "\n## Transformation")
+    _assert_on_failure_after_confirm(dq, "pipeline-config-reference Data Quality section")
+
+
+def test_codegen_rule_description_names_codegen_rule_on_failure():
+    desc = _property_description("codegen_rule")
+    assert "codegen_rule_on_failure" in desc, f"codegen_rule description must name its companion arg: {desc}"
