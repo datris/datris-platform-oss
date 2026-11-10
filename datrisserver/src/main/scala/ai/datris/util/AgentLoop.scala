@@ -614,16 +614,23 @@ object AgentLoop {
       * extended thinking + many tools + streaming) sit in the most-shed lane. */
     private val OverloadBackoffMs: List[Long] = List(1000L, 3000L)
 
-    /** Calls the Anthropic streaming API with retry-and-fallback around
-      * `overloaded_error`. Retries the same model 3 times with exponential
-      * backoff (1s, 3s, 8s). If still overloaded after that, attempts one
-      * final call on a lighter sibling model (Opus → Sonnet) and surfaces
-      * a `Notice` event so the UI can show "running on X — Y was overloaded".
+    /** Calls the AI streaming API with retry-and-fallback.
       *
-      * Stream events emitted by failed attempts are swallowed — the user
-      * only sees the successful attempt's stream. Non-overloaded errors
-      * propagate immediately (no retry). Cancellation is honored between
-      * attempts and during backoff sleeps. */
+      *  - `overloaded_error`: retries the same model on the [[OverloadBackoffMs]]
+      *    schedule; if still overloaded, one final call on a lighter sibling
+      *    model (Opus → Sonnet) with a `Notice` so the UI can show "running on
+      *    X — Y was overloaded".
+      *  - Transient transport / provider-side errors ([[isTransientTransportError]]:
+      *    TLS faults, connection resets and timeouts, HTTP 5xx): retried on the
+      *    same schedule, but ONLY while nothing from this call has reached the
+      *    sink yet — a retry after partial output would duplicate it on
+      *    screen. No model fallback; once retries are exhausted the last
+      *    error propagates.
+      *
+      * Error events from failed attempts are swallowed — the user only sees the
+      * successful attempt's stream. Other errors propagate immediately (no
+      * retry). Cancellation is honored between attempts and during backoff
+      * sleeps. */
     private def callWithRetryAndFallback(
         aiConfig: AIConfig,
         system: String,
@@ -634,44 +641,78 @@ object AgentLoop {
         sink: AIStreamEvent => Unit,
         cancelled: () => Boolean,
         notice: String => Unit
+    ): AIToolResponse =
+        callWithRetry(
+            call = (cfg: AIConfig, s: AIStreamEvent => Unit) =>
+                AIUtil.callAIWithToolsStreaming(
+                    aiConfig = cfg,
+                    system = system,
+                    messages = messages,
+                    tools = tools,
+                    enableThinking = enableThinking && AIUtil.supportsExtendedThinking(cfg),
+                    maxTokens = maxTokens,
+                    sink = s,
+                    cancelled = cancelled
+                ),
+            aiConfig = aiConfig,
+            sink = sink,
+            cancelled = cancelled,
+            notice = notice
+        )
+
+    /** The retry policy of [[callWithRetryAndFallback]], with the provider call
+      * and the backoff sleep injected so a spec can drive it. */
+    private[util] def callWithRetry(
+        call: (AIConfig, AIStreamEvent => Unit) => AIToolResponse,
+        aiConfig: AIConfig,
+        sink: AIStreamEvent => Unit,
+        cancelled: () => Boolean,
+        notice: String => Unit,
+        sleep: Long => Unit = (ms: Long) => Thread.sleep(ms)
     ): AIToolResponse = {
         var emitStreamErrors = false
+        // Whether the current attempt has forwarded any content to the sink.
+        var streamed = false
         val gatedSink: AIStreamEvent => Unit = {
             case AIStreamEvent.Error(_) if !emitStreamErrors => ()
-            case other => sink(other)
+            case AIStreamEvent.IterationStart => sink(AIStreamEvent.IterationStart)
+            case other =>
+                streamed = true
+                sink(other)
         }
 
         var lastOverloadError: Throwable = null
 
         // Attempt 0 = original call; attempts 1..N = retries with backoff.
         var attempt = 0
+        var reason = ""
         while (attempt <= OverloadBackoffMs.length) {
             if (cancelled()) throw new DatrisException("Cancelled by user")
             if (attempt > 0) {
                 val sleepMs = OverloadBackoffMs(attempt - 1)
                 logger.warn(
-                    "AgentLoop: Anthropic overloaded; retrying in " + sleepMs +
+                    "AgentLoop: " + reason + "; retrying in " + sleepMs +
                         "ms (retry " + attempt + " of " + OverloadBackoffMs.length + ")"
                 )
-                try Thread.sleep(sleepMs)
+                try sleep(sleepMs)
                 catch { case _: InterruptedException => throw new DatrisException("Cancelled by user") }
+                if (cancelled()) throw new DatrisException("Cancelled by user")
             }
+            streamed = false
             try {
-                return AIUtil.callAIWithToolsStreaming(
-                    aiConfig = aiConfig,
-                    system = system,
-                    messages = messages,
-                    tools = tools,
-                    enableThinking = enableThinking && AIUtil.supportsExtendedThinking(aiConfig),
-                    maxTokens = maxTokens,
-                    sink = gatedSink,
-                    cancelled = cancelled
-                )
+                return call(aiConfig, gatedSink)
             } catch {
                 case e: DatrisException if isOverloadedError(e) =>
                     lastOverloadError = e
+                    reason = "Anthropic overloaded"
                     attempt += 1
-                // Non-overloaded errors propagate out of the loop naturally.
+                case e: Exception
+                    if !streamed && !cancelled() && isTransientTransportError(e) &&
+                        attempt < OverloadBackoffMs.length =>
+                    reason = "transient AI provider error " + e.getClass.getName + ": " + e.getMessage
+                    attempt += 1
+                // Anything else — and a transient error once output has
+                // streamed or the retries are spent — propagates.
             }
         }
 
@@ -685,16 +726,7 @@ object AgentLoop {
                 )
                 notice("Running on " + fallbackModel + " — " + aiConfig.model + " is currently overloaded.")
                 emitStreamErrors = true
-                AIUtil.callAIWithToolsStreaming(
-                    aiConfig = fallbackCfg,
-                    system = system,
-                    messages = messages,
-                    tools = tools,
-                    enableThinking = enableThinking && AIUtil.supportsExtendedThinking(fallbackCfg),
-                    maxTokens = maxTokens,
-                    sink = gatedSink,
-                    cancelled = cancelled
-                )
+                call(fallbackCfg, gatedSink)
             case None =>
                 // No lighter model to fall back to. Surface the original error.
                 val msg = if (lastOverloadError != null && lastOverloadError.getMessage != null)
@@ -703,6 +735,47 @@ object AgentLoop {
                 sink(AIStreamEvent.Error(msg))
                 throw (if (lastOverloadError != null) lastOverloadError else new DatrisException(msg))
         }
+    }
+
+    /** HTTP status in a provider error message: the streaming paths throw
+      * "AI API returned error status: N, ..." or "<provider> ... returned status N". */
+    private val ProviderStatusPattern = """(?:error status|returned status):?\s*(\d{3})""".r
+
+    private val TransientHttpStatuses: Set[Int] = Set(500, 502, 503, 504, 529)
+
+    /** A failure worth retrying unchanged: the request never reached a model
+      * that answered it. TLS faults (e.g. `bad_record_mac`), connection
+      * resets/refusals/timeouts, a truncated stream, provider HTTP
+      * 500/502/503/504/529, or an Anthropic `api_error` stream event. Checks
+      * the cause chain. NOT transient: 4xx (credentials, bad request, and 429
+      * — the streaming path does not retry rate limits and a few seconds'
+      * backoff would not clear one), cancellation, and anything else. */
+    private[util] def isTransientTransportError(e: Throwable): Boolean = {
+        var t: Throwable = e
+        var depth = 0
+        while (t != null && depth < 8) {
+            val msg = if (t.getMessage == null) "" else t.getMessage
+            val lower = msg.toLowerCase
+            if (lower.contains("cancelled by user")) return false
+            t match {
+                case _: javax.net.ssl.SSLException => return true
+                case _: java.net.SocketException => return true // incl. ConnectException
+                case _: java.net.SocketTimeoutException => return true
+                case _: java.io.EOFException => return true
+                case _: org.apache.http.NoHttpResponseException => return true
+                case _: org.apache.http.ConnectionClosedException => return true
+                case _ =>
+            }
+            if (lower.contains("connection reset")) return true
+            ProviderStatusPattern.findFirstMatchIn(msg) match {
+                case Some(m) => return TransientHttpStatuses.contains(m.group(1).toInt)
+                case None =>
+            }
+            if (msg.startsWith("Anthropic streaming error") && lower.contains("api_error")) return true
+            t = t.getCause
+            depth += 1
+        }
+        false
     }
 
     private def isOverloadedError(e: Throwable): Boolean = {

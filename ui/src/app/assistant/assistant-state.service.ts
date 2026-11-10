@@ -207,6 +207,9 @@ export interface AssistantTurn {
   segments: AssistantSegment[];
   done: boolean;
   errorMessage: string;
+  /** The user pressed Retry on this failed turn: the error collapses to a
+   *  one-line note and the retry runs as the next turn. */
+  retried?: boolean;
   /** Last moment the user could SEE progress — turn start, a text delta, a
    *  tool card appearing, or a tool result. Drives the "thinking — 45s"
    *  elapsed on the streaming dots, so a long adaptive-thinking stretch
@@ -478,6 +481,38 @@ export class AssistantStateService {
         this.persist();
       }
     });
+  }
+
+  /** The last turn failed with an error the user can retry (not a Stop). */
+  canRetry(turn: Turn): boolean {
+    if (this.streaming || turn.role !== 'assistant') return false;
+    if (this.turns[this.turns.length - 1] !== turn) return false;
+    if (!turn.errorMessage || turn.retried || turn.errorMessage === 'Stopped.') return false;
+    return this.lastUserTurnBefore(this.turns.length - 1) !== null;
+  }
+
+  /** Retry the failed last turn: resend the user message that started it
+   *  (a card reply is resent as the same text), with its attachments. A
+   *  failed turn that showed nothing is replaced outright; one with partial
+   *  output stays, its error collapsed, and the retry follows it. */
+  retryLast(): void {
+    const turn = this.turns[this.turns.length - 1];
+    if (!turn || !this.canRetry(turn) || turn.role !== 'assistant') return;
+    const userIdx = this.lastUserTurnBefore(this.turns.length - 1)!;
+    const userTurn = this.turns[userIdx] as UserTurn;
+    const empty = turn.segments.length === 0 && !turn.thinking;
+    if (empty) {
+      this.turns.splice(userIdx);
+    } else {
+      turn.retried = true;
+    }
+    if (userTurn.attachments?.length) this.activeAttachments = userTurn.attachments.slice();
+    this.send(userTurn.text || (userTurn.attachments?.length ? '(see attached file)' : ''));
+  }
+
+  private lastUserTurnBefore(index: number): number | null {
+    for (let i = index - 1; i >= 0; i--) if (this.turns[i].role === 'user') return i;
+    return null;
   }
 
   /** Cancel the in-flight stream. The component's Stop button calls this. */
