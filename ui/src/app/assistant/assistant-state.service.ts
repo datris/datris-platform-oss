@@ -72,9 +72,31 @@ export interface SchemaProposalState {
   limit: number;
   loading: boolean;
   submitted: boolean;
+  /** The user typed a reply instead of using the card: it collapses and its
+   *  buttons stop working, so a late click can't post out of context. */
+  skipped?: boolean;
   /** The reply that was posted, shown as a one-line summary once submitted. */
   summary?: string;
   errorMessage: string;
+}
+
+/** A column name as it appears in a schema reply: bare when it is a plain
+ *  identifier, else in backticks so a name with spaces can't be misread. */
+export function schemaReplyName(name: string): string {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : '`' + name + '`';
+}
+
+/** How a schema-proposal card travels in the outbound history: one line of
+ *  plain prose on the assistant message, so a card-only turn still shows the
+ *  model that it proposed (and what) when the user's confirmation arrives.
+ *  Plain prose, not a bracketed tool-call record: the model copied such
+ *  records back as text (see askUserForHistory). Not shown in the UI. */
+export function schemaProposalForHistory(sp: SchemaProposalState): string {
+  if (!sp.typeGrid) {
+    return `I showed you a preview of ${sp.sampleRowCount} rows from tap \`${sp.tap}\` on a schema card.`;
+  }
+  const cols = sp.fields.map(f => `${schemaReplyName(f.name)} ${f.recommended || f.type}`).join(', ');
+  return `I proposed column types for tap \`${sp.tap}\` from ${sp.sampleRowCount} preview rows and showed them to you on a schema card: ${cols}.`;
 }
 
 /** Preview rows a schema-proposal card shows. */
@@ -235,6 +257,7 @@ export class AssistantStateService {
     if (restored) {
       this.turns = restored.turns;
       this.draft = restored.draft;
+      this.resetInterruptedSchemaPulls();
     }
     // Catch a mid-stream refresh: snapshot whatever's on screen so it survives
     // the reload. Terminal transitions persist explicitly too.
@@ -318,6 +341,34 @@ export class AssistantStateService {
     this.attachmentError = '';
   }
 
+  /** A "Pull more rows" in flight when the page reloaded never returns:
+   *  clear `loading` so the restored card's buttons work again. */
+  private resetInterruptedSchemaPulls(): void {
+    for (const t of this.turns) {
+      if (t.role !== 'assistant') continue;
+      for (const s of t.segments) {
+        if (s.kind === 'tool' && s.schemaProposal?.loading) {
+          s.schemaProposal.loading = false;
+          s.schemaProposal.errorMessage = 'The page reloaded before more rows arrived. Pull again.';
+        }
+      }
+    }
+  }
+
+  /** Mark every pending schema-proposal card skipped (the user typed a reply
+   *  instead). A card's own buttons mark it submitted before sending. */
+  private skipPendingSchemaProposals(): void {
+    for (const t of this.turns) {
+      if (t.role !== 'assistant') continue;
+      for (const s of t.segments) {
+        if (s.kind === 'tool' && s.schemaProposal && !s.schemaProposal.submitted && !s.schemaProposal.skipped) {
+          s.schemaProposal.skipped = true;
+          s.schemaProposal.loading = false;
+        }
+      }
+    }
+  }
+
   /** Mark every pending `ask_user` card skipped. A card's own Submit marks it
    *  submitted before sending, so it is not affected. */
   private skipPendingAskUser(): void {
@@ -340,6 +391,7 @@ export class AssistantStateService {
     // A question card still waiting for answers is superseded by whatever
     // the user sends now (a typed reply, or another form's reply): collapse it.
     this.skipPendingAskUser();
+    this.skipPendingSchemaProposals();
 
     const sentAttachments = this.activeAttachments.slice();
     this.turns.push({ role: 'user', text: trimmed, attachments: sentAttachments.length ? sentAttachments : undefined });
@@ -380,11 +432,17 @@ export class AssistantStateService {
         const visible = t.segments
           .map(s => s.kind === 'text' ? (s as TextSegment).text : '')
           .join('');
+        // A schema-proposal card adds one prose line, so a card-only turn
+        // still tells the model what it proposed before the reply arrives.
+        const proposals = t.segments
+          .filter(s => s.kind === 'tool' && !!(s as ToolCard).schemaProposal)
+          .map(s => schemaProposalForHistory((s as ToolCard).schemaProposal!));
+        const content = [visible, ...proposals].filter(x => x.trim().length > 0).join('\n\n');
         const card = t.segments.find(s => s.kind === 'tool' && !!(s as ToolCard).askUser) as ToolCard | undefined;
         if (card?.askUser) {
-          messages.push({ role: 'assistant', content: visible, askUser: askUserForHistory(card.askUser) });
-        } else if (visible.trim().length > 0) {
-          messages.push({ role: 'assistant', content: visible });
+          messages.push({ role: 'assistant', content, askUser: askUserForHistory(card.askUser) });
+        } else if (content.trim().length > 0) {
+          messages.push({ role: 'assistant', content });
         }
       }
     }
@@ -594,7 +652,8 @@ export class AssistantStateService {
           sampleRowCount: evt.sampleRowCount || 0,
           preview: (evt.preview || []).slice(0, SCHEMA_PREVIEW_ROWS).map(r => ({ ...r })),
           fields: schemaProposalRows(evt.fields),
-          limit: 20,
+          // The agent may have proposed from more than the default 20 rows.
+          limit: Math.max(20, evt.sampleRowCount || 0),
           loading: false,
           submitted: false,
           errorMessage: ''

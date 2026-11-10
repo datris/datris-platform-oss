@@ -279,7 +279,7 @@
                      message; Pull more rows refreshes in place, no model turn.
                      A vector-store proposal (typeGrid false) is preview only. -->
                 <ng-container *ngIf="seg.schemaProposal as sp">
-                  <div class="schema-card" *ngIf="!sp.submitted">
+                  <div class="schema-card" *ngIf="!sp.submitted && !sp.skipped">
                     <div class="schema-card-head">
                       <span class="schema-card-title">Proposed schema for <code>{{ sp.tap }}</code></span>
                       <span class="schema-card-count">{{ sp.sampleRowCount }} rows reviewed</span>
@@ -342,6 +342,9 @@
                   </div>
                   <div class="secret-form-result" *ngIf="sp.submitted">
                     ✓ {{ sp.typeGrid ? sp.summary : 'Preview of ' + sp.tap + ' looks right.' }}
+                  </div>
+                  <div class="secret-form-result secret-form-result-cancelled" *ngIf="sp.skipped && !sp.submitted">
+                    Schema for {{ sp.tap }} answered in chat.
                   </div>
                 </ng-container>
 

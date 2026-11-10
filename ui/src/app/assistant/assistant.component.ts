@@ -1,6 +1,6 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, AfterViewChecked, NgZone } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers, schemaProposalRows, SCHEMA_PREVIEW_ROWS } from './assistant-state.service';
+import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers, schemaProposalRows, schemaReplyName, SCHEMA_PREVIEW_ROWS } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
@@ -699,10 +699,10 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
    *  next user message in the fixed shape the prompt rule expects. */
   confirmSchemaGrid(card: ToolCard): void {
     const sp = card.schemaProposal;
-    if (!sp || sp.submitted || sp.loading) return;
+    if (!sp || sp.submitted || sp.skipped || sp.loading || this.state.streaming) return;
     const text = sp.typeGrid
       ? `Confirmed schema for tap \`${sp.tap}\` (${sp.sampleRowCount} rows reviewed): ` +
-        sp.fields.map(f => `${f.name} ${f.type}`).join(', ')
+        sp.fields.map(f => `${schemaReplyName(f.name)} ${f.type}`).join(', ')
       : 'Preview looks right.';
     this.submitSchemaReply(card, text);
   }
@@ -710,7 +710,7 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
   /** Keep all as text: every column stays `string`. */
   keepAllStrings(card: ToolCard): void {
     const sp = card.schemaProposal;
-    if (!sp || sp.submitted || sp.loading) return;
+    if (!sp || sp.submitted || sp.skipped || sp.loading || this.state.streaming) return;
     this.submitSchemaReply(card, `Keep every column as string for tap \`${sp.tap}\`.`);
   }
 
@@ -727,7 +727,7 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
    *  already changed is kept; untouched columns take the new recommendation. */
   pullMoreRows(card: ToolCard): void {
     const sp = card.schemaProposal;
-    if (!sp || sp.submitted || sp.loading || !sp.typeGrid) return;
+    if (!sp || sp.submitted || sp.skipped || sp.loading || !sp.typeGrid) return;
     const limit = Math.min((sp.limit || 20) * AssistantComponent.SCHEMA_LIMIT_STEP, AssistantComponent.SCHEMA_LIMIT_CAP);
     sp.loading = true;
     sp.errorMessage = '';
@@ -741,9 +741,11 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
           fail('Tap test failed: ' + (res?.error || res?.message || 'no rows returned'));
           return;
         }
+        if (sp.skipped || sp.submitted) return;
         const records: any[] = Array.isArray(res.records) ? res.records : [];
         this.pipelineService.proposeSchema(records, res.columns).subscribe({
           next: (proposal: any) => {
+            if (sp.skipped || sp.submitted) return;
             const userTypes = new Map<string, string>();
             for (const f of sp.fields) if (f.type !== f.recommended) userTypes.set(f.name, f.type);
             const rows = schemaProposalRows(proposal?.fields);

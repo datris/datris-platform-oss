@@ -446,6 +446,95 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     expect((c.schemaProposal.errorMessage || '').length).toBeGreaterThan(0);
     expect(c.schemaProposal.fields.length).toBe(3);
   });
+
+  // ------------------------------------------------- review round 1 ---
+
+  it('a typed reply while a card is pending collapses it; its buttons then send nothing', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    c.expanded = true;
+    await render();
+    state.send('actually use another destination instead');
+    stream.complete();
+    await render();
+    expect(c.schemaProposal.skipped).withContext('the card is marked skipped').toBeTrue();
+    expect(typeSelects().length).withContext('the skipped card hides its grid').toBe(0);
+    expect(buttonNamed('Confirm types')).toBeUndefined();
+    expect(text()).toContain('answered in chat');
+    const sendSpy = spyOn(state, 'send');
+    const comp: any = fixture.componentInstance;
+    comp.confirmSchemaGrid(c);
+    comp.keepAllStrings(c);
+    comp.pullMoreRows(c);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(runTapSpy).not.toHaveBeenCalled();
+  });
+
+  it('the card\'s own Confirm is not marked skipped by the reply it sends', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    (fixture.componentInstance as any).confirmSchemaGrid(c);
+    expect(c.schemaProposal.submitted).toBeTrue();
+    expect(c.schemaProposal.skipped).toBeFalsy();
+  });
+
+  it('a card-only turn still tells the model what it proposed in the outbound history', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_hist');
+    (fixture.componentInstance as any).confirmSchemaGrid(c);
+    const messages: any[] = chatSpy.calls.mostRecent().args[0];
+    const roles = messages.map(m => m.role);
+    expect(roles).withContext('user / assistant / user, never two user turns in a row').toEqual(['user', 'assistant', 'user']);
+    const proposed: string = messages[1].content;
+    expect(proposed).toContain('tap `prices_tap`');
+    expect(proposed).toContain('id int, price string, qty string');
+    expect(proposed).not.toContain('[Tool call');
+    expect(messages[2].content.startsWith('Confirmed schema for tap `prices_tap`')).toBeTrue();
+  });
+
+  it('a Pull more rows interrupted by a reload does not leave the restored card disabled', () => {
+    const c = proposeAndFinish();
+    c.schemaProposal.loading = true;
+    (state as any).persist();
+    const restored = new AssistantStateService(TestBed.inject(AssistantService));
+    const turn: any = restored.turns[restored.turns.length - 1];
+    const rc = turn.segments.find((s: any) => s.kind === 'tool' && s.id === 'toolu_sp');
+    expect(rc.schemaProposal.loading).toBeFalse();
+    expect((rc.schemaProposal.errorMessage || '').length).toBeGreaterThan(0);
+  });
+
+  it('Confirm while a turn is streaming changes nothing and sends nothing', async () => {
+    await mount();
+    const c = proposeAndFinish();
+    const sendSpy = spyOn(state, 'send');
+    state.streaming = true;
+    const comp: any = fixture.componentInstance;
+    comp.confirmSchemaGrid(c);
+    comp.keepAllStrings(c);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(c.schemaProposal.submitted).toBeFalse();
+    expect(c.schemaProposal.summary || '').toBe('');
+    state.streaming = false;
+  });
+
+  it('a column name with spaces is wrapped in backticks in the confirmation', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_sp', true, {
+      fields: [
+        { name: 'first name', type: 'string', samples: ['a'], stringReason: null, note: null },
+        { name: 'qty', type: 'int', samples: ['1'], stringReason: null, note: null }
+      ]
+    });
+    const sendSpy = spyOn(state, 'send');
+    (fixture.componentInstance as any).confirmSchemaGrid(c);
+    expect(sendSpy.calls.mostRecent().args[0])
+      .toBe('Confirmed schema for tap `prices_tap` (20 rows reviewed): `first name` string, qty int');
+  });
+
+  it('the pull-more-rows limit starts from the rows the proposal used', () => {
+    const c = proposeAndFinish('toolu_lim', true, { sampleRowCount: 100 });
+    expect(c.schemaProposal.limit).toBe(100);
+  });
 });
 
 describe('TapService.runTap / PipelineService.proposeSchema (schema-proposal card)', () => {
