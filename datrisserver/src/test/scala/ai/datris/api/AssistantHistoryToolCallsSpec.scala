@@ -146,6 +146,20 @@ class AssistantHistoryToolCallsSpec extends AnyFunSuite {
         assert(tr.content == AgentLoop.SecretRequestWaitingText)
     }
 
+    // Story: plans/stories/assistant-rule-proposal-cards.md, Acceptance 4.
+    test("synthetic propose_pipeline_rules replays RuleProposalWaitingText") {
+        val calls =
+            s"""[{"id":"t1","name":"${AgentLoop.SyntheticRuleProposalTool}","input":{"kind":"data_quality","pipeline":"p","items":[{"text":"a numeric column is never negative","column":"n"}]},"result":"","isError":false,"synthetic":true}]"""
+        val out = history(
+            s"""[{"role":"user","content":"a"},{"role":"assistant","content":"","toolCalls":$calls},{"role":"user","content":"Confirmed data-quality checks for pipeline `p`: 1. n: a numeric column is never negative"}]"""
+        )
+        val uses = toolUses(out(1)._2)
+        assert(uses.map(_.name) == List("propose_pipeline_rules"))
+        val tr = toolResults(out(2)._2).head
+        assert(tr.toolUseId == uses.head.id)
+        assert(tr.content == AgentLoop.RuleProposalWaitingText)
+    }
+
     test("synthetic on any other tool sends the result it was given") {
         val calls = """[{"id":"t1","name":"list_taps","input":{},"result":"[]","isError":false,"synthetic":true}]"""
         val out = history(s"""[{"role":"user","content":"a"},{"role":"assistant","content":"","toolCalls":$calls},{"role":"user","content":"b"}]""")
