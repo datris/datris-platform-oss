@@ -294,6 +294,22 @@ describe('Assistant rule-proposal card (rule_proposal)', () => {
       'Confirmed transformations for pipeline `sales_daily`: 1. Format the Created_At value as a date; 2. amount: round to 2 places');
   });
 
+  it('confirmRules prefixes a short column that only appears inside another word; a blank column gives bare text', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_tok', true, {
+      items: [
+        { text: 'Validate that it is unique', column: 'id' },
+        { text: 'Update the value to uppercase', column: 'date' },
+        { text: 'never empty', column: '   ' }
+      ]
+    });
+    const sendSpy = spyOn(state, 'send');
+    (fixture.componentInstance as any).confirmRules(c);
+    expect(sendSpy.calls.mostRecent().args[0]).toBe(
+      'Confirmed data-quality checks for pipeline `sales_daily`: ' +
+      '1. id: Validate that it is unique; 2. date: Update the value to uppercase; 3. never empty');
+  });
+
   it('a transformation card confirms as "Confirmed transformations for pipeline ..."', async () => {
     await mount();
     const c = proposeAndFinish('toolu_tr2', true, { kind: 'transformation', items: [{ text: 'trim whitespace', column: 'name' }, { text: 'lowercase the email column' }] });

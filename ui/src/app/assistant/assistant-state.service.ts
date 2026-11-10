@@ -88,15 +88,20 @@ export function ruleProposalRows(items: RuleProposalItem[] | null | undefined): 
 }
 
 /** The ticked, non-blank rows of a rule-proposal card, each prefixed with
- *  its column ("<column>: ") unless the text already names it anywhere
- *  (case-insensitive). */
+ *  its column ("<column>: ") unless the text already names it as a whole
+ *  token (case-insensitive; a substring of another word does not count). */
 export function ruleReplyItems(state: RuleProposalState): string[] {
   return (state.items || [])
     .filter(r => r.enabled && (r.text || '').trim())
     .map(r => {
       const text = r.text.trim();
       const column = (r.column || '').trim();
-      return column && !text.toLowerCase().includes(column.toLowerCase()) ? `${column}: ${text}` : text;
+      if (!column) return text;
+      // Whole-token match: a short column (`id`) must not count as named
+      // because it appears inside another word ("valIDate").
+      const escaped = column.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const named = new RegExp('(^|[^a-z0-9_])' + escaped + '($|[^a-z0-9_])').test(text.toLowerCase());
+      return named ? text : `${column}: ${text}`;
     });
 }
 
