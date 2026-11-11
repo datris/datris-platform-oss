@@ -151,7 +151,7 @@ lazy val datrisserver = project
             // lz4 OOB (Spark compression codecs), ivy XXE (Spark).
             "commons-beanutils" % "commons-beanutils" % "1.11.0",
             "net.minidev" % "json-smart" % "2.5.2",
-            "org.json" % "json" % "20231013",
+            "org.json" % "json" % "20260719",
             "io.airlift" % "aircompressor" % "2.0.3",
             "org.lz4" % "lz4-java" % "1.8.1",
             // kafka-clients 3.9.x switched lz4 to the at.yawk.lz4 fork (the

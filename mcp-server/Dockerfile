@@ -1,5 +1,5 @@
 # Pinned by digest (multi-arch manifest list); Dependabot docker sends digest-bump PRs.
-FROM python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 LABEL io.modelcontextprotocol.server.name="io.github.datris/datris"

@@ -20,7 +20,7 @@ ARG APP_VERSION=unknown
 RUN printf '{"version":"%s"}\n' "$APP_VERSION" > /app/dist/pipeline-ui/browser/version.json
 
 # Stage 2: Serve (non-root nginx, listens on 8080)
-FROM nginxinc/nginx-unprivileged:alpine@sha256:d9083fe47768377ef55dedafd67d4da7c2f2bc2bece7554954f29359deb0dce9
+FROM nginxinc/nginx-unprivileged:alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 # The Alpine packages in the pinned base lag behind alpine-security fixes
 # (libuuid/util-linux, libexpat, curl CVEs flagged by the weekly Trivy image
