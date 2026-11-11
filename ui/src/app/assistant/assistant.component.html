@@ -281,7 +281,7 @@
                      sample-data card: preview only, no buttons, informational
                      (the turn continues; it is never submitted or skipped). -->
                 <ng-container *ngIf="seg.schemaProposal as sp">
-                  <div class="schema-card" *ngIf="!sp.submitted && !sp.skipped">
+                  <div class="schema-card" *ngIf="!sp.typeGrid || (!sp.submitted && !sp.skipped)">
                     <div class="schema-card-head">
                       <span class="schema-card-title">{{ sp.typeGrid ? 'Proposed schema for' : 'Sample data from' }} <code>{{ sp.tap }}</code></span>
                       <span class="schema-card-count">{{ sp.sampleRowCount }} rows reviewed</span>

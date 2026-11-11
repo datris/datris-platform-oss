@@ -153,6 +153,11 @@ class AssistantPromptSchemaCheckpointSpec extends AnyFunSuite {
         assert("(?i)turn continues|do not wait".r.findFirstIn(b).isDefined, s"card bullet must say the turn continues:\n$b")
     }
 
+    test("card bullet overrides the result's next hint about showing the rows") {
+        val b = cardBullet
+        assert("(?i)next.*hint|already".r.findFirstIn(b).isDefined, s"card bullet must say the card already shows the rows the next hint mentions:\n$b")
+    }
+
     test("card bullet: mongodb goes to checkpoint 2 in the same sentence") {
         val hit = sentences(cardBullet).find(s => s.contains("mongodb") && s.toLowerCase.contains("checkpoint 2"))
         assert(hit.isDefined, s"a card-bullet sentence must name both `mongodb` and checkpoint 2:\n$cardBullet")
