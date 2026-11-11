@@ -43,8 +43,15 @@ jobs:
       - name: Build server JAR
         run: sbt clean test assembly
 
+      # network=host: the buildkit container shares the runner's network
+      # namespace, so apt/pip inside the builds resolve names through the
+      # runner's own resolver. On 2026-11-11 three v1.58.0 builds in a row
+      # failed with "Could not resolve archive.ubuntu.com" from the default
+      # bridge-networked builder on an otherwise unchanged workflow.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          driver-opts: network=host
 
       - name: Login to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
