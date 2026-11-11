@@ -122,12 +122,7 @@ class CatalogChatAPIController {
         if (messagesArr == null || messagesArr.size() == 0)
             throw new DatrisException("Request body must include a non-empty `messages` array")
 
-        val userMessages: List[(String, String)] = messagesArr.asScala.toList.map { el =>
-            val m = el.getAsJsonObject
-            val role = if (m.has("role")) m.get("role").getAsString else "user"
-            val content = if (m.has("content")) m.get("content").getAsString else ""
-            (role, content)
-        }
+        val userMessages: List[(String, String)] = ChatMessages.textHistory(messagesArr)
 
         val contextSnapshot: Option[JsonObject] =
             if (req.has("context") && !req.get("context").isJsonNull)
