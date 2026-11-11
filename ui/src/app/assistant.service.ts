@@ -26,6 +26,25 @@ export interface ChatMessage {
    *  `submitted` says whether the next user message is the card's
    *  `header: answer` lines or a reply typed in chat. */
   askUser?: { questions: AskUserQuestion[]; submitted: boolean };
+  /** Assistant only: the turn's finished tool calls, in order. Replayed by the
+   *  server as the tool_use / tool_result pairs the model saw live, so later
+   *  turns know what was already listed, created or tested. Never rendered. */
+  toolCalls?: HistoryToolCall[];
+}
+
+/** One prior tool call as it travels in the outbound history. `truncated`
+ *  says the result was shortened for history (the server tells the model to
+ *  call the tool again for the full output); `synthetic` marks a card the
+ *  model saw as waiting text live (schema proposal, secret request), which
+ *  the server replays instead of `result`. */
+export interface HistoryToolCall {
+  id: string;
+  name: string;
+  input: any;
+  result: string;
+  isError: boolean;
+  truncated?: boolean;
+  synthetic?: boolean;
 }
 
 /** Metadata for a file staged via POST /api/v1/assistant/attachment. The raw
@@ -49,8 +68,29 @@ export interface AskUserQuestion {
   header: string;
   question: string;
   /** Absent or empty for a free-text question (the card shows a text box). */
-  options?: { label: string; description: string }[];
+  /** `exclusive`: a None / no change / skip option on a multiSelect question;
+   *  picking it clears the others and picking another clears it. */
+  options?: { label: string; description: string; exclusive?: boolean }[];
   multiSelect: boolean;
+}
+
+/** One column of a `schema_proposal`: the recommended type and its evidence. */
+export interface SchemaProposalField {
+  name: string;
+  type: string;
+  samples?: string[];
+  /** Why the column stayed `string`: the server sends the value that blocked
+   *  a type, `{value, blocked}`. A plain string is tolerated too. */
+  stringReason?: { value: string; blocked: string } | string | null;
+  /** Thin-evidence note (too few values to type it). */
+  note?: string | null;
+}
+
+/** One item on a `rule_proposal` card: a data-quality check or a
+ *  transformation in plain words, and the confirmed column it covers. */
+export interface RuleProposalItem {
+  text: string;
+  column?: string;
 }
 
 export type AssistantEvent =
@@ -71,6 +111,15 @@ export type AssistantEvent =
    *  question card on the matching tool card; answers are posted as the
    *  user's next message in `header: answer` lines. Assistant only. */
   | { type: 'ask_user'; id: string; questions: AskUserQuestion[] }
+  /** `propose_pipeline_schema` returned a proposal. The Assistant renders an
+   *  inline card on the matching tool card: preview rows (the server sends at
+   *  most 5; `recordsTruncated` means the tap produced more), then a
+   *  type grid unless `typeGrid` is false (vector store: preview only). */
+  | { type: 'schema_proposal'; id: string; tap: string; typeGrid: boolean; sampleRowCount: number; fields: SchemaProposalField[]; preview: any[]; recordsTruncated?: boolean }
+  /** Synthetic event: agent called `propose_pipeline_rules` (checkpoint 2).
+   *  The Assistant renders an editable list card on the matching tool card;
+   *  Confirm posts the ticked items as the next user message. Assistant only. */
+  | { type: 'rule_proposal'; id: string; kind: 'data_quality' | 'transformation'; pipeline: string; items: RuleProposalItem[] }
   /** Configuration chat only: a mutating tool proposed a change. The UI shows
    *  `summary` with Confirm / Cancel; Confirm re-posts with `token`. */
   | { type: 'confirm_request'; id: string; tool: string; summary: string; token: string }
@@ -78,6 +127,10 @@ export type AssistantEvent =
    *  of the assistant's textual response. Currently used when the model is
    *  downgraded mid-request (e.g. Opus → Sonnet after sustained overload). */
   | { type: 'notice'; message: string }
+  /** The model call failed transiently and the server is retrying it
+   *  (`attempt` of `max`): drop what the failed attempt streamed this
+   *  iteration and show a status until the retry streams. */
+  | { type: 'retrying'; attempt: number; max: number; reason: string }
   | { type: 'done' }
   | { type: 'error'; message: string };
 

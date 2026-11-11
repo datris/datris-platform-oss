@@ -1,7 +1,8 @@
 import { Injectable } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, StagedAttachment } from '../assistant.service';
+import { AssistantService, AssistantEvent, AssistantInit, AskUserQuestion, ChatMessage, HistoryToolCall, RuleProposalItem, SchemaProposalField, StagedAttachment } from '../assistant.service';
 import { loadChatState, saveChatState, clearChatState } from '../shared/chat-persistence';
+import { handleRetryEvent, AttemptMark } from '../shared/chat-retry';
 
 /** Tool invocation inside an assistant turn. */
 export interface ToolCard {
@@ -48,6 +49,135 @@ export interface ToolCard {
    *  message. `selections` are Sets in memory; after a reload (JSON) they
    *  come back as plain objects, so read them through `askUserSelected`. */
   askUser?: AskUserState;
+  /** Populated when `propose_pipeline_schema` returned a proposal. The UI
+   *  renders the preview rows and an editable type grid; Confirm posts the
+   *  grid as the next user message (same resume path as the credentials form). */
+  schemaProposal?: SchemaProposalState;
+  /** Populated when the agent called `propose_pipeline_rules`. The UI renders
+   *  one editable row per proposed check or transformation; Confirm posts
+   *  `ruleReplyText` as the next user message. */
+  ruleProposal?: RuleProposalState;
+}
+
+/** One editable row on a rule-proposal card. */
+export interface RuleProposalRow {
+  text: string;
+  column: string;
+  enabled: boolean;
+}
+
+export interface RuleProposalState {
+  kind: 'data_quality' | 'transformation';
+  pipeline: string;
+  /** Editable copies; never the event payload itself. */
+  items: RuleProposalRow[];
+  submitted: boolean;
+  /** The user typed a reply instead of using the card. */
+  skipped?: boolean;
+  /** The reply that was posted, shown as a one-line summary once submitted. */
+  summary?: string;
+  /** data_quality only: what a failing row does, 'error' (reject the run,
+   *  the default) or 'warn' (log it, keep loading). Missing reads as 'error'
+   *  (a card persisted before this field existed). */
+  onFailure?: 'error' | 'warn';
+}
+
+/** Editable copies of proposed items, every row ticked. */
+export function ruleProposalRows(items: RuleProposalItem[] | null | undefined): RuleProposalRow[] {
+  return (items || []).map(i => ({
+    text: typeof i?.text === 'string' ? i.text : '',
+    column: typeof i?.column === 'string' ? i.column : '',
+    enabled: true
+  }));
+}
+
+/** The ticked, non-blank rows of a rule-proposal card, each prefixed with
+ *  its column ("<column>: ") unless the text already names it as a whole
+ *  token (case-insensitive; a substring of another word does not count). */
+export function ruleReplyItems(state: RuleProposalState): string[] {
+  return (state.items || [])
+    .filter(r => r.enabled && (r.text || '').trim())
+    .map(r => {
+      const text = r.text.trim();
+      const column = (r.column || '').trim();
+      if (!column) return text;
+      // Whole-token match: a short column (`id`) must not count as named
+      // because it appears inside another word ("valIDate").
+      const escaped = column.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const named = new RegExp('(^|[^a-z0-9_])' + escaped + '($|[^a-z0-9_])').test(text.toLowerCase());
+      return named ? text : `${column}: ${text}`;
+    });
+}
+
+/** The reply a rule-proposal card's Confirm posts, in the fixed shape the
+ *  prompt rule expects: "Confirmed data-quality checks for pipeline `<p>`
+ *  (on failure: reject the run|warn only): 1. <text>; 2. <text>" (or
+ *  "Confirmed transformations for pipeline `<p>`: ..."). */
+export function ruleReplyText(state: RuleProposalState): string {
+  const items = ruleReplyItems(state).map((t, i) => `${i + 1}. ${t}`).join('; ');
+  if (state.kind === 'transformation') {
+    return `Confirmed transformations for pipeline \`${state.pipeline}\`: ${items}`;
+  }
+  const onFailure = state.onFailure === 'warn' ? 'warn only' : 'reject the run';
+  return `Confirmed data-quality checks for pipeline \`${state.pipeline}\` (on failure: ${onFailure}): ${items}`;
+}
+
+/** The reply a rule-proposal card's Skip posts. */
+export function ruleSkipText(state: RuleProposalState): string {
+  return state.kind === 'transformation' ? 'No transformations.' : 'No data-quality checks.';
+}
+
+/** One editable grid row: the proposed field plus the type the server
+ *  recommended, so a refresh can tell a user-changed type from an untouched one. */
+export interface SchemaProposalRow extends SchemaProposalField {
+  recommended: string;
+}
+
+export interface SchemaProposalState {
+  tap: string;
+  typeGrid: boolean;
+  sampleRowCount: number;
+  /** Rows from the latest tap test, at most SCHEMA_PREVIEW_RENDER_CAP: the
+   *  event's preview rows at first, every pulled record after a pull. */
+  preview: any[];
+  /** Every row the latest test returned has been pulled: the tap has no more,
+   *  so "Pull more rows" is disabled and says so. */
+  exhausted?: boolean;
+  /** One-line result of the last "Pull more rows" ("Pulled 100 rows; ..."). */
+  statusMessage?: string;
+  /** Editable copies; never the event payload itself. */
+  fields: SchemaProposalRow[];
+  /** Tap-test row limit the proposal came from; "Pull more rows" multiplies it. */
+  limit: number;
+  loading: boolean;
+  submitted: boolean;
+  /** The user typed a reply instead of using the card: it collapses and its
+   *  buttons stop working, so a late click can't post out of context. */
+  skipped?: boolean;
+  /** The reply that was posted, shown as a one-line summary once submitted. */
+  summary?: string;
+  errorMessage: string;
+}
+
+/** A column name as it appears in a schema reply: bare when it is a plain
+ *  identifier, else in backticks so a name with spaces can't be misread. */
+export function schemaReplyName(name: string): string {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : '`' + name + '`';
+}
+
+/** Most preview rows a schema-proposal card renders; the box scrolls. */
+export const SCHEMA_PREVIEW_RENDER_CAP = 200;
+
+/** Rows a tap test returns when the agent passed no `limit`. */
+export const SCHEMA_DEFAULT_TEST_ROWS = 20;
+
+/** Editable copies of proposed fields (samples copied too). */
+export function schemaProposalRows(fields: SchemaProposalField[] | null | undefined): SchemaProposalRow[] {
+  return (fields || []).map(f => ({
+    ...f,
+    samples: Array.isArray(f.samples) ? [...f.samples] : [],
+    recommended: f.type
+  }));
 }
 
 export interface AskUserState {
@@ -75,6 +205,18 @@ export function askUserSelected(au: AskUserState, index: number): Set<string> {
   return s;
 }
 
+/** Labels that mean "nothing" on a pick-any question when the model sent no
+ *  `exclusive` flag. Narrow on purpose: "No schedule" is a real choice. */
+const EXCLUSIVE_ASK_LABEL = /^(none|nothing|skip|no|no (change|changes|thanks)|none of (these|those|the above))$/i;
+
+/** An option that cannot be combined with the others on a multiSelect
+ *  question: the `exclusive` flag first, then the label fallback. Always
+ *  false on single-select questions (radio behaviour already applies). */
+export function isExclusiveAskOption(q: AskUserQuestion, o: { label: string; exclusive?: boolean }): boolean {
+  if (!q || !q.multiSelect || !o) return false;
+  return o.exclusive === true || EXCLUSIVE_ASK_LABEL.test((o.label || '').trim());
+}
+
 /** The answer for one question: selected labels in option order, then the
  *  "Other" text when non-empty, joined with ", ". Empty when unanswered. */
 export function askUserAnswer(au: AskUserState, index: number): string {
@@ -97,6 +239,150 @@ export function askUserAnswer(au: AskUserState, index: number): string {
  *  the card is never shown to the model as text. Not shown in the UI. */
 export function askUserForHistory(au: AskUserState): { questions: AskUserQuestion[]; submitted: boolean } {
   return { questions: au.questions, submitted: !!au.submitted };
+}
+
+/** Shown on a turn the model ended with no text and no tool call. */
+export const EMPTY_REPLY_MESSAGE = 'The model returned an empty reply. Send your message again or rephrase it.';
+
+/** Most chars of one tool result sent in the outbound history. */
+export const HISTORY_RESULT_CAP = 1024;
+/** Result cap for the discovery listings: their pretty-printed JSON runs to
+ *  a few hundred chars per entry, and a listing cut short invites the model
+ *  to list again, which is what the replay exists to stop. */
+export const HISTORY_LIST_RESULT_CAP = 4096;
+/** Tools whose results get HISTORY_LIST_RESULT_CAP instead. */
+export const HISTORY_LIST_TOOLS: ReadonlySet<string> = new Set(['list_pipelines', 'list_taps']);
+/** Most chars of one tool input (as JSON) sent in the outbound history. */
+export const HISTORY_INPUT_CAP = 2048;
+/** Most result chars sent for all of one turn's tool calls together. */
+export const HISTORY_TURN_CAP = 8192;
+/** Most input chars (as JSON) sent for all of one turn's tool calls
+ *  together; later inputs go as `{ _inputOmitted: true }`. */
+export const HISTORY_TURN_INPUT_CAP = 8192;
+/** Most result + input chars sent for every prior turn's tool calls
+ *  together, spent newest turn first. Older turns past it keep only the
+ *  call's id and name (`input: {}`, `result: ''`, `truncated: true`), so the
+ *  pairing and what was done survive but the bytes do not. */
+export const HISTORY_TOTAL_CAP = 32768;
+
+/** Input keys whose values are never replayed: a credential the model passed
+ *  live is not re-sent on every later turn. Keys naming something
+ *  (`name`, `secret_name`, `field_names`) and the reference keys in
+ *  HISTORY_REF_KEY are kept. */
+const HISTORY_REDACT_KEY = /secret|password|passwd|token|api[_-]?key|private[_-]?key|credential/i;
+const HISTORY_NAME_KEY = /(^|_)names?$|[a-z]Names?$/;
+/** Keys that match HISTORY_REDACT_KEY but hold a reference, not a value:
+ *  the name of a platform secret (`credentialsSecret` in destination and
+ *  `unityCatalog` blocks, `unity_catalog_secret` on create_pipeline, `secret`
+ *  on browse_unity_catalog) or a job handle the model polls with
+ *  (`pipeline_token` / `publisher_token` and their camelCase forms). Listed
+ *  one by one: a `*Secret` suffix rule would also keep values such as
+ *  `clientSecret`. */
+const HISTORY_REF_KEY = /^(secret|credentialsSecret|unity_catalog_secret|pipeline_token|publisher_token|pipelineToken|publisherToken)$/;
+export const HISTORY_REDACTED = '[redacted]';
+
+/** A deep copy of a tool input with credential-like keys' values replaced by
+ *  HISTORY_REDACTED, at any depth (objects and arrays). */
+export function redactForHistory(v: any): any {
+  if (Array.isArray(v)) return v.map(redactForHistory);
+  if (v && typeof v === 'object') {
+    const out: any = {};
+    for (const k of Object.keys(v)) {
+      out[k] = HISTORY_REDACT_KEY.test(k) && !HISTORY_NAME_KEY.test(k) && !HISTORY_REF_KEY.test(k) && v[k] !== null && v[k] !== undefined
+        ? HISTORY_REDACTED
+        : redactForHistory(v[k]);
+    }
+    return out;
+  }
+  return v;
+}
+
+/** `full` cut to `room` chars, ending at the last line break when one falls
+ *  in the window's last 20%, so a pretty-printed JSON prefix ends on a whole
+ *  line instead of mid-value. */
+function cutForHistory(full: string, room: number): string {
+  const cut = full.slice(0, room);
+  const nl = cut.lastIndexOf('\n');
+  return room > 0 && nl >= Math.ceil(room * 0.8) ? cut.slice(0, nl) : cut;
+}
+
+/** How a turn's tool cards travel in the outbound history
+ *  (`ChatMessage.toolCalls`), which the server replays as the tool calls the
+ *  model made, so a later turn does not repeat discovery or re-create what it
+ *  built. Finished cards with an input only, in segment order; `ask_user`
+ *  cards travel as `askUser` instead. Inputs have credential-like keys
+ *  redacted and are cut to HISTORY_INPUT_CAP (and omitted once the turn has
+ *  used HISTORY_TURN_INPUT_CAP). Results are cut to HISTORY_RESULT_CAP
+ *  (HISTORY_LIST_RESULT_CAP for the listings) and, once the turn has used
+ *  HISTORY_TURN_CAP, sent empty; either way they are marked `truncated`. A
+ *  typed schema-proposal, secret-request or rule-proposal card is sent as `synthetic` with no
+ *  result: the model saw waiting text live, not the payload. A preview-only
+ *  schema card (typeGrid false) did not stop the loop, so its real result
+ *  travels like any other tool's. Undefined when
+ *  nothing qualifies. The cross-turn HISTORY_TOTAL_CAP is applied by
+ *  `capHistoryToolCalls`. */
+export function toolCallsForHistory(turn: AssistantTurn): HistoryToolCall[] | undefined {
+  const calls: HistoryToolCall[] = [];
+  let used = 0;
+  let inputUsed = 0;
+  for (const s of turn.segments || []) {
+    if (s.kind !== 'tool') continue;
+    const c = s as ToolCard;
+    if (c.status === 'running' || c.input === undefined || c.input === null || c.askUser) continue;
+    let input: any = redactForHistory(c.input);
+    let json = JSON.stringify(input) ?? '';
+    if (json.length > HISTORY_INPUT_CAP) {
+      input = { _truncatedInput: json.slice(0, HISTORY_INPUT_CAP) };
+      json = JSON.stringify(input);
+    }
+    if (inputUsed + json.length > HISTORY_TURN_INPUT_CAP) {
+      input = { _inputOmitted: true };
+      json = JSON.stringify(input);
+    }
+    inputUsed += json.length;
+    const call: HistoryToolCall = { id: c.id, name: c.name, input, result: '', isError: !!c.isError };
+    if ((c.schemaProposal && c.schemaProposal.typeGrid !== false) || c.secretRequest || c.ruleProposal) {
+      call.synthetic = true;
+    } else {
+      const full = typeof c.result === 'string' ? c.result : (c.result == null ? '' : String(c.result));
+      const cap = HISTORY_LIST_TOOLS.has(c.name) ? HISTORY_LIST_RESULT_CAP : HISTORY_RESULT_CAP;
+      const room = Math.max(0, Math.min(cap, HISTORY_TURN_CAP - used));
+      if (full.length > room) {
+        call.result = cutForHistory(full, room);
+        call.truncated = true;
+      } else {
+        call.result = full;
+      }
+      used += call.result.length;
+    }
+    calls.push(call);
+  }
+  return calls.length ? calls : undefined;
+}
+
+/** Apply HISTORY_TOTAL_CAP across turns, newest first: each turn's calls
+ *  (result + input JSON chars) are kept while they fit; from the first turn
+ *  that does not fit, it and every older turn keep only id, name, isError
+ *  and `synthetic` (`input: {}`, `result: ''`, `truncated: true`). `perTurn`
+ *  is oldest first; it is changed in place. */
+export function capHistoryToolCalls(perTurn: (HistoryToolCall[] | undefined)[]): void {
+  let used = 0;
+  let over = false;
+  for (let i = perTurn.length - 1; i >= 0; i--) {
+    const calls = perTurn[i];
+    if (!calls) continue;
+    const size = calls.reduce((n, c) => n + c.result.length + (JSON.stringify(c.input) ?? '').length, 0);
+    if (!over && used + size <= HISTORY_TOTAL_CAP) {
+      used += size;
+      continue;
+    }
+    over = true;
+    perTurn[i] = calls.map(c => {
+      const d: HistoryToolCall = { id: c.id, name: c.name, input: {}, result: '', isError: c.isError, truncated: true };
+      if (c.synthetic) d.synthetic = true;
+      return d;
+    });
+  }
 }
 
 /** One `Header: answer` line per question — the text posted as the user's
@@ -137,6 +423,10 @@ export interface AssistantTurn {
   segments: AssistantSegment[];
   done: boolean;
   errorMessage: string;
+  /** Where the current model call's output starts (set on iteration_start);
+   *  a `retrying` event drops the turn back to it. Absent in transcripts
+   *  persisted before automatic retries; nothing reads it after the turn. */
+  attemptMark?: AttemptMark;
   /** Last moment the user could SEE progress — turn start, a text delta, a
    *  tool card appearing, or a tool result. Drives the "thinking — 45s"
    *  elapsed on the streaming dots, so a long adaptive-thinking stretch
@@ -196,6 +486,7 @@ export class AssistantStateService {
     if (restored) {
       this.turns = restored.turns;
       this.draft = restored.draft;
+      this.resetInterruptedSchemaPulls();
     }
     // Catch a mid-stream refresh: snapshot whatever's on screen so it survives
     // the reload. Terminal transitions persist explicitly too.
@@ -279,6 +570,49 @@ export class AssistantStateService {
     this.attachmentError = '';
   }
 
+  /** A "Pull more rows" in flight when the page reloaded never returns:
+   *  clear `loading` so the restored card's buttons work again. */
+  private resetInterruptedSchemaPulls(): void {
+    for (const t of this.turns) {
+      if (t.role !== 'assistant') continue;
+      for (const s of t.segments) {
+        if (s.kind === 'tool' && s.schemaProposal?.loading) {
+          s.schemaProposal.loading = false;
+          s.schemaProposal.errorMessage = 'The page reloaded before more rows arrived. Pull again.';
+        }
+      }
+    }
+  }
+
+  /** Mark every pending typed schema-proposal card skipped (the user typed a
+   *  reply instead). A card's own buttons mark it submitted before sending. A
+   *  preview-only card (typeGrid false) is informational and never skipped. */
+  private skipPendingSchemaProposals(): void {
+    for (const t of this.turns) {
+      if (t.role !== 'assistant') continue;
+      for (const s of t.segments) {
+        if (s.kind === 'tool' && s.schemaProposal && s.schemaProposal.typeGrid !== false &&
+            !s.schemaProposal.submitted && !s.schemaProposal.skipped) {
+          s.schemaProposal.skipped = true;
+          s.schemaProposal.loading = false;
+        }
+      }
+    }
+  }
+
+  /** Mark every pending rule-proposal card skipped (the user typed a reply
+   *  instead). A card's own buttons mark it submitted before sending. */
+  private skipPendingRuleProposals(): void {
+    for (const t of this.turns) {
+      if (t.role !== 'assistant') continue;
+      for (const s of t.segments) {
+        if (s.kind === 'tool' && s.ruleProposal && !s.ruleProposal.submitted && !s.ruleProposal.skipped) {
+          s.ruleProposal.skipped = true;
+        }
+      }
+    }
+  }
+
   /** Mark every pending `ask_user` card skipped. A card's own Submit marks it
    *  submitted before sending, so it is not affected. */
   private skipPendingAskUser(): void {
@@ -301,6 +635,8 @@ export class AssistantStateService {
     // A question card still waiting for answers is superseded by whatever
     // the user sends now (a typed reply, or another form's reply): collapse it.
     this.skipPendingAskUser();
+    this.skipPendingSchemaProposals();
+    this.skipPendingRuleProposals();
 
     const sentAttachments = this.activeAttachments.slice();
     this.turns.push({ role: 'user', text: trimmed, attachments: sentAttachments.length ? sentAttachments : undefined });
@@ -319,11 +655,16 @@ export class AssistantStateService {
     this.persist();
 
     // Build outbound history. Skip the in-progress assistant turn; flatten
-    // each prior assistant turn's text segments into one string. Tool calls
-    // don't go in the conversation log on the client side — the agent loop
-    // preserves them server-side for continuity within a single run.
+    // each prior assistant turn's text segments into one string and send its
+    // finished tool calls (`toolCalls`) and question card (`askUser`) as
+    // data. The server replays both as the tool_use / tool_result pairs the
+    // model saw live, so a later turn remembers what it already listed,
+    // created and tested.
+    const priorToolCalls = this.turns.map(t =>
+      t.role === 'assistant' && t !== assistantTurn ? toolCallsForHistory(t as AssistantTurn) : undefined);
+    capHistoryToolCalls(priorToolCalls);
     const messages: ChatMessage[] = [];
-    for (const t of this.turns) {
+    for (const [ti, t] of this.turns.entries()) {
       if (t.role === 'user') {
         // An attachment-only turn has empty text; send a short non-empty
         // placeholder so the wire content is never an empty string (which can
@@ -334,18 +675,19 @@ export class AssistantStateService {
       } else if (t === assistantTurn) {
         continue;
       } else {
-        // Text segments, plus any question card as structured data: a
-        // card-only turn has no text, and without this the model never sees
-        // that it already asked (or what), so it re-asks the same card. The
-        // server replays the card as the tool call it was, never as text.
-        const visible = t.segments
+        // Text segments, plus the turn's tool calls and any question card as
+        // structured data: a tool-only or card-only turn has no text, and
+        // without this the model never sees what it already did or asked.
+        const content = t.segments
           .map(s => s.kind === 'text' ? (s as TextSegment).text : '')
           .join('');
         const card = t.segments.find(s => s.kind === 'tool' && !!(s as ToolCard).askUser) as ToolCard | undefined;
-        if (card?.askUser) {
-          messages.push({ role: 'assistant', content: visible, askUser: askUserForHistory(card.askUser) });
-        } else if (visible.trim().length > 0) {
-          messages.push({ role: 'assistant', content: visible });
+        const toolCalls = priorToolCalls[ti];
+        if (content.trim().length > 0 || card?.askUser || toolCalls) {
+          const m: ChatMessage = { role: 'assistant', content };
+          if (card?.askUser) m.askUser = askUserForHistory(card.askUser);
+          if (toolCalls) m.toolCalls = toolCalls;
+          messages.push(m);
         }
       }
     }
@@ -403,6 +745,8 @@ export class AssistantStateService {
   }
 
   private handleEvent(evt: AssistantEvent, turn: AssistantTurn): void {
+    // Automatic retry of a failed model call (shared/chat-retry.ts).
+    if (handleRetryEvent(evt, turn)) return;
     // Anything the user can see counts as visible progress: streamed text, a
     // tool card appearing, a result landing, a thinking ticker updating.
     // Only iteration boundaries don't (nothing on screen changes).
@@ -530,11 +874,85 @@ export class AssistantStateService {
         };
         break;
       }
+      case 'schema_proposal': {
+        // Same shape as secret_request: synthesize the card if no tool_use
+        // arrived, then attach the proposal state. A later tool_result only
+        // closes the card; the proposal state stays.
+        let card = this.findToolCard(turn, evt.id);
+        if (!card) {
+          card = {
+            kind: 'tool',
+            id: evt.id,
+            name: 'propose_pipeline_schema',
+            input: { tap: evt.tap },
+            result: '',
+            isError: false,
+            status: 'ok',
+            expanded: false
+          };
+          turn.segments.push(card);
+        }
+        card.status = 'ok';
+        card.schemaProposal = {
+          tap: evt.tap,
+          typeGrid: evt.typeGrid !== false,
+          sampleRowCount: evt.sampleRowCount || 0,
+          preview: (evt.preview || []).slice(0, SCHEMA_PREVIEW_RENDER_CAP).map(r => ({ ...r })),
+          // Fewer rows than even the default test size, and none cut off:
+          // the tap has nothing more to pull.
+          exhausted: !evt.recordsTruncated && (evt.sampleRowCount || 0) < SCHEMA_DEFAULT_TEST_ROWS,
+          statusMessage: '',
+          fields: schemaProposalRows(evt.fields),
+          // The agent may have proposed from more than the default 20 rows.
+          limit: Math.max(SCHEMA_DEFAULT_TEST_ROWS, evt.sampleRowCount || 0),
+          loading: false,
+          submitted: false,
+          errorMessage: ''
+        };
+        break;
+      }
+      case 'rule_proposal': {
+        // Same shape as ask_user: synthesize the card if no tool_use arrived,
+        // then attach the proposal state. A later tool_result only closes the
+        // card; the proposal state stays.
+        let card = this.findToolCard(turn, evt.id);
+        if (!card) {
+          card = {
+            kind: 'tool',
+            id: evt.id,
+            name: 'propose_pipeline_rules',
+            input: { kind: evt.kind, pipeline: evt.pipeline, items: (evt.items || []).map(i => ({ ...i })) },
+            result: '',
+            isError: false,
+            status: 'ok',
+            expanded: false
+          };
+          turn.segments.push(card);
+        }
+        card.status = 'ok';
+        const ruleKind: RuleProposalState['kind'] = evt.kind === 'transformation' ? 'transformation' : 'data_quality';
+        card.ruleProposal = {
+          kind: ruleKind,
+          pipeline: evt.pipeline || '',
+          items: ruleProposalRows(evt.items),
+          submitted: false,
+          skipped: false,
+          summary: '',
+          ...(ruleKind === 'data_quality' ? { onFailure: 'error' as const } : {})
+        };
+        break;
+      }
       case 'notice':
         turn.segments.push({ kind: 'notice', message: evt.message });
         break;
       case 'done':
         turn.done = true;
+        // A turn that ends with no text, no tool call and no error would
+        // otherwise show as a blank bubble; say what happened instead.
+        if (!turn.errorMessage && !turn.segments.some(s =>
+          s.kind === 'tool' || (s.kind === 'text' && (s as TextSegment).text.trim().length > 0))) {
+          turn.errorMessage = EMPTY_REPLY_MESSAGE;
+        }
         break;
       case 'error':
         turn.errorMessage = evt.message;

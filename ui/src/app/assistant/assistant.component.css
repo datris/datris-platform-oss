@@ -975,3 +975,227 @@
   font-size: 11px;
   color: #8a8e96;
 }
+
+/* --- Inline rule-proposal card (propose_pipeline_rules) --- */
+
+.rule-card {
+  border-top: 1px solid #3a3f4a;
+  padding: 12px;
+  background: #1f2229;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rule-on-failure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+.rule-on-failure-label {
+  color: #9aa0ab;
+}
+.rule-on-failure-option {
+  font-size: 12px;
+}
+.rule-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.rule-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6e8ec;
+}
+.rule-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rule-row-off .rule-text {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+.rule-check {
+  flex: 0 0 auto;
+}
+.rule-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #15171c;
+  border: 1px solid #3a3f4a;
+  border-radius: 4px;
+  color: #e6e8ec;
+  font-size: 13px;
+  padding: 4px 8px;
+}
+.rule-text:focus {
+  outline: none;
+  border-color: #5a8dee;
+}
+.rule-column {
+  flex: 0 0 auto;
+  font-family: monospace;
+  font-size: 11px;
+  color: #b8bcc6;
+  background: #2a2e37;
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+.rule-remove {
+  flex: 0 0 auto;
+  cursor: pointer;
+  color: #8a8f99;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.rule-remove:hover {
+  color: #e6e8ec;
+}
+
+/* --- Inline schema-proposal card (propose_pipeline_schema) ---
+   Grid styles borrowed from dest-types-dialog.component.css. */
+
+.schema-card {
+  border-top: 1px solid #3a3f4a;
+  padding: 12px;
+  background: #1f2229;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.schema-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.schema-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6e8ec;
+}
+.schema-card-count {
+  font-size: 12px;
+  color: #8a8f99;
+}
+.schema-section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a8f99;
+  margin-top: 4px;
+}
+.schema-table-wrap {
+  border: 1px solid #3a3f4a;
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 320px;
+}
+.schema-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.schema-table th {
+  text-align: left;
+  padding: 6px 10px;
+  color: #8a8f99;
+  font-weight: 600;
+  border-bottom: 1px solid #3a3f4a;
+  background: #262a33;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+}
+.schema-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #2c3039;
+  vertical-align: top;
+  color: #c0c4cc;
+}
+.schema-table tr:last-child td {
+  border-bottom: none;
+}
+.schema-cell {
+  font-family: var(--font-mono);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schema-col-name {
+  font-family: var(--font-mono);
+  color: #e6e8ec;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schema-type-select {
+  background: #262a33;
+  color: #e6e8ec;
+  border: 1px solid #3a3f4a;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.schema-changed {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #6ab0f3;
+}
+.schema-samples {
+  font-family: var(--font-mono);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schema-reason {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #8a8f99;
+  max-width: 220px;
+  white-space: normal;
+}
+.schema-empty {
+  font-size: 12px;
+  color: #8a8f99;
+}
+.schema-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.schema-preview-wrap {
+  max-height: 240px;
+}
+.schema-preview-footer {
+  font-size: 11px;
+  color: #8a8f99;
+}
+.schema-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #c0c4cc;
+}
+.schema-status-done {
+  color: #6ad88a;
+}
+.schema-pull-hint {
+  font-size: 12px;
+  color: #8a8f99;
+}

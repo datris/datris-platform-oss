@@ -1,8 +1,9 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, AfterViewChecked, NgZone } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, formatAskUserAnswers } from './assistant-state.service';
+import { AssistantStateService, AssistantTurn, ToolCard, TextSegment, askUserAnswer, askUserSelected, isExclusiveAskOption, formatAskUserAnswers, schemaProposalRows, schemaReplyName, SchemaProposalState, SCHEMA_PREVIEW_RENDER_CAP, RuleProposalState, ruleReplyItems, ruleReplyText, ruleSkipText } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
+import { PipelineService } from '../pipeline.service';
 import { ApprovalsService, PolicyToolOutcome } from '../approvals.service';
 import { httpErrorText } from '../shared/http-error';
 import { providerDisplayName } from '../shared/provider-label';
@@ -51,6 +52,7 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     public state: AssistantStateService,
     private secretsService: SecretsService,
     private tapService: TapService,
+    private pipelineService: PipelineService,
     private route: ActivatedRoute,
     private router: Router,
     private zone: NgZone,
@@ -360,6 +362,12 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
       case 'web_search':            return { icon: '🔍', label: 'Searching the web' + (arg('query') ? ` for ${arg('query')}` : '') };
       case 'create_tap':            return { icon: '🛠',  label: 'Creating tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'update_tap':            return { icon: '✏️', label: 'Updating tap' + (arg('name') ? ` ${arg('name')}` : '') };
+      case 'propose_pipeline_schema':
+        // A preview-only proposal (typeGrid false) is a sample-data card.
+        if (card.schemaProposal?.typeGrid === false) {
+          return { icon: '🧮', label: 'Sampling data' + (arg('tap') ? ` for ${arg('tap')}` : '') };
+        }
+        return { icon: '🧮', label: 'Proposing column types' + (arg('tap') ? ` for ${arg('tap')}` : '') };
       case 'test_tap':              return { icon: '▶️', label: 'Testing tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'run_tap':               return { icon: '▶️', label: 'Running tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'create_pipeline':       return { icon: '🛠',  label: 'Creating pipeline' + (arg('name') ? ` ${arg('name')}` : '') };
@@ -613,7 +621,24 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     if (!au || au.submitted || au.skipped) return;
     const selected = askUserSelected(au, index);
     if (au.questions[index]?.multiSelect) {
-      if (selected.has(label)) selected.delete(label); else selected.add(label);
+      if (selected.has(label)) {
+        selected.delete(label);
+      } else {
+        // An exclusive option (None / no change / skip) cannot be combined:
+        // ticking it clears the others, ticking another clears it.
+        const q = au.questions[index];
+        const opts = q.options || [];
+        const exclusive = (l: string) => {
+          const o = opts.find(x => x.label === l);
+          return !!o && isExclusiveAskOption(q, o);
+        };
+        if (exclusive(label)) {
+          selected.clear();
+        } else {
+          for (const l of Array.from(selected)) if (exclusive(l)) selected.delete(l);
+        }
+        selected.add(label);
+      }
     } else {
       const wasOnly = selected.has(label) && selected.size === 1;
       selected.clear();
@@ -652,6 +677,241 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
 
   askUserSummaryLines(card: ToolCard): string[] {
     return (card.askUser?.summary || '').split('\n').filter(l => l.trim().length > 0);
+  }
+
+  // -------- Schema-proposal card (propose_pipeline_schema) --------
+
+  /** Destination types offered in the grid dropdown. Copied from
+   *  DestTypesDialogComponent.types (the source of truth); keep in sync. */
+  readonly schemaTypes = ['string', 'boolean', 'int', 'bigint', 'float', 'double', 'date', 'timestamp'];
+
+  /** Preview cell text is clipped like DestTypeInference.maxSampleLength. */
+  private static readonly SCHEMA_CELL_MAX = 80;
+  /** "Pull more rows" multiplies the limit by this, up to SCHEMA_LIMIT_CAP
+   *  (the server's maxTestPreviewRecords). */
+  private static readonly SCHEMA_LIMIT_STEP = 5;
+  private static readonly SCHEMA_LIMIT_CAP = 500;
+
+  /** Preview columns: the union of the preview rows' keys, in first-seen order. */
+  schemaPreviewColumns(card: ToolCard): string[] {
+    const cols: string[] = [];
+    for (const row of card.schemaProposal?.preview || []) {
+      if (!row || typeof row !== 'object') continue;
+      for (const k of Object.keys(row)) if (!cols.includes(k)) cols.push(k);
+    }
+    return cols;
+  }
+
+  schemaPreviewRows(card: ToolCard): any[] {
+    return (card.schemaProposal?.preview || []).slice(0, SCHEMA_PREVIEW_RENDER_CAP);
+  }
+
+  /** Footer under the preview: how many of the reviewed rows are on screen. */
+  schemaPreviewFooter(card: ToolCard): string {
+    const sp = card.schemaProposal;
+    if (!sp) return '';
+    const shown = this.schemaPreviewRows(card).length;
+    const total = Math.max(sp.sampleRowCount || 0, shown);
+    if (total === 0) return '';
+    return shown < total ? `Showing ${shown} of ${total} rows` : `${total} ${total === 1 ? 'row' : 'rows'}`;
+  }
+
+  /** Why "Pull more rows" is disabled, or '' when it is usable. Never
+   *  disabled silently: the card shows this next to the button. */
+  schemaPullBlocked(sp: SchemaProposalState): string {
+    if (sp.loading) return '';
+    if (sp.exhausted) return `All ${sp.sampleRowCount} ${sp.sampleRowCount === 1 ? 'row' : 'rows'} pulled`;
+    if ((sp.limit || 0) >= AssistantComponent.SCHEMA_LIMIT_CAP) return `Maximum ${AssistantComponent.SCHEMA_LIMIT_CAP} rows`;
+    if (this.state.streaming) return 'Wait for the Assistant to finish';
+    return '';
+  }
+
+  /** The row limit the next "Pull more rows" asks for. */
+  schemaNextLimit(sp: SchemaProposalState): number {
+    return Math.min((sp.limit || 20) * AssistantComponent.SCHEMA_LIMIT_STEP, AssistantComponent.SCHEMA_LIMIT_CAP);
+  }
+
+  /** One preview / sample value as clipped display text. */
+  schemaCell(value: any): string {
+    if (value === null || value === undefined) return '';
+    const s = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const max = AssistantComponent.SCHEMA_CELL_MAX;
+    return s.length <= max ? s : s.substring(0, max) + '…';
+  }
+
+  /** The grid's reason cell: why the column stayed text (`stringReason` is
+   *  `{value, blocked}` from the server), else the thin-evidence `note`. */
+  schemaReason(f: { stringReason?: any; note?: string | null }): string {
+    const r = f.stringReason;
+    if (r && typeof r === 'object') {
+      const value = this.schemaCell(r.value);
+      return r.blocked ? `stayed text — found '${value}', would be ${r.blocked}` : `stayed text — found '${value}'`;
+    }
+    if (typeof r === 'string' && r.trim()) return r;
+    return f.note || '';
+  }
+
+  schemaSamples(f: { samples?: any[] }): string {
+    return (f.samples || []).map(v => this.schemaCell(v)).join(', ');
+  }
+
+  /** Confirm types: post the grid as the next user message in the fixed shape
+   *  the prompt rule expects. A preview-only card (typeGrid false) is
+   *  informational and sends nothing. */
+  confirmSchemaGrid(card: ToolCard): void {
+    const sp = card.schemaProposal;
+    if (!sp || !sp.typeGrid || sp.submitted || sp.skipped || sp.loading || this.state.streaming) return;
+    const text =
+      `Confirmed schema for tap \`${sp.tap}\` (${sp.sampleRowCount} rows reviewed): ` +
+      sp.fields.map(f => `${schemaReplyName(f.name)} ${f.type}`).join(', ');
+    this.submitSchemaReply(card, text);
+  }
+
+  /** Keep all as text: every column stays `string`. */
+  keepAllStrings(card: ToolCard): void {
+    const sp = card.schemaProposal;
+    if (!sp || !sp.typeGrid || sp.submitted || sp.skipped || sp.loading || this.state.streaming) return;
+    this.submitSchemaReply(card, `Keep every column as string for tap \`${sp.tap}\`.`);
+  }
+
+  private submitSchemaReply(card: ToolCard, text: string): void {
+    const sp = card.schemaProposal!;
+    sp.submitted = true;
+    sp.errorMessage = '';
+    sp.summary = text;
+    this.sendSystemReply(text);
+  }
+
+  /** Pull more rows: re-run the tap test at a higher limit and re-propose from
+   *  those rows, refreshing the card in place. No model turn. A type the user
+   *  already changed is kept; untouched columns take the new recommendation. */
+  pullMoreRows(card: ToolCard): void {
+    const sp = card.schemaProposal;
+    if (!sp || sp.submitted || sp.skipped || sp.loading || !sp.typeGrid || sp.exhausted) return;
+    if ((sp.limit || 0) >= AssistantComponent.SCHEMA_LIMIT_CAP) return;
+    const limit = this.schemaNextLimit(sp);
+    sp.loading = true;
+    sp.errorMessage = '';
+    sp.statusMessage = '';
+    const fail = (msg: string) => {
+      sp.loading = false;
+      sp.errorMessage = msg;
+    };
+    this.tapService.runTap(sp.tap, 'test', limit).subscribe({
+      next: (res: any) => {
+        if (!res || res.status !== 'success') {
+          fail('Tap test failed: ' + (res?.error || res?.message || 'no rows returned'));
+          return;
+        }
+        if (sp.skipped || sp.submitted) return;
+        const records: any[] = Array.isArray(res.records) ? res.records : [];
+        this.pipelineService.proposeSchema(records, res.columns).subscribe({
+          next: (proposal: any) => {
+            if (sp.skipped || sp.submitted) return;
+            const userTypes = new Map<string, string>();
+            for (const f of sp.fields) if (f.type !== f.recommended) userTypes.set(f.name, f.type);
+            const rows = schemaProposalRows(proposal?.fields);
+            for (const r of rows) {
+              const kept = userTypes.get(r.name);
+              if (kept) r.type = kept;
+            }
+            sp.fields = rows;
+            // The preview shows every pulled record (render-capped; the box scrolls).
+            sp.preview = records.slice(0, SCHEMA_PREVIEW_RENDER_CAP);
+            sp.sampleRowCount = typeof proposal?.sampleRowCount === 'number' ? proposal.sampleRowCount : records.length;
+            sp.limit = limit;
+            // Fewer rows than asked for, none cut off: the tap has no more.
+            const produced = typeof res.recordCount === 'number' ? res.recordCount : records.length;
+            sp.exhausted = !res.recordsTruncated && produced < limit;
+            const n = sp.sampleRowCount;
+            sp.statusMessage = `Pulled ${n} ${n === 1 ? 'row' : 'rows'}` +
+              (sp.exhausted ? ' (all the tap returned)' : '') + '; types re-checked.';
+            sp.loading = false;
+          },
+          error: (err) => fail('Could not re-propose types: ' + httpErrorText(err, 'unknown'))
+        });
+      },
+      error: (err) => fail('Tap test failed: ' + httpErrorText(err, 'unknown'))
+    });
+  }
+
+  /** Rule-proposal card is still open for edits (not answered, no turn running). */
+  private ruleCardOpen(card: ToolCard): RuleProposalState | null {
+    const rp = card.ruleProposal;
+    if (!rp || rp.submitted || rp.skipped || this.state.streaming) return null;
+    return rp;
+  }
+
+  ruleCardTitle(rp: RuleProposalState): string {
+    return rp.kind === 'transformation' ? 'Proposed transformations for' : 'Proposed data-quality checks for';
+  }
+
+  /** At least one ticked row has text, so Confirm has something to send. */
+  hasRuleText(rp: RuleProposalState): boolean {
+    return ruleReplyItems(rp).length > 0;
+  }
+
+  /** At least one row is ticked: the toggle button reads Clear all. */
+  anyRuleTicked(rp: RuleProposalState): boolean {
+    return !!rp && rp.items.some(i => i.enabled);
+  }
+
+  /** Clear all / Select all: untick every row when any is ticked, else tick
+   *  every row. Rows are never removed or reordered. */
+  toggleAllRules(card: ToolCard): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp) return;
+    const enabled = !this.anyRuleTicked(rp);
+    for (const item of rp.items) item.enabled = enabled;
+  }
+
+  toggleRule(card: ToolCard, index: number): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp || !rp.items[index]) return;
+    rp.items[index].enabled = !rp.items[index].enabled;
+  }
+
+  /** Data-quality card: what a failing row does ('error' rejects the run,
+   *  'warn' logs it and keeps loading). Ignored once answered or mid-turn. */
+  setRuleOnFailure(card: ToolCard, value: 'error' | 'warn'): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp || rp.kind !== 'data_quality') return;
+    if (value !== 'error' && value !== 'warn') return;
+    rp.onFailure = value;
+  }
+
+  /** Add rule: append an enabled empty row for the user to type into. */
+  addRule(card: ToolCard): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp) return;
+    rp.items.push({ text: '', column: '', enabled: true });
+  }
+
+  removeRule(card: ToolCard, index: number): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp) return;
+    rp.items.splice(index, 1);
+  }
+
+  /** Confirm: post the ticked, non-blank rows renumbered 1..n in the fixed
+   *  shape the prompt rule expects. */
+  confirmRules(card: ToolCard): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp || !this.hasRuleText(rp)) return;
+    this.submitRuleReply(rp, ruleReplyText(rp));
+  }
+
+  /** Skip: no checks (or no transformations) for this pipeline. */
+  skipRules(card: ToolCard): void {
+    const rp = this.ruleCardOpen(card);
+    if (!rp) return;
+    this.submitRuleReply(rp, ruleSkipText(rp));
+  }
+
+  private submitRuleReply(rp: RuleProposalState, text: string): void {
+    rp.submitted = true;
+    rp.summary = text;
+    this.sendSystemReply(text);
   }
 
   /** Send a follow-up message on the user's behalf to resume the agent loop.

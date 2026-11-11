@@ -38,6 +38,37 @@ object AssistantAPIController {
             s"- **Timeouts.** A tap test is killed after TAP_SCRIPT_TIMEOUT_SECONDS ($testCeiling) and a real or scheduled run after TAP_RUN_TIMEOUT_SECONDS ($runCeiling) — again the values in force, not the defaults. A test is also capped at 20 records, so a passing test says nothing about how long a real run takes — only the estimate above does. If the run would not finish in time, say so before you create anything and offer the three choices above — for the time budget, the first of them is that the operator can raise TAP_RUN_TIMEOUT_SECONDS. Never cap the rows to fit the clock. A timed-out run's error names the mode it ran in and the variable to raise.\n"
     }
 
+    /** Preview-and-confirm schema rule (plans/stories/assistant-preview-confirm-schema.md):
+      * tap first, pipeline second, column types from the rows the tap actually
+      * produced. At most two checkpoints (types; one DQ/transform/protection question, skipped for vector stores)
+      * — chat does not become a wizard. The drop-a-file (`attachmentId`) flow
+      * is separate and unchanged. Lifted out of `buildSystemPrompt` so a spec
+      * can read the wording directly (same seam as [[KeepOrScratchRule]]). No
+      * domains, proper nouns or literal column names: the model copies them.
+      */
+    private[datris] val SchemaCheckpointRule: String =
+        "## Tap + pipeline: preview, then confirm the schema\n\n" +
+            "- **Build the tap first, the pipeline second.** When a tap feeds a new pipeline, the order is: `create_tap` (no `target_pipeline`, no cron yet) → `test_tap` → `propose_pipeline_schema` → checkpoint 1 → checkpoint 2 → `create_pipeline` with `schema_fields` → `update_tap` with `target_pipeline` (and the cron, if one was asked for) → the run-or-ask rule below. Column types come from rows the tap actually produced, never from a sample you invent.\n" +
+            "- **Checkpoint 1: confirm the types.** `propose_pipeline_schema` returns each column with a recommended type and its evidence: sample values, a `stringReason` when a value blocked a type, and a `note` when too few values were present to type it. Show the fields as a table (column, recommended type, evidence) and ask the user to accept, change any type, or pull more rows (call it again with a higher `limit`). Recommendations are conservative: a column stays `string` unless the preview clearly supports a type, and the evidence says why. Pass the confirmed list as `schema_fields` (`[{name, type}]`) on `create_pipeline`. For a vector-store or `mongodb` destination the result has `typeGrid: false`: show the preview rows only and skip the type question. MongoDB stores each record as a document as-is, so it takes no column types: create its pipeline with a few of the preview rows as a JSON `content_text` sample (filename ending in .json), never `schema_fields`.\n" +
+            "- **In this chat the proposal is a card.** When `propose_pipeline_schema` returns a typed proposal (`typeGrid` true), the user sees it as a card with the preview rows, the type grid and Confirm types / Keep all as text / Pull more rows buttons, and your turn ends there. That card replaces the table and the types question: do not repeat the table and do not ask about the types with `ask_user`. The reply arrives as the next message in one of two shapes: \"Confirmed schema for tap `<tap>` (<n> rows reviewed): <name> <type>, <name> <type>, ...\" (pass exactly those names and types as `schema_fields`; a name with spaces or punctuation is wrapped in backticks, which are not part of the name), or \"Keep every column as string for tap `<tap>`.\" (every column `string`). Then go on to checkpoint 2, which is still a question you ask. When `typeGrid` is false the card is a sample-data card with no buttons: the tool result is yours and your turn continues, so do not wait, do not ask whether the preview looks right and do not repeat the rows (the result's `next` hint says to show them; the card already has): `mongodb` goes straight to checkpoint 2 and a vector store goes straight to `create_pipeline`.\n" +
+            "- **Vector destinations have no Checkpoint 2.** A vector-store pipeline has no column schema: the platform chunks and embeds each document when it loads, so there are no data-quality checks, transformations or field protection to choose. After the sample-data card for a vector-store destination, say so in one line and call `create_pipeline` (name and destination only, no `schema_fields`), then `update_tap` with `target_pipeline`; never ask the follow-up question or call `propose_pipeline_rules`. `mongodb` keeps checkpoint 2.\n" +
+            "- **Checkpoint 2: one follow-up question.** Once the types are confirmed, ask once whether to add data-quality checks (`codegen_rule`), transformations (`codegen_transform`), or field protection (`suggest_field_protection`, then `protect`) against the confirmed column names. \"None\" is a valid answer; then build without them. Put whatever the user chose on the same `create_pipeline` call.\n" +
+            "- **Data quality is proposed on a card, then confirmed.** When the answer includes data quality, call `propose_pipeline_rules` with `kind: \"data_quality\"`, the pipeline name and concrete, conservative items written against the confirmed column names (one check per item, each naming its column), and end your turn. The reply arrives as \"Confirmed data-quality checks for pipeline `<name>` (on failure: reject the run): 1. <text>; 2. <text>; ...\", the same with \"(on failure: warn only)\", or \"No data-quality checks.\". Pass the confirmed items as `codegen_rule` verbatim, character for character, one numbered line per item: keep every word the user wrote, even text that looks like an annotation or a note, and add nothing; the parenthetical is not an item. Pass `codegen_rule_on_failure: \"warn\"` when the reply says warn only and `codegen_rule_on_failure: \"error\"` when it says reject the run. After \"No data-quality checks.\" leave `codegen_rule` out.\n" +
+            "- **Then transformations, the same way.** When the answer includes transformations, call `propose_pipeline_rules` with `kind: \"transformation\"` next (in its own turn, after the data-quality reply) and end your turn. The reply arrives as \"Confirmed transformations for pipeline `<name>`: 1. <text>; 2. <text>; ...\" or \"No transformations.\". Pass the confirmed items as `codegen_transform` verbatim, character for character, one numbered line per item: keep every word the user wrote, even text that looks like an annotation or a note, and add nothing; after \"No transformations.\" leave it out. Then call `create_pipeline`.\n" +
+            "- **One proposal card per turn.** Call `propose_pipeline_rules` at most once per turn. Do not restate the proposed list in prose, and do not re-ask about it with `ask_user`. A prose reply instead of the card is fine: apply what the user said. After a confirmation, do not say the checks or transformations are saved or applied: nothing is saved until `create_pipeline` runs. Field protection is never on this card.\n" +
+            "- **At most two checkpoints, no more.** Destination, key fields and schedule stay in the plan the user already confirms in prose; do not turn the build into a step-by-step wizard.\n" +
+            "- If `propose_pipeline_schema` returns a test failure, fix the tap first (the two-failed-tests rule applies). If it reports the server is too old, fall back to `content_text` on `create_pipeline`. A file the user drops, or rows they paste, follow the attached-file flow below instead.\n"
+
+    /** Tool-call continuity rule (plans/stories/assistant-tool-call-continuity.md):
+      * earlier turns' tool calls are replayed in the history (see
+      * [[historyToBlocks]]), so the model must not re-run discovery or re-create
+      * what it already built. Lifted out of `buildSystemPrompt` so a spec can
+      * read the wording directly (same seam as [[SchemaCheckpointRule]]). No
+      * domains or proper nouns.
+      */
+    private[datris] val ContinuityRule: String =
+        "- **Earlier turns' tool calls are in this conversation.** Your own past `list_pipelines`, `list_taps`, `create_tap`, `test_tap` and other calls and their results appear in the history exactly as you made them. Do not repeat a discovery call whose result you already have in this conversation unless the user asks for a refresh or something was created or changed since; reuse a tap or pipeline you already created instead of creating it again.\n"
+
     /** KEEP-OR-READ-LIVE rule (plans/fetch-only-taps.md §5, renamed by
       * plans/live-read-naming.md), the same fork the MCP
       * server instructions carry. Lifted out of `buildSystemPrompt` so a spec can
@@ -60,17 +91,31 @@ object AssistantAPIController {
       * read it (same seam as [[KeepOrScratchRule]]).
       */
     /** Turn the UI's chat history into content-block messages. A plain message
-      * is one text block. An assistant message carrying `askUser` — the question
-      * card shown on that turn, as `{questions, submitted}` — is replayed as the
-      * `ask_user` tool_use block the model emitted, followed by the tool_result
-      * the live loop recorded, merged into the next user message so the
-      * tool_use/tool_result pairing holds. The model then sees a past card the
-      * same way it saw it when it called the tool, not as prose it could copy
-      * into a later turn as text. A malformed `askUser` falls back to the text
-      * alone. */
+      * is one text block. An assistant message may carry two kinds of replayed
+      * tool calls, both rebuilt as the tool_use / tool_result pairs the model saw
+      * live (results merged into the next user message so the pairing holds):
+      *
+      *  - `toolCalls` — the turn's finished tool cards, as
+      *    `[{id, name, input, result, isError, truncated?, synthetic?}]`. Each
+      *    becomes a ToolUseBlock (id prefixed `hist_<i>_` so it never clashes
+      *    with a live id or another turn's) and a ToolResultBlock in the same
+      *    order. A `synthetic` schema proposal or secret request replays the
+      *    waiting text the loop recorded; a `truncated` result carries a note
+      *    telling the model to call the tool again for the full output.
+      *  - `askUser` — the question card shown on that turn, as
+      *    `{questions, submitted}`, replayed last as the `ask_user` call.
+      *
+      * The model then sees past calls the same way it saw them when it made
+      * them, so it does not repeat discovery or re-create what it built. A
+      * malformed `toolCalls` entry is skipped with a warning; a non-array
+      * `toolCalls` or malformed `askUser` falls back to the text alone. An
+      * assistant message left with nothing to replay (blank text, no surviving
+      * call, no card) is dropped, and the user messages either side of it are
+      * merged; no empty text block is ever emitted. */
     private[datris] def historyToBlocks(messagesArr: JsonArray): List[(String, List[AIContentBlock])] = {
         val out = scala.collection.mutable.ListBuffer.empty[(String, List[AIContentBlock])]
-        var pendingResult: Option[AIContentBlock] = None
+        var pendingResults: List[AIContentBlock] = Nil
+        var dropped = false
         messagesArr.asScala.zipWithIndex.foreach { case (el, i) =>
             val m = el.getAsJsonObject
             val role = if (m.has("role") && !m.get("role").isJsonNull) m.get("role").getAsString else "user"
@@ -78,8 +123,8 @@ object AssistantAPIController {
             if (role == "assistant") {
                 // Two assistant turns in a row cannot happen, but if a card went
                 // unanswered keep the pairing well-formed rather than drop it.
-                pendingResult.foreach(r => out += (("user", List(r))))
-                pendingResult = None
+                if (pendingResults.nonEmpty) out += (("user", pendingResults))
+                pendingResults = Nil
                 val card: Option[(JsonArray, Boolean)] =
                     if (m.has("askUser") && m.get("askUser").isJsonObject) {
                         val au = m.getAsJsonObject("askUser")
@@ -92,28 +137,115 @@ object AssistantAPIController {
                                 None
                         }
                     } else None
+                val calls = historyToolCallsOf(m, i)
+                val text: List[AIContentBlock] =
+                    if (content.trim.nonEmpty) List(AIContentBlock.TextBlock(content)) else Nil
+                val uses: List[AIContentBlock] = calls.map(_._1)
+                val results: List[AIContentBlock] = calls.map(_._2)
                 card match {
                     case Some((questions, submitted)) =>
                         val id = "ask_user_history_" + i
                         val input = new JsonObject()
                         input.add("questions", questions)
-                        val text: List[AIContentBlock] =
-                            if (content.trim.nonEmpty) List(AIContentBlock.TextBlock(content)) else Nil
-                        out += (("assistant", text :+ AIContentBlock.ToolUseBlock(id, AgentLoop.SyntheticAskUserTool, input)))
+                        out += (("assistant", (text ++ uses) :+ AIContentBlock.ToolUseBlock(id, AgentLoop.SyntheticAskUserTool, input)))
                         val note =
                             if (submitted) "The user submitted the card; their answers follow as `header: answer` lines."
                             else "The user replied in chat instead of submitting the card; read their reply as prose."
-                        pendingResult = Some(AIContentBlock.ToolResultBlock(id, AgentLoop.AskUserWaitingText + " " + note, isError = false))
+                        pendingResults = results :+ AIContentBlock.ToolResultBlock(id, AgentLoop.AskUserWaitingText + " " + note, isError = false)
+                    case None if uses.nonEmpty =>
+                        out += (("assistant", text ++ uses))
+                        pendingResults = results
+                    case None if text.nonEmpty =>
+                        out += (("assistant", text))
                     case None =>
-                        out += (("assistant", List[AIContentBlock](AIContentBlock.TextBlock(content))))
+                        // Nothing left to replay (no text, no tool call survived,
+                        // no card): providers reject an empty text block, so the
+                        // message is dropped and the next user message is merged
+                        // into the previous one to keep the roles alternating.
+                        dropped = true
                 }
             } else {
-                out += (("user", pendingResult.toList :+ AIContentBlock.TextBlock(content)))
-                pendingResult = None
+                val blocks = pendingResults :+ AIContentBlock.TextBlock(content)
+                if (dropped && out.nonEmpty && out.last._1 == "user") {
+                    // One text block per message, so the chat-completions shaper
+                    // (which concatenates text blocks) keeps a paragraph break.
+                    val merged = (out.last._2.lastOption, blocks.headOption) match {
+                        case (Some(AIContentBlock.TextBlock(a)), Some(AIContentBlock.TextBlock(b))) =>
+                            out.last._2.init ++ (AIContentBlock.TextBlock(a + "\n\n" + b) :: blocks.tail)
+                        case _ => out.last._2 ++ blocks
+                    }
+                    out(out.size - 1) = (("user", merged))
+                } else out += (("user", blocks))
+                pendingResults = Nil
+            }
+            if (role != "assistant") dropped = false
+        }
+        if (pendingResults.nonEmpty) out += (("user", pendingResults))
+        out.toList
+    }
+
+    /** Appended to a replayed tool result the UI shortened for history. */
+    private[datris] val HistoryShortenedNote: String =
+        " [result shortened for history; call the tool again if you need the full output]"
+
+    /** Replayed tool_use id: `hist_<message>_<entry>_<client id>`. The prefix
+      * keeps it unique across turns and entries; the client id is reduced to
+      * `[A-Za-z0-9_-]` (Anthropic's id pattern) and the whole id kept within
+      * 40 chars (the chat-completions `tool_calls[].id` limit), dropping the
+      * front of the client id when it is too long. */
+    private def historyToolId(i: Int, j: Int, clientId: String): String = {
+        val prefix = "hist_" + i + "_" + j + "_"
+        val clean = clientId.replaceAll("[^A-Za-z0-9_-]", "_")
+        val room = math.max(0, 40 - prefix.length)
+        prefix + (if (clean.length > room) clean.substring(clean.length - room) else clean)
+    }
+
+    /** Parse an assistant history message's `toolCalls` into (tool_use,
+      * tool_result) pairs, in order. Not an array → none. A malformed entry
+      * (missing id/name, non-object input) is skipped with a warning naming
+      * the message index. */
+    private def historyToolCallsOf(m: JsonObject, i: Int): List[(AIContentBlock.ToolUseBlock, AIContentBlock.ToolResultBlock)] = {
+        if (!m.has("toolCalls") || !m.get("toolCalls").isJsonArray) return Nil
+        val log = LoggerFactory.getLogger(classOf[AssistantAPIController])
+        def str(o: JsonObject, k: String): Option[String] =
+            if (o.has(k) && o.get(k).isJsonPrimitive && o.get(k).getAsJsonPrimitive.isString) Some(o.get(k).getAsString) else None
+        def bool(o: JsonObject, k: String): Boolean =
+            o.has(k) && o.get(k).isJsonPrimitive && o.get(k).getAsJsonPrimitive.isBoolean && o.get(k).getAsBoolean
+        m.getAsJsonArray("toolCalls").asScala.zipWithIndex.toList.flatMap { case (el, j) =>
+            val parsed: Either[String, (AIContentBlock.ToolUseBlock, AIContentBlock.ToolResultBlock)] =
+                if (!el.isJsonObject) Left("entry is not an object")
+                else {
+                    val o = el.getAsJsonObject
+                    (str(o, "id").filter(_.nonEmpty), str(o, "name").filter(_.nonEmpty)) match {
+                        case (None, _) => Left("missing id")
+                        case (_, None) => Left("missing name")
+                        case (Some(id), Some(name)) =>
+                            if (!o.has("input") || !o.get("input").isJsonObject) Left("input is not an object")
+                            else {
+                                val histId = historyToolId(i, j, id)
+                                val sent = str(o, "result").getOrElse("")
+                                val base =
+                                    if (bool(o, "synthetic") && name == AgentLoop.SchemaProposalTool) AgentLoop.SchemaProposalWaitingText
+                                    else if (bool(o, "synthetic") && name == AgentLoop.SyntheticSecretTool) AgentLoop.SecretRequestWaitingText
+                                    else if (bool(o, "synthetic") && name == AgentLoop.SyntheticRuleProposalTool) AgentLoop.RuleProposalWaitingText
+                                    else sent
+                                val resultText = if (bool(o, "truncated")) base + HistoryShortenedNote else base
+                                Right(
+                                    (
+                                        AIContentBlock.ToolUseBlock(histId, name, o.getAsJsonObject("input")),
+                                        AIContentBlock.ToolResultBlock(histId, resultText, isError = bool(o, "isError"))
+                                    )
+                                )
+                            }
+                    }
+                }
+            parsed match {
+                case Right(pair) => List(pair)
+                case Left(why) =>
+                    log.warn("Skipping malformed toolCalls entry " + j + " on history message " + i + ": " + why)
+                    Nil
             }
         }
-        pendingResult.foreach(r => out += (("user", List(r))))
-        out.toList
     }
 
     private[datris] def syntheticAskUserToolDef(): JsonObject = {
@@ -139,12 +271,21 @@ object AssistantAPIController {
                 "NEVER use it for anything the platform can discover on its own (database or schema names, whether a table exists, column names or types) — do not ask the user about those at all. " +
                 "NEVER put a credential on it (API keys, passwords, tokens) — use `request_tap_secret_from_user` for credentials. " +
                 "Each question has a short `header` (12 characters or fewer), the `question`, optional `options`, and `multiSelect` when several options may apply. " +
+                "In a `multiSelect` question mark an option that means none / no change / skip with `exclusive: true` so it cannot be combined with the others. " +
                 "Call it at most once per turn and do not also write prose questions in the same turn; a plan or summary for the user to confirm may stay in prose. " +
                 "The conversation resumes with the user's next message: their answers as `header: answer` lines, or a prose reply instead."
         )
         val optionProps = new JsonObject()
         optionProps.add("label", strProp("Short option label (1-5 words), shown on the button and echoed back in the answer."))
         optionProps.add("description", strProp("One line explaining the option or its trade-off."))
+        val exclusive = new JsonObject()
+        exclusive.addProperty("type", "boolean")
+        exclusive.addProperty("default", false)
+        exclusive.addProperty(
+            "description",
+            "true for a None / no change / skip option in a multiSelect question: picking it clears the other options and picking any other option clears it. Leave out otherwise."
+        )
+        optionProps.add("exclusive", exclusive)
         val optionItem = new JsonObject()
         optionItem.addProperty("type", "object")
         optionItem.add("properties", optionProps)
@@ -186,6 +327,69 @@ object AssistantAPIController {
         schema.addProperty("type", "object")
         schema.add("properties", props)
         schema.add("required", required("questions"))
+        tool.add("input_schema", schema)
+        tool
+    }
+
+    /** Synthetic tool definition for `propose_pipeline_rules` — the
+      * Assistant's checkpoint-2 proposal card for data-quality checks or
+      * transformations (plans/stories/assistant-rule-proposal-cards.md). NOT
+      * registered on the MCP server; AgentLoop intercepts the call
+      * (`AgentLoop.ruleProposalOf`). Examples stay generic: no domains,
+      * proper nouns or literal column names.
+      */
+    private[datris] def syntheticRuleProposalToolDef(): JsonObject = {
+        def strProp(desc: String): JsonObject = {
+            val o = new JsonObject()
+            o.addProperty("type", "string")
+            o.addProperty("description", desc)
+            o
+        }
+        def required(names: String*): JsonArray = {
+            val a = new JsonArray()
+            names.foreach(n => a.add(n))
+            a
+        }
+        val tool = new JsonObject()
+        tool.addProperty("name", AgentLoop.SyntheticRuleProposalTool)
+        tool.addProperty(
+            "description",
+            "Propose data-quality checks or transformations on an inline card for the user to confirm before `create_pipeline`. " +
+                "Use it after checkpoint 2 when the user chose data quality (`kind: \"data_quality\"`) or transformations (`kind: \"transformation\"`). " +
+                "Give one item per check or transformation, each naming the confirmed column it covers in `column`, written in plain words (for example: a numeric column is never negative; a date column parses as a date). " +
+                "Propose only what the preview rows and the user's request support, no more than needed. " +
+                "The user can untick, edit or add rows, then Confirm or Skip; the conversation resumes with their confirmed list as numbered lines, or a prose reply. " +
+                "Call it at most once per turn, and do not restate the list in prose or ask about it with `ask_user`. " +
+                "NEVER use it for field protection; that stays `suggest_field_protection` then `protect`."
+        )
+        val kind = strProp("`data_quality` for checks (becomes `codegen_rule`) or `transformation` (becomes `codegen_transform`).")
+        val kinds = new JsonArray()
+        kinds.add("data_quality")
+        kinds.add("transformation")
+        kind.add("enum", kinds)
+
+        val itemProps = new JsonObject()
+        itemProps.add("text", strProp("The check or transformation in plain words, one rule."))
+        itemProps.add("column", strProp("The confirmed column name the item covers. Omit when it spans several columns."))
+        val item = new JsonObject()
+        item.addProperty("type", "object")
+        item.add("properties", itemProps)
+        item.add("required", required("text"))
+        val items = new JsonObject()
+        items.addProperty("type", "array")
+        items.addProperty("minItems", 1)
+        items.addProperty("maxItems", 20)
+        items.add("items", item)
+        items.addProperty("description", "1-20 proposed items, shown as editable rows on one card.")
+
+        val props = new JsonObject()
+        props.add("kind", kind)
+        props.add("pipeline", strProp("The name of the pipeline being built."))
+        props.add("items", items)
+        val schema = new JsonObject()
+        schema.addProperty("type", "object")
+        schema.add("properties", props)
+        schema.add("required", required("kind", "pipeline", "items"))
         tool.add("input_schema", schema)
         tool
     }
@@ -500,7 +704,9 @@ class AssistantAPIController {
         // instead of dispatching to MCP — it emits a SecretRequest SSE event
         // that the UI renders as an inline credentials form. `ask_user` is
         // intercepted the same way and renders an inline question card.
-        val toolDefs = MCPClient.listTools(uiKey) :+ syntheticSecretToolDef() :+ AssistantAPIController.syntheticAskUserToolDef()
+        // `propose_pipeline_rules` likewise renders the checkpoint-2 proposal card.
+        val toolDefs = MCPClient.listTools(uiKey) :+ syntheticSecretToolDef() :+ AssistantAPIController.syntheticAskUserToolDef() :+
+            AssistantAPIController.syntheticRuleProposalToolDef()
         val workflowReference =
             try MCPClient.readResource("datris://pipeline-config-reference", uiKey)
             catch {
@@ -535,7 +741,8 @@ class AssistantAPIController {
                     // per remaining token delta.
                     if (!cancelled.get() && !AssistantSseSupport.emitLoopEvent(emitter, evt)) cancelled.set(true)
                 },
-                attachments = attachmentMap
+                attachments = attachmentMap,
+                schemaProposalCards = true
             )
         finally heartbeat.cancel(false)
 
@@ -567,7 +774,7 @@ class AssistantAPIController {
         )
         sb.append("## Behavior rules\n\n")
         sb.append(
-            "- **Check existing platform state FIRST — before any recommendation, before listing external sources, before asking clarifying scope questions.** On the first turn of any data-related request (anything that sounds like \"I'm looking for X\", \"can you get me Y\", \"do you have Z\", \"I want to ingest...\"), call `list_pipelines` AND `list_taps` BEFORE generating any text reply. Then anchor your response in what already exists: `\"There's already a `records` pipeline pulling from a public REST API — does that cover what you need, or do you want to extend it / add ids / pick a different source?\"`. Do NOT enumerate external API options until you've confirmed nothing in the platform already covers the ask. The user almost always cares more about what's already running than about a generic options menu drawn from your training data.\n"
+            "- **Check existing platform state FIRST — before any recommendation, before listing external sources, before asking clarifying scope questions.** On the first data-related ask of a conversation (anything that sounds like \"I'm looking for X\", \"can you get me Y\", \"do you have Z\", \"I want to ingest...\"), call `list_pipelines` AND `list_taps` BEFORE generating any text reply. Then anchor your response in what already exists: `\"There's already a `records` pipeline pulling from a public REST API — does that cover what you need, or do you want to extend it / add ids / pick a different source?\"`. Do NOT enumerate external API options until you've confirmed nothing in the platform already covers the ask. The user almost always cares more about what's already running than about a generic options menu drawn from your training data.\n"
         )
         sb.append(
             "- When existing pipelines/taps DO partially cover the request, name them specifically and ask whether to extend, modify, or build alongside. When nothing covers it, then — and only then — propose external sources or ask scope questions.\n"
@@ -576,6 +783,7 @@ class AssistantAPIController {
             "- When the user asks for data from an external source AND no existing pipeline/tap covers it, find a suitable source (web_search if available, or your own knowledge), then create the tap and pipeline that delivers that data. Don't just describe what to do — do it.\n"
         )
         sb.append("- Always check existing taps/pipelines first via `list_taps` and `list_pipelines` before creating new ones.\n")
+        sb.append(AssistantAPIController.ContinuityRule)
         sb.append(
             "- **Set expectations before slow tools.** Calling `create_tap` with an `instruction` triggers server-side AI script generation that typically takes 1–3 minutes with no intermediate output. In the same message that announces the call, tell the user what to expect: \"Generating the tap script with AI — this usually takes a minute or two.\" Same for `create_pipeline` on a large file. Never let a multi-minute tool run start without having told the user roughly how long it takes.\n"
         )
@@ -627,6 +835,7 @@ class AssistantAPIController {
         )
         sb.append("\n")
         sb.append(AssistantAPIController.KeepOrScratchRule).append("\n")
+        sb.append(AssistantAPIController.SchemaCheckpointRule).append("\n")
         sb.append("## Attached files (drag-and-drop)\n\n")
         sb.append(
             "- When the user drops a file into their message, an \"Attached file(s)\" block appears in that message listing each file's name, detected type, byte size, a content sample, and an `attachmentId`. Wherever a tool wants file `content` — `create_pipeline`, `upload_data`, `profile_data` — set the `content` argument to the file's `attachmentId` value (just the handle string, e.g. `content: \"<attachmentId>\"`). The platform substitutes the real bytes when the tool runs. Never paste, base64-encode, or fabricate file content yourself.\n"
@@ -697,7 +906,7 @@ class AssistantAPIController {
             "- **Partial answers are not full answers.** If you asked N clarifying questions and the user answered K of them, the remaining N-K are still pending. Repeat the unanswered ones on a new `ask_user` card and wait — do not infer them from context, the user's tone, or the most popular choice in your training data. Only proceed once every open question is closed or the user has explicitly told you to pick a default.\n"
         )
         sb.append(
-            "- **Clarifying questions go on a question card.** Whenever you need answers from the user before proceeding, call `ask_user` instead of writing a numbered list — for closed choices (which source, which schedule, which destination, append vs latest, a scope preset) AND for open-ended ones (names, locations, free-form filters, lists of values). Offer 2-8 options whenever you can name sensible ones (a time of day: 6:00 AM, noon, 6:00 PM; a cadence; a region); leave options out for a genuinely open-ended question so the card shows a text box. Do not mix a card with prose questions in the same turn, and show at most one card per turn; a plan or summary for the user to confirm may stay in prose alongside the card. The partial-answers rule above applies to card answers too. Earlier cards appear in the history as your own `ask_user` tool calls and their results; for new questions call `ask_user` again.\n"
+            "- **Clarifying questions go on a question card.** Whenever you need answers from the user before proceeding, call `ask_user` instead of writing a numbered list — for closed choices (which source, which schedule, which destination, append vs latest, a scope preset) AND for open-ended ones (names, locations, free-form filters, lists of values). Offer 2-8 options whenever you can name sensible ones (a time of day: 6:00 AM, noon, 6:00 PM; a cadence; a region); leave options out for a genuinely open-ended question so the card shows a text box. Do not mix a card with prose questions in the same turn, and show at most one card per turn; a plan or summary for the user to confirm may stay in prose alongside the card. The partial-answers rule above applies to card answers too. Earlier cards appear in the history as your own `ask_user` tool calls and their results, the same way your other earlier tool calls do; for new questions call `ask_user` again.\n"
         )
         sb.append(
             "- If the user says \"use a sensible default\" or \"you pick,\" choose ONE obviously-placeholder value so they can verify the shape works, and tell them plainly that it's a placeholder. Do not pad the placeholder with a recognizable canonical list.\n"

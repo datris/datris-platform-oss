@@ -24,8 +24,77 @@ The Assistant is open-ended. Some examples:
 
 The agent will reach for tools as it needs them: web search to find a source,
 `list_taps` / `list_pipelines` to check for existing work, `create_tap_secret`
-when credentials are needed, `create_tap`, `test_tap`, `create_pipeline`, and
+when credentials are needed, `create_tap`, `test_tap`, `propose_pipeline_schema`, `create_pipeline`, and
 so on.
+
+## Preview and confirm the schema
+
+When the Assistant builds a tap and a pipeline together, it builds the tap
+first and takes the pipeline's column types from rows the tap actually
+returned:
+
+1. **Creates and tests the tap.** The test pulls a short preview (20 rows by
+   default) and lands nothing.
+2. **Shows the proposed schema.** Each column gets a recommended type with its
+   evidence: sample values, plus a reason when it stays text. Recommendations
+   are cautious. A column with fewer than 5 values, only empty values, or a
+   value that doesn't fit a type (such as `N/A` in a number column) stays text
+   and says why.
+3. **Asks you to confirm.** Accept the types, change any of them ("make that
+   column an integer"), or ask for more rows to get more evidence.
+4. **Asks one follow-up question.** It offers data-quality checks,
+   transformations, and field protection for the confirmed columns. "None" is a
+   fine answer. If you pick data-quality checks or transformations, the
+   Assistant proposes a short list of them for you to review before it builds
+   anything.
+5. **Creates the pipeline with the confirmed types and attaches the tap.** On
+   Postgres, Snowflake, Databricks, SQL Server, and object store destinations,
+   the first run lands typed columns, not text.
+
+That is at most two questions in total. The destination, key columns, and schedule
+are still agreed in the plan the Assistant states up front. MongoDB and
+vector-store destinations have no column types, so the card shows sample rows
+only and needs no click; the Assistant carries on in the same reply. MongoDB
+still asks the follow-up question; vector stores skip it, because the pipeline
+chunks and embeds documents as they load, so there are no checks,
+transformations or protection to choose.
+
+In the Assistant tab the proposal appears as a card in the chat, not as a
+table in the reply. The card shows the first few preview rows, then one line per
+column with the recommended type in a dropdown and sample values. When a column
+stayed text, or had too few values to type, a short note under its dropdown says
+why. Change any type in its dropdown, then click
+**Confirm types**, or click **Keep all as text**. **Pull more rows** runs the
+tap test again with five times as many rows (up to 500), shows the rows it
+fetched in the preview, and updates the samples and recommendations on the card
+without a new reply from the Assistant. Any type you already changed stays as
+you set it. When the tap has no more rows to give, or the 500-row limit is
+reached, the card says so next to the button. Your choice goes back to the
+Assistant as your next message, and the card shrinks to a one-line summary.
+Other MCP clients, such as Claude Desktop, work as
+before: the agent shows the proposal as a table and you answer in chat.
+
+When you choose data-quality checks or transformations at the follow-up
+question, the Assistant shows what it proposes as a second card: one row per
+check (or transformation), each with a checkbox, an editable text box, and the
+column it covers. Untick a row to leave it out, edit its wording, or click
+**Add rule** to add your own. Click **Clear all** to untick every row at once
+(it becomes **Select all** when nothing is ticked); the rows stay for you to
+re-tick or edit. Click **Confirm** to build with exactly the
+ticked rows, or **Skip** to build without them. The data-quality card also
+asks what a failing row does: **Reject** fails the run (the default), **Warn
+only** logs the failing rows and keeps loading. If you chose both, the
+data-quality card comes first and the transformations card follows once you
+answer it. Nothing you did not confirm is added, and field protection is still
+handled as before. You can also ignore the card and reply in your own words.
+Other MCP clients list the proposed checks in the chat and ask you to confirm
+them, and whether a failing row should warn only or reject the run, before the
+pipeline is created.
+
+Pipelines built from a dropped file or from rows you paste into the chat still
+use a small sample, and their columns are stored as text. To type those columns
+after the first load, click the **text** badge next to the pipeline's
+destination on the Pipelines tab.
 
 ## Drop a file to build a pipeline
 
@@ -75,7 +144,9 @@ question with choices shows up to eight of them, each with a one-line
 description, plus an **Other** box for your own answer; an open-ended question
 shows a text box. When the agent asks where the data should land, every
 destination available on your install is its own choice.
-Picking a single choice moves to the next tab. Click **Submit** on the last
+Picking a single choice moves to the next tab. On a pick-any question, an
+option that means none or no change cannot be combined with the others:
+ticking it clears them, and ticking another clears it. Click **Submit** on the last
 tab; the answers are posted as your next message and the agent carries on.
 You can also ignore the card and type a reply, or click **Answer in chat
 instead**.
@@ -192,6 +263,15 @@ the full capability model.
 - **No server-side conversation history.** The transcript lives in the
   browser tab's session storage — it survives a refresh but is gone once the
   tab is closed. Durable persistence is on the roadmap.
+- **Earlier tool calls travel with each message.** Every new message sends the
+  tool calls from earlier turns in the same chat (name, input and a shortened
+  result), so the Assistant remembers what it already listed, created and
+  tested instead of starting over. Long results are cut to about 1 KB each
+  (4 KB for pipeline and tap listings) and 8 KB per turn, and all earlier
+  turns together share a 32 KB budget, newest first; older turns keep only the
+  names of the tools called. Passwords, tokens, keys and other credential
+  fields in tool inputs are replaced with `[redacted]` before they are re-sent.
+  The Assistant calls a tool again when it needs the full output.
 - **32K output tokens per LLM call.** Sufficient for thinking + reasoning +
   tool selection on every public model we support.
 

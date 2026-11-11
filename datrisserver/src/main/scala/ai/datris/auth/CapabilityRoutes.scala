@@ -91,6 +91,9 @@ object CapabilityRoutes {
         // changes the pipeline definition (and may migrate the dest table).
         Route("GET", "/api/v1/pipeline/dest-types", "pipeline", "read"),
         Route("POST", "/api/v1/pipeline/dest-types", "pipeline", "update"),
+        // Preview-row schema proposal (before a pipeline exists): stateless,
+        // reads only the posted records, saves nothing.
+        Route("POST", "/api/v1/pipeline/propose-schema", "pipeline", "read"),
         // Field protection suggestions: stateless, names and types only, saves nothing.
         Route("POST", "/api/v1/pipeline/protect/suggest", "pipeline", "read"),
         // Safe Harbor preset proposal: stateless, deterministic name table, no model call.

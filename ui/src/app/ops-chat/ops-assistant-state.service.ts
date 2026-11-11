@@ -4,6 +4,7 @@ import { ChatMessage, AssistantEvent } from '../assistant.service';
 import { OpsAssistantService } from './ops-assistant.service';
 import { OpsChatContextService } from './ops-chat-context.service';
 import { OpsActionBus } from './ops-action-bus.service';
+import { handleRetryEvent } from '../shared/chat-retry';
 
 export interface ToolCard {
   kind: 'tool';
@@ -160,6 +161,8 @@ export class OpsAssistantStateService {
   }
 
   private handleEvent(evt: AssistantEvent, turn: AssistantTurn): void {
+    // Automatic retry of a failed model call (shared/chat-retry.ts).
+    if (handleRetryEvent(evt, turn)) return;
     switch (evt.type) {
       case 'iteration_start':
         break;

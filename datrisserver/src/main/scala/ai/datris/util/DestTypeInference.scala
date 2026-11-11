@@ -18,13 +18,17 @@ import scala.collection.JavaConverters._
 case class DestStringReason(value: String, blocked: String)
 
 /** One proposed destination column with the evidence behind it: up to
-  * [[DestTypeInference.maxSamples]] distinct landed values, and (for columns
-  * held at `string` by a dirty value) the reason. */
+  * [[DestTypeInference.maxSamples]] distinct landed values, (for columns
+  * held at `string` by a dirty value) the reason, and (for columns held at
+  * `string` because too few values voted — see `minVotes` on
+  * [[DestTypeInference.inferFieldsFromRecords]]) a thin-evidence note such as
+  * "2 non-null values in 20 rows; would be int". */
 case class InferredDestField(
     name: String,
     `type`: String,
     samples: java.util.List[String],
-    stringReason: DestStringReason
+    stringReason: DestStringReason,
+    note: String = null
 )
 
 /** Deterministic destination-type inference over string values.
@@ -173,15 +177,34 @@ object DestTypeInference {
       * (name → value maps, e.g. rows sampled from the destination). Values are
       * stringified; null stays a non-vote; names match case-insensitively.
       * `_json`/`_xml` keep their samples but are never retyped and never carry
-      * a reason (they were never candidates). */
-    def inferFieldsFromRecords(names: List[String], records: Iterable[Map[String, Any]]): java.util.List[InferredDestField] = {
+      * a reason (they were never candidates).
+      *
+      * `minVotes` (default 0 = no threshold, the landed-data behaviour) is the
+      * thin-evidence guard for preview rows: a column that would be typed but
+      * has fewer than `minVotes` typed values — or no non-null value at all —
+      * stays `string` with a `note` ("<n> non-null values in <rows> rows; would
+      * be <type>"). Dirty-value columns keep their `stringReason` instead. */
+    def inferFieldsFromRecords(
+        names: List[String],
+        records: Iterable[Map[String, Any]],
+        minVotes: Int = 0
+    ): java.util.List[InferredDestField] = {
         val lowerRecords = records.map(r => r.map { case (k, v) => k.toLowerCase -> v })
+        val rowCount = lowerRecords.size
         val fields = names.map { name =>
             val values = lowerRecords.flatMap(_.get(name.toLowerCase)).map(v => if (v == null) null else v.toString)
             val (inferredType, samples, reason) = inferColumnWithEvidence(values)
             if (NeverRetyped.contains(name.toLowerCase) || isProvenanceColumn(name))
                 InferredDestField(name, "string", samples, null)
-            else
+            else if (minVotes > 0 && reason == null) {
+                val votes = values.count(v => classify(v).exists(_ != "string"))
+                if (inferredType != "string" && votes < minVotes)
+                    InferredDestField(name, "string", samples, null, votes + " non-null values in " + rowCount + " rows; would be " + inferredType)
+                else if (inferredType == "string" && votes == 0 && samples.isEmpty)
+                    InferredDestField(name, "string", samples, null, "0 non-null values in " + rowCount + " rows")
+                else
+                    InferredDestField(name, inferredType, samples, reason)
+            } else
                 InferredDestField(name, inferredType, samples, reason)
         }
         fields.asJava

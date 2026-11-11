@@ -81,4 +81,27 @@ class TapRunTestLimitSpec extends AnyFunSuite {
         }
         assert(e.getMessage != null && e.getMessage.toLowerCase.contains("testlimit"))
     }
+
+    // Story: Assistant preview-and-confirm schema (plans/stories/assistant-preview-confirm-schema.md).
+    // "Pull more rows" re-calls with a higher testLimit, so the test response's
+    // preview must follow the limit instead of a fixed 20.
+    test("test preview size follows a positive testLimit, clamped to the ceiling") {
+        assert(TapAPIController.testPreviewSize(5) == 5)
+        assert(TapAPIController.testPreviewSize(20) == 20)
+        assert(TapAPIController.testPreviewSize(100) == 100)
+        assert(TapAPIController.testPreviewSize(100000) == TapAPIController.maxTestPreviewRecords)
+        assert(TapAPIController.maxTestPreviewRecords == 500)
+    }
+
+    test("an unlimited test (testLimit 0) keeps the default 20-row preview") {
+        assert(TapAPIController.testPreviewSize(0) == 20)
+        assert(TapAPIController.testPreviewSize(-1) == 20)
+    }
+
+    test("a higher limit yields more preview rows than the default") {
+        val default = TapAPIController.testPreviewSize(TapAPIController.resolveTestLimit("test", null))
+        val more = TapAPIController.testPreviewSize(TapAPIController.resolveTestLimit("test", Integer.valueOf(100)))
+        assert(default == 20)
+        assert(more == 100)
+    }
 }

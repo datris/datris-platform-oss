@@ -55,6 +55,35 @@ object AgentLoop {
           * `questions` is already validated and normalised by `askUserQuestionsOf`. */
         case class AskUser(id: String, questions: JsonArray) extends LoopEvent
 
+        /** Synthetic tool: the Assistant proposes data-quality checks or
+          * transformations for the user to confirm before `create_pipeline`.
+          * The UI renders an editable list card on the matching tool card. The
+          * loop ends after this so the user can confirm; their confirmed list
+          * (numbered lines, or prose) arrives as the next chat message.
+          * `kind` is `data_quality` or `transformation`; `items` is already
+          * validated and normalised by `ruleProposalOf` (`{text, column?}`). */
+        case class RuleProposal(id: String, kind: String, pipeline: String, items: JsonArray) extends LoopEvent
+
+        /** `propose_pipeline_schema` returned a schema proposal. The Assistant UI
+          * renders it as an inline card (preview rows, then a type grid unless
+          * `typeGrid` is false) on the matching tool card. Only when `typeGrid`
+          * is true does the loop end so the user can confirm (their confirmation
+          * arrives as the next chat message); a preview-only card
+          * (`typeGrid` false) is informational and the turn continues with the
+          * raw result. `fields` is empty for a vector-store proposal and
+          * `preview` carries at most [[SchemaProposalPreviewRows]] rows.
+          * `recordsTruncated`: the tap produced more rows than the test
+          * returned, so the card's "Pull more rows" has more to fetch. */
+        case class SchemaProposal(
+            id: String,
+            tap: String,
+            typeGrid: Boolean,
+            sampleRowCount: Int,
+            fields: JsonArray,
+            preview: JsonArray,
+            recordsTruncated: Boolean = false
+        ) extends LoopEvent
+
         /** Transient system message — surfaced to the user as a small inline note,
           * not as part of the assistant's textual response. Currently used to tell
           * the user when the model was downgraded mid-request (e.g., Opus → Sonnet
@@ -66,6 +95,14 @@ object AgentLoop {
           * token bound to the exact input; the UI renders Confirm / Cancel on
           * the matching tool card. Emitted before that call's ToolResult. */
         case class ConfirmRequest(id: String, tool: String, summary: String, token: String) extends LoopEvent
+
+        /** The model call failed and is being retried (`attempt` of `max`).
+          * Whatever the failed attempt streamed this iteration — text,
+          * thinking, tool_use cards — is void: the UI drops it back to the
+          * iteration's start and shows a transient "retrying" status that the
+          * retried stream replaces. No tool from the failed attempt ran (tools
+          * only execute after a complete response; see `run`). */
+        case class Retrying(attempt: Int, max: Int, reason: String) extends LoopEvent
         case object Done extends LoopEvent
         case class Error(message: String) extends LoopEvent
     }
@@ -84,6 +121,32 @@ object AgentLoop {
     private[datris] val AskUserWaitingText: String =
         "Question card displayed to the user. Their answers arrive as the next user message as `header: answer` lines; they may also reply in prose. Wait for their reply."
 
+    /** The synthetic tool name the Assistant calls to show a data-quality /
+      * transformation proposal card. Handled by AgentLoop directly — NOT
+      * dispatched to the MCP server. Only the Assistant registers it. */
+    val SyntheticRuleProposalTool: String = "propose_pipeline_rules"
+
+    /** What the model sees after a rule-proposal card is shown; the loop then
+      * ends so the user can confirm. */
+    private[datris] val RuleProposalWaitingText: String =
+        "Proposal card displayed to the user. Their confirmed list arrives as the next user message as numbered lines, or they may reply in prose. Wait for their reply."
+
+    private val RuleProposalKinds: Set[String] = Set("data_quality", "transformation")
+    private val RuleProposalMaxItems: Int = 20
+
+    /** The MCP tool whose `schema_proposal` result the Assistant shows as an
+      * inline type-grid card. */
+    val SchemaProposalTool: String = "propose_pipeline_schema"
+
+    /** Most preview rows a schema-proposal card carries. */
+    val SchemaProposalPreviewRows: Int = 5
+
+    /** What the model sees after a type-grid schema-proposal card
+      * (`typeGrid` true) is shown; the loop then ends so the user can confirm.
+      * A preview-only card feeds the model the trimmed raw result instead. */
+    private[datris] val SchemaProposalWaitingText: String =
+        "The proposal is shown to the user as a type grid; their confirmation arrives as the next message. Wait for their reply."
+
     private val AskUserMaxQuestions: Int = 4
     private val AskUserMinOptions: Int = 2
     private val AskUserMaxOptions: Int = 8
@@ -91,7 +154,7 @@ object AgentLoop {
 
     /** What the model sees after a secret form is shown; the loop then ends so
       * the user can act. */
-    private val SecretRequestWaitingText: String =
+    private[datris] val SecretRequestWaitingText: String =
         "Credentials request displayed to the user. The user's next message will tell you whether they provided a new secret, picked an existing one, or declined. Wait for their reply before continuing."
 
     /** Tools whose `content` (base64 file bytes) we resolve from a staged
@@ -133,7 +196,8 @@ object AgentLoop {
         sink: LoopEvent => Unit,
         attachments: Map[String, (String, Array[Byte])] = Map.empty,
         execute: (String, JsonObject) => String = null,
-        messageBlocks: List[(String, List[AIContentBlock])] = null
+        messageBlocks: List[(String, List[AIContentBlock])] = null,
+        schemaProposalCards: Boolean = false
     ): Unit = {
         // Tool dispatch. Defaults to the MCP catalog; the Configuration chat
         // passes its own executor (Datris-defined tools, confirmation tokens).
@@ -167,6 +231,11 @@ object AgentLoop {
                 iter += 1
                 sink(LoopEvent.IterationStart)
 
+                // Tools execute only below, after this call has returned a
+                // COMPLETE response. A call that fails mid-stream (and is
+                // retried inside callWithRetryAndFallback) has run no tool:
+                // its streamed tool_use blocks were only shown, never
+                // dispatched, so a retry cannot run a tool twice.
                 val response: AIToolResponse = callWithRetryAndFallback(
                     aiConfig = aiConfig,
                     system = system,
@@ -176,7 +245,8 @@ object AgentLoop {
                     maxTokens = maxTokensPerCall,
                     sink = streamSinkAdapter(sink),
                     cancelled = cancelled,
-                    notice = (msg: String) => sink(LoopEvent.Notice(msg))
+                    notice = (msg: String) => sink(LoopEvent.Notice(msg)),
+                    retrying = (a: Int, m: Int, r: String) => sink(LoopEvent.Retrying(a, m, r))
                 )
 
                 if (cancelled()) {
@@ -260,6 +330,22 @@ object AgentLoop {
                                     sink(LoopEvent.ToolResult(t.id, t.name, err, isError = true))
                                     AIContentBlock.ToolResultBlock(t.id, err, isError = true)
                             }
+                        } else if (t.name == SyntheticRuleProposalTool) {
+                            // Synthetic tool — intercept, same shape as ask_user:
+                            // a valid call shows the proposal card and ends the
+                            // loop after this batch; a malformed call is an error
+                            // tool result and the loop continues.
+                            ruleProposalOf(t.input) match {
+                                case Right(proposal) =>
+                                    sink(proposal.copy(id = t.id))
+                                    sink(LoopEvent.ToolResult(t.id, t.name, RuleProposalWaitingText, isError = false))
+                                    stopAfterBatch = true
+                                    AIContentBlock.ToolResultBlock(t.id, RuleProposalWaitingText, isError = false)
+                                case Left(msg) =>
+                                    val err = s"Invalid propose_pipeline_rules call: $msg"
+                                    sink(LoopEvent.ToolResult(t.id, t.name, err, isError = true))
+                                    AIContentBlock.ToolResultBlock(t.id, err, isError = true)
+                            }
                         } else {
                             try {
                                 // Substitute staged file bytes for an attachmentId before
@@ -273,7 +359,24 @@ object AgentLoop {
                                 // tokens or secret forms; MCP results pass through
                                 // unexamined.
                                 val secretRequest = if (execute != null) secretRequestOf(t.id, t.name, raw) else None
-                                secretRequest match {
+                                // A schema proposal becomes an inline type-grid
+                                // card, only for a caller whose UI renders it
+                                // (the Assistant); other chats see the raw result.
+                                val schemaProposal =
+                                    if (schemaProposalCards && secretRequest.isEmpty) schemaProposalOf(t.id, t.name, raw) else None
+                                if (schemaProposal.isDefined) {
+                                    sink(schemaProposal.get)
+                                    // Close the tool card with the raw proposal for
+                                    // UIs that predate the schema_proposal event
+                                    // (they keep the JSON tool card); the current
+                                    // UI keeps the card's proposal state.
+                                    sink(LoopEvent.ToolResult(t.id, t.name, raw, isError = false))
+                                    // Only a type-grid card waits for the user; a
+                                    // preview-only card continues the turn.
+                                    val (modelText, stop) = schemaProposalResult(schemaProposal.get, t.name, raw)
+                                    if (stop) stopAfterBatch = true
+                                    AIContentBlock.ToolResultBlock(t.id, modelText, isError = false)
+                                } else secretRequest match {
                                     case Some(req) =>
                                         // Same as the synthetic secret tool: show the
                                         // form and end the loop after this batch.
@@ -365,6 +468,9 @@ object AgentLoop {
                 val no = new JsonObject()
                 no.addProperty("label", label)
                 no.addProperty("description", str(o, "description"))
+                val ex = o.get("exclusive")
+                if (ex != null && ex.isJsonPrimitive && ex.getAsJsonPrimitive.isBoolean && ex.getAsBoolean)
+                    no.addProperty("exclusive", true)
                 outOpts.add(no)
                 j += 1
             }
@@ -379,6 +485,48 @@ object AgentLoop {
             i += 1
         }
         Right(out)
+    }
+
+    /** Validate and normalise a `propose_pipeline_rules` tool input: `kind`
+      * in {data_quality, transformation}, a non-empty `pipeline`, and `items`
+      * of 1-20 objects each with a non-empty `text` and an optional string
+      * `column`. Left carries the validation message, naming the bad field.
+      * The returned event's `id` is empty; the loop fills in the tool_use id. */
+    private[datris] def ruleProposalOf(input: JsonObject): Either[String, LoopEvent.RuleProposal] = {
+        def str(o: JsonObject, key: String): String = {
+            val e = if (o == null) null else o.get(key)
+            if (e == null || e.isJsonNull || !e.isJsonPrimitive) "" else e.getAsString.trim
+        }
+        val kind = str(input, "kind")
+        if (!RuleProposalKinds.contains(kind))
+            return Left(s"`kind` must be one of data_quality, transformation (got '${kind}')")
+        val pipeline = str(input, "pipeline")
+        if (pipeline.isEmpty) return Left("`pipeline` must be a non-empty pipeline name")
+        val ie = if (input == null) null else input.get("items")
+        if (ie == null || !ie.isJsonArray) return Left(s"`items` must be an array of 1-$RuleProposalMaxItems items")
+        val items = ie.getAsJsonArray
+        if (items.size < 1 || items.size > RuleProposalMaxItems)
+            return Left(s"`items` must have 1-$RuleProposalMaxItems items (got ${items.size})")
+        val out = new JsonArray()
+        var i = 0
+        while (i < items.size) {
+            val n = i + 1
+            val el = items.get(i)
+            if (!el.isJsonObject) return Left(s"`items` entry $n must be an object")
+            val o = el.getAsJsonObject
+            val text = str(o, "text")
+            if (text.isEmpty) return Left(s"`items` entry $n is missing a non-empty `text`")
+            val ce = o.get("column")
+            if (ce != null && !ce.isJsonNull && !(ce.isJsonPrimitive && ce.getAsJsonPrimitive.isString))
+                return Left(s"`items` entry $n `column` must be a string")
+            val column = str(o, "column")
+            val no = new JsonObject()
+            no.addProperty("text", text)
+            if (column.nonEmpty) no.addProperty("column", column)
+            out.add(no)
+            i += 1
+        }
+        Right(LoopEvent.RuleProposal("", kind, pipeline, out))
     }
 
     /** A `{"status":"secret_request","secretName":…,"fieldNames":[…],"reason":…}`
@@ -413,6 +561,54 @@ object AgentLoop {
             case _: Exception => None
         }
     }
+
+    /** A `{"status":"schema_proposal", ...}` result from `propose_pipeline_schema`
+      * becomes a SchemaProposal event (preview clipped to
+      * [[SchemaProposalPreviewRows]] rows; `fields` empty when absent, as for a
+      * vector-store proposal). Any other tool, an error result, another status
+      * or malformed JSON: None. */
+    private[datris] def schemaProposalOf(id: String, tool: String, raw: String): Option[LoopEvent.SchemaProposal] = {
+        if (tool != SchemaProposalTool) return None
+        if (raw == null || !raw.trim.startsWith("{") || !raw.contains("schema_proposal")) return None
+        try {
+            val el = JsonParser.parseString(raw)
+            if (!el.isJsonObject) None
+            else {
+                val o = el.getAsJsonObject
+                def prim(k: String): Option[com.google.gson.JsonPrimitive] =
+                    if (o.has(k) && o.get(k).isJsonPrimitive) Some(o.getAsJsonPrimitive(k)) else None
+                def arr(k: String): JsonArray =
+                    if (o.has(k) && o.get(k).isJsonArray) o.getAsJsonArray(k) else new JsonArray()
+                if (!prim("status").map(_.getAsString).contains("schema_proposal")) None
+                else {
+                    val fields = arr("fields")
+                    val allRows = arr("preview")
+                    val preview = new JsonArray()
+                    var i = 0
+                    while (i < allRows.size && i < SchemaProposalPreviewRows) {
+                        preview.add(allRows.get(i))
+                        i += 1
+                    }
+                    val typeGrid = prim("typeGrid").filter(_.isBoolean).map(_.getAsBoolean).getOrElse(fields.size > 0)
+                    val sampleRowCount = prim("sampleRowCount").filter(_.isNumber).map(_.getAsInt).getOrElse(allRows.size)
+                    val tap = prim("tap").map(_.getAsString).getOrElse("")
+                    val truncated = prim("recordsTruncated").filter(_.isBoolean).exists(_.getAsBoolean)
+                    Some(LoopEvent.SchemaProposal(id, tap, typeGrid, sampleRowCount, fields, preview, truncated))
+                }
+            }
+        } catch {
+            case _: Exception => None
+        }
+    }
+
+    /** What the model is fed for a schema proposal and whether the loop stops:
+      * a type-grid proposal waits for the user ([[SchemaProposalWaitingText]],
+      * stop); a preview-only proposal (`typeGrid` false) is informational, so
+      * the model gets the trimmed raw result (with its `next` hint) and the turn
+      * continues. */
+    private[datris] def schemaProposalResult(p: LoopEvent.SchemaProposal, tool: String, raw: String): (String, Boolean) =
+        if (p.typeGrid) (SchemaProposalWaitingText, true)
+        else (ToolResultTrim.trim(tool, raw), false)
 
     /** A `{"status":"needs_confirmation","summary":…,"token":…}` tool result
       * becomes a ConfirmRequest event. Non-JSON and other results: None. */
@@ -530,16 +726,22 @@ object AgentLoop {
       * extended thinking + many tools + streaming) sit in the most-shed lane. */
     private val OverloadBackoffMs: List[Long] = List(1000L, 3000L)
 
-    /** Calls the Anthropic streaming API with retry-and-fallback around
-      * `overloaded_error`. Retries the same model 3 times with exponential
-      * backoff (1s, 3s, 8s). If still overloaded after that, attempts one
-      * final call on a lighter sibling model (Opus → Sonnet) and surfaces
-      * a `Notice` event so the UI can show "running on X — Y was overloaded".
+    /** Calls the AI streaming API with retry-and-fallback.
       *
-      * Stream events emitted by failed attempts are swallowed — the user
-      * only sees the successful attempt's stream. Non-overloaded errors
-      * propagate immediately (no retry). Cancellation is honored between
-      * attempts and during backoff sleeps. */
+      *  - `overloaded_error`: retries the same model on the [[OverloadBackoffMs]]
+      *    schedule; if still overloaded, one final call on a lighter sibling
+      *    model (Opus → Sonnet) with a `Notice` so the UI can show "running on
+      *    X — Y was overloaded".
+      *  - Transient transport / provider-side errors ([[isTransientTransportError]]:
+      *    TLS faults, connection resets and timeouts, HTTP 5xx): retried on the
+      *    same schedule, also after partial output — `retrying` fires before
+      *    each retry so the UI drops the failed attempt's output. No model
+      *    fallback; once retries are exhausted the last error propagates.
+      *
+      * Error events from failed attempts are swallowed — the user only sees the
+      * successful attempt's stream. Other errors propagate immediately (no
+      * retry). Cancellation is honored between attempts and during backoff
+      * sleeps. */
     private def callWithRetryAndFallback(
         aiConfig: AIConfig,
         system: String,
@@ -549,45 +751,93 @@ object AgentLoop {
         maxTokens: Int,
         sink: AIStreamEvent => Unit,
         cancelled: () => Boolean,
-        notice: String => Unit
+        notice: String => Unit,
+        retrying: (Int, Int, String) => Unit
+    ): AIToolResponse =
+        callWithRetry(
+            call = (cfg: AIConfig, s: AIStreamEvent => Unit) =>
+                AIUtil.callAIWithToolsStreaming(
+                    aiConfig = cfg,
+                    system = system,
+                    messages = messages,
+                    tools = tools,
+                    enableThinking = enableThinking && AIUtil.supportsExtendedThinking(cfg),
+                    maxTokens = maxTokens,
+                    sink = s,
+                    cancelled = cancelled
+                ),
+            aiConfig = aiConfig,
+            sink = sink,
+            cancelled = cancelled,
+            notice = notice,
+            retrying = retrying
+        )
+
+    /** The retry policy of [[callWithRetryAndFallback]], with the provider call
+      * and the backoff sleep injected so a spec can drive it. */
+    private[util] def callWithRetry(
+        call: (AIConfig, AIStreamEvent => Unit) => AIToolResponse,
+        aiConfig: AIConfig,
+        sink: AIStreamEvent => Unit,
+        cancelled: () => Boolean,
+        notice: String => Unit,
+        retrying: (Int, Int, String) => Unit = (_: Int, _: Int, _: String) => (),
+        sleep: Long => Unit = (ms: Long) => Thread.sleep(ms)
     ): AIToolResponse = {
         var emitStreamErrors = false
         val gatedSink: AIStreamEvent => Unit = {
             case AIStreamEvent.Error(_) if !emitStreamErrors => ()
             case other => sink(other)
         }
+        val maxRetries = OverloadBackoffMs.length
 
         var lastOverloadError: Throwable = null
 
-        // Attempt 0 = original call; attempts 1..N = retries with backoff.
-        var attempt = 0
-        while (attempt <= OverloadBackoffMs.length) {
+        // Separate budgets: overload retries and transient retries each get
+        // the full OverloadBackoffMs schedule, so a transient fault does not
+        // eat into the overload retries before the Sonnet fallback.
+        var overloadAttempts = 0
+        var transientAttempts = 0
+        // The retry about to run: (attempt number, log reason, UI reason).
+        var pending: Option[(Int, String, String)] = None
+        while (overloadAttempts <= maxRetries) {
             if (cancelled()) throw new DatrisException("Cancelled by user")
-            if (attempt > 0) {
-                val sleepMs = OverloadBackoffMs(attempt - 1)
-                logger.warn(
-                    "AgentLoop: Anthropic overloaded; retrying in " + sleepMs +
-                        "ms (retry " + attempt + " of " + OverloadBackoffMs.length + ")"
-                )
-                try Thread.sleep(sleepMs)
-                catch { case _: InterruptedException => throw new DatrisException("Cancelled by user") }
+            pending.foreach {
+                case (attempt, reason, shortReason) =>
+                    val sleepMs = OverloadBackoffMs(attempt - 1)
+                    logger.warn(
+                        "AgentLoop: " + reason + "; retrying in " + sleepMs +
+                            "ms (retry " + attempt + " of " + maxRetries + ")"
+                    )
+                    // Tell the UI first: it discards what the failed attempt
+                    // streamed and shows a "retrying" status until the retry streams.
+                    retrying(attempt, maxRetries, shortReason)
+                    try sleep(sleepMs)
+                    catch { case _: InterruptedException => throw new DatrisException("Cancelled by user") }
+                    if (cancelled()) throw new DatrisException("Cancelled by user")
             }
+            pending = None
             try {
-                return AIUtil.callAIWithToolsStreaming(
-                    aiConfig = aiConfig,
-                    system = system,
-                    messages = messages,
-                    tools = tools,
-                    enableThinking = enableThinking && AIUtil.supportsExtendedThinking(aiConfig),
-                    maxTokens = maxTokens,
-                    sink = gatedSink,
-                    cancelled = cancelled
-                )
+                return call(aiConfig, gatedSink)
             } catch {
                 case e: DatrisException if isOverloadedError(e) =>
                     lastOverloadError = e
-                    attempt += 1
-                // Non-overloaded errors propagate out of the loop naturally.
+                    overloadAttempts += 1
+                    if (overloadAttempts <= maxRetries)
+                        pending = Some((overloadAttempts, "Anthropic overloaded", "provider overloaded"))
+                // Transient errors are retried even when the attempt already
+                // streamed output: no tool from it ran (see `run`), and the
+                // `retrying` callback tells the UI to drop that output.
+                case e: Exception
+                    if !cancelled() && isTransientTransportError(e) && transientAttempts < maxRetries =>
+                    transientAttempts += 1
+                    pending = Some((
+                        transientAttempts,
+                        "transient AI provider error " + e.getClass.getName + ": " + e.getMessage,
+                        "connection problem"
+                    ))
+                // Anything else, and a transient error once its retries are
+                // spent, propagates.
             }
         }
 
@@ -601,16 +851,7 @@ object AgentLoop {
                 )
                 notice("Running on " + fallbackModel + " — " + aiConfig.model + " is currently overloaded.")
                 emitStreamErrors = true
-                AIUtil.callAIWithToolsStreaming(
-                    aiConfig = fallbackCfg,
-                    system = system,
-                    messages = messages,
-                    tools = tools,
-                    enableThinking = enableThinking && AIUtil.supportsExtendedThinking(fallbackCfg),
-                    maxTokens = maxTokens,
-                    sink = gatedSink,
-                    cancelled = cancelled
-                )
+                call(fallbackCfg, gatedSink)
             case None =>
                 // No lighter model to fall back to. Surface the original error.
                 val msg = if (lastOverloadError != null && lastOverloadError.getMessage != null)
@@ -619,6 +860,47 @@ object AgentLoop {
                 sink(AIStreamEvent.Error(msg))
                 throw (if (lastOverloadError != null) lastOverloadError else new DatrisException(msg))
         }
+    }
+
+    /** HTTP status in a provider error message: the streaming paths throw
+      * "AI API returned error status: N, ..." or "<provider> ... returned status N". */
+    private val ProviderStatusPattern = """(?:error status|returned status):?\s*(\d{3})""".r
+
+    private val TransientHttpStatuses: Set[Int] = Set(500, 502, 503, 504, 529)
+
+    /** A failure worth retrying unchanged: the request never reached a model
+      * that answered it. TLS faults (e.g. `bad_record_mac`), connection
+      * resets/refusals/timeouts, a truncated stream, provider HTTP
+      * 500/502/503/504/529, or an Anthropic `api_error` stream event. Checks
+      * the cause chain. NOT transient: 4xx (credentials, bad request, and 429
+      * — the streaming path does not retry rate limits and a few seconds'
+      * backoff would not clear one), cancellation, and anything else. */
+    private[util] def isTransientTransportError(e: Throwable): Boolean = {
+        var t: Throwable = e
+        var depth = 0
+        while (t != null && depth < 8) {
+            val msg = if (t.getMessage == null) "" else t.getMessage
+            val lower = msg.toLowerCase
+            if (lower.contains("cancelled by user")) return false
+            t match {
+                case _: javax.net.ssl.SSLException => return true
+                case _: java.net.SocketException => return true // incl. ConnectException
+                case _: java.net.SocketTimeoutException => return true
+                case _: java.io.EOFException => return true
+                case _: org.apache.http.NoHttpResponseException => return true
+                case _: org.apache.http.ConnectionClosedException => return true
+                case _ =>
+            }
+            if (lower.contains("connection reset")) return true
+            ProviderStatusPattern.findFirstMatchIn(msg) match {
+                case Some(m) => return TransientHttpStatuses.contains(m.group(1).toInt)
+                case None =>
+            }
+            if (msg.startsWith("Anthropic streaming error") && lower.contains("api_error")) return true
+            t = t.getCause
+            depth += 1
+        }
+        false
     }
 
     private def isOverloadedError(e: Throwable): Boolean = {

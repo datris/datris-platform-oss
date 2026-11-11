@@ -3,6 +3,7 @@ import { Subscription, Subject, Observable } from 'rxjs';
 import { ChatMessage, AssistantEvent } from '../assistant.service';
 import { CatalogAssistantService } from './catalog-assistant.service';
 import { CatalogChatContextService } from './catalog-chat-context.service';
+import { handleRetryEvent } from '../shared/chat-retry';
 
 export interface ToolCard {
   kind: 'tool';
@@ -161,6 +162,8 @@ export class CatalogAssistantStateService {
   }
 
   private handleEvent(evt: AssistantEvent, turn: AssistantTurn): void {
+    // Automatic retry of a failed model call (shared/chat-retry.ts).
+    if (handleRetryEvent(evt, turn)) return;
     switch (evt.type) {
       case 'iteration_start':
         break;

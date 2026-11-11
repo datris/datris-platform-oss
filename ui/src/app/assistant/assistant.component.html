@@ -272,6 +272,142 @@
                   </div>
                 </ng-container>
 
+                <!-- Inline schema-proposal card: rendered instead of the generic
+                     tool body when propose_pipeline_schema returned a proposal.
+                     Preview rows, then the type grid (column | type | samples);
+                     a column's reason, if any, is a hint under its type. Confirm / Keep all as text post the next user
+                     message; Pull more rows refreshes in place, no model turn.
+                     A vector-store or MongoDB proposal (typeGrid false) is a
+                     sample-data card: preview only, no buttons, informational
+                     (the turn continues; it is never submitted or skipped). -->
+                <ng-container *ngIf="seg.schemaProposal as sp">
+                  <div class="schema-card" *ngIf="!sp.typeGrid || (!sp.submitted && !sp.skipped)">
+                    <div class="schema-card-head">
+                      <span class="schema-card-title">{{ sp.typeGrid ? 'Proposed schema for' : 'Sample data from' }} <code>{{ sp.tap }}</code></span>
+                      <span class="schema-card-count">{{ sp.sampleRowCount }} rows reviewed</span>
+                    </div>
+
+                    <div class="schema-section-label">Preview</div>
+                    <div class="schema-table-wrap schema-preview-wrap" *ngIf="schemaPreviewRows(seg).length; else schemaNoPreview">
+                      <table class="schema-table schema-preview-table">
+                        <thead>
+                          <tr><th *ngFor="let c of schemaPreviewColumns(seg); trackBy: trackByIndex">{{ c }}</th></tr>
+                        </thead>
+                        <tbody>
+                          <tr *ngFor="let row of schemaPreviewRows(seg); trackBy: trackByIndex">
+                            <td *ngFor="let c of schemaPreviewColumns(seg); trackBy: trackByIndex" class="schema-cell">{{ schemaCell(row[c]) }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="schema-preview-footer" *ngIf="schemaPreviewRows(seg).length">{{ schemaPreviewFooter(seg) }}</div>
+                    <ng-template #schemaNoPreview>
+                      <div class="schema-empty">No preview rows.</div>
+                    </ng-template>
+
+                    <ng-container *ngIf="sp.typeGrid">
+                      <div class="schema-section-label">Column types</div>
+                      <div class="schema-table-wrap">
+                        <table class="schema-table schema-grid">
+                          <thead>
+                            <tr><th>Column</th><th>Type</th><th>Samples</th></tr>
+                          </thead>
+                          <tbody>
+                            <tr *ngFor="let f of sp.fields; trackBy: trackByIndex">
+                              <td class="schema-col-name">{{ f.name }}</td>
+                              <td>
+                                <select class="schema-type-select" [(ngModel)]="f.type" [disabled]="sp.loading"
+                                        [attr.aria-label]="'Type for ' + f.name">
+                                  <option *ngFor="let t of schemaTypes" [value]="t">{{ t }}</option>
+                                </select>
+                                <span class="schema-changed" *ngIf="f.type !== f.recommended">changed</span>
+                                <div class="schema-reason" *ngIf="schemaReason(f) as why">{{ why }}</div>
+                              </td>
+                              <td class="schema-samples">{{ schemaSamples(f) }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </ng-container>
+
+                    <div class="schema-status" *ngIf="sp.loading" role="status">
+                      <span class="dots-mini"><span></span><span></span><span></span></span>
+                      <span>Pulling up to {{ schemaNextLimit(sp) }} rows…</span>
+                    </div>
+                    <div class="schema-status schema-status-done" *ngIf="!sp.loading && sp.statusMessage" role="status">✓ {{ sp.statusMessage }}</div>
+                    <div class="secret-form-error" *ngIf="sp.errorMessage">{{ sp.errorMessage }}</div>
+
+                    <div class="schema-actions" *ngIf="sp.typeGrid">
+                      <button class="secret-btn secret-btn-cancel" (click)="pullMoreRows(seg)" [disabled]="sp.loading || !!schemaPullBlocked(sp)">Pull more rows</button>
+                      <span class="schema-pull-hint" *ngIf="schemaPullBlocked(sp) as why">{{ why }}</span>
+                      <span class="ask-actions-spacer"></span>
+                      <button class="secret-btn secret-btn-cancel" (click)="keepAllStrings(seg)" [disabled]="sp.loading || state.streaming">Keep all as text</button>
+                      <button class="secret-btn secret-btn-save" (click)="confirmSchemaGrid(seg)" [disabled]="sp.loading || state.streaming">Confirm types</button>
+                    </div>
+                  </div>
+                  <ng-container *ngIf="sp.typeGrid">
+                    <div class="secret-form-result" *ngIf="sp.submitted">
+                      ✓ {{ sp.summary }}
+                    </div>
+                    <div class="secret-form-result secret-form-result-cancelled" *ngIf="sp.skipped && !sp.submitted">
+                      Schema for {{ sp.tap }} answered in chat.
+                    </div>
+                  </ng-container>
+                </ng-container>
+
+                <!-- Inline rule-proposal card: rendered instead of the generic
+                     tool body when the agent called propose_pipeline_rules
+                     (checkpoint 2). One editable row per proposed check or
+                     transformation; Confirm / Skip post the next user message. -->
+                <ng-container *ngIf="seg.ruleProposal as rp">
+                  <div class="rule-card">
+                    <ng-container *ngIf="!rp.submitted && !rp.skipped">
+                      <div class="rule-card-head">
+                        <span class="rule-card-title">{{ ruleCardTitle(rp) }} <code>{{ rp.pipeline }}</code></span>
+                      </div>
+                      <div class="rule-rows">
+                        <div class="rule-row" *ngFor="let item of rp.items; let i = index; trackBy: trackByIndex"
+                             [class.rule-row-off]="!item.enabled">
+                          <input type="checkbox" class="rule-check" [checked]="item.enabled"
+                                 (change)="toggleRule(seg, i)" [disabled]="state.streaming"
+                                 [attr.aria-label]="'Include rule ' + (i + 1)">
+                          <input type="text" class="rule-text" [(ngModel)]="item.text" [ngModelOptions]="{ standalone: true }"
+                                 [disabled]="state.streaming" [attr.aria-label]="'Rule ' + (i + 1)">
+                          <span class="rule-column" *ngIf="item.column">{{ item.column }}</span>
+                          <span class="rule-remove" role="button" tabindex="0" title="Remove"
+                                (click)="removeRule(seg, i)" (keydown.enter)="removeRule(seg, i)">&times;</span>
+                        </div>
+                      </div>
+                      <div class="rule-on-failure" *ngIf="rp.kind === 'data_quality'">
+                        <span class="rule-on-failure-label">On failure</span>
+                        <label class="secret-mode-option rule-on-failure-option">
+                          <input type="radio" name="ruleOnFailure-{{ seg.id }}" value="error"
+                                 [checked]="rp.onFailure !== 'warn'" [disabled]="state.streaming"
+                                 (change)="setRuleOnFailure(seg, 'error')">
+                          <span>Reject: fail the run on any failing row</span>
+                        </label>
+                        <label class="secret-mode-option rule-on-failure-option">
+                          <input type="radio" name="ruleOnFailure-{{ seg.id }}" value="warn"
+                                 [checked]="rp.onFailure === 'warn'" [disabled]="state.streaming"
+                                 (change)="setRuleOnFailure(seg, 'warn')">
+                          <span>Warn only: log failing rows, keep loading</span>
+                        </label>
+                      </div>
+                      <div class="schema-actions">
+                        <button class="secret-btn secret-btn-cancel" (click)="addRule(seg)" [disabled]="state.streaming">Add rule</button>
+                        <button class="secret-btn secret-btn-cancel" *ngIf="rp.items.length > 0" (click)="toggleAllRules(seg)" [disabled]="state.streaming">{{ anyRuleTicked(rp) ? 'Clear all' : 'Select all' }}</button>
+                        <span class="ask-actions-spacer"></span>
+                        <button class="secret-btn secret-btn-cancel" (click)="skipRules(seg)" [disabled]="state.streaming">Skip</button>
+                        <button class="secret-btn secret-btn-save" (click)="confirmRules(seg)" [disabled]="state.streaming || !hasRuleText(rp)">Confirm</button>
+                      </div>
+                    </ng-container>
+                    <div class="secret-form-result" *ngIf="rp.submitted">✓ {{ rp.summary }}</div>
+                    <div class="secret-form-result secret-form-result-cancelled" *ngIf="rp.skipped && !rp.submitted">
+                      {{ rp.kind === 'transformation' ? 'Transformations' : 'Data-quality checks' }} for {{ rp.pipeline }} answered in chat.
+                    </div>
+                  </div>
+                </ng-container>
+
                 <!-- Agent-policy outcomes: the call is queued for a person, or
                      was refused by policy. Rendered from the tool result JSON. -->
                 <ng-container *ngIf="policyOutcome(seg) as po">
@@ -292,8 +428,8 @@
                 </ng-container>
 
                 <!-- Generic tool body (input + result JSON). Suppressed for
-                     secret-request and question cards since the form replaces it. -->
-                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest && !seg.askUser">
+                     secret-request, question, schema- and rule-proposal cards since the form replaces it. -->
+                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest && !seg.askUser && !seg.schemaProposal && !seg.ruleProposal">
                   <div class="tool-body-label">Input</div>
                   <pre class="tool-body-pre">{{ formatJson(seg.input) }}</pre>
                   <ng-container *ngIf="seg.status !== 'running'">

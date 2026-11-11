@@ -148,6 +148,33 @@ object AssistantSseSupport {
                 obj.addProperty("id", id)
                 obj.add("questions", questions)
                 sendEvent(emitter, "ask_user", obj)
+            case AgentLoop.LoopEvent.RuleProposal(id, kind, pipeline, items) =>
+                val obj = new JsonObject()
+                obj.addProperty("type", "rule_proposal")
+                obj.addProperty("id", id)
+                obj.addProperty("kind", kind)
+                obj.addProperty("pipeline", pipeline)
+                obj.add("items", items)
+                sendEvent(emitter, "rule_proposal", obj)
+            case AgentLoop.LoopEvent.SchemaProposal(id, tap, typeGrid, sampleRowCount, fields, preview, recordsTruncated) =>
+                val obj = new JsonObject()
+                obj.addProperty("type", "schema_proposal")
+                obj.addProperty("id", id)
+                obj.addProperty("tap", tap)
+                obj.addProperty("typeGrid", typeGrid)
+                obj.addProperty("sampleRowCount", sampleRowCount)
+                obj.add("fields", if (fields == null) new JsonArray() else fields)
+                val rows = new JsonArray()
+                if (preview != null) {
+                    var i = 0
+                    while (i < preview.size && i < AgentLoop.SchemaProposalPreviewRows) {
+                        rows.add(preview.get(i))
+                        i += 1
+                    }
+                }
+                obj.add("preview", rows)
+                obj.addProperty("recordsTruncated", recordsTruncated)
+                sendEvent(emitter, "schema_proposal", obj)
             case AgentLoop.LoopEvent.ConfirmRequest(id, tool, summary, token) =>
                 val obj = new JsonObject()
                 obj.addProperty("type", "confirm_request")
@@ -156,6 +183,13 @@ object AssistantSseSupport {
                 obj.addProperty("summary", summary)
                 obj.addProperty("token", token)
                 sendEvent(emitter, "confirm_request", obj)
+            case AgentLoop.LoopEvent.Retrying(attempt, max, reason) =>
+                val obj = new JsonObject()
+                obj.addProperty("type", "retrying")
+                obj.addProperty("attempt", attempt)
+                obj.addProperty("max", max)
+                obj.addProperty("reason", reason)
+                sendEvent(emitter, "retrying", obj)
             case AgentLoop.LoopEvent.Notice(msg) =>
                 sendEvent(emitter, "notice", makeEvent("notice", "message", msg))
             case AgentLoop.LoopEvent.Done =>
