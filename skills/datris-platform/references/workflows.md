@@ -13,11 +13,12 @@ Each sequence ends with verification by token. Say that data landed only after t
 
 1. `list_taps`. If a tap covers the source, test or run it.
 2. Credentials: `list_tap_secrets` and `get_tap_secret_fields` first. If nothing fits, `create_tap_secret`. The fields become env vars in the script.
-3. `create_tap` with an `instruction`, or your own script exposing `fetch()`. Bind `secret_name`. Set `target_pipeline` (create it first if needed). For PDFs, Word, HTML into a vector pipeline, `tap_type="document"`.
+3. `create_tap` with an `instruction`, or your own script exposing `fetch()`. Bind `secret_name`. Leave `target_pipeline` unset when the pipeline does not exist yet. For PDFs, Word, HTML into a vector pipeline, `tap_type="document"` (that pipeline must exist first).
 4. `test_tap`. On failure read the error, fix, `create_tap` again with the same name, repeat until it passes.
-5. `run_tap`. Read `persisted`. False: report `persistedReason` and stop. True: keep `publisherToken`.
-6. `get_pipeline_status(publisher_token=...)` until `rollup.allDone`; then `rollup.status`.
-7. Recurrence: `update_tap` with `cron_expression`. Later, pick a run in `get_tap_logs` and verify it with step 6.
+5. New pipeline: `propose_pipeline_schema(tap, destination)`. It runs a capped test and returns each column with a recommended type and its evidence. Show the table, let the user confirm or change types (call again with a higher `limit` for more rows), then ask once whether they want data-quality checks (`codegen_rule`, with `codegen_rule_on_failure` = `error` or `warn`), transformations (`codegen_transform`) or field protection; "none" is fine. `create_pipeline` with `schema_fields` (the confirmed `{name, type}` list) plus whatever they chose, then `update_tap` with `target_pipeline`. Vector destinations and `mongodb` return `typeGrid: false`: a vector pipeline needs only a name and destination (no checks, transformations or protection question); `mongodb` takes a few preview rows as a JSON `content_text` sample instead of `schema_fields`. Fall back to `content_text` only when there is no tap (a file in hand, pasted rows).
+6. `run_tap`. Read `persisted`. False: report `persistedReason` and stop. True: keep `publisherToken`.
+7. `get_pipeline_status(publisher_token=...)` until `rollup.allDone`; then `rollup.status`.
+8. Recurrence: `update_tap` with `cron_expression`. Later, pick a run in `get_tap_logs` and verify it with step 7.
 
 Incremental sources: have the script commit a bookmark so each run fetches only what is new; inspect with `get_tap_state`, rewind or clear with `set_tap_state`. The `datris://tap-workflow-reference` resource covers the state contract and the CRON cookbook.
 
