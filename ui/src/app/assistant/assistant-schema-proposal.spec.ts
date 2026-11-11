@@ -603,6 +603,14 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     expect(text()).toContain('Proposing column types for prices_tap');
   });
 
+  it('the tool header of a preview-only (typeGrid false) card says Sampling data for the tap', async () => {
+    await mount();
+    proposeAndFinish('toolu_sample_hdr', true, { typeGrid: false, fields: [] });
+    await render();
+    expect(text()).toContain('Sampling data for prices_tap');
+    expect(text()).not.toContain('Proposing column types');
+  });
+
   // ------------------------------------------- live feedback 2026-11-10 ---
 
   it('the initial card shows the 5 event rows of 20 reviewed in the footer', async () => {

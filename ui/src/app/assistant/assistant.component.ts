@@ -362,7 +362,12 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
       case 'web_search':            return { icon: '🔍', label: 'Searching the web' + (arg('query') ? ` for ${arg('query')}` : '') };
       case 'create_tap':            return { icon: '🛠',  label: 'Creating tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'update_tap':            return { icon: '✏️', label: 'Updating tap' + (arg('name') ? ` ${arg('name')}` : '') };
-      case 'propose_pipeline_schema': return { icon: '🧮', label: 'Proposing column types' + (arg('tap') ? ` for ${arg('tap')}` : '') };
+      case 'propose_pipeline_schema':
+        // A preview-only proposal (typeGrid false) is a sample-data card.
+        if (card.schemaProposal?.typeGrid === false) {
+          return { icon: '🧮', label: 'Sampling data' + (arg('tap') ? ` for ${arg('tap')}` : '') };
+        }
+        return { icon: '🧮', label: 'Proposing column types' + (arg('tap') ? ` for ${arg('tap')}` : '') };
       case 'test_tap':              return { icon: '▶️', label: 'Testing tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'run_tap':               return { icon: '▶️', label: 'Running tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'create_pipeline':       return { icon: '🛠',  label: 'Creating pipeline' + (arg('name') ? ` ${arg('name')}` : '') };
