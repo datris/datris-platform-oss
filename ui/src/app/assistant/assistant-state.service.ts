@@ -315,8 +315,10 @@ function cutForHistory(full: string, room: number): string {
  *  used HISTORY_TURN_INPUT_CAP). Results are cut to HISTORY_RESULT_CAP
  *  (HISTORY_LIST_RESULT_CAP for the listings) and, once the turn has used
  *  HISTORY_TURN_CAP, sent empty; either way they are marked `truncated`. A
- *  schema-proposal, secret-request or rule-proposal card is sent as `synthetic` with no
- *  result: the model saw waiting text live, not the payload. Undefined when
+ *  typed schema-proposal, secret-request or rule-proposal card is sent as `synthetic` with no
+ *  result: the model saw waiting text live, not the payload. A preview-only
+ *  schema card (typeGrid false) did not stop the loop, so its real result
+ *  travels like any other tool's. Undefined when
  *  nothing qualifies. The cross-turn HISTORY_TOTAL_CAP is applied by
  *  `capHistoryToolCalls`. */
 export function toolCallsForHistory(turn: AssistantTurn): HistoryToolCall[] | undefined {
@@ -339,7 +341,7 @@ export function toolCallsForHistory(turn: AssistantTurn): HistoryToolCall[] | un
     }
     inputUsed += json.length;
     const call: HistoryToolCall = { id: c.id, name: c.name, input, result: '', isError: !!c.isError };
-    if (c.schemaProposal || c.secretRequest || c.ruleProposal) {
+    if ((c.schemaProposal && c.schemaProposal.typeGrid !== false) || c.secretRequest || c.ruleProposal) {
       call.synthetic = true;
     } else {
       const full = typeof c.result === 'string' ? c.result : (c.result == null ? '' : String(c.result));
@@ -582,13 +584,15 @@ export class AssistantStateService {
     }
   }
 
-  /** Mark every pending schema-proposal card skipped (the user typed a reply
-   *  instead). A card's own buttons mark it submitted before sending. */
+  /** Mark every pending typed schema-proposal card skipped (the user typed a
+   *  reply instead). A card's own buttons mark it submitted before sending. A
+   *  preview-only card (typeGrid false) is informational and never skipped. */
   private skipPendingSchemaProposals(): void {
     for (const t of this.turns) {
       if (t.role !== 'assistant') continue;
       for (const s of t.segments) {
-        if (s.kind === 'tool' && s.schemaProposal && !s.schemaProposal.submitted && !s.schemaProposal.skipped) {
+        if (s.kind === 'tool' && s.schemaProposal && s.schemaProposal.typeGrid !== false &&
+            !s.schemaProposal.submitted && !s.schemaProposal.skipped) {
           s.schemaProposal.skipped = true;
           s.schemaProposal.loading = false;
         }

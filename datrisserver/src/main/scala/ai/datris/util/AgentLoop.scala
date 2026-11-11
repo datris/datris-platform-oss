@@ -66,9 +66,11 @@ object AgentLoop {
 
         /** `propose_pipeline_schema` returned a schema proposal. The Assistant UI
           * renders it as an inline card (preview rows, then a type grid unless
-          * `typeGrid` is false) on the matching tool card. The loop ends after
-          * this so the user can confirm; their confirmation arrives as the next
-          * chat message. `fields` is empty for a vector-store proposal and
+          * `typeGrid` is false) on the matching tool card. Only when `typeGrid`
+          * is true does the loop end so the user can confirm (their confirmation
+          * arrives as the next chat message); a preview-only card
+          * (`typeGrid` false) is informational and the turn continues with the
+          * raw result. `fields` is empty for a vector-store proposal and
           * `preview` carries at most [[SchemaProposalPreviewRows]] rows.
           * `recordsTruncated`: the tap produced more rows than the test
           * returned, so the card's "Pull more rows" has more to fetch. */
@@ -139,8 +141,9 @@ object AgentLoop {
     /** Most preview rows a schema-proposal card carries. */
     val SchemaProposalPreviewRows: Int = 5
 
-    /** What the model sees after a schema-proposal card is shown; the loop then
-      * ends so the user can confirm. */
+    /** What the model sees after a type-grid schema-proposal card
+      * (`typeGrid` true) is shown; the loop then ends so the user can confirm.
+      * A preview-only card feeds the model the trimmed raw result instead. */
     private[datris] val SchemaProposalWaitingText: String =
         "The proposal is shown to the user as a type grid; their confirmation arrives as the next message. Wait for their reply."
 
@@ -368,8 +371,11 @@ object AgentLoop {
                                     // (they keep the JSON tool card); the current
                                     // UI keeps the card's proposal state.
                                     sink(LoopEvent.ToolResult(t.id, t.name, raw, isError = false))
-                                    stopAfterBatch = true
-                                    AIContentBlock.ToolResultBlock(t.id, SchemaProposalWaitingText, isError = false)
+                                    // Only a type-grid card waits for the user; a
+                                    // preview-only card continues the turn.
+                                    val (modelText, stop) = schemaProposalResult(schemaProposal.get, t.name, raw)
+                                    if (stop) stopAfterBatch = true
+                                    AIContentBlock.ToolResultBlock(t.id, modelText, isError = false)
                                 } else secretRequest match {
                                     case Some(req) =>
                                         // Same as the synthetic secret tool: show the
@@ -594,6 +600,15 @@ object AgentLoop {
             case _: Exception => None
         }
     }
+
+    /** What the model is fed for a schema proposal and whether the loop stops:
+      * a type-grid proposal waits for the user ([[SchemaProposalWaitingText]],
+      * stop); a preview-only proposal (`typeGrid` false) is informational, so
+      * the model gets the trimmed raw result (with its `next` hint) and the turn
+      * continues. */
+    private[datris] def schemaProposalResult(p: LoopEvent.SchemaProposal, tool: String, raw: String): (String, Boolean) =
+        if (p.typeGrid) (SchemaProposalWaitingText, true)
+        else (ToolResultTrim.trim(tool, raw), false)
 
     /** A `{"status":"needs_confirmation","summary":…,"token":…}` tool result
       * becomes a ConfirmRequest event. Non-JSON and other results: None. */

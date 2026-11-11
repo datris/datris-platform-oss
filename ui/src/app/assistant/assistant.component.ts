@@ -750,22 +750,22 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     return (f.samples || []).map(v => this.schemaCell(v)).join(', ');
   }
 
-  /** Confirm types (or Looks right on a vector card): post the grid as the
-   *  next user message in the fixed shape the prompt rule expects. */
+  /** Confirm types: post the grid as the next user message in the fixed shape
+   *  the prompt rule expects. A preview-only card (typeGrid false) is
+   *  informational and sends nothing. */
   confirmSchemaGrid(card: ToolCard): void {
     const sp = card.schemaProposal;
-    if (!sp || sp.submitted || sp.skipped || sp.loading || this.state.streaming) return;
-    const text = sp.typeGrid
-      ? `Confirmed schema for tap \`${sp.tap}\` (${sp.sampleRowCount} rows reviewed): ` +
-        sp.fields.map(f => `${schemaReplyName(f.name)} ${f.type}`).join(', ')
-      : 'Preview looks right.';
+    if (!sp || !sp.typeGrid || sp.submitted || sp.skipped || sp.loading || this.state.streaming) return;
+    const text =
+      `Confirmed schema for tap \`${sp.tap}\` (${sp.sampleRowCount} rows reviewed): ` +
+      sp.fields.map(f => `${schemaReplyName(f.name)} ${f.type}`).join(', ');
     this.submitSchemaReply(card, text);
   }
 
   /** Keep all as text: every column stays `string`. */
   keepAllStrings(card: ToolCard): void {
     const sp = card.schemaProposal;
-    if (!sp || sp.submitted || sp.skipped || sp.loading || this.state.streaming) return;
+    if (!sp || !sp.typeGrid || sp.submitted || sp.skipped || sp.loading || this.state.streaming) return;
     this.submitSchemaReply(card, `Keep every column as string for tap \`${sp.tap}\`.`);
   }
 

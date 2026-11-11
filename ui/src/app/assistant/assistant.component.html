@@ -277,11 +277,13 @@
                      Preview rows, then the type grid (column | type | samples);
                      a column's reason, if any, is a hint under its type. Confirm / Keep all as text post the next user
                      message; Pull more rows refreshes in place, no model turn.
-                     A vector-store or MongoDB proposal (typeGrid false) is preview only. -->
+                     A vector-store or MongoDB proposal (typeGrid false) is a
+                     sample-data card: preview only, no buttons, informational
+                     (the turn continues; it is never submitted or skipped). -->
                 <ng-container *ngIf="seg.schemaProposal as sp">
                   <div class="schema-card" *ngIf="!sp.submitted && !sp.skipped">
                     <div class="schema-card-head">
-                      <span class="schema-card-title">Proposed schema for <code>{{ sp.tap }}</code></span>
+                      <span class="schema-card-title">{{ sp.typeGrid ? 'Proposed schema for' : 'Sample data from' }} <code>{{ sp.tap }}</code></span>
                       <span class="schema-card-count">{{ sp.sampleRowCount }} rows reviewed</span>
                     </div>
 
@@ -342,17 +344,15 @@
                       <button class="secret-btn secret-btn-cancel" (click)="keepAllStrings(seg)" [disabled]="sp.loading || state.streaming">Keep all as text</button>
                       <button class="secret-btn secret-btn-save" (click)="confirmSchemaGrid(seg)" [disabled]="sp.loading || state.streaming">Confirm types</button>
                     </div>
-                    <div class="schema-actions" *ngIf="!sp.typeGrid">
-                      <span class="ask-actions-spacer"></span>
-                      <button class="secret-btn secret-btn-save" (click)="confirmSchemaGrid(seg)" [disabled]="state.streaming">Looks right</button>
+                  </div>
+                  <ng-container *ngIf="sp.typeGrid">
+                    <div class="secret-form-result" *ngIf="sp.submitted">
+                      ✓ {{ sp.summary }}
                     </div>
-                  </div>
-                  <div class="secret-form-result" *ngIf="sp.submitted">
-                    ✓ {{ sp.typeGrid ? sp.summary : 'Preview of ' + sp.tap + ' looks right.' }}
-                  </div>
-                  <div class="secret-form-result secret-form-result-cancelled" *ngIf="sp.skipped && !sp.submitted">
-                    Schema for {{ sp.tap }} answered in chat.
-                  </div>
+                    <div class="secret-form-result secret-form-result-cancelled" *ngIf="sp.skipped && !sp.submitted">
+                      Schema for {{ sp.tap }} answered in chat.
+                    </div>
+                  </ng-container>
                 </ng-container>
 
                 <!-- Inline rule-proposal card: rendered instead of the generic

@@ -52,10 +52,12 @@ returned:
    the first run lands typed columns, not text.
 
 That is at most two questions in total. The destination, key columns, and schedule
-are still agreed in the plan the Assistant states up front. Vector-store
-destinations have no column types, so you only see the preview and the
-follow-up question is skipped: the pipeline chunks and embeds documents as
-they load, so there are no checks, transformations or protection to choose.
+are still agreed in the plan the Assistant states up front. MongoDB and
+vector-store destinations have no column types, so the card shows sample rows
+only and needs no click; the Assistant carries on in the same reply. MongoDB
+still asks the follow-up question; vector stores skip it, because the pipeline
+chunks and embeds documents as they load, so there are no checks,
+transformations or protection to choose.
 
 In the Assistant tab the proposal appears as a card in the chat, not as a
 table in the reply. The card shows the first few preview rows, then one line per
@@ -68,9 +70,8 @@ fetched in the preview, and updates the samples and recommendations on the card
 without a new reply from the Assistant. Any type you already changed stays as
 you set it. When the tap has no more rows to give, or the 500-row limit is
 reached, the card says so next to the button. Your choice goes back to the
-Assistant as your next message, and the card shrinks to a one-line summary. For
-a vector-store destination the card shows the preview and a single
-**Looks right** button. Other MCP clients, such as Claude Desktop, work as
+Assistant as your next message, and the card shrinks to a one-line summary.
+Other MCP clients, such as Claude Desktop, work as
 before: the agent shows the proposal as a table and you answer in chat.
 
 When you choose data-quality checks or transformations at the follow-up

@@ -4019,9 +4019,10 @@ _VECTOR_DESTINATIONS = ("pgvector", "qdrant", "weaviate", "milvus", "chroma")
 _SCHEMA_FIELDS_DESTINATIONS = ("postgres", "snowflake", "databricks", "sqlserver", "objectstore", "scratch")
 
 _MONGODB_PREVIEW_NEXT = (
-    "MongoDB stores each record as a document as-is, so there are no column types to confirm: show "
-    "the preview rows only, then call create_pipeline with destination mongodb and content_text set "
-    "to a few of these rows as JSON (filename ending in .json). Do not pass schema_fields."
+    "MongoDB stores each record as a document as-is, so there are no column types to confirm. Show "
+    "the preview rows, ask the one question about data-quality checks, transformations or field "
+    "protection, then call create_pipeline with destination mongodb and content_text set to a few of "
+    "these rows as JSON (filename ending in .json). Do not pass schema_fields."
 )
 
 _VECTOR_PREVIEW_NEXT = (
