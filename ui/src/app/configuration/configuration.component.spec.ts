@@ -14,10 +14,10 @@ import { FormsModule } from '@angular/forms';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ActivatedRoute, convertToParamMap } from '@angular/router';
-import { of, Subject } from 'rxjs';
+import { of, Subject, throwError } from 'rxjs';
 
 import { ConfigurationComponent } from './configuration.component';
-import { ModelCatalogService } from '../model-catalog.service';
+import { ModelCatalogService, ModelOption } from '../model-catalog.service';
 import { AuthService } from '../auth.service';
 import { ConfigChatContextService } from '../config-chat/config-chat-context.service';
 import { ConfigAssistantStateService } from '../config-chat/config-assistant-state.service';
@@ -249,5 +249,58 @@ describe('ConfigurationComponent — configuration chat show me and refresh', ()
 
     changed.next({ tab: 'ai-providers' });
     expect(loadConfig).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Story: Claude Fable 5.2 as a selectable model (Anthropic and Bedrock, chat
+ * and CodeGen) (plans/stories/claude-fable-5-2-model-option.md), Acceptance
+ * bullet 2.
+ *
+ * Live Bedrock discovery returns inference-profile ids; bedrockModelList
+ * overlays the first catalog entry whose id is a substring of the discovered
+ * id. With the real FALLBACK bedrock order (Fable 5.2 above Fable 5.1 and
+ * Fable 5), each discovered Fable id must get its own label instead of the
+ * `anthropic.claude-fable-5` prefix match winning.
+ */
+describe('ConfigurationComponent — Bedrock discovery labels Claude Fable 5.2', () => {
+  let component: ConfigurationComponent;
+  let fallbackBedrock: ModelOption[];
+
+  beforeEach(async () => {
+    // The real service's fallback path: request fails, nothing cached.
+    localStorage.removeItem('datris.modelCatalog');
+    const failingHttp = { get: () => throwError(() => new Error('offline')) } as any;
+    const catalog = await new ModelCatalogService(failingHttp).fetch();
+    fallbackBedrock = catalog.aiPrimary['bedrock'];
+
+    await TestBed.configureTestingModule({
+      declarations: [ConfigurationComponent],
+      imports: [FormsModule],
+      schemas: [NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: ActivatedRoute, useValue: { queryParamMap: of(convertToParamMap({})) } },
+        { provide: ModelCatalogService, useValue: { fetch: () => new Promise(() => { /* never resolves */ }) } },
+        { provide: AuthService, useValue: { current: () => ({ role: 'admin' }) } }
+      ]
+    }).compileComponents();
+    component = TestBed.createComponent(ConfigurationComponent).componentInstance;
+  });
+
+  it('discovered us.anthropic.claude-fable-5-2 / 5-1 / 5 are labelled Claude Fable 5.2 / 5.1 / 5', () => {
+    component.aiPrimaryProvider = 'bedrock';
+    component.models = { ...component.models, bedrock: fallbackBedrock };
+    component.bedrockModels = [
+      { value: 'us.anthropic.claude-fable-5-2', label: 'x' },
+      { value: 'us.anthropic.claude-fable-5-1', label: 'y' },
+      { value: 'us.anthropic.claude-fable-5', label: 'z' },
+    ];
+
+    const byValue = new Map(component.aiPrimaryModelOptions.map(o => [o.value, o.label]));
+    expect(byValue.get('us.anthropic.claude-fable-5-2')).toBe('Claude Fable 5.2');
+    expect(byValue.get('us.anthropic.claude-fable-5-1')).toBe('Claude Fable 5.1');
+    expect(byValue.get('us.anthropic.claude-fable-5')).toBe('Claude Fable 5');
   });
 });
