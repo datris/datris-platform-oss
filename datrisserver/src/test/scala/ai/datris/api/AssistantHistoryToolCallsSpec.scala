@@ -138,6 +138,35 @@ class AssistantHistoryToolCallsSpec extends AnyFunSuite {
         assert(tr.content == AgentLoop.SchemaProposalWaitingText)
     }
 
+    // Story: Assistant: preview-only schema card is informational
+    // (plans/stories/assistant-preview-card-informational.md), Acceptance bullet 3.
+    // A preview-only card is sent non-synthetic with its real result; the
+    // replay must carry that result, never the waiting text.
+    test("a non-synthetic propose_pipeline_schema entry replays its result, not SchemaProposalWaitingText") {
+        val result =
+            """{"status":"schema_proposal","typeGrid":false,"tap":"t","destination":"mongodb","preview":[{"a":"1"}],"sampleRowCount":1,"next":"ask the one question, then call create_pipeline"}"""
+        val calls = new com.google.gson.JsonArray()
+        val entry = new com.google.gson.JsonObject()
+        entry.addProperty("id", "t1")
+        entry.addProperty("name", AgentLoop.SchemaProposalTool)
+        val input = new com.google.gson.JsonObject()
+        input.addProperty("tap", "t")
+        input.addProperty("destination", "mongodb")
+        entry.add("input", input)
+        entry.addProperty("result", result)
+        entry.addProperty("isError", false)
+        calls.add(entry)
+        val out =
+            history(s"""[{"role":"user","content":"a"},{"role":"assistant","content":"","toolCalls":$calls},{"role":"user","content":"none"}]""")
+        val uses = toolUses(out(1)._2)
+        assert(uses.map(_.name) == List("propose_pipeline_schema"))
+        val tr = toolResults(out(2)._2).head
+        assert(tr.toolUseId == uses.head.id)
+        assert(tr.content == result)
+        assert(tr.content != AgentLoop.SchemaProposalWaitingText)
+        assert(!tr.content.contains("Wait for their reply"))
+    }
+
     test("synthetic request_tap_secret_from_user replays SecretRequestWaitingText") {
         val calls =
             s"""[{"id":"t1","name":"${AgentLoop.SyntheticSecretTool}","input":{"secret_name":"s","field_names":["k"]},"result":"","isError":false,"synthetic":true}]"""

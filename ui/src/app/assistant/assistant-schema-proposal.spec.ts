@@ -264,14 +264,23 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     expect(t).toContain('only-in-row-two');
   });
 
-  it('a vector proposal (typeGrid false) shows the preview and a single Looks right button, no grid', async () => {
+  // Story: Assistant: preview-only schema card is informational
+  // (plans/stories/assistant-preview-card-informational.md): a typeGrid false
+  // card is a sample-data card with no buttons (replaces "single Looks right").
+  it('a vector proposal (typeGrid false) shows the preview as "Sample data from", no buttons, no grid', async () => {
     await mount();
     const c = proposeAndFinish('toolu_vec', true, { typeGrid: false, fields: [], sampleRowCount: 3 });
     c.expanded = true;
     await render();
-    expect(text()).toContain('row1price');
+    const t = text();
+    expect(t).toContain('row1price');
+    expect(t).toContain('Sample data from prices_tap');
+    expect(t).not.toContain('Proposed schema for');
     expect(typeSelects().length).withContext('no type dropdowns for a vector destination').toBe(0);
-    expect(buttonNamed('Looks right')).withContext('Looks right button').toBeTruthy();
+    const sc = el.querySelector('.schema-card');
+    expect(sc).withContext('the sample-data card renders').toBeTruthy();
+    expect(sc!.querySelectorAll('button').length).withContext('no buttons on a sample-data card').toBe(0);
+    expect(buttonNamed('Looks right')).toBeUndefined();
     expect(buttonNamed('Confirm types')).toBeUndefined();
     expect(buttonNamed('Keep all as text')).toBeUndefined();
     expect(buttonNamed('Pull more rows')).toBeUndefined();
@@ -322,18 +331,22 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     expect(c.schemaProposal.submitted).toBeTrue();
   });
 
-  it('Looks right on a vector card sends "Preview looks right."', async () => {
+  it('confirmSchemaGrid / keepAllStrings / pullMoreRows on a preview-only card send nothing (never "Preview looks right.")', async () => {
     await mount();
     const c = proposeAndFinish('toolu_vec2', true, { typeGrid: false, fields: [] });
     c.expanded = true;
     await render();
     const sendSpy = spyOn(state, 'send');
-    const btn = buttonNamed('Looks right');
-    expect(btn).withContext('Looks right button').toBeTruthy();
-    btn!.click();
-    expect(sendSpy).toHaveBeenCalledTimes(1);
-    expect(sendSpy.calls.mostRecent().args[0]).toBe('Preview looks right.');
-    expect(c.schemaProposal.submitted).toBeTrue();
+    const chatCalls = chatSpy.calls.count();
+    const comp: any = fixture.componentInstance;
+    comp.confirmSchemaGrid(c);
+    comp.keepAllStrings(c);
+    comp.pullMoreRows(c);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(sendSpy).not.toHaveBeenCalledWith('Preview looks right.');
+    expect(runTapSpy).not.toHaveBeenCalled();
+    expect(chatSpy.calls.count()).toBe(chatCalls);
+    expect(c.schemaProposal.submitted).toBeFalsy();
   });
 
   it('a submitted card sends nothing a second time and collapses to a summary (no grid)', async () => {
@@ -688,6 +701,89 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
   it('the pull-more-rows limit starts from the rows the proposal used', () => {
     const c = proposeAndFinish('toolu_lim', true, { sampleRowCount: 100 });
     expect(c.schemaProposal.limit).toBe(100);
+  });
+
+  // ------------------- preview-only card is informational (2026-11-11) ---
+  // Story: plans/stories/assistant-preview-card-informational.md, Acceptance 4.
+
+  const MONGO_RAW = JSON.stringify({
+    status: 'schema_proposal', typeGrid: false, tap: 'prices_tap', destination: 'mongodb',
+    preview: previewRows(3), sampleRowCount: 3,
+    next: 'Show the preview rows, ask the one question, then call create_pipeline.'
+  });
+
+  /** A MongoDB turn: the server no longer stops on the preview-only card, so the
+   *  tool_result (raw JSON) follows and the reply continues in the same turn. */
+  function previewOnlyTurn(id = 'toolu_mongo'): any {
+    state.send('build a tap and pipeline from a JSON URL into MongoDB');
+    stream.next({ type: 'tool_use_start', id, name: 'propose_pipeline_schema' });
+    stream.next({ type: 'tool_use', id, name: 'propose_pipeline_schema', input: { tap: 'prices_tap', destination: 'mongodb' } });
+    stream.next(proposalEvent(id, { typeGrid: false, fields: [], sampleRowCount: 3 }));
+    stream.next({ type: 'tool_result', id, name: 'propose_pipeline_schema', result: MONGO_RAW, isError: false });
+    stream.next({ type: 'text_delta', text: 'Do you want data-quality checks, transformations or field protection?' });
+    stream.next({ type: 'done' });
+    stream.complete();
+    return card(id);
+  }
+
+  it('a typeGrid false card renders "Sample data from", the preview rows and "3 rows reviewed", with no buttons and no type selects', async () => {
+    await mount();
+    const c = previewOnlyTurn();
+    c.expanded = true;
+    await render();
+    const t = text();
+    expect(t).toContain('Sample data from prices_tap');
+    expect(t).toContain('row1price');
+    expect(t).toContain('row3price');
+    expect(t).toContain('3 rows reviewed');
+    const sc = el.querySelector('.schema-card');
+    expect(sc).withContext('the sample-data card renders').toBeTruthy();
+    expect(sc!.querySelectorAll('button').length).withContext('no <button> inside .schema-card').toBe(0);
+    expect(typeSelects().length).toBe(0);
+    expect(sc!.querySelectorAll('select').length).toBe(0);
+  });
+
+  it('a typed reply while a preview-only card is on screen leaves it rendered (not skipped, no "answered in chat")', async () => {
+    await mount();
+    const c = previewOnlyTurn();
+    c.expanded = true;
+    await render();
+    stream = new Subject<any>();
+    chatSpy.and.callFake(() => stream.asObservable());
+    state.send('none');
+    stream.next({ type: 'done' });
+    stream.complete();
+    await render();
+    expect(c.schemaProposal.skipped).withContext('a preview-only card is never skipped').toBeFalsy();
+    expect(text()).not.toContain('answered in chat');
+    expect(text()).toContain('Sample data from prices_tap');
+    expect(text()).toContain('row1price');
+    expect(el.querySelector('.schema-card')).withContext('the sample-data card stays rendered').toBeTruthy();
+  });
+
+  it('a turn with a preview-only card sends it in toolCalls with synthetic falsy and its result text', async () => {
+    await mount();
+    previewOnlyTurn();
+    stream = new Subject<any>();
+    chatSpy.and.callFake(() => stream.asObservable());
+    state.send('none');
+    const messages: any[] = chatSpy.calls.mostRecent().args[0];
+    expect(messages.map(m => m.role)).toEqual(['user', 'assistant', 'user']);
+    const toolCalls: any[] = messages[1].toolCalls || [];
+    const entry = toolCalls.find(tc => tc.name === 'propose_pipeline_schema');
+    expect(entry).withContext('the preview-only card travels as a toolCalls entry').toBeTruthy();
+    expect(entry.synthetic).withContext('a preview-only card is not synthetic').toBeFalsy();
+    expect(entry.result).withContext('its real result travels').toBe(MONGO_RAW);
+    expect(entry.input).toEqual({ tap: 'prices_tap', destination: 'mongodb' });
+  });
+
+  it('a typed card in the same flow is still sent as synthetic (unchanged)', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_typed_hist');
+    (fixture.componentInstance as any).confirmSchemaGrid(c);
+    const messages: any[] = chatSpy.calls.mostRecent().args[0];
+    const entry = (messages[1].toolCalls || []).find((tc: any) => tc.name === 'propose_pipeline_schema');
+    expect(entry?.synthetic).toBeTrue();
   });
 });
 

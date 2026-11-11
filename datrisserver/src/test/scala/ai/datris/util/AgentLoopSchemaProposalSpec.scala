@@ -118,4 +118,49 @@ class AgentLoopSchemaProposalSpec extends AnyFunSuite {
         assert(preview.get(0).getAsJsonObject.get("id").getAsString == "1")
         assert(o.get("sampleRowCount").getAsInt == 7)
     }
+
+    // Story: Assistant: preview-only schema card is informational
+    // (plans/stories/assistant-preview-card-informational.md), Acceptance bullet 1.
+    //
+    //  `AgentLoop.schemaProposalResult(p, tool, raw): (String, Boolean)` is the
+    //  intercept's decision: the text the model sees for the tool_result and
+    //  whether the loop stops after this batch. A typed grid waits for the user;
+    //  a preview-only card (mongodb, vector stores) hands the model the trimmed
+    //  raw result (with its `next` hint) and the turn continues.
+
+    private val mongoResult: String =
+        s"""{"status":"schema_proposal","typeGrid":false,"tap":"docs_tap","destination":"mongodb",
+           |"preview":$previewJson,"sampleRowCount":2,
+           |"next":"MongoDB stores each record as a document as-is. Ask the one follow-up question, then call create_pipeline."}""".stripMargin
+
+    test("schemaProposalResult on a typeGrid true proposal returns the waiting text and stops the loop") {
+        val p = AgentLoop.schemaProposalOf("toolu_g", Tool, gridResult).get
+        assert(p.typeGrid)
+        val (text, stop) = AgentLoop.schemaProposalResult(p, Tool, gridResult)
+        assert(text == AgentLoop.SchemaProposalWaitingText)
+        assert(stop, "a typed grid card ends the turn")
+    }
+
+    test("schemaProposalResult on a typeGrid false (mongodb) proposal returns the trimmed raw JSON and does not stop") {
+        val p = AgentLoop.schemaProposalOf("toolu_m", Tool, mongoResult).get
+        assert(!p.typeGrid)
+        val (text, stop) = AgentLoop.schemaProposalResult(p, Tool, mongoResult)
+        assert(!stop, "a preview-only card must not end the turn")
+        assert(text != AgentLoop.SchemaProposalWaitingText, "the model must see the result, not the waiting text")
+        assert(!text.contains("Wait for their reply"), text)
+        assert(text.contains("\"next\""), s"the model must see the `next` hint: $text")
+        assert(text.contains("\"typeGrid\":false"), text)
+        assert(text == ToolResultTrim.trim(Tool, mongoResult), "the text is the trimmed raw result")
+    }
+
+    test("schemaProposalResult on a vector (typeGrid false) proposal returns the trimmed raw JSON and does not stop") {
+        val raw =
+            s"""{"status":"schema_proposal","typeGrid":false,"tap":"docs_tap","destination":"pgvector",
+               |"preview":$previewJson,"sampleRowCount":2,"next":"call create_pipeline with name and destination"}""".stripMargin
+        val p = AgentLoop.schemaProposalOf("toolu_v2", Tool, raw).get
+        val (text, stop) = AgentLoop.schemaProposalResult(p, Tool, raw)
+        assert(!stop)
+        assert(text.contains("\"next\"") && text.contains("\"typeGrid\":false"), text)
+        assert(text != AgentLoop.SchemaProposalWaitingText)
+    }
 }

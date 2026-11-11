@@ -192,10 +192,21 @@ def test_older_server_404_returns_the_compat_error(monkeypatch):
 # The vector result gains a `next` hint: create_pipeline with name and
 # destination only, no checks / transformations / protection question.
 
+# Story: Assistant: preview-only schema card is informational
+# (plans/stories/assistant-preview-card-informational.md), Step 5: the mongodb
+# `next` hint gains the checkpoint-2 question before create_pipeline.
 _MONGODB_NEXT_BEFORE = (
-    "MongoDB stores each record as a document as-is, so there are no column types to confirm: show "
-    "the preview rows only, then call create_pipeline with destination mongodb and content_text set "
-    "to a few of these rows as JSON (filename ending in .json). Do not pass schema_fields."
+    "MongoDB stores each record as a document as-is, so there are no column types to confirm. Show "
+    "the preview rows, ask the one question about data-quality checks, transformations or field "
+    "protection, then call create_pipeline with destination mongodb and content_text set to a few of "
+    "these rows as JSON (filename ending in .json). Do not pass schema_fields."
+)
+
+_VECTOR_NEXT_BEFORE = (
+    "A vector-store pipeline has no column schema: the platform chunks and embeds each document on "
+    "load. Show the preview rows only, then call create_pipeline with the pipeline name and destination "
+    "(no schema_fields) and update_tap with target_pipeline. Do not ask about data-quality checks, "
+    "transformations or field protection."
 )
 
 
@@ -218,3 +229,28 @@ def test_mongodb_next_is_unchanged(monkeypatch):
     out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "mongodb"}))
     assert out.get("next") == _MONGODB_NEXT_BEFORE, out
     assert out.get("typeGrid") is False, out
+
+
+# ---------------------------------------------------------------------------
+# Story: Assistant: preview-only schema card is informational
+# (plans/stories/assistant-preview-card-informational.md), Acceptance (pytest).
+# The Assistant no longer stops on a mongodb preview, so the `next` hint must
+# carry the model straight on to the checkpoint-2 question, then create_pipeline.
+
+
+def test_mongodb_next_asks_checkpoint_2_before_create_pipeline(monkeypatch):
+    _install(monkeypatch, _Server())
+    out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "mongodb"}))
+    nxt = out.get("next") or ""
+    assert "transformations" in nxt, f"mongodb `next` must name the checks/transformations/protection question: {nxt}"
+    assert "create_pipeline" in nxt, nxt
+    assert nxt.index("transformations") < nxt.index("create_pipeline"), \
+        f"the checkpoint-2 question comes before create_pipeline: {nxt}"
+    assert "preview rows only" not in nxt, f"mongodb no longer shows the preview rows only: {nxt}"
+
+
+@pytest.mark.parametrize("dest", VECTOR)
+def test_vector_next_is_unchanged(monkeypatch, dest):
+    _install(monkeypatch, _Server())
+    out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": dest}))
+    assert out.get("next") == _VECTOR_NEXT_BEFORE, out

@@ -122,4 +122,44 @@ class AssistantPromptSchemaCheckpointSpec extends AnyFunSuite {
         assert(rule.contains("At most two checkpoints"), rule)
         assert(!rule.contains("Two checkpoints, no more"), rule)
     }
+
+    // Story: Assistant: preview-only schema card is informational
+    // (plans/stories/assistant-preview-card-informational.md), Acceptance bullet 2.
+    // The typed card keeps its buttons and ends the turn; a `typeGrid: false`
+    // card is a sample-data card with no buttons and the turn continues.
+
+    /** The card bullet: the "- " line that describes the typed card's Confirm types button. */
+    private def cardBullet: String = {
+        val hit = rule.split("\n").toList.find(l => l.startsWith("- ") && l.contains("Confirm types"))
+        assert(hit.isDefined, s"a bullet describing the Confirm types card must exist:\n$rule")
+        hit.get
+    }
+
+    private def sentences(s: String): List[String] = s.split("(?<=[.!?])\\s+").toList
+
+    test("rule no longer mentions a Looks right button or the 'Preview looks right.' reply") {
+        assert(!rule.contains("Preview looks right"), s"'Preview looks right' must be gone:\n$rule")
+        assert(!rule.contains("Looks right"), s"'Looks right' must be gone:\n$rule")
+    }
+
+    test("card bullet says a typeGrid false card has no buttons") {
+        val b = cardBullet
+        assert(b.contains("typeGrid"), s"card bullet must name typeGrid:\n$b")
+        assert("(?i)no buttons".r.findFirstIn(b).isDefined, s"card bullet must say the sample-data card has no buttons:\n$b")
+    }
+
+    test("card bullet says the turn continues after a sample-data card") {
+        val b = cardBullet
+        assert("(?i)turn continues|do not wait".r.findFirstIn(b).isDefined, s"card bullet must say the turn continues:\n$b")
+    }
+
+    test("card bullet: mongodb goes to checkpoint 2 in the same sentence") {
+        val hit = sentences(cardBullet).find(s => s.contains("mongodb") && s.toLowerCase.contains("checkpoint 2"))
+        assert(hit.isDefined, s"a card-bullet sentence must name both `mongodb` and checkpoint 2:\n$cardBullet")
+    }
+
+    test("card bullet: a vector store goes to create_pipeline in the same sentence") {
+        val hit = sentences(cardBullet).find(s => s.toLowerCase.contains("vector") && s.contains("create_pipeline"))
+        assert(hit.isDefined, s"a card-bullet sentence must name both vector and create_pipeline:\n$cardBullet")
+    }
 }
