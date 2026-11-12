@@ -167,4 +167,46 @@ class AssistantPromptSchemaCheckpointSpec extends AnyFunSuite {
         val hit = sentences(cardBullet).find(s => s.toLowerCase.contains("vector") && s.contains("create_pipeline"))
         assert(hit.isDefined, s"a card-bullet sentence must name both vector and create_pipeline:\n$cardBullet")
     }
+
+    // Story: Schema proposal reuses the tap's test rows and stops cleanly on
+    // failure (plans/stories/schema-proposal-reuse-test-rows.md), Acceptance 6.
+    // The last bullet becomes the stop rule: only a result whose `status` is
+    // `schema_proposal` is a proposal; anything else means no schema and no
+    // table were shown, so report the failure with the tool's next step and do
+    // not ask the types question or call `ask_user` about types.
+
+    private def bullets: List[String] = rule.split("\n").toList.filter(_.startsWith("- "))
+
+    /** The stop-on-failure bullet: the "- " line naming `schema_proposal` as the only proposal status. */
+    private def stopBullet: String = {
+        val hit = bullets.find(b => b.contains("`schema_proposal`") && b.contains("status"))
+        assert(hit.isDefined, s"a bullet must say only a result whose `status` is `schema_proposal` is a proposal:\n$rule")
+        hit.get
+    }
+
+    test("rule has the stop-on-failure bullet, and it is the last bullet") {
+        val b = stopBullet
+        assert(bullets.last == b, s"the stop-on-failure rule must be the last bullet; last was:\n${bullets.last}")
+        assert("(?i)\\bno schema\\b".r.findFirstIn(b).isDefined, s"stop bullet must say no schema was shown:\n$b")
+        assert("(?i)\\btable\\b".r.findFirstIn(b).isDefined, s"stop bullet must say no table was shown / not to mention one:\n$b")
+        assert("(?i)next step".r.findFirstIn(b).isDefined, s"stop bullet must say to pass on the tool's stated next step:\n$b")
+    }
+
+    test("stop bullet forbids ask_user about types after a failed proposal") {
+        val b = stopBullet
+        val forbids = "(?i)(do not|don't|never)[^.]{0,60}`?ask_user`?[^.]{0,40}types".r.findFirstIn(b)
+        assert(forbids.isDefined, s"stop bullet must forbid calling `ask_user` about types:\n$b")
+        val noTypesQuestion = "(?i)(do not|don't|never)[^.]{0,30}ask[^.]{0,30}types".r.findFirstIn(b)
+        assert(noTypesQuestion.isDefined, s"stop bullet must forbid asking the types question:\n$b")
+    }
+
+    test("stop bullet carries no quoted example question or reply") {
+        val b = stopBullet
+        val quoted = "[\"\u201c][^\"\u201d]{3,}[\"\u201d]".r.findAllIn(b).toList
+        assert(quoted.isEmpty, s"stop bullet must not quote example text: $quoted\n$b")
+    }
+
+    test("rule no longer says propose_pipeline_schema runs a capped test") {
+        assert(!rule.toLowerCase.contains("runs a capped test"), rule)
+    }
 }

@@ -15,6 +15,7 @@ New MCP tool `propose_pipeline_schema(tap, destination, limit=20)`:
 handler goes through `_call` or a status-aware helper."""
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -114,13 +115,15 @@ def test_first_call_is_a_capped_tap_test(monkeypatch):
     assert srv.posts, "no HTTP call was made"
     path, body = srv.posts[0]
     assert path == "/api/v1/tap/run", srv.posts
-    assert body == {"name": "src", "mode": "test", "testLimit": 20}, body
+    # Story: schema-proposal-reuse-test-rows: the body also asks the server to
+    # answer from the tap's last successful test when it still holds one.
+    assert body == {"name": "src", "mode": "test", "testLimit": 20, "reuseLastTest": True}, body
 
 
 def test_limit_is_passed_as_test_limit(monkeypatch):
     srv = _install(monkeypatch, _Server())
     server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "postgres", "limit": 100})
-    assert srv.posts[0][1] == {"name": "src", "mode": "test", "testLimit": 100}, srv.posts[0]
+    assert srv.posts[0][1] == {"name": "src", "mode": "test", "testLimit": 100, "reuseLastTest": True}, srv.posts[0]
 
 
 def test_failed_test_is_passed_through_verbatim_and_nothing_is_proposed(monkeypatch):
@@ -221,7 +224,8 @@ def test_vector_destination_next_goes_straight_to_create_pipeline(monkeypatch, d
     assert "transformations" in nxt, nxt
     stripped = nxt.replace("no schema_fields", "")
     assert "schema_fields" not in stripped, f"`next` may name schema_fields only as 'no schema_fields': {nxt}"
-    assert set(out) == {"status", "typeGrid", "tap", "destination", "preview", "sampleRowCount", "next"}, sorted(out)
+    # Story: schema-proposal-reuse-test-rows adds `rowsFrom` (and `testedAt` when the server sends it).
+    assert set(out) == {"status", "typeGrid", "tap", "destination", "preview", "sampleRowCount", "next", "rowsFrom"}, sorted(out)
 
 
 def test_mongodb_next_is_unchanged(monkeypatch):
@@ -254,3 +258,92 @@ def test_vector_next_is_unchanged(monkeypatch, dest):
     _install(monkeypatch, _Server())
     out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": dest}))
     assert out.get("next") == _VECTOR_NEXT_BEFORE, out
+
+
+# ---------------------------------------------------------------------------
+# Story: Schema proposal reuses the tap's test rows and stops cleanly on failure
+# (plans/stories/schema-proposal-reuse-test-rows.md), Acceptance 3.
+#
+# `/tap/run` gets `reuseLastTest: True`; the server answers from the tap's last
+# successful test (`reused: true`, `testedAt`) or runs a fresh one. An older
+# server ignores the flag and omits `reused`. The result says where the rows
+# came from in `rowsFrom` ("last_test" | "new_test"). A no-rows test is a
+# single-key error that says nothing was shown and not to ask about types.
+
+TESTED_AT = "2026-11-12T10:15:00Z"
+
+
+def _reused_result(**extra):
+    out = dict(_Server().test_result)
+    out.update({"reused": True, "testedAt": TESTED_AT})
+    out.update(extra)
+    return out
+
+
+def _tap_run_posts(srv):
+    return [b for p, b in srv.posts if p == "/api/v1/tap/run"]
+
+
+def test_tap_run_body_carries_reuse_last_test(monkeypatch):
+    srv = _install(monkeypatch, _Server())
+    server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "postgres"})
+    body = _tap_run_posts(srv)[0]
+    assert body.get("reuseLastTest") is True, body
+    assert body.get("mode") == "test", body
+
+
+def test_reused_response_yields_rows_from_last_test_and_one_tap_run(monkeypatch):
+    srv = _install(monkeypatch, _Server(test_result=_reused_result()))
+    out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "postgres"}))
+    assert out.get("status") == "schema_proposal", out
+    assert out.get("rowsFrom") == "last_test", out
+    assert out.get("testedAt") == TESTED_AT, out
+    assert len(_tap_run_posts(srv)) == 1, srv.posts
+    assert srv.paths() == ["/api/v1/tap/run", "/api/v1/pipeline/propose-schema"], srv.posts
+
+
+def test_older_server_without_reused_yields_rows_from_new_test_and_the_same_proposal(monkeypatch):
+    srv = _install(monkeypatch, _Server())
+    out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "postgres"}))
+    assert out.get("rowsFrom") == "new_test", out
+    assert "testedAt" not in out, out
+    assert len(_tap_run_posts(srv)) == 1, srv.posts
+    before = {k: v for k, v in out.items() if k != "rowsFrom"}
+    assert set(before) == {
+        "status", "typeGrid", "tap", "destination", "sampleRowCount", "recordsTruncated",
+        "fields", "preview", "next",
+    }, sorted(out)
+    assert before["status"] == "schema_proposal" and before["typeGrid"] is True, out
+    assert [f["name"] for f in before["fields"]] == ["id", "label", "amount"], out
+    assert [f["type"] for f in before["fields"]] == ["string", "string", "double"], out
+    assert before["preview"] == RECORDS[:5], out
+    assert before["sampleRowCount"] == 8, out
+
+
+def test_explicit_limit_is_still_sent_as_test_limit_with_reuse(monkeypatch):
+    srv = _install(monkeypatch, _Server(test_result=_reused_result()))
+    server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "postgres", "limit": 100})
+    body = _tap_run_posts(srv)[0]
+    assert body.get("testLimit") == 100, body
+    assert body.get("reuseLastTest") is True, body
+
+
+_NO_ASK_TYPES = re.compile(r"(do not|don't|never)[^.]{0,40}\bask\w*[^.]{0,40}\btypes?\b", re.IGNORECASE)
+
+
+@pytest.mark.parametrize("records", [[], ["not-a-dict", 3]], ids=["empty", "no-dict-rows"])
+def test_no_rows_is_a_single_key_error_naming_the_tap_and_saying_not_to_ask_about_types(monkeypatch, records):
+    result = dict(_Server().test_result)
+    result.update({"records": records, "recordCount": len(records)})
+    srv = _install(monkeypatch, _Server(test_result=result))
+    raw = server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "postgres"})
+    assert server._is_error_payload(raw), raw
+    out = json.loads(raw)
+    assert set(out) == {"error"}, f"the next step must live inside `error`, not a sibling key: {out}"
+    err = out["error"]
+    assert "'src'" in err or "`src`" in err, f"the error must name the tap: {err}"
+    assert _NO_ASK_TYPES.search(err), f"the error must say not to ask about column types: {err}"
+    assert re.search(r"no schema", err, re.IGNORECASE), f"the error must say no schema was proposed: {err}"
+    assert re.search(r"nothing was shown|not shown|nothing has been shown", err, re.IGNORECASE), \
+        f"the error must say nothing was shown to the user: {err}"
+    assert "/api/v1/pipeline/propose-schema" not in srv.paths(), srv.posts

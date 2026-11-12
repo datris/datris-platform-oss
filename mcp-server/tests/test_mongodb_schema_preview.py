@@ -82,3 +82,25 @@ def test_tool_descriptions_say_mongodb_gets_a_preview_only():
     sf = tools["create_pipeline"].input_schema["properties"]["schema_fields"]["description"]
     assert "rejected for mongodb" in sf, sf
     assert "not mongodb" in tools["create_pipeline"].description, tools["create_pipeline"].description
+
+
+# Story: Schema proposal reuses the tap's test rows and stops cleanly on failure
+# (plans/stories/schema-proposal-reuse-test-rows.md), Acceptance 4.
+
+def test_mongodb_preview_sends_reuse_last_test_and_reports_rows_from(monkeypatch):
+    srv = _install(monkeypatch, _Server())
+    out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "mongodb"}))
+    body = srv.posts[0][1]
+    assert srv.posts[0][0] == "/api/v1/tap/run", srv.posts
+    assert body.get("reuseLastTest") is True, body
+    assert out.get("rowsFrom") == "new_test", out
+
+
+def test_mongodb_preview_from_a_reused_test_reports_last_test(monkeypatch):
+    result = dict(_Server().test_result)
+    result.update({"reused": True, "testedAt": "2026-11-12T10:15:00Z"})
+    srv = _install(monkeypatch, _Server(test_result=result))
+    out = json.loads(server._dispatch("propose_pipeline_schema", {"tap": "src", "destination": "mongodb"}))
+    assert out.get("rowsFrom") == "last_test", out
+    assert out.get("testedAt") == "2026-11-12T10:15:00Z", out
+    assert srv.paths() == ["/api/v1/tap/run"], srv.posts
