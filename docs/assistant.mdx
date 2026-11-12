@@ -35,8 +35,9 @@ returned:
 
 1. **Creates and tests the tap.** The test pulls a short preview (20 rows by
    default) and lands nothing.
-2. **Shows the proposed schema.** Each column gets a recommended type with its
-   evidence: sample values, plus a reason when it stays text. Recommendations
+2. **Shows the proposed schema.** The proposal uses the rows that test just
+   returned, so the tap is not run a second time (asking for more rows runs it
+   again). Each column gets a recommended type with its evidence: sample values, plus a reason when it stays text. Recommendations
    are cautious. A column with fewer than 5 values, only empty values, or a
    value that doesn't fit a type (such as `N/A` in a number column) stays text
    and says why.
@@ -50,6 +51,9 @@ returned:
 5. **Creates the pipeline with the confirmed types and attaches the tap.** On
    Postgres, Snowflake, Databricks, SQL Server, and object store destinations,
    the first run lands typed columns, not text.
+
+If the proposal fails (for example, the test returned no rows), the Assistant
+tells you what failed and what to do next, and does not ask about column types.
 
 That is at most two questions in total. The destination, key columns, and schedule
 are still agreed in the plan the Assistant states up front. MongoDB and

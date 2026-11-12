@@ -129,8 +129,9 @@ object MCPToolRoutes {
         "get_tap_state" -> Mapped("GET", "/api/v1/tap/state"),
         "set_tap_state" -> Mapped("POST", "/api/v1/tap/state"),
         "test_tap" -> Mapped("POST", "/api/v1/tap/run"),
-        // Two calls: a capped test run (primary), then POST
-        // /api/v1/pipeline/propose-schema (pipeline:read) for structured dests.
+        // Two calls: a capped test run with reuseLastTest (primary; the server
+        // answers from the tap's last successful test when it still holds one),
+        // then POST /api/v1/pipeline/propose-schema (pipeline:read) for structured dests.
         "propose_pipeline_schema" -> Mapped("POST", "/api/v1/tap/run"),
         "update_tap" -> Mapped("POST", "/api/v1/tap"),
 

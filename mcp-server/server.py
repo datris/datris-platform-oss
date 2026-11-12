@@ -572,7 +572,7 @@ Tap workflow (for step 3 Option B):
      A run that timed out returns the script's logs, its `[wrapper] streamed N records` progress lines and a partial record count. Read them first: a script that reached the source and was still streaming records when the timeout hit is healthy and too long, not wrong — do not rewrite it; tell the user how far it got and offer a smaller window via `params` or the operator's timeout setting.
      After two consecutive failed tests, STOP and report the exact error text to the user with what you tried; let the user decide the next step.
      Never probe the runner environment or read the wrapper to diagnose a failure — the error text, the logs and the script are the whole diagnosis; datris://tap-workflow-reference is the complete contract.
-  4. Preview the schema and create the pipeline (new pipeline only): call propose_pipeline_schema(tap, destination), present the fields as a table and ask the user to confirm the types, ask the one DQ / transformation / protection question, then call create_pipeline with schema_fields and update_tap with target_pipeline (and cron_expression, if the user described a schedule). If propose_pipeline_schema reports the server is too old, fall back to content_text on create_pipeline.
+  4. Preview the schema and create the pipeline (new pipeline only): call propose_pipeline_schema(tap, destination), present the fields as a table and ask the user to confirm the types, ask the one DQ / transformation / protection question, then call create_pipeline with schema_fields and update_tap with target_pipeline (and cron_expression, if the user described a schedule). propose_pipeline_schema uses the rows from the tap's last successful test and runs the tap again only when none are held or a higher limit asks for more. Only a result whose `status` is `schema_proposal` is a proposal; anything else (a failed test, no rows, an error) means no schema and no table were shown to the user, so tell the user what failed in one or two plain sentences with the tool's stated next step, and do not ask the types question, do not call `ask_user` about types and do not mention a table. If propose_pipeline_schema reports the server is too old, fall back to content_text on create_pipeline.
   5. Run: call run_tap to execute and push data to the pipeline.
      After `run_tap` returns, READ the response's `persisted` field BEFORE doing anything else:
        - `persisted: true` → records were handed to the pipeline, but the load is async. You MUST call `get_pipeline_status(publisher_token=response.publisherToken)` and poll (re-call every few seconds) until `rollup.allDone` is true. Only THEN query the destination or report completion to the user. Reporting success before the poll finishes is a bug — the destination will appear empty. Read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failures.
@@ -765,7 +765,7 @@ PIPELINE_CONFIG_REFERENCE = """\
 
 1. Call `list_pipelines` to check if the pipeline already exists.
 2. If it exists, data may already be in the destination. Use metadata tools (`list_postgres_tables`, `list_mongodb_collections`, `list_qdrant_collections`, etc.) to discover it and query/search directly. Only re-ingest if the data is stale or needs updating.
-3. If the pipeline does not exist, call `create_pipeline`. When a tap will feed it, create and test the tap first (`create_tap` without `target_pipeline` → `test_tap`), call `propose_pipeline_schema` to get recommended column types from the tap's real rows, confirm them with the user, and pass the confirmed list as `schema_fields` on `create_pipeline` — no sample content needed; then `update_tap` with `target_pipeline`. MongoDB is the exception: it stores documents as-is, so pass a few preview rows as a JSON `content_text` sample (filename ending in .json) instead of `schema_fields`. For a vector destination fed by a tap, skip the follow-up question about checks, transformations or protection: the platform chunks and embeds on load, so there are no checks, transformations or protection to offer; say so in one line and go straight to `create_pipeline` (name + destination only) → `update_tap`. For data without a tap (a file in hand, pasted rows), the fallback is a tiny sample for schema auto-detection: structured destinations ({{STRUCTURED_DB_DESTINATIONS}}) take content_text with header + 3-5 rows, never a full dataset (every column lands as string); snowflake also needs credentialsSecret + warehouse + database, and databricks needs credentialsSecret + database (Unity Catalog name) + warehouse (SQL warehouse ID) — omit warehouse, and do not ask the human for it, when the Databricks secret has a `warehouse` field; sqlserver needs credentialsSecret + database (schema defaults to dbo) and also accepts a JSON or XML sample. Vector destinations (pgvector/qdrant/weaviate/milvus/chroma) need only pipeline name + destination — no sample content; the document goes through `upload_data`.
+3. If the pipeline does not exist, call `create_pipeline`. When a tap will feed it, create and test the tap first (`create_tap` without `target_pipeline` → `test_tap`), call `propose_pipeline_schema` to get recommended column types from the tap's real rows (it uses the rows from the tap's last successful test and runs the tap again only when none are held or a higher `limit` asks for more), confirm them with the user, and pass the confirmed list as `schema_fields` on `create_pipeline` — no sample content needed; then `update_tap` with `target_pipeline`. Only a result whose `status` is `schema_proposal` is a proposal; anything else (a failed test, no rows, an error) means no schema and no table were shown to the user, so tell the user what failed in one or two plain sentences with the tool's stated next step, and do not ask the types question, do not call `ask_user` about types and do not mention a table. MongoDB is the exception: it stores documents as-is, so pass a few preview rows as a JSON `content_text` sample (filename ending in .json) instead of `schema_fields`. For a vector destination fed by a tap, skip the follow-up question about checks, transformations or protection: the platform chunks and embeds on load, so there are no checks, transformations or protection to offer; say so in one line and go straight to `create_pipeline` (name + destination only) → `update_tap`. For data without a tap (a file in hand, pasted rows), the fallback is a tiny sample for schema auto-detection: structured destinations ({{STRUCTURED_DB_DESTINATIONS}}) take content_text with header + 3-5 rows, never a full dataset (every column lands as string); snowflake also needs credentialsSecret + warehouse + database, and databricks needs credentialsSecret + database (Unity Catalog name) + warehouse (SQL warehouse ID) — omit warehouse, and do not ask the human for it, when the Databricks secret has a `warehouse` field; sqlserver needs credentialsSecret + database (schema defaults to dbo) and also accepts a JSON or XML sample. Vector destinations (pgvector/qdrant/weaviate/milvus/chroma) need only pipeline name + destination — no sample content; the document goes through `upload_data`.
 5. Call `check_service_health` to verify the target destination service is available.
 6. Call `create_pipeline` with the config.
 7. Call `upload_data` ONCE with your full data (base64-encoded) and the pipeline name. Do not pre-chunk — vector destinations chunk server-side, structured pipelines accept the whole file as one batch.
@@ -1309,7 +1309,7 @@ If the user already has the file in hand, prefer `upload_data` against an existi
    - **HTTP taps** (`kind: "http"` + `endpoint_url`): the tap is a service the USER hosts, in any language; Datris POSTs `{tap, params, state, testLimit}` to the endpoint each run and the endpoint responds with the same envelope a script produces (`{"type": ..., "data": [...], "state": {...}}`). Auth: if the tap's secret has an `endpoint_token` field it is sent as `Authorization: Bearer` — no other secret fields are ever forwarded. Everything else in this reference (params, state, scheduling, run flow, polling, verification) applies identically. What does NOT apply: `instruction`/`script`/`packages`, AI codegen actions, and the platform-data callback below — an HTTP tap cannot read platform data, so keep platform-data-driven taps as Python taps. Only suggest HTTP kind when the user says they want to implement the tap themselves outside the platform (existing service, non-Python language).
 3. **Test.** Call `test_tap` to validate the script without persisting. A test previews the first 20 records by default (`limit` raises it, `limit: 0` streams the whole source), so the `recordCount` a test returns is the preview size, not what `run_tap` will produce — never quote it to the user as the size of the source. **MANDATORY for any newly-created or just-updated script** — see the VALIDATION RULE below. If the script errors, fix it by calling `create_tap` again with the same name and a corrected `instruction` or revised `script` (create_tap upserts and replaces the existing script), and re-test until it succeeds.
    The platform enforces this order: a save carrying `cron_expression` for a script that has not passed `test_tap` is refused with HTTP 409 — create without the cron, `test_tap`, then `update_tap` with the cron.
-4. **Preview and confirm the schema (new pipeline only).** Call `propose_pipeline_schema(tap, destination)`. It runs a capped test and returns each column with a recommended type and evidence (sample values; `stringReason` when a value blocked a type; `note` when too few values were present). Present the fields as a table (column, recommended type, evidence) and ask the user to confirm or change the types, or pull more rows (call again with a higher `limit`) — checkpoint 1. Then ask ONE question offering data-quality checks (`codegen_rule`), transformations (`codegen_transform`) and field protection (`suggest_field_protection` → `protect`) against the confirmed names; "none" is a valid answer — checkpoint 2. If the user chose data quality or transformations, propose the checks (then the transformations) as a numbered list, one per line, each naming the confirmed column it covers, and ask the user to confirm, remove or edit them before `create_pipeline` and, in the same message, ask whether a failing row should warn only (logged, loading continues) or reject the run; pass the answer as `codegen_rule_on_failure` (`warn` or `error`); pass only the confirmed list as `codegen_rule` / `codegen_transform`, verbatim, character for character (keep text that looks like an annotation), with nothing added; nothing is saved until `create_pipeline` runs. Then call `create_pipeline` with `schema_fields` (the confirmed `[{name, type}]` list, plus whatever the user chose) and `update_tap` with `target_pipeline`. Vector destinations and `mongodb` return `typeGrid: false`: show the preview, skip the type question and, for a vector destination, skip checkpoint 2 as well: the platform chunks and embeds on load, so there are no checks, transformations or protection to offer; say so in one line and go straight to `create_pipeline` (name + destination only) → `update_tap` (for `mongodb`, pass a few preview rows as a JSON `content_text` sample with a `.json` filename instead of `schema_fields`). An older server answers "server too old" — fall back to `content_text` on `create_pipeline`.
+4. **Preview and confirm the schema (new pipeline only).** Call `propose_pipeline_schema(tap, destination)`. It uses the rows from the tap's last successful test (nothing is pushed), runs the tap again only when none are held or a higher `limit` asks for more, and returns each column with a recommended type and evidence (sample values; `stringReason` when a value blocked a type; `note` when too few values were present). Present the fields as a table (column, recommended type, evidence) and ask the user to confirm or change the types, or pull more rows (call again with a higher `limit`) — checkpoint 1. Then ask ONE question offering data-quality checks (`codegen_rule`), transformations (`codegen_transform`) and field protection (`suggest_field_protection` → `protect`) against the confirmed names; "none" is a valid answer — checkpoint 2. If the user chose data quality or transformations, propose the checks (then the transformations) as a numbered list, one per line, each naming the confirmed column it covers, and ask the user to confirm, remove or edit them before `create_pipeline` and, in the same message, ask whether a failing row should warn only (logged, loading continues) or reject the run; pass the answer as `codegen_rule_on_failure` (`warn` or `error`); pass only the confirmed list as `codegen_rule` / `codegen_transform`, verbatim, character for character (keep text that looks like an annotation), with nothing added; nothing is saved until `create_pipeline` runs. Then call `create_pipeline` with `schema_fields` (the confirmed `[{name, type}]` list, plus whatever the user chose) and `update_tap` with `target_pipeline`. Vector destinations and `mongodb` return `typeGrid: false`: show the preview, skip the type question and, for a vector destination, skip checkpoint 2 as well: the platform chunks and embeds on load, so there are no checks, transformations or protection to offer; say so in one line and go straight to `create_pipeline` (name + destination only) → `update_tap` (for `mongodb`, pass a few preview rows as a JSON `content_text` sample with a `.json` filename instead of `schema_fields`). An older server answers "server too old" — fall back to `content_text` on `create_pipeline`. Only a result whose `status` is `schema_proposal` is a proposal; anything else (a failed test, no rows, an error) means no schema and no table were shown to the user, so tell the user what failed in one or two plain sentences with the tool's stated next step, and do not ask the types question, do not call `ask_user` about types and do not mention a table.
 5. **Schedule (if recurring).** If the user mentioned any recurrence cue, set `cron_expression` via `update_tap` once the script has passed `test_tap` — see the SCHEDULING RULE below.
 6. **Run.** Call `run_tap` with `name` and optional `params`. Read the response — see the run-flow section below.
 7. **Poll.** When `persisted: true`, call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true.
@@ -1410,7 +1410,7 @@ The user trusted your narrative, you produced a confident story, and the platfor
 
 **Discipline:**
 - Before writing "X is live" or "X is set up," enumerate the tool calls you made in this turn. If your enumeration is shorter than your intent, finish the intent before claiming success.
-- For a new tap + pipeline, the minimum chain is: `create_tap` → `test_tap` → `propose_pipeline_schema` → (user confirms types) → `create_pipeline` → `update_tap` with `target_pipeline`. If you set `cron_expression`, that's part of that `update_tap`. If the user wants a manual run too, add `run_tap` and the polling chain.
+- For a new tap + pipeline, the minimum chain is: `create_tap` → `test_tap` → `propose_pipeline_schema` → (user confirms types) → `create_pipeline` → `update_tap` with `target_pipeline`. When the proposal fails, report it and stop (step 4). If you set `cron_expression`, that's part of that `update_tap`. If the user wants a manual run too, add `run_tap` and the polling chain.
 - When a tool call returns an error or unexpected response, surface the actual response field (`error`, `persistedReason`, `recordCount`, etc.) — don't smooth it into success language.
 - When in doubt, call `list_pipelines` / `list_taps` / `get_pipeline` / `get_tap` to ground yourself in real platform state before claiming anything is done.
 - **If a verification call finds the resource, it exists.** Do not retract a previous-turn success claim just because you can't see the original `create_*` call in THIS turn's evidence — the platform persists between turns. Scan the list response for the name; if it's there, move on to the user's current ask. Retracting a true claim is just as misleading as confabulating a false one.
@@ -3266,12 +3266,13 @@ def _base_tools():
             name="propose_pipeline_schema",
             description=(
                 "Preview a tested tap's rows and recommend a destination column type for each column, BEFORE the pipeline exists. "
-                "Runs a capped test of the tap (same as `test_tap`, nothing is pushed), then infers a type per column from the rows the tap actually produced. "
+                "Uses the rows from the tap's last successful test (nothing is pushed) and runs the tap again only when none are held or a higher `limit` asks for more, then infers a type per column from the rows the tap actually produced. "
                 "Recommendations are conservative: a column is typed only on strong evidence; otherwise it stays `string` with a visible reason — `stringReason` when a value blocked a type, `note` when too few non-null values were present (all-null or a thin sample). "
                 "Call it after `test_tap` succeeds and before `create_pipeline`. Present the returned `fields` to the user as a table (column, recommended type, evidence) and ask them to confirm or change the types, or to pull more rows (call again with a higher `limit`). "
                 "Then pass the confirmed list as `schema_fields` on `create_pipeline` — no sample content needed — and attach the tap with `update_tap` (`target_pipeline`). "
                 "A failed test comes back verbatim (fix the tap first). Vector destinations (pgvector, qdrant, weaviate, milvus, chroma) and mongodb return `typeGrid: false` with a preview only — they have no column schema — for a vector destination go straight to `create_pipeline` with name and destination only; no checks, transformations or protection question (MongoDB stores documents as-is; create it with a few preview rows as a JSON content_text sample, filename ending in .json, never schema_fields). "
-                "An older Datris server answers with a \"server too old\" error; then fall back to `content_text` on `create_pipeline`."
+                "An older Datris server answers with a \"server too old\" error; then fall back to `content_text` on `create_pipeline`. "
+                "Only a result whose `status` is `schema_proposal` is a proposal; anything else (a failed test, no rows, an error) means no schema and no table were shown to the user, so tell the user what failed in one or two plain sentences with the tool's stated next step, and do not ask the types question, do not call `ask_user` about types and do not mention a table."
             ),
             inputSchema={
                 "type": "object",
@@ -4080,16 +4081,28 @@ _PROPOSE_SCHEMA_NEXT = (
 )
 
 
+# Closing clause on every propose_pipeline_schema failure that is not a failed
+# tap test (those come back verbatim). It lives INSIDE the `error` string so the
+# result stays a single-key error payload (`_is_error_payload`).
+_PROPOSE_FAILED_NEXT = (
+    "No schema was proposed and nothing was shown to the user. Report this to the user as written; "
+    "do not ask about column types and do not mention a table."
+)
+
+
 def _propose_pipeline_schema(args):
-    """Capped test run of a tap, then (structured destinations) a typed
-    proposal from POST /api/v1/pipeline/propose-schema. A failed test is
-    returned verbatim; a 404 from propose-schema means an older server."""
+    """Rows from the tap's last successful test (the server answers
+    `reuseLastTest` from its held preview, else it runs the capped test), then
+    (structured destinations) a typed proposal from POST
+    /api/v1/pipeline/propose-schema. A failed test is returned verbatim; a 404
+    from propose-schema means an older server. An older server ignores
+    `reuseLastTest` and always runs the test."""
     tap = args["tap"]
     destination = (args.get("destination") or "").strip().lower()
     raw = _call(
         "post",
         "/api/v1/tap/run",
-        json={"name": tap, "mode": "test", "testLimit": _test_limit(args.get("limit"))},
+        json={"name": tap, "mode": "test", "testLimit": _test_limit(args.get("limit")), "reuseLastTest": True},
     )
     try:
         test = json.loads(raw)
@@ -4102,6 +4115,10 @@ def _propose_pipeline_schema(args):
     if not isinstance(records, list):
         records = []
     preview = records[:5]
+    # Where the rows came from: the server's held last test, or a test it just ran.
+    origin = {"rowsFrom": "last_test" if test.get("reused") is True else "new_test"}
+    if test.get("testedAt"):
+        origin["testedAt"] = test.get("testedAt")
 
     if destination in _VECTOR_DESTINATIONS or destination == "mongodb":
         out = {
@@ -4116,11 +4133,16 @@ def _propose_pipeline_schema(args):
             out["next"] = _MONGODB_PREVIEW_NEXT
         else:
             out["next"] = _VECTOR_PREVIEW_NEXT
+        out.update(origin)
         return json.dumps(out)
 
     rows = [r for r in records if isinstance(r, dict)]
     if not rows:
-        return json.dumps({"error": f"The test of tap '{tap}' returned no rows to infer a schema from; check the tap's output (test_tap) before creating the pipeline."})
+        return json.dumps({"error": (
+            f"No schema was proposed for tap '{tap}' and nothing was shown to the user: its test returned no rows "
+            "to infer column types from. Report this to the user as written; do not ask about column types and do "
+            "not mention a table. Re-test the tap (test_tap), and call propose_pipeline_schema again once a test returns rows."
+        )})
     body = {"records": rows}
     columns = test.get("columns")
     if isinstance(columns, list) and columns and all(isinstance(c, str) for c in columns):
@@ -4130,17 +4152,17 @@ def _propose_pipeline_schema(args):
     try:
         resp = requests.post(url, headers=_headers(), timeout=120, json=body)
     except requests.RequestException as e:
-        return json.dumps({"error": str(e)})
+        return json.dumps({"error": f"propose-schema failed: {e}. {_PROPOSE_FAILED_NEXT}"})
     if resp.status_code == 404:
-        return json.dumps({"error": "propose-schema is not available: Datris server too old for propose_pipeline_schema; use content_text on create_pipeline instead (header plus a few rows of the test output)."})
+        return json.dumps({"error": "propose-schema is not available: Datris server too old for propose_pipeline_schema; use content_text on create_pipeline instead (header plus a few rows of the test output). " + _PROPOSE_FAILED_NEXT})
     try:
         proposal = json.loads(resp.text)
     except (json.JSONDecodeError, TypeError):
-        return json.dumps({"error": f"propose-schema failed (HTTP {resp.status_code}): {resp.text[:500]}"})
+        return json.dumps({"error": f"propose-schema failed (HTTP {resp.status_code}): {resp.text[:500]} {_PROPOSE_FAILED_NEXT}"})
     if resp.status_code != 200 or not isinstance(proposal, dict):
         if isinstance(proposal, dict) and proposal.get("error"):
-            return json.dumps({"error": proposal["error"]})
-        return json.dumps({"error": f"propose-schema failed (HTTP {resp.status_code}): {resp.text[:500]}"})
+            return json.dumps({"error": f"{proposal['error']} {_PROPOSE_FAILED_NEXT}"})
+        return json.dumps({"error": f"propose-schema failed (HTTP {resp.status_code}): {resp.text[:500]} {_PROPOSE_FAILED_NEXT}"})
 
     fields = []
     for f in proposal.get("fields") or []:
@@ -4153,7 +4175,7 @@ def _propose_pipeline_schema(args):
             "stringReason": f.get("stringReason"),
             "note": f.get("note"),
         })
-    return json.dumps({
+    out = {
         "status": "schema_proposal",
         "typeGrid": True,
         "tap": tap,
@@ -4163,7 +4185,9 @@ def _propose_pipeline_schema(args):
         "fields": fields,
         "preview": preview,
         "next": _PROPOSE_SCHEMA_NEXT,
-    })
+    }
+    out.update(origin)
+    return json.dumps(out)
 
 
 def _test_limit(value) -> int:
