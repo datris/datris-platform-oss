@@ -159,4 +159,43 @@ class TapRunReuseResponseSpec extends AnyFunSuite {
     test("reuseCandidate: mode=run is never a candidate") {
         assert(!TapAPIController.reuseCandidate("run", java.lang.Boolean.TRUE, Map.empty))
     }
+
+    // ------------------------------------------------- wiring pins (source)
+
+    private def source(rel: String): String = {
+        val file = Seq(java.nio.file.Paths.get(rel), java.nio.file.Paths.get("datrisserver", rel))
+            .find(java.nio.file.Files.isRegularFile(_)).getOrElse(fail(rel + " not found"))
+        new String(java.nio.file.Files.readAllBytes(file), java.nio.charset.StandardCharsets.UTF_8)
+    }
+
+    private def body(src: String, signature: String): String = {
+        val i = src.indexOf(signature)
+        assert(i >= 0, signature)
+        val j = src.indexOf("\n    def ", i + signature.length)
+        if (j < 0) src.substring(i) else src.substring(i, j)
+    }
+
+    test("a definition save (writeVersioned) drops the held preview; a plain write does not") {
+        val src = source("src/main/scala/ai/datris/util/TapConfigIO.scala")
+        assert(body(src, "def writeVersioned(").contains("TapTestPreviewCache.drop(tapConfig.name)"))
+        assert(
+            !body(src, "def write(tapConfig: TapConfig)").contains("TapTestPreviewCache"),
+            "plain write carries test stamps: dropping there would defeat test-then-propose reuse"
+        )
+    }
+
+    test("the catalog ordered-enable test goes through holdTestPreview") {
+        val src = source("src/main/scala/ai/datris/api/CatalogAPIController.scala")
+        val test = body(src, "override def test(tap: TapConfig)")
+        assert(test.contains("TapAPIController.holdTestPreview("), test)
+    }
+
+    test("holdTestPreview with no preview drops, so the ordered-enable test never holds rows") {
+        val cache = new TapTestPreviewCache()
+        asTenant {
+            seed(cache)
+            TapAPIController.holdTestPreview(cache, tap, ok(8), null, previewTruncated = false, 20, paramsSent = false, scriptId = None)
+            assert(cache.get(tap, 20).isEmpty)
+        }
+    }
 }

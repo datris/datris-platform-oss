@@ -73,6 +73,11 @@ object TapConfigIO {
         val nextVersion = baseVersion + 1
         val versioned = tapConfig.copy(version = nextVersion)
         write(versioned)
+        // A definition save (secret, packages, type, script, ...) may change what
+        // the tap produces: rows held from an earlier test no longer vouch for it.
+        // Plain `write` (test stamps, status churn) must NOT drop, or a test
+        // followed by propose_pipeline_schema would never reuse.
+        TapTestPreviewCache.drop(tapConfig.name)
         EntityVersionIO.append(
             versionTable,
             EntityVersion(
