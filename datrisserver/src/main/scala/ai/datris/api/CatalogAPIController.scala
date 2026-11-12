@@ -33,7 +33,8 @@ import ai.datris.util.{
     TapRunner,
     TapScriptResult,
     TapState,
-    TapStateIO
+    TapStateIO,
+    TapTestPreviewCache
 }
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -1495,6 +1496,9 @@ object CatalogAPIController {
             try {
                 // Status churn: plain write, no version minted (as POST /tap/run).
                 TapConfigIO.write(TapAPIController.stampTestResult(tap, result, TapAPIController.nowStamp()))
+                // A failed test no longer vouches for the stored script: drop any
+                // preview held for a later reuseLastTest request.
+                if (result.error != null) TapTestPreviewCache.drop(tap.name)
             } finally {
                 try TapRunner.release(result)
                 catch { case e: Exception => logger.warn("Could not release test staging of tap '" + tap.name + "': " + e.getMessage) }

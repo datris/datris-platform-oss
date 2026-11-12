@@ -67,7 +67,11 @@ class TapTestPreviewCache(clock: () => Long = () => System.currentTimeMillis()) 
             dataType = dataType
         )
         val k = key(tap.name)
+        val now = held.capturedAtMs
         entries.synchronized {
+            // Sweep expired entries so rows of a tap that is never proposed do
+            // not outlive the hold window.
+            entries.values().removeIf(h => now - h.capturedAtMs > HoldMs)
             entries.remove(k)
             entries.put(k, held)
             while (entries.size() > MaxEntries) {

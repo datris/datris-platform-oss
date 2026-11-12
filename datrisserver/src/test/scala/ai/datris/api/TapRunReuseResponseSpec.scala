@@ -144,4 +144,19 @@ class TapRunReuseResponseSpec extends AnyFunSuite {
             assert(cache.get(tap, 20).isEmpty)
         }
     }
+
+    // ------------------------------------------------------- reuseCandidate
+
+    test("reuseCandidate: mode=test with the flag and no params is a candidate") {
+        assert(TapAPIController.reuseCandidate("test", java.lang.Boolean.TRUE, Map.empty))
+        assert(TapAPIController.reuseCandidate("test", "true", Map.empty))
+    }
+
+    test("reuseCandidate: params present is never a candidate") {
+        assert(!TapAPIController.reuseCandidate("test", java.lang.Boolean.TRUE, Map("since" -> "2026-05-01")))
+    }
+
+    test("reuseCandidate: mode=run is never a candidate") {
+        assert(!TapAPIController.reuseCandidate("run", java.lang.Boolean.TRUE, Map.empty))
+    }
 }

@@ -4154,7 +4154,7 @@ def _propose_pipeline_schema(args):
     except requests.RequestException as e:
         return json.dumps({"error": f"propose-schema failed: {e}. {_PROPOSE_FAILED_NEXT}"})
     if resp.status_code == 404:
-        return json.dumps({"error": "propose-schema is not available: Datris server too old for propose_pipeline_schema; use content_text on create_pipeline instead (header plus a few rows of the test output). " + _PROPOSE_FAILED_NEXT})
+        return json.dumps({"error": "propose-schema is not available: Datris server too old for propose_pipeline_schema; use content_text on create_pipeline instead (header plus a few rows of the test output). No schema was proposed: do not ask about column types and do not mention a table."})
     try:
         proposal = json.loads(resp.text)
     except (json.JSONDecodeError, TypeError):

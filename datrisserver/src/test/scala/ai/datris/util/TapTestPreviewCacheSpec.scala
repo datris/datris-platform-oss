@@ -216,4 +216,17 @@ class TapTestPreviewCacheSpec extends AnyFunSuite {
             assert(cache.get(httpTap("src", "https://feed.example.org/v1/items"), 20).isDefined)
         }
     }
+
+    test("a put sweeps entries past the hold window without a get on them") {
+        val (cache, clock) = fresh()
+        asTenant("tenant_a") {
+            putRows(cache, httpTap("a"))
+            clock.advanceMs(TapTestPreviewCache.HoldMs + 1L)
+            putRows(cache, httpTap("b"))
+            // Rewind so a get on A could only hit if A were still in the map.
+            clock.advanceMs(-(TapTestPreviewCache.HoldMs + 1L))
+            assert(cache.get(httpTap("a"), 20).isEmpty, "the expired entry must have been swept by the later put")
+            assert(cache.get(httpTap("b"), 20).isDefined)
+        }
+    }
 }

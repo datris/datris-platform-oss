@@ -177,10 +177,6 @@ object TapAPIController {
       * high `testLimit` goes. */
     private[datris] val maxTestPreviewRecords = 500
 
-    /** Whether a `/tap/run` request may answer from the tap's held last test
-      * preview ([[ai.datris.util.TapTestPreviewCache]]). Only `mode=test`
-      * honours it — a production run always runs the tap. `bodyReuseLastTest`
-      * is `body.get("reuseLastTest")`: Boolean true or the string "true". */
     /** The `/tap/run` body for a `reuseLastTest` request answered from `held`:
       * the usual test response (records cut to `testPreviewSize(testLimit)`)
       * plus `reused: true` and `testedAt`. No logs, no tokens: nothing ran. */
@@ -239,6 +235,10 @@ object TapAPIController {
             case _ => cache.drop(tap.name)
         }
 
+    /** Whether a `/tap/run` request may answer from the tap's held last test
+      * preview ([[ai.datris.util.TapTestPreviewCache]]). Only `mode=test`
+      * honours it — a production run always runs the tap. `bodyReuseLastTest`
+      * is `body.get("reuseLastTest")`: Boolean true or the string "true". */
     private[api] def resolveReuseLastTest(mode: String, bodyReuseLastTest: Any): Boolean = {
         if (mode == null || mode.toLowerCase != "test") return false
         bodyReuseLastTest match {
@@ -247,6 +247,12 @@ object TapAPIController {
             case _ => false
         }
     }
+
+    /** The reuse gate of `POST /tap/run`: the request asks for reuse
+      * ([[resolveReuseLastTest]]) and sends no `params` (held rows come from an
+      * unparameterised test, so a parameterised request always runs the tap). */
+    private[api] def reuseCandidate(mode: String, bodyReuseLastTest: Any, params: Map[String, String]): Boolean =
+        resolveReuseLastTest(mode, bodyReuseLastTest) && (params == null || params.isEmpty)
 
     /** How many staged records a test response returns: the requested
       * `testLimit` when positive (clamped to [[maxTestPreviewRecords]]),
@@ -1561,7 +1567,7 @@ class TapAPIController {
             // and valid, so a slow or non-deterministic source is not run twice. No
             // TapRunner.run, no lastTestRun* re-stamp. On a miss, fall through.
             val reuseHit: Option[TapTestPreviewCache.Held] =
-                if (TapAPIController.resolveReuseLastTest(mode, body.get("reuseLastTest")) && params.isEmpty)
+                if (TapAPIController.reuseCandidate(mode, body.get("reuseLastTest"), params))
                     TapTestPreviewCache.get(tapConfig, effectiveTestLimit)
                 else None
 
