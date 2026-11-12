@@ -181,6 +181,64 @@ object TapAPIController {
       * preview ([[ai.datris.util.TapTestPreviewCache]]). Only `mode=test`
       * honours it — a production run always runs the tap. `bodyReuseLastTest`
       * is `body.get("reuseLastTest")`: Boolean true or the string "true". */
+    /** The `/tap/run` body for a `reuseLastTest` request answered from `held`:
+      * the usual test response (records cut to `testPreviewSize(testLimit)`)
+      * plus `reused: true` and `testedAt`. No logs, no tokens: nothing ran. */
+    private[api] def reusedTestResponse(tap: TapConfig, held: TapTestPreviewCache.Held, testLimit: Int): java.util.Map[String, Any] = {
+        val size = testPreviewSize(testLimit)
+        val cut = held.records.size() > size
+        val records = new com.google.gson.JsonArray()
+        (0 until math.min(size, held.records.size())).foreach(i => records.add(held.records.get(i).deepCopy()))
+        val response = new java.util.HashMap[String, Any]()
+        response.put("tap", tap.name)
+        response.put("description", tap.description)
+        response.put("status", "success")
+        response.put("mode", "test")
+        response.put("targetPipeline", tap.targetPipeline)
+        response.put("persisted", java.lang.Boolean.FALSE)
+        response.put("persistedReason", "test_mode")
+        response.put("records", records)
+        if (cut || held.recordsTruncated) response.put("recordsTruncated", java.lang.Boolean.TRUE)
+        response.put("recordCount", Integer.valueOf(held.recordCount))
+        response.put("dataType", held.dataType)
+        response.put("columns", held.columns)
+        response.put("reused", java.lang.Boolean.TRUE)
+        response.put("testedAt", java.time.Instant.ofEpochMilli(held.capturedAtMs).toString)
+        response
+    }
+
+    /** After a `mode=test` run: hold its preview for a later `reuseLastTest`
+      * request only when it passed with a non-empty array preview and no
+      * `params` were sent. Anything else drops the held entry: a failed test no
+      * longer vouches for the stored script, an empty test must not be
+      * answered with older rows, and a parameterised test's rows must never
+      * feed a later plain proposal. `scriptId` is the identity captured before
+      * the run; None (unreadable script) holds nothing. */
+    private[api] def holdTestPreview(
+        cache: TapTestPreviewCache,
+        tap: TapConfig,
+        result: TapScriptResult,
+        preview: JsonElement,
+        previewTruncated: Boolean,
+        testLimit: Int,
+        paramsSent: Boolean,
+        scriptId: Option[String]
+    ): Unit =
+        preview match {
+            case arr: com.google.gson.JsonArray if result.error == null && !paramsSent && arr.size() > 0 && scriptId.isDefined =>
+                cache.put(
+                    tap,
+                    records = arr,
+                    columns = result.columns,
+                    recordCount = result.recordCount,
+                    recordsTruncated = previewTruncated,
+                    testLimit = testLimit,
+                    dataType = result.dataType,
+                    scriptId = scriptId
+                )
+            case _ => cache.drop(tap.name)
+        }
+
     private[api] def resolveReuseLastTest(mode: String, bodyReuseLastTest: Any): Boolean = {
         if (mode == null || mode.toLowerCase != "test") return false
         bodyReuseLastTest match {
@@ -1508,37 +1566,13 @@ class TapAPIController {
                 else None
 
             if (reuseHit.isDefined) {
-                val held = reuseHit.get
-                val size = TapAPIController.testPreviewSize(effectiveTestLimit)
-                val cut = held.records.size() > size
-                val records =
-                    if (!cut) held.records.deepCopy()
-                    else {
-                        val arr = new com.google.gson.JsonArray()
-                        (0 until size).foreach(i => arr.add(held.records.get(i).deepCopy()))
-                        arr
-                    }
+                val response = TapAPIController.reusedTestResponse(tapConfig, reuseHit.get, effectiveTestLimit)
                 logger.info(
                     "POST /tap/run for tap: " + name + " answered from the last successful test (" +
-                        records.size() + " of " + held.recordCount + " records)"
+                        response.get("records").asInstanceOf[com.google.gson.JsonArray].size() + " of " +
+                        reuseHit.get.recordCount + " records)"
                 )
-                val gson = new Gson
-                val response = new java.util.HashMap[String, Any]()
-                response.put("tap", name)
-                response.put("description", tapConfig.description)
-                response.put("status", "success")
-                response.put("mode", "test")
-                response.put("targetPipeline", tapConfig.targetPipeline)
-                response.put("persisted", java.lang.Boolean.FALSE)
-                response.put("persistedReason", "test_mode")
-                response.put("records", records)
-                if (cut || held.recordsTruncated) response.put("recordsTruncated", java.lang.Boolean.TRUE)
-                response.put("recordCount", Integer.valueOf(held.recordCount))
-                response.put("dataType", held.dataType)
-                response.put("columns", held.columns)
-                response.put("reused", java.lang.Boolean.TRUE)
-                response.put("testedAt", java.time.Instant.ofEpochMilli(held.capturedAtMs).toString)
-                new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+                new ResponseEntity[String](new Gson().toJson(response), HttpStatus.OK)
             } else if (debouncedAgeMs.isDefined) {
                 val ageMs = debouncedAgeMs.get
                 logger.info(
@@ -1562,6 +1596,10 @@ class TapAPIController {
                 response.put("recordCount", Integer.valueOf(0))
                 new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
             } else {
+
+                // Identity of the script this test runs, captured BEFORE the run so a
+                // script replaced mid-test never has the old script's rows held under it.
+                val testedScriptId: Option[String] = if (mode != "run") TapScriptIdentity.of(tapConfig) else None
 
                 val result = TapRunner.run(tapConfig, mode = mode, testLimit = effectiveTestLimit, params = params)
 
@@ -1588,26 +1626,17 @@ class TapAPIController {
                         try TapRunner.preview(result.staged, TapAPIController.testPreviewSize(effectiveTestLimit))
                         finally TapRunner.release(result)
 
-                // Hold a successful test's preview for a later reuseLastTest request
-                // (propose_pipeline_schema). A failed test drops any held preview: the
-                // previous green no longer vouches for what is stored now.
-                if (mode != "run" && params.isEmpty) {
-                    if (result.error != null) TapTestPreviewCache.drop(name)
-                    else
-                        recordsToReturn match {
-                            case arr: com.google.gson.JsonArray if arr.size() > 0 =>
-                                TapTestPreviewCache.put(
-                                    tapConfig,
-                                    records = arr,
-                                    columns = result.columns,
-                                    recordCount = result.recordCount,
-                                    recordsTruncated = recordsTruncated,
-                                    testLimit = effectiveTestLimit,
-                                    dataType = result.dataType
-                                )
-                            case _ => TapTestPreviewCache.drop(name)
-                        }
-                }
+                if (mode != "run")
+                    TapAPIController.holdTestPreview(
+                        TapTestPreviewCache,
+                        tapConfig,
+                        result,
+                        recordsToReturn,
+                        recordsTruncated,
+                        effectiveTestLimit,
+                        paramsSent = params.nonEmpty,
+                        scriptId = testedScriptId
+                    )
 
                 val hasTargetPipeline = tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
                 val persisted = mode == "run" && hasTargetPipeline && result.error == null && result.recordCount > 0

@@ -39,14 +39,17 @@ class TapTestPreviewCache(clock: () => Long = () => System.currentTimeMillis()) 
         recordCount: Int,
         recordsTruncated: Boolean,
         testLimit: Int,
-        dataType: String = "json"
+        dataType: String = "json",
+        scriptId: Option[String] = None
     ): Unit = {
         if (tap == null || tap.name == null || records == null || records.size() == 0) return
         if (records.toString.getBytes(StandardCharsets.UTF_8).length > MaxPreviewBytes) {
             drop(tap.name)
             return
         }
-        val scriptId = TapScriptIdentity.of(tap) match {
+        // The identity captured before the run when the caller has it (a script
+        // replaced mid-test must not get the old script's rows), else read now.
+        val id = scriptId.orElse(TapScriptIdentity.of(tap)) match {
             case Some(id) => id
             case None =>
                 // An unreadable script can never be matched later; do not hold.
@@ -58,7 +61,7 @@ class TapTestPreviewCache(clock: () => Long = () => System.currentTimeMillis()) 
             columns = columns,
             recordCount = recordCount,
             recordsTruncated = recordsTruncated,
-            scriptId = scriptId,
+            scriptId = id,
             testLimit = testLimit,
             capturedAtMs = clock(),
             dataType = dataType

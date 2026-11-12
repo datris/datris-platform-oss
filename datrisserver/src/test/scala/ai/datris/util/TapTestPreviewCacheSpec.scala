@@ -177,4 +177,43 @@ class TapTestPreviewCacheSpec extends AnyFunSuite {
             assert(cache.get(httpTap("tap_201"), 20).isDefined, "the newest entry is held")
         }
     }
+
+    // Reviewer follow-ups (2026-11-12): the 4 MiB cap and the identity captured before the run.
+
+    test("a preview whose JSON is over 4 MiB is not held") {
+        val (cache, _) = fresh()
+        asTenant("tenant_a") {
+            val tap = httpTap("src")
+            val big = new JsonArray()
+            val blob = "x" * (64 * 1024)
+            (0 until 70).foreach { i =>
+                val o = new JsonObject()
+                o.addProperty("id", i.toString)
+                o.addProperty("label", blob)
+                big.add(o)
+            }
+            assert(big.toString.length > TapTestPreviewCache.MaxPreviewBytes)
+            cache.put(tap, records = big, columns = Columns, recordCount = 70, recordsTruncated = false, testLimit = 100)
+            assert(cache.get(tap, 20).isEmpty, "an over-4-MiB preview must not be held")
+        }
+    }
+
+    test("an identity captured before the run is what the entry is held under") {
+        val (cache, _) = fresh()
+        asTenant("tenant_a") {
+            // The test ran v1; the stored tap was replaced with v2 while it ran.
+            val v2 = httpTap("src", "https://feed.example.org/v2/items")
+            cache.put(
+                v2,
+                records = rows(4),
+                columns = Columns,
+                recordCount = 4,
+                recordsTruncated = false,
+                testLimit = 20,
+                scriptId = Some("http:https://feed.example.org/v1/items")
+            )
+            assert(cache.get(v2, 20).isEmpty, "v1's rows must not be served for v2")
+            assert(cache.get(httpTap("src", "https://feed.example.org/v1/items"), 20).isDefined)
+        }
+    }
 }
