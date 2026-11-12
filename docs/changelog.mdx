@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.58.1" description="November 12, 2026">
+  **Claude Fable 5.2 is selectable, and an empty chat message gets a clear answer.**
+
+  - **Claude Fable 5.2 support.** Anthropic's newest model appears in Configuration → AI Providers for both the Assistant and code generation, on the direct Anthropic provider and on Amazon Bedrock. Claude Opus 5.5 stays the recommended model and the default on new installs, and no saved selection changes. Installs that can reach datris.ai see the new option without upgrading; this release adds it to the built-in list for installs that cannot. On Amazon Bedrock, Fable 5.2 needs the same one-time data-retention opt-in as the earlier Fable models.
+  - **Correct model names on Amazon Bedrock.** With live model discovery, Claude Fable 5.2 is listed under its own name instead of appearing as Claude Fable 5.
+  - **Empty chat messages are refused clearly.** Sending a message with no text to the Assistant or to the Operations, Configuration, Search or Catalog chat now returns a short message asking you to type something, instead of a provider error. A message with no text that carries an attached file still works.
+
+  **Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. No configuration changes are required. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
+</Update>
+
 <Update label="v1.58.0" description="November 11, 2026">
   **The Assistant previews real rows before it creates a pipeline, and proposes checks you confirm on a card.**
 
@@ -43,7 +53,7 @@ description: "Release history for Datris"
   - **Prompt caching for Anthropic.** Chat and agent requests sent directly to Anthropic now mark the system prompt and tool list for prompt caching, so repeat calls in a session reuse the cached prefix at a fraction of the input cost. The server log shows the cache token counts for each call. Bedrock, OpenAI, Azure and Grok requests are unchanged.
   - **Set self-healing per pipeline or tap from its page.** The pipeline page, the pipeline edit page and the tap run page now show a **Self-healing** row with the effective recovery mode and where it comes from (instance default or override). Admins can switch it to Off, Propose or Autopilot right there, or send it back to the instance default. The Agent Policy page's override editor shows these recovery entries properly instead of a blank row.
 
-  **Upgrading:** `docker compose pull && docker compose up -d`; the server and UI images changed. No configuration changes are required. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
+  **Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. No configuration changes are required. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
 </Update>
 
 <Update label="v1.55.0" description="October 31, 2026">
@@ -52,7 +62,7 @@ description: "Release history for Datris"
   - **Question cards in the Assistant.** When the Assistant needs answers before it can build something (which source, how often to run, where the data should land, which locations to cover), it now shows an inline question card instead of a numbered list. Each question gets its own tab: choices come with a one-line description and an **Other** box for your own answer, and open-ended questions show a text box. Picking a single choice moves to the next tab; **Submit** on the last tab posts the answers as your next message and the Assistant carries on. You can still ignore the card and type a reply, or click **Answer in chat instead**. The Ops, Configuration, Search and Catalog chats, the MCP server and the CLI are unchanged.
   - **Security hardening of request authentication.** Request identity handling in the server was tightened so that a request is only ever authenticated by the credentials it presents. All users should upgrade.
 
-  **Upgrading:** `docker compose pull && docker compose up -d`; the server and UI images changed. No configuration changes are required. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
+  **Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. No configuration changes are required. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
 </Update>
 
 <Update label="v1.54.2" description="October 30, 2026">
@@ -68,7 +78,7 @@ description: "Release history for Datris"
 
   - **Security updates.** Refreshed the server's bundled libraries and the UI's build-time dependencies to patched versions, clearing the open vulnerability reports against the published images. No behaviour change.
 
-  **Upgrading:** `docker compose pull && docker compose up -d`; the server and UI images changed. No configuration changes are required. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
+  **Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. No configuration changes are required. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
 </Update>
 
 <Update label="v1.54.0" description="October 29, 2026">
@@ -182,7 +192,7 @@ description: "Release history for Datris"
   - **Security updates.** Refreshed server and UI build dependencies to clear the open vulnerability reports. No behaviour change.
   - **MinIO health check** no longer depends on a config file inside the container.
 
-  **Upgrading:** refresh the compose file (`git pull` or re-download `docker-compose.standalone.yml`), then `docker compose pull && docker compose up -d`; the server and UI images changed. SSO is off by default. To turn it on, set `USE_USER_AUTH=true`, `OIDC_ENABLED=true`, `OIDC_ISSUER`, `OIDC_CLIENT_ID` and `OIDC_REDIRECT_URI`, put the client secret in Vault under `oss/oidc` (key `clientSecret`), and recreate the server. A secret named `oidc` is now platform-managed (taps and pipelines cannot reference it). The version endpoint gains `oidcEnabled`. SSO is single-tenant; no SAML or provider group-to-role mapping yet.
+  **Upgrading:** refresh the compose file (`git pull` or re-download `docker-compose.standalone.yml`), then `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. SSO is off by default. To turn it on, set `USE_USER_AUTH=true`, `OIDC_ENABLED=true`, `OIDC_ISSUER`, `OIDC_CLIENT_ID` and `OIDC_REDIRECT_URI`, put the client secret in Vault under `oss/oidc` (key `clientSecret`), and recreate the server. A secret named `oidc` is now platform-managed (taps and pipelines cannot reference it). The version endpoint gains `oidcEnabled`. SSO is single-tenant; no SAML or provider group-to-role mapping yet.
 </Update>
 
 <Update label="v1.46.0" description="October 8, 2026">
