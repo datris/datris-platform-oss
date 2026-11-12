@@ -15,8 +15,10 @@ class AIProvidersSpec extends AnyFunSuite {
         val rejecting = List(
             "claude-fable-5",
             "claude-fable-5-1",
+            "claude-fable-5-2",
             "claude-mythos-5",
             "claude-mythos-5-1",
+            "claude-mythos-5-2",
             "claude-opus-4-7",
             "claude-opus-4-8",
             "claude-opus-5",
@@ -112,7 +114,9 @@ class AIProvidersSpec extends AnyFunSuite {
             "anthropic.claude-opus-5-5",
             "anthropic.claude-sonnet-5",
             "anthropic.claude-fable-5",
+            "anthropic.claude-fable-5-2",
             "us.anthropic.claude-opus-5",
+            "us.anthropic.claude-fable-5-2",
             "us.anthropic.claude-sonnet-5"
         )
         rejecting.foreach { m =>

@@ -107,6 +107,7 @@
               "zone.js/testing"
             ],
             "tsConfig": "tsconfig.spec.json",
+            "browsers": "ChromeHeadless",
             "assets": [
               {
                 "glob": "**/*",

@@ -165,8 +165,13 @@ object AssistantAPIController {
                         dropped = true
                 }
             } else {
-                val blocks = pendingResults :+ AIContentBlock.TextBlock(content)
-                if (dropped && out.nonEmpty && out.last._1 == "user") {
+                // A blank user message carries no text block (providers reject
+                // an empty one); with no tool result to carry either, it is skipped.
+                val blocks =
+                    if (content.trim.nonEmpty) pendingResults :+ AIContentBlock.TextBlock(content) else pendingResults
+                if (blocks.isEmpty) {
+                    // nothing to send for this message
+                } else if (dropped && out.nonEmpty && out.last._1 == "user") {
                     // One text block per message, so the chat-completions shaper
                     // (which concatenates text blocks) keeps a paragraph break.
                     val merged = (out.last._2.lastOption, blocks.headOption) match {
@@ -680,6 +685,8 @@ class AssistantAPIController {
             attachmentIds.flatMap(id => AttachmentStore.get(id, tenantEnv))
         val attachmentMap: Map[String, (String, Array[Byte])] =
             resolvedAttachments.map(a => a.id -> (a.filename, a.bytes)).toMap
+        // A blank new message is only meaningful when it carries a file.
+        if (resolvedAttachments.isEmpty) ChatMessages.requireLastUserText(messagesArr)
         val effectiveMessages: List[(String, List[AIContentBlock])] =
             if (resolvedAttachments.isEmpty) historyMessages
             else appendAttachmentDescriptor(historyMessages, buildAttachmentDescriptor(resolvedAttachments))
@@ -1026,10 +1033,11 @@ class AssistantAPIController {
         msgs: List[(String, List[AIContentBlock])],
         descriptor: String
     ): List[(String, List[AIContentBlock])] = {
-        msgs.lastIndexWhere(_._1 == "user") match {
-            case -1 => msgs :+ (("user", List[AIContentBlock](AIContentBlock.TextBlock(descriptor))))
-            case i => msgs.updated(i, (msgs(i)._1, msgs(i)._2 :+ AIContentBlock.TextBlock("\n\n" + descriptor)))
-        }
+        // The files belong to the new (last) message. When that message had no
+        // text it was not emitted, so the descriptor becomes the user turn.
+        if (msgs.nonEmpty && msgs.last._1 == "user")
+            msgs.init :+ ((msgs.last._1, msgs.last._2 :+ AIContentBlock.TextBlock("\n\n" + descriptor)))
+        else msgs :+ (("user", List[AIContentBlock](AIContentBlock.TextBlock(descriptor))))
     }
 
     /** Render the dropped files as a block the model can reason about: name,

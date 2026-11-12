@@ -14,7 +14,7 @@ export interface ModelCatalog {
   embedding: Record<string, ModelOption[]>;
 }
 
-// Same-origin backend proxy that server-side fetches docs.datris.ai/models.json.
+// Same-origin backend proxy that server-side fetches datris.ai/models.json.
 // Going through the backend avoids the CORS gap on Mintlify's static assets and
 // lets the auth interceptor attach the user's API key.
 const CATALOG_URL = '/api/v1/ai/model-catalog';
@@ -22,11 +22,12 @@ const CACHE_KEY = 'datris.modelCatalog';
 const FETCH_TIMEOUT_MS = 5000;
 
 // Baked-in fallback — used when the remote fetch fails (airgapped installs, DNS flake).
-// Keep shape in sync with docs/models.json.
+// Keep shape in sync with datris.ai/models.json (src/data/models.json in the website repo).
 const FALLBACK: ModelCatalog = {
   aiPrimary: {
     anthropic: [
       { value: 'claude-opus-5-5', label: 'Claude Opus 5.5 (recommended)', recommended: true },
+      { value: 'claude-fable-5-2', label: 'Claude Fable 5.2' },
       { value: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
       { value: 'claude-fable-5', label: 'Claude Fable 5' },
       { value: 'claude-opus-5', label: 'Claude Opus 5' },
@@ -50,6 +51,7 @@ const FALLBACK: ModelCatalog = {
     // (only models the account/region can actually invoke).
     bedrock: [
       { value: 'anthropic.claude-opus-5-5', label: 'Claude Opus 5.5 (recommended)', recommended: true },
+      { value: 'anthropic.claude-fable-5-2', label: 'Claude Fable 5.2' },
       { value: 'anthropic.claude-fable-5-1', label: 'Claude Fable 5.1' },
       { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5' },
       { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5' },
@@ -71,6 +73,7 @@ const FALLBACK: ModelCatalog = {
       { value: 'claude-opus-5', label: 'Claude Opus 5' },
       { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { value: 'claude-fable-5-2', label: 'Claude Fable 5.2' },
       { value: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
       { value: 'claude-fable-5', label: 'Claude Fable 5' },
       { value: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
@@ -91,6 +94,7 @@ const FALLBACK: ModelCatalog = {
     bedrock: [
       { value: 'anthropic.claude-opus-5-5', label: 'Claude Opus 5.5 (recommended)', recommended: true },
       { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5' },
+      { value: 'anthropic.claude-fable-5-2', label: 'Claude Fable 5.2' },
       { value: 'anthropic.claude-fable-5-1', label: 'Claude Fable 5.1' },
       { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5' },
       { value: 'anthropic.claude-opus-4-8', label: 'Claude Opus 4.8' },

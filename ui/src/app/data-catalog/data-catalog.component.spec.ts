@@ -684,8 +684,7 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
   // (plans/stories/uc-catalog-cascade-delete-warnings.md)
   // Contract: cascade response `warnings: [{pipeline, message}]` -> component
   // `opWarnings` / `opWarningsLabel`, rendered as `.op-failures-banner.warn`
-  // reading "Deleting catalog '<name>': N pipeline(s) left a table in Unity
-  // Catalog" with one <li> per warning and a `.move-error-close` dismiss.
+  // reading "Deleting catalog '<name>': N warning(s) to review" with one <li> per warning and a `.move-error-close` dismiss.
 
   function cascadeDelete(name: string): void {
     const confirm = openDelete(name);
@@ -714,7 +713,7 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     if (!banner) return;
     const text = (banner.textContent || '').replace(/\s+/g, ' ');
     expect(text).toContain("Deleting catalog 'e2e_a'");
-    expect(text).toContain('left a table in Unity Catalog');
+    expect(text).toContain('1 warning to review');
     const items = Array.from(banner.querySelectorAll('li'));
     expect(items.length).toBe(1);
     expect(items[0].querySelector('strong')?.textContent?.trim()).toBe('p_a');
