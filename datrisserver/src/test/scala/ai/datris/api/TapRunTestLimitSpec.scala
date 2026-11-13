@@ -98,6 +98,30 @@ class TapRunTestLimitSpec extends AnyFunSuite {
         assert(TapAPIController.testPreviewSize(-1) == 20)
     }
 
+    // Story: Schema proposal reuses the tap's test rows
+    // (plans/stories/schema-proposal-reuse-test-rows.md), Acceptance 2.
+    // `POST /tap/run` gains an optional `reuseLastTest` body flag (Boolean true
+    // or the string "true"); like `testLimit`, the decision is lifted onto the
+    // companion so it is reachable without Vault or a servlet request:
+    //
+    //   private[api] def resolveReuseLastTest(mode: String, bodyReuseLastTest: Any): Boolean
+    //
+    // Only mode=test may answer from the held preview: a production run always
+    // runs the tap.
+    test("reuseLastTest with mode=run is ignored") {
+        assert(!TapAPIController.resolveReuseLastTest("run", java.lang.Boolean.TRUE))
+        assert(!TapAPIController.resolveReuseLastTest("run", "true"))
+        assert(!TapAPIController.resolveReuseLastTest("run", null))
+    }
+
+    test("reuseLastTest true (Boolean or string) with mode=test is honoured; absent or false is not") {
+        assert(TapAPIController.resolveReuseLastTest("test", java.lang.Boolean.TRUE))
+        assert(TapAPIController.resolveReuseLastTest("test", "true"))
+        assert(!TapAPIController.resolveReuseLastTest("test", null))
+        assert(!TapAPIController.resolveReuseLastTest("test", java.lang.Boolean.FALSE))
+        assert(!TapAPIController.resolveReuseLastTest("test", "false"))
+    }
+
     test("a higher limit yields more preview rows than the default") {
         val default = TapAPIController.testPreviewSize(TapAPIController.resolveTestLimit("test", null))
         val more = TapAPIController.testPreviewSize(TapAPIController.resolveTestLimit("test", Integer.valueOf(100)))

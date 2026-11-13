@@ -33,7 +33,8 @@ import ai.datris.util.{
     TapRunner,
     TapScriptResult,
     TapState,
-    TapStateIO
+    TapStateIO,
+    TapTestPreviewCache
 }
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -1495,6 +1496,20 @@ object CatalogAPIController {
             try {
                 // Status churn: plain write, no version minted (as POST /tap/run).
                 TapConfigIO.write(TapAPIController.stampTestResult(tap, result, TapAPIController.nowStamp()))
+                // This test returns no preview, so nothing is held: a failed test
+                // drops any preview held for a later reuseLastTest request (and a
+                // passing one is followed by the enable's versioned save, which
+                // drops it too).
+                TapAPIController.holdTestPreview(
+                    TapTestPreviewCache,
+                    tap,
+                    result,
+                    preview = null,
+                    previewTruncated = false,
+                    testLimit = TapAPIController.resolveTestLimit("test", null),
+                    paramsSent = false,
+                    scriptId = None
+                )
             } finally {
                 try TapRunner.release(result)
                 catch { case e: Exception => logger.warn("Could not release test staging of tap '" + tap.name + "': " + e.getMessage) }

@@ -1347,6 +1347,13 @@ components:
           type: array
           items:
             type: string
+        reused:
+          type: boolean
+          description: Present (true) when a `reuseLastTest` request was answered from the tap's last successful test; the tap was not run and `logs` is absent
+        testedAt:
+          type: string
+          format: date-time
+          description: ISO-8601 time of the test whose rows a `reused` response carries
         logs:
           type: string
         error:
@@ -5333,6 +5340,19 @@ paths:
                     uncapped test previews the first 20. Ignored for mode=run,
                     which always reads every row.
                   example: 20
+                reuseLastTest:
+                  type: boolean
+                  default: false
+                  description: >-
+                    mode=test only. Answer from the preview of this tap's last
+                    successful test when the server still holds it (in memory,
+                    for 30 minutes, while the tap's script or endpoint is
+                    unchanged, and when it previewed at least as many rows as
+                    testLimit asks for); the response then has `reused: true`
+                    and the tap is not run. Otherwise the test runs as usual.
+                    Ignored when `params` is sent and for mode=run. Used by
+                    propose_pipeline_schema.
+                  example: true
                 params:
                   type: object
                   additionalProperties: true

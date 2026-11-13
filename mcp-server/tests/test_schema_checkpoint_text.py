@@ -146,3 +146,84 @@ def test_assistant_prompt_appends_the_schema_checkpoint_rule():
     assert re.search(r"append\(\s*AssistantAPIController\.SchemaCheckpointRule\s*\)", src), (
         "buildSystemPrompt must append SchemaCheckpointRule"
     )
+
+
+# ---------------------------------------------------------------------------
+# Story: Schema proposal reuses the tap's test rows and stops cleanly on failure
+# (plans/stories/schema-proposal-reuse-test-rows.md), Acceptance 5.
+#
+# (a) "runs a capped test" is gone: the tool uses the rows from the tap's last
+#     successful test and runs the tap again only when none are held or a
+#     higher `limit` asks for more.
+# (b) One stop rule per block: only a result whose `status` is
+#     `schema_proposal` is a proposal; anything else means no schema and no
+#     table were shown, so tell the user what failed with the tool's next step,
+#     and do not ask the types question or call `ask_user` about types.
+#     Domain-neutral: no quoted example question or reply.
+
+_STOP_NO_ASK_USER = re.compile(r"(do not|don't|never)[^.]{0,60}`?ask_user`?[^.]{0,40}\btypes?\b", re.IGNORECASE)
+_QUOTED_QUESTION = re.compile(r"(\\\"|\"|“)[^\"”\n]{3,}\?(\\\"|\"|”)")
+
+
+def _stop_rule_windows(text):
+    """Spans around each `schema_proposal` that names it as the `status` a
+    proposal must carry."""
+    out = []
+    for m in re.finditer(r"schema_proposal", text):
+        before = text[max(0, m.start() - 80): m.start()]
+        if "status" not in before:
+            continue
+        out.append(text[max(0, m.start() - 200): m.end() + 700])
+    return out
+
+
+def _stop_rule(text, where):
+    wins = [w for w in _stop_rule_windows(text) if _STOP_NO_ASK_USER.search(w)]
+    assert wins, (
+        f"{where} must carry the stop rule: only a result whose `status` is `schema_proposal` "
+        f"is a proposal; otherwise no schema and no table were shown, report the failure with the "
+        f"next step, and do not call `ask_user` about types"
+    )
+    return wins[0]
+
+
+_STOP_BLOCKS = [
+    ("MCP instructions", _instructions),
+    ("datris://pipeline-config-reference", _pipeline_config_reference),
+    ("datris://tap-workflow-reference", _tap_workflow_reference),
+    ("propose_pipeline_schema tool description", lambda: _tool_block("propose_pipeline_schema")),
+    ("SchemaCheckpointRule", _schema_checkpoint_rule),
+]
+
+
+@pytest.mark.parametrize("path", [SERVER_PY, ASSISTANT_SCALA], ids=["server.py", "AssistantAPIController.scala"])
+def test_no_block_says_the_tool_runs_a_capped_test(path):
+    src = _read(path)
+    assert not re.search(r"runs a capped test", src, re.IGNORECASE), (
+        f"{os.path.basename(path)} still says propose_pipeline_schema runs a capped test"
+    )
+
+
+@pytest.mark.parametrize("where,block", _STOP_BLOCKS, ids=[w for w, _ in _STOP_BLOCKS])
+def test_block_contains_the_stop_rule(where, block):
+    w = _stop_rule(block(), where)
+    assert re.search(r"\bno schema\b", w, re.IGNORECASE), f"{where}: stop rule must say no schema was shown:\n{w}"
+    assert re.search(r"\btable\b", w, re.IGNORECASE), f"{where}: stop rule must say no table was shown:\n{w}"
+
+
+@pytest.mark.parametrize("where,block", _STOP_BLOCKS, ids=[w for w, _ in _STOP_BLOCKS])
+def test_stop_rule_contains_no_quoted_question_text(where, block):
+    w = _stop_rule(block(), where)
+    hits = [m.group(0) for m in _QUOTED_QUESTION.finditer(w)]
+    assert not hits, f"{where}: stop rule must not quote example question text: {hits}\n{w}"
+
+
+_REUSE_BLOCKS = [_STOP_BLOCKS[2], _STOP_BLOCKS[3]]  # the two places that said "runs a capped test"
+
+
+@pytest.mark.parametrize("where,block", _REUSE_BLOCKS, ids=[w for w, _ in _REUSE_BLOCKS])
+def test_block_says_the_tool_reuses_the_last_successful_test(where, block):
+    text = block()
+    assert re.search(r"last successful test", text, re.IGNORECASE), (
+        f"{where} must say propose_pipeline_schema uses the rows from the tap's last successful test"
+    )

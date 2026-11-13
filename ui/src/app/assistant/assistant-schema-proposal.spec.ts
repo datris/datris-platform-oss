@@ -785,6 +785,48 @@ describe('Assistant schema-proposal card (schema_proposal)', () => {
     expect(entry.input).toEqual({ tap: 'prices_tap', destination: 'mongodb' });
   });
 
+  // ------------- failed proposal / pull more rows runs fresh (2026-11-12) ---
+  // Story: plans/stories/schema-proposal-reuse-test-rows.md, Acceptance 7
+  // (regression: the UI side is unchanged by the story).
+
+  it('an error tool_result for propose_pipeline_schema leaves the card with no schemaProposal, no grid and no Confirm types button', async () => {
+    await mount();
+    const id = 'toolu_sp_err';
+    const err = JSON.stringify({
+      error: "No schema was proposed for tap 'prices_tap' and nothing was shown to the user: its test returned no rows. " +
+        'Report this to the user as written, do not ask about column types, re-test the tap and call again once a test returns rows.'
+    });
+    state.send('build a tap and pipeline from a CSV URL into Postgres');
+    stream.next({ type: 'tool_use_start', id, name: 'propose_pipeline_schema' });
+    stream.next({ type: 'tool_use', id, name: 'propose_pipeline_schema', input: { tap: 'prices_tap', destination: 'postgres' } });
+    stream.next({ type: 'tool_result', id, name: 'propose_pipeline_schema', result: err, isError: true });
+    stream.next({ type: 'text_delta', text: 'The schema proposal failed.' });
+    stream.next({ type: 'done' });
+    stream.complete();
+    const c = card(id);
+    expect(c).withContext('the tool card exists').toBeTruthy();
+    expect(c.schemaProposal).withContext('a failed proposal must not attach a schemaProposal').toBeFalsy();
+    c.expanded = true;
+    await render();
+    expect(el.querySelector('.schema-card')).withContext('no schema card for a failed proposal').toBeNull();
+    expect(typeSelects().length).withContext('no type grid for a failed proposal').toBe(0);
+    expect(buttonNamed('Confirm types')).withContext('no Confirm types button').toBeUndefined();
+    expect(buttonNamed('Pull more rows')).withContext('no Pull more rows button').toBeUndefined();
+  });
+
+  it('pullMoreRows still calls runTap(tap, "test", limit) with no reuse flag', async () => {
+    await mount();
+    const c = proposeAndFinish('toolu_fresh');
+    runTapSpy.and.returnValue(of({ status: 'success', records: previewRows(100), columns: ['id', 'price', 'qty'] }));
+    proposeSpy.and.returnValue(of({ sampleRowCount: 100, fields: fields() }));
+    (fixture.componentInstance as any).pullMoreRows(c);
+    await render();
+    expect(runTapSpy).toHaveBeenCalledTimes(1);
+    const args = runTapSpy.calls.mostRecent().args;
+    expect(args).withContext('exactly (tap, mode, limit): no fourth reuse argument').toEqual(['prices_tap', 'test', 100]);
+    expect(JSON.stringify(args)).not.toContain('reuseLastTest');
+  });
+
   it('a typed card in the same flow is still sent as synthetic (unchanged)', async () => {
     await mount();
     const c = proposeAndFinish('toolu_typed_hist');
@@ -821,6 +863,17 @@ describe('TapService.runTap / PipelineService.proposeSchema (schema-proposal car
     expect(req.request.body.testLimit).toBeUndefined();
     expect(req.request.body).toEqual(jasmine.objectContaining({ name: 'prices_tap', mode: 'run' }));
     req.flush({});
+  });
+
+  // Story: plans/stories/schema-proposal-reuse-test-rows.md, Acceptance 7:
+  // the Test button and Pull more rows always run fresh.
+  it('runTap(name, "test", testLimit) never sends reuseLastTest', () => {
+    const tap: any = TestBed.inject(TapService);
+    tap.runTap('prices_tap', 'test', 100).subscribe();
+    const req = http.expectOne(r => r.url.startsWith('/api/v1/tap/run'));
+    expect('reuseLastTest' in req.request.body).withContext(JSON.stringify(req.request.body)).toBeFalse();
+    expect(req.request.body).toEqual({ name: 'prices_tap', mode: 'test', testLimit: 100 });
+    req.flush({ status: 'success', records: [] });
   });
 
   it('proposeSchema(records, columns) posts both to /api/v1/pipeline/propose-schema', () => {
