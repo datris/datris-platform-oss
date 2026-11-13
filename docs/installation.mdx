@@ -6,8 +6,8 @@ description: "How to install and set up the Datris Data Platform"
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
-- **Memory:** 4 GB available to Docker for the [minimal install](#minimal-install),
-  about 8 GB for the full stack with the bundled embedding server. On Docker
+- **Memory:** 4 GB available to Docker for a standard install, about 8 GB
+  if you run the bundled embedding server (see [Minimal install](#minimal-install)). On Docker
   Desktop this is the VM allocation under Settings → Resources, not your
   host's total RAM.
 
@@ -34,10 +34,15 @@ Installing for production? Add `DATRIS_GOVERNED=1` (`curl -fsSL https://get.datr
 
 ### Minimal install
 
-Trying Datris on a laptop? The default stack runs about ten containers and
-the bundled embedding server (TEI) downloads a 2.2 GB model on first boot.
-None of that is required. Three settings cut it to nine small containers,
-no model download, and roughly 3 GB of memory at idle:
+A standard install with an OpenAI key is already small: ten containers,
+no model download, and roughly 3 GB of memory at idle. The heavier path is
+the bundled embedding server (TEI), which the installer offers for semantic
+search when you have no OpenAI key. It adds one container, downloads a
+2.2 GB model on first boot, and brings the stack to about 8 GB. Answer `n`
+at that prompt to skip it.
+
+To get the small footprint by hand, or to drop the bundled Postgres as well
+(nine containers), use these settings:
 
 ```bash
 # .env — or export before `docker compose up`

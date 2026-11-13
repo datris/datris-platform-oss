@@ -47,11 +47,15 @@ curl -fsSL https://get.datris.ai/install.sh | sh
 
 Installing from a coding agent or a CI job with no terminal attached? Export the key first (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or another provider's): the installer asks nothing and reads it from the environment. Then check `http://localhost:8080/api/v1/version` answers before going on. Full steps: [Install for Agents](https://docs.datris.ai/install-for-agents).
 
-**Minimal install (laptop-friendly).** The default stack runs about ten
-containers and the bundled embedding server downloads a 2.2 GB model on first
-boot. None of that is required. Three settings in `.env` cut it to nine small
-containers, no download, and roughly 3.5 GB of memory (4 GB of Docker memory
-is enough; the full stack wants 8 GB):
+**How big is it?** A standard install with an OpenAI key runs ten small
+containers and uses about 3 GB of memory at idle, with no model download
+(4 GB of Docker memory is enough). Without an OpenAI key the installer offers
+a bundled local embedding server for semantic search instead: one more
+container, a 2.2 GB model download on first boot, and about 8 GB in total.
+Answer `n` at that prompt to skip it and add an embedding provider later.
+
+**Minimal install (laptop-friendly).** To get the small footprint by hand, or
+to drop the bundled Postgres as well (nine containers), set these in `.env`:
 
 ```bash
 TEI_ENABLED=0               # skip the local embedding server and its 2.2 GB download
