@@ -874,4 +874,20 @@ describe('DataCatalogComponent — restricted user', () => {
     discardPeriodicTasks();
     flush();
   }));
+
+
+  // Story: Catalog-scoped user access, part 3
+  // (plans/stories/catalog-scoped-user-access-metadata-read.md): lineage is
+  // filtered to the user's catalogs server-side, so the button is shown.
+  it('restricted user sees the Lineage button', fakeAsync(() => {
+    fixture.detectChanges();
+    tick();
+    fixture.detectChanges();
+    const btn = el.querySelector('a.lineage-btn') as HTMLElement | null;
+    expect(btn).withContext('Lineage button rendered for a restricted user').not.toBeNull();
+    expect((btn?.textContent || '').trim()).toContain('Lineage');
+    fixture.destroy();
+    discardPeriodicTasks();
+    flush();
+  }));
 });

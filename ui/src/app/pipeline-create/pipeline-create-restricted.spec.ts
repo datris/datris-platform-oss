@@ -146,4 +146,26 @@ describe('PipelineCreateComponent — restricted user catalog field', () => {
     expect(optionLabels(s)).withContext('view-only Archive is visible in lists but not a filing target').not.toContain('Archive');
     expect(component.availableCatalogs || []).not.toContain('Archive');
   }));
+
+
+  // Story: Catalog-scoped user access, part 3
+  // (plans/stories/catalog-scoped-user-access-metadata-read.md): the restricted
+  // bundle keeps metadata:read, so the AI schema generator is offered again.
+  it('Generate schema with AI is offered to a restricted user', fakeAsync(() => {
+    setup({ Sales: 'edit', Archive: 'view' });
+    create();
+    component.step = 5;
+    component.sourceType = 'json';
+    component.dqValidateHeader = true;
+    fixture.detectChanges();
+    const labels = (Array.from(el.querySelectorAll('label.radio-label')) as HTMLElement[])
+      .map(l => (l.textContent || '').trim());
+    expect(labels).withContext('step 5 schema-mode radios').toContain('Generate schema with AI');
+    expect(el.querySelector('input[name="dqSchemaMode"][value="generate"]'))
+      .withContext('generate radio rendered').not.toBeNull();
+    component.dqSchemaMode = 'generate';
+    fixture.detectChanges();
+    expect(el.querySelector('input[placeholder="e.g. stock_prices_schema"]'))
+      .withContext('generate-mode inputs render for a restricted user').not.toBeNull();
+  }));
 });

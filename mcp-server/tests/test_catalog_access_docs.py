@@ -22,6 +22,18 @@ import server  # noqa: E402
 NAMED = (
     "list_pipelines", "list_taps", "find_data", "get_pipeline", "get_tap",
     "create_pipeline", "create_tap", "set_catalog", "rename_catalog",
+    # Part 3 (plans/stories/catalog-scoped-user-access-metadata-read.md):
+    # lineage and provenance now work for catalog-limited users, filtered.
+    "get_lineage", "get_provenance",
+)
+
+# Part 3: table/collection listings and Unity Catalog browse cannot be
+# catalog-filtered, so the server refuses them for catalog-limited users.
+LISTING = (
+    "list_postgres_databases", "list_postgres_schemas", "list_postgres_tables", "list_postgres_columns",
+    "list_mongodb_databases", "list_mongodb_collections",
+    "list_qdrant_collections", "list_weaviate_classes", "list_milvus_collections",
+    "list_chroma_collections", "list_pgvector_collections", "browse_unity_catalog",
 )
 CREATE = ("create_pipeline", "create_tap")
 
@@ -65,3 +77,21 @@ def test_create_tool_description_says_missing_catalog_is_filled_in_or_refused_wi
     assert "catalog access" in d, name
     assert "without" in d and "catalog" in d, f"{name}: does not describe a create without `catalog`"
     assert "allowed catalogs" in d, f"{name}: does not say the refusal lists allowed catalogs"
+
+
+def test_listing_tools_say_the_server_refuses_them_for_catalog_limited_users():
+    tools = _tools()
+    missing = [n for n in LISTING if n not in tools]
+    assert not missing, f"tools missing from _all_tools(): {missing}"
+    problems = []
+    for name in LISTING:
+        d = _norm(tools[name].description)
+        if "limited to specific catalogs" not in d:
+            problems.append(f"{name}: does not name catalog-limited users")
+        if "cannot list tables or collections" not in d:
+            problems.append(f"{name}: does not say they cannot list tables or collections")
+        if "server refuses" not in d:
+            problems.append(f"{name}: does not say the server refuses this tool")
+        if "find_data" not in d or "get_pipeline" not in d:
+            problems.append(f"{name}: does not point at find_data / get_pipeline")
+    assert not problems, "\n".join(problems)

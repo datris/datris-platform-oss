@@ -6,14 +6,15 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.{AuditEntry, AuditLog}
-import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResourceHiddenException}
-import ai.datris.config.TenantInterceptor
+import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, CapabilityRoutes, ResourceHiddenException, RouteCheck}
+import ai.datris.config.{CapabilityInterceptor, TenantInterceptor}
 import ai.datris.model._
-import ai.datris.util.{APIKeyValidator, CatalogOps, InMemoryUserDb, UserStore}
+import ai.datris.util.{APIKeyValidator, CatalogOps, InMemoryUserDb, LineageService, UserStore}
 import ai.datris.util.InMemoryUserDb.grants
-import com.google.gson.JsonParser
-import jakarta.servlet.http.HttpServletRequest
-import org.mockito.Mockito.{mock, when}
+import com.google.gson.{JsonObject, JsonParser}
+import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
+import org.mockito.ArgumentMatchers.anyInt
+import org.mockito.Mockito.{doAnswer, mock, when}
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 import org.springframework.http.ResponseEntity
@@ -49,6 +50,30 @@ import scala.collection.mutable
   * }}}
   * Bullet 6 (Observable PATCH + /me) runs through the real AuthAPIController
   * against an in-memory user table, with AuditLog captured at its sink.
+  *
+  * Part 3 (plans/stories/catalog-scoped-user-access-metadata-read.md),
+  * Acceptance bullet 2. The refusals of the /metadata listings and Unity Catalog
+  * browse run through the real `CapabilityInterceptor.preHandle`. Lineage
+  * and provenance read Mongo, so their controller decisions are pinned on
+  * pure seams over the loaded data (as `enableOrderedRefusal` above):
+  * {{{
+  * object CapabilityRoutes {
+  *   val UnfilterableForRestricted: Seq[(String, String)]
+  *   def refusedForRestrictedSession(method: String, path: String): Boolean
+  * }
+  * object LineageAPIController {
+  *   // the graph GET /lineage returns and GET /lineage/{type}/{name} walks:
+  *   // LineageService.visibleTo(g, keep) for a restricted session, g otherwise
+  *   def visibleGraph(request: HttpServletRequest, g: LineageService.Graph): LineageService.Graph
+  *   // GET /lineage/columns/{pipeline}: Some(404 no such pipeline) when hidden; None otherwise
+  *   def columnsRefusal(request: HttpServletRequest, pipeline: String, read: String => PipelineConfig): Option[ResponseEntity[String]]
+  * }
+  * object ProvenanceAPIController {
+  *   // after ProvenanceResolver.resolve: Some(404 no such run) when the run's
+  *   // pipeline is absent or hidden from a restricted session; None otherwise
+  *   def provenanceRefusal(request: HttpServletRequest, runId: String, resolved: JsonObject, read: String => PipelineConfig): Option[ResponseEntity[String]]
+  * }
+  * }}}
   */
 class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach {
 
@@ -413,5 +438,153 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         // Real booleans still work.
         assert(patchAsAdmin("bob", """{"restricted":false}""").getStatusCode.value == 200)
         assert(!db.user("bob").get.restricted)
+    }
+
+    // ------------------------------------------------------ Part 3: metadata:read kept, unfilterable listings refused
+
+    /** Runs the real interceptor; returns (continue?, status, body). */
+    private def intercept(r: HttpServletRequest): (Boolean, Int, String) = {
+        val out = new java.io.StringWriter()
+        val writer = new java.io.PrintWriter(out)
+        var status = 200
+        val resp = mock(classOf[HttpServletResponse])
+        when(resp.getWriter).thenReturn(writer)
+        doAnswer { i => status = i.getArgument[Int](0); null }.when(resp).setStatus(anyInt())
+        val cont = new CapabilityInterceptor().preHandle(r, resp, null)
+        writer.flush()
+        (cont, status, out.toString)
+    }
+
+    private val catalogScopedMetadataKey: ResolvedKey =
+        ResolvedKey(None, "sales-meta", Capability.parseList(Seq("pipeline:read:catalog=Sales", "metadata:read")), isLegacyFullAccess = false)
+
+    test("GET /api/v1/metadata/postgres/tables is 403 with the capability-denied body for a restricted session and passes for a catalog-scoped API key holding metadata:read") {
+        val path = "/api/v1/metadata/postgres/tables"
+        val bob = restrictedSession(grants("Sales" -> "edit"))
+        // The refusal is the listing route, not a missing capability: the bundle holds metadata:read.
+        assert(bob.matchesResourceAction("metadata", "read"), "restricted bundle keeps metadata:read")
+        assert(CapabilityRoutes.refusedForRestrictedSession("GET", path))
+        assert(CapabilityRoutes.UnfilterableForRestricted.contains(("GET", "/api/v1/metadata/**")))
+
+        val (cont, status, body) = intercept(req(bob, path = path))
+        assert(!cont, "the controller must not run")
+        assert(status == 403, body)
+        val o = JsonParser.parseString(body).getAsJsonObject
+        assert(o.get("errorKind").getAsString == "capability_denied", body)
+        assert(o.get("error").getAsString == "capability denied", body)
+        assert(o.get("required").getAsString == "metadata:read", body)
+        assert(o.get("route").getAsString == "GET " + path, body)
+        assert(captured.exists(e => e.category == "security" && e.action == "denied"), captured.map(e => e.category + "/" + e.action))
+
+        captured.clear()
+        val (keyCont, keyStatus, keyBody) = intercept(req(catalogScopedMetadataKey, path = path))
+        assert(keyCont && keyStatus == 200 && keyBody.isEmpty, s"API key with metadata:read passes: $keyStatus $keyBody")
+        assert(!captured.exists(_.category == "security"), "no denial row for the key")
+        // An unrestricted session is unchanged too.
+        val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        assert(intercept(req(editor, path = path))._1)
+    }
+
+    test("GET /api/v1/unity-catalog/browse is 403 for a restricted session") {
+        val path = "/api/v1/unity-catalog/browse"
+        val bob = restrictedSession(grants("Sales" -> "own"))
+        assert(bob.matchesResourceAction("metadata", "read"), "restricted bundle keeps metadata:read")
+        assert(CapabilityRoutes.refusedForRestrictedSession("GET", path))
+        val (cont, status, body) = intercept(req(bob, path = path))
+        assert(!cont && status == 403, s"$status $body")
+        assert(JsonParser.parseString(body).getAsJsonObject.get("errorKind").getAsString == "capability_denied", body)
+        assert(intercept(req(catalogScopedMetadataKey, path = path))._1, "API keys with metadata:read are unchanged")
+    }
+
+    private val pgOrders = Destination(schemaProperties = null, database = Database(dbName = "datris", schema = "public", table = "orders", usePostgres = true))
+
+    private def lineageGraph: LineageService.Graph = {
+        def tap(n: String, target: String, catalog: String) = TapConfig(name = n, description = "d", targetPipeline = target, catalog = catalog)
+        LineageService.build(
+            List(tap("t_orders", "orders", "Sales"), tap("t_hr_feed", "orders", "HR"), tap("t_payroll", "payroll", "HR")),
+            List(
+                PipelineConfig(name = "orders", catalog = "Sales", destination = pgOrders),
+                // Lands into the same table: the shared dataset gets an edge to catalog:HR.
+                PipelineConfig(name = "payroll", catalog = "HR", destination = pgOrders)
+            )
+        )
+    }
+
+    test("lineage neighborhood of a pipeline outside the grants is 404 and inside the grants is 200 with hidden upstream/downstream dropped") {
+        val g = lineageGraph
+        val ds = "dataset:postgres:datris.public.orders"
+        // Precondition: the unfiltered graph links orders to HR items both ways.
+        assert(g.edges.exists(e => e.from == "tap:t_hr_feed" && e.to == "pipeline:orders"))
+        assert(g.edges.exists(e => e.from == ds && e.to == "catalog:HR"))
+
+        val session = req(restrictedSession(grants("Sales" -> "view")), path = "/api/v1/lineage/pipeline/payroll")
+        val v = LineageAPIController.visibleGraph(session, g)
+        val ids = v.nodes.map(_.id).toSet
+        // Outside the grants: absent from the walked graph -> the existing "no such node" 404.
+        assert(!ids.contains("pipeline:payroll"), ids)
+        // Inside the grants: present, with its own chain.
+        Seq("pipeline:orders", "tap:t_orders", "source:tap:t_orders", ds, "catalog:Sales").foreach(i => assert(ids.contains(i), s"$i kept: $ids"))
+        // Hidden upstream (HR tap and its source) and downstream (catalog:HR) dropped.
+        Seq("tap:t_hr_feed", "source:tap:t_hr_feed", "tap:t_payroll", "source:tap:t_payroll", "catalog:HR").foreach(i =>
+            assert(!ids.contains(i), s"$i must be dropped: $ids")
+        )
+        assert(v.edges.forall(e => ids.contains(e.from) && ids.contains(e.to)), v.edges)
+        assert(!v.edges.exists(e => e.from == "pipeline:payroll" || e.to == "pipeline:payroll"))
+
+        // Unrestricted session and API keys: the graph is untouched.
+        val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        assert(LineageAPIController.visibleGraph(req(editor), g) == g)
+        assert(LineageAPIController.visibleGraph(req(catalogScopedMetadataKey), g) == g)
+    }
+
+    test("lineage columns for a hidden pipeline is the no-such-pipeline 404") {
+        val stored = Map("payroll" -> pipeline("payroll", "HR"), "orders" -> pipeline("orders", "Sales"))
+        val read: String => PipelineConfig = n => stored.getOrElse(n, null)
+        val session = req(restrictedSession(grants("Sales" -> "view")), path = "/api/v1/lineage/columns/payroll")
+        val r = LineageAPIController.columnsRefusal(session, "payroll", read)
+        assert(r.exists(_.getStatusCode.value == 404), r.map(_.getBody))
+        assert(errorOf(r.get) == "no such pipeline: payroll", r.get.getBody)
+        assert(LineageAPIController.columnsRefusal(session, "orders", read).isEmpty)
+        val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        assert(LineageAPIController.columnsRefusal(req(editor), "payroll", read).isEmpty)
+    }
+
+    test("provenance for a run of a hidden pipeline is 404 no such run") {
+        val stored = Map("payroll" -> pipeline("payroll", "HR"), "orders" -> pipeline("orders", "Sales"))
+        val read: String => PipelineConfig = n => stored.getOrElse(n, null)
+        def resolved(p: Option[String]): JsonObject = {
+            val o = new JsonObject(); o.addProperty("runId", "run-1"); p.foreach(o.addProperty("pipeline", _)); o
+        }
+        val session = req(restrictedSession(grants("Sales" -> "view")), path = "/api/v1/provenance")
+        Seq(Some("payroll"), None, Some("gone")).foreach { p =>
+            val r = ProvenanceAPIController.provenanceRefusal(session, "run-1", resolved(p), read)
+            assert(r.exists(_.getStatusCode.value == 404), s"$p -> ${r.map(_.getBody)}")
+            assert(errorOf(r.get) == "no such run: run-1", r.get.getBody)
+            assert(!r.get.getBody.contains("payroll"), "never a leaked name")
+        }
+        assert(ProvenanceAPIController.provenanceRefusal(session, "run-1", resolved(Some("orders")), read).isEmpty)
+        val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        assert(ProvenanceAPIController.provenanceRefusal(req(editor), "run-1", resolved(Some("payroll")), read).isEmpty)
+        assert(ProvenanceAPIController.provenanceRefusal(req(editor), "run-1", resolved(None), read).isEmpty)
+    }
+
+    test("config/generate-schema and pipeline/profile routes resolve to metadata:read, which the restricted bundle holds") {
+        val bob = restrictedSession(grants("Sales" -> "edit"))
+        Seq(
+            "POST" -> "/api/v1/config/generate-schema",
+            "POST" -> "/api/v1/pipeline/profile",
+            "GET" -> "/api/v1/vector-stores/available",
+            "GET" -> "/api/v1/lineage",
+            "GET" -> "/api/v1/lineage/pipeline/orders",
+            "GET" -> "/api/v1/provenance",
+            "GET" -> "/api/v1/catalog/find",
+            "GET" -> "/api/v1/activity/signals"
+        ).foreach { case (m, p) =>
+            assert(CapabilityRoutes.lookup(m, p) == RouteCheck.Require("metadata", "read"), s"$m $p")
+            assert(!CapabilityRoutes.refusedForRestrictedSession(m, p), s"$m $p is not an unfilterable listing")
+        }
+        assert(bob.matchesResourceAction("metadata", "read"), "restricted bundle holds metadata:read")
+        val (cont, status, body) = intercept(req(bob, method = "POST", path = "/api/v1/config/generate-schema"))
+        assert(cont, s"restricted session passes the capability gate: $status $body")
     }
 }

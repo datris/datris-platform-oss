@@ -66,13 +66,16 @@ class CatalogGrantsSpec extends AnyFunSuite {
         }
     }
 
-    test("restricted bundle omits query:postgres, query:mongodb, query:natural, metadata:read") {
-        val refused = Seq("query" -> "postgres", "query" -> "mongodb", "query" -> "natural", "metadata" -> "read")
+    // Story part 3 (plans/stories/catalog-scoped-user-access-metadata-read.md), Acceptance bullet 1:
+    // metadata:read stays in the restricted bundle; only the three raw query capabilities are refused.
+    test("restricted bundle keeps metadata:read and omits query:postgres, query:mongodb, query:natural") {
+        val refused = Seq("query" -> "postgres", "query" -> "mongodb", "query" -> "natural")
         Seq(User.RoleEditor, User.RoleViewer).foreach { role =>
             val caps = CatalogGrants.capabilitiesFor(role, grants("Sales" -> "edit"))
             refused.foreach { case (r, a) =>
                 assert(!caps.exists(_.matchesResourceAction(r, a)), s"$role restricted bundle must not hold $r:$a: ${raw(caps)}")
             }
+            assert(caps.exists(_.matchesResourceAction("metadata", "read")), s"$role restricted bundle keeps metadata:read: ${raw(caps)}")
             // Non-catalog capabilities of the role bundle are carried.
             assert(caps.exists(_.matchesResourceAction("job", "read")), s"$role keeps job:read")
             assert(caps.exists(_.matchesResourceAction("query", "objectstore")), s"$role keeps query:objectstore")

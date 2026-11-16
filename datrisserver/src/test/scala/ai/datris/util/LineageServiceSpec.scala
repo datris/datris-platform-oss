@@ -290,4 +290,70 @@ class LineageServiceSpec extends AnyFunSuite {
         assert(!g.edges.exists(e => e.from == "pipeline:answer" && e.to.startsWith("dataset:")))
         assert(!g.nodes.exists(_.id.contains("scratch")), s"nothing in the graph may be keyed on scratch: ${g.nodes.map(_.id)}")
     }
+
+    // Story: Catalog-scoped user access, part 3
+    // (plans/stories/catalog-scoped-user-access-metadata-read.md), Acceptance bullet 3.
+    // Pinned: LineageService.visibleTo(g: Graph, keep: Node => Boolean): Graph — drops
+    // pipeline/tap/catalog nodes failing `keep`, then source/dataset nodes left with no
+    // edge to a kept node, then edges with a dropped endpoint.
+
+    private val salesOnly: LineageService.Node => Boolean = n => n.nodeType match {
+        case "pipeline" | "tap" => n.catalog.contains("Sales")
+        case "catalog" => n.name == "Sales"
+        case _ => true
+    }
+
+    private def hrDest(table: String) = Destination(
+        schemaProperties = null,
+        database = Database(dbName = "datris", schema = "public", table = table, usePostgres = true)
+    )
+
+    test("visibleTo keeps a granted pipeline, its tap, source, dataset and catalog, and drops a hidden pipeline's chain") {
+        val g = LineageService.build(
+            List(tap("orders-export", "orders", "Sales"), tap("payroll-export", "payroll", "HR")),
+            List(pipeline("orders", "Sales", pgDest), pipeline("payroll", "HR", hrDest("payroll")))
+        )
+        val v = LineageService.visibleTo(g, salesOnly)
+        val ids = v.nodes.map(_.id).toSet
+        assert(ids == Set(
+            "source:tap:orders-export",
+            "tap:orders-export",
+            "pipeline:orders",
+            "dataset:postgres:datris.public.orders",
+            "catalog:Sales"
+        ), ids)
+        val edges = v.edges.map(e => e.from -> e.to).toSet
+        assert(edges == Set(
+            "source:tap:orders-export" -> "tap:orders-export",
+            "tap:orders-export" -> "pipeline:orders",
+            "pipeline:orders" -> "dataset:postgres:datris.public.orders",
+            "dataset:postgres:datris.public.orders" -> "catalog:Sales"
+        ), edges)
+        // keep-everything is the identity.
+        assert(LineageService.visibleTo(g, _ => true) == g)
+    }
+
+    test("a source feeding one visible and one hidden pipeline survives with only the visible edge") {
+        // Two HTTP taps reading the same host share one source node.
+        def httpTap(n: String, target: String, catalog: String) = TapConfig(
+            name = n,
+            description = "d",
+            targetPipeline = target,
+            catalog = catalog,
+            scriptKind = "http",
+            endpointUrl = "https://feeds.example.com/v1/" + n
+        )
+        val g = LineageService.build(
+            List(httpTap("sales-prices", "orders", "Sales"), httpTap("hr-prices", "payroll", "HR")),
+            List(pipeline("orders", "Sales", pgDest), pipeline("payroll", "HR", hrDest("payroll")))
+        )
+        val src = "source:feeds.example.com"
+        assert(g.edges.count(_.from == src) == 2, "precondition: one source, two taps")
+        val v = LineageService.visibleTo(g, salesOnly)
+        assert(v.nodes.exists(_.id == src), "shared source survives")
+        assert(v.edges.filter(e => e.from == src || e.to == src).map(e => e.from -> e.to) == List(src -> "tap:sales-prices"))
+        assert(!v.nodes.exists(_.id == "tap:hr-prices"))
+        assert(!v.nodes.exists(_.id == "pipeline:payroll"))
+        assert(!v.nodes.exists(_.id == "dataset:postgres:datris.public.payroll"))
+    }
 }
