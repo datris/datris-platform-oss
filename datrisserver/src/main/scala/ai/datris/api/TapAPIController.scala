@@ -1354,12 +1354,17 @@ class TapAPIController {
     @GetMapping(path = Array("/tap/generate/status"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def generateStatus(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestParam tap: String
+        @RequestParam tap: String,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
             val gson = new Gson
-            val response = TapAPIController.generateStatusBody(TapGenerationProgress.get(tap), System.currentTimeMillis())
+            // A hidden tap's generation reads as "none running" for a restricted user.
+            val progress =
+                if (TapAPIController.restrictedRefusalIfExists(request, tap, "read").isDefined) None
+                else TapGenerationProgress.get(tap)
+            val response = TapAPIController.generateStatusBody(progress, System.currentTimeMillis())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -1432,6 +1437,7 @@ class TapAPIController {
             logger.info(s"API endpoint POST /tap/review called, tapName: $tapName, recordCount: $recordCount, " +
                 s"priorIterations: ${priorIterations.size}")
             APIKeyValidator.validate(apiKey)
+            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")
@@ -1481,6 +1487,7 @@ class TapAPIController {
             logger.info(s"API endpoint POST /tap/optimize called, tapName: $tapName, recordCount: $recordCount, " +
                 s"durationMs: $durationMs, priorIterations: ${priorIterations.size}")
             APIKeyValidator.validate(apiKey)
+            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")

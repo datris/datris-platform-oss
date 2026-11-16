@@ -2830,6 +2830,7 @@ paths:
       tags: [Pipelines]
       summary: Propose destination column types from landed data
       description: >-
+        Restricted users get the same "Pipeline not found" 400 for a pipeline outside their catalog grants (applying types needs edit).
         Agent-created pipelines store every destination column as text. This
         stateless call samples up to 1000 rows that already landed in the
         destination (postgres, snowflake, databricks, or sqlserver), infers real column
@@ -2956,6 +2957,7 @@ paths:
       tags: [Pipelines]
       summary: Suggest field protection from field names and types
       description: >-
+        Restricted users get the same "not configured" 400 for a named pipeline outside their catalog grants.
         Asks the configured CodeGen model which source fields should carry
         `protect` (hmac, mask with an optional preserve, redact, drop, or
         none), with a one-line reason per field. Only field names and types
@@ -3051,6 +3053,7 @@ paths:
       tags: [Pipelines]
       summary: Propose field protection from a preset (HIPAA Safe Harbor)
       description: >-
+        Restricted users get the same "not configured" 400 for a named pipeline outside their catalog grants.
         Classifies source fields against the preset's fixed name table (the
         18 HIPAA Safe Harbor identifier classes) and proposes each recognised
         field's default method, clamped by the same rules as
@@ -3256,7 +3259,7 @@ paths:
     post:
       tags: [Ingestion]
       summary: Upload a file for processing
-      description: Upload a data file to a registered pipeline. Returns a pipeline token for tracking job status.
+      description: Upload a data file to a registered pipeline. Returns a pipeline token for tracking job status. A restricted user gets the pipeline 404 for a pipeline outside its catalog grants, and 403 when it can view but not run it.
       requestBody:
         required: true
         content:
@@ -3459,7 +3462,7 @@ paths:
     delete:
       tags: [Status]
       summary: Clear all ingestion history
-      description: Deletes every job status entry — detail rows and per-pipeline summaries — for the environment.
+      description: Deletes every job status entry — detail rows and per-pipeline summaries — for the environment. Refused (403) for restricted users.
       responses:
         '200':
           description: Number of entries deleted
@@ -3478,6 +3481,7 @@ paths:
       tags: [Status]
       summary: Get a Live Read (scratch) pipeline's result
       description: >-
+        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants.
         Page through the rows a Live Read (scratch destination) pipeline run
         produced. Paging reads the stored result and never re-runs the source.
         Only Live Read pipelines have a result. `limit` is clamped server-side to the

@@ -15,6 +15,12 @@ import org.springframework.web.bind.annotation._
 
 object PipelineStatusAPIController {
 
+    /** The 404 [[ScratchReader.resolve]] answers for a token with no run. */
+    def unknownToken(pipelinetoken: String, publishertoken: String): ScratchResultException =
+        // Same precedence as ScratchReader.resolve: publishertoken wins.
+        if (publishertoken != null) new ScratchResultException(404, "No pipeline run found for publishertoken '" + publishertoken + "'")
+        else new ScratchResultException(404, "No pipeline run found for pipelinetoken '" + pipelinetoken + "'")
+
     /** Pipeline names a restricted user's session may read; None for everyone else. */
     private def visibleNames(request: jakarta.servlet.http.HttpServletRequest): Option[Set[String]] =
         if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) None
@@ -122,7 +128,8 @@ class PipelineStatusAPIController {
         @RequestParam(required = false) pipelinetoken: String,
         @RequestParam(required = false) publishertoken: String,
         @RequestParam(required = false) offset: String,
-        @RequestParam(required = false) limit: String
+        @RequestParam(required = false) limit: String,
+        request: jakarta.servlet.http.HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info(
@@ -133,6 +140,10 @@ class PipelineStatusAPIController {
             val offsetOpt = Option(offset).map(_.trim).filter(_.nonEmpty).map(_.toLong)
             val limitOpt = Option(limit).map(_.trim).filter(_.nonEmpty).map(_.toInt)
             val job = ScratchReader.resolve(pipelinetoken, publishertoken)
+            // Restricted users: a job of a pipeline outside the grants reads
+            // exactly as an unknown token.
+            if (PipelineAPIController.restrictedHidden(request, job.pipeline, "read"))
+                throw PipelineStatusAPIController.unknownToken(pipelinetoken, publishertoken)
             val page = ScratchReader.read(ScratchLoader.settingsFromEnvironment(), job, offsetOpt, limitOpt)
             new ResponseEntity[String](new Gson().toJson(page), HttpStatus.OK)
         } catch {
@@ -148,10 +159,18 @@ class PipelineStatusAPIController {
     }
 
     @DeleteMapping(path = Array("/pipeline/status"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def clearAllStatus(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+    def clearAllStatus(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        request: jakarta.servlet.http.HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /pipeline/status called — clearing all ingestion history")
             APIKeyValidator.validate(apiKey)
+            // Clearing wipes every catalog's history: never for a restricted user.
+            if (ai.datris.auth.CapabilityCheck.isRestrictedSession(request))
+                return PipelineAPIController.capabilityDenied(
+                    new ai.datris.model.DatrisException("capability denied: only an unrestricted user can clear all ingestion history")
+                )
 
             val tableName = DatrisEnvironment.current.pipelineStatusTableName
             val detailCount = NoSQLDbUtil.deleteAll(tableName)

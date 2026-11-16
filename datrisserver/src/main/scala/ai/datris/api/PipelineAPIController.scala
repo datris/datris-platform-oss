@@ -1092,6 +1092,34 @@ object PipelineAPIController {
                 case e: CapabilityDeniedException => capabilityDenied(e)
             }
 
+    /** For a restricted user's session only: true when `name` is missing or
+      * outside the user's grants for `action` (callers answer exactly as for a
+      * missing pipeline). Always false for everyone else, so API keys keep
+      * today's behaviour on the route. */
+    def restrictedHidden(request: HttpServletRequest, name: String, action: String): Boolean =
+        CapabilityCheck.isRestrictedSession(request) &&
+            hiddenConfig(request, PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name), action)
+
+    /** Pure core of [[restrictedHidden]] on the loaded config (null = missing). */
+    def hiddenConfig(request: HttpServletRequest, config: PipelineConfig, action: String): Boolean =
+        CapabilityCheck.isRestrictedSession(request) &&
+            (config == null || !CapabilityCheck.grants(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)))
+
+    /** For a restricted user's session only: 404 ([[pipelineNotFound]]) when
+      * `name` is missing or outside the grants, 403 when visible but `action`
+      * is not granted. None for everyone else. */
+    def restrictedRefusal(request: HttpServletRequest, name: String, action: String): Option[ResponseEntity[String]] =
+        if (!CapabilityCheck.isRestrictedSession(request)) None
+        else refusalFor(request, name, PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name), action)
+
+    /** Pure core of [[restrictedRefusal]] on the loaded config (null = missing). */
+    def refusalFor(request: HttpServletRequest, name: String, config: PipelineConfig, action: String): Option[ResponseEntity[String]] =
+        if (!CapabilityCheck.isRestrictedSession(request)) None
+        else if (hiddenConfig(request, config, "read")) Some(pipelineNotFound(name))
+        else if (hiddenConfig(request, config, action))
+            Some(capabilityDenied(new DatrisException("capability denied: your catalog grant does not allow pipeline:" + action + " on " + name)))
+        else None
+
     /** GET /pipelines: the configs the caller may read (per-item scope
       * check on catalog + owner); nulls dropped. */
     def visiblePipelines(request: HttpServletRequest, configs: Seq[PipelineConfig]): Seq[PipelineConfig] =

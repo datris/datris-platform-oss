@@ -284,4 +284,46 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(PipelineStatusAPIController.restrictedView(req(editor), data) == Right(data))
     }
+
+    // ------------------------------------------------------ Review round 2
+
+    test("upload, dest-types and status seams: hidden or missing pipelines read as missing; view-only cannot run") {
+        val session = req(restrictedSession(grants("Sales" -> "view", "Ops" -> "edit")))
+        val hr = pipeline("payroll", "HR")
+        // POST /pipeline/upload: run needed; hidden and missing are the pipeline 404.
+        Seq(hr, pipeline("loose", null), null).foreach { c =>
+            val r = PipelineAPIController.refusalFor(session, "payroll", c, "run")
+            assert(r.exists(_.getStatusCode.value == 404), r.map(_.getBody))
+            assert(r.get.getBody == PipelineAPIController.pipelineNotFound("payroll").getBody)
+        }
+        val viewOnly = PipelineAPIController.refusalFor(session, "orders", pipeline("orders", "Sales"), "run")
+        assert(viewOnly.exists(_.getStatusCode.value == 403), viewOnly.map(_.getBody))
+        assert(PipelineAPIController.refusalFor(session, "ops_feed", pipeline("ops_feed", "Ops"), "run").isEmpty)
+        // dest-types / scratch result: read on view, update needs edit.
+        assert(PipelineAPIController.hiddenConfig(session, hr, "read"))
+        assert(!PipelineAPIController.hiddenConfig(session, pipeline("orders", "Sales"), "read"))
+        assert(PipelineAPIController.hiddenConfig(session, pipeline("orders", "Sales"), "update"))
+        // API keys and unrestricted sessions: unchanged (no refusal).
+        assert(PipelineAPIController.refusalFor(req(salesKey), "payroll", hr, "run").isEmpty)
+        val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        assert(!PipelineAPIController.restrictedHidden(req(editor), "payroll", "read"), "no stored read for unrestricted")
+        // GET /pipeline/result: a hidden job reads exactly as an unknown token.
+        assert(PipelineStatusAPIController.unknownToken("tok", null).getMessage == "No pipeline run found for pipelinetoken 'tok'")
+        assert(PipelineStatusAPIController.unknownToken("tok", "pub").getMessage == "No pipeline run found for publishertoken 'pub'")
+        assert(PipelineStatusAPIController.unknownToken("tok", null).status == 404)
+    }
+
+    test("field-protection suggest/preset hide a pipeline outside the grants with the missing-pipeline error") {
+        val session = req(restrictedSession(grants("Sales" -> "view")))
+        val e = intercept[DatrisException](FieldProtectionAPIController.hideFromRestricted(session, "payroll")(pipeline("payroll", "HR")))
+        assert(e.getMessage == "Pipeline: payroll is not configured in the NoSQL database")
+        FieldProtectionAPIController.hideFromRestricted(session, "orders")(pipeline("orders", "Sales"))
+        FieldProtectionAPIController.hideFromRestricted(req(salesKey), "payroll")(pipeline("payroll", "HR"))
+    }
+
+    test("DELETE /pipeline/status is refused for a restricted session") {
+        val r = new PipelineStatusAPIController().clearAllStatus(null, req(restrictedSession(grants("Sales" -> "own")), method = "DELETE"))
+        assert(r.getStatusCode.value == 403, r.getBody)
+        assert(r.getBody.contains("only an unrestricted user can clear all ingestion history"), r.getBody)
+    }
 }
