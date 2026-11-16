@@ -175,10 +175,9 @@ export class UsersComponent implements OnInit, OnDestroy {
 
   setRestricted(user: UserListItem, restricted: boolean): void {
     if (!this.canRestrict(user) || !!user.restricted === restricted) return;
-    const draft = this.draftFor(user);
     this.auth.patchUser(user.username, { restricted }).subscribe({
-      next: () => this.refresh(),
-      error: (err) => { draft.error = this.formatError(err, 'Failed to change scoped access'); this.refresh(); }
+      next: () => { this.error = ''; this.refresh(); },
+      error: (err) => { this.error = this.formatError(err, 'Failed to change scoped access'); this.refresh(); }
     });
   }
 

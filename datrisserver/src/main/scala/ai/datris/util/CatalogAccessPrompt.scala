@@ -52,7 +52,7 @@ object CatalogAccessPrompt {
                 )
         }
         sb.append(
-            "- **Moving and deleting.** `set_catalog` may only move an item between filing targets. Deleting a tap or pipeline needs the own level on its catalog; renaming or deleting a catalog is for administrators.\n"
+            "- **Moving and deleting.** `set_catalog` may only move an item between filing targets. Deleting a tap or pipeline needs the own level on its catalog. `rename_catalog` needs the own level on that catalog; deleting a catalog is for administrators.\n"
         )
         sb.append(
             "- **Relay refusals verbatim.** When the server refuses a request, quote its error text to the user exactly as returned (for example the list of catalogs to choose from), then follow it. Do not reword it or work around it.\n"
