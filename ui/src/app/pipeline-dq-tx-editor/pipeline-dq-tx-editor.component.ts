@@ -1,7 +1,5 @@
-import { Component, EventEmitter, Input, OnChanges, Optional, Output, SimpleChanges } from '@angular/core';
+import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges } from '@angular/core';
 import { PipelineService } from '../pipeline.service';
-import { AuthService } from '../auth.service';
-import { isRestrictedUser } from '../shared/catalog-access';
 import { sanitizeIdentifier } from '../shared/sanitize';
 import { httpErrorText } from '../shared/http-error';
 
@@ -43,11 +41,7 @@ export class PipelineDqTxEditorComponent implements OnChanges {
   private readonly TX_TRIM_TEXT = 'Trim leading/trailing whitespace from all columns.';
   private readonly TX_DEDUP_TEXT = 'Remove duplicate rows.';
 
-  /** Catalog-scoped access: AI schema generation is refused for restricted
-   *  users (it needs install-wide metadata access), so the option is hidden. */
-  get restricted(): boolean { return isRestrictedUser(this.auth); }
-
-  constructor(private pipelineService: PipelineService, @Optional() private auth: AuthService | null) { }
+  constructor(private pipelineService: PipelineService) { }
 
   ngOnChanges(_: SimpleChanges): void {
     this.loadFromInputs();

@@ -184,6 +184,9 @@ object MCPToolRoutes {
 
     private def mappedAllowed(name: String, method: String, path: String, key: ResolvedKey): Boolean =
         CapabilityRoutes.lookup(method, path) match {
+            case RouteCheck.Require(_, _) if key.restrictedSession && CapabilityRoutes.refusedForRestrictedSession(method, path) =>
+                // The server refuses this listing to a restricted session.
+                false
             case RouteCheck.Require(resource, action) => key.matchesResourceAction(resource, action)
             case RouteCheck.Skip => true
             case RouteCheck.Unmapped =>

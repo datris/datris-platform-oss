@@ -297,11 +297,12 @@ class LineageServiceSpec extends AnyFunSuite {
     // pipeline/tap/catalog nodes failing `keep`, then source/dataset nodes left with no
     // edge to a kept node, then edges with a dropped endpoint.
 
-    private val salesOnly: LineageService.Node => Boolean = n => n.nodeType match {
-        case "pipeline" | "tap" => n.catalog.contains("Sales")
-        case "catalog" => n.name == "Sales"
-        case _ => true
-    }
+    private val salesOnly: LineageService.Node => Boolean = n =>
+        n.nodeType match {
+            case "pipeline" | "tap" => n.catalog.contains("Sales")
+            case "catalog" => n.name == "Sales"
+            case _ => true
+        }
 
     private def hrDest(table: String) = Destination(
         schemaProperties = null,
@@ -315,20 +316,26 @@ class LineageServiceSpec extends AnyFunSuite {
         )
         val v = LineageService.visibleTo(g, salesOnly)
         val ids = v.nodes.map(_.id).toSet
-        assert(ids == Set(
-            "source:tap:orders-export",
-            "tap:orders-export",
-            "pipeline:orders",
-            "dataset:postgres:datris.public.orders",
-            "catalog:Sales"
-        ), ids)
+        assert(
+            ids == Set(
+                "source:tap:orders-export",
+                "tap:orders-export",
+                "pipeline:orders",
+                "dataset:postgres:datris.public.orders",
+                "catalog:Sales"
+            ),
+            ids
+        )
         val edges = v.edges.map(e => e.from -> e.to).toSet
-        assert(edges == Set(
-            "source:tap:orders-export" -> "tap:orders-export",
-            "tap:orders-export" -> "pipeline:orders",
-            "pipeline:orders" -> "dataset:postgres:datris.public.orders",
-            "dataset:postgres:datris.public.orders" -> "catalog:Sales"
-        ), edges)
+        assert(
+            edges == Set(
+                "source:tap:orders-export" -> "tap:orders-export",
+                "tap:orders-export" -> "pipeline:orders",
+                "pipeline:orders" -> "dataset:postgres:datris.public.orders",
+                "dataset:postgres:datris.public.orders" -> "catalog:Sales"
+            ),
+            edges
+        )
         // keep-everything is the identity.
         assert(LineageService.visibleTo(g, _ => true) == g)
     }

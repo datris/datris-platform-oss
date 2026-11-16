@@ -458,7 +458,9 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
     private val catalogScopedMetadataKey: ResolvedKey =
         ResolvedKey(None, "sales-meta", Capability.parseList(Seq("pipeline:read:catalog=Sales", "metadata:read")), isLegacyFullAccess = false)
 
-    test("GET /api/v1/metadata/postgres/tables is 403 with the capability-denied body for a restricted session and passes for a catalog-scoped API key holding metadata:read") {
+    test(
+        "GET /api/v1/metadata/postgres/tables is 403 with the capability-denied body for a restricted session and passes for a catalog-scoped API key holding metadata:read"
+    ) {
         val path = "/api/v1/metadata/postgres/tables"
         val bob = restrictedSession(grants("Sales" -> "edit"))
         // The refusal is the listing route, not a missing capability: the bundle holds metadata:read.

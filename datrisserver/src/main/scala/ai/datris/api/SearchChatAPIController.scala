@@ -310,7 +310,7 @@ class SearchChatAPIController {
                 "1. **Learn what exists first.** Before answering any data question, call `list_pipelines` and `list_taps` so you know which pipelines this user can read.\n"
             )
             sb.append(
-                "2. **Inspect structure before querying.** Use `get_pipeline` to confirm a pipeline's destination and fields before you query it.\n"
+                "2. **Inspect structure before querying.** Use `find_data` to locate the pipeline that holds the data and `get_pipeline` to confirm its destination and fields before you query it.\n"
             )
             sb.append("3. **Pick the right access path for the question:**\n")
             sb.append("   - Rows behind a pipeline → the `query_*` tool for that pipeline's destination, passing the `pipeline` name.\n")

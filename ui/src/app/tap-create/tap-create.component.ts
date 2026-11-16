@@ -1685,15 +1685,6 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       this.chunkStrategy = 'recursive';
       this.chunkSize = 500;
       this.chunkOverlap = 50;
-      if (this.restricted) {
-        // Store availability is install-wide metadata, refused for restricted
-        // users: offer every supported store and let the server decide.
-        this.availableVectorStores = ['pgvector', 'qdrant', 'weaviate', 'milvus', 'chroma'];
-        this.selectedVectorStore = 'pgvector';
-        this.loadingVectorStores = false;
-        this.showGenerateModal = true;
-        return;
-      }
       this.loadingVectorStores = true;
       this.tapService.getAvailableVectorStores().subscribe({
         next: (stores) => {

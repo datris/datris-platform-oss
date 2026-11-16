@@ -436,7 +436,7 @@
             <label class="radio-label">
               <input type="radio" name="dqSchemaMode" value="upload" [(ngModel)]="dqSchemaMode"> Upload schema file
             </label>
-            <label class="radio-label" *ngIf="!restricted">
+            <label class="radio-label">
               <input type="radio" name="dqSchemaMode" value="generate" [(ngModel)]="dqSchemaMode"> Generate schema with AI
             </label>
           </div>
@@ -451,7 +451,7 @@
           </div>
 
           <!-- Generate mode -->
-          <ng-container *ngIf="dqSchemaMode === 'generate' && !restricted">
+          <ng-container *ngIf="dqSchemaMode === 'generate'">
             <div class="form-row">
               <label class="form-label">Schema Name</label>
               <input class="form-input" [(ngModel)]="dqSchemaName" placeholder="e.g. stock_prices_schema">

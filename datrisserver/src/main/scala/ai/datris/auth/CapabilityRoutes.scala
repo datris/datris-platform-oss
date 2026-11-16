@@ -191,7 +191,9 @@ object CapabilityRoutes {
         // Vector search (one capability across all stores; the scope identifies the collection)
         Route("POST", "/api/v1/search/**", "search", "vector"),
 
-        // Metadata
+        // Metadata. The raw table/collection listings under /metadata/** cannot
+        // be narrowed to a catalog, so restricted sessions are refused them
+        // even though their bundle holds metadata:read (UnfilterableForRestricted).
         Route("GET", "/api/v1/metadata/**", "metadata", "read"),
         Route("GET", "/api/v1/vector-stores/available", "metadata", "read"),
         Route("POST", "/api/v1/config/generate-schema", "metadata", "read"),
@@ -243,9 +245,26 @@ object CapabilityRoutes {
         // Unity Catalog browse — read-only warehouse metadata. The controller
         // additionally requires that the caller could read the named secret
         // (the list_platform_secrets predicate); an unreadable secret answers
-        // 404 like an unknown one.
+        // 404 like an unknown one. Refused to restricted sessions
+        // (UnfilterableForRestricted): warehouse listings have no catalog.
+        // Lineage, provenance, /catalog/find and /activity/signals above stay
+        // open to them and filter their results to the granted catalogs.
         Route("GET", "/api/v1/unity-catalog/browse", "metadata", "read")
     )
+
+    /** Routes a restricted user's session is refused even though its bundle
+      * holds the capability the route requires: raw table/collection and
+      * warehouse listings cannot be narrowed to the granted catalogs. API
+      * keys and unrestricted sessions are unaffected. */
+    val UnfilterableForRestricted: Seq[(String, String)] = Seq(
+        ("GET", "/api/v1/metadata/**"),
+        ("GET", "/api/v1/unity-catalog/browse")
+    )
+
+    /** True when `method path` is one of [[UnfilterableForRestricted]]. */
+    def refusedForRestrictedSession(method: String, path: String): Boolean =
+        method != null && path != null &&
+            UnfilterableForRestricted.exists { case (m, p) => m.equalsIgnoreCase(method) && matcher.`match`(p, path) }
 
     /** Every `resource:action` pair the table grants — the vocabulary the
       * agent policy is allowed to use. */

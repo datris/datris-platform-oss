@@ -346,12 +346,22 @@ class MCPToolRoutesSpec extends AnyFunSuite {
 
     // Story: Catalog-scoped user access, part 3
     // (plans/stories/catalog-scoped-user-access-metadata-read.md), Acceptance bullet 5.
-    test("metadata listing tools and browse_unity_catalog are hidden from a restricted session but find_data, get_lineage, get_provenance and profile_data stay") {
+    test(
+        "metadata listing tools and browse_unity_catalog are hidden from a restricted session but find_data, get_lineage, get_provenance and profile_data stay"
+    ) {
         val listing = Seq(
-            "list_postgres_databases", "list_postgres_schemas", "list_postgres_tables", "list_postgres_columns",
-            "list_mongodb_databases", "list_mongodb_collections",
-            "list_qdrant_collections", "list_weaviate_classes", "list_milvus_collections", "list_chroma_collections",
-            "list_pgvector_collections", "browse_unity_catalog"
+            "list_postgres_databases",
+            "list_postgres_schemas",
+            "list_postgres_tables",
+            "list_postgres_columns",
+            "list_mongodb_databases",
+            "list_mongodb_collections",
+            "list_qdrant_collections",
+            "list_weaviate_classes",
+            "list_milvus_collections",
+            "list_chroma_collections",
+            "list_pgvector_collections",
+            "browse_unity_catalog"
         )
         val kept = Seq("find_data", "get_lineage", "get_provenance", "profile_data")
         val bob = APIKeyValidator.resolveFromSession(

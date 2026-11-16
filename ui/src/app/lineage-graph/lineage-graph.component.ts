@@ -6,7 +6,6 @@ import {
   CodegenScript, ColumnEdge, ColumnLineage, EdgeEvidence, LineageEdge, LineageGraph, LineageNeighborhood, LineageNode, LineageNodeType, LineageService
 } from '../lineage.service';
 import { AuthService } from '../auth.service';
-import { isRestrictedUser } from '../shared/catalog-access';
 
 /** Interactive lineage graph (plan L2): the whole config-derived graph
  *  rendered as a left-to-right DAG (Source → Tap → Pipeline → Dataset →
@@ -102,13 +101,6 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void { this.sub.unsubscribe(); }
 
   load(focus = ''): void {
-    // Catalog-scoped access: the lineage graph spans every catalog, so it is
-    // refused for restricted users. Say so instead of calling the server.
-    if (isRestrictedUser(this.auth)) {
-      this.loading = false;
-      this.error = 'The lineage graph is available to users with install-wide access.';
-      return;
-    }
     this.loading = true;
     this.error = '';
     this.lineageService.graph().subscribe({

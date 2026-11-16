@@ -443,6 +443,21 @@ object LineageService {
         }
     }
 
+    /** The part of `g` a caller may see. Pipeline, tap and catalog nodes
+      * failing `keep` are dropped; then source and dataset nodes left with no
+      * edge to a kept pipeline, tap or catalog node; then every edge with a
+      * dropped endpoint. A source or dataset shared with hidden items survives
+      * with only its visible edges. `keep` = everything is the identity. */
+    def visibleTo(g: Graph, keep: Node => Boolean): Graph = {
+        val gated = Set("pipeline", "tap", "catalog")
+        val keptGated = g.nodes.filter(n => gated.contains(n.nodeType) && keep(n)).map(_.id).toSet
+        def linkedToKept(id: String): Boolean =
+            g.edges.exists(e => (e.from == id && keptGated.contains(e.to)) || (e.to == id && keptGated.contains(e.from)))
+        val nodes = g.nodes.filter(n => if (gated.contains(n.nodeType)) keptGated.contains(n.id) else linkedToKept(n.id))
+        val ids = nodes.map(_.id).toSet
+        Graph(nodes, g.edges.filter(e => ids.contains(e.from) && ids.contains(e.to)))
+    }
+
     /** The whole graph (cached ~1 minute). */
     def graph(): Graph = loadCached().graph
 
@@ -506,10 +521,21 @@ object LineageService {
       * current definition; for a dataset node its feeding pipeline's current
       * definition, or — when the dataset is historical — the definition version
       * of the last recorded run that wrote it. Deterministic tier only; the
-      * inferred tier is fetched on demand via /lineage/columns. */
-    def neighborhood(nodeType: String, name: String, direction: String, depth: Int, runs: Int, columns: Boolean): JsonObject = {
+      * inferred tier is fetched on demand via /lineage/columns.
+      * `graph` is the graph to walk (default: the whole cached graph); a
+      * caller-filtered graph (see [[visibleTo]]) makes a node absent from it
+      * unknown, and drops recorded runs of pipelines it does not contain. */
+    def neighborhood(
+        nodeType: String,
+        name: String,
+        direction: String,
+        depth: Int,
+        runs: Int,
+        columns: Boolean,
+        graph: Graph = null
+    ): JsonObject = {
         val entry = loadCached()
-        val g = entry.graph
+        val g = if (graph == null) entry.graph else graph
         val id = nodeType + ":" + name
         val node = g.nodes.find(_.id == id).orNull
         if (node == null) return null
@@ -553,7 +579,10 @@ object LineageService {
 
         if (runs > 0) {
             val arr = new JsonArray()
-            recentRuns(nodeType, name, runs).foreach(r => arr.add(runToJson(r)))
+            val visibleRuns =
+                if (graph == null) recentRuns(nodeType, name, runs)
+                else recentRuns(nodeType, name, runs).filter(r => r.pipeline != null && byId.contains("pipeline:" + r.pipeline))
+            visibleRuns.foreach(r => arr.add(runToJson(r)))
             o.add("runs", arr)
         }
 

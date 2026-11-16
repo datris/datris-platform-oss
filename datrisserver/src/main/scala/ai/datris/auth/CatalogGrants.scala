@@ -16,18 +16,22 @@ import scala.collection.JavaConverters._
   *
   * A restricted bundle holds `pipeline:<a>:catalog=<c>` and `tap:<a>:catalog=<c>`
   * for each granted catalog, intersected with what the role allows, plus the
-  * role's non-catalog capabilities minus the surfaces that cannot be
-  * catalog-filtered (free SQL / Mongo / natural-language queries and table
-  * metadata). Uncataloged items (blank catalog) never match a `catalog=` scope,
+  * role's non-catalog capabilities minus the free-form queries that cannot be
+  * catalog-filtered (SQL / Mongo / natural language). `metadata:read` is
+  * kept: lineage, provenance, discovery and activity signals filter their
+  * results to the granted catalogs, and the two raw listings that cannot be
+  * filtered (the `/metadata` listings and Unity Catalog browse) are refused per route by
+  * [[CapabilityRoutes.refusedForRestrictedSession]]. Uncataloged items (blank catalog) never match a `catalog=` scope,
   * so a restricted user never sees them. */
 object CatalogGrants {
 
     private val CatalogResources: Seq[String] = Seq("pipeline", "tap")
 
-    /** Role capabilities a restricted bundle drops: free-form queries and
-      * table listings cannot be narrowed to a catalog. */
+    /** Role capabilities a restricted bundle drops: free-form queries cannot
+      * be narrowed to a catalog. Table listings are refused per route instead
+      * (see [[CapabilityRoutes.UnfilterableForRestricted]]). */
     val RefusedForRestricted: Set[(String, String)] =
-        Set("query" -> "postgres", "query" -> "mongodb", "query" -> "natural", "metadata" -> "read")
+        Set("query" -> "postgres", "query" -> "mongodb", "query" -> "natural")
 
     /** Actions a grant level allows on the catalog's pipelines and taps. */
     def levelActions(level: String): Seq[String] = level match {

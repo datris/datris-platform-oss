@@ -1766,9 +1766,22 @@ _CATALOG_ACCESS_RAW_QUERY_NOTE = (
     "and a 404 for a name you were given means it is not available to this user."
 )
 
+_CATALOG_ACCESS_LISTING_NOTE = (
+    " A user limited to specific catalogs cannot list tables or collections: the server refuses this tool for them; "
+    "use `find_data` or `get_pipeline` instead."
+)
+
 _CATALOG_ACCESS_TOOLS = frozenset({
     "list_pipelines", "list_taps", "find_data", "get_pipeline", "get_tap",
-    "set_catalog", "rename_catalog",
+    "set_catalog", "rename_catalog", "get_lineage", "get_provenance",
+})
+# Raw table/collection and warehouse listings: they cannot be narrowed to a
+# catalog, so the server refuses them for catalog-limited users.
+_CATALOG_ACCESS_LISTING_TOOLS = frozenset({
+    "list_postgres_databases", "list_postgres_schemas", "list_postgres_tables", "list_postgres_columns",
+    "list_mongodb_databases", "list_mongodb_collections",
+    "list_qdrant_collections", "list_weaviate_classes", "list_milvus_collections",
+    "list_chroma_collections", "list_pgvector_collections", "browse_unity_catalog",
 })
 _CATALOG_ACCESS_CREATE_TOOLS = frozenset({"create_pipeline", "create_tap"})
 _CATALOG_ACCESS_RAW_QUERY_TOOLS = frozenset({"query_postgres", "query_mongodb", "query_natural"})
@@ -1779,6 +1792,8 @@ def _catalog_access_note(name):
         return _CATALOG_ACCESS_CREATE_NOTE
     if name in _CATALOG_ACCESS_RAW_QUERY_TOOLS:
         return _CATALOG_ACCESS_RAW_QUERY_NOTE
+    if name in _CATALOG_ACCESS_LISTING_TOOLS:
+        return _CATALOG_ACCESS_LISTING_NOTE
     if name in _CATALOG_ACCESS_TOOLS or name.startswith("search_") or name.startswith("query_"):
         return _CATALOG_ACCESS_NOTE
     return ""
@@ -1788,7 +1803,8 @@ def _all_tools():
     tools = _base_tools()
     for t in tools:
         note = _catalog_access_note(t.name)
-        if note and "catalog access" not in (t.description or ""):
+        marker = "limited to specific catalogs" if note == _CATALOG_ACCESS_LISTING_NOTE else "catalog access"
+        if note and marker not in (t.description or ""):
             t.description = (t.description or "") + note
         if t.name in _MUTATING_TOOLS:
             props = t.input_schema.setdefault("properties", {})

@@ -4130,7 +4130,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL databases
-      description: List all PostgreSQL databases available in the platform.
+      description: List all PostgreSQL databases available in the platform. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of database names
@@ -4147,7 +4147,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL schemas
-      description: List all schemas in a PostgreSQL database.
+      description: List all schemas in a PostgreSQL database. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4171,7 +4171,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL tables
-      description: List all tables in a PostgreSQL schema. Set vectorOnly to true to filter to tables with an embedding column (pgvector tables).
+      description: List all tables in a PostgreSQL schema. Set vectorOnly to true to filter to tables with an embedding column (pgvector tables). Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4207,7 +4207,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List table columns
-      description: List all columns and their data types for a specific PostgreSQL table.
+      description: List all columns and their data types for a specific PostgreSQL table. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4243,7 +4243,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List MongoDB databases
-      description: List all MongoDB databases available in the platform. Excludes system databases (admin, config, local).
+      description: List all MongoDB databases available in the platform. Excludes system databases (admin, config, local). Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of database names
@@ -4260,7 +4260,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List MongoDB collections
-      description: List MongoDB collections. If database is specified, lists collections in that database. Otherwise lists all collections across all databases in "db.collection" format.
+      description: List MongoDB collections. If database is specified, lists collections in that database. Otherwise lists all collections across all databases in "db.collection" format. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4285,7 +4285,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Qdrant collections
-      description: List all collections in the Qdrant vector database. Returns an empty array if Qdrant is not configured.
+      description: List all collections in the Qdrant vector database. Returns an empty array if Qdrant is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4302,7 +4302,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Weaviate classes
-      description: List all classes in the Weaviate vector database. Returns an empty array if Weaviate is not configured.
+      description: List all classes in the Weaviate vector database. Returns an empty array if Weaviate is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of class names
@@ -4319,7 +4319,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Milvus collections
-      description: List all collections in the Milvus vector database. Returns an empty array if Milvus is not configured.
+      description: List all collections in the Milvus vector database. Returns an empty array if Milvus is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4336,7 +4336,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Chroma collections
-      description: List all collections in the Chroma vector database. Returns an empty array if Chroma is not configured.
+      description: List all collections in the Chroma vector database. Returns an empty array if Chroma is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -6516,6 +6516,7 @@ paths:
         One definition of operational signals — failures (with the recovered
         flag), stale scheduled taps, and pipeline volume anomalies — shared
         by the dashboard, the Ops chat context and the recovery agent.
+        For a restricted user, rows are limited to the taps and pipelines in their granted catalogs.
       parameters:
         - in: query
           name: window
@@ -7499,6 +7500,7 @@ paths:
         run → script commit → pipeline config version → declared source and
         returns one document. Pass the row's `_datris_tap_run` and
         `_datris_config_version` values when available for exact resolution.
+        For a restricted user, a run whose pipeline is outside their granted catalogs (or cannot be determined) is 404 (`no such run`); the `pipeline` and `tapRun` hints are ignored for them.
       parameters:
         - in: query
           name: runId
@@ -7554,6 +7556,7 @@ paths:
         configuration plus recorded runs (cached ~1 minute). Node ids are
         `type:name`. Datasets a pipeline landed into under an earlier
         configuration appear with `historical: true` (and a dashed edge).
+        For a restricted user, only nodes in their granted catalogs (and the sources and datasets linked to them) are returned.
       responses:
         '200':
           description: Nodes and edges
@@ -7622,6 +7625,7 @@ paths:
         between them, freshness for the pipeline the node is (or feeds), and
         optionally the most recent recorded runs touching the node — what each
         read and wrote, per destination.
+        For a restricted user, the walk covers only their granted catalogs: a node outside them is 404 (`no such node`), and hidden upstream or downstream items are left out.
       parameters:
         - in: path
           name: nodeType
@@ -7756,6 +7760,7 @@ paths:
         mappings it can evidence (`rename` / `derive` / `drop`, confidence
         `inferred`). Inferred results are cached per definition version and
         never recomputed unless the definition changes.
+        For a restricted user, a pipeline outside their granted catalogs is 404 (`no such pipeline`).
       parameters:
         - in: path
           name: pipeline
@@ -7969,6 +7974,7 @@ paths:
         `warehouse` field (aliases `httpPath`, `http_path`,
         `DATABRICKS_WAREHOUSE`), else the warehouse of the first Databricks
         pipeline using the secret.
+        Not available to restricted users (403 from the capability check); warehouse listings cannot be limited to a catalog.
       parameters:
         - in: query
           name: secret

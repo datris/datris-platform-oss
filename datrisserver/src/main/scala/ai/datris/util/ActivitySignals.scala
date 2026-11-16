@@ -139,6 +139,29 @@ object ActivitySignals {
         )
     }
 
+    /** The part of `s` a caller may see: failing rows judged by `keepTap` or
+      * `keepPipeline` on their kind (any other kind is dropped), stale taps by
+      * `keepTap`, volumes by `keepPipeline` on the catalog `pipelineCatalog`
+      * returns (None = unknown pipeline, dropped). Predicates take the item's
+      * name and catalog. Window and computation time are unchanged. */
+    def visibleTo(
+        s: Signals,
+        keepTap: (String, Option[String]) => Boolean,
+        keepPipeline: (String, Option[String]) => Boolean,
+        pipelineCatalog: String => Option[String]
+    ): Signals =
+        s.copy(
+            failing = s.failing.filter { f =>
+                f.kind match {
+                    case "tap" => keepTap(f.name, f.catalog)
+                    case "pipeline" => keepPipeline(f.name, f.catalog)
+                    case _ => false
+                }
+            },
+            staleTaps = s.staleTaps.filter(t => keepTap(t.name, t.catalog)),
+            volumes = s.volumes.filter(v => pipelineCatalog(v.name).exists(c => keepPipeline(v.name, Some(c))))
+        )
+
     /** Scratch rehearsals (the recovery agent's candidate runs) are not the
       * pipeline's or the tap's own runs: they never count as a failure, a
       * landing or a volume point. */

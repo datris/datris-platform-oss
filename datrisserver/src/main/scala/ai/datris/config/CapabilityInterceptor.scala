@@ -191,6 +191,18 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         )
                         true
 
+                    case Some(rk) if rk.restrictedSession && CapabilityRoutes.refusedForRestrictedSession(method, path) =>
+                        // A restricted user's session holds metadata:read, but
+                        // raw table/collection listings cannot be narrowed to
+                        // its catalogs: refused with the capability-denied body
+                        // in both modes (the grants are a hard boundary).
+                        logger.info(
+                            "capability check: route={} {} required={}:{} key={} outcome=deny (restricted session, unfilterable listing)",
+                            Array[AnyRef](method, path, resource, action, rk.label): _*
+                        )
+                        denyCapability(request, response, rk, resource, action, method, path)
+                        false
+
                     case Some(rk) =>
                         // Pre-action gate is scope-agnostic — we don't have
                         // the loaded resource yet (the controller hasn't run),
@@ -217,32 +229,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                                 "capability check: route={} {} required={}:{} key={} outcome=deny",
                                 Array[AnyRef](method, path, resource, action, rk.label): _*
                             )
-                            // Emit a clean JSON body so agents can parse the
-                            // denial. sendError() produces Tomcat's default
-                            // HTML page, which agents tend to misread (e.g.
-                            // "must be an AI provider auth issue") instead
-                            // of recognizing it as a capability denial.
-                            response.setStatus(HttpServletResponse.SC_FORBIDDEN)
-                            response.setContentType("application/json")
-                            val safeLabel = rk.label.replace("\"", "\\\"")
-                            val body =
-                                "{\"error\":\"capability denied\"," +
-                                    "\"errorKind\":\"capability_denied\"," +
-                                    "\"key\":\"" + safeLabel + "\"," +
-                                    "\"required\":\"" + resource + ":" + action + "\"," +
-                                    "\"route\":\"" + method + " " + path + "\"," +
-                                    "\"message\":\"API key '" + safeLabel + "' does not hold capability '" + resource + ":" + action + "'. " +
-                                    "This is a permission boundary on the API key, not a problem with the upstream service. " +
-                                    "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
-                                    "or the operator must use a different key with the required capability.\"}"
-                            response.getWriter.write(body)
-                            response.getWriter.flush()
-                            AuditLog.denied(
-                                request,
-                                "capability denied for key '" + rk.label + "'",
-                                HttpServletResponse.SC_FORBIDDEN,
-                                required = Some(resource + ":" + action)
-                            )
+                            denyCapability(request, response, rk, resource, action, method, path)
                             false
                         } else {
                             logger.warn(
@@ -253,6 +240,42 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         }
                 }
         }
+    }
+
+    /** The 403 capability-denied JSON body and its audit row. Emit a clean
+      * JSON body so agents can parse the denial. sendError() produces Tomcat's
+      * default HTML page, which agents tend to misread (e.g. "must be an AI
+      * provider auth issue") instead of recognizing it as a capability denial. */
+    private def denyCapability(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        rk: ResolvedKey,
+        resource: String,
+        action: String,
+        method: String,
+        path: String
+    ): Unit = {
+        response.setStatus(HttpServletResponse.SC_FORBIDDEN)
+        response.setContentType("application/json")
+        val safeLabel = rk.label.replace("\"", "\\\"")
+        val body =
+            "{\"error\":\"capability denied\"," +
+                "\"errorKind\":\"capability_denied\"," +
+                "\"key\":\"" + safeLabel + "\"," +
+                "\"required\":\"" + resource + ":" + action + "\"," +
+                "\"route\":\"" + method + " " + path + "\"," +
+                "\"message\":\"API key '" + safeLabel + "' does not hold capability '" + resource + ":" + action + "'. " +
+                "This is a permission boundary on the API key, not a problem with the upstream service. " +
+                "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
+                "or the operator must use a different key with the required capability.\"}"
+        response.getWriter.write(body)
+        response.getWriter.flush()
+        AuditLog.denied(
+            request,
+            "capability denied for key '" + rk.label + "'",
+            HttpServletResponse.SC_FORBIDDEN,
+            required = Some(resource + ":" + action)
+        )
     }
 
     private def readResolvedKey(request: HttpServletRequest): Option[ResolvedKey] = {
