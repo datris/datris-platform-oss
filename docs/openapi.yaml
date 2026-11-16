@@ -4654,7 +4654,10 @@ paths:
         user can edit (400 `{"error": "Choose a catalog: A, B"}` when there are
         several, 400 `No catalog you can edit` when there are none). A named
         catalog the user cannot edit, or an existing tap outside the grants, is
-        404. Moving a tap to Uncataloged is 400.
+        404. Moving a tap to Uncataloged is 400. A `targetPipeline` outside the
+        user's grants answers the pipeline 404 (`{"error": "Pipeline: <name> is
+        not configured in the NoSQL database"}`); one the user can view but
+        not run is 403.
       parameters:
         - name: changeNote
           in: query
@@ -5363,7 +5366,7 @@ paths:
     post:
       tags: [Taps]
       summary: Run a tap
-      description: Executes a saved tap. Optionally sends data to the configured pipeline.
+      description: Executes a saved tap. Optionally sends data to the configured pipeline. For a restricted user, a tap outside its catalog grants is 404, and `mode=run` with a `targetPipeline` outside the grants answers the pipeline 404 (403 when the user can view but not run that pipeline).
       requestBody:
         required: true
         content:

@@ -384,6 +384,19 @@ class AuthAPIController {
                 md.addProperty("role", newRole)
                 md.addProperty("from", current.role)
                 AuditLog.record(request, "user", "update", "user", u, metadata = md)
+                // Promotion to admin clears a stored restricted flag (grants are
+                // kept), so a later demotion never silently re-restricts.
+                if (newRole == User.RoleAdmin && current.restricted && restrictedIn.isEmpty && grantsIn.isEmpty) {
+                    val kept = new java.util.LinkedHashMap[String, String]()
+                    CatalogGrants.grantsOf(current.catalogGrants).foreach { case (c, l) => kept.put(c, l) }
+                    UserStore.updateGrants(u, restricted = false, kept)
+                    if (current.isRestricted) {
+                        val rmd = new JsonObject
+                        rmd.addProperty("restricted", false)
+                        rmd.addProperty("from", true)
+                        AuditLog.record(request, "user", "set-restricted", "user", u, metadata = rmd)
+                    }
+                }
             }
 
             // restricted flag + catalog grants (full replacement). One audit row

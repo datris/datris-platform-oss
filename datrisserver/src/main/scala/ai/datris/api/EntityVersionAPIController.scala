@@ -117,6 +117,7 @@ class EntityVersionAPIController {
                     case Left(refused) => return refused
                     case Right(_) =>
                 }
+                TapAPIController.targetPipelineRefusal(request, snap).foreach(r => return r)
                 // Restore the DEFINITION; preserve current run-status + ownership.
                 val restored = TapCronGate.normalizeCron(
                     if (live != null)

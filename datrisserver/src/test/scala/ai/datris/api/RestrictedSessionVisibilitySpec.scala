@@ -326,4 +326,35 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(r.getStatusCode.value == 403, r.getBody)
         assert(r.getBody.contains("only an unrestricted user can clear all ingestion history"), r.getBody)
     }
+
+    // ------------------------------------------------------ Review round 3
+
+    test("a tap's targetPipeline must be a pipeline the restricted user may run") {
+        val session = req(restrictedSession(grants("Sales" -> "edit", "Ops" -> "view")))
+        val hidden = PipelineAPIController.refusalFor(session, "ledger", pipeline("ledger", "Finance"), "run")
+        assert(hidden.exists(_.getStatusCode.value == 404), hidden.map(_.getBody))
+        assert(hidden.get.getBody == PipelineAPIController.pipelineNotFound("ledger").getBody)
+        assert(PipelineAPIController.refusalFor(session, "gone", null, "run").exists(_.getStatusCode.value == 404))
+        val viewOnly = PipelineAPIController.refusalFor(session, "ops_feed", pipeline("ops_feed", "Ops"), "run")
+        assert(viewOnly.exists(_.getStatusCode.value == 403), viewOnly.map(_.getBody))
+        assert(PipelineAPIController.refusalFor(session, "orders", pipeline("orders", "Sales"), "run").isEmpty)
+        val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        assert(PipelineAPIController.refusalFor(req(editor), "ledger", pipeline("ledger", "Finance"), "run").isEmpty)
+        // No target pipeline: nothing to check (no stored read).
+        val tap = TapConfig(name = "t", description = "", targetPipeline = null, catalog = "Sales")
+        assert(TapAPIController.targetPipelineRefusal(session, tap).isEmpty)
+        assert(TapAPIController.targetPipelineRefusal(req(editor), tap.copy(targetPipeline = "ledger")).isEmpty)
+    }
+
+    test("promoting a restricted user to admin clears the flag and audits it; demotion does not re-restrict") {
+        assert(patchAsAdmin("bob", """{"restricted":true,"catalogGrants":{"Sales":"edit"}}""").getStatusCode.value == 200)
+        captured.clear()
+        assert(patchAsAdmin("bob", """{"role":"admin"}""").getStatusCode.value == 200)
+        val promoted = db.user("bob").get
+        assert(!promoted.restricted, "stored flag cleared")
+        assert(promoted.catalogGrants.asScala.toMap == Map("Sales" -> "edit"), "grants kept")
+        assert(captured.exists(e => e.category == "user" && e.action == "set-restricted"), captured.map(_.action))
+        assert(patchAsAdmin("bob", """{"role":"editor"}""").getStatusCode.value == 200)
+        assert(!db.user("bob").get.isRestricted, "demotion must not silently re-restrict")
+    }
 }

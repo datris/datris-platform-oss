@@ -69,6 +69,13 @@ object TapAPIController {
         if (!CapabilityCheck.isRestrictedSession(request) || name == null || name.isEmpty) None
         else Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)).flatMap(t => scopeRefusal(request, t, action))
 
+    /** For a restricted user's session only: refusal when the tap's
+      * `targetPipeline` is missing or outside the grants (pipeline 404) or
+      * visible but not runnable (403). None when no target or not restricted. */
+    def targetPipelineRefusal(request: HttpServletRequest, tap: TapConfig): Option[ResponseEntity[String]] =
+        if (tap == null || tap.targetPipeline == null || tap.targetPipeline.trim.isEmpty) None
+        else PipelineAPIController.restrictedRefusal(request, tap.targetPipeline, "run")
+
     /** POST /tap catalog rules for a restricted user's session (no-op for
       * everyone else); see [[RestrictedCatalogRules.catalogForSave]]. */
     def catalogForSave(request: HttpServletRequest, config: TapConfig, existing: TapConfig): Either[ResponseEntity[String], TapConfig] =
@@ -688,7 +695,11 @@ class TapAPIController {
             val stored = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
             TapAPIController.catalogForSave(request, tapConfig, stored) match {
                 case Left(refused) => return Left(refused)
-                case Right(c) => return saveTapScoped(c, changeNote, request, restored)
+                case Right(c) =>
+                    // The tap feeds its target pipeline: that pipeline must be
+                    // one the user may run (hidden/missing -> pipeline 404).
+                    TapAPIController.targetPipelineRefusal(request, c).foreach(r => return Left(r))
+                    return saveTapScoped(c, changeNote, request, restored)
             }
         }
         saveTapScoped(tapConfig, changeNote, request, restored)
@@ -1636,6 +1647,8 @@ class TapAPIController {
             TapAPIController.scopeRefusal(request, tapConfig, "run").foreach(return _)
 
             val mode = requestedMode
+            // A run feeds the target pipeline: refuse one outside a restricted user's grants.
+            if (mode == "run") TapAPIController.targetPipelineRefusal(request, tapConfig).foreach(return _)
 
             // Optional per-run params. Stringify each value so the script sees
             // env vars regardless of whether the agent sent {start_date: "2026-05-01"}
