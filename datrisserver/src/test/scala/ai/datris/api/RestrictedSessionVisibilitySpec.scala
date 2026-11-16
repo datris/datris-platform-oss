@@ -357,4 +357,29 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(patchAsAdmin("bob", """{"role":"editor"}""").getStatusCode.value == 200)
         assert(!db.user("bob").get.isRestricted, "demotion must not silently re-restrict")
     }
+
+    test("promotion to admin with grants in the same body still audits set-restricted") {
+        assert(patchAsAdmin("bob", """{"restricted":true,"catalogGrants":{"Sales":"edit"}}""").getStatusCode.value == 200)
+        captured.clear()
+        assert(patchAsAdmin("bob", """{"role":"admin","catalogGrants":{"Sales":"own"}}""").getStatusCode.value == 200)
+        assert(!db.user("bob").get.restricted)
+        val flips = captured.filter(e => e.category == "user" && e.action == "set-restricted")
+        assert(flips.size == 1, captured.map(_.action))
+        assert(md(flips.head, "from").contains("true") && md(flips.head, "restricted").contains("false"), flips.head.metadata)
+    }
+
+    test("enable-ordered refuses a member tap whose target pipeline is hidden from a restricted user") {
+        val session = req(restrictedSession(grants("Sales" -> "edit")), method = "POST", path = "/api/v1/catalog/Sales/enable-ordered")
+        val stored = Map("ledger" -> pipeline("ledger", "Finance"), "orders" -> pipeline("orders", "Sales"))
+        val read: String => PipelineConfig = n => stored.getOrElse(n, null)
+        def tap(n: String, target: String) =
+            TapConfig(name = n, description = "", targetPipeline = target, catalog = "Sales", createdByKeyLabel = "session:bob")
+        val r = CatalogAPIController.enableOrderedRefusal(session, Seq(tap("ok_feed", "orders"), tap("orders_feed", "ledger")), read)
+        assert(r.exists(_.getStatusCode.value == 404), r.map(_.getBody))
+        assert(r.get.getBody == PipelineAPIController.pipelineNotFound("ledger").getBody)
+        assert(CatalogAPIController.enableOrderedRefusal(session, Seq(tap("ok_feed", "orders")), read).isEmpty)
+        // Unrestricted: target pipelines are not consulted.
+        val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        assert(CatalogAPIController.enableOrderedRefusal(req(editor), Seq(tap("orders_feed", "ledger")), read).isEmpty)
+    }
 }

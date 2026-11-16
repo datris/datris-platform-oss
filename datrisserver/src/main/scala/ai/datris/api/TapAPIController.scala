@@ -72,9 +72,14 @@ object TapAPIController {
     /** For a restricted user's session only: refusal when the tap's
       * `targetPipeline` is missing or outside the grants (pipeline 404) or
       * visible but not runnable (403). None when no target or not restricted. */
-    def targetPipelineRefusal(request: HttpServletRequest, tap: TapConfig): Option[ResponseEntity[String]] =
+    def targetPipelineRefusal(
+        request: HttpServletRequest,
+        tap: TapConfig,
+        readPipeline: String => PipelineConfig = n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
+    ): Option[ResponseEntity[String]] =
         if (tap == null || tap.targetPipeline == null || tap.targetPipeline.trim.isEmpty) None
-        else PipelineAPIController.restrictedRefusal(request, tap.targetPipeline, "run")
+        else if (!CapabilityCheck.isRestrictedSession(request)) None
+        else PipelineAPIController.refusalFor(request, tap.targetPipeline, readPipeline(tap.targetPipeline), "run")
 
     /** POST /tap catalog rules for a restricted user's session (no-op for
       * everyone else); see [[RestrictedCatalogRules.catalogForSave]]. */

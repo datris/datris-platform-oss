@@ -1432,7 +1432,11 @@ object CatalogAPIController {
       *  - 409 {"error", "cycles"} when TapDependencies.order has cycles;
       *  - 403 when the caller's key fails CapabilityCheck.assertScope for
       *    `tap:update` or `tap:run` on any member (scope = catalog + owner). */
-    def enableOrderedRefusal(request: HttpServletRequest, taps: Seq[TapConfig]): Option[ResponseEntity[String]] = {
+    def enableOrderedRefusal(
+        request: HttpServletRequest,
+        taps: Seq[TapConfig],
+        readPipeline: String => PipelineConfig = n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
+    ): Option[ResponseEntity[String]] = {
         val plan = TapDependencies.order(taps)
         if (plan.cycles.nonEmpty) {
             val o = new JsonObject
@@ -1462,6 +1466,9 @@ object CatalogAPIController {
                     )
             }
         }
+        // The job runs each tap in mode=run, feeding its target pipeline: same
+        // rule as POST /tap/run for a restricted user (no-op for everyone else).
+        for (t <- taps) TapAPIController.targetPipelineRefusal(request, t, readPipeline).foreach(r => return Some(r))
         None
     }
 

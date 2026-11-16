@@ -403,7 +403,9 @@ class AuthAPIController {
             // per flip and per added / changed / removed grant.
             if (restrictedIn.isDefined || grantsIn.isDefined) {
                 val before = UserStore.find(u).getOrElse(current)
-                val wasRestricted = before.isRestricted
+                // Pre-PATCH snapshot: a role change earlier in this request must
+                // not hide a real restricted -> unrestricted flip from the audit.
+                val wasRestricted = current.isRestricted
                 val newRestricted = restrictedIn.getOrElse(wasRestricted) && effectiveRole != User.RoleAdmin
                 val oldGrants = CatalogGrants.grantsOf(before.catalogGrants).toMap
                 val newGrants = grantsIn.getOrElse(before.catalogGrants)
