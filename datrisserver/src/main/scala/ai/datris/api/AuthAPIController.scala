@@ -341,14 +341,22 @@ class AuthAPIController {
             )
             val obj = JsonParser.parseString(body).getAsJsonObject
 
-            // Catalog-scoped access: validate everything before any write.
+            // Validate everything before any write. Types are strict: Gson's
+            // getAsBoolean / getAsString coerce strings and numbers ("maybe" ->
+            // false, 1 -> "1"), so a malformed body could otherwise widen a
+            // restricted user.
+            def isBool(name: String): Boolean = obj.get(name).isJsonPrimitive && obj.get(name).getAsJsonPrimitive.isBoolean
+            def isStr(name: String): Boolean = obj.get(name).isJsonPrimitive && obj.get(name).getAsJsonPrimitive.isString
+            if (obj.has("role") && !isStr("role"))
+                return ResponseEntity.badRequest().body("""{"error":"Invalid role"}""")
+            if (obj.has("resetPassword") && !obj.get("resetPassword").isJsonNull && !isBool("resetPassword"))
+                return badRequest("resetPassword must be true or false")
             val effectiveRole =
-                if (obj.has("role") && !obj.get("role").isJsonNull) obj.get("role").getAsString else current.role
+                if (obj.has("role")) obj.get("role").getAsString else current.role
             val restrictedIn: Option[Boolean] =
                 if (!obj.has("restricted") || obj.get("restricted").isJsonNull) None
-                else
-                    try Some(obj.get("restricted").getAsBoolean)
-                    catch { case _: Exception => return badRequest("restricted must be true or false") }
+                else if (!isBool("restricted")) return badRequest("restricted must be true or false")
+                else Some(obj.get("restricted").getAsBoolean)
             if (restrictedIn.contains(true) && (effectiveRole == User.RoleAdmin || u == "admin"))
                 return badRequest("An admin cannot be restricted; admins always have access to every catalog")
             val grantsIn: Option[java.util.Map[String, String]] =
@@ -360,7 +368,8 @@ class AuthAPIController {
                     val raw = new java.util.LinkedHashMap[String, String]()
                     obj.getAsJsonObject("catalogGrants").entrySet().asScala.foreach { e =>
                         val v = e.getValue
-                        raw.put(e.getKey, if (v.isJsonPrimitive) v.getAsString else null)
+                        // Only a JSON string is a level; numbers/booleans/objects are refused.
+                        raw.put(e.getKey, if (v.isJsonPrimitive && v.getAsJsonPrimitive.isString) v.getAsString else null)
                     }
                     CatalogGrants.validate(raw) match {
                         case Left(err) => return badRequest(err)
@@ -439,7 +448,7 @@ class AuthAPIController {
             }
 
             // reset password (admin sets back to null → user must set on next login)
-            if (obj.has("resetPassword") && obj.get("resetPassword").getAsBoolean) {
+            if (obj.has("resetPassword") && !obj.get("resetPassword").isJsonNull && obj.get("resetPassword").getAsBoolean) {
                 UserStore.updatePasswordHash(u, null)
                 AuditLog.record(request, "user", "reset-password", "user", u)
             }

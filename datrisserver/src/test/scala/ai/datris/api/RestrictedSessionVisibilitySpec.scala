@@ -382,4 +382,36 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(CatalogAPIController.enableOrderedRefusal(req(editor), Seq(tap("orders_feed", "ledger")), read).isEmpty)
     }
+
+    // ------------------------------------------------------ E2E finding: strict PATCH types
+
+    test("PATCH refuses non-boolean restricted, non-string grant levels and role, and non-boolean resetPassword") {
+        assert(patchAsAdmin("bob", """{"restricted":true,"catalogGrants":{"Sales":"edit"}}""").getStatusCode.value == 200)
+        captured.clear()
+        Seq(
+            """{"restricted":"maybe"}""" -> "restricted must be true or false",
+            """{"restricted":"yes"}""" -> "restricted must be true or false",
+            """{"restricted":1}""" -> "restricted must be true or false",
+            """{"restricted":"false"}""" -> "restricted must be true or false",
+            """{"restricted":{}}""" -> "restricted must be true or false",
+            """{"catalogGrants":{"Sales":1}}""" -> "Invalid grant level",
+            """{"catalogGrants":{"Sales":true}}""" -> "Invalid grant level",
+            """{"catalogGrants":{"Sales":["own"]}}""" -> "Invalid grant level",
+            """{"role":1}""" -> "Invalid role",
+            """{"role":null}""" -> "Invalid role",
+            """{"resetPassword":"yes"}""" -> "resetPassword must be true or false"
+        ).foreach { case (body, msg) =>
+            val r = patchAsAdmin("bob", body)
+            assert(r.getStatusCode.value == 400, body + " -> " + r.getStatusCode + " " + r.getBody)
+            assert(errorOf(r).contains(msg), body + " -> " + r.getBody)
+        }
+        // Nothing changed and nothing was audited.
+        val bob = db.user("bob").get
+        assert(bob.restricted && bob.catalogGrants.asScala.toMap == Map("Sales" -> "edit") && bob.role == User.RoleEditor)
+        assert(bob.passwordHash == "bob-hash")
+        assert(!captured.exists(_.category == "user"), captured.map(_.action))
+        // Real booleans still work.
+        assert(patchAsAdmin("bob", """{"restricted":false}""").getStatusCode.value == 200)
+        assert(!db.user("bob").get.restricted)
+    }
 }
