@@ -104,12 +104,30 @@ class APIKeyValidatorSpec extends AnyFunSuite {
 
     /** The editor bundle as served before the story; unrestricted users must keep it exactly. */
     private val EditorBundleToday = Seq(
-        "pipeline:read", "pipeline:create", "pipeline:update", "pipeline:delete", "pipeline:run",
-        "tap:read", "tap:create", "tap:update", "tap:delete", "tap:run",
-        "document:upload", "search:vector",
-        "query:postgres", "query:mongodb", "query:objectstore", "query:snowflake", "query:databricks",
-        "query:sqlserver", "query:natural",
-        "job:read", "job:kill", "metadata:read", "config:read", "mcp:tool"
+        "pipeline:read",
+        "pipeline:create",
+        "pipeline:update",
+        "pipeline:delete",
+        "pipeline:run",
+        "tap:read",
+        "tap:create",
+        "tap:update",
+        "tap:delete",
+        "tap:run",
+        "document:upload",
+        "search:vector",
+        "query:postgres",
+        "query:mongodb",
+        "query:objectstore",
+        "query:snowflake",
+        "query:databricks",
+        "query:sqlserver",
+        "query:natural",
+        "job:read",
+        "job:kill",
+        "metadata:read",
+        "config:read",
+        "mcp:tool"
     )
 
     test("resolveFromSession of an unrestricted editor is unchanged") {

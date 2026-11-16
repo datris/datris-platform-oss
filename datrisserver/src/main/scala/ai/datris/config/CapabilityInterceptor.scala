@@ -113,9 +113,25 @@ class CapabilityInterceptor extends HandlerInterceptor {
         false
     }
 
+    /** Keys-off mode (`useApiKeys=false`) attaches the anonymous full-access
+      * identity to every request, browser sessions included, so role bundles
+      * never apply there. A restricted user's catalog grants must still hold:
+      * when the request carries that anonymous identity and the logged-in
+      * session user is restricted, the identity is replaced with the user's
+      * session bundle. Only ever narrows; unrestricted users are unchanged. */
+    private def narrowForRestrictedSession(request: HttpServletRequest): Unit =
+        request.getAttribute(TenantInterceptor.ResolvedKeyAttr) match {
+            case rk: ResolvedKey if rk.label == "anonymous" && rk.isLegacyFullAccess && rk.tenantEnvironment.isEmpty =>
+                UserContext.get().filter(_.isRestricted).foreach { user =>
+                    request.setAttribute(TenantInterceptor.ResolvedKeyAttr, APIKeyValidator.resolveFromSession(user))
+                }
+            case _ =>
+        }
+
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
         val method = request.getMethod
         val path = request.getRequestURI
+        narrowForRestrictedSession(request)
 
         CapabilityRoutes.lookup(method, path) match {
             case RouteCheck.Skip =>

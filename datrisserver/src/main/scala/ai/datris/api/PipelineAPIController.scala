@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject}
-import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, VersionActor}
+import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, ResourceHiddenException, VersionActor}
 import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion, UnityCatalogSync, ValidationException}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
 import ai.datris.util._
@@ -26,13 +26,17 @@ class PipelineAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[PipelineAPIController])
 
     @GetMapping(path = Array("/pipeline"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam pipeline: String): ResponseEntity[String] = {
+    def getPipeline(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam pipeline: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /pipeline called with pipeline: " + pipeline)
             APIKeyValidator.validate(apiKey)
 
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
-            PipelineAPIController.pipelineResponse(config, pipeline)
+            PipelineAPIController.pipelineResponse(config, pipeline, request)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -173,20 +177,10 @@ class PipelineAPIController {
                 PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name)
             })
 
-            // Scope-aware filter for keys whose only `pipeline:read` grant is
-            // `pipeline:read:owner=self` — return ONLY pipelines this key
-            // created. A key with an unscoped `pipeline:read` or `*:*` skips
-            // the filter entirely. Server-side filtering keeps the result
-            // shape consistent with single-resource reads and prevents
-            // leaking metadata (names, destinations) about pipelines the
-            // caller has no business seeing.
-            val filteredConfigs =
-                if (CapabilityCheck.hasOnlyOwnerSelfScope(request, "pipeline", "read")) {
-                    val ownerLabel = ResolvedKeyAccess.keyLabel(request).orNull
-                    allConfigs.filter(c => c != null && c.createdByKeyLabel != null && c.createdByKeyLabel == ownerLabel)
-                } else {
-                    allConfigs
-                }
+            // Per-item scope filter (owner=self keys, catalog-scoped keys and
+            // restricted users' catalog grants), so the list never names a
+            // pipeline the caller could not read by name.
+            val filteredConfigs = PipelineAPIController.visiblePipelines(request, allConfigs)
 
             val gson = new Gson
             val json = gson.toJson(filteredConfigs.asJava)
@@ -246,7 +240,18 @@ class PipelineAPIController {
         changeNote: String,
         request: HttpServletRequest
     ): Either[ResponseEntity[String], (PipelineConfig, String)] = {
-        val withDefaults = PipelineValidatorUtil.applyDefaults(config)
+        // Restricted users: default a blank catalog and refuse targets
+        // outside their grants before anything is validated or written.
+        val scoped =
+            if (!CapabilityCheck.isRestrictedSession(request) || config == null) config
+            else {
+                val stored = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, config.name)
+                PipelineAPIController.catalogForSave(request, config, stored) match {
+                    case Left(refused) => return Left(refused)
+                    case Right(c) => c
+                }
+            }
+        val withDefaults = PipelineValidatorUtil.applyDefaults(scoped)
         PipelineValidatorUtil.validate(withDefaults)
 
         // Postgres is install-time optional (POSTGRES_ENABLED=0 skips the
@@ -369,9 +374,13 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
-            CapabilityCheck.assertOwnerScope(request, "pipeline", "read", config.createdByKeyLabel)
+            CapabilityCheck.assertVisible(request, "pipeline", "read", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
             ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(PipelineAPIController.codegenScriptsBody(config, PipelineScripts).toString)
         } catch {
+            case _: ResourceHiddenException =>
+                ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
             case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -412,7 +421,7 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
-            CapabilityCheck.assertOwnerScope(request, "pipeline", "update", config.createdByKeyLabel)
+            CapabilityCheck.assertVisible(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
             if (PipelineScripts.instructionOf(config, kind).isEmpty)
                 return ResponseEntity
                     .status(HttpStatus.BAD_REQUEST)
@@ -449,6 +458,10 @@ class PipelineAPIController {
                         )
             }
         } catch {
+            case _: ResourceHiddenException =>
+                ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
             case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -479,12 +492,16 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
-            CapabilityCheck.assertOwnerScope(request, "pipeline", "update", config.createdByKeyLabel)
+            CapabilityCheck.assertVisible(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
             val response = PipelineAPIController.pullCodegenScriptWith(PipelineScripts, name, kind, ResolvedKeyAccess.keyLabel(request).orNull, config)
             if (response.getStatusCode.is2xxSuccessful) PipelineAPIController.auditCodegenScript(request, "pull", name, kind, "success", None)
             else PipelineAPIController.auditCodegenScript(request, "pull", name, kind, "failure", Some(String.valueOf(response.getBody)))
             response
         } catch {
+            case _: ResourceHiddenException =>
+                ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
             case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -516,6 +533,8 @@ class PipelineAPIController {
             out.add("warnings", arr)
             ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
+            case _: ResourceHiddenException => PipelineAPIController.pipelineNotFound(pipeline)
+            case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
@@ -540,7 +559,8 @@ class PipelineAPIController {
         // Scope check: a key with `pipeline:delete:owner=self` may only
         // delete pipelines it created. Loaded resource provides the
         // `createdByKeyLabel` we compare against the caller's label.
-        if (checkScope) CapabilityCheck.assertOwnerScope(request, "pipeline", "delete", config.createdByKeyLabel)
+        if (checkScope)
+            CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
 
         // Deleting the config without also deleting the data is disallowed.
         // Leaving orphaned rows/collections/tables behind with no pipeline to
@@ -1050,6 +1070,47 @@ object PipelineAPIController {
     def pipelineResponse(config: PipelineConfig, name: String): ResponseEntity[String] =
         if (config == null) pipelineNotFound(name)
         else new ResponseEntity[String](new Gson().toJson(config), HttpStatus.OK)
+
+    /** [[pipelineResponse]] with the caller's scope applied: a pipeline
+      * outside a restricted user's catalog grants is the same 404 as a
+      * missing one; an API key's scope miss is 403. */
+    def pipelineResponse(config: PipelineConfig, name: String, request: HttpServletRequest): ResponseEntity[String] =
+        if (config == null) pipelineNotFound(name)
+        else
+            try {
+                CapabilityCheck.assertVisible(request, "pipeline", "read", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+                pipelineResponse(config, name)
+            } catch {
+                case _: ResourceHiddenException => pipelineNotFound(name)
+                case e: CapabilityDeniedException => capabilityDenied(e)
+            }
+
+    /** GET /pipelines: the configs the caller may read (per-item scope
+      * check on catalog + owner); nulls dropped. */
+    def visiblePipelines(request: HttpServletRequest, configs: Seq[PipelineConfig]): Seq[PipelineConfig] =
+        configs.filter(c => c != null && CapabilityCheck.grants(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel)))
+
+    /** POST /pipeline catalog rules for a restricted user's session (no-op
+      * for everyone else). `existing` is the stored config of the same name,
+      * or null. Right is the config to save (a blank catalog filled in with
+      * the one editable catalog); Left is the refusal. */
+    def catalogForSave(
+        request: HttpServletRequest,
+        config: PipelineConfig,
+        existing: PipelineConfig
+    ): Either[ResponseEntity[String], PipelineConfig] =
+        RestrictedCatalogRules.catalogForSave(
+            request,
+            "pipeline",
+            config.catalog,
+            existing != null,
+            if (existing == null) null else existing.catalog,
+            if (existing == null) null else existing.createdByKeyLabel,
+            pipelineNotFound(config.name)
+        ).right.map {
+            case Some(c) if c != config.catalog => config.copy(catalog = c)
+            case _ => config
+        }
 
     /** 404 for a pipeline name with no config (GET and DELETE /pipeline),
       * with the "not configured in the NoSQL database" error body. */

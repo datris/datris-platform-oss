@@ -109,7 +109,8 @@ class QueryAPIController {
     @PostMapping(path = Array("/query/objectstore"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def queryObjectStore(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, Any]
+        @RequestBody body: java.util.Map[String, Any],
+        request: jakarta.servlet.http.HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/objectstore called")
@@ -117,6 +118,7 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = ObjectStoreQueryUtil.query(pipelineName, limit)
@@ -137,7 +139,8 @@ class QueryAPIController {
     @PostMapping(path = Array("/query/snowflake"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def querySnowflake(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, Any]
+        @RequestBody body: java.util.Map[String, Any],
+        request: jakarta.servlet.http.HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/snowflake called")
@@ -145,6 +148,7 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
@@ -179,7 +183,8 @@ class QueryAPIController {
     @PostMapping(path = Array("/query/sqlserver"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def querySqlServer(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, Any]
+        @RequestBody body: java.util.Map[String, Any],
+        request: jakarta.servlet.http.HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/sqlserver called")
@@ -187,6 +192,7 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
@@ -219,7 +225,8 @@ class QueryAPIController {
     @PostMapping(path = Array("/query/databricks"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def queryDatabricks(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, Any]
+        @RequestBody body: java.util.Map[String, Any],
+        request: jakarta.servlet.http.HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/databricks called")
@@ -227,6 +234,7 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
@@ -383,6 +391,29 @@ class QueryAPIController {
 }
 
 object QueryAPIController {
+
+    /** Pipeline-bound queries (objectstore, snowflake, sqlserver,
+      * databricks) for a restricted user's session: the named pipeline must
+      * be in its catalog grants, else the same 404 as a missing pipeline.
+      * None for everyone else (and when allowed). */
+    private[api] def restrictedPipelineRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        pipelineName: String
+    ): Option[ResponseEntity[String]] =
+        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) None
+        else {
+            val config = ai.datris.util.PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
+            if (
+                config == null ||
+                !ai.datris.auth.CapabilityCheck.grants(
+                    request,
+                    "pipeline",
+                    "read",
+                    ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
+                )
+            ) Some(PipelineAPIController.pipelineNotFound(pipelineName))
+            else None
+        }
 
     /** A `limit` request field that is not an integer. */
     final class InvalidLimitException(message: String) extends DatrisException(message)

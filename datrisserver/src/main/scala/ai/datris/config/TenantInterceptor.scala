@@ -93,8 +93,13 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
       * (see AuditActor.trustsOnBehalfOf) AND the user exists, the ResolvedKey
       * is relabeled `session:<user>` — so version history, owner tagging and
       * the audit log all attribute the action to the person, exactly as if
-      * they had clicked in the UI. Capabilities are NOT changed: the key's
-      * bundle still governs what the call may do.
+      * they had clicked in the UI. For an unrestricted user the capabilities
+      * are NOT changed: the key's bundle still governs what the call may do.
+      * For a restricted user the key's bundle is replaced by that user's
+      * session bundle (catalog grants; `restrictedSession = true`), so the
+      * Assistant acting for them sees exactly what they would see. This only
+      * ever narrows: a trusted carrier (`ui`, or the keys-off identity) holds
+      * full access, and a restricted bundle is a subset of it.
       *
       * Any other key sending the header is ignored — and the attempt is
       * itself recorded as a security event. */
@@ -122,7 +127,20 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
                 case Some(user) =>
                     request.setAttribute(AuditActor.OnBehalfOfAttr, user)
                     request.setAttribute(AuditActor.CarrierKeyLabelAttr, resolved.label)
-                    resolved.copy(label = "session:" + user.username)
+                    if (user.isRestricted) {
+                        val bundle = APIKeyValidator.resolveFromSession(user)
+                        // Narrow only: a capability the carrier itself could
+                        // not exercise under the same scope is dropped.
+                        val narrowed =
+                            if (resolved.isLegacyFullAccess) bundle.capabilities
+                            else bundle.capabilities.filter(c => resolved.grants(c.resource, c.action, c.scope))
+                        resolved.copy(
+                            label = bundle.label,
+                            capabilities = narrowed,
+                            isLegacyFullAccess = false,
+                            restrictedSession = true
+                        )
+                    } else resolved.copy(label = "session:" + user.username)
                 case None =>
                     logger.debug(AuditActor.HeaderOnBehalfOf + " names unknown user '" + header.get + "'; keeping key identity")
                     resolved

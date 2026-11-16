@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess}
+import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, ResourceHiddenException}
 import ai.datris.model.{CodeGenScriptVersion, DatrisEnvironment, DatrisException, PipelineConfig}
 import ai.datris.util._
 import com.google.common.base.Throwables
@@ -171,10 +171,14 @@ class CodeGenScriptVersionAPIController {
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
             else {
-                CapabilityCheck.assertOwnerScope(request, "pipeline", action, config.createdByKeyLabel)
+                CapabilityCheck.assertVisible(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
                 body(config)
             }
         } catch {
+            case _: ResourceHiddenException =>
+                ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
             case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

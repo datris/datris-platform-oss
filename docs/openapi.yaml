@@ -294,9 +294,22 @@ components:
           description: Labels of non-revoked API keys holding a capability scoped `catalog=<old name>`
           items:
             type: string
+        updatedUsers:
+          type: array
+          description: Users whose catalog grants on the old name now read the new name (grants follow a rename; a partial rename adds the new name and keeps the old one). Unlike `affectedKeys`, no follow-up is needed.
+          items:
+            type: string
         placeholder:
           type: string
           enum: [created, skipped, failed]
+    CatalogGrants:
+      type: object
+      description: A user's catalog grants, catalog name -> level. `view` reads the catalog's taps and pipelines; `edit` also creates, updates and runs them; `own` also deletes them and renames the catalog. Only enforced when the user is `restricted`. `{}` when none.
+      additionalProperties:
+        type: string
+        enum: [view, edit, own]
+      example:
+        Sales: edit
     CatalogEnableJobStatus:
       type: object
       description: An ordered enable job. Only `active` is present when there is no job.
@@ -362,6 +375,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CatalogFailure'
+        updatedUsers:
+          type: array
+          description: Users whose grant on the deleted catalog was removed (only when every member was detached or deleted; empty otherwise).
+          items:
+            type: string
         warnings:
           type: array
           description: Cascade only (always present there, possibly empty; absent for detach). Follow-up actions for items that were deleted, such as a Unity Catalog table committed through the REST catalog that an admin has to drop, or a script file kept in the code repository because it was edited there since its recorded commit. Pipeline entries come first, then tap entries. Never affects the 200/207 status.
@@ -1683,8 +1701,10 @@ paths:
             application/json:
               schema:
                 type: object
+        '403':
+          description: The API key's scope (`owner=self`, `catalog=`) does not cover this pipeline
         '404':
-          description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`'
+          description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`. A restricted user gets the same 404 for a pipeline outside its catalog grants.'
           content:
             application/json:
               schema:
@@ -1705,6 +1725,14 @@ paths:
         field, any method but `hmac` on a `keyFields` column, or a source that is not
         delimited or JSON). Like every other validator error, the rejection
         returns HTTP 400 with `{"error": "..."}` naming the field.
+
+        Restricted users: a blank `catalog` is filled in with the one catalog
+        the user can edit (400 `{"error": "Choose a catalog: A, B"}` when there
+        are several, 400 `No catalog you can edit` when there are none). A named
+        catalog the user cannot edit, or an existing pipeline outside the
+        grants, is 404 (a new catalog name works only once an admin has granted
+        it). Moving a pipeline (`set_catalog`) needs edit on both catalogs;
+        moving it to Uncataloged is 400.
       parameters:
         - name: changeNote
           in: query
@@ -1916,9 +1944,9 @@ paths:
         '400':
           description: Reserved or blank catalog name, missing or invalid `newName`, or `newName` equal to `name`
         '403':
-          description: 'The catalog holds only its placeholder and the key''s scope does not cover it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+          description: 'The catalog holds only its placeholder and the key''s scope does not cover it, or a restricted user holds `view`/`edit` but not `own` on it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
-          description: No tap, pipeline or placeholder carries this catalog
+          description: No tap, pipeline or placeholder carries this catalog, or (restricted user) the catalog is not in the user's grants
         '409':
           description: target catalog already exists
           content:
@@ -1973,9 +2001,9 @@ paths:
         '400':
           description: Reserved or blank catalog name, unknown mode, or cascade without a matching `confirm`
         '403':
-          description: 'The catalog holds only its placeholder and the key''s scope does not cover it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+          description: 'The catalog holds only its placeholder and the key''s scope does not cover it, or the caller is a restricted user (only admins and unrestricted users delete catalogs). Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
-          description: No tap, pipeline or placeholder carries this catalog
+          description: No tap, pipeline or placeholder carries this catalog, or (restricted user) the catalog is not in the user's grants
         '409':
           description: 'An ordered enable of the catalog is running. Body: `{"error": ..., "jobId": ...}`'
         '500':
@@ -2262,6 +2290,7 @@ paths:
     get:
       tags: [Pipelines]
       summary: List all pipeline configurations
+      description: Only the pipelines the caller may read are listed. An API key scoped `owner=self` or `catalog=<name>` sees the pipelines its scope covers; a restricted user sees the pipelines in its catalog grants (never Uncataloged ones).
       responses:
         '200':
           description: Array of pipeline configurations
@@ -3518,7 +3547,7 @@ paths:
     post:
       tags: [Query]
       summary: Query PostgreSQL
-      description: Execute a read-only SQL SELECT query against PostgreSQL. Enforces SELECT-only, blocks dangerous keywords, and auto-appends LIMIT.
+      description: Execute a read-only SQL SELECT query against PostgreSQL. Enforces SELECT-only, blocks dangerous keywords, and auto-appends LIMIT. Not available to restricted users (403 from the capability check); free-form SQL cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3555,7 +3584,7 @@ paths:
     post:
       tags: [Query]
       summary: Query MongoDB
-      description: Query a MongoDB collection with optional filter and projection. Blocks $where and $function operators.
+      description: Query a MongoDB collection with optional filter and projection. Blocks $where and $function operators. Not available to restricted users (403 from the capability check); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3648,6 +3677,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '404':
+          description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
           description: Error
 
@@ -3701,6 +3732,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '404':
+          description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
           description: Error
 
@@ -3754,6 +3787,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '404':
+          description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
           description: Error
         '502':
@@ -3809,6 +3844,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '404':
+          description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
           description: Error
 
@@ -3816,7 +3853,7 @@ paths:
     post:
       tags: [Query]
       summary: Natural-language query (AI)
-      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results.
+      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. Not available to restricted users (403 from the capability check); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3958,6 +3995,8 @@ paths:
             stores, e.g. "Unknown vector store: 'faiss'. Valid stores: chroma,
             milvus, pgvector, qdrant, weaviate"), a missing `query`, or an
             embedding dimension mismatch between ingest and query.
+        '404':
+          description: 'Restricted users only: no pipeline in the user''s catalog grants writes to the requested collection / class / table. Body: `{"error": "<Collection|ClassName|Table>: <name> not found"}`.'
         '500':
           description: Error
 
@@ -4545,7 +4584,7 @@ paths:
     get:
       tags: [Taps]
       summary: List all taps
-      description: Returns all registered tap configurations.
+      description: Returns the tap configurations the caller may read. An API key scoped `owner=self` or `catalog=<name>` sees the taps its scope covers; a restricted user sees the taps in its catalog grants (never Uncataloged ones).
       responses:
         '200':
           description: Array of tap configurations
@@ -4575,8 +4614,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TapDetail'
+        '403':
+          description: The API key's scope (`owner=self`, `catalog=`) does not cover this tap
         '404':
-          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`. A restricted user gets the same 404 for a tap outside its catalog grants.'
           content:
             application/json:
               schema:
@@ -4602,6 +4643,12 @@ paths:
         cron, is refused with 409 and nothing is persisted. Remedy: save without
         `cronExpression`, run `POST /api/v1/tap/run` with `mode=test`, then save again
         with the cron.
+
+        Restricted users: a blank `catalog` is filled in with the one catalog the
+        user can edit (400 `{"error": "Choose a catalog: A, B"}` when there are
+        several, 400 `No catalog you can edit` when there are none). A named
+        catalog the user cannot edit, or an existing tap outside the grants, is
+        404. Moving a tap to Uncataloged is 400.
       parameters:
         - name: changeNote
           in: query
@@ -5974,6 +6021,11 @@ paths:
                     type: string
                   mustSetPassword:
                     type: boolean
+                  restricted:
+                    type: boolean
+                    description: True when the user sees only the taps and pipelines in its catalog grants. Always false for an admin.
+                  catalogGrants:
+                    $ref: '#/components/schemas/CatalogGrants'
         '401':
           description: Not authenticated
 
@@ -6032,6 +6084,11 @@ paths:
                       nullable: true
                     mustSetPassword:
                       type: boolean
+                    restricted:
+                      type: boolean
+                      description: Always false for an admin.
+                    catalogGrants:
+                      $ref: '#/components/schemas/CatalogGrants'
     post:
       tags: [Auth]
       summary: Create a user (admin)
@@ -6069,8 +6126,14 @@ paths:
       summary: Update a user (admin)
       description: >-
         Admin-only. Change a user's role and/or reset their password (back to
-        first-login mode). The built-in `admin` user is locked to the admin
-        role, and the last remaining admin cannot be demoted.
+        first-login mode), and set catalog-scoped access. The built-in `admin`
+        user is locked to the admin role, and the last remaining admin cannot
+        be demoted. A `restricted` user sees only the taps and pipelines in the
+        catalogs of `catalogGrants`; anything else answers 404 as if it did not
+        exist. Restricted users cannot run free-form Postgres, MongoDB or
+        natural-language queries, or read table metadata. Each restricted flip
+        and each added, changed or removed grant writes an audit entry
+        (`user/set-restricted`, `user/grant-catalog`, `user/revoke-catalog`).
       parameters:
         - name: username
           in: path
@@ -6089,11 +6152,18 @@ paths:
                 resetPassword:
                   type: boolean
                   description: If true, clears the password so the user must set a new one on next login
+                restricted:
+                  type: boolean
+                  description: Narrow the user to its catalog grants. Refused (400) for an admin and for the built-in `admin` user.
+                catalogGrants:
+                  allOf:
+                    - $ref: '#/components/schemas/CatalogGrants'
+                  description: Full replacement of the user's grants (catalog name -> `view` | `edit` | `own`). `null` or `{}` removes every grant; the user stays restricted.
       responses:
         '200':
           description: User updated
         '400':
-          description: Invalid role
+          description: Invalid role, `restricted` on an admin, or an invalid catalog name or grant level
         '404':
           description: User not found
         '409':

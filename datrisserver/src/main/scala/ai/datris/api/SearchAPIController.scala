@@ -15,6 +15,27 @@ import org.springframework.web.bind.annotation._
 
 import scala.collection.JavaConverters._
 
+object SearchAPIController {
+
+    /** False only for a restricted user's session when no pipeline feeding
+      * `container` is in its grants (view or higher). Everyone else: true. */
+    def containerVisible(
+        request: jakarta.servlet.http.HttpServletRequest,
+        store: String,
+        container: String,
+        find: (String, String) => Seq[ai.datris.model.PipelineConfig]
+    ): Boolean =
+        !ai.datris.auth.CapabilityCheck.isRestrictedSession(request) ||
+            find(store, container).exists(c =>
+                ai.datris.auth.CapabilityCheck.grants(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel))
+            )
+
+    def containerNotFound(param: String, container: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .body[String](ApiErrors.errorBody(param.capitalize + ": " + container + " not found"))
+}
+
 @RestController
 @RequestMapping(Array("/api/v1"))
 class SearchAPIController {
@@ -30,7 +51,8 @@ class SearchAPIController {
     def search(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
         @PathVariable store: String,
-        @RequestBody body: java.util.Map[String, Any]
+        @RequestBody body: java.util.Map[String, Any],
+        request: jakarta.servlet.http.HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /search/" + store + " called")
@@ -41,6 +63,10 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val container = optString(body, util.containerParam, util.containerDefault)
+            // A restricted user searches only containers fed by a pipeline in
+            // its catalog grants; any other container is as if it did not exist.
+            if (!SearchAPIController.containerVisible(request, store, container, VectorSearchRegistry.findPipelinesForContainer))
+                return SearchAPIController.containerNotFound(util.containerParam, container)
             // Always use the server's secret names — the client may have stale/incorrect
             // names, and in multi-tenant mode this enforces tenant isolation.
             val embeddingSecretName = DatrisEnvironment.current.embeddingSecretName

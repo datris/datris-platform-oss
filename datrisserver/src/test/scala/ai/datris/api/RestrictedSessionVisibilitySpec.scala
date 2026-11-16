@@ -83,8 +83,7 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         intercept[ResourceHiddenException](CapabilityCheck.assertVisible(session, "pipeline", "read", ctx))
         val hidden = PipelineAPIController.pipelineResponse(hr, "payroll", session)
         assert(hidden.getStatusCode.value == 404, hidden.getBody)
-        assert(hidden.getBody == PipelineAPIController.pipelineNotFound("payroll").getBody,
-            "hidden must be indistinguishable from missing: " + hidden.getBody)
+        assert(hidden.getBody == PipelineAPIController.pipelineNotFound("payroll").getBody, "hidden must be indistinguishable from missing: " + hidden.getBody)
 
         val key = req(salesKey)
         val denied = intercept[CapabilityDeniedException](CapabilityCheck.assertVisible(key, "pipeline", "read", ctx))
@@ -152,7 +151,7 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
     test("blank-catalog create for an unrestricted user keeps the blank catalog") {
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         PipelineAPIController.catalogForSave(req(editor, method = "POST"), pipeline("loose", null), null) match {
-            case Right(cfg) => assert(cfg.catalog == null || cfg.catalog.isEmpty, cfg.catalog)
+            case Right(cfg) => assert(cfg.catalog == null || cfg.catalog.isEmpty, String.valueOf(cfg.catalog))
             case Left(refused) => fail("unrestricted create must be unchanged: " + refused.getBody)
         }
     }

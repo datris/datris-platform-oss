@@ -15,7 +15,12 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * oidcSubject is the identity provider's `sub` bound on the first single
   * sign-on (OIDC); null for accounts that never signed in through SSO and for
   * documents stored before SSO existed. A later SSO sign-in with a different
-  * `sub` is refused (see ai.datris.auth.OidcLogin.resolveUser). */
+  * `sub` is refused (see ai.datris.auth.OidcLogin.resolveUser).
+  *
+  * restricted + catalogGrants narrow a non-admin user to specific data
+  * catalogs (catalog -> view|edit|own; see ai.datris.auth.CatalogGrants).
+  * Documents stored before these fields existed read as false/null, which
+  * keeps today's role-wide access. Admins are never restricted. */
 case class User(
     username: String,
     passwordHash: String,
@@ -23,9 +28,14 @@ case class User(
     createdAt: String,
     updatedAt: String,
     lastLoginAt: String,
-    oidcSubject: String = null
+    oidcSubject: String = null,
+    restricted: Boolean = false,
+    catalogGrants: java.util.Map[String, String] = null
 ) {
     def mustSetPassword: Boolean = passwordHash == null || passwordHash.isEmpty
+
+    /** True when this user's session is narrowed to its catalog grants. Admins never are. */
+    def isRestricted: Boolean = restricted && role != User.RoleAdmin
 }
 
 object User {
@@ -34,4 +44,11 @@ object User {
     val RoleViewer = "viewer"
 
     val ValidRoles: Set[String] = Set(RoleAdmin, RoleEditor, RoleViewer)
+
+    val GrantView = "view"
+    val GrantEdit = "edit"
+    val GrantOwn = "own"
+
+    /** Catalog grant levels: view (read), edit (+ create/update/run), own (+ delete/move). */
+    val ValidGrantLevels: Set[String] = Set(GrantView, GrantEdit, GrantOwn)
 }
