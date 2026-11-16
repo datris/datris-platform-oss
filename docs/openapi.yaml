@@ -3389,7 +3389,9 @@ paths:
     get:
       tags: [Status]
       summary: Get job status
-      description: Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
+      description: >-
+        Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
+        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`.
       parameters:
         - name: publishertoken
           in: query
@@ -4758,7 +4760,7 @@ paths:
     get:
       tags: [Taps]
       summary: Get run history across all taps
-      description: Returns run log entries for every tap, newest window first. Feeds the Ops activity dashboard's aggregation. Defaults to the last 30 days, capped at 2000 rows.
+      description: Returns run log entries for every tap, newest window first. Feeds the Ops activity dashboard's aggregation. Defaults to the last 30 days, capped at 2000 rows. Requires `job:read`. A restricted user sees only the runs of taps in its catalog grants.
       parameters:
         - name: since
           in: query
@@ -5689,7 +5691,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EntityVersionSnapshot'
         '404':
-          description: No such version for this tap
+          description: No such version for this tap. A restricted user gets the same 404 when the tap is outside its catalog grants or has been deleted.
         '500':
           description: Error
 
@@ -5757,7 +5759,7 @@ paths:
         '400':
           description: 'The snapshot''s `cronExpression` is invalid, or its `secretName` may not be used by a tap (server-managed or unsafe name, or not tagged `_type=tap` while tap-secret scoping is enforced). Body: `{"error": ...}`'
         '404':
-          description: No such version for this tap
+          description: No such version for this tap. A restricted user gets the same 404 when the tap is outside its catalog grants or has been deleted.
         '409':
           description: >-
             The snapshot's script differs from the one that last passed a test while a
@@ -5812,7 +5814,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EntityVersionSnapshot'
         '404':
-          description: No such version for this pipeline
+          description: No such version for this pipeline. A restricted user gets the same 404 when the pipeline is outside its catalog grants or has been deleted.
         '500':
           description: Error
 
@@ -5874,7 +5876,7 @@ paths:
               schema:
                 type: object
         '404':
-          description: No such version for this pipeline
+          description: No such version for this pipeline. A restricted user gets the same 404 when the pipeline is outside its catalog grants or has been deleted.
         '500':
           description: Error
 

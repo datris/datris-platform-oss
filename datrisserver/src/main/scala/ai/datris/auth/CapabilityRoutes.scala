@@ -148,6 +148,7 @@ object CapabilityRoutes {
         Route("POST", "/api/v1/tap/state", "tap", "update"),
         Route("DELETE", "/api/v1/tap/state", "tap", "update"),
         Route("GET", "/api/v1/tap/logs", "job", "read"),
+        Route("GET", "/api/v1/tap/logs/all", "job", "read"),
         // Tap definition versions (read/diff = read; restore = update)
         Route("GET", "/api/v1/tap/versions", "tap", "read"),
         Route("GET", "/api/v1/tap/version", "tap", "read"),

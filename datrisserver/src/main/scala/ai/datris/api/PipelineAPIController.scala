@@ -52,7 +52,8 @@ class PipelineAPIController {
     @GetMapping(path = Array("/pipelines/{name}/unity-catalog"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getUnityCatalogState(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @PathVariable("name") name: String
+        @PathVariable("name") name: String,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /pipelines/" + name + "/unity-catalog called")
@@ -63,6 +64,7 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
+            CapabilityCheck.assertVisible(request, "pipeline", "read", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
 
             val out = new JsonObject
             out.addProperty("pipeline", config.name)
@@ -160,6 +162,11 @@ class PipelineAPIController {
             // other null field (nested ones included) stays omitted, as before.
             new ResponseEntity[String](UnityCatalogStateJson.toJson(out), HttpStatus.OK)
         } catch {
+            case _: ResourceHiddenException =>
+                ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
+            case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))

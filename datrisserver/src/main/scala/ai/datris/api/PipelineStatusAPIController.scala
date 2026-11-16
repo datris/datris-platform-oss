@@ -7,11 +7,54 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
-import ai.datris.model.DatrisEnvironment
-import ai.datris.util.{APIKeyValidator, NoSQLDbUtil, PipelineStatusUtil, ScratchLoader, ScratchReader, ScratchResultException}
+import ai.datris.model.{DatrisEnvironment, PipelineStatus, PipelineStatusResponse, PipelineStatusSummary}
+import ai.datris.util.{APIKeyValidator, NoSQLDbUtil, PipelineConfigIO, PipelineStatusUtil, ScratchLoader, ScratchReader, ScratchResultException}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
+
+object PipelineStatusAPIController {
+
+    /** Pipeline names a restricted user's session may read; None for everyone else. */
+    private def visibleNames(request: jakarta.servlet.http.HttpServletRequest): Option[Set[String]] =
+        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) None
+        else
+            Some(
+                PipelineAPIController
+                    .visiblePipelines(request, PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName))
+                    .map(_.name)
+                    .toSet
+            )
+
+    /** GET /pipeline/status for a restricted user's session: summary rows of
+      * pipelines outside the grants are dropped; a token query that touches
+      * any hidden pipeline is 404 (as if the token were unknown). Everyone
+      * else: `data` unchanged. */
+    def restrictedView(request: jakarta.servlet.http.HttpServletRequest, data: AnyRef): Either[ResponseEntity[String], AnyRef] =
+        visibleNames(request) match {
+            case None => Right(data)
+            case Some(visible) => filterFor(visible, data)
+        }
+
+    /** Pure core of [[restrictedView]]. */
+    def filterFor(visible: Set[String], data: AnyRef): Either[ResponseEntity[String], AnyRef] = {
+        import scala.collection.JavaConverters._
+        def hidden(names: Seq[String]): Boolean = names.exists(n => n != null && !visible.contains(n))
+        val notFound = ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](ApiErrors.errorBody("Pipeline status not found"))
+        data match {
+            case r: PipelineStatusResponse =>
+                val events = Option(r.events).map(_.asScala.toSeq).getOrElse(Nil)
+                if (hidden(events.map(_.pipeline))) Left(notFound) else Right(r)
+            case l: java.util.List[_] =>
+                val items = l.asScala.toSeq
+                if (items.forall(_.isInstanceOf[PipelineStatusSummary]))
+                    Right(items.collect { case s: PipelineStatusSummary if s.pipeline != null && visible.contains(s.pipeline) => s }.asJava)
+                else if (hidden(items.collect { case e: PipelineStatus => e.pipeline })) Left(notFound)
+                else Right(l)
+            case other => Right(other)
+        }
+    }
+}
 
 @RestController
 @RequestMapping(Array("/api/v1"))
@@ -25,7 +68,8 @@ class PipelineStatusAPIController {
         @RequestParam(required = false) publishertoken: String,
         @RequestParam(required = false) pipelinename: String,
         @RequestParam(required = false) page: String,
-        @RequestParam(required = false) withrollup: String
+        @RequestParam(required = false) withrollup: String,
+        request: jakarta.servlet.http.HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info(
@@ -57,7 +101,10 @@ class PipelineStatusAPIController {
                 }
             }
             val gson = new Gson
-            new ResponseEntity[String](gson.toJson(data), HttpStatus.OK)
+            PipelineStatusAPIController.restrictedView(request, data) match {
+                case Left(hidden) => hidden
+                case Right(shown) => new ResponseEntity[String](gson.toJson(shown), HttpStatus.OK)
+            }
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

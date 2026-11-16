@@ -241,4 +241,47 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(me.get("username").getAsString == "legacy" && me.get("role").getAsString == "viewer", me.toString)
         assert(me.has("restricted") && !me.get("restricted").getAsBoolean, me.toString)
     }
+
+    // ------------------------------------------------------ Review round 1
+
+    test("version history of a hidden or deleted item is hidden from a restricted session (read and restore)") {
+        val session = req(restrictedSession(grants("Sales" -> "view", "Ops" -> "edit")))
+        // Live item in a non-granted catalog, Uncataloged, or deleted (orphaned history): hidden.
+        Seq("pipeline", "tap").foreach { r =>
+            assert(EntityVersionAPIController.hiddenFromRestricted(session, r, "read", Some(("HR", "someone"))))
+            assert(EntityVersionAPIController.hiddenFromRestricted(session, r, "read", Some((null, "someone"))))
+            assert(EntityVersionAPIController.hiddenFromRestricted(session, r, "read", None))
+            assert(EntityVersionAPIController.hiddenFromRestricted(session, r, "update", Some(("HR", "someone"))))
+            // Granted: readable; restore (update) needs edit.
+            assert(!EntityVersionAPIController.hiddenFromRestricted(session, r, "read", Some(("Sales", "someone"))))
+            assert(EntityVersionAPIController.hiddenFromRestricted(session, r, "update", Some(("Sales", "someone"))))
+            assert(!EntityVersionAPIController.hiddenFromRestricted(session, r, "update", Some(("Ops", "someone"))))
+        }
+        // API keys and unrestricted sessions are unchanged.
+        assert(!EntityVersionAPIController.hiddenFromRestricted(req(salesKey), "pipeline", "read", Some(("HR", "x"))))
+        val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        assert(!EntityVersionAPIController.hiddenFromRestricted(req(editor), "pipeline", "update", None))
+    }
+
+    test("pipeline status drops other catalogs' runs and 404s a token that touches a hidden pipeline") {
+        def summary(p: String) = PipelineStatusSummary("t", 0L, 0L, p, "tok-" + p, "proc", "s", "e", "1s", "success")
+        def event(p: String) = PipelineStatus(0, "t", p, "proc", "pub", "tok", "f", "end", "ok", "", 0L)
+        val visible = Set("orders")
+        PipelineStatusAPIController.filterFor(visible, java.util.Arrays.asList(summary("orders"), summary("payroll"), summary(null))) match {
+            case Right(l: java.util.List[_]) =>
+                assert(l.asScala.map(_.asInstanceOf[PipelineStatusSummary].pipeline) == Seq("orders"))
+            case other => fail("summary must be filtered, got " + other)
+        }
+        assert(PipelineStatusAPIController.filterFor(visible, java.util.Arrays.asList(event("orders"))).isRight)
+        PipelineStatusAPIController.filterFor(visible, java.util.Arrays.asList(event("orders"), event("payroll"))) match {
+            case Left(r) => assert(r.getStatusCode.value == 404, r.getBody)
+            case other => fail("a hidden pipeline's events must be 404, got " + other)
+        }
+        val rollup = PipelineStatusResponse(null, java.util.Arrays.asList(event("payroll")))
+        assert(PipelineStatusAPIController.filterFor(visible, rollup).isLeft)
+        // Unrestricted: data passes through untouched.
+        val data = java.util.Arrays.asList(summary("payroll"))
+        val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        assert(PipelineStatusAPIController.restrictedView(req(editor), data) == Right(data))
+    }
 }

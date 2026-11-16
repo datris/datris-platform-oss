@@ -63,6 +63,12 @@ object TapAPIController {
                 case Some(t) => scopeRefusal(request, t, action)
             }
 
+    /** [[restrictedRefusal]] for routes that also serve a tap not saved yet
+      * (generate / fix from the wizard): only an EXISTING tap is checked. */
+    def restrictedRefusalIfExists(request: HttpServletRequest, name: String, action: String): Option[ResponseEntity[String]] =
+        if (!CapabilityCheck.isRestrictedSession(request) || name == null || name.isEmpty) None
+        else Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)).flatMap(t => scopeRefusal(request, t, action))
+
     /** POST /tap catalog rules for a restricted user's session (no-op for
       * everyone else); see [[RestrictedCatalogRules.catalogForSave]]. */
     def catalogForSave(request: HttpServletRequest, config: TapConfig, existing: TapConfig): Either[ResponseEntity[String], TapConfig] =
@@ -1298,6 +1304,8 @@ class TapAPIController {
             val tapType = Option(body.get("tapType")).getOrElse("structured")
             logger.info("API endpoint POST /tap/generate called, tapName: " + tapName + ", tapType: " + tapType)
             APIKeyValidator.validate(apiKey)
+            // Generating for an existing tap repoints it: same visibility as an update.
+            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
 
             if (description == null || description.isEmpty)
                 throw new DatrisException("Description is required")
@@ -1378,6 +1386,8 @@ class TapAPIController {
             logger.info("API endpoint POST /tap/fix called, tapName: " + tapName +
                 ", priorIterations: " + priorIterations.size)
             APIKeyValidator.validate(apiKey)
+            // Fixing an existing tap repoints it: same visibility as an update.
+            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
 
             if (script == null || script.isEmpty)
                 throw new DatrisException("Script is required")

@@ -119,13 +119,24 @@ class CapabilityInterceptor extends HandlerInterceptor {
       * when the request carries that anonymous identity and the logged-in
       * session user is restricted, the identity is replaced with the user's
       * session bundle. Only ever narrows; unrestricted users are unchanged. */
-    private def narrowForRestrictedSession(request: HttpServletRequest): Unit =
+    private[config] def narrowForRestrictedSession(request: HttpServletRequest): Unit =
         request.getAttribute(TenantInterceptor.ResolvedKeyAttr) match {
             case rk: ResolvedKey if rk.label == "anonymous" && rk.isLegacyFullAccess && rk.tenantEnvironment.isEmpty =>
-                UserContext.get().filter(_.isRestricted).foreach { user =>
-                    request.setAttribute(TenantInterceptor.ResolvedKeyAttr, APIKeyValidator.resolveFromSession(user))
-                }
+                attachRestrictedSession(request)
+            case _: ResolvedKey =>
             case _ =>
+                // No key identity (keys on, cookie-only browser request): attach
+                // a restricted user's session bundle now, before the route
+                // lookup, so controller-side visibility checks apply on every
+                // route (unmapped ones included), not only on mapped ones.
+                // Unrestricted users keep the lazy fallback in readResolvedKey.
+                // A presented-but-rejected key is never replaced by the session.
+                if (request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr) == null) attachRestrictedSession(request)
+        }
+
+    private def attachRestrictedSession(request: HttpServletRequest): Unit =
+        UserContext.get().filter(_.isRestricted).foreach { user =>
+            request.setAttribute(TenantInterceptor.ResolvedKeyAttr, APIKeyValidator.resolveFromSession(user))
         }
 
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
