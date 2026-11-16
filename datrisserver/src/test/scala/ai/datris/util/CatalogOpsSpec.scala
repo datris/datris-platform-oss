@@ -368,4 +368,70 @@ class CatalogOpsSpec extends AnyFunSuite {
         assert(result.ok == Seq("p1", "p2"))
         assert(result.warnings.isEmpty)
     }
+
+    // ------------------------------------------------------ Story: Catalog-scoped user access
+    // (plans/stories/catalog-scoped-user-access.md), Acceptance bullet 5.
+    //   - `UserStore.renameCatalogInGrants(old, new): Seq[String]` (affected usernames = `updatedUsers`)
+    //   - `UserStore.removeCatalogFromGrants(name): Seq[String]`
+    // Driven through the real UserStore against an in-memory user table.
+
+    private def withUsers(body: InMemoryUserDb => Unit): Unit = {
+        import ai.datris.model.{DatrisEnvironment, TenantContext, User}
+        import InMemoryUserDb.grants
+        val saved = DatrisEnvironment.values
+        val db = new InMemoryUserDb
+        val e = InMemoryUserDb.env()
+        try {
+            DatrisEnvironment.values = e
+            TenantContext.set(e)
+            UserStore.dbOverride = db
+            def u(name: String, restricted: Boolean, g: java.util.Map[String, String]): User =
+                User(name, "h", User.RoleEditor, null, null, null, restricted = restricted, catalogGrants = g)
+            db.put(u("bob", restricted = true, grants("Sales" -> "edit")))
+            db.put(u("carol", restricted = true, grants("Sales" -> "own", "HR" -> "view")))
+            db.put(u("dave", restricted = true, grants("HR" -> "view")))
+            db.put(u("erin", restricted = false, null))
+            body(db)
+        } finally {
+            UserStore.dbOverride = null
+            TenantContext.clear()
+            DatrisEnvironment.values = saved
+        }
+    }
+
+    private def grantsOf(db: InMemoryUserDb, name: String): Map[String, String] = {
+        import scala.collection.JavaConverters._
+        db.user(name).flatMap(u => Option(u.catalogGrants)).map(_.asScala.toMap).getOrElse(Map.empty)
+    }
+
+    test("rename returns updatedUsers and the user's grant now reads the new name") {
+        withUsers { db =>
+            val updated = UserStore.renameCatalogInGrants("Sales", "Revenue")
+            assert(updated.toSet == Set("bob", "carol"), updated)
+            assert(updated.distinct.size == updated.size)
+            assert(grantsOf(db, "bob") == Map("Revenue" -> "edit"))
+            assert(grantsOf(db, "carol") == Map("Revenue" -> "own", "HR" -> "view"))
+            assert(grantsOf(db, "dave") == Map("HR" -> "view"), "a user without the catalog is untouched")
+            assert(db.user("erin").exists(u => !u.restricted && u.catalogGrants == null), "an unrestricted user is untouched")
+            assert(db.user("bob").exists(_.restricted))
+        }
+    }
+
+    test("rename of a catalog nobody holds updates no users") {
+        withUsers { _ =>
+            assert(UserStore.renameCatalogInGrants("Nope", "Other").isEmpty)
+        }
+    }
+
+    test("delete removes the grant") {
+        withUsers { db =>
+            val updated = UserStore.removeCatalogFromGrants("Sales")
+            assert(updated.toSet == Set("bob", "carol"), updated)
+            assert(!grantsOf(db, "bob").contains("Sales"))
+            assert(grantsOf(db, "carol") == Map("HR" -> "view"))
+            assert(grantsOf(db, "dave") == Map("HR" -> "view"))
+            // Losing the last grant never widens access: bob stays restricted.
+            assert(db.user("bob").exists(_.restricted))
+        }
+    }
 }
