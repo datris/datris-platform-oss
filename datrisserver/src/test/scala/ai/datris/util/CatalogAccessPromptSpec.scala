@@ -47,8 +47,7 @@ class CatalogAccessPromptSpec extends AnyFunSuite {
     }
 
     test("restricted block lists each catalog with its level and names only editable ones as filing targets") {
-        val u = user(User.RoleEditor, restricted = true,
-            "Sales" -> "edit", "Marketing" -> "own", "Archive" -> "view")
+        val u = user(User.RoleEditor, restricted = true, "Sales" -> "edit", "Marketing" -> "own", "Archive" -> "view")
         val block = CatalogAccessPrompt.block(u)
         assert(block.isDefined, "a restricted user must get a catalog-access block")
         val text = block.get
@@ -66,10 +65,11 @@ class CatalogAccessPromptSpec extends AnyFunSuite {
         // and the view-only catalog is never named outside the data line.
         val rules = lines.drop(dataIdx + 1)
         assert(rules.nonEmpty, "rules must follow the data line")
-        assert(rules.exists(l => l.contains("Sales") && l.contains("Marketing")),
-            s"a rule must name the editable catalogs (Sales, Marketing) as filing targets:\n$text")
-        assert(!rules.exists(_.contains("Archive")),
-            s"a view-only catalog must not be offered as a filing target:\n$text")
+        assert(
+            rules.exists(l => l.contains("Sales") && l.contains("Marketing")),
+            s"a rule must name the editable catalogs (Sales, Marketing) as filing targets:\n$text"
+        )
+        assert(!rules.exists(_.contains("Archive")), s"a view-only catalog must not be offered as a filing target:\n$text")
     }
 
     test("block never contains the word Uncataloged") {

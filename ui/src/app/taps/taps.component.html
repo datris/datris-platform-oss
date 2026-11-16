@@ -24,12 +24,12 @@
         <span class="catalog-group-name">{{ group.name }}</span>
         <span class="catalog-group-count">{{ group.taps.length }}</span>
         <!-- Run all taps in catalog -->
-        <button class="catalog-action-btn catalog-run-btn" *ngIf="auth.canWrite() && runCatalogTarget !== group.name && deleteCatalogTarget !== group.name"
+        <button class="catalog-action-btn catalog-run-btn" *ngIf="canEditCatalogName(group.name) && runCatalogTarget !== group.name && deleteCatalogTarget !== group.name"
                 (click)="runCatalogTarget = group.name; $event.stopPropagation()"
                 title="Run all taps in this catalog">
           <span class="material-icons">play_arrow</span>
         </button>
-        <div class="catalog-action-confirm" *ngIf="auth.canWrite() && runCatalogTarget === group.name" (click)="$event.stopPropagation()">
+        <div class="catalog-action-confirm" *ngIf="canEditCatalogName(group.name) && runCatalogTarget === group.name" (click)="$event.stopPropagation()">
           <button class="confirm-opt confirm-run" (click)="runCatalogTaps(group); $event.stopPropagation()" [disabled]="group.running">
             <span class="material-icons">{{ group.running ? 'hourglass_empty' : 'play_arrow' }}</span> {{ group.running ? 'Running...' : 'Run All' }}
           </button>
@@ -39,12 +39,12 @@
         </div>
         <!-- Delete the catalog (named groups only): keep or delete its items -->
         <button class="catalog-action-btn catalog-delete-btn"
-                *ngIf="auth.canWrite() && group.name !== 'Uncataloged' && deleteCatalogTarget !== group.name && runCatalogTarget !== group.name"
+                *ngIf="auth.canWrite() && !isRestricted && group.name !== 'Uncataloged' && deleteCatalogTarget !== group.name && runCatalogTarget !== group.name"
                 (click)="openCatalogDelete(group.name, $event)"
                 title="Delete this catalog (taps and pipelines)">
           <span class="material-icons">delete</span>
         </button>
-        <div class="catalog-action-confirm" *ngIf="auth.canWrite() && deleteCatalogTarget === group.name" (click)="$event.stopPropagation()">
+        <div class="catalog-action-confirm" *ngIf="auth.canWrite() && !isRestricted && deleteCatalogTarget === group.name" (click)="$event.stopPropagation()">
           <label class="catalog-del-mode">
             <input type="radio" [name]="'tap-del-mode-' + group.name" value="detach" [(ngModel)]="deleteCatalogMode">
             Keep taps and pipelines (move to Uncataloged)
@@ -97,7 +97,7 @@
                     [title]="'Script in repository: ' + (tap.scriptRepoPath || '') + (tap.scriptCommitSha ? ' @ ' + tap.scriptCommitSha.substring(0, 9) : '')">GitHub</span>
               <span class="storage-badge" *ngIf="tap.scriptKind === 'http'"
                     [title]="'User-hosted HTTP endpoint: ' + (tap.endpointUrl || '')">HTTP</span>
-              <button class="embed-name-edit-btn" *ngIf="auth.canWrite()" (click)="startEditName($event, tap)" title="Rename">
+              <button class="embed-name-edit-btn" *ngIf="canOwnItem(tap)" (click)="startEditName($event, tap)" title="Rename">
                 <span class="material-icons">edit</span>
               </button>
             </ng-container>
@@ -123,15 +123,15 @@
                  cron's place (the cron stays in the tooltip). Kept out of the
                  name cell, where the ellipsis clipped it. -->
             <span class="enable-wrap" *ngIf="tap.enabled === false">
-              <span class="storage-badge disabled-badge" [class.clickable]="auth.canWrite()"
-                    [attr.role]="auth.canWrite() ? 'button' : null"
-                    [attr.tabindex]="auth.canWrite() ? 0 : null"
-                    [attr.aria-haspopup]="auth.canWrite() ? 'menu' : null"
-                    [attr.aria-expanded]="auth.canWrite() ? enableMenuOpen === tap.name : null"
+              <span class="storage-badge disabled-badge" [class.clickable]="canEditItem(tap)"
+                    [attr.role]="canEditItem(tap) ? 'button' : null"
+                    [attr.tabindex]="canEditItem(tap) ? 0 : null"
+                    [attr.aria-haspopup]="canEditItem(tap) ? 'menu' : null"
+                    [attr.aria-expanded]="canEditItem(tap) ? enableMenuOpen === tap.name : null"
                     (click)="toggleEnableMenu(tap, $event)"
                     (keydown.enter)="toggleEnableMenu(tap, $event)"
                     (keydown.space)="toggleEnableMenu(tap, $event)"
-                    [title]="(auth.canWrite() ? 'Disabled: click to enable. ' : 'Disabled: the schedule does not run this tap. ') + (tap.cronExpression ? 'Schedule: ' + tap.cronExpression : '')">Disabled</span>
+                    [title]="(canEditItem(tap) ? 'Disabled: click to enable. ' : 'Disabled: the schedule does not run this tap. ') + (tap.cronExpression ? 'Schedule: ' + tap.cronExpression : '')">Disabled</span>
               <div class="embed-move-menu enable-menu" role="menu" [attr.aria-label]="'Enable ' + tap.name"
                    *ngIf="enableMenuOpen === tap.name" (click)="$event.stopPropagation()">
                 <button type="button" class="embed-move-item enable-tap-item" role="menuitem"
@@ -179,14 +179,14 @@
               <button class="embed-action-btn" (click)="openHistory($event, tap.name)" title="Version history"><span class="material-icons">manage_history</span></button>
               <button class="embed-action-btn" *ngIf="tap.tapType !== 'document'"
                       (click)="viewState($event, tap.name)" title="Sync state (incremental bookmark)"><span class="material-icons">bookmark</span></button>
-              <button class="embed-action-btn" (click)="editTap($event, tap.name)" title="Edit" *ngIf="auth.canWrite()"><span class="material-icons">edit</span></button>
-              <button class="embed-action-btn" (click)="runTap($event, tap.name)" title="Test run" *ngIf="auth.canWrite()"><span class="material-icons">play_arrow</span></button>
-              <button class="embed-action-btn run-now-btn" *ngIf="auth.canWrite() && tap.enabled !== false && canRunNow(tap)"
+              <button class="embed-action-btn" (click)="editTap($event, tap.name)" title="Edit" *ngIf="canEditItem(tap)"><span class="material-icons">edit</span></button>
+              <button class="embed-action-btn" (click)="runTap($event, tap.name)" title="Test run" *ngIf="canEditItem(tap)"><span class="material-icons">play_arrow</span></button>
+              <button class="embed-action-btn run-now-btn" *ngIf="canEditItem(tap) && tap.enabled !== false && canRunNow(tap)"
                       [disabled]="runNowBusy === tap.name" (click)="runNow(tap, $event)"
                       title="Run now: one real run that lands data">
                 <span class="material-icons">{{ runNowBusy === tap.name ? 'hourglass_empty' : 'publish' }}</span>
               </button>
-              <span class="embed-move-wrap" *ngIf="auth.canWrite() && moveTargets().length > 0">
+              <span class="embed-move-wrap" *ngIf="canOwnItem(tap) && moveTargets().length > 0">
                 <button class="embed-action-btn" (click)="toggleMoveMenu(tap.name, $event)" title="Move to catalog">
                   <span class="material-icons">drive_file_move</span>
                 </button>
@@ -196,17 +196,17 @@
                   </button>
                 </div>
               </span>
-              <button class="embed-action-btn" *ngIf="auth.canWrite() && repoConfigured && tap.scriptKind !== 'http'"
+              <button class="embed-action-btn" *ngIf="canEditItem(tap) && repoConfigured && tap.scriptKind !== 'http'"
                       (click)="migrateStorage($event, tap)"
                       [disabled]="migratingTap === tap.name"
                       [title]="tap.scriptStorage === 'github' ? 'Move script to built-in storage' : 'Move script to GitHub'">
                 <span class="material-icons">{{ migratingTap === tap.name ? 'hourglass_empty' : (tap.scriptStorage === 'github' ? 'cloud_off' : 'cloud_upload') }}</span>
               </button>
               <button class="embed-action-btn" (click)="promptDelete($event, tap.name)" title="Delete"
-                      *ngIf="auth.canWrite()"><span class="material-icons">delete</span></button>
+                      *ngIf="canOwnItem(tap)"><span class="material-icons">delete</span></button>
             </ng-container>
             <span class="delete-confirm embed-delete-confirm"
-                  *ngIf="auth.canWrite() && deleteTarget === tap.name" (click)="$event.stopPropagation()">
+                  *ngIf="canOwnItem(tap) && deleteTarget === tap.name" (click)="$event.stopPropagation()">
               <button class="del-opt del-yes" (click)="confirmDelete($event)" [disabled]="deleting === tap.name" title="Confirm delete">
                 <span class="material-icons">{{ deleting === tap.name ? 'hourglass_empty' : 'delete_forever' }}</span> {{ deleting === tap.name ? 'Deleting...' : 'Delete' }}
               </button>
@@ -235,7 +235,7 @@
       </thead>
       <tbody>
         <tr *ngFor="let tap of group.taps">
-          <td class="tap-name" [class.tap-name-link]="auth.canWrite()" (click)="auth.canWrite() && startEditName($event, tap)">
+          <td class="tap-name" [class.tap-name-link]="canOwnItem(tap)" (click)="canOwnItem(tap) && startEditName($event, tap)">
             <span *ngIf="editingName !== tap.name">{{ tap.name }}</span>
             <input *ngIf="editingName === tap.name" class="inline-name-input"
                    [(ngModel)]="editingNameValue"
@@ -246,7 +246,7 @@
                    #nameInput>
           </td>
           <td class="tap-desc">{{ tap.description }}</td>
-          <td class="pipeline-cell" (click)="auth.canWrite() && openPipelineDropdown($event, tap.name)">
+          <td class="pipeline-cell" (click)="canEditItem(tap) && openPipelineDropdown($event, tap.name)">
             <span *ngIf="editingPipeline !== tap.name" class="pipeline-value">
               {{ tap.targetPipeline || 'Not set' }}
               <span class="material-icons pipeline-edit-icon">edit</span>
@@ -259,7 +259,7 @@
               <option *ngFor="let p of pipelines" [value]="p.name" [selected]="tap.targetPipeline === p.name">{{ p.name }}</option>
             </select>
           </td>
-          <td class="tap-cron" [class.tap-cron-link]="auth.canWrite()" (click)="auth.canWrite() && openEditCron($event, tap)" title="Click to edit schedule">
+          <td class="tap-cron" [class.tap-cron-link]="canEditItem(tap)" (click)="canEditItem(tap) && openEditCron($event, tap)" title="Click to edit schedule">
             <span>{{ tap.cronExpression || '-' }}</span>
             <span class="material-icons cron-edit-icon">edit</span>
           </td>
@@ -301,20 +301,20 @@
                     (click)="viewState($event, tap.name)" title="Sync state (incremental bookmark)">
               <span class="material-icons">bookmark</span>
             </button>
-            <button class="action-btn edit-btn" (click)="editTap($event, tap.name)" title="Edit tap" *ngIf="auth.canWrite()">
+            <button class="action-btn edit-btn" (click)="editTap($event, tap.name)" title="Edit tap" *ngIf="canEditItem(tap)">
               <span class="material-icons">edit</span>
             </button>
-            <button class="action-btn run-btn" (click)="runTap($event, tap.name)" title="Test run now" *ngIf="auth.canWrite()">
+            <button class="action-btn run-btn" (click)="runTap($event, tap.name)" title="Test run now" *ngIf="canEditItem(tap)">
               <span class="material-icons">play_arrow</span>
             </button>
-            <button class="action-btn script-btn" (click)="openScriptEditor($event, tap)" title="Edit script" *ngIf="auth.canWrite() && tap.scriptKind !== 'http'">
+            <button class="action-btn script-btn" (click)="openScriptEditor($event, tap)" title="Edit script" *ngIf="canEditItem(tap) && tap.scriptKind !== 'http'">
               <span class="material-icons">terminal</span>
             </button>
             <button class="action-btn delete-btn" (click)="promptDelete($event, tap.name)" title="Delete tap"
-                    *ngIf="auth.canWrite() && deleteTarget !== tap.name">
+                    *ngIf="canOwnItem(tap) && deleteTarget !== tap.name">
               <span class="material-icons">delete</span>
             </button>
-            <div class="delete-confirm" *ngIf="auth.canWrite() && deleteTarget === tap.name" (click)="$event.stopPropagation()">
+            <div class="delete-confirm" *ngIf="canOwnItem(tap) && deleteTarget === tap.name" (click)="$event.stopPropagation()">
               <button class="del-opt del-yes" (click)="confirmDelete($event)" [disabled]="deleting === tap.name">
                 <span class="material-icons">{{ deleting === tap.name ? 'hourglass_empty' : 'delete_forever' }}</span> {{ deleting === tap.name ? 'Deleting...' : 'Delete' }}
               </button>

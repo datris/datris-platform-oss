@@ -3,18 +3,18 @@
   <div class="page-header">
     <h1 class="page-title">Catalog</h1>
     <div class="header-actions">
-      <a class="lineage-btn" routerLink="/catalog/lineage" title="Interactive lineage graph: Source → Tap → Pipeline → Dataset → Catalog">
+      <a class="lineage-btn" routerLink="/catalog/lineage" *ngIf="!isRestricted" title="Interactive lineage graph: Source → Tap → Pipeline → Dataset → Catalog">
         <span class="material-icons">account_tree</span> Lineage
       </a>
-      <button class="import-catalog-btn" (click)="openImport()" *ngIf="!showImportPanel && auth.canWrite()"
+      <button class="import-catalog-btn" (click)="openImport()" *ngIf="!showImportPanel && canImport"
               title="Restore a catalog from a zip made with the download icon">
         <span class="material-icons">upload_file</span> Import catalog
       </button>
-      <button class="create-btn" (click)="showCreateModal = true" *ngIf="!showCreateModal && auth.canWrite()">+ Create Catalog</button>
+      <button class="create-btn" (click)="showCreateModal = true" *ngIf="!showCreateModal && canCreateCatalogs">+ Create Catalog</button>
     </div>
   </div>
 
-  <div class="import-panel" *ngIf="showImportPanel && auth.canWrite()">
+  <div class="import-panel" *ngIf="showImportPanel && canImport">
     <div class="import-row">
       <label class="import-label" for="import-file">Archive</label>
       <input id="import-file" class="import-file-input" type="file" accept=".zip,application/zip" (change)="onImportFile($event)">
@@ -94,12 +94,16 @@
     </div>
   </div>
 
-  <div class="create-catalog-row" *ngIf="showCreateModal && auth.canWrite()">
+  <div class="create-catalog-row" *ngIf="showCreateModal && canCreateCatalogs">
     <input class="form-input" [(ngModel)]="newCatalogName" placeholder="Catalog name" (keydown.enter)="createCatalog()">
     <button class="primary-btn" (click)="createCatalog()" [disabled]="!newCatalogName.trim()">Create</button>
     <button class="secondary-btn" (click)="showCreateModal = false; newCatalogName = ''">Cancel</button>
   </div>
-  <p class="page-description">
+  <p class="page-description" *ngIf="isRestricted">
+    These are the catalogs you have access to. Your level on each catalog decides whether you can view,
+    edit, or also move and delete its taps and pipelines.
+  </p>
+  <p class="page-description" *ngIf="!isRestricted">
     A catalog groups related taps and pipelines. Use <strong>Create Catalog</strong> to add one,
     then assign taps and pipelines to it when you create them — or move existing ones into it
     from the Uncataloged section below.
@@ -146,6 +150,14 @@
     <span class="material-icons">vpn_key</span>
     <span>API keys scoped to '{{ affectedKeysCatalog }}' no longer match: {{ affectedKeys.join(', ') }}. Update them in Configuration &rarr; Keys.</span>
     <button class="move-error-close" (click)="dismissAffectedKeys()" title="Dismiss">
+      <span class="material-icons">close</span>
+    </button>
+  </div>
+
+  <div class="updated-users-banner affected-keys-banner" *ngIf="updatedUsers.length > 0">
+    <span class="material-icons">group</span>
+    <span>Access for {{ updatedUsers.join(', ') }} now reads '{{ updatedUsersCatalog }}'.</span>
+    <button class="move-error-close" (click)="dismissUpdatedUsers()" title="Dismiss">
       <span class="material-icons">close</span>
     </button>
   </div>
@@ -206,7 +218,7 @@
           <span class="rename-rule">Letters, digits, _ and - only</span>
         </span>
         <button class="rename-catalog-btn"
-                *ngIf="auth.canWrite() && cat.name !== 'Uncataloged' && renameTarget !== cat.name && deleteTarget !== cat.name"
+                *ngIf="canOwn(cat.name) && cat.name !== 'Uncataloged' && renameTarget !== cat.name && deleteTarget !== cat.name"
                 (click)="startRename(cat, $event)"
                 [disabled]="renamingCatalog === cat.name || movingCatalog === cat.name"
                 title="Rename catalog">
@@ -226,7 +238,7 @@
           <span class="catalog-count">{{ cat.pipelineCount }} pipeline{{ cat.pipelineCount !== 1 ? 's' : '' }}</span>
         </div>
         <span class="catalog-move-wrap"
-              *ngIf="auth.canWrite() && (cat.taps.length > 0 || cat.pipelines.length > 0) && catalogMoveTargets(cat.name).length > 0 && deleteTarget !== cat.name"
+              *ngIf="canOwn(cat.name) && (cat.taps.length > 0 || cat.pipelines.length > 0) && catalogMoveTargets(cat.name).length > 0 && deleteTarget !== cat.name"
               (click)="$event.stopPropagation()">
           <button class="move-catalog-btn"
                   (click)="toggleMoveCatalogMenu(cat.name, $event)"
@@ -249,7 +261,7 @@
           <span class="material-icons">playlist_play</span>
         </button>
         <button class="delete-catalog-btn"
-                *ngIf="auth.canWrite() && cat.name !== 'Uncataloged' && deleteTarget !== cat.name && renameTarget !== cat.name"
+                *ngIf="canCreateCatalogs && cat.name !== 'Uncataloged' && deleteTarget !== cat.name && renameTarget !== cat.name"
                 (click)="openDelete(cat.name, $event)"
                 title="Delete catalog">
           <span class="material-icons">delete</span>
@@ -325,7 +337,7 @@
       </div>
 
       <div class="catalog-card-body" *ngIf="cat.expanded">
-        <div class="catalog-create-row" *ngIf="auth.canWrite()">
+        <div class="catalog-create-row" *ngIf="canEditIn(cat.name)">
           <button class="primary-btn" (click)="describeToAssistant(cat.name, $event)">Describe to Assistant</button>
           <span class="catalog-create-manual">
             or create manually:

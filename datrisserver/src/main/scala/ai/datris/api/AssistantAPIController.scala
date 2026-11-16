@@ -6,8 +6,18 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
-import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
-import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, DestinationAvailabilityUtil, MCPClient, SecretsUtil, TapBudgets, TapPromptInjector}
+import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, User, UserContext}
+import ai.datris.util.{
+    AgentLoop,
+    APIKeyValidator,
+    AttachmentStore,
+    CatalogAccessPrompt,
+    DestinationAvailabilityUtil,
+    MCPClient,
+    SecretsUtil,
+    TapBudgets,
+    TapPromptInjector
+}
 import ai.datris.util.aiutil.AIStreaming.AIContentBlock
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -633,7 +643,7 @@ class AssistantAPIController {
                 capturedTenant.foreach(TenantContext.set)
                 try {
                     APIKeyValidator.validate(apiKey)
-                    runChat(apiKey, body, emitter, cancelled)
+                    runChat(apiKey, body, emitter, cancelled, capturedUser)
                 } catch {
                     case e: Exception =>
                         try {
@@ -657,7 +667,13 @@ class AssistantAPIController {
         emitter
     }
 
-    private def runChat(apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
+    private def runChat(
+        apiKey: String,
+        body: String,
+        emitter: SseEmitter,
+        cancelled: java.util.concurrent.atomic.AtomicBoolean,
+        sessionUser: Option[User] = None
+    ): Unit = {
         // Parse request body: { messages: [{role, content, askUser?}], maxIterations?: Int }.
         val req = JsonParser.parseString(body).getAsJsonObject
         val messagesArr = req.getAsJsonArray("messages")
@@ -722,7 +738,10 @@ class AssistantAPIController {
                     ""
             }
 
-        val systemPrompt = buildSystemPrompt(workflowReference, env.environment)
+        // Catalog-scoped user access: the block is injected only for a
+        // restricted session user; everyone else gets today's prompt.
+        val catalogAccess = sessionUser.flatMap(CatalogAccessPrompt.block)
+        val systemPrompt = buildSystemPrompt(workflowReference, env.environment, catalogAccess)
 
         logger.info("Assistant chat starting: tenant=" + env.environment + ", provider=" + aiConfig.provider +
             ", model=" + aiConfig.model + ", tools=" + toolDefs.size + ", maxIter=" + maxIterations +
@@ -765,7 +784,7 @@ class AssistantAPIController {
         }
     }
 
-    private def buildSystemPrompt(workflowReference: String, tenantEnv: String): String = {
+    private def buildSystemPrompt(workflowReference: String, tenantEnv: String, catalogAccess: Option[String] = None): String = {
         // Empty when no registry is configured — the prompt is then byte-identical
         // to the pre-registry prompt (see plans/assistant-data-sources-registry.md).
         val sourcesSection = TapPromptInjector.approvedSourcesSection()
@@ -920,9 +939,14 @@ class AssistantAPIController {
         )
         sb.append("- Phrase questions about scope in neutral, domain-appropriate terms. Avoid loaded shortcuts that signal a specific industry or framing.\n")
         sb.append("- The same rule applies to schedules, batch sizes, retention windows, refresh cadences, and other tunables — ask, don't assume.\n")
-        sb.append(
-            "- **Do not assign taps or pipelines to a data catalog** (the `catalog` parameter on `create_tap` and `create_pipeline`, or the `set_catalog` tool) unless the user has explicitly asked you to organize the work under a named catalog. Catalog labels are a user-chosen organizational convention — assigning one for them puts them into a taxonomy they didn't ask for. When unset, the platform shows the tap/pipeline as Uncataloged, which is the right default.\n"
-        )
+        if (catalogAccess.isEmpty)
+            sb.append(
+                "- **Do not assign taps or pipelines to a data catalog** (the `catalog` parameter on `create_tap` and `create_pipeline`, or the `set_catalog` tool) unless the user has explicitly asked you to organize the work under a named catalog. Catalog labels are a user-chosen organizational convention — assigning one for them puts them into a taxonomy they didn't ask for. When unset, the platform shows the tap/pipeline as Uncataloged, which is the right default.\n"
+            )
+        else
+            sb.append(
+                "- **Catalogs follow this user's catalog access.** Assign the `catalog` parameter on `create_tap` and `create_pipeline` as the Catalog access section below says.\n"
+            )
         sb.append("\n")
         sb.append(AssistantAPIController.sizingRule(TapBudgets.effective(DatrisEnvironment.current)))
         sb.append(
@@ -1022,6 +1046,10 @@ class AssistantAPIController {
             "- **Destructive operations gate**: NEVER call `delete_tap`, `delete_pipeline`, `delete_tap_secret`, or `update_secret` on an existing secret without explicit user confirmation in the chat. If the user asks to delete or overwrite something, restate what will be removed and ask the user to confirm before proceeding.\n"
         )
         sb.append("- When you finish, say so plainly in one or two sentences. The UI will surface clickable links to any tap or pipeline you created.\n")
+        catalogAccess.foreach { b =>
+            sb.append("\n## Catalog access\n\n")
+            sb.append(b)
+        }
         sb.append(sourcesSection)
         sb.toString
     }

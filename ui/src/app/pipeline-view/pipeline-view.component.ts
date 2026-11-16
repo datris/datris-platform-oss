@@ -5,6 +5,7 @@ import { AuthService } from '../auth.service';
 import { isAllTextDestination } from '../shared/dest-types';
 import { LineageService, LineageNeighborhood } from '../lineage.service';
 import { httpErrorText } from '../shared/http-error';
+import { isRestrictedUser } from '../shared/catalog-access';
 
 @Component({
     selector: 'app-pipeline-view',
@@ -39,6 +40,8 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
   /** Loaded once — the server caches the graph ~1 minute anyway. Fail-soft:
    *  no lineage panel when the endpoint is unavailable. */
   private loadLineage(): void {
+    // Lineage is install-wide metadata, refused for restricted users: no panel.
+    if (isRestrictedUser(this.auth)) { this.lineage = null; return; }
     this.lineageService.neighborhood('pipeline', this.name).subscribe({
       next: (n) => this.lineage = n,
       error: () => this.lineage = null

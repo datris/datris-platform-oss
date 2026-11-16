@@ -6,6 +6,7 @@ import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { caseTwinMessage, findCaseTwin, sanitizeCatalogName } from '../shared/sanitize';
 import { AuthService } from '../auth.service';
+import { canEditCatalog, canOwnCatalog, editableCatalogsOf, isRestrictedUser } from '../shared/catalog-access';
 import { CatalogChatContextService, CatalogSnapshot } from '../catalog-chat/catalog-chat-context.service';
 import { CatalogAssistantStateService } from '../catalog-chat/catalog-assistant-state.service';
 import { httpErrorText } from '../shared/http-error';
@@ -132,6 +133,9 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
    *  Persistent until dismissed: the user has to update them by hand. */
   affectedKeys: string[] = [];
   affectedKeysCatalog = '';
+  /** Users whose catalog grant followed the last rename (`updatedUsers`). */
+  updatedUsers: string[] = [];
+  updatedUsersCatalog = '';
   // Per-item delete confirm. Key format: "tap:<name>" or "pipeline:<name>".
   deleteItemTarget = '';
   deletingItem = '';
@@ -328,11 +332,20 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
         prevTapsExpanded = new Set(this.catalogs.filter(c => c.tapsExpanded).map(c => c.name));
         prevPipelinesExpanded = new Set(this.catalogs.filter(c => c.pipelinesExpanded).map(c => c.name));
       }
+      // Catalog-scoped access: a restricted user sees every granted catalog
+      // (even an empty one) and never the Uncataloged group.
+      const restricted = this.isRestricted;
+      if (restricted) {
+        const grants = (this.auth.current()?.catalogGrants) || {};
+        for (const g of Object.keys(grants)) {
+          if (!catalogMap.has(g)) catalogMap.set(g, { name: g, tapCount: 0, pipelineCount: 0, taps: [], pipelines: [] });
+        }
+      }
       this.catalogs = Array.from(catalogMap.values()).sort((a, b) => a.name.localeCompare(b.name));
       // Always render Uncataloged — even when empty it's the day-1 home for any
       // tap or pipeline created without an assigned catalog, and its Create Tap /
       // Create Pipeline buttons are the primary new-user entry point.
-      this.catalogs.push(uncataloged);
+      if (!restricted) this.catalogs.push(uncataloged);
       for (const cat of this.catalogs) {
         if (prevExpanded.has(cat.name)) cat.expanded = true;
         if (prevTapsExpanded.has(cat.name)) cat.tapsExpanded = true;
@@ -416,6 +429,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
    *  ordered enable of the catalog running from this page. */
   canEnableOrdered(cat: CatalogInfo): boolean {
     if (!this.auth.canWrite() || cat.name === 'Uncataloged') return false;
+    if (!canEditCatalog(this.auth, cat.name)) return false;
     const job = this.enableJobs[cat.name];
     if (job && job.active) return false;
     return cat.taps.some(t => !(t.name || '').startsWith('__catalog__') && t.enabled === false);
@@ -688,6 +702,19 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
           this.affectedKeys = keys;
           this.affectedKeysCatalog = oldName;
         }
+        // Catalog grants follow a rename; name the users whose access moved.
+        const users: string[] = (res && Array.isArray(res.updatedUsers)) ? res.updatedUsers : [];
+        if (users.length > 0) {
+          this.updatedUsers = users;
+          this.updatedUsersCatalog = newName;
+        }
+        // A restricted user's own grant was re-keyed: refresh /me so the
+        // restricted branches read the new name.
+        const a: any = this.auth;
+        if (this.isRestricted && typeof a.refreshMe === 'function') {
+          a.refreshMe().subscribe({ next: () => this.loadCatalogs(), error: () => this.loadCatalogs() });
+          return;
+        }
         this.loadCatalogs();
       },
       error: (err) => {
@@ -923,6 +950,39 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.affectedKeysCatalog = '';
   }
 
+  dismissUpdatedUsers(): void {
+    this.updatedUsers = [];
+    this.updatedUsersCatalog = '';
+  }
+
+  // --- Catalog-scoped access ---------------------------------------------
+  // Restricted branches read the /me fields via AuthService, never list contents.
+
+  get isRestricted(): boolean {
+    return isRestrictedUser(this.auth);
+  }
+
+  /** Create Catalog / Import / Uncataloged are not offered to restricted users. */
+  get canCreateCatalogs(): boolean {
+    return this.auth.canWrite() && !this.isRestricted;
+  }
+
+  /** Restore an archive: restricted users only into a catalog they can edit
+   *  (the server refuses anything else), so the panel needs one. */
+  get canImport(): boolean {
+    return this.auth.canWrite() && (!this.isRestricted || editableCatalogsOf(this.auth).length > 0);
+  }
+
+  /** Create items in / describe to the Assistant: edit or own. */
+  canEditIn(catalogName: string): boolean {
+    return this.auth.canWrite() && canEditCatalog(this.auth, catalogName);
+  }
+
+  /** Rename / bulk move a catalog: own (restricted); delete stays admin-side. */
+  canOwn(catalogName: string): boolean {
+    return this.auth.canWrite() && canOwnCatalog(this.auth, catalogName);
+  }
+
   deleteTap(name: string): void {
     const key = 'tap:' + name;
     this.deletingItem = key;
@@ -997,7 +1057,10 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
 
   /** Catalog names that an uncataloged item can be moved into. Excludes 'Uncataloged'. */
   moveTargets(): string[] {
-    return this.catalogs.filter(c => c.name !== 'Uncataloged').map(c => c.name);
+    const names = this.catalogs.filter(c => c.name !== 'Uncataloged').map(c => c.name);
+    if (!this.isRestricted) return names;
+    const editable = new Set(editableCatalogsOf(this.auth));
+    return names.filter(n => editable.has(n));
   }
 
   /** All catalog names (including 'Uncataloged'), passed to embedded
@@ -1005,7 +1068,11 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
    *  targets. Empty catalogs are included via the __catalog__ placeholder taps
    *  that loadCatalogs already enumerates. */
   get allCatalogNames(): string[] {
-    return this.catalogs.map(c => c.name);
+    const names = this.catalogs.map(c => c.name);
+    if (!this.isRestricted) return names;
+    // Restricted: move targets are the user's edit/own catalogs only.
+    const editable = new Set(editableCatalogsOf(this.auth));
+    return names.filter(n => editable.has(n));
   }
 
   /** Open the in-page curation chat focused on this catalog, with a seeded
@@ -1155,9 +1222,13 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   // Uncataloged pseudo-catalog (use the wizard to unassign instead).
 
   catalogMoveTargets(currentCatalogName: string): string[] {
-    return this.catalogs
+    const names = this.catalogs
       .filter(c => c.name !== currentCatalogName)
       .map(c => c.name);
+    if (!this.isRestricted) return names;
+    if (!canOwnCatalog(this.auth, currentCatalogName)) return [];
+    const editable = new Set(editableCatalogsOf(this.auth));
+    return names.filter(n => editable.has(n));
   }
 
   toggleMoveCatalogMenu(catalogName: string, event: MouseEvent): void {

@@ -1745,9 +1745,51 @@ def _depends_on_list(value):
     return [str(d).strip() for d in value if str(d).strip()]
 
 
+# Catalog-scoped user access: a user an admin has limited to specific data
+# catalogs sees only those catalogs' taps and pipelines; everything else
+# answers 404 as if it did not exist. These notes go on every tool whose
+# results or lookups are narrowed that way (see _CATALOG_ACCESS_TOOLS).
+_CATALOG_ACCESS_NOTE = (
+    " Results reflect the caller's catalog access: a 404 for a tap, pipeline or catalog name you were given "
+    "means it is not available to this user, so say it is not available and do not retry other spellings or guess a similar name."
+)
+
+_CATALOG_ACCESS_CREATE_NOTE = (
+    " Results reflect the caller's catalog access: a 404 for a name you were given means it is not available to this user. "
+    "For a user limited to specific catalogs, a create without `catalog` is filled in with their only editable catalog, "
+    "or refused with a message listing the allowed catalogs; relay that message and ask which one to use."
+)
+
+_CATALOG_ACCESS_RAW_QUERY_NOTE = (
+    " A user limited to specific catalogs cannot run free-form queries: the server refuses this tool for them, so relay "
+    "the refusal and use a tool that takes a `pipeline` name instead. Otherwise results reflect the caller's catalog access, "
+    "and a 404 for a name you were given means it is not available to this user."
+)
+
+_CATALOG_ACCESS_TOOLS = frozenset({
+    "list_pipelines", "list_taps", "find_data", "get_pipeline", "get_tap",
+    "set_catalog", "rename_catalog",
+})
+_CATALOG_ACCESS_CREATE_TOOLS = frozenset({"create_pipeline", "create_tap"})
+_CATALOG_ACCESS_RAW_QUERY_TOOLS = frozenset({"query_postgres", "query_mongodb", "query_natural"})
+
+
+def _catalog_access_note(name):
+    if name in _CATALOG_ACCESS_CREATE_TOOLS:
+        return _CATALOG_ACCESS_CREATE_NOTE
+    if name in _CATALOG_ACCESS_RAW_QUERY_TOOLS:
+        return _CATALOG_ACCESS_RAW_QUERY_NOTE
+    if name in _CATALOG_ACCESS_TOOLS or name.startswith("search_") or name.startswith("query_"):
+        return _CATALOG_ACCESS_NOTE
+    return ""
+
+
 def _all_tools():
     tools = _base_tools()
     for t in tools:
+        note = _catalog_access_note(t.name)
+        if note and "catalog access" not in (t.description or ""):
+            t.description = (t.description or "") + note
         if t.name in _MUTATING_TOOLS:
             props = t.input_schema.setdefault("properties", {})
             if "reason" not in props:

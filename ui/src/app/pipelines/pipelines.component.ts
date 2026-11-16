@@ -6,6 +6,7 @@ import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { PipelineStatusService } from '../pipeline-status.service';
 import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
+import { canEditCatalog, canOwnCatalog, editableCatalogsOf, isRestrictedUser } from '../shared/catalog-access';
 import { httpErrorText } from '../shared/http-error';
 
 @Component({
@@ -32,6 +33,19 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   moveMenuOpen = '';
 
   get isEmbedded(): boolean { return !!this.embedCatalog; }
+
+  // Catalog-scoped access: restricted branches read the /me fields via
+  // AuthService, never list contents. Edit/ingest need edit or own on the
+  // pipeline's catalog; delete, rename and move need own.
+  get isRestricted(): boolean { return isRestrictedUser(this.auth); }
+
+  canEditItem(p: any): boolean {
+    return this.auth.canWrite() && canEditCatalog(this.auth, p && p.catalog);
+  }
+
+  canOwnItem(p: any): boolean {
+    return this.auth.canWrite() && canOwnCatalog(this.auth, p && p.catalog);
+  }
 
   @HostListener('document:click')
   onDocumentClick(): void {
@@ -129,7 +143,10 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   }
 
   moveTargets(): string[] {
-    return this.allCatalogs.filter(c => c !== this.embedCatalog);
+    const names = this.allCatalogs.filter(c => c !== this.embedCatalog);
+    if (!this.isRestricted) return names;
+    const editable = new Set(editableCatalogsOf(this.auth));
+    return names.filter(c => editable.has(c));
   }
 
   toggleMoveMenu(name: string, event: Event): void {
@@ -233,7 +250,8 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     this.catalogGroups = named.map(([name, pipelines]) => ({
       name, pipelines, expanded: prevExpanded.has(name)
     }));
-    if (uncataloged && uncataloged.length > 0) {
+    // Restricted users never see an Uncataloged group.
+    if (uncataloged && uncataloged.length > 0 && !this.isRestricted) {
       this.catalogGroups.push({
         name: 'Uncataloged', pipelines: uncataloged,
         expanded: prevExpanded.has('Uncataloged')

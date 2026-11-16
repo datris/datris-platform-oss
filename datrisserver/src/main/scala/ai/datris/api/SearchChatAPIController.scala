@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
-import ai.datris.util.{AgentLoop, APIKeyValidator, MCPClient, SecretsUtil}
+import ai.datris.util.{AgentLoop, APIKeyValidator, CatalogAccessPrompt, MCPClient, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.MediaType
 import org.springframework.web.bind.annotation._
@@ -154,7 +154,10 @@ class SearchChatAPIController {
         // prompt request the model could be talked out of.
         val toolDefs = filterToolsReadOnly(MCPClient.listTools(uiKey))
 
-        val systemPrompt = buildSearchSystemPrompt(env.environment)
+        // Catalog-scoped user access: a restricted session user gets the
+        // catalog-access block and no wording about the unassigned group.
+        val accessBlock = UserContext.get().flatMap(CatalogAccessPrompt.block)
+        val systemPrompt = buildSearchSystemPrompt(env.environment, accessBlock)
 
         // Prepend the catalog scope (if any) as a leading user message, mirroring
         // the dashboard-snapshot injection in OpsChatAPIController.
@@ -267,7 +270,11 @@ class SearchChatAPIController {
         sb.toString
     }
 
-    private def buildSearchSystemPrompt(tenantEnv: String): String = {
+    private def buildSearchSystemPrompt(tenantEnv: String, accessBlock: Option[String] = None): String = {
+        // The uncataloged wording and the raw-query paths apply only to
+        // unrestricted users; a restricted user sees only granted catalogs and
+        // the server refuses free-form SQL, MongoDB and metadata for them.
+        val unrestricted = accessBlock.isEmpty
         val sb = new StringBuilder
         sb.append("# Datris Search Assistant\n\n")
         sb.append("You are the conversational Search assistant for tenant `").append(tenantEnv).append("`. ")
@@ -283,20 +290,33 @@ class SearchChatAPIController {
         )
 
         sb.append("## How to work\n\n")
-        sb.append(
-            "1. **Learn what exists first.** Before answering any data question, call `list_pipelines` and `list_taps` so you know what data sources are available. Treat cataloged and uncataloged sources equally — data with no catalog assigned is just as real and queryable; never skip it.\n"
-        )
-        sb.append(
-            "2. **Inspect structure before querying.** Use the metadata tools (`list_postgres_schemas`/`list_postgres_tables`/`list_postgres_columns`, `list_mongodb_collections`, and the vector `list_*` tools) to confirm the shape of a source before you query it.\n"
-        )
-        sb.append("3. **Pick the right access path for the question:**\n")
-        sb.append(
-            "   - Structured/analytical questions over a relational table → `query_natural` (you give it the question + table) or `query_postgres` (you write the read-only SQL).\n"
-        )
-        sb.append("   - Document/collection lookups → `query_mongodb`.\n")
-        sb.append("   - File-based sources behind a pipeline → `query_objectstore`.\n")
-        sb.append("   - Semantic / meaning-based retrieval ('find things about X') → the `search_*` tool matching the available vector store.\n")
-        sb.append("   - To turn retrieved rows or chunks into a written answer → `ai_answer`.\n")
+        if (unrestricted) {
+            sb.append(
+                "1. **Learn what exists first.** Before answering any data question, call `list_pipelines` and `list_taps` so you know what data sources are available. Treat cataloged and uncataloged sources equally — data with no catalog assigned is just as real and queryable; never skip it.\n"
+            )
+            sb.append(
+                "2. **Inspect structure before querying.** Use the metadata tools (`list_postgres_schemas`/`list_postgres_tables`/`list_postgres_columns`, `list_mongodb_collections`, and the vector `list_*` tools) to confirm the shape of a source before you query it.\n"
+            )
+            sb.append("3. **Pick the right access path for the question:**\n")
+            sb.append(
+                "   - Structured/analytical questions over a relational table → `query_natural` (you give it the question + table) or `query_postgres` (you write the read-only SQL).\n"
+            )
+            sb.append("   - Document/collection lookups → `query_mongodb`.\n")
+            sb.append("   - File-based sources behind a pipeline → `query_objectstore`.\n")
+            sb.append("   - Semantic / meaning-based retrieval ('find things about X') → the `search_*` tool matching the available vector store.\n")
+            sb.append("   - To turn retrieved rows or chunks into a written answer → `ai_answer`.\n")
+        } else {
+            sb.append(
+                "1. **Learn what exists first.** Before answering any data question, call `list_pipelines` and `list_taps` so you know which pipelines this user can read.\n"
+            )
+            sb.append(
+                "2. **Inspect structure before querying.** Use `get_pipeline` to confirm a pipeline's destination and fields before you query it.\n"
+            )
+            sb.append("3. **Pick the right access path for the question:**\n")
+            sb.append("   - Rows behind a pipeline → the `query_*` tool for that pipeline's destination, passing the `pipeline` name.\n")
+            sb.append("   - Semantic / meaning-based retrieval → the `search_*` tool matching the pipeline's vector store.\n")
+            sb.append("   - To turn retrieved rows or chunks into a written answer → `ai_answer`.\n")
+        }
         sb.append(
             "4. **Answer with citations.** State which pipeline, table, or collection each part of your answer came from, so the user can trust and reproduce it. If you ran SQL, show it briefly.\n\n"
         )
@@ -321,6 +341,12 @@ class SearchChatAPIController {
         sb.append(
             "- This narrows nothing in the rules above: still ask the one clarifying question when genuinely ambiguous, and stay read-only. The point is only this: once you've decided the next discovery or query step and are merely narrating it, perform it instead of ending the turn.\n\n"
         )
+
+        accessBlock.foreach { b =>
+            sb.append("## Catalog access\n\n")
+            sb.append(b)
+            sb.append("\n")
+        }
 
         sb.append("## When you can't answer\n\n")
         sb.append(

@@ -44,11 +44,13 @@
         <th>Role</th>
         <th>Last login</th>
         <th>Status</th>
+        <th *ngIf="isAdmin()">Catalog access</th>
         <th></th>
       </tr>
     </thead>
     <tbody>
-      <tr *ngFor="let u of users">
+      <ng-container *ngFor="let u of users">
+      <tr>
         <td>
           {{ u.username }}
           <span class="lock-badge" *ngIf="u.username === 'admin'" title="Built-in admin account — cannot be deleted or demoted">Built-in</span>
@@ -64,13 +66,55 @@
         <td>
           <span class="badge" *ngIf="u.mustSetPassword">Must set password</span>
         </td>
+        <td *ngIf="isAdmin()" class="scoped-cell">
+          <label class="scoped-label" [title]="canRestrict(u) ? 'Limit this user to the catalogs granted below' : 'Admins always have access to every catalog'">
+            <input type="checkbox" class="scoped-access-toggle"
+                   [checked]="!!u.restricted"
+                   [disabled]="!canRestrict(u)"
+                   (change)="setRestricted(u, $any($event.target).checked)" />
+            Scoped access
+          </label>
+          <span class="scoped-off" *ngIf="canRestrict(u) && hasDormantGrants(u)" title="Stored grants are kept but ignored while scoped access is off">Scoped access off</span>
+        </td>
         <td class="actions">
           <button class="btn-secondary" (click)="resetPassword(u)" title="Reset password">Reset</button>
           <button class="btn-danger" (click)="deleteUser(u)" title="Delete user" [disabled]="u.username === 'admin'">Delete</button>
         </td>
       </tr>
+      <tr class="grants-tr" *ngIf="isAdmin() && u.restricted && canRestrict(u)">
+        <td colspan="6">
+          <div class="grants-editor">
+            <div class="grants-title">Catalog grants for {{ u.username }}</div>
+            <div class="grants-empty" *ngIf="draftFor(u).grants.length === 0">No catalogs granted: this user sees no taps or pipelines.</div>
+            <div class="grant-row" *ngFor="let g of draftFor(u).grants; let i = index">
+              <span class="grant-name">{{ g.catalog }}</span>
+              <select class="grant-row-level" [(ngModel)]="g.level" [name]="'lvl-' + u.username + '-' + i" (ngModelChange)="draftFor(u).saved = false">
+                <option *ngFor="let l of grantLevels" [value]="l">{{ l }}</option>
+              </select>
+              <button type="button" class="btn-secondary remove-grant" (click)="removeGrant(u, i)" title="Remove grant">Remove</button>
+            </div>
+            <div class="grant-add">
+              <select class="grant-catalog" [(ngModel)]="draftFor(u).newCatalog" [name]="'cat-' + u.username">
+                <option value="">Choose a catalog</option>
+                <option *ngFor="let c of pickableCatalogs(u)" [value]="c">{{ c }}</option>
+                <option [value]="NEW_CATALOG">+ Catalog name...</option>
+              </select>
+              <input *ngIf="draftFor(u).newCatalog === NEW_CATALOG" type="text" class="grant-new-catalog"
+                     placeholder="Catalog name" [(ngModel)]="draftFor(u).newCatalogName" [name]="'newcat-' + u.username" />
+              <select class="grant-level" [(ngModel)]="draftFor(u).newLevel" [name]="'newlvl-' + u.username">
+                <option *ngFor="let l of grantLevels" [value]="l">{{ l }}</option>
+              </select>
+              <button type="button" class="btn-secondary add-grant" (click)="addGrant(u)">Add</button>
+              <button type="button" class="btn-primary save-grants" (click)="saveGrants(u)">Save grants</button>
+            </div>
+            <div class="grants-help">view: read; edit: read, create, update, run; own: edit plus delete and move.</div>
+            <p class="error" *ngIf="draftFor(u).error">{{ draftFor(u).error }}</p>
+          </div>
+        </td>
+      </tr>
+      </ng-container>
       <tr *ngIf="!loading && users.length === 0">
-        <td colspan="5" class="empty">No users.</td>
+        <td [attr.colspan]="isAdmin() ? 6 : 5" class="empty">No users.</td>
       </tr>
     </tbody>
   </table>

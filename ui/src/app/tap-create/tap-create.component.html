@@ -142,13 +142,25 @@
       </div>
 
       <div class="form-group">
+        <ng-container *ngIf="!restricted; else restrictedCatalog">
         <label class="form-label">Data Catalog (optional)</label>
         <select class="form-select" [(ngModel)]="catalog" (ngModelChange)="onCatalogChange($event)">
           <option value="">Uncataloged</option>
           <option *ngFor="let c of availableCatalogs" [value]="c">{{ c }}</option>
           <option value="__new__">+ Create New Catalog</option>
         </select>
-        <div *ngIf="showNewCatalog" class="new-catalog-row">
+        </ng-container>
+        <ng-template #restrictedCatalog>
+          <label class="form-label">Data Catalog</label>
+          <select class="form-select" [(ngModel)]="catalog" (ngModelChange)="onCatalogChange($event)"
+                  required aria-required="true" [class.input-error]="!!catalogError">
+            <option value="" disabled>Choose a catalog</option>
+            <option *ngFor="let c of availableCatalogs" [value]="c">{{ c }}</option>
+          </select>
+          <p class="form-hint" *ngIf="availableCatalogs.length === 0">No catalog you can edit. Ask an administrator for edit access to a catalog.</p>
+        </ng-template>
+        <div class="error-hint" *ngIf="catalogError">{{ catalogError }}</div>
+        <div *ngIf="showNewCatalog && !restricted" class="new-catalog-row">
           <input class="form-input" [class.input-error]="!!newCatalogError" [(ngModel)]="newCatalogName" (ngModelChange)="newCatalogError = ''" placeholder="New catalog name">
           <button class="secondary-btn" (click)="confirmNewCatalog()" [disabled]="!newCatalogName.trim()">Create</button>
           <button class="secondary-btn" (click)="showNewCatalog = false; newCatalogError = ''; catalog = ''">Cancel</button>
