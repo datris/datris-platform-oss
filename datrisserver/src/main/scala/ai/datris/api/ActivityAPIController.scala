@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.auth.CapabilityCheck
+import ai.datris.auth.{CapabilityCheck, HiddenTapScrub}
 import ai.datris.model.DatrisEnvironment
 import ai.datris.util.{ActivitySignals, CatalogOps, PipelineConfigIO, TapConfigIO}
 import com.google.common.base.Throwables
@@ -55,20 +55,26 @@ object ActivityAPIController {
       * its grants allow it to read. Pipeline rows are judged on the stored
       * pipeline's catalog (failing pipeline rows carry none); a pipeline no
       * longer stored is dropped. A visible pipeline's related tap name is
-      * cleared when that tap is hidden. */
+      * cleared when that tap is hidden, and a pipeline row's reason has any
+      * hidden feeding tap's name replaced. */
     private[api] def restrictedView(request: HttpServletRequest, s: ActivitySignals.Signals): ActivitySignals.Signals = {
         val env = DatrisEnvironment.current
         val pipelineCatalogs: Map[String, String] =
             PipelineConfigIO.readAll(env.pipelineTableName).filter(_ != null).map(p => p.name -> Option(p.catalog).getOrElse("")).toMap
-        val tapCatalogs: Map[String, String] =
-            TapConfigIO.readAll(env.tapTableName).filter(_ != null).map(t => t.name -> Option(t.catalog).getOrElse("")).toMap
+        val taps = TapConfigIO.readAll(env.tapTableName).filter(_ != null)
+        val tapCatalogs: Map[String, String] = taps.map(t => t.name -> Option(t.catalog).getOrElse("")).toMap
         def readable(resource: String, catalog: Option[String]): Boolean =
             CapabilityCheck.grants(request, resource, "read", CatalogOps.scopeContext(catalog.orNull, null))
         val keepTap: (String, Option[String]) => Boolean = (_, c) => readable("tap", c)
         val keepPipeline: (String, Option[String]) => Boolean = (n, _) => pipelineCatalogs.get(n).exists(c => readable("pipeline", Some(c)))
         val v = ActivitySignals.visibleTo(s, keepTap, keepPipeline, pipelineCatalogs.get)
+        val visiblePipelines = pipelineCatalogs.collect { case (n, c) if readable("pipeline", Some(c)) => n }.toSet
+        val hiddenFeeding = HiddenTapScrub.hiddenFeedingTaps(request, taps, visiblePipelines)
         v.copy(failing = v.failing.map { f =>
-            if (f.relatedTapName.exists(t => !tapCatalogs.get(t).exists(c => readable("tap", Some(c))))) f.copy(relatedTapName = None) else f
+            val related =
+                if (f.relatedTapName.exists(t => !tapCatalogs.get(t).exists(c => readable("tap", Some(c))))) f.copy(relatedTapName = None) else f
+            // A pipeline row's reason is the run's message, which may name a hidden feeding tap.
+            if (f.kind == "pipeline") related.copy(reason = HiddenTapScrub.scrubText(related.reason, hiddenFeeding, visiblePipelines)) else related
         })
     }
 }

@@ -37,6 +37,14 @@ object CapabilityInterceptor {
       * (legacy full access or scoped) → normal capability check. */
     def denyPresentedButUnresolved(presentedKey: Boolean, resolved: Boolean, rejection: Option[String]): Boolean =
         presentedKey && !resolved && rejection.isDefined
+
+    /** `message` of the 403 a restricted user's session gets on a table or
+      * collection listing ([[CapabilityRoutes.UnfilterableForRestricted]]).
+      * The other body fields match the capability-denied body. */
+    def restrictedListingMessage(label: String, required: String): String =
+        "'" + label + "' holds " + required + ", but this listing is refused for a catalog-scoped user: " +
+            "table and collection listings cannot be limited to the user's catalogs. " +
+            "Use find_data or get_pipeline to locate data in those catalogs instead."
 }
 
 /** Checks every request against the capability declared for its route in
@@ -200,7 +208,16 @@ class CapabilityInterceptor extends HandlerInterceptor {
                             "capability check: route={} {} required={}:{} key={} outcome=deny (restricted session, unfilterable listing)",
                             Array[AnyRef](method, path, resource, action, rk.label): _*
                         )
-                        denyCapability(request, response, rk, resource, action, method, path)
+                        denyCapability(
+                            request,
+                            response,
+                            rk,
+                            resource,
+                            action,
+                            method,
+                            path,
+                            Some(CapabilityInterceptor.restrictedListingMessage(rk.label, resource + ":" + action))
+                        )
                         false
 
                     case Some(rk) =>
@@ -253,21 +270,25 @@ class CapabilityInterceptor extends HandlerInterceptor {
         resource: String,
         action: String,
         method: String,
-        path: String
+        path: String,
+        message: Option[String] = None
     ): Unit = {
         response.setStatus(HttpServletResponse.SC_FORBIDDEN)
         response.setContentType("application/json")
         val safeLabel = rk.label.replace("\"", "\\\"")
+        val text = message.map(_.replace("\"", "\\\"")).getOrElse(
+            "API key '" + safeLabel + "' does not hold capability '" + resource + ":" + action + "'. " +
+                "This is a permission boundary on the API key, not a problem with the upstream service. " +
+                "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
+                "or the operator must use a different key with the required capability."
+        )
         val body =
             "{\"error\":\"capability denied\"," +
                 "\"errorKind\":\"capability_denied\"," +
                 "\"key\":\"" + safeLabel + "\"," +
                 "\"required\":\"" + resource + ":" + action + "\"," +
                 "\"route\":\"" + method + " " + path + "\"," +
-                "\"message\":\"API key '" + safeLabel + "' does not hold capability '" + resource + ":" + action + "'. " +
-                "This is a permission boundary on the API key, not a problem with the upstream service. " +
-                "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
-                "or the operator must use a different key with the required capability.\"}"
+                "\"message\":\"" + text + "\"}"
         response.getWriter.write(body)
         response.getWriter.flush()
         AuditLog.denied(

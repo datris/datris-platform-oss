@@ -6,10 +6,11 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.auth.{CapabilityCheck, CatalogGrants}
-import ai.datris.model.{DatrisEnvironment, PipelineConfig}
-import ai.datris.util.{CatalogOps, LineageService, PipelineConfigIO}
+import ai.datris.auth.HiddenTapScrub
+import ai.datris.model.{DatrisEnvironment, PipelineConfig, TapConfig}
+import ai.datris.util.{CatalogOps, LineageService, PipelineConfigIO, TapConfigIO}
 import com.google.common.base.Throwables
-import com.google.gson.Gson
+import com.google.gson.{Gson, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -74,8 +75,13 @@ class LineageAPIController {
             if (result == null)
                 ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body[String]("{\"error\":\"no such node: " + t + ":" + Option(name).getOrElse("").replace("\"", "'") + "\"}")
-            else
-                new ResponseEntity[String](gson.toJson(result), HttpStatus.OK)
+            else {
+                val shown =
+                    if (CapabilityCheck.isRestrictedSession(request))
+                        LineageAPIController.scrubNeighborhood(request, result, n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n))
+                    else result
+                new ResponseEntity[String](gson.toJson(shown), HttpStatus.OK)
+            }
         } catch {
             case e: Exception =>
                 logger.error("Error building lineage neighborhood: " + Throwables.getStackTraceAsString(e))
@@ -149,6 +155,22 @@ object LineageAPIController {
                         }
                 )
         }
+
+    /** GET /lineage/{type}/{name} for a restricted session: recorded runs
+      * whose input names a tap the session cannot read (`readTap` loads it;
+      * null = missing) lose that tap's identity ([[HiddenTapScrub.scrubRun]]).
+      * Everyone else: `result` unchanged. Scrubs in place; returns `result`. */
+    def scrubNeighborhood(request: HttpServletRequest, result: JsonObject, readTap: String => TapConfig): JsonObject = {
+        if (result == null || !CapabilityCheck.isRestrictedSession(request)) return result
+        if (result.has("runs") && result.get("runs").isJsonArray) {
+            val memo = scala.collection.mutable.Map[String, Boolean]()
+            val hidden: String => Boolean = n => memo.getOrElseUpdate(n, HiddenTapScrub.tapHidden(request, n, readTap))
+            result.getAsJsonArray("runs").forEach { el =>
+                if (el.isJsonObject) HiddenTapScrub.scrubRun(el.getAsJsonObject, hidden)
+            }
+        }
+        result
+    }
 
     /** GET /lineage/columns/{pipeline} for a restricted session: the
       * `no such pipeline` 404 when the pipeline is missing or outside the

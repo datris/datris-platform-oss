@@ -5,9 +5,9 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.auth.CapabilityCheck
-import ai.datris.model.{DatrisEnvironment, PipelineConfig}
-import ai.datris.util.{PipelineConfigIO, ProvenanceResolver}
+import ai.datris.auth.{CapabilityCheck, HiddenTapScrub}
+import ai.datris.model.{DatrisEnvironment, PipelineConfig, TapConfig}
+import ai.datris.util.{PipelineConfigIO, ProvenanceResolver, TapConfigIO}
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
@@ -52,7 +52,15 @@ class ProvenanceAPIController {
                 n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
             )
             if (refused.isDefined) return refused.get
-            new ResponseEntity[String](gson.toJson(resolved), HttpStatus.OK)
+            val shown =
+                if (!restricted) resolved
+                else {
+                    val env = DatrisEnvironment.current
+                    val pipelineName = resolved.get("pipeline").getAsString // present: provenanceRefusal passed
+                    val feeding = HiddenTapScrub.hiddenFeedingTaps(request, TapConfigIO.readAll(env.tapTableName), Set(pipelineName))
+                    ProvenanceAPIController.scrubProvenance(request, resolved, n => TapConfigIO.read(env.tapTableName, n), feeding)
+                }
+            new ResponseEntity[String](gson.toJson(shown), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error resolving provenance: " + Throwables.getStackTraceAsString(e))
@@ -85,5 +93,42 @@ object ProvenanceAPIController {
                 ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body[String]("{\"error\":\"no such run: " + Option(runId).getOrElse("").replace("\"", "'").replace("\\", "") + "\"}")
             )
+    }
+
+    /** For a restricted user's session, after [[provenanceRefusal]] passed:
+      * when the run's tap (from `input.tapName`, `tapRun.tapName` or
+      * `tap.name`) is one the session cannot read (`readTap` loads it; null =
+      * missing), the `tapRun` and `tap` blocks and the top-level `source` go,
+      * and the input loses the tap identity fields. Filenames (`input`,
+      * `job`) read `tap-[hidden]` for that tap and for `hiddenFeeding`
+      * (hidden taps feeding the run's pipeline, for runs that predate the
+      * recorded tap identity). Everyone else: `resolved` unchanged. Scrubs in
+      * place; returns `resolved`. */
+    def scrubProvenance(
+        request: HttpServletRequest,
+        resolved: JsonObject,
+        readTap: String => TapConfig,
+        hiddenFeeding: Set[String]
+    ): JsonObject = {
+        if (resolved == null || !CapabilityCheck.isRestrictedSession(request)) return resolved
+        def str(o: JsonObject, block: String, field: String): Option[String] =
+            if (o.has(block) && o.get(block).isJsonObject) {
+                val b = o.getAsJsonObject(block)
+                if (b.has(field) && b.get(field).isJsonPrimitive) Some(b.get(field).getAsString) else None
+            } else None
+        val named = Seq(str(resolved, "input", "tapName"), str(resolved, "tapRun", "tapName"), str(resolved, "tap", "name")).flatten.distinct
+        val hiddenNamed = named.filter(n => HiddenTapScrub.tapHidden(request, n, readTap)).toSet
+        if (hiddenNamed.nonEmpty) {
+            resolved.remove("tapRun")
+            resolved.remove("tap")
+            resolved.remove("source")
+            if (resolved.has("input") && resolved.get("input").isJsonObject)
+                HiddenTapScrub.TapIdentityFields.foreach(resolved.getAsJsonObject("input").remove)
+        }
+        val scrub = hiddenNamed ++ hiddenFeeding
+        if (scrub.nonEmpty) Seq("input", "job").foreach { block =>
+            str(resolved, block, "filename").foreach(f => resolved.getAsJsonObject(block).addProperty("filename", HiddenTapScrub.scrubFilename(f, scrub)))
+        }
+        resolved
     }
 }

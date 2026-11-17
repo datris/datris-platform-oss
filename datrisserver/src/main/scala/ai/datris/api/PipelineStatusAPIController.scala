@@ -7,8 +7,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
-import ai.datris.model.{DatrisEnvironment, PipelineStatus, PipelineStatusResponse, PipelineStatusSummary}
-import ai.datris.util.{APIKeyValidator, NoSQLDbUtil, PipelineConfigIO, PipelineStatusUtil, ScratchLoader, ScratchReader, ScratchResultException}
+import ai.datris.model.{DatrisEnvironment, PipelineJobRollup, PipelineStatus, PipelineStatusResponse, PipelineStatusSummary}
+import ai.datris.util.{APIKeyValidator, NoSQLDbUtil, PipelineConfigIO, PipelineStatusUtil, ScratchLoader, ScratchReader, ScratchResultException, TapConfigIO}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -39,8 +39,57 @@ object PipelineStatusAPIController {
     def restrictedView(request: jakarta.servlet.http.HttpServletRequest, data: AnyRef): Either[ResponseEntity[String], AnyRef] =
         visibleNames(request) match {
             case None => Right(data)
-            case Some(visible) => filterFor(visible, data)
+            case Some(visible) =>
+                // A visible pipeline fed by a tap the user cannot read: its
+                // events still name that tap (`tap-<name>.csv`, messages).
+                lazy val hidden = ai.datris.auth.HiddenTapScrub.hiddenFeedingTaps(
+                    request,
+                    TapConfigIO.readAll(DatrisEnvironment.current.tapTableName),
+                    visible
+                )
+                filterFor(visible, data).map(shown => scrubFor(hidden, visible, shown))
         }
+
+    /** `data` (a /pipeline/status payload) with every hidden tap name in
+      * filenames and message text replaced ([[ai.datris.auth.HiddenTapScrub]]);
+      * a bare name that is also a visible pipeline name is kept. `data`
+      * itself when `hidden` is empty. */
+    def scrubFor(hidden: Set[String], visibleNames: Set[String], data: AnyRef): AnyRef = {
+        import ai.datris.auth.HiddenTapScrub.{scrubFilename, scrubText}
+        import scala.collection.JavaConverters._
+        if (hidden.isEmpty) return data
+        def text(t: String): String = scrubText(t, hidden, visibleNames)
+        def event(e: PipelineStatus): PipelineStatus =
+            if (e == null) e
+            else
+                e.copy(
+                    filename = scrubFilename(e.filename, hidden),
+                    description = text(e.description),
+                    aiSummary = text(e.aiSummary),
+                    aiDiagnosis = text(e.aiDiagnosis),
+                    aiSuggestion = text(e.aiSuggestion),
+                    detail = text(e.detail)
+                )
+        def job(j: PipelineJobRollup): PipelineJobRollup =
+            if (j == null) j
+            else
+                j.copy(
+                    filename = scrubFilename(j.filename, hidden),
+                    lastError = Option(j.lastError).map(l => l.copy(description = text(l.description), aiSummary = text(l.aiSummary))).orNull
+                )
+        data match {
+            case r: PipelineStatusResponse =>
+                val rollup = Option(r.rollup).map(ro => ro.copy(jobs = Option(ro.jobs).map(_.asScala.map(job).asJava).orNull)).orNull
+                r.copy(rollup = rollup, events = Option(r.events).map(_.asScala.map(event).asJava).orNull)
+            case l: java.util.List[_] =>
+                l.asScala.map {
+                    case e: PipelineStatus => event(e)
+                    case s: PipelineStatusSummary => s.copy(aiSummary = text(s.aiSummary))
+                    case other => other
+                }.asJava
+            case other => other
+        }
+    }
 
     /** Pure core of [[restrictedView]]. */
     def filterFor(visible: Set[String], data: AnyRef): Either[ResponseEntity[String], AnyRef] = {
