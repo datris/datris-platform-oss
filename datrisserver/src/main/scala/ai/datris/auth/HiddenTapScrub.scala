@@ -18,8 +18,9 @@ import scala.collection.JavaConverters._
   * filename a tap feed lands under), and so do the provenance stamp columns
   * of the rows and vector chunks it wrote (`_datris_tap_run`,
   * `_datris_script_sha`, `_datris_source`): in scratch result rows
-  * ([[scrubStampedRows]], also by the job's feed filename when
-  * `provenance.fields` is a subset) and in search hits ([[scrubHits]]).
+  * ([[scrubStampedRows]]; when `provenance.fields` is a subset, by the
+  * job's run record or the feed file its events name, [[ScratchFeed]]) and
+  * in search hits ([[scrubHits]]).
   * The pipeline-bound query routes drop those columns from every row for a
   * restricted session, whatever the tap ([[dropTapStampColumns]],
   * [[dropTapStampNames]]).
@@ -201,32 +202,141 @@ object HiddenTapScrub {
 
     private def holdsStampColumn(row: JsonObject): Boolean = StampTapColumns.exists(row.has)
 
-    /** Whether `row` loses its tap stamp columns: every row holding one when
+    /** A row value as text: a non-null primitive's string; None for absent,
+      * null or empty. */
+    private def rowStr(row: JsonObject, f: String): Option[String] =
+        if (row.has(f) && row.get(f).isJsonPrimitive) Option(row.get(f).getAsString).filter(_.nonEmpty) else None
+
+    private def holdsNonEmptyStampColumn(row: JsonObject): Boolean = StampTapColumns.exists(c => rowStr(row, c).isDefined)
+
+    /** The job filename StreamNotifier gives every run it starts (tap record
+      * feeds, tap document feeds, uploads, stream messages): `stream: <pipeline>`. */
+    val StreamFilenamePrefix = "stream: "
+
+    /** The feed filename named by StreamNotifier's begin event of a run of
+      * `pipeline`, whose description reads exactly
+      * `Stream data received, pipeline: <pipeline>, filename: <filename>`.
+      * None for any other text, null included. */
+    def streamFeedFilename(pipeline: String, description: String): Option[String] = {
+        if (pipeline == null || description == null) return None
+        val prefix = "Stream data received, pipeline: " + pipeline + ", filename: "
+        if (description.startsWith(prefix)) Some(description.substring(prefix.length)).filter(_.nonEmpty) else None
+    }
+
+    /** What ties one scratch job's result rows to its feeding tap, for
+      * [[scrubStampedRows]] / [[stampsHiddenTap]]: the job's `pipeline`,
+      * its pipeline token (`runId`, also the run-lineage key and the
+      * `_datris_run_id` stamp), its own `filename` (as stored, before any
+      * scrub) and the descriptions of its status events (read lazily, at
+      * most once). */
+    final class ScratchFeed(val pipeline: String, val runId: String, val filename: String, descriptionsOf: () => Seq[String]) {
+        lazy val descriptions: Seq[String] =
+            Option(descriptionsOf).map(f => Option(f()).getOrElse(Nil)).getOrElse(Nil).filter(_ != null)
+
+        /** True when the job came in through StreamNotifier, the only way a tap feed arrives. */
+        def streamEntry: Boolean = filename != null && filename.startsWith(StreamFilenamePrefix)
+
+        /** Taps named as this job's feed: an exact `tap-<name>.csv|json` job
+          * filename, and the exact feed filename of its StreamNotifier begin event. */
+        lazy val namedFeeds: Set[String] =
+            (feedTap(filename).toSeq ++ descriptions.flatMap(d => streamFeedFilename(pipeline, d)).flatMap(feedTap)).toSet
+
+        /** Every `tap-<name>.csv|json` the job's event descriptions carry. */
+        lazy val textFeeds: Set[String] = feedFileNames(descriptions)
+    }
+
+    /** `run` memoised for one request: each distinct run id is read at most
+      * once, and at most `max` distinct ids are read (beyond that, and for a
+      * read that throws, None). */
+    def memoRuns(run: String => Option[RunLineage], max: Int = 16): String => Option[RunLineage] = {
+        val memo = scala.collection.mutable.Map[String, Option[RunLineage]]()
+        id =>
+            memo.synchronized {
+                memo.get(id) match {
+                    case Some(r) => r
+                    case None if memo.size >= max => None
+                    case None =>
+                        val r =
+                            try Option(run(id)).flatten
+                            catch { case _: Exception => None }
+                        memo.put(id, r)
+                        r
+                }
+            }
+    }
+
+    /** Whether `row` loses its tap stamp columns. Every row holding one when
       * the job's feeding tap (`jobTap`, from its `tap-<name>.csv|json`
       * filename, [[feedTap]]) is hidden, whatever `provenance.fields`
-      * selected; otherwise only a row stamped with a hidden tap. */
-    private def rowStripped(row: JsonObject, hidden: String => Boolean, jobHidden: Boolean): Boolean =
-        if (jobHidden) holdsStampColumn(row) else stampedTaps(row).exists(hidden)
+      * selected; otherwise a row stamped with a hidden tap. With a `feed`,
+      * a row holding a non-empty tap stamp column that names no tap is tied
+      * to its tap by the run record of its `_datris_run_id` (else the job's
+      * token), trusted only when filed under the job's own pipeline (an
+      * upload, or no tapName, keeps the columns); with no such record, by
+      * the feed files the job's events name (a hidden one strips, a readable
+      * one keeps); failing both, a job that came in through StreamNotifier
+      * loses them (fail closed). */
+    private def rowStripped(
+        row: JsonObject,
+        hidden: String => Boolean,
+        jobHidden: Boolean,
+        feed: ScratchFeed,
+        run: String => Option[RunLineage]
+    ): Boolean =
+        if (jobHidden) holdsStampColumn(row)
+        else {
+            val named = stampedTaps(row)
+            if (named.exists(hidden)) true
+            else if (feed == null || named.nonEmpty || !holdsNonEmptyStampColumn(row)) false
+            else {
+                val record = rowStr(row, "_datris_run_id")
+                    .orElse(Option(feed.runId).filter(_.nonEmpty))
+                    .flatMap(id => Option(run(id)).flatten)
+                    .filter(r => r != null && r.input != null && r.pipeline != null && r.pipeline == feed.pipeline)
+                record match {
+                    case Some(r) => r.input.kind != "upload" && Option(r.input.tapName).filter(_.nonEmpty).exists(hidden)
+                    case None =>
+                        if ((feed.textFeeds ++ feed.namedFeeds).exists(hidden)) true
+                        else if (feed.namedFeeds.nonEmpty) false
+                        else feed.streamEntry
+                }
+            }
+        }
 
-    /** True when some row in `rows` is stamped with a tap `hidden` holds
-      * (`_datris_tap_run` = `<tap>|<runTime>`, or a `tap:<name>` source), or
-      * holds any tap stamp column while `jobTap` is hidden. */
-    def stampsHiddenTap(rows: JsonArray, hidden: String => Boolean, jobTap: Option[String] = None): Boolean =
+    /** True when some row in `rows` loses its tap stamp columns
+      * ([[rowStripped]]): stamped with a tap `hidden` holds
+      * (`_datris_tap_run` = `<tap>|<runTime>`, or a `tap:<name>` source),
+      * holding any tap stamp column while `jobTap` is hidden, or, with a
+      * `feed`, tied to a hidden tap (or to none, fail closed) through the
+      * run record or the job's events. `run` is called only for a row with
+      * a non-empty tap stamp column that names no tap. */
+    def stampsHiddenTap(
+        rows: JsonArray,
+        hidden: String => Boolean,
+        jobTap: Option[String] = None,
+        feed: ScratchFeed = null,
+        run: String => Option[RunLineage] = _ => None
+    ): Boolean =
         rows != null && {
             val jobHidden = jobTap.exists(hidden)
-            rows.asScala.exists(r => r.isJsonObject && rowStripped(r.getAsJsonObject, hidden, jobHidden))
+            rows.asScala.exists(r => r.isJsonObject && rowStripped(r.getAsJsonObject, hidden, jobHidden, feed, run))
         }
 
     /** Scratch result rows (provenance-stamped) with the tap stamp columns
-      * removed from every row stamped with a hidden tap, or from every row
-      * of a job whose feeding tap `jobTap` is hidden. A copy when any row
-      * changes; `rows` itself otherwise (null stays null). */
-    def scrubStampedRows(rows: JsonArray, hidden: String => Boolean, jobTap: Option[String] = None): JsonArray = {
-        if (!stampsHiddenTap(rows, hidden, jobTap)) return rows
+      * removed from every row [[stampsHiddenTap]] counts. A copy when any
+      * row changes; `rows` itself otherwise (null stays null). */
+    def scrubStampedRows(
+        rows: JsonArray,
+        hidden: String => Boolean,
+        jobTap: Option[String] = None,
+        feed: ScratchFeed = null,
+        run: String => Option[RunLineage] = _ => None
+    ): JsonArray = {
+        if (!stampsHiddenTap(rows, hidden, jobTap, feed, run)) return rows
         val jobHidden = jobTap.exists(hidden)
         val out = rows.deepCopy()
         out.forEach { r =>
-            if (r.isJsonObject && rowStripped(r.getAsJsonObject, hidden, jobHidden))
+            if (r.isJsonObject && rowStripped(r.getAsJsonObject, hidden, jobHidden, feed, run))
                 StampTapColumns.foreach(r.getAsJsonObject.remove)
         }
         out
