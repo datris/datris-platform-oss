@@ -178,7 +178,7 @@ curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data&delete
 
 `warnings` lists anything left for you to handle. For an object-store Iceberg pipeline whose table was committed through Unity Catalog (`catalogMode: rest`), it says `Unity Catalog still holds <catalog>.<schema>.<table>; have an admin drop it`, because Datris removes the files but never drops the catalog table (see [Unity Catalog](/destinations/unity-catalog)). For a `catalogMode: managed` table it says `Unity Catalog owns <catalog>.<schema>.<table> and its files (catalogMode managed); Datris deleted nothing there; drop <catalog>.<schema>.<table> in Unity Catalog to remove the data`.
 
-A vector collection, class or table that another pipeline also names is not dropped: the pipeline's own config is deleted, the container and its chunks stay with the other pipeline, and `warnings` holds `Kept <store> <collection|class|table> <name>: ...` (naming the other pipeline only when you can see it). The container is dropped with the last pipeline that names it.
+A vector collection, class or table that another pipeline also names is not dropped: the pipeline's own config is deleted, the container and its chunks stay with the other pipeline, and `warnings` holds `Kept <store> <collection|class|table> <name>: ...` (naming the other pipeline only when you can see it). The container is dropped with the last pipeline that names it. A data-only reset (`deleteConfig=false`) does not clear a shared container either: its chunks stay, and the document-tap ledgers of a tap feeding the pipeline are kept too, so the next tap run does not ingest every document again into the shared container.
 
 ---
 

@@ -2251,7 +2251,8 @@ def _base_tools():
                 "orphaning the data — that creates ghost state. "
                 "If you want to keep the config but wipe the destination data (\"reset\"), "
                 "pass keep_config=true; the config survives, the data does not. "
-                "A vector collection another pipeline also writes to is kept and reported in `warnings`. "
+                "A vector collection another pipeline also writes to is kept and reported in `warnings`; "
+                "a keep_config=true reset then leaves that shared collection and the document-tap ledgers as they are. "
                 "ALWAYS confirm with the user before calling this tool."
             ),
             inputSchema={

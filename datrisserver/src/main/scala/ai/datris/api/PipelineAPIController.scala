@@ -314,10 +314,19 @@ class PipelineAPIController {
         // Source-of-authority rules are validated against every other
         // pipeline: a declared kind must exist, and one dataset has at most
         // one authoritative writer.
-        val others =
-            try PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
-            catch { case _: Exception => Nil }
-        LineageService.authorityConflict(preserved, others).foreach { problem =>
+        // A failed read keeps the authority check fail-open, but a save that
+        // adds a vector container is refused (500): it cannot be checked.
+        val others = PipelineAPIController.othersForSave(
+            preserved,
+            existing,
+            () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+        ) match {
+            case Left(refused) =>
+                logger.warn("POST /pipeline " + preserved.name + " rejected: pipeline configs unreadable for the vector container check")
+                return Left(refused)
+            case Right(o) => o
+        }
+        LineageService.authorityConflict(preserved, others.toList).foreach { problem =>
             return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"" + problem.replace("\"", "'") + "\"}"))
         }
         // One vector container per pipeline: refuse a new or changed
@@ -582,6 +591,16 @@ class PipelineAPIController {
         val deleteConfigBool = deleteConfig.equalsIgnoreCase("true")
         val deleteDataBool = deleteData.equalsIgnoreCase("true") || deleteConfigBool
 
+        // Read before anything is deleted (this config's own row is in the
+        // list and excluded by name), and only when the config names a vector
+        // container. A read failure propagates (500, nothing destroyed): a
+        // dropped container shared with another pipeline cannot be undone.
+        val otherConfigs = PipelineAPIController.vectorOthersForDelete(
+            config,
+            deleteDataBool,
+            () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+        )
+
         if (deleteConfigBool && config.source.databaseAttributes != null)
             PipelinePullTableUtil.deleteEntryIfExists(config.name)
 
@@ -595,16 +614,7 @@ class PipelineAPIController {
 
         // Clean up destination data
         if (deleteDataBool && config.destination != null) {
-            // Read once, before the config row is deleted (it is in the list
-            // and excluded by name). A vector container another pipeline
-            // also names is kept and reported.
-            val otherConfigs =
-                try PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName).filter(_ != null)
-                catch {
-                    case ex: Exception =>
-                        logger.warn("Pipeline delete: " + pipeline + ": could not read pipeline configs for the vector container check: " + ex.getMessage)
-                        Nil
-                }
+            // A vector container another pipeline also names is kept and reported.
             val sharedVector = VectorContainers.sharedOnDelete(config, otherConfigs)
             val objectStoreDataDeleted = cleanupDestinationData(config, sharedVector.map(_._1).toSet)
             sharedVector.foreach { case (k, sharers) =>
@@ -624,7 +634,13 @@ class PipelineAPIController {
             // pipeline. The ledger records "already-processed URIs"; leaving it
             // intact after the destination is emptied would cause the next tap
             // run to skip every doc and land nothing in the now-empty pipeline.
-            cleanupDocumentTapLedgers(pipeline)
+            // A data-only reset that kept a shared vector container keeps the
+            // ledgers too: the chunks are still there, and a re-ingest would
+            // duplicate them in a container that cannot be cleaned per pipeline.
+            if (PipelineAPIController.clearTapLedgersOnDelete(deleteConfigBool, sharedVector.nonEmpty))
+                cleanupDocumentTapLedgers(pipeline)
+            else
+                logger.warn("Pipeline reset: " + pipeline + ": document-tap ledgers kept because a shared vector container was kept")
         }
 
         // Delete the json configuration
@@ -1169,6 +1185,56 @@ object PipelineAPIController {
             body.addProperty("error", VectorContainers.refusalMessage(k, visibleNamesOf(request, colliding)))
             ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString)
         }
+
+    /** POST /pipeline: the other configs for the authority and vector
+      * container checks. A failed read is `Nil` (fail-open, as before)
+      * unless the candidate adds a vector container its stored config does
+      * not name: that save cannot be checked and is refused with 500. */
+    def othersForSave(
+        candidate: PipelineConfig,
+        existing: PipelineConfig,
+        read: () => Seq[PipelineConfig]
+    ): Either[ResponseEntity[String], Seq[PipelineConfig]] =
+        try Right(read())
+        catch {
+            case e: Exception =>
+                val stored = VectorContainers.keysOf(existing).toSet
+                if (VectorContainers.keysOf(candidate).exists(k => !stored.contains(k)))
+                    Left(
+                        ResponseEntity
+                            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body[String](
+                                ApiErrors.errorBody(
+                                    "Could not check whether the vector collection, class or table is used by another pipeline; nothing was saved: " +
+                                        e.getMessage
+                                )
+                            )
+                    )
+                else Right(Nil)
+        }
+
+    /** DELETE /pipeline: the configs a vector delete is checked against.
+      * Nil without reading when no data is deleted or the config names no
+      * vector container; otherwise `read()` (nulls dropped), whose failure
+      * propagates so the delete fails before anything is destroyed. */
+    def vectorOthersForDelete(config: PipelineConfig, deleteData: Boolean, read: () => Seq[PipelineConfig]): Seq[PipelineConfig] =
+        if (!deleteData || VectorContainers.keysOf(config).isEmpty) Nil
+        else
+            try read().filter(_ != null)
+            catch {
+                case e: Exception =>
+                    throw new IllegalStateException(
+                        "Could not read pipeline configs to check for shared vector containers; nothing was deleted: " + e.getMessage,
+                        e
+                    )
+            }
+
+    /** Whether a delete clears the pipeline's document-tap ledgers: always
+      * when the config is deleted; for a data-only reset only when no shared
+      * vector container was kept. */
+    def clearTapLedgersOnDelete(deleteConfig: Boolean, keptSharedVector: Boolean): Boolean =
+        deleteConfig || !keptSharedVector
 
     /** DELETE /pipeline: one warning per vector container of `config` that
       * another pipeline in `others` also names (the container is kept). */
