@@ -256,6 +256,26 @@ class PipelineAPIController {
                 return Left(refused)
             }
         }
+        // Limited-visibility callers: a new name that a pipeline hidden from
+        // the caller lists in previousNames is refused exactly as a hidden
+        // pipeline of that name would be, so the name (and the records filed
+        // under it) cannot be taken. A failed config read refuses (500).
+        if (config != null && config.name != null && PipelineAPIController.limitedVisibility(request)) {
+            val table = DatrisEnvironment.current.pipelineTableName
+            if (PipelineConfigIO.read(table, config.name) == null) {
+                val all =
+                    try PipelineConfigIO.readAll(table)
+                    catch {
+                        case e: Exception =>
+                            logger.warn("POST /pipeline " + config.name + " rejected: pipeline configs unreadable for the previous-name check: " + e.getMessage)
+                            return Left(PipelineAPIController.aliasCheckUnavailable("saved"))
+                    }
+                PipelineAPIController.hiddenAliasSaveRefusal(request, config, all, PipelineAPIController.SaveOverwriteActions).foreach { refused =>
+                    logger.warn("POST /pipeline " + config.name + " rejected: HTTP " + refused.getStatusCode.value)
+                    return Left(refused)
+                }
+            }
+        }
         // Restricted users: default a blank catalog and refuse targets
         // outside their grants before anything is validated or written.
         val scoped =
@@ -646,10 +666,27 @@ class PipelineAPIController {
                     EntityVersionIO.listVersions(env.pipelineVersionTableName, newName),
                     EntityVersionIO.listVersions(env.pipelineVersionTableName, name)
                 )
-                PipelineAPIController.renameRefusal(request, name, requested, old, existingNew, jobs, ucStateExists, priorAttempt).foreach { refused =>
-                    logger.warn("POST /pipelines/" + name + "/rename refused: HTTP " + refused.getStatusCode.value)
-                    return refused
-                }
+                // A new name a pipeline hidden from the caller lists in
+                // previousNames reads as taken (checked inside, after the
+                // earlier refusals; a failed read refuses, nothing renamed).
+                def hiddenAlias: Boolean =
+                    existingNew == null && PipelineAPIController.limitedVisibility(request) && {
+                        val all =
+                            try PipelineConfigIO.readAll(table)
+                            catch {
+                                case e: Exception =>
+                                    throw new IllegalStateException(
+                                        "Could not check whether the name '" + newName + "' is in use; nothing was renamed. Try again.",
+                                        e
+                                    )
+                            }
+                        PipelineAPIController.hiddenAliasClaimant(request, newName, all).isDefined
+                    }
+                PipelineAPIController.renameRefusal(request, name, requested, old, existingNew, jobs, ucStateExists, priorAttempt, hiddenAlias)
+                    .foreach { refused =>
+                        logger.warn("POST /pipelines/" + name + "/rename refused: HTTP " + refused.getStatusCode.value)
+                        return refused
+                    }
 
                 val actor = VersionActor.resolve(request)
                 val scriptActor = ResolvedKeyAccess.keyLabel(request).orNull
@@ -1665,6 +1702,53 @@ object PipelineAPIController {
             SharedDatasets.keptOnDeleteMessage(SharedDatasets.label(k), visibleNamesOf(request, sharers))
         }
 
+    /** Limited-visibility callers only: a pipeline hidden from the caller
+      * that lists `name` in `previousNames` (other than one currently named
+      * `name`), or None. None for everyone else. Saving, restoring or
+      * renaming into such a name would hand its stored records to the
+      * caller ([[PipelineAliases]]). */
+    def hiddenAliasClaimant(request: HttpServletRequest, name: String, all: Seq[PipelineConfig]): Option[PipelineConfig] =
+        if (name == null || !limitedVisibility(request)) None
+        else PipelineAliases.listersOf(name, Option(all).getOrElse(Nil).filter(_ != null)).find(p => visiblePipelines(request, Seq(p)).isEmpty)
+
+    /** POST /pipeline for a name no stored config carries, limited-visibility
+      * callers: when [[hiddenAliasClaimant]] finds a hidden pipeline listing
+      * the name, the refusal a hidden pipeline of that name would get today
+      * (no new oracle): for a restricted session the [[catalogForSave]]
+      * refusal (its 404), for an API key the [[overwriteRefusal]] 403 on
+      * `actions` (or, for a key whose write is unscoped but whose read is
+      * not, the same capability-denied 403 on read). None for everyone else. */
+    def hiddenAliasSaveRefusal(
+        request: HttpServletRequest,
+        config: PipelineConfig,
+        all: Seq[PipelineConfig],
+        actions: Seq[String]
+    ): Option[ResponseEntity[String]] =
+        if (config == null) None
+        else
+            hiddenAliasClaimant(request, config.name, all).map { hidden =>
+                if (CapabilityCheck.isRestrictedSession(request))
+                    catalogForSave(request, config, hidden).left.toOption.getOrElse(pipelineNotFound(config.name))
+                else overwriteRefusal(request, hidden, actions).getOrElse(readScopeDenied(request, hidden))
+            }
+
+    /** The capability-denied 403 for `pipeline:read` on `hidden`'s scope. */
+    private def readScopeDenied(request: HttpServletRequest, hidden: PipelineConfig): ResponseEntity[String] =
+        try {
+            CapabilityCheck.assertScope(request, "pipeline", "read", CatalogOps.scopeContext(hidden.catalog, hidden.createdByKeyLabel))
+            capabilityDenied(new CapabilityDeniedException("capability denied"))
+        } catch {
+            case e: CapabilityDeniedException => capabilityDenied(e)
+        }
+
+    /** 500 when the configs needed for the previous-name check could not be
+      * read: nothing was `done` (saved, restored). */
+    def aliasCheckUnavailable(done: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody("Could not check whether the name is in use; nothing was " + done + ". Try again."))
+
     /** GET /pipelines: the configs the caller may read (per-item scope
       * check on catalog + owner); nulls dropped. */
     def visiblePipelines(request: HttpServletRequest, configs: Seq[PipelineConfig]): Seq[PipelineConfig] =
@@ -1715,7 +1799,9 @@ object PipelineAPIController {
       * sync (400); a job initialized or processing (409); a taken new name
       * (409) unless it holds this pipeline from a rename that stopped half
       * way (`resumable` and `priorAttempt`, [[PipelineRename.priorAttempt]]
-      * on the stored version history). None = go ahead. The vector-container and authority rules are
+      * on the stored version history); a free new name that a pipeline hidden
+      * from the caller lists in `previousNames` (`hiddenAliasClaim`, the same
+      * 409). None = go ahead. The vector-container and authority rules are
       * never consulted: the destination does not change. */
     def renameRefusal(
         request: HttpServletRequest,
@@ -1725,7 +1811,8 @@ object PipelineAPIController {
         existingNew: PipelineConfig,
         jobs: Seq[(String, ai.datris.model.JobState)],
         ucStateExists: Boolean,
-        priorAttempt: Boolean = true
+        priorAttempt: Boolean = true,
+        hiddenAliasClaim: => Boolean = false
     ): Option[ResponseEntity[String]] = {
         if (old == null) return Some(pipelineNotFound(name))
         refusalFor(request, name, old, "delete").foreach(r => return Some(r))
@@ -1740,6 +1827,10 @@ object PipelineAPIController {
         PipelineRename.unityCatalogBlock(ucEnabled, ucStateExists).foreach(p => return Some(renameError(HttpStatus.BAD_REQUEST, p)))
         if (PipelineRename.jobBlock(jobs, name))
             return Some(renameError(HttpStatus.CONFLICT, "Pipeline " + name + " has a job running; rename it once the job has finished"))
+        // A name a pipeline hidden from the caller lists in previousNames:
+        // the same 409 as a taken name (evaluated only here, for a free name).
+        if (existingNew == null && hiddenAliasClaim)
+            return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
         if (existingNew != null && !(PipelineRename.resumable(old, existingNew) && priorAttempt))
             return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
         None

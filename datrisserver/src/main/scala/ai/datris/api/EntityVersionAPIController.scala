@@ -59,6 +59,23 @@ object EntityVersionAPIController {
     def pipelineRestoreScopeRefusal(request: HttpServletRequest, snap: PipelineConfig, live: PipelineConfig): Option[ResponseEntity[String]] =
         PipelineAPIController.overwriteRefusal(request, Option(live).getOrElse(snap), PipelineAPIController.RestoreOverwriteActions)
 
+    /** Version restore of a deleted pipeline (no live config),
+      * limited-visibility callers: when a pipeline hidden from the caller
+      * lists the snapshot's name in `previousNames`
+      * ([[PipelineAPIController.hiddenAliasClaimant]]), the refusal a hidden
+      * live pipeline of that name gets today: `hiddenResponse` (the 404) for
+      * a restricted session, the [[pipelineRestoreScopeRefusal]] 403 for an
+      * API key. None otherwise. */
+    def pipelineRestoreAliasRefusal(
+        request: HttpServletRequest,
+        snap: PipelineConfig,
+        all: Seq[PipelineConfig],
+        hiddenResponse: => ResponseEntity[String]
+    ): Option[ResponseEntity[String]] =
+        if (snap == null || PipelineAPIController.hiddenAliasClaimant(request, snap.name, all).isEmpty) None
+        else if (CapabilityCheck.isRestrictedSession(request)) Some(hiddenResponse)
+        else PipelineAPIController.hiddenAliasSaveRefusal(request, snap, all, PipelineAPIController.RestoreOverwriteActions)
+
     /** [[pipelineRestoreRefusal]] with the shared-dataset environment given. */
     def pipelineRestoreRefusal(
         request: HttpServletRequest,
@@ -271,6 +288,17 @@ class EntityVersionAPIController {
                 // config, or the snapshot when the pipeline was deleted)
                 // cannot be restored (403).
                 EntityVersionAPIController.pipelineRestoreScopeRefusal(request, snap, live).foreach(refused => return refused)
+                // Limited-visibility callers: re-creating a deleted pipeline
+                // under a name a pipeline hidden from them lists in
+                // previousNames is refused as that hidden pipeline would be
+                // (a failed config read refuses, nothing restored).
+                if (live == null && PipelineAPIController.limitedVisibility(request)) {
+                    val all =
+                        try PipelineConfigIO.readAll(env.pipelineTableName)
+                        catch { case _: Exception => return PipelineAPIController.aliasCheckUnavailable("restored") }
+                    EntityVersionAPIController.pipelineRestoreAliasRefusal(request, snap, all, notFound("pipeline", name, version))
+                        .foreach(refused => return refused)
+                }
                 // A restricted user may not restore a snapshot into a catalog
                 // outside its grants (same rules as a save).
                 PipelineAPIController.catalogForSave(request, snap, live) match {

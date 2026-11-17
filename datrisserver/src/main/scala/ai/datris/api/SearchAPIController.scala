@@ -42,7 +42,9 @@ object SearchAPIController {
       * rule on it, `Left` the existing 404 when it fails; otherwise
       * `Right(Some(names))`, the names of every pipeline the session can read
       * (in any store), plus the previous names of those among them that name
-      * this container ([[PipelineAliases.recordNames]]). A `readAll` failure propagates (fail closed). */
+      * this container ([[PipelineAliases.recordNames]]), less any name reused
+      * after a rename with a pipeline it may belong to hidden
+      * ([[PipelineAliases.shownRecordNames]]). A `readAll` failure propagates (fail closed). */
     def searchWriters(
         request: jakarta.servlet.http.HttpServletRequest,
         store: String,
@@ -60,9 +62,14 @@ object SearchAPIController {
                 // Chunks keep the name they were written under: a renamed
                 // pipeline's earlier names count for it, but only for a
                 // pipeline that names this container (PipelineAliases).
+                // A name reused after a rename counts only when every
+                // pipeline it may belong to is visible.
                 val visible = PipelineAPIController.visiblePipelines(request, configs)
                 val namers = VectorSearchRegistry.pipelinesForContainer(store, container, configs, schema).map(_.name).toSet
-                Right(Some(visible.map(_.name).toSet ++ PipelineAliases.recordNames(visible.filter(c => namers.contains(c.name)), configs)))
+                val shown = PipelineAliases.shownRecordNames(visible, configs)
+                Right(Some(
+                    (visible.map(_.name).toSet ++ PipelineAliases.recordNames(visible.filter(c => namers.contains(c.name)), configs)).filter(shown.contains)
+                ))
             }
         }
 

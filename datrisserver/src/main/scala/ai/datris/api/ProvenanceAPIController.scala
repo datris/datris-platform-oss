@@ -45,13 +45,17 @@ class ProvenanceAPIController {
                 if (tapRun != null && !restricted) tapRun.trim else null,
                 configVersion
             )
+            // Read only for a restricted session (provenanceRefusal and the
+            // scrub below never call it otherwise).
+            lazy val configs = PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName).filter(_ != null)
             val refused = ProvenanceAPIController.provenanceRefusal(
                 request,
                 runId.trim,
                 resolved,
                 // A run filed under a renamed pipeline's earlier name is
-                // judged on that pipeline (PipelineAliases).
-                n => PipelineAliases.readOwner(n)
+                // judged on that pipeline; a reused name only when every
+                // pipeline it may belong to is visible (PipelineAliases).
+                n => ProvenanceAPIController.recordOwner(request, n, configs)
             )
             if (refused.isDefined) return refused.get
             val shown =
@@ -59,7 +63,7 @@ class ProvenanceAPIController {
                 else {
                     val env = DatrisEnvironment.current
                     val pipelineName = resolved.get("pipeline").getAsString // present: provenanceRefusal passed
-                    val owner = Option(PipelineAliases.readOwner(pipelineName)).map(_.name).toSet
+                    val owner = Option(PipelineAliases.ownerOf(pipelineName, configs)).map(_.name).toSet
                     val feeding = HiddenTapScrub.hiddenFeedingTaps(request, TapConfigIO.readAll(env.tapTableName), Set(pipelineName) ++ owner)
                     ProvenanceAPIController.scrubProvenance(request, resolved, n => TapConfigIO.read(env.tapTableName, n), feeding)
                 }
@@ -74,6 +78,17 @@ class ProvenanceAPIController {
 }
 
 object ProvenanceAPIController {
+
+    /** The `read` for [[provenanceRefusal]] on loaded configs: the owner of a
+      * run filed under `name` ([[PipelineAliases.ownerOf]]), or null (read as
+      * missing, so the run is refused) when the session may not see that
+      * name's records ([[PipelineAliases.recordShown]]: a reused name with a
+      * claimant outside the grants). */
+    def recordOwner(request: HttpServletRequest, name: String, configs: Seq[PipelineConfig]): PipelineConfig = {
+        val all = Option(configs).getOrElse(Nil).filter(_ != null)
+        if (!PipelineAliases.recordShown(name, all, c => !PipelineAPIController.hiddenConfig(request, c, "read"))) null
+        else PipelineAliases.ownerOf(name, all)
+    }
 
     /** For a restricted user's session, after [[ProvenanceResolver.resolve]]:
       * 404 `no such run: <runId>` when the resolved run names no pipeline, or

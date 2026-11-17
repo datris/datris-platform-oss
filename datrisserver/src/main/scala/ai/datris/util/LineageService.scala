@@ -487,6 +487,18 @@ object LineageService {
         Graph(nodes, g.edges.filter(e => ids.contains(e.from) && ids.contains(e.to)))
     }
 
+    /** The recorded-run filter of a caller-filtered [[neighborhood]]: a run
+      * filed under `pipeline` is kept when the name's records are shown
+      * under [[PipelineAliases.recordShown]] with the graph's pipeline nodes
+      * as what the caller can see, or when no stored pipeline carries or
+      * lists the name and its node is in the graph. */
+    def runShown(pipeline: String, pipelines: Seq[PipelineConfig], inGraph: String => Boolean): Boolean =
+        pipeline != null && {
+            val all = Option(pipelines).getOrElse(Nil).filter(_ != null)
+            PipelineAliases.recordShown(pipeline, all, c => inGraph("pipeline:" + c.name)) ||
+            (PipelineAliases.claimantsOf(pipeline, all).isEmpty && inGraph("pipeline:" + pipeline))
+        }
+
     /** The whole graph (cached ~1 minute). */
     def graph(): Graph = loadCached().graph
 
@@ -612,14 +624,12 @@ object LineageService {
                 if (graph == null) recentRuns(nodeType, name, runs)
                 else {
                     // A run filed under a renamed pipeline's earlier name
-                    // counts for that pipeline (PipelineAliases).
-                    val aliases = PipelineAliases.aliasOwners(entry.pipelines)
-                    recentRuns(nodeType, name, runs).filter { r =>
-                        r.pipeline != null &&
-                        (byId.contains("pipeline:" + r.pipeline) ||
-                            (!entry.pipelines.exists(p => p != null && p.name == r.pipeline) &&
-                                aliases.get(r.pipeline).exists(o => byId.contains("pipeline:" + o.name))))
-                    }
+                    // counts for that pipeline; a reused name only when every
+                    // pipeline it may belong to is in the graph
+                    // (PipelineAliases.recordShown). A name no stored
+                    // pipeline carries or lists (a historical node) is kept
+                    // when its node is in the graph, as before.
+                    recentRuns(nodeType, name, runs).filter(r => runShown(r.pipeline, entry.pipelines, byId.contains))
                 }
             visibleRuns.foreach(r => arr.add(runToJson(r)))
             o.add("runs", arr)

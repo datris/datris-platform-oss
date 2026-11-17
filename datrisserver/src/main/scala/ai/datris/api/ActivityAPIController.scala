@@ -66,9 +66,10 @@ object ActivityAPIController {
         def readable(resource: String, catalog: Option[String]): Boolean =
             CapabilityCheck.grants(request, resource, "read", CatalogOps.scopeContext(catalog.orNull, null))
         val keepTap: (String, Option[String]) => Boolean = (_, c) => readable("tap", c)
-        val keepPipeline: (String, Option[String]) => Boolean = (n, _) => pipelineCatalogs.get(n).exists(c => readable("pipeline", Some(c)))
+        val keepPipeline: (String, Option[String]) => Boolean =
+            (n, _) => recordReadable(n, configs, c => readable("pipeline", Some(Option(c.catalog).getOrElse(""))))
         val v = ActivitySignals.visibleTo(s, keepTap, keepPipeline, pipelineCatalogs.get)
-        val visiblePipelines = pipelineCatalogs.collect { case (n, c) if readable("pipeline", Some(c)) => n }.toSet
+        val visiblePipelines = pipelineCatalogs.keys.filter(n => keepPipeline(n, None)).toSet
         val tapHidden: String => Boolean = t => !tapCatalogs.get(t).exists(c => readable("tap", Some(c)))
         v.copy(failing = scrubFailing(v.failing, tapHidden, HiddenTapScrub.hiddenFeedingTaps(request, taps, visiblePipelines)))
     }
@@ -81,6 +82,14 @@ object ActivityAPIController {
         live.map(p => p.name -> Option(p.catalog).getOrElse("")).toMap ++
             PipelineAliases.aliasOwners(live).map { case (n, c) => n -> Option(c.catalog).getOrElse("") }
     }
+
+    /** Whether a restricted session sees activity rows filed under `name`:
+      * [[PipelineAliases.recordShown]] with `catalogReadable` deciding which
+      * pipelines it can see, so a name reused after a rename needs every
+      * pipeline it may belong to readable. A name no pipeline carries or
+      * lists is hidden. */
+    def recordReadable(name: String, configs: Seq[ai.datris.model.PipelineConfig], catalogReadable: ai.datris.model.PipelineConfig => Boolean): Boolean =
+        PipelineAliases.recordShown(name, configs.filter(_ != null), catalogReadable)
 
     /** Failing rows a restricted session sees, with hidden tap names gone:
       * `relatedTapName` is cleared when `tapHidden` (a tap no longer stored

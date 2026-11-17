@@ -1744,10 +1744,18 @@ paths:
                       absent for a pipeline never renamed. Server-maintained:
                       ignored in `POST /api/v1/pipeline` bodies and version
                       restores (the stored value is kept; a new pipeline has
-                      none). Run history, lineage runs, provenance and vector
-                      chunks recorded under an earlier name stay visible to
-                      the users who can see the pipeline, unless a pipeline
-                      now carries that name.
+                      none). Run history, lineage runs, provenance, activity
+                      and vector chunks recorded under an earlier name stay
+                      visible to the users who can see the pipeline. When
+                      another pipeline now carries that earlier name, a user
+                      with scoped catalog access sees the records under it
+                      only if they can see all of those pipelines (unrestricted users
+                      and API keys: unchanged). A caller who cannot see every
+                      pipeline cannot take an earlier name of a pipeline
+                      hidden from it: save, version restore and rename are
+                      refused as for a hidden pipeline of that name (500,
+                      nothing written, when the pipeline list cannot be read
+                      for this check).
         '403':
           description: The API key's scope (`owner=self`, `catalog=`) does not cover this pipeline
         '404':
@@ -2392,7 +2400,9 @@ paths:
         access a delete needs (own on the pipeline's catalog, or
         `pipeline:delete` for an API key). A rename that stopped part way is
         finished by sending it again. Audited as `pipeline` / `rename` on the
-        old name with `newName` in the metadata.
+        old name with `newName` in the metadata. A caller who cannot see
+        every pipeline gets the taken-name 409 for a new name that a pipeline
+        hidden from it had before it was renamed (`previousNames`).
       parameters:
         - in: path
           name: name
