@@ -247,46 +247,25 @@ class PipelineAPIController {
         changeNote: String,
         request: HttpServletRequest
     ): Either[ResponseEntity[String], (PipelineConfig, String)] = {
-        // API keys: a pipeline of this name outside the key's scope cannot
-        // be overwritten (403) — checked before anything else.
-        if (config != null && PipelineAPIController.overwriteCheckNeeded(request, PipelineAPIController.SaveOverwriteActions)) {
-            val stored = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, config.name)
-            PipelineAPIController.overwriteRefusal(request, stored, PipelineAPIController.SaveOverwriteActions).foreach { refused =>
-                logger.warn("POST /pipeline " + config.name + " rejected: existing pipeline outside the key's scope")
-                return Left(refused)
-            }
-        }
-        // Limited-visibility callers: a new name that a pipeline hidden from
-        // the caller lists in previousNames is refused exactly as a hidden
-        // pipeline of that name would be, so the name (and the records filed
-        // under it) cannot be taken. A failed config read refuses (500).
-        if (config != null && config.name != null && PipelineAPIController.limitedVisibility(request)) {
-            val table = DatrisEnvironment.current.pipelineTableName
-            if (PipelineConfigIO.read(table, config.name) == null) {
-                val all =
-                    try PipelineConfigIO.readAll(table)
-                    catch {
-                        case e: Exception =>
-                            logger.warn("POST /pipeline " + config.name + " rejected: pipeline configs unreadable for the previous-name check: " + e.getMessage)
-                            return Left(PipelineAPIController.aliasCheckUnavailable("saved"))
-                    }
-                PipelineAPIController.hiddenAliasSaveRefusal(request, config, all, PipelineAPIController.SaveOverwriteActions).foreach { refused =>
-                    logger.warn("POST /pipeline " + config.name + " rejected: HTTP " + refused.getStatusCode.value)
-                    return Left(refused)
-                }
-            }
-        }
-        // Restricted users: default a blank catalog and refuse targets
-        // outside their grants before anything is validated or written.
+        // Callers who may not see or write every pipeline (scoped API keys,
+        // scoped catalog access): the stored config of this name is read
+        // ONCE and that one value decides the scope check, the previous-name
+        // check and the catalog rules (PipelineAPIController.saveGuardDecision)
+        // and is the `existing` used below, so a concurrent rename or delete
+        // cannot turn a refused save into a create. Everyone else reads
+        // nothing here.
+        val table = DatrisEnvironment.current.pipelineTableName
+        val guarded = config != null && PipelineAPIController.saveGuardNeeded(request)
+        val guardStored: PipelineConfig = if (guarded) PipelineConfigIO.read(table, config.name) else null
         val scoped =
-            if (!CapabilityCheck.isRestrictedSession(request) || config == null) config
-            else {
-                val stored = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, config.name)
-                PipelineAPIController.catalogForSave(request, config, stored) match {
-                    case Left(refused) => return Left(refused)
+            if (!guarded) config
+            else
+                PipelineAPIController.saveGuardDecision(request, config, guardStored, () => PipelineConfigIO.readAll(table)) match {
+                    case Left(refused) =>
+                        logger.warn("POST /pipeline " + config.name + " rejected: HTTP " + refused.getStatusCode.value)
+                        return Left(refused)
                     case Right(c) => c
                 }
-            }
         val withDefaults = PipelineValidatorUtil.applyDefaults(scoped)
         PipelineValidatorUtil.validate(withDefaults)
 
@@ -323,7 +302,9 @@ class PipelineAPIController {
         }
 
         // Definition-edit write → mints a new immutable version snapshot.
-        val existing = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tagged.name)
+        val existing =
+            if (guarded && tagged.name == config.name) guardStored
+            else PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tagged.name)
         // Tags/provenance preservation: clients rebuild the body from
         // scratch, so a body that omits these entirely must not wipe them
         // on an unrelated edit. An explicit empty list / stamp=false in the
@@ -396,8 +377,26 @@ class PipelineAPIController {
         else if (existing != null) "updated" else "created"
         // A new pipeline must not inherit Unity Catalog sync state left by
         // an earlier pipeline of the same name (deleted out of band).
-        if (existing == null) UnityCatalogStaleState.clearOnCreate(preserved)
-        val saved = PipelineConfigIO.writeVersioned(preserved, note, VersionActor.resolve(request))
+        def write(): PipelineConfig = {
+            if (existing == null) UnityCatalogStaleState.clearOnCreate(preserved)
+            PipelineConfigIO.writeVersioned(preserved, note, VersionActor.resolve(request))
+        }
+        // Guarded callers: re-check and write under the lock a rename holds
+        // from its first read to its last write, so a rename that completed
+        // since the decision above (a hidden pipeline renamed into or out of
+        // this name) is seen before anything is written. Only the re-read and
+        // the write are held; validation, the Postgres probe and CodeGen are not.
+        val saved =
+            if (!guarded) write()
+            else
+                CatalogOps.withCatalogLock {
+                    val fresh = PipelineConfigIO.read(table, config.name)
+                    PipelineAPIController.saveRecheck(request, config, guardStored, fresh, () => PipelineConfigIO.readAll(table)).foreach { refused =>
+                        logger.warn("POST /pipeline " + config.name + " rejected at write: HTTP " + refused.getStatusCode.value)
+                        return Left(refused)
+                    }
+                    write()
+                }
 
         // If the source is a database, initialize the pipeline pull table
         if (modifiedConfig.source.databaseAttributes != null)
@@ -1731,6 +1730,75 @@ object PipelineAPIController {
                     catalogForSave(request, config, hidden).left.toOption.getOrElse(pipelineNotFound(config.name))
                 else overwriteRefusal(request, hidden, actions).getOrElse(readScopeDenied(request, hidden))
             }
+
+    /** POST /pipeline: callers whose save is decided from the stored config
+      * of the same name (API keys whose create/update is scoped, callers who
+      * cannot see every pipeline, restricted sessions). False for full keys,
+      * unrestricted sessions and auth-off installs: they read nothing before
+      * the write and take no lock. */
+    def saveGuardNeeded(request: HttpServletRequest): Boolean =
+        overwriteCheckNeeded(request, SaveOverwriteActions) || limitedVisibility(request) || CapabilityCheck.isRestrictedSession(request)
+
+    /** POST /pipeline for a [[saveGuardNeeded]] caller, decided from ONE
+      * stored-config read (`stored`, the config named `config.name` or null):
+      * the scope check on `stored` ([[overwriteRefusal]], 403), then for a
+      * null `stored` the previous-name check ([[hiddenAliasSaveRefusal]];
+      * `readAll` is called only then, and a failure is
+      * [[aliasCheckUnavailable]], 500), then the restricted-session catalog
+      * rules ([[catalogForSave]] against the same `stored`). Right is the
+      * config to save. Reads nothing itself besides `readAll`. */
+    def saveGuardDecision(
+        request: HttpServletRequest,
+        config: PipelineConfig,
+        stored: PipelineConfig,
+        readAll: () => Seq[PipelineConfig]
+    ): Either[ResponseEntity[String], PipelineConfig] = {
+        overwriteRefusal(request, stored, SaveOverwriteActions).foreach(refused => return Left(refused))
+        if (stored == null && config.name != null && limitedVisibility(request)) {
+            val all =
+                try readAll()
+                catch { case _: Exception => return Left(aliasCheckUnavailable("saved")) }
+            hiddenAliasSaveRefusal(request, config, all, SaveOverwriteActions).foreach(refused => return Left(refused))
+        }
+        if (CapabilityCheck.isRestrictedSession(request)) catalogForSave(request, config, stored)
+        else Right(config)
+    }
+
+    /** POST /pipeline, [[saveGuardNeeded]] callers, under
+      * `CatalogOps.withCatalogLock` just before the write: `fresh` is the
+      * config of that name read under the lock. A save [[saveGuardDecision]]
+      * refuses on `fresh` gets that refusal (the one a retry would get); a
+      * save allowed on `fresh` whose stored config changed since the decision
+      * (`decided`: appeared, disappeared, or moved catalog, owner or earlier
+      * names) gets [[saveConflict]] (409). None: write. */
+    def saveRecheck(
+        request: HttpServletRequest,
+        config: PipelineConfig,
+        decided: PipelineConfig,
+        fresh: PipelineConfig,
+        readAll: () => Seq[PipelineConfig]
+    ): Option[ResponseEntity[String]] =
+        saveGuardDecision(request, config, fresh, readAll) match {
+            case Left(refused) => Some(refused)
+            case Right(_) if !sameGuardState(decided, fresh) => Some(saveConflict(config.name))
+            case Right(_) => None
+        }
+
+    /** The stored fields [[saveGuardDecision]] and the save's preservation of
+      * server-maintained state depend on. */
+    private[api] def sameGuardState(a: PipelineConfig, b: PipelineConfig): Boolean =
+        if (a == null || b == null) a == null && b == null
+        else
+            a.catalog == b.catalog && a.createdByKeyLabel == b.createdByKeyLabel &&
+            Option(a.previousNames).map(_.asScala.toList).getOrElse(Nil) == Option(b.previousNames).map(_.asScala.toList).getOrElse(Nil)
+
+    /** 409 when the pipeline changed while a save was being checked: nothing
+      * was saved. */
+    def saveConflict(name: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody("Pipeline '" + name + "' changed while it was being saved; nothing was saved. Try again."))
 
     /** The capability-denied 403 for `pipeline:read` on `hidden`'s scope. */
     private def readScopeDenied(request: HttpServletRequest, hidden: PipelineConfig): ResponseEntity[String] =

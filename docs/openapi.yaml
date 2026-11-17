@@ -1918,6 +1918,12 @@ paths:
             grants neither `pipeline:create` nor `pipeline:update` on it. A
             scoped key cannot overwrite a pipeline outside its scope; nothing
             is saved.
+        '409':
+          description: >-
+            For a caller who cannot see or write every pipeline (scoped
+            catalog access, scoped API key): the pipeline of this name was
+            created, deleted, renamed or moved to another catalog while the
+            save was being checked. Nothing was saved; send the save again.
         '400':
           description: >-
             The configuration was refused and nothing was saved: it failed
