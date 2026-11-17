@@ -112,21 +112,27 @@ object PipelineStatusAPIController {
       * filenames and message text replaced where it appears in a tap context
       * ([[ai.datris.auth.HiddenTapScrub.scrubText]]), and scratch result
       * preview rows stamped with a tap `rowTapHidden` holds lose their tap
-      * stamp columns ([[ai.datris.auth.HiddenTapScrub.scrubStampedRows]]).
-      * `data` itself when neither applies. */
+      * stamp columns ([[ai.datris.auth.HiddenTapScrub.scrubStampedRows]]), as
+      * do all preview rows of a job or event whose own filename is the
+      * `tap-<name>.csv|json` feed of such a tap (a `provenance.fields` subset
+      * without `_datris_tap_run`). `data` itself when neither applies. */
     def scrubFor(hidden: Set[String], data: AnyRef, rowTapHidden: String => Boolean = _ => false): AnyRef = {
-        import ai.datris.auth.HiddenTapScrub.{scrubFilename, scrubStampedRows, scrubText, stampsHiddenTap}
+        import ai.datris.auth.HiddenTapScrub.{feedTap, scrubFilename, scrubStampedRows, scrubText, stampsHiddenTap}
         import scala.collection.JavaConverters._
-        def eventRows(e: PipelineStatus): com.google.gson.JsonArray =
-            if (e == null || e.scratchResult == null) null else e.scratchResult.resultPreview
-        val previews: Seq[com.google.gson.JsonArray] = data match {
+        // Each preview with its job's own filename (read before scrubFilename
+        // rewrites it): a tap feed's rows belong to that tap.
+        def eventRows(e: PipelineStatus): (com.google.gson.JsonArray, String) =
+            if (e == null || e.scratchResult == null) (null, null) else (e.scratchResult.resultPreview, e.filename)
+        val previews: Seq[(com.google.gson.JsonArray, String)] = data match {
             case r: PipelineStatusResponse =>
-                Option(r.rollup).flatMap(ro => Option(ro.jobs)).map(_.asScala.toSeq).getOrElse(Nil).filter(_ != null).map(_.resultPreview) ++
+                Option(r.rollup).flatMap(ro => Option(ro.jobs)).map(_.asScala.toSeq).getOrElse(Nil).filter(_ != null).map(j =>
+                    (j.resultPreview, j.filename)
+                ) ++
                     Option(r.events).map(_.asScala.toSeq).getOrElse(Nil).map(eventRows)
             case l: java.util.List[_] => l.asScala.toSeq.collect { case e: PipelineStatus => eventRows(e) }
             case _ => Nil
         }
-        if (hidden.isEmpty && !previews.exists(stampsHiddenTap(_, rowTapHidden))) return data
+        if (hidden.isEmpty && !previews.exists { case (rows, fn) => stampsHiddenTap(rows, rowTapHidden, feedTap(fn)) }) return data
         def text(t: String): String = scrubText(t, hidden)
         def event(e: PipelineStatus): PipelineStatus =
             if (e == null) e
@@ -139,7 +145,7 @@ object PipelineStatusAPIController {
                     aiSuggestion = text(e.aiSuggestion),
                     detail = text(e.detail),
                     scratchResult = Option(e.scratchResult)
-                        .map(sr => sr.copy(resultPreview = scrubStampedRows(sr.resultPreview, rowTapHidden)))
+                        .map(sr => sr.copy(resultPreview = scrubStampedRows(sr.resultPreview, rowTapHidden, feedTap(e.filename))))
                         .orNull
                 )
         def job(j: PipelineJobRollup): PipelineJobRollup =
@@ -147,7 +153,7 @@ object PipelineStatusAPIController {
             else
                 j.copy(
                     filename = scrubFilename(j.filename, hidden),
-                    resultPreview = scrubStampedRows(j.resultPreview, rowTapHidden),
+                    resultPreview = scrubStampedRows(j.resultPreview, rowTapHidden, feedTap(j.filename)),
                     lastError = Option(j.lastError).map(l => l.copy(description = text(l.description), aiSummary = text(l.aiSummary))).orNull
                 )
         data match {
@@ -166,17 +172,20 @@ object PipelineStatusAPIController {
 
     /** GET /pipeline/result for a restricted user's session: rows stamped
       * with a tap the session cannot read (or one no longer stored) lose
-      * their tap stamp columns. Everyone else: `page` unchanged. */
+      * their tap stamp columns, as do all rows when `jobFilename` (the job's
+      * own filename) is the `tap-<name>.csv|json` feed of such a tap.
+      * Everyone else: `page` unchanged. */
     def scrubResultPage(
         request: jakarta.servlet.http.HttpServletRequest,
         page: ScratchReader.ScratchResultPage,
-        readTap: String => ai.datris.model.TapConfig
+        readTap: String => ai.datris.model.TapConfig,
+        jobFilename: String = null
     ): ScratchReader.ScratchResultPage =
         if (page == null || !ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) page
         else {
             val memo = scala.collection.mutable.Map[String, Boolean]()
             val hidden: String => Boolean = n => memo.getOrElseUpdate(n, ai.datris.auth.HiddenTapScrub.tapHidden(request, n, readTap))
-            val rows = ai.datris.auth.HiddenTapScrub.scrubStampedRows(page.records, hidden)
+            val rows = ai.datris.auth.HiddenTapScrub.scrubStampedRows(page.records, hidden, ai.datris.auth.HiddenTapScrub.feedTap(jobFilename))
             if (rows eq page.records) page else page.copy(records = rows)
         }
 
@@ -294,7 +303,8 @@ class PipelineStatusAPIController {
             val page = PipelineStatusAPIController.scrubResultPage(
                 request,
                 read,
-                n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n)
+                n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n),
+                job.filename
             )
             new ResponseEntity[String](new Gson().toJson(page), HttpStatus.OK)
         } catch {

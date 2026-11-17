@@ -5,8 +5,8 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.TapConfig
-import ai.datris.util.CatalogOps
+import ai.datris.model.{RunLineage, TapConfig}
+import ai.datris.util.{CatalogOps, VectorChunkWriter}
 import com.google.gson.{JsonArray, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
 
@@ -15,9 +15,14 @@ import scala.collection.JavaConverters._
 /** Catalog-scoped user access: a visible pipeline can be fed by a tap filed in
   * a catalog the restricted user cannot read. The pipeline's run records still
   * name that tap (run input, provenance tap-run block, the `tap-<name>.csv`
-  * filename a tap feed lands under). These helpers scrub the hidden tap's
-  * identity from those records for a restricted user's session only; every
-  * other caller gets the records unchanged. */
+  * filename a tap feed lands under), and so do the provenance stamp columns
+  * of the rows and vector chunks it wrote (`_datris_tap_run`,
+  * `_datris_script_sha`, `_datris_source`): in scratch result rows
+  * ([[scrubStampedRows]], also by the job's feed filename when
+  * `provenance.fields` is a subset) and in search hits ([[scrubHits]]).
+  * These helpers scrub the hidden tap's identity from those records for a
+  * restricted user's session only; every other caller gets the records
+  * unchanged. */
 object HiddenTapScrub {
 
     /** What a scrubbed tap name reads as in free text and filenames. */
@@ -47,6 +52,16 @@ object HiddenTapScrub {
 
     /** A tap feed's file is named `tap-<name>.csv` or `tap-<name>.json`. */
     private val FeedFileExact = java.util.regex.Pattern.compile("^tap-(.+)\\.(csv|json)$")
+
+    /** The `<name>` of an exact `tap-<name>.csv|json` filename (the file a
+      * tap record feed lands under). None for anything else, null included. */
+    def feedTap(filename: String): Option[String] =
+        if (filename == null) None
+        else {
+            val m = FeedFileExact.matcher(filename)
+            if (m.matches()) Some(m.group(1)) else None
+        }
+
     private val FeedFileInText = java.util.regex.Pattern.compile("(?<![A-Za-z0-9_\\-])tap-([^\\s'\"/]+?)\\.(csv|json)(?![A-Za-z0-9_])")
 
     /** Tap names a payload can carry without a tap field: the `<name>` of
@@ -145,21 +160,106 @@ object HiddenTapScrub {
             .orElse(str("_datris_source").filter(_.startsWith("tap:")).map(_.stripPrefix("tap:")))
     }
 
+    private def holdsStampColumn(row: JsonObject): Boolean = StampTapColumns.exists(row.has)
+
+    /** Whether `row` loses its tap stamp columns: every row holding one when
+      * the job's feeding tap (`jobTap`, from its `tap-<name>.csv|json`
+      * filename, [[feedTap]]) is hidden, whatever `provenance.fields`
+      * selected; otherwise only a row stamped with a hidden tap. */
+    private def rowStripped(row: JsonObject, hidden: String => Boolean, jobHidden: Boolean): Boolean =
+        if (jobHidden) holdsStampColumn(row) else stampedTap(row).exists(hidden)
+
     /** True when some row in `rows` is stamped with a tap `hidden` holds
-      * (`_datris_tap_run` = `<tap>|<runTime>`, or a `tap:<name>` source). */
-    def stampsHiddenTap(rows: JsonArray, hidden: String => Boolean): Boolean =
-        rows != null && rows.asScala.exists(r => r.isJsonObject && stampedTap(r.getAsJsonObject).exists(hidden))
+      * (`_datris_tap_run` = `<tap>|<runTime>`, or a `tap:<name>` source), or
+      * holds any tap stamp column while `jobTap` is hidden. */
+    def stampsHiddenTap(rows: JsonArray, hidden: String => Boolean, jobTap: Option[String] = None): Boolean =
+        rows != null && {
+            val jobHidden = jobTap.exists(hidden)
+            rows.asScala.exists(r => r.isJsonObject && rowStripped(r.getAsJsonObject, hidden, jobHidden))
+        }
 
     /** Scratch result rows (provenance-stamped) with the tap stamp columns
-      * removed from every row stamped with a hidden tap. A copy when any row
+      * removed from every row stamped with a hidden tap, or from every row
+      * of a job whose feeding tap `jobTap` is hidden. A copy when any row
       * changes; `rows` itself otherwise (null stays null). */
-    def scrubStampedRows(rows: JsonArray, hidden: String => Boolean): JsonArray = {
-        if (!stampsHiddenTap(rows, hidden)) return rows
+    def scrubStampedRows(rows: JsonArray, hidden: String => Boolean, jobTap: Option[String] = None): JsonArray = {
+        if (!stampsHiddenTap(rows, hidden, jobTap)) return rows
+        val jobHidden = jobTap.exists(hidden)
         val out = rows.deepCopy()
         out.forEach { r =>
-            if (r.isJsonObject && stampedTap(r.getAsJsonObject).exists(hidden))
+            if (r.isJsonObject && rowStripped(r.getAsJsonObject, hidden, jobHidden))
                 StampTapColumns.foreach(r.getAsJsonObject.remove)
         }
         out
+    }
+
+    /** A hit value as text: String.valueOf of a non-null value (stores return
+      * strings or JDBC objects); None for null or empty. */
+    private def hitStr(hit: java.util.Map[String, Any], key: String): Option[String] =
+        Option(hit.get(key)).map(v => String.valueOf(v)).filter(_.nonEmpty)
+
+    /** The feeding tap a search hit names itself: `_datris_tap_run` up to
+      * `|`, else a `tap:<name>` `_datris_source`, else a `tap-<name>.csv|json`
+      * filename. */
+    private def hitTap(hit: java.util.Map[String, Any]): Option[String] =
+        hitStr(hit, "_datris_tap_run").map(_.takeWhile(_ != '|')).filter(_.nonEmpty)
+            .orElse(hitStr(hit, "_datris_source").filter(_.startsWith("tap:")).map(_.stripPrefix("tap:")).filter(_.nonEmpty))
+            .orElse(feedTap(hitStr(hit, "filename").orNull))
+
+    /** Vector search hits (already limited to readable writers) with the tap
+      * stamp columns ([[StampTapColumns]]) removed from each hit fed by a tap
+      * `hidden` holds. The tap is, first match wins: the one the hit names
+      * ([[hitTap]]); else the input of the run record `run` returns for its
+      * `_datris_run_id`, trusted only when the record's `pipeline` is the
+      * hit's own stored writer ([[VectorChunkWriter.writerOf]]) and it has an
+      * input (an upload, or no tapName, keeps the columns). A hit whose tap
+      * cannot be determined loses any non-empty tap stamp column (fail
+      * closed). A `tap-<name>.csv|json` filename of a hidden tap reads
+      * `tap-[hidden]`. `run` is called only when the hit names no tap and
+      * holds a non-empty stamp column. No name-keyed lookups: chunks and run
+      * records keep the name they were written under. Changed hits are
+      * copies (key order kept); the input maps are never modified; `hits`
+      * itself when no hit changes. */
+    def scrubHits(
+        hits: java.util.List[java.util.Map[String, Any]],
+        hidden: String => Boolean,
+        run: String => Option[RunLineage]
+    ): java.util.List[java.util.Map[String, Any]] = {
+        if (hits == null || hits.isEmpty) return hits
+        var changed = false
+        val out = hits.asScala.map { hit =>
+            val scrubbed = if (hit == null) hit else scrubHit(hit, hidden, run)
+            if (!(scrubbed eq hit)) changed = true
+            scrubbed
+        }
+        if (!changed) hits else new java.util.ArrayList[java.util.Map[String, Any]](out.asJava)
+    }
+
+    private def scrubHit(
+        hit: java.util.Map[String, Any],
+        hidden: String => Boolean,
+        run: String => Option[RunLineage]
+    ): java.util.Map[String, Any] = {
+        val stamped = StampTapColumns.exists(c => hitStr(hit, c).isDefined)
+        val filename = hitStr(hit, "filename").orNull
+        val fileTap = feedTap(filename)
+        if (!stamped && fileTap.isEmpty) return hit
+        val strip = stamped && (hitTap(hit) match {
+            case Some(t) => hidden(t)
+            case None =>
+                val record = hitStr(hit, "_datris_run_id")
+                    .flatMap(id => Option(run(id)).flatten)
+                    .filter(r => r != null && r.input != null && r.pipeline != null && VectorChunkWriter.writerOf(hit).contains(r.pipeline))
+                record match {
+                    case Some(r) => r.input.kind != "upload" && Option(r.input.tapName).filter(_.nonEmpty).exists(hidden)
+                    case None => true
+                }
+        })
+        val renameFile = fileTap.exists(hidden)
+        if (!strip && !renameFile) return hit
+        val copy = new java.util.LinkedHashMap[String, Any](hit)
+        if (strip) StampTapColumns.foreach(copy.remove)
+        if (renameFile) copy.put("filename", scrubFilename(filename, fileTap.toSet))
+        copy
     }
 }

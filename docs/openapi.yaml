@@ -3565,7 +3565,7 @@ paths:
       summary: Get job status
       description: >-
         Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
-        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) stamped with such a tap omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) of a run fed by such a tap omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
       parameters:
         - name: publishertoken
           in: query
@@ -3658,7 +3658,7 @@ paths:
         Only Live Read pipelines have a result. `limit` is clamped server-side to the
         inline cap, so the next page starts at `offset + returnedCount`, never
         `offset + limit`. Results expire after the retention window.
-        For a restricted user, rows stamped with a tap they cannot read (or one no longer stored) omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        For a restricted user, rows of a run fed by a tap they cannot read (or one no longer stored) omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
       parameters:
         - name: pipelinetoken
           in: query
@@ -4125,7 +4125,10 @@ paths:
         `404`). Results hold only chunks written by pipelines in their
         catalogs; a chunk from any other pipeline, or with no recorded
         pipeline, is left out and not counted, so fewer than `topK` results
-        can come back.
+        can come back. For a restricted user, a result that came from a run
+        fed by a tap they cannot read (or one no longer stored), or whose
+        feeding tap cannot be determined, omits `_datris_tap_run`,
+        `_datris_script_sha` and `_datris_source`.
       parameters:
         - name: store
           in: path
