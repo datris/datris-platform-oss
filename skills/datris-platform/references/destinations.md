@@ -29,7 +29,7 @@ Column types: a pipeline created from a sample may land every column as text. `g
 
 ## Vector stores (semantic search, RAG)
 
-pgvector (bundled Postgres), Qdrant, Weaviate, Milvus, Chroma. The source must be `unstructuredAttributes` for documents. The embedding model is pinned at creation and dimensions cannot change afterwards; confirm which embedder the instance uses (`run_doctor` reports it) before creating the pipeline. Chunking strategies: fixed-size, sentence, paragraph, recursive.
+pgvector (bundled Postgres), Qdrant, Weaviate, Milvus, Chroma. The source must be `unstructuredAttributes` for documents. The embedding model is pinned at creation and dimensions cannot change afterwards; confirm which embedder the instance uses (`run_doctor` reports it) before creating the pipeline. Chunking strategies: fixed-size, sentence, paragraph, recursive. Each collection, class or table belongs to one pipeline: a save onto one another pipeline already uses is refused, so pick a new name per pipeline.
 
 ## Messaging and callbacks
 

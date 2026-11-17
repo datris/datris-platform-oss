@@ -63,28 +63,30 @@ object VectorSearchRegistry {
     }
 
     /** Pipelines (from `configs`) whose `store` destination targets
-      * `container`. Weaviate class names compare case-insensitively (Weaviate
-      * capitalises them); the others exactly. Pure; see
-      * [[findPipelinesForContainer]] for the stored-config version. */
+      * `container` (`schema`: pgvector only; None or blank = "public").
+      * Identity per [[VectorContainers.key]]: weaviate class names compare
+      * case-insensitively, pgvector by schema + table, the others exactly.
+      * Pure; see [[findPipelinesForContainer]] for the stored-config version. */
     def pipelinesForContainer(
         store: String,
         container: String,
-        configs: Seq[ai.datris.model.PipelineConfig]
+        configs: Seq[ai.datris.model.PipelineConfig],
+        schema: Option[String] = None
     ): Seq[ai.datris.model.PipelineConfig] =
-        if (container == null) Nil
-        else
-            configs.filter { c =>
-                containerOf(store, c).exists(t => if (store == "weaviate") t.equalsIgnoreCase(container) else t == container)
-            }
+        VectorContainers.key(store, container, schema) match {
+            case Some(k) => VectorContainers.namers(k, configs)
+            case None => Nil
+        }
 
     /** The stored pipelines whose `store` vector destination targets
       * `container`. Shared by the Search tab and the `search_*` MCP tools
       * (both reach `POST /search/{store}`) to resolve a container back to the
       * pipelines (and so the catalogs) that own it. */
-    def findPipelinesForContainer(store: String, container: String): Seq[ai.datris.model.PipelineConfig] =
+    def findPipelinesForContainer(store: String, container: String, schema: Option[String] = None): Seq[ai.datris.model.PipelineConfig] =
         pipelinesForContainer(
             store,
             container,
-            PipelineConfigIO.readAll(ai.datris.model.DatrisEnvironment.current.pipelineTableName).filter(_ != null)
+            PipelineConfigIO.readAll(ai.datris.model.DatrisEnvironment.current.pipelineTableName).filter(_ != null),
+            schema
         )
 }

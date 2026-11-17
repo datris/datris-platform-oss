@@ -31,6 +31,17 @@ object EntityVersionAPIController {
     def tapRestoreProblem(restored: TapConfig, typeOf: String => Option[Option[String]], enforced: Boolean): Option[String] =
         TapAPIController.tapSecretSaveProblem(restored, typeOf, enforced)
 
+    /** Restoring a pipeline version is a save: a snapshot naming a vector
+      * container that the live config (null when deleted) does not, and
+      * that another pipeline names, is refused like POST /pipeline. */
+    def pipelineRestoreRefusal(
+        request: HttpServletRequest,
+        snap: PipelineConfig,
+        live: PipelineConfig,
+        others: Seq[PipelineConfig]
+    ): Option[ResponseEntity[String]] =
+        PipelineAPIController.vectorContainerRefusal(request, snap, live, others)
+
     /** For a restricted user's session only: true when the item's history
       * must look absent, i.e. the live item is missing (orphaned history of a
       * deleted item) or outside the user's catalog grants for `action`.
@@ -233,6 +244,8 @@ class EntityVersionAPIController {
                     case Left(refused) => return refused
                     case Right(_) =>
                 }
+                val others = PipelineConfigIO.readAll(env.pipelineTableName).filter(_ != null)
+                EntityVersionAPIController.pipelineRestoreRefusal(request, snap, live, others).foreach(refused => return refused)
                 val restored =
                     if (live != null) snap.copy(createdByKeyLabel = live.createdByKeyLabel) else snap
                 val saved = PipelineConfigIO.writeVersioned(

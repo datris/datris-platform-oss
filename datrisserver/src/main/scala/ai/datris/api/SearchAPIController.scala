@@ -17,18 +17,24 @@ import scala.collection.JavaConverters._
 
 object SearchAPIController {
 
-    /** False only for a restricted user's session when no pipeline feeding
-      * `container` is in its grants (view or higher). Everyone else: true. */
+    /** False only for a restricted user's session unless at least one
+      * pipeline names `container` and every pipeline naming it is in its
+      * grants (view or higher). `schema` is the request's pgvector schema.
+      * Everyone else (unrestricted sessions, API keys): true, without
+      * reading configs. */
     def containerVisible(
         request: jakarta.servlet.http.HttpServletRequest,
         store: String,
         container: String,
-        find: (String, String) => Seq[ai.datris.model.PipelineConfig]
+        schema: Option[String],
+        find: (String, String, Option[String]) => Seq[ai.datris.model.PipelineConfig]
     ): Boolean =
-        !ai.datris.auth.CapabilityCheck.isRestrictedSession(request) ||
-            find(store, container).exists(c =>
+        !ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || {
+            val namers = find(store, container, schema)
+            namers.nonEmpty && namers.forall(c =>
                 ai.datris.auth.CapabilityCheck.grants(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel))
             )
+        }
 
     def containerNotFound(param: String, container: String): ResponseEntity[String] =
         ResponseEntity
@@ -65,7 +71,8 @@ class SearchAPIController {
             val container = optString(body, util.containerParam, util.containerDefault)
             // A restricted user searches only containers fed by a pipeline in
             // its catalog grants; any other container is as if it did not exist.
-            if (!SearchAPIController.containerVisible(request, store, container, VectorSearchRegistry.findPipelinesForContainer))
+            val schema = if (store == "pgvector") Option(body.get("schema")).map(_.toString) else None
+            if (!SearchAPIController.containerVisible(request, store, container, schema, VectorSearchRegistry.findPipelinesForContainer))
                 return SearchAPIController.containerNotFound(util.containerParam, container)
             // Always use the server's secret names — the client may have stale/incorrect
             // names, and in multi-tenant mode this enforces tenant isolation.

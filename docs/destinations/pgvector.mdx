@@ -42,12 +42,16 @@ pgvector uses your existing PostgreSQL infrastructure — no separate vector dat
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `tableName` | string | (required) | PostgreSQL table name. Auto-created with vector column if it doesn't exist. |
+| `tableName` | string | (required) | PostgreSQL table name. Auto-created with vector column if it doesn't exist. Must not be used by another pipeline (the save is refused). |
 | `schemaName` | string | `"public"` | PostgreSQL schema name. Auto-created if it doesn't exist. |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored as columns on every chunk. Use snake_case for column names. |
 | `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
 | `postgresSecretName` | string | _server default_ | Vault secret name for the PostgreSQL connection. Only consulted when the server-level `secrets.pgvectorSecretName` is unset; with the default configuration (`oss/pgvector`, seeded automatically) the server-level secret is always used and this field is ignored. |
+
+### One pipeline per table
+
+A PostgreSQL table belongs to one pipeline. Saving a pipeline whose `tableName` another pipeline already uses is refused with HTTP 400, whoever saves it (UI, REST, MCP, version restore or catalog restore). The table is identified by `schemaName` plus `tableName`, so the same table name in another schema is a different table. Deleting a pipeline keeps a table that another pipeline also writes to (installs that already had two pipelines on one table keep working) and says so in the delete response's `warnings`; the table is removed with the last pipeline that names it.
 
 ## Supported File Types
 

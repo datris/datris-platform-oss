@@ -320,6 +320,12 @@ class PipelineAPIController {
         LineageService.authorityConflict(preserved, others).foreach { problem =>
             return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"" + problem.replace("\"", "'") + "\"}"))
         }
+        // One vector container per pipeline: refuse a new or changed
+        // container another pipeline already names.
+        PipelineAPIController.vectorContainerRefusal(request, preserved, existing, others.filter(_ != null)).foreach { refused =>
+            logger.warn("POST /pipeline " + preserved.name + " rejected: vector container in use by another pipeline")
+            return Left(refused)
+        }
         val note = if (changeNote != null && changeNote.nonEmpty) changeNote
         else if (existing != null) "updated" else "created"
         // A new pipeline must not inherit Unity Catalog sync state left by
@@ -589,7 +595,25 @@ class PipelineAPIController {
 
         // Clean up destination data
         if (deleteDataBool && config.destination != null) {
-            val objectStoreDataDeleted = cleanupDestinationData(config)
+            // Read once, before the config row is deleted (it is in the list
+            // and excluded by name). A vector container another pipeline
+            // also names is kept and reported.
+            val otherConfigs =
+                try PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName).filter(_ != null)
+                catch {
+                    case ex: Exception =>
+                        logger.warn("Pipeline delete: " + pipeline + ": could not read pipeline configs for the vector container check: " + ex.getMessage)
+                        Nil
+                }
+            val sharedVector = VectorContainers.sharedOnDelete(config, otherConfigs)
+            val objectStoreDataDeleted = cleanupDestinationData(config, sharedVector.map(_._1).toSet)
+            sharedVector.foreach { case (k, sharers) =>
+                logger.warn(
+                    "Skipped vector data delete for pipeline '" + pipeline + "': " + VectorContainers.label(k) +
+                        " is also named by pipeline(s): " + sharers.map(_.name).mkString(", ")
+                )
+            }
+            warnings ++= PipelineAPIController.vectorDeleteWarnings(request, config, otherConfigs)
             UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
                 warnings += advice
                 ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, objectStoreDataDeleted, adviceGiven = true)
@@ -703,9 +727,12 @@ class PipelineAPIController {
 
     /** Returns true when the object-store destination's files were deleted
       * (false when there is none, the prefix is shared, or the delete failed). */
-    private def cleanupDestinationData(config: PipelineConfig): Boolean = {
+    private def cleanupDestinationData(config: PipelineConfig, keepVector: Set[VectorContainers.Key]): Boolean = {
         val dest = config.destination
         var objectStoreDataDeleted = false
+        // A vector container another pipeline also names is kept.
+        def dropVector(store: String, name: String, schema: Option[String] = None): Boolean =
+            !VectorContainers.key(store, name, schema).exists(keepVector.contains)
 
         // PostgreSQL — DROP TABLE
         if (dest.database != null && dest.database.usePostgres) {
@@ -814,7 +841,7 @@ class PipelineAPIController {
         }
 
         // pgvector — DROP TABLE
-        if (dest.pgvector != null) {
+        if (dest.pgvector != null && dropVector("pgvector", dest.pgvector.tableName, Option(dest.pgvector.schemaName))) {
             try {
                 val secretName = DatrisEnvironment.current.pgvectorSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
@@ -849,7 +876,7 @@ class PipelineAPIController {
         }
 
         // Qdrant — delete collection
-        if (dest.qdrant != null) {
+        if (dest.qdrant != null && dropVector("qdrant", dest.qdrant.collectionName)) {
             try {
                 val secretName = DatrisEnvironment.current.qdrantSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
@@ -880,7 +907,7 @@ class PipelineAPIController {
         }
 
         // Weaviate — delete class
-        if (dest.weaviate != null) {
+        if (dest.weaviate != null && dropVector("weaviate", dest.weaviate.className)) {
             try {
                 val secretName = DatrisEnvironment.current.weaviateSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
@@ -911,7 +938,7 @@ class PipelineAPIController {
         }
 
         // Milvus — drop collection
-        if (dest.milvus != null) {
+        if (dest.milvus != null && dropVector("milvus", dest.milvus.collectionName)) {
             try {
                 val secretName = DatrisEnvironment.current.milvusSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
@@ -947,7 +974,7 @@ class PipelineAPIController {
         }
 
         // Chroma — delete collection
-        if (dest.chroma != null) {
+        if (dest.chroma != null && dropVector("chroma", dest.chroma.collectionName)) {
             try {
                 val secretName = DatrisEnvironment.current.chromaSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
@@ -1119,6 +1146,36 @@ object PipelineAPIController {
         else if (hiddenConfig(request, config, action))
             Some(capabilityDenied(new DatrisException("capability denied: your catalog grant does not allow pipeline:" + action + " on " + name)))
         else None
+
+    /** The names of `colliding` for the caller, only when every one is
+      * visible to it ([[visiblePipelines]]); None otherwise, so a message
+      * never names a pipeline the caller could not list. */
+    private def visibleNamesOf(request: HttpServletRequest, colliding: Seq[PipelineConfig]): Option[Seq[String]] =
+        if (colliding.nonEmpty && visiblePipelines(request, colliding).size == colliding.size) Some(colliding.map(_.name))
+        else None
+
+    /** POST /pipeline (and version restore): 400 `{"error": ...}` when the
+      * candidate names a vector container that it did not already name in
+      * `stored` (same name, or null) and another pipeline in `others` names.
+      * One container belongs to one pipeline. */
+    def vectorContainerRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig]
+    ): Option[ResponseEntity[String]] =
+        VectorContainers.saveConflicts(candidate, stored, others).headOption.map { case (k, colliding) =>
+            val body = new JsonObject()
+            body.addProperty("error", VectorContainers.refusalMessage(k, visibleNamesOf(request, colliding)))
+            ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString)
+        }
+
+    /** DELETE /pipeline: one warning per vector container of `config` that
+      * another pipeline in `others` also names (the container is kept). */
+    def vectorDeleteWarnings(request: HttpServletRequest, config: PipelineConfig, others: Seq[PipelineConfig]): Seq[String] =
+        VectorContainers.sharedOnDelete(config, others).map { case (k, sharers) =>
+            VectorContainers.keptOnDeleteMessage(k, visibleNamesOf(request, sharers))
+        }
 
     /** GET /pipelines: the configs the caller may read (per-item scope
       * check on catalog + owner); nulls dropped. */

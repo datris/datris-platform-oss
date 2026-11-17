@@ -1726,6 +1726,13 @@ paths:
         delimited or JSON). Like every other validator error, the rejection
         returns HTTP 400 with `{"error": "..."}` naming the field.
 
+        One pipeline per vector container: a vector destination whose
+        collection, class or table (pgvector: schema plus table) another
+        pipeline already names is refused with 400 `{"error": "..."}` naming
+        the container (and the other pipeline only when the caller can see
+        it). A stored pipeline whose container is unchanged still saves, so
+        pipelines that already shared a container keep working.
+
         Restricted users: a blank `catalog` is filled in with the one catalog
         the user can edit (400 `{"error": "Choose a catalog: A, B"}` when there
         are several, 400 `No catalog you can edit` when there are none). A named
@@ -1841,8 +1848,9 @@ paths:
           description: >-
             The configuration was refused and nothing was saved: it failed
             validation, it selects a Postgres destination when no Postgres is
-            reachable, or it conflicts with another pipeline's source-of-authority
-            declaration. Fix the configuration and save again.
+            reachable, it conflicts with another pipeline's source-of-authority
+            declaration, or its vector collection, class or table is already
+            used by another pipeline. Fix the configuration and save again.
           content:
             application/json:
               schema:
@@ -1880,7 +1888,7 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand.
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a vector collection, class or table kept because another pipeline also names it (the warning starts with `Kept` and names the container; the other pipeline is named only when the caller can see it), a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand.
           content:
             application/json:
               schema:
@@ -1964,7 +1972,7 @@ paths:
       tags: [Pipelines]
       summary: Delete a catalog (detach or cascade)
       description: |
-        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop; warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
+        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop or a vector container kept because another pipeline still names it (it is dropped with the last one); warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -2263,7 +2271,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CatalogRestoreResult'
         '207':
-          description: Some members could not be restored; see `failed`
+          description: Some members could not be restored; see `failed`. A pipeline whose vector collection, class or table another pipeline already names (for example the second of two archived pipelines sharing one) is listed there with the refusal text; the rest of the restore goes ahead.
           content:
             application/json:
               schema:
@@ -4003,7 +4011,7 @@ paths:
             milvus, pgvector, qdrant, weaviate"), a missing `query`, or an
             embedding dimension mismatch between ingest and query.
         '404':
-          description: 'Restricted users only: no pipeline in the user''s catalog grants writes to the requested collection / class / table. Body: `{"error": "<Collection|ClassName|Table>: <name> not found"}`.'
+          description: 'Restricted users only: no pipeline writes to the requested collection / class / table, or one of the pipelines writing to it is outside the user''s catalog grants (a container is searchable only when every pipeline writing to it is visible). Body: `{"error": "<Collection|ClassName|Table>: <name> not found"}`.'
         '500':
           description: Error
 
@@ -5885,6 +5893,8 @@ paths:
                 type: object
         '404':
           description: No such version for this pipeline. A restricted user gets the same 404 when the pipeline is outside its catalog grants or has been deleted.
+        '400':
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses. Body: `{"error": "..."}`.'
         '500':
           description: Error
 

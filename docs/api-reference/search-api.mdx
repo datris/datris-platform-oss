@@ -34,6 +34,8 @@ All stores share these request-body parameters:
 
 Plus the store's container field from the table above (e.g. `collection` for Qdrant, `className` for Weaviate, `table`/`schema` for pgvector).
 
+For a user with scoped catalog access, a vector collection, class or table is searchable only when every pipeline writing to it is in their catalogs; any other container returns `404` as if it did not exist. API keys and users with install-wide access are not affected.
+
 ### Common Response Format
 
 ```json

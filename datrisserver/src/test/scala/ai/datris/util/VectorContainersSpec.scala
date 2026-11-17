@@ -48,13 +48,16 @@ class VectorContainersSpec extends AnyFunSuite {
     private def names(cs: Seq[PipelineConfig]): Set[String] = cs.map(_.name).toSet
 
     test("keysOf lists one key per vector destination and none for a null or blank name") {
-        val all = p("all", Destination(
-            qdrant = qdrant("q1"),
-            weaviate = weaviate("W1"),
-            pgvector = pgvector("t1", "s1"),
-            milvus = milvus("m1"),
-            chroma = chroma("c1")
-        ))
+        val all = p(
+            "all",
+            Destination(
+                qdrant = qdrant("q1"),
+                weaviate = weaviate("W1"),
+                pgvector = pgvector("t1", "s1"),
+                milvus = milvus("m1"),
+                chroma = chroma("c1")
+            )
+        )
         assert(VectorContainers.keysOf(all).toSet == Set(
             Key("qdrant", "", "q1"),
             Key("weaviate", "", "w1"),
@@ -64,13 +67,16 @@ class VectorContainersSpec extends AnyFunSuite {
         ))
         assert(VectorContainers.keysOf(all).size == 5)
 
-        val blanks = p("blanks", Destination(
-            qdrant = qdrant(null),
-            weaviate = weaviate(""),
-            pgvector = pgvector("   ", "public"),
-            milvus = milvus(null),
-            chroma = chroma(" ")
-        ))
+        val blanks = p(
+            "blanks",
+            Destination(
+                qdrant = qdrant(null),
+                weaviate = weaviate(""),
+                pgvector = pgvector("   ", "public"),
+                milvus = milvus(null),
+                chroma = chroma(" ")
+            )
+        )
         assert(VectorContainers.keysOf(blanks).isEmpty)
         assert(VectorContainers.keysOf(p("none", Destination())).isEmpty)
         assert(VectorContainers.keysOf(p("nodest", null)).isEmpty)

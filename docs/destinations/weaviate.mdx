@@ -39,11 +39,15 @@ Ingest unstructured documents (PDFs, Word docs, text files, HTML) into [Weaviate
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `className` | string | (required) | Weaviate class name. **Must be PascalCase** (e.g., `FinancialDocuments`). Auto-created if it doesn't exist. |
+| `className` | string | (required) | Weaviate class name. **Must be PascalCase** (e.g., `FinancialDocuments`). Auto-created if it doesn't exist. Must not be used by another pipeline (the save is refused). |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored on every chunk as Weaviate properties. Used for filtered search. |
 | `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
 | `weaviateSecretName` | string | _server default_ | Vault secret name for the Weaviate connection. Only consulted when the server-level `secrets.weaviateSecretName` is unset; with the default configuration (`oss/weaviate`) the server-level secret is always used and this field is ignored. |
+
+### One pipeline per class
+
+A Weaviate class belongs to one pipeline. Saving a pipeline whose `className` another pipeline already uses is refused with HTTP 400, whoever saves it (UI, REST, MCP, version restore or catalog restore). Class names are compared case-insensitively, so `Docs` and `DOCS` are the same class here. Deleting a pipeline keeps a class that another pipeline also writes to (installs that already had two pipelines on one class keep working) and says so in the delete response's `warnings`; the class is removed with the last pipeline that names it.
 
 ## Supported File Types
 

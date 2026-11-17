@@ -142,7 +142,8 @@ class VectorContainerRuleSpec extends AnyFunSuite {
         assert(!r2.get.getBody.contains("sales_sharer"), r2.get.getBody)
 
         // all namers visible: they are named
-        val visible = assert400(PipelineAPIController.vectorContainerRefusal(bob, pg("bob_probe", "Sales", "s_x"), null, Seq(pg("sales_owner", "Sales", "s_x"))))
+        val visible =
+            assert400(PipelineAPIController.vectorContainerRefusal(bob, pg("bob_probe", "Sales", "s_x"), null, Seq(pg("sales_owner", "Sales", "s_x"))))
         assert(visible.contains("sales_owner"), visible)
     }
 

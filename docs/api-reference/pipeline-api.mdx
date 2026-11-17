@@ -142,6 +142,8 @@ curl -X POST http://localhost:8080/api/v1/pipeline \
 
 **Validation:** The configuration is validated before saving. Invalid configurations return `400` with `{"error": "<message>"}` and nothing is saved; `500` means the server itself failed. See [Pipeline Configuration](/pipeline-configuration) for all constraints.
 
+**One pipeline per vector container:** a vector collection, class or table (pgvector: schema plus table) belongs to one pipeline. A save whose vector destination names a container another pipeline already uses returns `400` with an `error` naming the container, for example `The qdrant collection docs is already in use by another pipeline. ...`. The other pipeline is named only when you can see it. A pipeline that already shared a container before this rule (an existing install) still saves while its container is unchanged. The same check applies to version restore and catalog restore.
+
 ---
 
 ## Delete a Pipeline
@@ -175,6 +177,8 @@ curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data&delete
 ```
 
 `warnings` lists anything left for you to handle. For an object-store Iceberg pipeline whose table was committed through Unity Catalog (`catalogMode: rest`), it says `Unity Catalog still holds <catalog>.<schema>.<table>; have an admin drop it`, because Datris removes the files but never drops the catalog table (see [Unity Catalog](/destinations/unity-catalog)). For a `catalogMode: managed` table it says `Unity Catalog owns <catalog>.<schema>.<table> and its files (catalogMode managed); Datris deleted nothing there; drop <catalog>.<schema>.<table> in Unity Catalog to remove the data`.
+
+A vector collection, class or table that another pipeline also names is not dropped: the pipeline's own config is deleted, the container and its chunks stay with the other pipeline, and `warnings` holds `Kept <store> <collection|class|table> <name>: ...` (naming the other pipeline only when you can see it). The container is dropped with the last pipeline that names it.
 
 ---
 
