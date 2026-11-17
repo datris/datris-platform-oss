@@ -326,15 +326,15 @@ class PipelineAPIController {
                 return Left(refused)
             case Right(o) => o
         }
-        LineageService.authorityConflict(preserved, others.toList).foreach { problem =>
-            return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"" + problem.replace("\"", "'") + "\"}"))
-        }
         // One vector container per pipeline: refuse a new or changed
-        // container another pipeline already names.
+        // container another pipeline already names. Runs before the
+        // authority check, whose remedy (authoritative=false) does not apply
+        // to a vector container.
         PipelineAPIController.vectorContainerRefusal(request, preserved, existing, others.filter(_ != null)).foreach { refused =>
             logger.warn("POST /pipeline " + preserved.name + " rejected: vector container in use by another pipeline")
             return Left(refused)
         }
+        PipelineAPIController.authorityRefusal(request, preserved, others).foreach(refused => return Left(refused))
         val note = if (changeNote != null && changeNote.nonEmpty) changeNote
         else if (existing != null) "updated" else "created"
         // A new pipeline must not inherit Unity Catalog sync state left by
@@ -619,7 +619,7 @@ class PipelineAPIController {
             val objectStoreDataDeleted = cleanupDestinationData(config, sharedVector.map(_._1).toSet)
             sharedVector.foreach { case (k, sharers) =>
                 logger.warn(
-                    "Skipped vector data delete for pipeline '" + pipeline + "': " + VectorContainers.label(k) +
+                    "Skipped vector data delete for pipeline '" + pipeline + "': " + VectorContainers.label(VectorContainers.displayKey(k, config)) +
                         " is also named by pipeline(s): " + sharers.map(_.name).mkString(", ")
                 )
             }
@@ -1170,6 +1170,17 @@ object PipelineAPIController {
         if (colliding.nonEmpty && visiblePipelines(request, colliding).size == colliding.size) Some(colliding.map(_.name))
         else None
 
+    /** POST /pipeline: 400 `{"error": ...}` for a source-of-authority
+      * problem ([[LineageService.authorityProblem]]). The other pipeline is
+      * named only when the caller can see it ([[visiblePipelines]]); the
+      * named text and body are unchanged from before. */
+    def authorityRefusal(request: HttpServletRequest, candidate: PipelineConfig, others: Seq[PipelineConfig]): Option[ResponseEntity[String]] =
+        LineageService.authorityProblem(candidate, others.toList).map { problem =>
+            val visible = problem.other.forall(o => visiblePipelines(request, Seq(o)).nonEmpty)
+            val text = problem.message(otherVisible = visible)
+            ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"" + text.replace("\"", "'") + "\"}")
+        }
+
     /** POST /pipeline (and version restore): 400 `{"error": ...}` when the
       * candidate names a vector container that it did not already name in
       * `stored` (same name, or null) and another pipeline in `others` names.
@@ -1182,7 +1193,7 @@ object PipelineAPIController {
     ): Option[ResponseEntity[String]] =
         VectorContainers.saveConflicts(candidate, stored, others).headOption.map { case (k, colliding) =>
             val body = new JsonObject()
-            body.addProperty("error", VectorContainers.refusalMessage(k, visibleNamesOf(request, colliding)))
+            body.addProperty("error", VectorContainers.refusalMessage(VectorContainers.displayKey(k, candidate), visibleNamesOf(request, colliding)))
             ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString)
         }
 
@@ -1240,7 +1251,7 @@ object PipelineAPIController {
       * another pipeline in `others` also names (the container is kept). */
     def vectorDeleteWarnings(request: HttpServletRequest, config: PipelineConfig, others: Seq[PipelineConfig]): Seq[String] =
         VectorContainers.sharedOnDelete(config, others).map { case (k, sharers) =>
-            VectorContainers.keptOnDeleteMessage(k, visibleNamesOf(request, sharers))
+            VectorContainers.keptOnDeleteMessage(VectorContainers.displayKey(k, config), visibleNamesOf(request, sharers))
         }
 
     /** GET /pipelines: the configs the caller may read (per-item scope

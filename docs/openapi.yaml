@@ -1730,8 +1730,11 @@ paths:
         collection, class or table (pgvector: schema plus table) another
         pipeline already names is refused with 400 `{"error": "..."}` naming
         the container (and the other pipeline only when the caller can see
-        it). A stored pipeline whose container is unchanged still saves, so
-        pipelines that already shared a container keep working.
+        it). A stored pipeline whose container is unchanged is not refused by
+        this rule; the other save checks, including the source-of-authority
+        rule, still apply. A source-of-authority refusal names the other
+        pipeline only when the caller can see it ("another pipeline"
+        otherwise).
 
         Restricted users: a blank `catalog` is filled in with the one catalog
         the user can edit (400 `{"error": "Choose a catalog: A, B"}` when there

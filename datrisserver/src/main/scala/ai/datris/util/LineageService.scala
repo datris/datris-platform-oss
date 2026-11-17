@@ -215,25 +215,54 @@ object LineageService {
         }
     }
 
-    /** Save-time check for a pipeline definition: a declared authoritative kind
-      * must be one of its destinations, and no other pipeline may already be
-      * the authoritative writer of the same dataset. Returns the problem. */
-    def authorityConflict(p: PipelineConfig, others: List[PipelineConfig]): Option[String] = {
+    /** A save-time authority problem. `other` is the pipeline that already
+      * is the authoritative writer of `dataset` (None for a problem with the
+      * pipeline's own declaration, whose text is in `ownProblem`). */
+    case class AuthorityProblem(other: Option[PipelineConfig], dataset: String, ownProblem: String = null) {
+
+        /** The message; `otherVisible = false` leaves the other pipeline's
+          * name out (it is outside the caller's visibility). */
+        def message(otherVisible: Boolean): String = other match {
+            case None => ownProblem
+            case Some(o) if otherVisible =>
+                "pipeline '" + o.name + "' is already the authoritative writer of " + dataset +
+                    "; set authoritative=false on one of them (or destination.authoritative on the other)"
+            case Some(_) =>
+                "another pipeline is already the authoritative writer of " + dataset +
+                    "; set authoritative=false on this pipeline (or destination.authoritative to another of its destinations)"
+        }
+    }
+
+    /** Pure core of [[authorityConflict]]: the first problem, with the
+      * conflicting pipeline so the caller can decide whether to name it. */
+    def authorityProblem(p: PipelineConfig, others: List[PipelineConfig]): Option[AuthorityProblem] = {
         val own = datasets(p)
         val declared = Option(p.destination).flatMap(d => Option(d.authoritative)).map(_.trim.toLowerCase).filter(_.nonEmpty)
         declared.filterNot(k => own.exists(_.kind == k)).foreach { k =>
-            return Some("destination.authoritative names '" + k + "' but the pipeline has no such destination (" + own.map(_.kind).mkString(", ") + ")")
+            return Some(
+                AuthorityProblem(
+                    None,
+                    null,
+                    "destination.authoritative names '" + k + "' but the pipeline has no such destination (" + own.map(_.kind).mkString(", ") + ")"
+                )
+            )
         }
         own.filter(ds => ownClaim(p, ds) == AuthorityAuthoritative).foreach { ds =>
             others.filter(o => o != null && o.name != p.name).foreach { o =>
                 datasets(o).find(_.id == ds.id).filter(od => ownClaim(o, od) == AuthorityAuthoritative).foreach { _ =>
-                    return Some("pipeline '" + o.name + "' is already the authoritative writer of " + ds.name +
-                        "; set authoritative=false on one of them (or destination.authoritative on the other)")
+                    return Some(AuthorityProblem(Some(o), ds.name))
                 }
             }
         }
         None
     }
+
+    /** Save-time check for a pipeline definition: a declared authoritative kind
+      * must be one of its destinations, and no other pipeline may already be
+      * the authoritative writer of the same dataset. Returns the problem,
+      * naming the other pipeline. */
+    def authorityConflict(p: PipelineConfig, others: List[PipelineConfig]): Option[String] =
+        authorityProblem(p, others).map(_.message(otherVisible = true))
 
     /** Graph from configs plus datasets observed in recorded runs. An observed
       * dataset the current config still lands into is a no-op; one it no

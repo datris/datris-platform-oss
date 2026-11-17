@@ -86,6 +86,20 @@ object VectorContainers {
                 .map(k => k -> namedByOthers(config.name, k, others))
                 .filter(_._2.nonEmpty)
 
+    /** `k` for messages only: a weaviate key carries the class name as `c`
+      * wrote it (the key itself is lowercased for identity). Other keys and
+      * a config without that class are returned unchanged. */
+    def displayKey(k: Key, c: PipelineConfig): Key =
+        if (k.store != "weaviate") k
+        else
+            Option(c)
+                .flatMap(x => Option(x.destination))
+                .flatMap(d => Option(d.weaviate))
+                .map(_.className)
+                .filter(n => key("weaviate", n, None).contains(k))
+                .map(n => k.copy(name = n))
+                .getOrElse(k)
+
     /** Human label, e.g. "pgvector table public.docs", "qdrant collection docs". */
     def label(k: Key): String = k.store match {
         case "pgvector" => "pgvector table " + k.schema + "." + k.name
