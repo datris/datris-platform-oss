@@ -1520,6 +1520,37 @@ components:
                   enum: [ai-providers, secrets, data-sources, code-repo, users, keys, agent-policy, audit-log, doctor]
                   description: The Configuration sub-tab the user is looking at
 
+    PipelineRenameResult:
+      type: object
+      properties:
+        name:
+          type: string
+          description: The new name
+        previousName:
+          type: string
+        version:
+          type: integer
+          description: Definition version of the renamed pipeline (the rename is a new version)
+        repointedTaps:
+          type: array
+          items:
+            type: string
+          description: Taps re-pointed to the new name that the caller can see
+        failed:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              error:
+                type: string
+          description: Taps that could not be re-pointed (response is 207 when non-empty)
+        warnings:
+          type: array
+          items:
+            type: string
+
     EntityVersionSummary:
       type: object
       properties:
@@ -2324,6 +2355,85 @@ paths:
                   type: object
         '500':
           description: Error
+
+  /api/v1/pipelines/{name}/rename:
+    post:
+      tags: [Pipelines]
+      summary: Rename a pipeline
+      description: >-
+        Changes the pipeline's name and nothing else: destination data is not
+        touched, definition versions and stored CodeGen scripts (with their
+        history) move to the new name, an incremental pull keeps its position,
+        and every tap whose targetPipeline is the old name is re-pointed
+        (taps the caller cannot see are re-pointed but never named). Needs the
+        access a delete needs (own on the pipeline's catalog, or
+        `pipeline:delete` for an API key). A rename that stopped part way is
+        finished by sending it again. Audited as `pipeline` / `rename` on the
+        old name with `newName` in the metadata.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+          description: Current pipeline name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newName]
+              properties:
+                newName:
+                  type: string
+                  maxLength: 80
+                  description: New name (trimmed)
+      responses:
+        '200':
+          description: Renamed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineRenameResult'
+        '207':
+          description: Renamed, but some taps could not be re-pointed (listed in `failed`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineRenameResult'
+        '400':
+          description: newName missing, blank, unchanged or over 80 characters, or the pipeline syncs to Unity Catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '403':
+          description: The caller can see the pipeline but may not rename it (own / pipeline:delete required)
+        '404':
+          description: No such pipeline, or one the caller cannot see
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '409':
+          description: >-
+            The new name is taken, a job for the pipeline is queued or running,
+            or a stored CodeGen script could not be copied to the new name.
+            Nothing is renamed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /api/v1/pipelines/{name}/unity-catalog:
     get:

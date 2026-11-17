@@ -148,6 +148,61 @@ curl -X POST http://localhost:8080/api/v1/pipeline \
 
 ---
 
+## Rename a Pipeline
+
+```
+POST /api/v1/pipelines/{name}/rename
+```
+
+Changes a pipeline's name and nothing else. Its destination data stays where it is, its definition version history and stored CodeGen scripts (with their history) move to the new name, an incremental database pull continues from where it was, and every tap whose target is the pipeline is pointed at the new name. The Pipelines tab's inline rename uses this endpoint.
+
+**Body:**
+```json
+{"newName": "sales_data_v2"}
+```
+
+The new name is trimmed and can be up to 80 characters.
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipelines/sales_data/rename \
+  -H "Content-Type: application/json" \
+  -d '{"newName": "sales_data_v2"}'
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "name": "sales_data_v2",
+  "previousName": "sales_data",
+  "version": 4,
+  "repointedTaps": ["sales_tap"],
+  "failed": [],
+  "warnings": []
+}
+```
+
+- `version` is the renamed pipeline's definition version; the rename is recorded as a new version with the note `renamed <old> -> <new> by <actor>`.
+- `repointedTaps` lists the taps now pointing at the new name. Taps you cannot see are re-pointed too but never named.
+- `failed` lists taps that could not be re-pointed (`{"name", "error"}`); the response is then `207 Multi-Status` and the pipeline is renamed anyway. Re-point those taps by editing them.
+- `warnings` are follow-up notes, for example a CodeGen script that no longer matched its instruction and is generated again on the first run, or a repository file under the old name that was kept because it was edited by hand.
+
+**Refusals (nothing is renamed):**
+
+| Status | When |
+|--------|------|
+| `400` | `newName` missing, blank, unchanged or longer than 80 characters; or the pipeline syncs to Unity Catalog (its table there is named after the pipeline: create the pipeline under the new name instead) |
+| `403` | You can see the pipeline but do not own it: renaming needs the same access as deleting (**own** on its catalog for a user with scoped access, `pipeline:delete` for an API key) |
+| `404` | No such pipeline, or one you cannot see |
+| `409` | A pipeline with the new name already exists, a job for the pipeline is queued or running, or a stored CodeGen script could not be copied to the new name |
+
+If a rename stops part way (for example the server restarts), sending the same rename again finishes it.
+
+What keeps the old name: run status and history, run lineage and provenance, audit entries, incidents and approvals, the `source_pipeline` recorded on chunks already in a vector store, older tap version snapshots, and scratch results already written. The audit log records the rename as `pipeline` / `rename` on the old name with `newName` in the details.
+
+---
+
 ## Delete a Pipeline
 
 ```

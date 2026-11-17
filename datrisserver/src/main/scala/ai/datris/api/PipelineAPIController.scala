@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject}
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, ResourceHiddenException, VersionActor}
-import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion, UnityCatalogSync, ValidationException}
+import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion, GlobalJobContext, UnityCatalogSync, ValidationException}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
@@ -580,6 +580,152 @@ class PipelineAPIController {
             ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
             case _: ResourceHiddenException => PipelineAPIController.pipelineNotFound(pipeline)
+            case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    /** Rename a pipeline: `POST /api/v1/pipelines/{name}/rename`, body
+      * `{"newName": "..."}`. Changes the name and nothing else: destination
+      * data is never touched (no save path, no delete path, so neither the
+      * vector-container nor the authority rule can fire against the
+      * pipeline's own old name), and definition versions, CodeGen scripts and
+      * their history, the pull position and the taps that feed it follow the
+      * new name. Needs own on the pipeline's catalog (`pipeline:delete`).
+      *
+      * Ordered so a failure leaves the data intact and a repeated rename
+      * continues where it stopped (see [[PipelineRename.resumable]]): copy
+      * scripts (a failed copy refuses, nothing renamed), re-key versions,
+      * write the new config, move the pull-table entry, re-point taps (per-tap
+      * failures: 207, `failed`), remove the old name's versions and scripts,
+      * and remove the old config row last. */
+    @PostMapping(path = Array("/pipelines/{name}/rename"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def renamePipeline(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable("name") name: String,
+        @RequestBody(required = false) body: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /pipelines/" + name + "/rename called")
+            APIKeyValidator.validate(apiKey)
+            val requested = PipelineAPIController.readNewName(body)
+            val newName = Option(requested).map(_.trim).orNull
+            PipelineAPIController.auditRename(request, newName)
+
+            CatalogOps.withCatalogLock {
+                val env = DatrisEnvironment.current
+                val table = env.pipelineTableName
+                val old = PipelineConfigIO.read(table, name)
+                val existingNew =
+                    if (old == null || newName == null || newName.isEmpty || newName == name) null
+                    else PipelineConfigIO.read(table, newName)
+                val ucStateExists = old != null && UnityCatalogSyncIO.read(name) != null
+                val jobs = GlobalJobContext.synchronized(GlobalJobContext.getAll.toList).flatMap(jc => Option(jc.config).map(c => (c.name, jc.state)))
+                PipelineAPIController.renameRefusal(request, name, requested, old, existingNew, jobs, ucStateExists).foreach { refused =>
+                    logger.warn("POST /pipelines/" + name + "/rename refused: HTTP " + refused.getStatusCode.value)
+                    return refused
+                }
+
+                val actor = VersionActor.resolve(request)
+                val scriptActor = ResolvedKeyAccess.keyLabel(request).orNull
+                val renamedBase = PipelineRename.renamedConfig(old, newName)
+                val resuming = existingNew != null
+                val warnings = Seq.newBuilder[String]
+
+                // Nothing written under the new name survives a refusal of a
+                // fresh rename (a resumed one keeps what the first attempt wrote).
+                def removeCopies(): Unit =
+                    if (!resuming) {
+                        try PipelineScripts.deleteAll(newName)
+                        catch { case e: Exception => logger.warn("Rename " + name + " -> " + newName + ": could not remove copied scripts: " + e.getMessage) }
+                        try EntityVersionIO.deleteAllForEntity(env.pipelineVersionTableName, newName)
+                        catch { case e: Exception => logger.warn("Rename " + name + " -> " + newName + ": could not remove copied versions: " + e.getMessage) }
+                    }
+
+                // 1. CodeGen scripts (copy; the old ones are removed at the end).
+                PipelineScripts.copyForRename(old, renamedBase, scriptActor) match {
+                    case Left(reason) =>
+                        logger.warn("POST /pipelines/" + name + "/rename refused: " + reason)
+                        removeCopies()
+                        return PipelineAPIController.renameError(HttpStatus.CONFLICT, "Pipeline " + name + " was not renamed: " + reason)
+                    case Right(w) => warnings ++= w
+                }
+                warnings ++= PipelineScripts.copyHistoryForRename(name, newName)
+
+                // 2. Definition versions re-keyed under the new name, then the
+                // new config as the next version.
+                val renamed =
+                    try {
+                        PipelineAPIController.copyVersionsForRename(env.pipelineVersionTableName, old, newName)
+                        if (resuming) existingNew
+                        else {
+                            UnityCatalogStaleState.clearOnCreate(renamedBase)
+                            PipelineConfigIO.writeVersioned(renamedBase, PipelineRename.changeNote(name, newName, actor), actor)
+                        }
+                    } catch {
+                        case e: Exception =>
+                            logger.error("POST /pipelines/" + name + "/rename failed before the new config was written: " + Throwables.getStackTraceAsString(e))
+                            removeCopies()
+                            return PipelineAPIController.renameError(
+                                HttpStatus.INTERNAL_SERVER_ERROR,
+                                "Pipeline " + name + " was not renamed: " + Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                            )
+                    }
+
+                // 3. Pull position.
+                if (old.source != null && old.source.databaseAttributes != null)
+                    try PipelinePullTableUtil.rename(name, newName, old.source.databaseAttributes.cronExpression)
+                    catch {
+                        case e: Exception =>
+                            logger.warn("Rename " + name + " -> " + newName + ": pull-table entry not moved: " + e.getMessage)
+                            warnings += "The incremental pull position could not be moved to " + newName + ": " + e.getMessage
+                    }
+
+                // 4. Taps that feed the pipeline, visible to the caller or not.
+                val taps =
+                    try TapConfigIO.readAll(env.tapTableName).filter(_ != null)
+                    catch {
+                        case e: Exception =>
+                            logger.warn("Rename " + name + " -> " + newName + ": taps unreadable: " + e.getMessage)
+                            warnings += "Taps could not be read, so none was re-pointed to " + newName + ": " + e.getMessage
+                            Nil
+                    }
+                val toMove = PipelineRename.tapsToRepoint(taps, name)
+                val tapNote = "target pipeline renamed " + name + " -> " + newName + " by " + actor
+                val tapResult = CatalogOps.execute(toMove.map(_.name)) { n =>
+                    val live = TapConfigIO.read(env.tapTableName, n)
+                    if (live == null) throw new DatrisException("Tap " + n + " no longer exists")
+                    if (live.targetPipeline == name) TapConfigIO.writeVersioned(PipelineRename.repointed(live, newName), tapNote, actor)
+                }
+                val moved = toMove.filter(t => tapResult.ok.contains(t.name))
+                val visibleTap: String => Boolean = n =>
+                    toMove.find(_.name == n).exists(t =>
+                        CapabilityCheck.grants(request, "tap", "read", CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel))
+                    )
+                val (visibleFailed, hiddenFailed) = tapResult.failed.partition { case (n, _) => visibleTap(n) }
+                tapResult.failed.foreach { case (n, err) => logger.warn("Rename " + name + " -> " + newName + ": tap " + n + " not re-pointed: " + err) }
+                if (hiddenFailed.nonEmpty)
+                    warnings += hiddenFailed.size + " tap(s) you cannot see could not be re-pointed to " + newName + "; an administrator can re-point them"
+
+                // 5. Old name's versions and scripts, then the old config row last.
+                try EntityVersionIO.deleteAllForEntity(env.pipelineVersionTableName, name)
+                catch { case e: Exception => logger.warn("Rename " + name + " -> " + newName + ": old version cleanup failed: " + e.getMessage) }
+                try warnings ++= PipelineScripts.deleteAll(name)
+                catch { case e: Exception => logger.warn("Rename " + name + " -> " + newName + ": old CodeGen script cleanup failed: " + e.getMessage) }
+                NoSQLDbUtil.deleteItemJSON(table, "name", name)
+
+                logger.info("Pipeline renamed " + name + " -> " + newName + " (version " + renamed.version + ") by " + actor)
+                val out = PipelineAPIController.renameResponseBody(request, renamed, name, moved, visibleFailed, warnings.result())
+                ResponseEntity
+                    .status(if (tapResult.failed.isEmpty) HttpStatus.OK else HttpStatus.MULTI_STATUS)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body[String](out.toString)
+            }
+        } catch {
+            case _: ResourceHiddenException => PipelineAPIController.pipelineNotFound(name)
             case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -1449,6 +1595,131 @@ object PipelineAPIController {
         ).right.map {
             case Some(c) if c != config.catalog => config.copy(catalog = c)
             case _ => config
+        }
+
+    /** `newName` from a rename body, or null (no body, not JSON, missing). */
+    private[api] def readNewName(body: String): String =
+        if (body == null || body.trim.isEmpty) null
+        else
+            try {
+                val obj = com.google.gson.JsonParser.parseString(body).getAsJsonObject
+                if (obj.has("newName") && !obj.get("newName").isJsonNull) obj.get("newName").getAsString else null
+            } catch { case _: Exception => null }
+
+    private[api] def renameError(status: HttpStatus, message: String): ResponseEntity[String] = {
+        val o = new JsonObject
+        o.addProperty("error", message)
+        ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).body[String](o.toString)
+    }
+
+    /** POST /pipelines/{name}/rename, before anything is written, in this
+      * order: missing (404, [[pipelineNotFound]]); scope, own on the
+      * pipeline's catalog (`pipeline:delete`: a restricted session that
+      * cannot see it gets the same 404, one that can see it but does not own
+      * it 403; an API key's scope miss 403); the new name (400); Unity Catalog
+      * sync (400); a job initialized or processing (409); a taken new name
+      * (409) unless it holds this pipeline from a rename that stopped half
+      * way. None = go ahead. The vector-container and authority rules are
+      * never consulted: the destination does not change. */
+    def renameRefusal(
+        request: HttpServletRequest,
+        name: String,
+        newName: String,
+        old: PipelineConfig,
+        existingNew: PipelineConfig,
+        jobs: Seq[(String, ai.datris.model.JobState)],
+        ucStateExists: Boolean
+    ): Option[ResponseEntity[String]] = {
+        if (old == null) return Some(pipelineNotFound(name))
+        refusalFor(request, name, old, "delete").foreach(r => return Some(r))
+        try CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(old.catalog, old.createdByKeyLabel))
+        catch {
+            case _: ResourceHiddenException => return Some(pipelineNotFound(name))
+            case e: CapabilityDeniedException => return Some(capabilityDenied(e))
+        }
+        PipelineRename.nameProblem(name, newName).foreach(p => return Some(renameError(HttpStatus.BAD_REQUEST, p)))
+        val target = newName.trim
+        val ucEnabled = UnityCatalogSync.stateFields(old, UnityCatalogSync.defaultEnabledFromEnv)._1
+        PipelineRename.unityCatalogBlock(ucEnabled, ucStateExists).foreach(p => return Some(renameError(HttpStatus.BAD_REQUEST, p)))
+        if (PipelineRename.jobBlock(jobs, name))
+            return Some(renameError(HttpStatus.CONFLICT, "Pipeline " + name + " has a job running; rename it once the job has finished"))
+        if (existingNew != null && !PipelineRename.resumable(old, existingNew))
+            return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
+        None
+    }
+
+    /** The rename's 200/207 body: `name`, `previousName`, `version`,
+      * `repointedTaps` (only the taps the caller may read: a hidden tap is
+      * re-pointed but never named), `failed` ([{name, error}], as given) and
+      * `warnings`. */
+    def renameResponseBody(
+        request: HttpServletRequest,
+        renamed: PipelineConfig,
+        previousName: String,
+        repointed: Seq[ai.datris.model.TapConfig],
+        failed: Seq[(String, String)],
+        warnings: Seq[String]
+    ): JsonObject = {
+        val out = new JsonObject
+        out.addProperty("name", renamed.name)
+        out.addProperty("previousName", previousName)
+        out.addProperty("version", renamed.version)
+        val taps = new com.google.gson.JsonArray
+        repointed
+            .filter(t => t != null && CapabilityCheck.grants(request, "tap", "read", CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel)))
+            .foreach(t => taps.add(t.name))
+        out.add("repointedTaps", taps)
+        val f = new com.google.gson.JsonArray
+        failed.foreach { case (n, err) =>
+            val o = new JsonObject
+            o.addProperty("name", n)
+            o.addProperty("error", err)
+            f.add(o)
+        }
+        out.add("failed", f)
+        val w = new com.google.gson.JsonArray
+        warnings.foreach(w.add(_))
+        out.add("warnings", w)
+        out
+    }
+
+    /** Rename: the old name's definition versions appended under the new
+      * name (re-keyed, snapshot `name` rewritten), skipping keys already
+      * there (a resumed rename). A pipeline with no version rows (saved
+      * before versioning) is seeded under the new name at its current
+      * version, so the renamed config continues its numbering. Throws on a
+      * read or write failure. */
+    private[api] def copyVersionsForRename(versionTable: String, old: PipelineConfig, newName: String): Unit = {
+        val have = EntityVersionIO.listVersions(versionTable, newName).map(_.key).toSet
+        val rows = EntityVersionIO.listVersions(versionTable, old.name).map(PipelineRename.rekeyVersion(_, newName))
+        rows.filterNot(v => have.contains(v.key)).foreach(EntityVersionIO.append(versionTable, _))
+        if (rows.isEmpty && have.isEmpty) {
+            val seedVersion = if (old.version > 0) old.version else 1
+            EntityVersionIO.append(
+                versionTable,
+                EntityVersion(
+                    key = EntityVersionIO.docKey(newName, seedVersion),
+                    entityName = newName,
+                    version = seedVersion,
+                    config = new Gson().toJson(PipelineRename.renamedConfig(old, newName).copy(version = seedVersion)),
+                    changeNote = "(seeded from pre-versioning state)",
+                    createdBy = "system"
+                )
+            )
+        }
+    }
+
+    /** The rename's audit row: `operation: rename` and `newName` merged into
+      * any metadata already on the request (PolicyInterceptor's approval
+      * replay sets some). Never throws. */
+    private[api] def auditRename(request: HttpServletRequest, newName: String): Unit =
+        try {
+            val m = Option(request.getAttribute(ai.datris.audit.AuditLog.MetadataAttr)).collect { case o: JsonObject => o }.getOrElse(new JsonObject)
+            m.addProperty("operation", "rename")
+            if (newName != null) m.addProperty("newName", newName.take(256))
+            request.setAttribute(ai.datris.audit.AuditLog.MetadataAttr, m)
+        } catch {
+            case e: Exception => auditLogger.warn("Could not record rename audit metadata: " + e.getMessage)
         }
 
     /** 404 for a pipeline name with no config (GET and DELETE /pipeline),

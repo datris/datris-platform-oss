@@ -29,6 +29,9 @@ object PolicyRoutes {
         // an earlier version) without changing its definition.
         ("POST", "/api/v1/pipelines/*/codegen-scripts/*/regenerate", "pipeline:update:codegen-scripts"),
         ("POST", "/api/v1/pipelines/*/codegen-scripts/*/versions/*/restore", "pipeline:update:codegen-scripts"),
+        // Renaming a pipeline (needs own, as a delete does) without deleting
+        // anything: a policy can gate it apart from a real delete.
+        ("POST", "/api/v1/pipelines/*/rename", "pipeline:delete:rename"),
         // Ordered enable of a whole catalog (tests, enables and runs every
         // tap in dependency order): one approval for the job, not one per tap.
         ("POST", "/api/v1/catalog/*/enable-ordered", "tap:run:enable-ordered")

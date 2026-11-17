@@ -76,6 +76,9 @@ object CapabilityRoutes {
         Route("POST", "/api/v1/pipelines/*/codegen-scripts/*/pull", "pipeline", "update"),
         Route("POST", "/api/v1/pipeline", "pipeline", "create"),
         Route("DELETE", "/api/v1/pipeline", "pipeline", "delete"),
+        // Rename needs what a delete needs (own on the pipeline's catalog):
+        // the old name stops existing. Audited as action "rename".
+        Route("POST", "/api/v1/pipelines/*/rename", "pipeline", "delete"),
         Route("POST", "/api/v1/pipeline/generate", "pipeline", "create"),
         Route("POST", "/api/v1/pipeline/upload", "document", "upload"),
         Route("POST", "/api/v1/pipeline/profile", "metadata", "read"),

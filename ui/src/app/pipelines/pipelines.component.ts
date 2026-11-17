@@ -112,25 +112,21 @@ export class PipelinesComponent implements OnInit, OnDestroy {
 
     if (!newName || newName === oldName) return;
 
-    // Rename: load full config, POST as new name, delete old config (data only — keep)
-    this.pipelineService.getPipeline(oldName).subscribe({
-      next: (config) => {
-        const renamed = { ...config, name: newName };
-        this.pipelineService.createPipeline(renamed).subscribe({
-          next: () => {
-            this.pipelineService.deletePipeline(oldName).subscribe({
-              next: () => this.loadPipelines(),
-              error: () => this.loadPipelines()
-            });
-          },
-          error: (err) => {
-            alert('Failed to rename: ' + httpErrorText(err));
-            this.loadPipelines();
-          }
-        });
+    // One server-side rename: the config, its data, history, scripts and
+    // the taps that feed it all follow the new name. Nothing is created or
+    // deleted from here.
+    this.pipelineService.renamePipeline(oldName, newName).subscribe({
+      next: (res) => {
+        const failed = (res && Array.isArray(res.failed)) ? res.failed : [];
+        if (failed.length > 0) {
+          alert('Renamed to ' + newName + ', but some taps could not be re-pointed: ' +
+            failed.map((f: any) => f.name + ' (' + f.error + ')').join(', '));
+        }
+        this.loadPipelines();
+        this.loadTaps();
       },
       error: (err) => {
-        alert('Failed to load pipeline for rename: ' + httpErrorText(err));
+        alert('Failed to rename: ' + httpErrorText(err));
         this.loadPipelines();
       }
     });

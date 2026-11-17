@@ -47,6 +47,26 @@ object PipelinePullTableUtil {
             NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline)
     }
 
+    /** Pipeline rename: the entry moves to `newName` with its `nextPullDate`
+      * and `lastPullTimestampUsed` (re-initializing would reset the pull
+      * position), then the old entry is removed. With no entry under `old`,
+      * `newName` is initialized from `cronExpression` when one is given. */
+    def rename(old: String, newName: String, cronExpression: String = null): Unit = {
+        val table = DatrisEnvironment.current.dataPullTableName
+        val gson = new Gson()
+        NoSQLDbUtil.getItemJSON(table, "pipeline", old, "json") match {
+            case Some(json) =>
+                val pull = gson.fromJson(json, classOf[PipelinePull])
+                val moved = PipelinePull(newName, pull.nextPullDate, pull.lastPullTimestampUsed)
+                NoSQLDbUtil.putItemJSON(table, "pipeline", newName, "json", gson.toJson(moved))
+                NoSQLDbUtil.deleteItemJSON(table, "pipeline", old)
+            case None =>
+                val existingNew = NoSQLDbUtil.getItemJSON(table, "pipeline", newName, "json")
+                if (existingNew.isEmpty && cronExpression != null && cronExpression.trim.nonEmpty)
+                    initialize(newName, cronExpression)
+        }
+    }
+
     def getAll: List[PipelinePull] = {
         val jsonItems = NoSQLDbUtil.getAllItemsAsJSON(DatrisEnvironment.current.dataPullTableName)
         val gson = new Gson()

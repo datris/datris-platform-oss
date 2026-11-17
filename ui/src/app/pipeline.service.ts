@@ -26,6 +26,16 @@ export class PipelineService {
     return this.http.get<any>('/api/v1/pipelines/' + encodeURIComponent(name) + '/unity-catalog');
   }
 
+  /** Server-side rename (POST /api/v1/pipelines/{name}/rename, body {newName}).
+   *  Keeps destination data, version history, CodeGen scripts and the pull
+   *  position; taps that feed the pipeline follow it. Resolves with
+   *  { name, previousName, version, repointedTaps, failed, warnings } on 200
+   *  and on 207 (a tap could not be re-pointed: `failed`); 400/403/404/409
+   *  come through `error` with the server's JSON body. */
+  renamePipeline(name: string, newName: string): Observable<any> {
+    return this.http.post<any>('/api/v1/pipelines/' + encodeURIComponent(name) + '/rename', { newName });
+  }
+
   deletePipeline(name: string): Observable<any> {
     return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(name));
   }

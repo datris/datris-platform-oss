@@ -496,8 +496,22 @@ class PipelineScripts(
       * restore never reaches this for a new pipeline: its pre-check,
       * [[CatalogArchive.planRepoScripts]], refuses the whole restore with 409
       * first); otherwise the usual commit, rejected with [[conflictWarning]] when the
-      * file changed since the recorded commit. */
-    def importScript(config: PipelineConfig, kind: String, text: String, archived: CodeGenScript, actor: String): Either[String, CodeGenScript] = {
+      * file changed since the recorded commit.
+      *
+      * A pipeline rename copies its scripts with this too: `changeNote` and
+      * `origin` then describe the copy, and `versionFloor` (the old name's
+      * latest script version) numbers it after the versions re-keyed under
+      * the new name. The defaults are the catalog restore's. */
+    def importScript(
+        config: PipelineConfig,
+        kind: String,
+        text: String,
+        archived: CodeGenScript,
+        actor: String,
+        changeNote: String = "imported from catalog archive",
+        origin: String = "restore",
+        versionFloor: Int = 0
+    ): Either[String, CodeGenScript] = {
         if (config == null || config.name == null) return Left("No pipeline config to import the script into")
         if (!Kinds.contains(kind)) return Left(unknownKindMessage(kind))
         val instruction = instructionOf(config, kind) match {
@@ -517,7 +531,9 @@ class PipelineScripts(
             )
         val existing = records.read(config.name, kind)
         val backend = chooseBackend(existing, null)
-        val plan = planVersion(config.name, kind, existing)
+        // `versionFloor`: the copied script's version comes after the
+        // versions a rename re-keys under the new name afterwards.
+        val plan = planVersion(config.name, kind, existing).map(p => if (p.number > versionFloor) p else p.copy(number = versionFloor + 1))
         try {
             val store = storeOf(config.name, backend)
             val sameBackendPrior = existing.filter(r => backendOf(r) == backend)
@@ -558,7 +574,7 @@ class PipelineScripts(
                 generatedAgainst = archived.generatedAgainst,
                 model = archived.model,
                 status = Ready,
-                origin = "restore",
+                origin = origin,
                 contractVersion = contractVersion(kind),
                 scriptVersion = plan.map(_.number).getOrElse(0)
             )
@@ -569,9 +585,9 @@ class PipelineScripts(
                     throw e
             }
             sameBackendPrior.foreach(old => if (backend != Github && !sameObject(old, rec)) deleteObject(old))
-            commitVersion(plan, rec, text, actor, "imported from catalog archive")
+            commitVersion(plan, rec, text, actor, changeNote)
             logger.info(
-                "CodeGen script " + config.name + "/" + kind + " imported from a catalog archive (model " + archived.model + ", generated " +
+                "CodeGen script " + config.name + "/" + kind + " " + changeNote + " (model " + archived.model + ", generated " +
                     archived.generatedAt + ")" + Option(actor).map(" by " + _).getOrElse("")
             )
             Right(rec)
@@ -579,6 +595,79 @@ class PipelineScripts(
             case _: CodeRepoConflictException => Left(conflictWarning(config.name, kind, existing.orNull))
             case e: Throwable if scala.util.control.NonFatal(e) => Left(messageOf(e))
         }
+    }
+
+    // ---------------------------------------------------------------- rename
+
+    /** Pipeline rename, first step: copy each ready script of `old` that runs
+      * today (instruction, source schema and contract version unchanged) to
+      * `renamed.name` with [[importScript]] (generatedAt, model, fingerprint
+      * and backend kept; no model call), numbered after the old name's latest
+      * script version. A ready script that no longer matches its instruction
+      * or schema is not copied (the first run under the new name generates
+      * it): one warning each. Left with the reason when a script that runs
+      * today could not be read or copied; the caller removes the copies and
+      * refuses the rename. The old name's scripts are left as they are. */
+    def copyForRename(old: PipelineConfig, renamed: PipelineConfig, actor: String): Either[String, Seq[String]] = {
+        val warnings = Seq.newBuilder[String]
+        Kinds.foreach { kind =>
+            records.read(old.name, kind).filter(_.status != Pending).foreach { r =>
+                instructionOf(old, kind).foreach { instruction =>
+                    if (!usable(r, fingerprint(instruction, schemaSignature(old)), kind))
+                        warnings += "The " + kind + " CodeGen script of " + old.name +
+                            " no longer matches its instruction or source schema and was not copied; the first run of " + renamed.name +
+                            " generates it"
+                    else {
+                        val text =
+                            try readStoredForRun(r)
+                            catch {
+                                case e: Throwable if scala.util.control.NonFatal(e) =>
+                                    return Left("the " + kind + " CodeGen script could not be read: " + messageOf(e))
+                            }
+                        if (text.isEmpty || text.get.trim.isEmpty) return Left("the " + kind + " CodeGen script could not be read")
+                        val floor = history
+                            .map { h =>
+                                try h.latestVersion(old.name, kind)
+                                catch { case e: Throwable if scala.util.control.NonFatal(e) => 0 }
+                            }
+                            .getOrElse(0)
+                        importScript(
+                            renamed,
+                            kind,
+                            text.get,
+                            r,
+                            actor,
+                            changeNote = "renamed from " + old.name,
+                            origin = r.origin,
+                            versionFloor = floor
+                        ) match {
+                            case Left(reason) => return Left("the " + kind + " CodeGen script could not be copied to " + renamed.name + ": " + reason)
+                            case Right(_) =>
+                        }
+                    }
+                }
+            }
+        }
+        Right(warnings.result())
+    }
+
+    /** Pipeline rename: append the old name's script versions under the new
+      * name (re-keyed, text unchanged), skipping keys already there (a
+      * resumed rename). Best effort: one warning per kind that failed. */
+    def copyHistoryForRename(oldName: String, newName: String): Seq[String] = history match {
+        case None => Nil
+        case Some(h) =>
+            Kinds.flatMap { kind =>
+                try {
+                    val have = h.listVersions(newName, kind).map(_.key).toSet
+                    h.listVersions(oldName, kind).map(PipelineRename.rekeyScriptVersion(_, newName)).filterNot(v => have.contains(v.key)).foreach(h.append)
+                    None
+                } catch {
+                    case e: Throwable if scala.util.control.NonFatal(e) =>
+                        logger.warn("Could not copy the " + kind + " CodeGen script history of " + oldName + " to " + newName + ": " + messageOf(e))
+                        Some("The " + kind + " CodeGen script history of " + oldName + " could not be copied to " + newName + ": " + messageOf(e))
+                }
+            }
     }
 
     // ------------------------------------------------------- drift and pull
