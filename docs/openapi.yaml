@@ -7443,11 +7443,15 @@ paths:
   /api/v1/mcp/tools:
     get:
       tags: [MCP]
-      summary: MCP tools the calling key may use
+      summary: MCP tools the calling key or logged-in session may use
       description: >-
-        The MCP tool names the calling API key's capabilities allow. A legacy
-        full-access key (`*:*`, including the anonymous identity when API keys
-        are off) sees the whole catalog with `filtered: false`.
+        The MCP tool names the calling API key's capabilities allow, or, with
+        no API key, the logged-in session's role allows. A legacy full-access
+        key (`*:*`, including the anonymous identity when API keys are off)
+        and an admin session see the whole catalog with `filtered: false`;
+        editor and viewer sessions get their role's tools with
+        `filtered: true`. A presented API key takes precedence over the
+        session.
       responses:
         '200':
           description: Tool names
@@ -7458,13 +7462,13 @@ paths:
                 properties:
                   filtered:
                     type: boolean
-                    description: '`true` when the list was narrowed to the key''s capabilities'
+                    description: '`true` when the list was narrowed to the key''s or session''s capabilities'
                   tools:
                     type: array
                     items:
                       type: string
         '401':
-          description: 'API keys are required and this one is missing or invalid. Body: `{"error": "Authentication required"}`'
+          description: 'API keys are required and there is no API key and no logged-in session, or the presented key is invalid (even with a session). Body: `{"error": "Authentication required"}`'
         '500':
           description: Error
 
