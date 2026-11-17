@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation._
 import scala.collection.JavaConverters._
 
 object SearchAPIController {
+    private val companionLogger: Logger = LoggerFactory.getLogger(classOf[SearchAPIController])
 
     /** False only for a restricted user's session unless at least one
       * pipeline names `container` and every pipeline naming it is in its
@@ -91,7 +92,9 @@ object SearchAPIController {
 
     /** [[hitsFor]] with the tap reader and the run-lineage reader (by run id)
       * given. `writers == None`: `hits` itself, neither function called.
-      * Both are memoised per call. */
+      * Both are memoised per call. A tap read that throws counts as a hidden
+      * tap, and a run read that throws as no record (both fail closed: the
+      * hit loses its tap stamp columns instead of the search failing). */
     def hitsFor(
         request: jakarta.servlet.http.HttpServletRequest,
         hits: java.util.List[java.util.Map[String, Any]],
@@ -107,8 +110,26 @@ object SearchAPIController {
                 val runMemo = scala.collection.mutable.Map[String, Option[ai.datris.model.RunLineage]]()
                 ai.datris.auth.HiddenTapScrub.scrubHits(
                     survivors,
-                    n => hiddenMemo.getOrElseUpdate(n, ai.datris.auth.HiddenTapScrub.tapHidden(request, n, readTap)),
-                    id => runMemo.getOrElseUpdate(id, run(id))
+                    n =>
+                        hiddenMemo.getOrElseUpdate(
+                            n,
+                            try ai.datris.auth.HiddenTapScrub.tapHidden(request, n, readTap)
+                            catch {
+                                case e: Exception =>
+                                    companionLogger.warn("Search: tap '" + n + "' could not be read, treating it as hidden: " + e.getMessage)
+                                    true
+                            }
+                        ),
+                    id =>
+                        runMemo.getOrElseUpdate(
+                            id,
+                            try run(id)
+                            catch {
+                                case e: Exception =>
+                                    companionLogger.warn("Search: run record '" + id + "' could not be read, treating it as not found: " + e.getMessage)
+                                    None
+                            }
+                        )
                 )
         }
 
