@@ -505,18 +505,46 @@ object LineageService {
     /** Per-pipeline freshness: last successful landing, its record count, the
       * incremental cursor when the feeding tap keeps one, and the stale/fresh
       * classification shared with ActivitySignals. */
-    def freshness(pipelineName: String, taps: List[TapConfig]): JsonObject = {
+    def freshness(pipelineName: String, taps: List[TapConfig]): JsonObject = freshness(pipelineName, taps, recordsShown = true)
+
+    /** [[freshness]]; `recordsShown` false (a restricted session that may not
+      * see the runs filed under the name, [[PipelineAliases.recordShown]])
+      * reports as if the pipeline had no runs: no summary read, no
+      * `lastLandedAt` / `recordCount` / `latestRunId`. */
+    def freshness(pipelineName: String, taps: List[TapConfig], recordsShown: Boolean): JsonObject = {
         val env = DatrisEnvironment.current
         val now = System.currentTimeMillis()
+        freshnessOf(
+            pipelineName,
+            taps,
+            () =>
+                try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusTableName + "-summary", "created_at", now - FreshnessWindowMs, MaxRows).flatMap {
+                        json =>
+                            try Some(gson.fromJson(json, classOf[PipelineStatusSummaryTable]))
+                            catch { case _: Exception => None }
+                    }
+                catch { case e: Exception => logger.debug("lineage: summary read failed: " + e.getMessage); Nil },
+            recordsShown,
+            now,
+            tapName =>
+                try Option(TapStateIO.read(tapName)).flatMap(st => Option(st.updatedAt))
+                catch { case _: Exception => None }
+        )
+    }
+
+    /** [[freshness]] over `readSummaries` (called only when `recordsShown`)
+      * and `cursorOf` (the feeding tap's state `updatedAt`). Pure otherwise. */
+    private[datris] def freshnessOf(
+        pipelineName: String,
+        taps: List[TapConfig],
+        readSummaries: () => List[PipelineStatusSummaryTable],
+        recordsShown: Boolean,
+        now: Long,
+        cursorOf: String => Option[String]
+    ): JsonObject = {
         val o = new JsonObject()
 
-        val summaries: List[PipelineStatusSummaryTable] =
-            try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusTableName + "-summary", "created_at", now - FreshnessWindowMs, MaxRows).flatMap {
-                    json =>
-                        try Some(gson.fromJson(json, classOf[PipelineStatusSummaryTable]))
-                        catch { case _: Exception => None }
-                }
-            catch { case e: Exception => logger.debug("lineage: summary read failed: " + e.getMessage); Nil }
+        val summaries: List[PipelineStatusSummaryTable] = if (recordsShown) readSummaries() else Nil
 
         val landed = ActivitySignals.withoutRehearsals(summaries)
             .filter(s =>
@@ -526,7 +554,7 @@ object LineageService {
             .sortBy(s => Option(s.created_at).map(_.longValue()).getOrElse(0L))
 
         val feedingTap = taps.find(t => t != null && pipelineName.equals(t.targetPipeline))
-        val staleNames = ActivitySignals.computeStale(now, taps).map(_.name).toSet
+        lazy val staleNames = ActivitySignals.computeStale(now, taps).map(_.name).toSet
 
         landed.lastOption match {
             case Some(last) =>
@@ -539,13 +567,33 @@ object LineageService {
                 o.addProperty("state", if (feedingTap.exists(t => staleNames.contains(t.name))) "stale" else "unknown")
         }
 
-        feedingTap.foreach { t =>
-            try {
-                val st = TapStateIO.read(t.name)
-                if (st != null && st.updatedAt != null) o.addProperty("cursorUpdatedAt", st.updatedAt)
-            } catch { case _: Exception => () }
-        }
+        feedingTap.foreach(t => cursorOf(t.name).foreach(o.addProperty("cursorUpdatedAt", _)))
         o
+    }
+
+    /** The stored pipelines the cached graph was built from. */
+    def pipelines(): List[PipelineConfig] = loadCached().pipelines
+
+    /** A restricted session's graph (already [[visibleTo]]-filtered): for a
+      * pipeline node whose name's stored runs the caller may not see
+      * ([[runShown]] with the graph's pipeline nodes as what it can see: a
+      * name reused after a hidden pipeline's rename), run evidence is removed
+      * from its edges and the historical datasets its runs landed in (with
+      * their edges) are dropped, as if the name had no runs. `g` itself when
+      * no such node exists. Pure. */
+    def withoutHiddenRuns(g: Graph, pipelines: Seq[PipelineConfig]): Graph = {
+        val ids = g.nodes.map(_.id).toSet
+        val hidden = g.nodes.filter(n => n.nodeType == "pipeline" && !runShown(n.name, pipelines, ids.contains)).map(_.id).toSet
+        if (hidden.isEmpty) g
+        else {
+            val edges = g.edges.filterNot(e => e.historical && hidden.contains(e.from)).map(e =>
+                if (hidden.contains(e.from) || hidden.contains(e.to)) e.copy(evidence = None) else e
+            )
+            val orphaned = g.nodes.filter(n =>
+                n.nodeType == "dataset" && n.historical && !edges.exists(e => e.to == n.id && e.from.startsWith("pipeline:"))
+            ).map(_.id).toSet
+            Graph(g.nodes.filterNot(n => orphaned.contains(n.id)), edges.filterNot(e => orphaned.contains(e.from) || orphaned.contains(e.to)))
+        }
     }
 
     /** Neighborhood of one node: the node, everything transitively upstream,
@@ -616,7 +664,10 @@ object LineageService {
         val pipelineName: Option[String] =
             if (nodeType == "pipeline") Some(name)
             else (upstream ++ downstream).find(_.startsWith("pipeline:")).map(_.stripPrefix("pipeline:"))
-        pipelineName.foreach(p => o.add("freshness", freshness(p, entry.taps)))
+        // A caller-filtered graph: a name whose runs the caller may not see
+        // (PipelineAliases.recordShown) reports as if it had no runs.
+        def runsShown(p: String): Boolean = graph == null || runShown(p, entry.pipelines, byId.contains)
+        pipelineName.foreach(p => o.add("freshness", if (graph == null) freshness(p, entry.taps) else freshness(p, entry.taps, runsShown(p))))
 
         if (runs > 0) {
             val arr = new JsonArray()
@@ -648,7 +699,12 @@ object LineageService {
                             (p, version)
                         }
                     }
-                target.flatMap { case (p, v) => Option(ColumnLineageService.forPipeline(p, v, runInference = false)) }
+                target.flatMap { case (p, v) =>
+                    Option(
+                        if (graph == null) ColumnLineageService.forPipeline(p, v, runInference = false)
+                        else ColumnLineageService.forPipeline(p, v, runInference = false, storedInference = runsShown(p))
+                    )
+                }
                     .foreach(r => o.add("columns", r.toJson))
             } catch {
                 case e: Exception => logger.debug("column lineage embed skipped for " + id + ": " + e.getMessage)

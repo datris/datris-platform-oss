@@ -126,7 +126,8 @@ object CatalogFind {
         ai: Boolean,
         visible: List[PipelineConfig],
         taps: List[TapConfig],
-        unityCatalog: Option[UnityCatalogResults] = None
+        unityCatalog: Option[UnityCatalogResults] = None,
+        recordsShown: String => Boolean = null
     ): JsonObject = {
         val cappedLimit = math.max(1, math.min(if (limit <= 0) DefaultLimit else limit, MaxLimit))
         val queryTokens = tokenize(query)
@@ -162,7 +163,7 @@ object CatalogFind {
         val results = new JsonArray()
         val shown = ordered.take(cappedLimit)
         val withSource = unityCatalog.isDefined
-        shown.foreach(c => results.add(renderHit(c, taps, withSource)))
+        shown.foreach(c => results.add(renderHit(c, taps, withSource, recordsShown)))
         unityCatalog match {
             case None =>
                 out.add("results", results)
@@ -251,7 +252,10 @@ object CatalogFind {
         o
     }
 
-    private def renderHit(c: Candidate, taps: List[TapConfig], withSource: Boolean = false): JsonObject = {
+    /** `recordsShown` (null = always) decides whether the runs filed under a
+      * hit's name are shown: when false the hit's freshness, provenance run id
+      * and location evidence read as if the pipeline had no runs. */
+    private def renderHit(c: Candidate, taps: List[TapConfig], withSource: Boolean, recordsShown: String => Boolean): JsonObject = {
         val p = c.pipeline
         val o = new JsonObject()
         o.addProperty("name", p.name)
@@ -263,7 +267,8 @@ object CatalogFind {
         if (p.catalog != null) o.addProperty("catalog", p.catalog)
         o.addProperty("score", math.round(c.score * 100.0) / 100.0)
 
-        val freshness = LineageService.freshness(p.name, taps)
+        val runsShown = recordsShown == null || recordsShown(p.name)
+        val freshness = if (recordsShown == null) LineageService.freshness(p.name, taps) else LineageService.freshness(p.name, taps, runsShown)
         o.add("freshness", freshness)
 
         // Locations: the authoritative dataset first (L5b), each with its
@@ -278,7 +283,7 @@ object CatalogFind {
         def locationJson(ds: LineageService.DatasetRef): JsonObject = {
             val l = ds.toJson
             LineageService.authorityOfDataset(ds.id).foreach(l.addProperty("authority", _))
-            LineageService.evidenceFor("pipeline:" + p.name, ds.id).foreach { ev =>
+            (if (runsShown) LineageService.evidenceFor("pipeline:" + p.name, ds.id) else None).foreach { ev =>
                 val e = new JsonObject()
                 e.addProperty("runs", ev.runs)
                 e.addProperty("records", ev.records)

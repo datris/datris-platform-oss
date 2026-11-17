@@ -32,7 +32,7 @@ class LineageAPIController {
     @GetMapping(path = Array(""), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def wholeGraph(request: HttpServletRequest): ResponseEntity[String] = {
         try {
-            new ResponseEntity[String](gson.toJson(LineageAPIController.visibleGraph(request, LineageService.graph()).toJson), HttpStatus.OK)
+            new ResponseEntity[String](gson.toJson(LineageAPIController.callerGraph(request).toJson), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error building lineage graph: " + Throwables.getStackTraceAsString(e))
@@ -69,7 +69,7 @@ class LineageAPIController {
                 if (runs == null) 0 else math.max(0, runs.intValue()),
                 columns != null && columns.booleanValue(),
                 // A restricted session walks only its visible graph; null = the whole cached graph.
-                if (CapabilityCheck.isRestrictedSession(request)) LineageAPIController.visibleGraph(request, LineageService.graph())
+                if (CapabilityCheck.isRestrictedSession(request)) LineageAPIController.callerGraph(request)
                 else null
             )
             if (result == null)
@@ -108,11 +108,21 @@ class LineageAPIController {
                 n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
             )
             if (refused.isDefined) return refused.get
-            val result = ai.datris.util.ColumnLineageService.forPipeline(
-                pipeline,
-                Option(version).map(_.intValue()).filter(_ > 0),
-                infer != null && infer.booleanValue()
-            )
+            val v = Option(version).map(_.intValue()).filter(_ > 0)
+            val inferOn = infer != null && infer.booleanValue()
+            val result =
+                if (!CapabilityCheck.isRestrictedSession(request)) ai.datris.util.ColumnLineageService.forPipeline(pipeline, v, inferOn)
+                else
+                    ai.datris.util.ColumnLineageService.forPipeline(
+                        pipeline,
+                        v,
+                        inferOn,
+                        storedInference = LineageAPIController.recordsShown(
+                            request,
+                            pipeline,
+                            PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+                        )
+                    )
             if (result == null)
                 ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body[String]("{\"error\":\"no such pipeline" + (if (version != null) " version" else "") + ": " + Option(pipeline).getOrElse("").replace(
@@ -155,6 +165,24 @@ object LineageAPIController {
                         }
                 )
         }
+
+    /** The graph GET /lineage returns and GET /lineage/{type}/{name} walks:
+      * [[visibleGraph]], and for a restricted session without the runs it may
+      * not see ([[LineageService.withoutHiddenRuns]]). */
+    def callerGraph(request: HttpServletRequest): LineageService.Graph =
+        if (!CapabilityCheck.isRestrictedSession(request)) visibleGraph(request, LineageService.graph())
+        else LineageService.withoutHiddenRuns(visibleGraph(request, LineageService.graph()), LineageService.pipelines())
+
+    /** Restricted sessions: whether records filed under `name` are shown
+      * ([[ai.datris.util.PipelineAliases.recordShown]] with the pipelines the
+      * session can read). True for everyone else. */
+    def recordsShown(request: HttpServletRequest, name: String, all: Seq[PipelineConfig]): Boolean =
+        !CapabilityCheck.isRestrictedSession(request) ||
+            ai.datris.util.PipelineAliases.recordShown(
+                name,
+                Option(all).getOrElse(Nil).filter(_ != null),
+                c => !PipelineAPIController.hiddenConfig(request, c, "read")
+            )
 
     /** GET /lineage/{type}/{name} for a restricted session: recorded runs
       * whose input names a tap the session cannot read (`readTap` loads it;
