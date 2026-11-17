@@ -18,6 +18,7 @@ import { of, throwError } from 'rxjs';
 import { SearchComponent } from './search.component';
 import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
+import { AuthService } from '../auth.service';
 
 const dbxPipeline = {
   name: 'orders_dbx',
@@ -206,5 +207,94 @@ describe('SearchService — warehouse endpoints', () => {
     sf.flush({ results: [], count: 0 });
 
     http.verify();
+  });
+});
+
+// Story: plans/stories/catalog-scoped-user-access-query-stamps.md, Acceptance.
+// A restricted user (catalog grants only) gets a server-built preview: no SQL
+// box, no SQL hints, a one-line note, and `sql` is always sent as ''.
+describe('SearchComponent — warehouse query types, restricted user', () => {
+  afterEach(() => { try { sessionStorage.removeItem('search.activeView'); } catch { /* ignore */ } });
+
+  async function setupRestricted(pipelines: any[]): Promise<{ fixture: ComponentFixture<SearchComponent>; component: SearchComponent; el: HTMLElement; svc: ServiceSpy & { querySqlServer: jasmine.Spy } }> {
+    const svc = {
+      queryDatabricks: jasmine.createSpy('queryDatabricks'),
+      querySnowflake: jasmine.createSpy('querySnowflake'),
+      querySqlServer: jasmine.createSpy('querySqlServer'),
+      queryObjectstore: jasmine.createSpy('queryObjectstore'),
+      getPipelines: jasmine.createSpy('getPipelines').and.returnValue(of(pipelines)),
+      getPostgresSchemas: jasmine.createSpy('getPostgresSchemas').and.returnValue(of([])),
+      getMongoCollections: jasmine.createSpy('getMongoCollections').and.returnValue(of([]))
+    };
+    const user = { username: 'bob', role: 'editor', mustSetPassword: false, restricted: true, catalogGrants: { Sales: 'edit' } };
+    const auth = {
+      userAuthEnabled: true,
+      isAdmin: () => false,
+      isViewer: () => false,
+      canWrite: () => true,
+      isRestricted: () => true,
+      editableCatalogs: () => ['Sales'],
+      current: () => user,
+      user: () => of(user)
+    };
+    await TestBed.configureTestingModule({
+      declarations: [SearchComponent],
+      imports: [FormsModule],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: SearchService, useValue: svc },
+        { provide: AuthService, useValue: auth },
+        { provide: HealthService, useValue: { isAvailable: () => true, refresh: () => Promise.resolve() } }
+      ]
+    }).compileComponents();
+
+    const fixture = TestBed.createComponent(SearchComponent);
+    const component = fixture.componentInstance;
+    fixture.detectChanges();
+    TestBed.inject(HttpTestingController).match('/api/v1/version')
+      .forEach(r => r.flush({ postgresDatabase: 'datris', mongodbDatabase: 'datris' }));
+    component.setActiveView('traditional');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    return { fixture, component, el: fixture.nativeElement as HTMLElement, svc };
+  }
+
+  it('restricted user gets no SQL box and the request carries an empty sql', async () => {
+    const sqlPipeline = {
+      name: 'orders_mssql',
+      destination: { database: { useSqlServer: true, dbName: 'sales', schema: 'dbo', table: 'orders' } }
+    };
+    const { fixture, component, el, svc } = await setupRestricted([dbxPipeline, sfPipeline, sqlPipeline]);
+    expect(component.restricted).toBeTrue();
+
+    const cases: { type: string; pipeline: string; spy: jasmine.Spy }[] = [
+      { type: 'snowflake', pipeline: 'orders_sf', spy: svc.querySnowflake },
+      { type: 'databricks', pipeline: 'orders_dbx', spy: svc.queryDatabricks },
+      { type: 'sqlserver', pipeline: 'orders_mssql', spy: svc.querySqlServer }
+    ];
+    for (const c of cases) {
+      selectQueryType(fixture, component, c.type);
+      expect(component.whSelectedPipeline).toBe(c.pipeline);
+
+      const text = el.textContent || '';
+      expect(el.querySelector('textarea')).withContext(c.type + ': no SQL textarea').toBeNull();
+      expect(Array.from(el.querySelectorAll('.form-label')).map(l => (l.textContent || '').trim()))
+        .withContext(c.type).not.toContain('SQL Query');
+      expect(text).withContext(c.type + ': no SQL hint').not.toContain('Read-only');
+      expect(text).withContext(c.type + ': preview note')
+        .toContain("Showing the pipeline's table. Custom SQL is available to users with install-wide access.");
+
+      // A stale value (e.g. typed before the session became restricted) is never sent.
+      component.whSql = 'SELECT _datris_tap_run FROM t';
+      component.whLimit = 25;
+      c.spy.and.returnValue(of({ results: [], count: 0 }));
+      component.execute();
+      fixture.detectChanges();
+      expect(c.spy).toHaveBeenCalledWith(c.pipeline, '', 25);
+    }
   });
 });

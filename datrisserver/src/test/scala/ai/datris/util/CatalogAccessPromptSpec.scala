@@ -86,4 +86,22 @@ class CatalogAccessPromptSpec extends AnyFunSuite {
             assert(!text.get.toLowerCase.contains("uncataloged"), s"grants $grants:\n${text.get}")
         }
     }
+
+    // Story: plans/stories/catalog-scoped-user-access-query-stamps.md, Acceptance.
+    test("restricted block says warehouse query tools preview the pipeline's table and take no sql") {
+        val cases = Seq(
+            user(User.RoleEditor, restricted = true, "Sales" -> "edit"),
+            user(User.RoleViewer, restricted = true, "Archive" -> "view")
+        )
+        cases.foreach { u =>
+            val text = CatalogAccessPrompt.block(u)
+            assert(text.isDefined)
+            val line = text.get.split("\n").find(l => l.toLowerCase.contains("warehouse query tools"))
+            assert(line.isDefined, s"a rule must name the warehouse query tools:\n${text.get}")
+            val l = line.get.toLowerCase
+            assert(l.contains("preview the pipeline's table"), s"must say they preview the pipeline's table: ${line.get}")
+            assert(l.contains("do not pass `sql`"), s"must say not to pass `sql`: ${line.get}")
+        }
+        assert(CatalogAccessPrompt.block(user(User.RoleEditor, restricted = false, "Sales" -> "edit")).isEmpty)
+    }
 }
