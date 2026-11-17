@@ -20,6 +20,9 @@ import scala.collection.JavaConverters._
   * `_datris_script_sha`, `_datris_source`): in scratch result rows
   * ([[scrubStampedRows]], also by the job's feed filename when
   * `provenance.fields` is a subset) and in search hits ([[scrubHits]]).
+  * The pipeline-bound query routes drop those columns from every row for a
+  * restricted session, whatever the tap ([[dropTapStampColumns]],
+  * [[dropTapStampNames]]).
   * These helpers scrub the hidden tap's identity from those records for a
   * restricted user's session only; every other caller gets the records
   * unchanged. */
@@ -152,6 +155,40 @@ object HiddenTapScrub {
 
     /** Provenance stamp columns that identify the feeding tap. */
     val StampTapColumns: Seq[String] = Seq("_datris_tap_run", "_datris_script_sha", "_datris_source")
+
+    private val StampTapColumnsLower: Set[String] = StampTapColumns.map(_.toLowerCase(java.util.Locale.ROOT)).toSet
+
+    /** True when `name` is one of [[StampTapColumns]], in any letter case
+      * (Snowflake folds unquoted names to upper case). Exact names only;
+      * false for null. */
+    def isTapStampColumn(name: String): Boolean =
+        name != null && StampTapColumnsLower.contains(name.toLowerCase(java.util.Locale.ROOT))
+
+    /** Query result rows with the tap stamp columns ([[isTapStampColumn]])
+      * removed from each row's top-level keys (nested values are left
+      * alone). Only rows that change are copied (key order kept); the input
+      * rows are never modified; `rows` itself when no row changes (null
+      * stays null). */
+    def dropTapStampColumns(rows: java.util.List[java.util.Map[String, Any]]): java.util.List[java.util.Map[String, Any]] = {
+        if (rows == null || rows.isEmpty) return rows
+        var changed = false
+        val out = new java.util.ArrayList[java.util.Map[String, Any]](rows.size())
+        rows.forEach { r =>
+            if (r != null && r.keySet.asScala.exists(isTapStampColumn)) {
+                val copy = new java.util.LinkedHashMap[String, Any]()
+                r.forEach((k, v) => if (!isTapStampColumn(k)) copy.put(k, v))
+                out.add(copy)
+                changed = true
+            } else out.add(r)
+        }
+        if (changed) out else rows
+    }
+
+    /** Column names without the tap stamp columns ([[isTapStampColumn]]);
+      * `columns` itself when none is one (null stays null). */
+    def dropTapStampNames(columns: java.util.List[String]): java.util.List[String] =
+        if (columns == null || !columns.asScala.exists(isTapStampColumn)) columns
+        else new java.util.ArrayList[String](columns.asScala.filterNot(isTapStampColumn).asJava)
 
     private def stampedTap(row: JsonObject): Option[String] = {
         def str(f: String): Option[String] =

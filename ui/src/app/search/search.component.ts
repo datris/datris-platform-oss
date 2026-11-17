@@ -248,6 +248,13 @@ export class SearchComponent implements OnInit, OnDestroy {
     return this.warehousePipelines().find(p => p.name === this.whSelectedPipeline) || null;
   }
 
+  /** The `sql` sent to a warehouse query: always '' for a restricted user
+   *  (the server refuses caller SQL for them and previews the pipeline's
+   *  table), else the trimmed SQL box. */
+  warehouseSql(): string {
+    return this.restricted ? '' : this.whSql.trim();
+  }
+
   warehouseSqlPlaceholder(): string {
     const meta = this.selectedWarehouseMeta();
     if (this.queryType === 'sqlserver') {
@@ -494,13 +501,13 @@ export class SearchComponent implements OnInit, OnDestroy {
         request = this.searchService.queryObjectstore(this.osSelectedPipeline, this.osLimit);
         break;
       case 'databricks':
-        request = this.searchService.queryDatabricks(this.whSelectedPipeline, this.whSql.trim(), this.whLimit);
+        request = this.searchService.queryDatabricks(this.whSelectedPipeline, this.warehouseSql(), this.whLimit);
         break;
       case 'snowflake':
-        request = this.searchService.querySnowflake(this.whSelectedPipeline, this.whSql.trim(), this.whLimit);
+        request = this.searchService.querySnowflake(this.whSelectedPipeline, this.warehouseSql(), this.whLimit);
         break;
       case 'sqlserver':
-        request = this.searchService.querySqlServer(this.whSelectedPipeline, this.whSql.trim(), this.whLimit);
+        request = this.searchService.querySqlServer(this.whSelectedPipeline, this.warehouseSql(), this.whLimit);
         break;
       default:
         this.loading = false;

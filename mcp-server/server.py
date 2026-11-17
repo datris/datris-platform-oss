@@ -1775,6 +1775,18 @@ _CATALOG_ACCESS_LISTING_NOTE = (
     "use `find_data` or `get_pipeline` instead."
 )
 
+# Warehouse query tools: for a catalog-limited user the server runs only its
+# own preview of the pipeline's table and drops the tap-identity provenance
+# columns; a caller `sql` is refused. The object-store preview takes no SQL.
+_CATALOG_ACCESS_PREVIEW_NOTE = _CATALOG_ACCESS_NOTE + (
+    " For a user limited to specific catalogs this tool only previews the pipeline's own table: the server refuses "
+    "a `sql` argument for them, so omit it, and their rows leave out the provenance fields that identify the feeding tap."
+)
+
+_CATALOG_ACCESS_OBJECTSTORE_NOTE = _CATALOG_ACCESS_NOTE + (
+    " For a user limited to specific catalogs, rows leave out the provenance fields that identify the feeding tap."
+)
+
 _CATALOG_ACCESS_TOOLS = frozenset({
     "list_pipelines", "list_taps", "find_data", "get_pipeline", "get_tap",
     "set_catalog", "rename_catalog", "get_lineage", "get_provenance",
@@ -1789,6 +1801,7 @@ _CATALOG_ACCESS_LISTING_TOOLS = frozenset({
 })
 _CATALOG_ACCESS_CREATE_TOOLS = frozenset({"create_pipeline", "create_tap"})
 _CATALOG_ACCESS_RAW_QUERY_TOOLS = frozenset({"query_postgres", "query_mongodb", "query_natural"})
+_CATALOG_ACCESS_PREVIEW_TOOLS = frozenset({"query_snowflake", "query_sqlserver", "query_databricks"})
 
 
 def _catalog_access_note(name):
@@ -1798,6 +1811,10 @@ def _catalog_access_note(name):
         return _CATALOG_ACCESS_RAW_QUERY_NOTE
     if name in _CATALOG_ACCESS_LISTING_TOOLS:
         return _CATALOG_ACCESS_LISTING_NOTE
+    if name in _CATALOG_ACCESS_PREVIEW_TOOLS:
+        return _CATALOG_ACCESS_PREVIEW_NOTE
+    if name == "query_objectstore":
+        return _CATALOG_ACCESS_OBJECTSTORE_NOTE
     if name in _CATALOG_ACCESS_TOOLS or name.startswith("search_") or name.startswith("query_"):
         return _CATALOG_ACCESS_NOTE
     return ""

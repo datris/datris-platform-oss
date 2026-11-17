@@ -313,7 +313,9 @@ class SearchChatAPIController {
                 "2. **Inspect structure before querying.** Use `find_data` to locate the pipeline that holds the data and `get_pipeline` to confirm its destination and fields before you query it.\n"
             )
             sb.append("3. **Pick the right access path for the question:**\n")
-            sb.append("   - Rows behind a pipeline → the `query_*` tool for that pipeline's destination, passing the `pipeline` name.\n")
+            sb.append(
+                "   - Rows behind a pipeline → the `query_*` tool for that pipeline's destination, passing the `pipeline` name. For this user the warehouse query tools only preview the pipeline's table: do not pass `sql`.\n"
+            )
             sb.append("   - Semantic / meaning-based retrieval → the `search_*` tool matching the pipeline's vector store.\n")
             sb.append("   - To turn retrieved rows or chunks into a written answer → `ai_answer`.\n")
         }

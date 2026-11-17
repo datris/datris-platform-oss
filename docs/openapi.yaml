@@ -3804,7 +3804,7 @@ paths:
     post:
       tags: [Query]
       summary: Query object store
-      description: Read rows back from the files an object-store-destination pipeline has written (Parquet, ORC, CSV, or JSON), without downloading them.
+      description: 'Read rows back from the files an object-store-destination pipeline has written (Parquet, ORC, CSV, or JSON), without downloading them. For a restricted user: the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
       requestBody:
         required: true
         content:
@@ -3864,7 +3864,7 @@ paths:
     post:
       tags: [Query]
       summary: Query Snowflake
-      description: Execute a read-only SQL query against the Snowflake destination of a pipeline. Connection credentials come from the pipeline's configured `credentialsSecret`.
+      description: 'Execute a read-only SQL query against the Snowflake destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
       requestBody:
         required: true
         content:
@@ -3910,6 +3910,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -3919,7 +3921,7 @@ paths:
     post:
       tags: [Query]
       summary: Query SQL Server
-      description: Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline's configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY and no TOP, left as written when it already has OFFSET, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q` (for a WITH statement only the final SELECT is wrapped). When SQL Server rejects the wrapper (an unnamed or duplicate column name, FOR JSON / FOR XML) the query runs unwrapped with the same row cap. Write, exec and session keywords (INSERT, UPDATE, DELETE, INTO, EXEC, USE, OPENROWSET and others) are rejected anywhere in the statement, string literals included. Requires the `query:sqlserver` capability.
+      description: 'Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY and no TOP, left as written when it already has OFFSET, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q` (for a WITH statement only the final SELECT is wrapped). When SQL Server rejects the wrapper (an unnamed or duplicate column name, FOR JSON / FOR XML) the query runs unwrapped with the same row cap. Write, exec and session keywords (INSERT, UPDATE, DELETE, INTO, EXEC, USE, OPENROWSET and others) are rejected anywhere in the statement, string literals included. Requires the `query:sqlserver` capability. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
       requestBody:
         required: true
         content:
@@ -3965,6 +3967,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -3976,7 +3980,7 @@ paths:
     post:
       tags: [Query]
       summary: Query Databricks
-      description: Execute a read-only SQL query against the Databricks destination of a pipeline (a Unity Catalog managed Delta table). Connection credentials come from the pipeline's configured `credentialsSecret`.
+      description: 'Execute a read-only SQL query against the Databricks destination of a pipeline (a Unity Catalog managed Delta table). Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
       requestBody:
         required: true
         content:
@@ -4022,6 +4026,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. Also returned when Databricks denies the query a permission.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
