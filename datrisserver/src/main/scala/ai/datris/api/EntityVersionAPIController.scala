@@ -51,6 +51,14 @@ object EntityVersionAPIController {
                 else None
             )
 
+    /** Version restore, API keys: 403 when the key's scope does not grant
+      * `pipeline:update` on the pipeline being restored over (the live
+      * config, or the snapshot itself when the pipeline was deleted). None
+      * for restricted sessions (`pipelineHidden` answers them), no key, full
+      * keys and unrestricted sessions. */
+    def pipelineRestoreScopeRefusal(request: HttpServletRequest, snap: PipelineConfig, live: PipelineConfig): Option[ResponseEntity[String]] =
+        PipelineAPIController.overwriteRefusal(request, Option(live).getOrElse(snap), PipelineAPIController.RestoreOverwriteActions)
+
     /** [[pipelineRestoreRefusal]] with the shared-dataset environment given. */
     def pipelineRestoreRefusal(
         request: HttpServletRequest,
@@ -259,6 +267,10 @@ class EntityVersionAPIController {
             case Some(snapshot) =>
                 val snap = gson.fromJson(snapshot.config, classOf[PipelineConfig])
                 val live = PipelineConfigIO.read(env.pipelineTableName, name)
+                // API keys: a pipeline outside the key's scope (the live
+                // config, or the snapshot when the pipeline was deleted)
+                // cannot be restored (403).
+                EntityVersionAPIController.pipelineRestoreScopeRefusal(request, snap, live).foreach(refused => return refused)
                 // A restricted user may not restore a snapshot into a catalog
                 // outside its grants (same rules as a save).
                 PipelineAPIController.catalogForSave(request, snap, live) match {

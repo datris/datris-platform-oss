@@ -247,6 +247,15 @@ class PipelineAPIController {
         changeNote: String,
         request: HttpServletRequest
     ): Either[ResponseEntity[String], (PipelineConfig, String)] = {
+        // API keys: a pipeline of this name outside the key's scope cannot
+        // be overwritten (403) — checked before anything else.
+        if (config != null && PipelineAPIController.overwriteCheckNeeded(request, PipelineAPIController.SaveOverwriteActions)) {
+            val stored = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, config.name)
+            PipelineAPIController.overwriteRefusal(request, stored, PipelineAPIController.SaveOverwriteActions).foreach { refused =>
+                logger.warn("POST /pipeline " + config.name + " rejected: existing pipeline outside the key's scope")
+                return Left(refused)
+            }
+        }
         // Restricted users: default a blank catalog and refuse targets
         // outside their grants before anything is validated or written.
         val scoped =
@@ -766,7 +775,7 @@ class PipelineAPIController {
         // container, table or collection. A read failure propagates (500,
         // nothing destroyed): a dropped container or table shared with another
         // pipeline cannot be undone.
-        val dsEnv = PipelineAPIController.datasetEnv()
+        val dsEnv = PipelineAPIController.deleteDatasetEnv(config, deleteDataBool)
         val otherConfigs = PipelineAPIController.othersForDelete(
             config,
             deleteDataBool,
@@ -1468,6 +1477,56 @@ object PipelineAPIController {
         SharedDatasets.Env(defaultBucket, tenantDatabase, pgvectorDatabase)
     }
 
+    /** Capability actions that let an API key overwrite an existing
+      * pipeline through POST /pipeline (a key may re-save its own in-scope
+      * pipeline with either; the route gate is `pipeline:create`). */
+    val SaveOverwriteActions: Seq[String] = Seq("create", "update")
+
+    /** Actions for a version restore over a pipeline (route gate
+      * `pipeline:update`). */
+    val RestoreOverwriteActions: Seq[String] = Seq("update")
+
+    /** Whether [[overwriteRefusal]] can refuse this caller at all, so the
+      * stored config is read only then: an API key (or session) that holds
+      * none of `actions` unscoped, and not a restricted user's session
+      * (those get their 404/403 from `catalogForSave` / `pipelineHidden`).
+      * False for no key, full keys and unrestricted sessions. */
+    def overwriteCheckNeeded(request: HttpServletRequest, actions: Seq[String]): Boolean =
+        CapabilityCheck.resolvedKey(request).isDefined && !CapabilityCheck.isRestrictedSession(request) &&
+            !actions.exists(a => CapabilityCheck.grants(request, "pipeline", a, Map.empty))
+
+    /** POST /pipeline and version restore, API keys: 403 (capability-denied
+      * shape) when a pipeline of that name exists and the key's scope
+      * (`catalog=`, `owner=self`) grants none of `actions` on it, so a
+      * scoped key cannot overwrite or restore a pipeline outside its scope.
+      * Runs before anything is validated or written. None for a new name, a
+      * restricted user's session (handled by its own 404/403 rules), no
+      * key, full keys and unrestricted sessions. */
+    def overwriteRefusal(request: HttpServletRequest, existing: PipelineConfig, actions: Seq[String]): Option[ResponseEntity[String]] =
+        if (existing == null || !overwriteCheckNeeded(request, actions)) None
+        else {
+            val ctx = CatalogOps.scopeContext(existing.catalog, existing.createdByKeyLabel)
+            if (actions.exists(a => CapabilityCheck.grants(request, "pipeline", a, ctx))) None
+            else
+                try {
+                    CapabilityCheck.assertScope(request, "pipeline", actions.last, ctx)
+                    None
+                } catch {
+                    case e: CapabilityDeniedException => Some(capabilityDenied(e))
+                }
+        }
+
+    /** [[datasetEnv]] for a delete, read only when it can matter: data is
+      * deleted and the destination has a `database` or `pgvector` section
+      * (the only ones with a table or collection key). Otherwise an
+      * all-unknown env, which yields no structured key for such a config,
+      * so the pgvector secret is not read on every delete. */
+    def deleteDatasetEnv(config: PipelineConfig, deleteData: Boolean): SharedDatasets.Env = {
+        val d = Option(config).flatMap(c => Option(c.destination)).orNull
+        if (deleteData && d != null && (d.database != null || d.pgvector != null)) datasetEnv()
+        else SharedDatasets.Env("", None, None)
+    }
+
     /** True when the caller cannot see every pipeline: a restricted user's
       * session, or an API key whose pipeline read is scoped (`catalog=`,
       * `owner=self`) or absent. False for unrestricted sessions, full keys
@@ -1490,7 +1549,17 @@ object PipelineAPIController {
         if (!limitedVisibility(request)) None
         else
             SharedDatasets
-                .hiddenWriterConflicts(candidate, stored, others, o => visiblePipelines(request, Seq(o)).nonEmpty, env)
+                .hiddenWriterConflicts(
+                    candidate,
+                    stored,
+                    others,
+                    o => visiblePipelines(request, Seq(o)).nonEmpty,
+                    env,
+                    // A stored config of the same name the caller cannot see
+                    // (a scoped key reusing a hidden pipeline's name) is a
+                    // hidden writer, not a grandfathered sharer.
+                    storedVisible = stored == null || visiblePipelines(request, Seq(stored)).nonEmpty
+                )
                 .headOption
                 .map { k =>
                     val name = LineageService

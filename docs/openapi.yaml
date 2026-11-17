@@ -1887,6 +1887,13 @@ paths:
                             script was not committed and the recorded one stays.
                             Names the pull endpoint and regenerate with
                             `overwrite=true`; also listed in `warnings`.
+        '403':
+          description: >-
+            Capability denied: the key lacks `pipeline:create`, or a pipeline
+            of this name exists and the key's scope (`catalog=`, `owner=self`)
+            grants neither `pipeline:create` nor `pipeline:update` on it. A
+            scoped key cannot overwrite a pipeline outside its scope; nothing
+            is saved.
         '400':
           description: >-
             The configuration was refused and nothing was saved: it failed
@@ -6023,6 +6030,8 @@ paths:
                 type: object
         '404':
           description: No such version for this pipeline. A restricted user gets the same 404 when the pipeline is outside its catalog grants or has been deleted.
+        '403':
+          description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope.
         '400':
           description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes. Body: `{"error": "..."}`.'
         '500':

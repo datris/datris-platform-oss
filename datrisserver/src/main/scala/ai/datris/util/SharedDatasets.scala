@@ -148,12 +148,26 @@ object SharedDatasets {
         others: Seq[PipelineConfig],
         visible: PipelineConfig => Boolean,
         env: Env
+    ): Seq[Key] = hiddenWriterConflicts(candidate, stored, others, visible, env, storedVisible = true)
+
+    /** As above; `storedVisible = false` (the caller cannot see the stored
+      * config of the same name) makes the stored config a hidden writer like
+      * any other: reusing its name grandfathers nothing. */
+    def hiddenWriterConflicts(
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        visible: PipelineConfig => Boolean,
+        env: Env,
+        storedVisible: Boolean
     ): Seq[Key] = {
         if (candidate == null) return Nil
-        val kept = keysOf(stored, env).toSet
+        val storedHidden = stored != null && !storedVisible
+        val kept = if (storedHidden) Set.empty[Key] else keysOf(stored, env).toSet
         val fresh = keysOf(candidate, env).filterNot(kept.contains)
         if (fresh.isEmpty) return Nil
-        val hidden = others.filter(o => o != null && o.name != candidate.name && !visible(o))
+        val hidden = others.filter(o => o != null && o.name != candidate.name && !visible(o)) ++
+            (if (storedHidden) Seq(stored) else Nil)
         if (hidden.isEmpty) return Nil
         val hiddenKeys = hidden.flatMap(o => keysOf(o, env, withScratch = true))
         fresh.filter(k => hiddenKeys.exists(h => overlaps(k, h)))
