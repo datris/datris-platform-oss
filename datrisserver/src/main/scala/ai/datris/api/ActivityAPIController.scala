@@ -69,12 +69,27 @@ object ActivityAPIController {
         val keepPipeline: (String, Option[String]) => Boolean = (n, _) => pipelineCatalogs.get(n).exists(c => readable("pipeline", Some(c)))
         val v = ActivitySignals.visibleTo(s, keepTap, keepPipeline, pipelineCatalogs.get)
         val visiblePipelines = pipelineCatalogs.collect { case (n, c) if readable("pipeline", Some(c)) => n }.toSet
-        val hiddenFeeding = HiddenTapScrub.hiddenFeedingTaps(request, taps, visiblePipelines)
-        v.copy(failing = v.failing.map { f =>
-            val related =
-                if (f.relatedTapName.exists(t => !tapCatalogs.get(t).exists(c => readable("tap", Some(c))))) f.copy(relatedTapName = None) else f
-            // A pipeline row's reason is the run's message, which may name a hidden feeding tap.
-            if (f.kind == "pipeline") related.copy(reason = HiddenTapScrub.scrubText(related.reason, hiddenFeeding, visiblePipelines)) else related
-        })
+        val tapHidden: String => Boolean = t => !tapCatalogs.get(t).exists(c => readable("tap", Some(c)))
+        v.copy(failing = scrubFailing(v.failing, tapHidden, HiddenTapScrub.hiddenFeedingTaps(request, taps, visiblePipelines)))
     }
+
+    /** Failing rows a restricted session sees, with hidden tap names gone:
+      * `relatedTapName` is cleared when `tapHidden` (a tap no longer stored
+      * counts as hidden), and a pipeline row's `reason` (the run's message)
+      * has `hiddenFeeding` and any hidden tap named by a `tap-<name>.csv|json`
+      * token replaced in tap contexts. Tap rows are visible taps (already
+      * filtered): their reason is untouched. */
+    def scrubFailing(
+        failing: List[ActivitySignals.FailingItem],
+        tapHidden: String => Boolean,
+        hiddenFeeding: Set[String]
+    ): List[ActivitySignals.FailingItem] =
+        failing.map { f =>
+            val related = if (f.relatedTapName.exists(tapHidden)) f.copy(relatedTapName = None) else f
+            if (f.kind != "pipeline") related
+            else {
+                val hidden = hiddenFeeding ++ HiddenTapScrub.feedFileNames(Option(f.reason).toSeq).filter(tapHidden)
+                related.copy(reason = HiddenTapScrub.scrubText(related.reason, hidden))
+            }
+        }
 }

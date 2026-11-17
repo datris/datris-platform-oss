@@ -74,17 +74,29 @@ class RestrictedHiddenTapScrubSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     // ------------------------------------------------------------ helpers
 
-    test("scrubText replaces tap-<name> always and the bare name unless it is also a visible name") {
-        val hidden = Set("t_hr_feed", "orders")
-        assert(HiddenTapScrub.scrubText("Loaded tap-t_hr_feed.csv from t_hr_feed", hidden) == "Loaded tap-[hidden].csv from [hidden]")
-        // Bare "orders" is a visible pipeline name: kept; its tap- form is not.
-        assert(HiddenTapScrub.scrubText("orders got tap-orders.json", hidden, Set("orders")) == "orders got tap-[hidden].json")
-        // Whole names only: a longer name sharing the prefix is untouched.
+    test("scrubText replaces a hidden tap name only in tap contexts and never rewrites a table, column or longer name") {
+        val hidden = Set("t_hr_feed", "customers", "hr")
+        assert(HiddenTapScrub.scrubText("Loaded tap-t_hr_feed.csv from tap 't_hr_feed'", hidden) == "Loaded tap-[hidden].csv from tap '[hidden]'")
+        assert(HiddenTapScrub.scrubText("Tap: customers failed; tap customers. tap:customers", hidden) == "Tap: [hidden] failed; tap [hidden]. tap:[hidden]")
+        assert(HiddenTapScrub.scrubText("staged tap-docs/customers/a.pdf", hidden) == "staged tap-docs/[hidden]/a.pdf")
+        // Finding 2: a destination table or column sharing the name is legitimate text.
+        assert(HiddenTapScrub.scrubText("Loaded 500 rows into public.customers", hidden) == "Loaded 500 rows into public.customers")
+        assert(HiddenTapScrub.scrubText("column customers is null; customers_clean ran", hidden) == "column customers is null; customers_clean ran")
+        // A longer (visible) name sharing a prefix: hidden `hr`, visible tap `hr.eu`.
+        assert(HiddenTapScrub.scrubText("tap-hr.eu.csv from tap hr.eu", hidden) == "tap-hr.eu.csv from tap hr.eu")
+        assert(HiddenTapScrub.scrubText("tap-hr.csv", hidden) == "tap-[hidden].csv")
         assert(HiddenTapScrub.scrubText("t_hr_feed_v2 and tap-t_hr_feed_v2.csv", hidden) == "t_hr_feed_v2 and tap-t_hr_feed_v2.csv")
         assert(HiddenTapScrub.scrubText(null, hidden) == null)
         assert(HiddenTapScrub.scrubText("tap-t_hr_feed.csv", Set.empty) == "tap-t_hr_feed.csv")
-        assert(HiddenTapScrub.scrubFilename("t_hr_feed.csv", Set("t_hr_feed")) == "t_hr_feed.csv", "only the tap- form in filenames")
-        assert(HiddenTapScrub.scrubFilename("tap-t_hr_feed.csv", Set("t_hr_feed")) == "tap-[hidden].csv")
+        assert(HiddenTapScrub.scrubFilename("tap-t_hr_feed.json", Set("t_hr_feed")) == "tap-[hidden].json")
+        assert(HiddenTapScrub.scrubFilename("t_hr_feed.csv", Set("t_hr_feed")) == "t_hr_feed.csv", "a non-feed filename is untouched")
+    }
+
+    test("feedFileNames reads tap names from feed filenames and tap-<name>.csv|json tokens in text") {
+        assert(HiddenTapScrub.feedFileNames(Seq("tap-hr.eu.csv")) == Set("hr.eu"))
+        assert(HiddenTapScrub.feedFileNames(Seq("tap-gone.json", null, "orders.csv")) == Set("gone"))
+        assert(HiddenTapScrub.feedFileNames(Seq("Processing tap-gone.csv and 'tap-other.json' now")) == Set("gone", "other"))
+        assert(HiddenTapScrub.feedFileNames(Seq("tap returned a list")).isEmpty)
     }
 
     test("tapHidden and hiddenFeedingTaps apply to restricted sessions only") {
@@ -174,45 +186,102 @@ class RestrictedHiddenTapScrubSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
+    test("a tap no longer stored is hidden: lineage run filename, provenance filenames and tap:<name> source are scrubbed") {
+        val run = JsonParser.parseString("""{"runId":"r","pipeline":"orders","input":{"kind":"tap","filename":"tap-gone.csv"}}""").getAsJsonObject
+        HiddenTapScrub.scrubRun(run, n => HiddenTapScrub.tapHidden(req(bob), n, readTap))
+        assert(run.getAsJsonObject("input").get("filename").getAsString == "tap-[hidden].csv", run.toString)
+
+        val p = JsonParser.parseString(
+            """{"runId":"run-1","pipeline":"orders","job":{"filename":"tap-gone.csv"},"input":{"kind":"tap","filename":"tap-gone.csv","source":"tap:gone"},"source":"tap:gone"}"""
+        ).getAsJsonObject
+        val out = ProvenanceAPIController.scrubProvenance(req(bob), p, readTap, Set.empty)
+        assert(out.getAsJsonObject("job").get("filename").getAsString == "tap-[hidden].csv", out.toString)
+        assert(out.getAsJsonObject("input").get("filename").getAsString == "tap-[hidden].csv", out.toString)
+        assert(!out.has("source") && !out.getAsJsonObject("input").has("source"), out.toString)
+        assert(!out.toString.contains("gone"), out.toString)
+
+        // A visible tap's tap:<name> source stays; unrestricted callers are untouched.
+        val visible = JsonParser.parseString("""{"runId":"run-1","pipeline":"orders","source":"tap:t_sales"}""").getAsJsonObject
+        assert(ProvenanceAPIController.scrubProvenance(req(bob), visible, readTap, Set.empty).has("source"))
+        val original =
+            """{"runId":"run-1","pipeline":"orders","job":{"filename":"tap-gone.csv"},"input":{"kind":"tap","filename":"tap-gone.csv","source":"tap:gone"},"source":"tap:gone"}"""
+        assert(ProvenanceAPIController.scrubProvenance(req(editor), JsonParser.parseString(original).getAsJsonObject, readTap, Set.empty).toString ==
+            JsonParser.parseString(original).getAsJsonObject.toString)
+    }
+
     // ------------------------------------------------------------ pipeline status
 
     private def event(filename: String, description: String) =
-        PipelineStatus(1, "now", "orders", "process", "pub", "tok", filename, "end", "OK", description, 1L, aiSummary = "t_hr_feed returned bad rows")
+        PipelineStatus(1, "now", "orders", "process", "pub", "tok", filename, "end", "OK", description, 1L, aiSummary = "tap 't_hr_feed' returned bad rows")
+
+    private def statusResponse(feedFile: String) = PipelineStatusResponse(
+        PipelineStatusRollup(
+            allDone = true,
+            status = "error",
+            jobs = List(
+                PipelineJobRollup("tok", "orders", feedFile, "error", "s", "l", "1s", PipelineJobError("p", "row from tap t_hr_feed failed", "tap: t_hr_feed"))
+            ).asJava
+        ),
+        List(event(feedFile, "Processing " + feedFile + " into public.orders")).asJava
+    )
 
     test("pipeline status of a visible pipeline names no hidden feeding tap; empty hidden set returns the same payload") {
-        val response = PipelineStatusResponse(
-            PipelineStatusRollup(
-                allDone = true,
-                status = "error",
-                jobs = List(
-                    PipelineJobRollup(
-                        "tok",
-                        "orders",
-                        "tap-t_hr_feed.csv",
-                        "error",
-                        "s",
-                        "l",
-                        "1s",
-                        PipelineJobError("p", "row from t_hr_feed failed", "t_hr_feed")
-                    )
-                ).asJava
-            ),
-            List(event("tap-t_hr_feed.csv", "Processing tap-t_hr_feed.csv for orders")).asJava
-        )
+        val response = statusResponse("tap-t_hr_feed.csv")
         val gson = new com.google.gson.Gson
-        val scrubbed = gson.toJson(PipelineStatusAPIController.scrubFor(Set("t_hr_feed"), Set("orders"), response))
+        val scrubbed = gson.toJson(PipelineStatusAPIController.scrubFor(Set("t_hr_feed"), response))
         assert(!scrubbed.contains("t_hr_feed"), scrubbed)
-        assert(scrubbed.contains("tap-[hidden].csv") && scrubbed.contains("for orders"), scrubbed)
+        assert(scrubbed.contains("tap-[hidden].csv") && scrubbed.contains("into public.orders"), scrubbed)
 
-        val summaries = List(PipelineStatusSummary("ts", 1L, 1L, "orders", "tok", "p", "s", "e", "1s", "error", aiSummary = "t_hr_feed timed out")).asJava
-        val s2 = gson.toJson(PipelineStatusAPIController.scrubFor(Set("t_hr_feed"), Set("orders"), summaries))
-        assert(!s2.contains("t_hr_feed") && s2.contains("[hidden] timed out"), s2)
+        val summaries = List(PipelineStatusSummary("ts", 1L, 1L, "orders", "tok", "p", "s", "e", "1s", "error", aiSummary = "tap t_hr_feed timed out")).asJava
+        val s2 = gson.toJson(PipelineStatusAPIController.scrubFor(Set("t_hr_feed"), summaries))
+        assert(!s2.contains("t_hr_feed") && s2.contains("tap [hidden] timed out"), s2)
 
         val events = List(event("tap-t_hr_feed.csv", "x")).asJava
-        assert(!gson.toJson(PipelineStatusAPIController.scrubFor(Set("t_hr_feed"), Set("orders"), events)).contains("t_hr_feed"))
+        assert(!gson.toJson(PipelineStatusAPIController.scrubFor(Set("t_hr_feed"), events)).contains("t_hr_feed"))
 
-        // Unrestricted callers get an empty hidden set: the very same object back.
-        assert(PipelineStatusAPIController.scrubFor(Set.empty, Set("orders"), response) eq response)
+        assert(PipelineStatusAPIController.scrubFor(Set.empty, response) eq response)
+    }
+
+    test("GET /pipeline/status wiring: a deleted or retargeted hidden tap named only by its feed file is scrubbed; unrestricted callers get the same object") {
+        val pipelines = Seq(PipelineConfig(name = "orders", catalog = "Sales"), PipelineConfig(name = "payroll", catalog = "HR"))
+        // t_hr_feed now targets payroll (retargeted); "gone" is no longer stored.
+        val stored = Seq(tap("t_sales", "orders", "Sales"), tap("t_hr_feed", "payroll", "HR"))
+        val gson = new com.google.gson.Gson
+        Seq("tap-gone.csv", "tap-t_hr_feed.csv").foreach { file =>
+            val name = file.stripPrefix("tap-").stripSuffix(".csv")
+            val shown = PipelineStatusAPIController.restrictedViewWith(req(bob, path = "/api/v1/pipeline/status"), statusResponse(file), pipelines, stored)
+            val body = gson.toJson(shown.toOption.get)
+            assert(body.contains("tap-[hidden].csv"), body)
+            assert(!body.contains(file), body)
+        }
+        // A visible tap's feed file is kept.
+        val ok = gson.toJson(PipelineStatusAPIController.restrictedViewWith(req(bob), statusResponse("tap-t_sales.csv"), pipelines, stored).toOption.get)
+        assert(ok.contains("tap-t_sales.csv"), ok)
+        // Unrestricted session and API key: the very same object.
+        Seq(editor, salesKey).foreach { rk =>
+            val data = statusResponse("tap-gone.csv")
+            assert(PipelineStatusAPIController.restrictedViewWith(req(rk), data, pipelines, stored).toOption.get eq data)
+            assert(PipelineStatusAPIController.restrictedView(req(rk), data).toOption.get eq data)
+        }
+    }
+
+    // ------------------------------------------------------------ activity signals
+
+    test("activity failing rows: a pipeline row's reason is scrubbed, a tap row's reason is untouched, a hidden relatedTapName is cleared") {
+        import ai.datris.util.ActivitySignals.FailingItem
+        def item(kind: String, name: String, reason: String, related: Option[String]) =
+            FailingItem(kind, name, Some("Sales"), reason, None, recovered = false, failureCount = 1, pipelineToken = None, relatedTapName = related)
+        val tapHidden: String => Boolean = n => n != "t_sales" // gone and t_hr_feed are hidden
+        val rows = List(
+            item("pipeline", "orders", "Processing tap-gone.csv failed; tap 't_hr_feed' sent bad rows into public.t_hr_feed", Some("t_hr_feed")),
+            item("pipeline", "orders", "tap t_sales ok", Some("t_sales")),
+            item("tap", "t_sales", "tap t_sales: upstream tap-t_sales.csv failed", None)
+        )
+        val out = ActivityAPIController.scrubFailing(rows, tapHidden, Set("t_hr_feed"))
+        assert(out.head.reason == "Processing tap-[hidden].csv failed; tap '[hidden]' sent bad rows into public.t_hr_feed", out.head.reason)
+        assert(out.head.relatedTapName.isEmpty)
+        assert(out(1) == rows(1), "a visible related tap and its reason stay")
+        assert(out(2) == rows(2), "tap rows are untouched")
     }
 
     // ------------------------------------------------------------ 403 message

@@ -100,9 +100,10 @@ object ProvenanceAPIController {
       * `tap.name`) is one the session cannot read (`readTap` loads it; null =
       * missing), the `tapRun` and `tap` blocks and the top-level `source` go,
       * and the input loses the tap identity fields. Filenames (`input`,
-      * `job`) read `tap-[hidden]` for that tap and for `hiddenFeeding`
-      * (hidden taps feeding the run's pipeline, for runs that predate the
-      * recorded tap identity). Everyone else: `resolved` unchanged. Scrubs in
+      * `job`) read `tap-[hidden]` for that tap, for `hiddenFeeding` (hidden
+      * taps feeding the run's pipeline) and for any hidden or no-longer-stored
+      * tap a feed filename names; a `tap:<name>` source naming such a tap is
+      * dropped. Everyone else: `resolved` unchanged. Scrubs in
       * place; returns `resolved`. */
     def scrubProvenance(
         request: HttpServletRequest,
@@ -125,7 +126,19 @@ object ProvenanceAPIController {
             if (resolved.has("input") && resolved.get("input").isJsonObject)
                 HiddenTapScrub.TapIdentityFields.foreach(resolved.getAsJsonObject("input").remove)
         }
-        val scrub = hiddenNamed ++ hiddenFeeding
+        // A tap no longer stored (or a run predating the recorded tap
+        // identity) shows only in a feed filename or a `tap:<name>` source.
+        val fromFiles = HiddenTapScrub.feedFileNames(Seq(str(resolved, "input", "filename"), str(resolved, "job", "filename")).flatten)
+            .filter(n => HiddenTapScrub.tapHidden(request, n, readTap))
+        val scrub = hiddenNamed ++ hiddenFeeding ++ fromFiles
+        def tapSource(o: JsonObject, field: String): Boolean =
+            o.has(field) && o.get(field).isJsonPrimitive && {
+                val v = o.get(field).getAsString
+                v.startsWith("tap:") && HiddenTapScrub.tapHidden(request, v.stripPrefix("tap:"), readTap)
+            }
+        if (tapSource(resolved, "source")) resolved.remove("source")
+        if (resolved.has("input") && resolved.get("input").isJsonObject && tapSource(resolved.getAsJsonObject("input"), "source"))
+            resolved.getAsJsonObject("input").remove("source")
         if (scrub.nonEmpty) Seq("input", "job").foreach { block =>
             str(resolved, block, "filename").foreach(f => resolved.getAsJsonObject(block).addProperty("filename", HiddenTapScrub.scrubFilename(f, scrub)))
         }
