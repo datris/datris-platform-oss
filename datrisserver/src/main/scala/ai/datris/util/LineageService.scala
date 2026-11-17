@@ -215,25 +215,54 @@ object LineageService {
         }
     }
 
-    /** Save-time check for a pipeline definition: a declared authoritative kind
-      * must be one of its destinations, and no other pipeline may already be
-      * the authoritative writer of the same dataset. Returns the problem. */
-    def authorityConflict(p: PipelineConfig, others: List[PipelineConfig]): Option[String] = {
+    /** A save-time authority problem. `other` is the pipeline that already
+      * is the authoritative writer of `dataset` (None for a problem with the
+      * pipeline's own declaration, whose text is in `ownProblem`). */
+    case class AuthorityProblem(other: Option[PipelineConfig], dataset: String, ownProblem: String = null) {
+
+        /** The message; `otherVisible = false` leaves the other pipeline's
+          * name out (it is outside the caller's visibility). */
+        def message(otherVisible: Boolean): String = other match {
+            case None => ownProblem
+            case Some(o) if otherVisible =>
+                "pipeline '" + o.name + "' is already the authoritative writer of " + dataset +
+                    "; set authoritative=false on one of them (or destination.authoritative on the other)"
+            case Some(_) =>
+                "another pipeline is already the authoritative writer of " + dataset +
+                    "; set authoritative=false on this pipeline (or destination.authoritative to another of its destinations)"
+        }
+    }
+
+    /** Pure core of [[authorityConflict]]: the first problem, with the
+      * conflicting pipeline so the caller can decide whether to name it. */
+    def authorityProblem(p: PipelineConfig, others: List[PipelineConfig]): Option[AuthorityProblem] = {
         val own = datasets(p)
         val declared = Option(p.destination).flatMap(d => Option(d.authoritative)).map(_.trim.toLowerCase).filter(_.nonEmpty)
         declared.filterNot(k => own.exists(_.kind == k)).foreach { k =>
-            return Some("destination.authoritative names '" + k + "' but the pipeline has no such destination (" + own.map(_.kind).mkString(", ") + ")")
+            return Some(
+                AuthorityProblem(
+                    None,
+                    null,
+                    "destination.authoritative names '" + k + "' but the pipeline has no such destination (" + own.map(_.kind).mkString(", ") + ")"
+                )
+            )
         }
         own.filter(ds => ownClaim(p, ds) == AuthorityAuthoritative).foreach { ds =>
             others.filter(o => o != null && o.name != p.name).foreach { o =>
                 datasets(o).find(_.id == ds.id).filter(od => ownClaim(o, od) == AuthorityAuthoritative).foreach { _ =>
-                    return Some("pipeline '" + o.name + "' is already the authoritative writer of " + ds.name +
-                        "; set authoritative=false on one of them (or destination.authoritative on the other)")
+                    return Some(AuthorityProblem(Some(o), ds.name))
                 }
             }
         }
         None
     }
+
+    /** Save-time check for a pipeline definition: a declared authoritative kind
+      * must be one of its destinations, and no other pipeline may already be
+      * the authoritative writer of the same dataset. Returns the problem,
+      * naming the other pipeline. */
+    def authorityConflict(p: PipelineConfig, others: List[PipelineConfig]): Option[String] =
+        authorityProblem(p, others).map(_.message(otherVisible = true))
 
     /** Graph from configs plus datasets observed in recorded runs. An observed
       * dataset the current config still lands into is a no-op; one it no
@@ -443,24 +472,79 @@ object LineageService {
         }
     }
 
+    /** The part of `g` a caller may see. Pipeline, tap and catalog nodes
+      * failing `keep` are dropped; then source and dataset nodes left with no
+      * edge to a kept pipeline, tap or catalog node; then every edge with a
+      * dropped endpoint. A source or dataset shared with hidden items survives
+      * with only its visible edges. `keep` = everything is the identity. */
+    def visibleTo(g: Graph, keep: Node => Boolean): Graph = {
+        val gated = Set("pipeline", "tap", "catalog")
+        val keptGated = g.nodes.filter(n => gated.contains(n.nodeType) && keep(n)).map(_.id).toSet
+        def linkedToKept(id: String): Boolean =
+            g.edges.exists(e => (e.from == id && keptGated.contains(e.to)) || (e.to == id && keptGated.contains(e.from)))
+        val nodes = g.nodes.filter(n => if (gated.contains(n.nodeType)) keptGated.contains(n.id) else linkedToKept(n.id))
+        val ids = nodes.map(_.id).toSet
+        Graph(nodes, g.edges.filter(e => ids.contains(e.from) && ids.contains(e.to)))
+    }
+
+    /** The recorded-run filter of a caller-filtered [[neighborhood]]: a run
+      * filed under `pipeline` is kept when the name's records are shown
+      * under [[PipelineAliases.recordShown]] with the graph's pipeline nodes
+      * as what the caller can see, or when no stored pipeline carries or
+      * lists the name and its node is in the graph. */
+    def runShown(pipeline: String, pipelines: Seq[PipelineConfig], inGraph: String => Boolean): Boolean =
+        pipeline != null && {
+            val all = Option(pipelines).getOrElse(Nil).filter(_ != null)
+            PipelineAliases.recordShown(pipeline, all, c => inGraph("pipeline:" + c.name)) ||
+            (PipelineAliases.claimantsOf(pipeline, all).isEmpty && inGraph("pipeline:" + pipeline))
+        }
+
     /** The whole graph (cached ~1 minute). */
     def graph(): Graph = loadCached().graph
 
     /** Per-pipeline freshness: last successful landing, its record count, the
       * incremental cursor when the feeding tap keeps one, and the stale/fresh
       * classification shared with ActivitySignals. */
-    def freshness(pipelineName: String, taps: List[TapConfig]): JsonObject = {
+    def freshness(pipelineName: String, taps: List[TapConfig]): JsonObject = freshness(pipelineName, taps, recordsShown = true)
+
+    /** [[freshness]]; `recordsShown` false (a restricted session that may not
+      * see the runs filed under the name, [[PipelineAliases.recordShown]])
+      * reports as if the pipeline had no runs: no summary read, no
+      * `lastLandedAt` / `recordCount` / `latestRunId`. */
+    def freshness(pipelineName: String, taps: List[TapConfig], recordsShown: Boolean): JsonObject = {
         val env = DatrisEnvironment.current
         val now = System.currentTimeMillis()
+        freshnessOf(
+            pipelineName,
+            taps,
+            () =>
+                try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusTableName + "-summary", "created_at", now - FreshnessWindowMs, MaxRows).flatMap {
+                        json =>
+                            try Some(gson.fromJson(json, classOf[PipelineStatusSummaryTable]))
+                            catch { case _: Exception => None }
+                    }
+                catch { case e: Exception => logger.debug("lineage: summary read failed: " + e.getMessage); Nil },
+            recordsShown,
+            now,
+            tapName =>
+                try Option(TapStateIO.read(tapName)).flatMap(st => Option(st.updatedAt))
+                catch { case _: Exception => None }
+        )
+    }
+
+    /** [[freshness]] over `readSummaries` (called only when `recordsShown`)
+      * and `cursorOf` (the feeding tap's state `updatedAt`). Pure otherwise. */
+    private[datris] def freshnessOf(
+        pipelineName: String,
+        taps: List[TapConfig],
+        readSummaries: () => List[PipelineStatusSummaryTable],
+        recordsShown: Boolean,
+        now: Long,
+        cursorOf: String => Option[String]
+    ): JsonObject = {
         val o = new JsonObject()
 
-        val summaries: List[PipelineStatusSummaryTable] =
-            try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusTableName + "-summary", "created_at", now - FreshnessWindowMs, MaxRows).flatMap {
-                    json =>
-                        try Some(gson.fromJson(json, classOf[PipelineStatusSummaryTable]))
-                        catch { case _: Exception => None }
-                }
-            catch { case e: Exception => logger.debug("lineage: summary read failed: " + e.getMessage); Nil }
+        val summaries: List[PipelineStatusSummaryTable] = if (recordsShown) readSummaries() else Nil
 
         val landed = ActivitySignals.withoutRehearsals(summaries)
             .filter(s =>
@@ -470,7 +554,7 @@ object LineageService {
             .sortBy(s => Option(s.created_at).map(_.longValue()).getOrElse(0L))
 
         val feedingTap = taps.find(t => t != null && pipelineName.equals(t.targetPipeline))
-        val staleNames = ActivitySignals.computeStale(now, taps).map(_.name).toSet
+        lazy val staleNames = ActivitySignals.computeStale(now, taps).map(_.name).toSet
 
         landed.lastOption match {
             case Some(last) =>
@@ -483,13 +567,33 @@ object LineageService {
                 o.addProperty("state", if (feedingTap.exists(t => staleNames.contains(t.name))) "stale" else "unknown")
         }
 
-        feedingTap.foreach { t =>
-            try {
-                val st = TapStateIO.read(t.name)
-                if (st != null && st.updatedAt != null) o.addProperty("cursorUpdatedAt", st.updatedAt)
-            } catch { case _: Exception => () }
-        }
+        feedingTap.foreach(t => cursorOf(t.name).foreach(o.addProperty("cursorUpdatedAt", _)))
         o
+    }
+
+    /** The stored pipelines the cached graph was built from. */
+    def pipelines(): List[PipelineConfig] = loadCached().pipelines
+
+    /** A restricted session's graph (already [[visibleTo]]-filtered): for a
+      * pipeline node whose name's stored runs the caller may not see
+      * ([[runShown]] with the graph's pipeline nodes as what it can see: a
+      * name reused after a hidden pipeline's rename), run evidence is removed
+      * from its edges and the historical datasets its runs landed in (with
+      * their edges) are dropped, as if the name had no runs. `g` itself when
+      * no such node exists. Pure. */
+    def withoutHiddenRuns(g: Graph, pipelines: Seq[PipelineConfig]): Graph = {
+        val ids = g.nodes.map(_.id).toSet
+        val hidden = g.nodes.filter(n => n.nodeType == "pipeline" && !runShown(n.name, pipelines, ids.contains)).map(_.id).toSet
+        if (hidden.isEmpty) g
+        else {
+            val edges = g.edges.filterNot(e => e.historical && hidden.contains(e.from)).map(e =>
+                if (hidden.contains(e.from) || hidden.contains(e.to)) e.copy(evidence = None) else e
+            )
+            val orphaned = g.nodes.filter(n =>
+                n.nodeType == "dataset" && n.historical && !edges.exists(e => e.to == n.id && e.from.startsWith("pipeline:"))
+            ).map(_.id).toSet
+            Graph(g.nodes.filterNot(n => orphaned.contains(n.id)), edges.filterNot(e => orphaned.contains(e.from) || orphaned.contains(e.to)))
+        }
     }
 
     /** Neighborhood of one node: the node, everything transitively upstream,
@@ -506,10 +610,21 @@ object LineageService {
       * current definition; for a dataset node its feeding pipeline's current
       * definition, or — when the dataset is historical — the definition version
       * of the last recorded run that wrote it. Deterministic tier only; the
-      * inferred tier is fetched on demand via /lineage/columns. */
-    def neighborhood(nodeType: String, name: String, direction: String, depth: Int, runs: Int, columns: Boolean): JsonObject = {
+      * inferred tier is fetched on demand via /lineage/columns.
+      * `graph` is the graph to walk (default: the whole cached graph); a
+      * caller-filtered graph (see [[visibleTo]]) makes a node absent from it
+      * unknown, and drops recorded runs of pipelines it does not contain. */
+    def neighborhood(
+        nodeType: String,
+        name: String,
+        direction: String,
+        depth: Int,
+        runs: Int,
+        columns: Boolean,
+        graph: Graph = null
+    ): JsonObject = {
         val entry = loadCached()
-        val g = entry.graph
+        val g = if (graph == null) entry.graph else graph
         val id = nodeType + ":" + name
         val node = g.nodes.find(_.id == id).orNull
         if (node == null) return null
@@ -549,11 +664,25 @@ object LineageService {
         val pipelineName: Option[String] =
             if (nodeType == "pipeline") Some(name)
             else (upstream ++ downstream).find(_.startsWith("pipeline:")).map(_.stripPrefix("pipeline:"))
-        pipelineName.foreach(p => o.add("freshness", freshness(p, entry.taps)))
+        // A caller-filtered graph: a name whose runs the caller may not see
+        // (PipelineAliases.recordShown) reports as if it had no runs.
+        def runsShown(p: String): Boolean = graph == null || runShown(p, entry.pipelines, byId.contains)
+        pipelineName.foreach(p => o.add("freshness", if (graph == null) freshness(p, entry.taps) else freshness(p, entry.taps, runsShown(p))))
 
         if (runs > 0) {
             val arr = new JsonArray()
-            recentRuns(nodeType, name, runs).foreach(r => arr.add(runToJson(r)))
+            val visibleRuns =
+                if (graph == null) recentRuns(nodeType, name, runs)
+                else {
+                    // A run filed under a renamed pipeline's earlier name
+                    // counts for that pipeline; a reused name only when every
+                    // pipeline it may belong to is in the graph
+                    // (PipelineAliases.recordShown). A name no stored
+                    // pipeline carries or lists (a historical node) is kept
+                    // when its node is in the graph, as before.
+                    recentRuns(nodeType, name, runs).filter(r => runShown(r.pipeline, entry.pipelines, byId.contains))
+                }
+            visibleRuns.foreach(r => arr.add(runToJson(r)))
             o.add("runs", arr)
         }
 
@@ -570,7 +699,12 @@ object LineageService {
                             (p, version)
                         }
                     }
-                target.flatMap { case (p, v) => Option(ColumnLineageService.forPipeline(p, v, runInference = false)) }
+                target.flatMap { case (p, v) =>
+                    Option(
+                        if (graph == null) ColumnLineageService.forPipeline(p, v, runInference = false)
+                        else ColumnLineageService.forPipeline(p, v, runInference = false, storedInference = runsShown(p))
+                    )
+                }
                     .foreach(r => o.add("columns", r.toJson))
             } catch {
                 case e: Exception => logger.debug("column lineage embed skipped for " + id + ": " + e.getMessage)

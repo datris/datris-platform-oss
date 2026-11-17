@@ -6,6 +6,7 @@ import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { PipelineStatusService } from '../pipeline-status.service';
 import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
+import { canEditCatalog, canOwnCatalog, editableCatalogsOf, isRestrictedUser } from '../shared/catalog-access';
 import { httpErrorText } from '../shared/http-error';
 
 @Component({
@@ -32,6 +33,19 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   moveMenuOpen = '';
 
   get isEmbedded(): boolean { return !!this.embedCatalog; }
+
+  // Catalog-scoped access: restricted branches read the /me fields via
+  // AuthService, never list contents. Edit/ingest need edit or own on the
+  // pipeline's catalog; delete, rename and move need own.
+  get isRestricted(): boolean { return isRestrictedUser(this.auth); }
+
+  canEditItem(p: any): boolean {
+    return this.auth.canWrite() && canEditCatalog(this.auth, p && p.catalog);
+  }
+
+  canOwnItem(p: any): boolean {
+    return this.auth.canWrite() && canOwnCatalog(this.auth, p && p.catalog);
+  }
 
   @HostListener('document:click')
   onDocumentClick(): void {
@@ -98,25 +112,18 @@ export class PipelinesComponent implements OnInit, OnDestroy {
 
     if (!newName || newName === oldName) return;
 
-    // Rename: load full config, POST as new name, delete old config (data only — keep)
-    this.pipelineService.getPipeline(oldName).subscribe({
-      next: (config) => {
-        const renamed = { ...config, name: newName };
-        this.pipelineService.createPipeline(renamed).subscribe({
-          next: () => {
-            this.pipelineService.deletePipeline(oldName).subscribe({
-              next: () => this.loadPipelines(),
-              error: () => this.loadPipelines()
-            });
-          },
-          error: (err) => {
-            alert('Failed to rename: ' + httpErrorText(err));
-            this.loadPipelines();
-          }
-        });
+    // One server-side rename: the config, its data, history, scripts and
+    // the taps that feed it all follow the new name. Nothing is created or
+    // deleted from here.
+    this.pipelineService.renamePipeline(oldName, newName).subscribe({
+      next: (res) => {
+        const notes = renameNotes(res);
+        if (notes.length > 0) alert('Renamed to ' + newName + '.\n\n' + notes.join('\n'));
+        this.loadPipelines();
+        this.loadTaps();
       },
       error: (err) => {
-        alert('Failed to load pipeline for rename: ' + httpErrorText(err));
+        alert('Failed to rename: ' + httpErrorText(err));
         this.loadPipelines();
       }
     });
@@ -129,7 +136,10 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   }
 
   moveTargets(): string[] {
-    return this.allCatalogs.filter(c => c !== this.embedCatalog);
+    const names = this.allCatalogs.filter(c => c !== this.embedCatalog);
+    if (!this.isRestricted) return names;
+    const editable = new Set(editableCatalogsOf(this.auth));
+    return names.filter(c => editable.has(c));
   }
 
   toggleMoveMenu(name: string, event: Event): void {
@@ -233,7 +243,8 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     this.catalogGroups = named.map(([name, pipelines]) => ({
       name, pipelines, expanded: prevExpanded.has(name)
     }));
-    if (uncataloged && uncataloged.length > 0) {
+    // Restricted users never see an Uncataloged group.
+    if (uncataloged && uncataloged.length > 0 && !this.isRestricted) {
       this.catalogGroups.push({
         name: 'Uncataloged', pipelines: uncataloged,
         expanded: prevExpanded.has('Uncataloged')
@@ -435,4 +446,20 @@ export class PipelinesComponent implements OnInit, OnDestroy {
       }
     });
   }
+}
+
+/** Follow-up lines for a rename result: one per tap that could not be
+ *  re-pointed (`failed`) and one per server warning (a script not copied,
+ *  a pull position not moved, taps you cannot see that were not re-pointed).
+ *  Empty when the rename needs no follow-up. */
+export function renameNotes(res: any): string[] {
+  const failed = (res && Array.isArray(res.failed)) ? res.failed : [];
+  const warnings = (res && Array.isArray(res.warnings)) ? res.warnings : [];
+  const lines: string[] = [];
+  if (failed.length > 0) {
+    lines.push('Some taps could not be re-pointed: ' +
+      failed.map((f: any) => f.name + ' (' + f.error + ')').join(', '));
+  }
+  warnings.forEach((w: any) => { if (w != null && String(w).trim()) lines.push(String(w)); });
+  return lines;
 }

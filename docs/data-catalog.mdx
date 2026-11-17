@@ -4,7 +4,7 @@ description: "A logical grouping for related taps and pipelines"
 ---
 
 <Note>
-**Beta.** Data Catalogs may evolve as we add features like sharing and access control.
+Admins can limit a user to specific catalogs at a view, edit or own level. See [Catalog access](/user-auth#catalog-access).
 </Note>
 
 A **Data Catalog** is a named bucket that groups related [taps](/taps) and [pipelines](/pipeline-configuration). It's pure metadata — assigning a tap to a catalog doesn't change how the tap runs or where its data lands. Catalogs exist to make a busy platform browsable: instead of a flat list of 40 taps, you see "Stock Prices (12)", "Weather (6)", "Earnings (8)" and so on.
@@ -23,6 +23,7 @@ Catalogs aren't a separate table or external system. Each tap and pipeline carri
 
 - A catalog "exists" as soon as anything is assigned to it. There's no separate create step required to *use* a name.
 - Renaming a catalog means updating the `catalog` field on every tap and pipeline in it. The Catalog tab's rename control does this in one step, or call `rename_catalog` over MCP.
+- Renaming a pipeline does not change its catalog. The Pipelines tab's inline rename (or `POST /api/v1/pipelines/{name}/rename`, see [Pipeline API](/api-reference/pipeline-api#rename-a-pipeline)) keeps the pipeline's data, version history and scripts, and the taps that feed it follow the new name.
 
 When you create a catalog explicitly via the UI, Datris persists the name by writing a placeholder tap named `__catalog__<name>` (description "Catalog placeholder", `enabled=false`). This makes empty catalogs survive across UI reloads. The placeholder is hidden from the Taps list and ignored by the runtime.
 

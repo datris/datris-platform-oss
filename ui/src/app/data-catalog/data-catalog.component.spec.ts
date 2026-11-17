@@ -463,6 +463,32 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(el.querySelector('.affected-keys-banner')).toBeNull();
   }));
 
+  // ── Catalog-scoped user access: rename follows grants ──────────────────
+  // Story: plans/stories/catalog-scoped-user-access-ui-assistant.md. A rename
+  // response carries `updatedUsers` (users whose catalog grant was re-keyed);
+  // the result banner names them.
+
+  it('rename banner lists updatedUsers', fa(() => {
+    pipeSvc.renameCatalog.and.returnValue(of({
+      renamed: ['t_a', 'p_a'], failed: [], affectedKeys: [], updatedUsers: ['bob', 'carol']
+    }));
+    settle();
+    const input = openRename('e2e_a');
+    if (!input) return;
+    submitRename(input, 'Revenue');
+    expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
+    const text = (el.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain("Access for bob, carol now reads 'Revenue'");
+  }));
+
+  it('rename with no updatedUsers shows no access banner', fa(() => {
+    settle();
+    const input = openRename('e2e_a');
+    if (!input) return;
+    submitRename(input, 'Revenue');
+    expect((el.textContent || '')).not.toContain('Access for');
+  }));
+
   // ── 404: catalog gone on the server (no fallback) ───────────────────────
 
   function writeCalls(): number {
@@ -763,5 +789,105 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     (confirm.querySelector('.del-yes') as HTMLButtonElement).click();
     settle();
     expect(warnBanner()).withContext('clearOpBanners clears warnings too').toBeNull();
+  }));
+});
+
+/**
+ * Story: Catalog-scoped user access (UI, Assistant, MCP, docs)
+ * (plans/stories/catalog-scoped-user-access-ui-assistant.md), Step 3.
+ *
+ * A restricted user (AuthService `isRestricted()` true, from the /me
+ * `restricted` + `catalogGrants` fields — never inferred from list contents)
+ * sees no Uncataloged card, no "+ Create Catalog" button and no
+ * create-catalog row. The server already returns only granted items; an
+ * uncataloged item that slipped into the list must still not produce an
+ * Uncataloged card.
+ */
+describe('DataCatalogComponent — restricted user', () => {
+  let fixture: ComponentFixture<DataCatalogComponent>;
+  let component: any;
+  let el: HTMLElement;
+
+  beforeEach(async () => {
+    sessionStorage.removeItem('catalog.expanded');
+    const grants: Record<string, 'view' | 'edit' | 'own'> = { Sales: 'edit', Archive: 'view' };
+    const me = { username: 'bob', role: 'editor', mustSetPassword: false, restricted: true, catalogGrants: grants };
+    const tapSvc = {
+      getTaps: () => of([
+        { name: '__catalog__Sales', catalog: 'Sales' },
+        { name: 't_sales', catalog: 'Sales' },
+        { name: 't_arch', catalog: 'Archive' },
+        { name: 't_loose' }
+      ]),
+      deleteTap: () => of({}),
+      createOrUpdateTap: () => of({})
+    };
+    const pipeSvc = {
+      getPipelines: () => of([{ name: 'p_sales', catalog: 'Sales' }, { name: 'p_loose' }]),
+      deletePipeline: () => of({}),
+      createPipeline: () => of('ok'),
+      renameCatalog: () => of({ renamed: [], failed: [], affectedKeys: [] }),
+      deleteCatalog: () => of({ detached: [], failed: [] })
+    };
+    await TestBed.configureTestingModule({
+      declarations: [DataCatalogComponent],
+      imports: [FormsModule],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA],
+      providers: [
+        provideRouter([]),
+        { provide: TapService, useValue: tapSvc },
+        { provide: PipelineService, useValue: pipeSvc },
+        { provide: AuthService, useValue: {
+            current: () => me,
+            user: () => of(me),
+            isAdmin: () => false,
+            canWrite: () => true,
+            isViewer: () => false,
+            isRestricted: () => true,
+            editableCatalogs: () => ['Sales'],
+            userAuthEnabled: true
+        } },
+        { provide: CatalogAssistantStateService, useValue: { changed$: new Subject<void>(), seedDraft: () => {} } }
+      ]
+    }).compileComponents();
+    fixture = TestBed.createComponent(DataCatalogComponent);
+    component = fixture.componentInstance as any;
+    el = fixture.nativeElement as HTMLElement;
+  });
+
+  it('restricted user sees no Uncataloged group and no Create Catalog control', fakeAsync(() => {
+    fixture.detectChanges();
+    tick();
+    fixture.detectChanges();
+    const names = (Array.from(el.querySelectorAll('.catalog-card')) as HTMLElement[])
+      .map(c => (c.querySelector('.catalog-name')?.textContent || '').trim());
+    expect(names).withContext('granted catalogs shown').toEqual(jasmine.arrayContaining(['Sales', 'Archive']));
+    expect(names).withContext('no Uncataloged card').not.toContain('Uncataloged');
+    const buttons = (Array.from(el.querySelectorAll('button')) as HTMLElement[]).map(b => (b.textContent || '').trim());
+    expect(el.querySelector('.create-btn')).withContext('no + Create Catalog button').toBeNull();
+    expect(buttons.some(t => /create catalog/i.test(t))).withContext('no Create Catalog control').toBeFalse();
+    // Forcing the modal flag must still render no create row.
+    component.showCreateModal = true;
+    fixture.detectChanges();
+    expect(el.querySelector('.create-catalog-row')).withContext('no create-catalog row').toBeNull();
+    fixture.destroy();
+    discardPeriodicTasks();
+    flush();
+  }));
+
+
+  // Story: Catalog-scoped user access, part 3
+  // (plans/stories/catalog-scoped-user-access-metadata-read.md): lineage is
+  // filtered to the user's catalogs server-side, so the button is shown.
+  it('restricted user sees the Lineage button', fakeAsync(() => {
+    fixture.detectChanges();
+    tick();
+    fixture.detectChanges();
+    const btn = el.querySelector('a.lineage-btn') as HTMLElement | null;
+    expect(btn).withContext('Lineage button rendered for a restricted user').not.toBeNull();
+    expect((btn?.textContent || '').trim()).toContain('Lineage');
+    fixture.destroy();
+    discardPeriodicTasks();
+    flush();
   }));
 });

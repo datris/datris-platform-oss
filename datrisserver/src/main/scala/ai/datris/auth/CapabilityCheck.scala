@@ -15,6 +15,13 @@ import jakarta.servlet.http.HttpServletRequest
   * 500-with-stacktrace path. */
 class CapabilityDeniedException(msg: String) extends DatrisException(msg)
 
+/** Thrown by [[CapabilityCheck.assertVisible]] when a restricted user's
+  * session targets a resource outside its catalog grants. Controllers map it
+  * to their existing "not found" 404 body so the resource's existence never
+  * leaks. Deliberately NOT a [[CapabilityDeniedException]]: a catch block for
+  * the 403 must not swallow it. */
+class ResourceHiddenException(msg: String) extends DatrisException(msg)
+
 /** In-action scope check helper, called by controllers AFTER loading the
   * target resource. The CapabilityInterceptor's pre-action gate is scope-
   * agnostic: it confirms the request's key holds SOME capability for the
@@ -58,6 +65,30 @@ object CapabilityCheck {
             }
         }
     }
+
+    /** Same as [[assertScope]], but a restricted user's session
+      * (`ResolvedKey.restrictedSession`) gets a [[ResourceHiddenException]]
+      * instead, so the controller answers 404 as if the resource did not
+      * exist. API keys keep the 403 (`CapabilityDeniedException`). */
+    def assertVisible(
+        request: HttpServletRequest,
+        resource: String,
+        action: String,
+        context: Map[String, String]
+    ): Unit = {
+        readResolvedKey(request).foreach { rk =>
+            if (rk.restrictedSession && !rk.grants(resource, action, context))
+                throw new ResourceHiddenException("not found")
+        }
+        assertScope(request, resource, action, context)
+    }
+
+    /** True when the request runs as a restricted user's session. */
+    def isRestrictedSession(request: HttpServletRequest): Boolean =
+        readResolvedKey(request).exists(_.restrictedSession)
+
+    /** The request's resolved identity, if any. */
+    def resolvedKey(request: HttpServletRequest): Option[ResolvedKey] = readResolvedKey(request)
 
     /** Convenience overload for the most common scope check: a single
       * `owner` field on a loaded resource against `owner=self` capabilities. */

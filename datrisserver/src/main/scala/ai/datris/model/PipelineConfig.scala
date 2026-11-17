@@ -35,7 +35,14 @@ case class PipelineConfig(
     authoritative: java.lang.Boolean = null,
     // Opt-in Unity Catalog metadata push (absent/null ⇒ off). Databricks
     // destinations only (PipelineValidatorUtil). See UnityCatalogMetadataSync.
-    unityCatalog: UnityCatalogSync = null
+    unityCatalog: UnityCatalogSync = null,
+    // Server-maintained, read-only: names this pipeline had before a rename
+    // (POST /pipelines/{name}/rename appends the old name). Stored run
+    // records, search chunks and lineage keep the name they were written
+    // under; a restricted session's visibility maps them back through this
+    // list (PipelineAliases). A save or version restore never takes the
+    // value from the caller: the stored value is carried over.
+    previousNames: java.util.List[String] = null
 )
 
 /** `unityCatalog: {"enabled": true}` — after each successful Databricks load,

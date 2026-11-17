@@ -5,7 +5,9 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{Capability, ResolvedKey}
+import ai.datris.model.{Capability, ResolvedKey, User}
+import ai.datris.util.APIKeyValidator
+import ai.datris.util.InMemoryUserDb.grants
 import org.scalatest.funsuite.AnyFunSuite
 
 class MCPToolRoutesSpec extends AnyFunSuite {
@@ -340,5 +342,41 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(MCPToolRoutes.allowedTools(legacyKey).contains("restore_script_version"))
         // The pipeline-definition restore next to it is untouched.
         assert(tools.get("restore_pipeline_version") == Some(MCPToolRoutes.Mapped("POST", "/api/v1/pipeline/version/restore")))
+    }
+
+    // Story: Catalog-scoped user access, part 3
+    // (plans/stories/catalog-scoped-user-access-metadata-read.md), Acceptance bullet 5.
+    test(
+        "metadata listing tools and browse_unity_catalog are hidden from a restricted session but find_data, get_lineage, get_provenance and profile_data stay"
+    ) {
+        val listing = Seq(
+            "list_postgres_databases",
+            "list_postgres_schemas",
+            "list_postgres_tables",
+            "list_postgres_columns",
+            "list_mongodb_databases",
+            "list_mongodb_collections",
+            "list_qdrant_collections",
+            "list_weaviate_classes",
+            "list_milvus_collections",
+            "list_chroma_collections",
+            "list_pgvector_collections",
+            "browse_unity_catalog"
+        )
+        val kept = Seq("find_data", "get_lineage", "get_provenance", "profile_data")
+        val bob = APIKeyValidator.resolveFromSession(
+            User("bob", "h", User.RoleEditor, null, null, null, restricted = true, catalogGrants = grants("Sales" -> "edit"))
+        )
+        assert(bob.restrictedSession)
+        val seen = MCPToolRoutes.allowedTools(bob)
+        listing.foreach(t => assert(!seen.contains(t), s"$t must be hidden from a restricted session"))
+        kept.foreach(t => assert(seen.contains(t), s"$t must stay visible to a restricted session"))
+
+        // Unrestricted sessions and API keys holding metadata:read are unchanged.
+        val ed = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
+        val edSeen = MCPToolRoutes.allowedTools(ed)
+        (listing ++ kept).foreach(t => assert(edSeen.contains(t), s"unrestricted editor sees $t"))
+        val metaKey = key("metadata:read", "pipeline:read:catalog=Sales")
+        (listing ++ kept).foreach(t => assert(MCPToolRoutes.allowedTools(metaKey).contains(t), s"API key sees $t"))
     }
 }

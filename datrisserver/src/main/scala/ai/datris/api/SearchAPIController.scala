@@ -15,6 +15,85 @@ import org.springframework.web.bind.annotation._
 
 import scala.collection.JavaConverters._
 
+object SearchAPIController {
+
+    /** False only for a restricted user's session unless at least one
+      * pipeline names `container` and every pipeline naming it is in its
+      * grants (view or higher). `schema` is the request's pgvector schema.
+      * Everyone else (unrestricted sessions, API keys): true, without
+      * reading configs. */
+    def containerVisible(
+        request: jakarta.servlet.http.HttpServletRequest,
+        store: String,
+        container: String,
+        schema: Option[String],
+        find: (String, String, Option[String]) => Seq[ai.datris.model.PipelineConfig]
+    ): Boolean =
+        !ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || {
+            val namers = find(store, container, schema)
+            namers.nonEmpty && namers.forall(c =>
+                ai.datris.auth.CapabilityCheck.grants(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel))
+            )
+        }
+
+    /** The search gate and its allowed writers. Unrestricted sessions and
+      * every API key: `Right(None)`, without calling `readAll`. A restricted
+      * user's session: one `readAll` (nulls dropped); the [[containerVisible]]
+      * rule on it, `Left` the existing 404 when it fails; otherwise
+      * `Right(Some(names))`, the names of every pipeline the session can read
+      * (in any store), plus the previous names of those among them that name
+      * this container ([[PipelineAliases.recordNames]]), less any name reused
+      * after a rename with a pipeline it may belong to hidden
+      * ([[PipelineAliases.shownRecordNames]]). A `readAll` failure propagates (fail closed). */
+    def searchWriters(
+        request: jakarta.servlet.http.HttpServletRequest,
+        store: String,
+        container: String,
+        schema: Option[String],
+        readAll: () => Seq[ai.datris.model.PipelineConfig]
+    ): Either[ResponseEntity[String], Option[Set[String]]] =
+        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) Right(None)
+        else {
+            val configs = Option(readAll()).getOrElse(Nil).filter(_ != null)
+            if (!containerVisible(request, store, container, schema, (s, c, sc) => VectorSearchRegistry.pipelinesForContainer(s, c, configs, sc))) {
+                val param = VectorSearchRegistry.forStore(store).map(_.containerParam).getOrElse("container")
+                Left(containerNotFound(param, container))
+            } else {
+                // Chunks keep the name they were written under: a renamed
+                // pipeline's earlier names count for it, but only for a
+                // pipeline that names this container (PipelineAliases).
+                // A name reused after a rename counts only when every
+                // pipeline it may belong to is visible.
+                val visible = PipelineAPIController.visiblePipelines(request, configs)
+                val namers = VectorSearchRegistry.pipelinesForContainer(store, container, configs, schema).map(_.name).toSet
+                val shown = PipelineAliases.shownRecordNames(visible, configs)
+                Right(Some(
+                    (visible.map(_.name).toSet ++ PipelineAliases.recordNames(visible.filter(c => namers.contains(c.name)), configs)).filter(shown.contains)
+                ))
+            }
+        }
+
+    /** The single place search hits are post-processed before the response.
+      * `writers` from [[searchWriters]]: None returns `hits` itself (same
+      * instance); Some keeps only chunks written by one of those pipelines
+      * ([[VectorChunkWriter.keepWrittenBy]]). Further per-hit scrubs belong
+      * here, after the writer check, applied to the survivors. */
+    def hitsFor(
+        request: jakarta.servlet.http.HttpServletRequest,
+        hits: java.util.List[java.util.Map[String, Any]],
+        writers: Option[Set[String]]
+    ): java.util.List[java.util.Map[String, Any]] =
+        writers match {
+            case None => hits
+            case Some(w) => VectorChunkWriter.keepWrittenBy(hits, w)
+        }
+
+    def containerNotFound(param: String, container: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .body[String](ApiErrors.errorBody(param.capitalize + ": " + container + " not found"))
+}
+
 @RestController
 @RequestMapping(Array("/api/v1"))
 class SearchAPIController {
@@ -30,7 +109,8 @@ class SearchAPIController {
     def search(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
         @PathVariable store: String,
-        @RequestBody body: java.util.Map[String, Any]
+        @RequestBody body: java.util.Map[String, Any],
+        request: jakarta.servlet.http.HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /search/" + store + " called")
@@ -41,13 +121,32 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val container = optString(body, util.containerParam, util.containerDefault)
+            // A restricted user searches only containers fed by a pipeline in
+            // its catalog grants; any other container is as if it did not exist.
+            val schema = if (store == "pgvector") Option(body.get("schema")).map(_.toString) else None
+            // A restricted user also gets only chunks written by pipelines it
+            // can read (a container no config names can hold other catalogs' chunks).
+            val writers = SearchAPIController.searchWriters(
+                request,
+                store,
+                container,
+                schema,
+                () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+            ) match {
+                case Left(notFound) => return notFound
+                case Right(w) => w
+            }
             // Always use the server's secret names — the client may have stale/incorrect
             // names, and in multi-tenant mode this enforces tenant isolation.
             val embeddingSecretName = DatrisEnvironment.current.embeddingSecretName
             val secretName = util.tenantSecretName
             val topK = optInt(body, "topK", 5)
 
-            val results = util.searchStore(query, container, embeddingSecretName, secretName, topK, body)
+            val results = SearchAPIController.hitsFor(
+                request,
+                util.searchStore(query, container, embeddingSecretName, secretName, topK, body),
+                writers
+            )
             buildResponse(results)
         } catch {
             case e: DatrisException =>

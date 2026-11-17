@@ -97,4 +97,84 @@ class APIKeyValidatorSpec extends AnyFunSuite {
         val admin = APIKeyValidator.resolveFromSession(ai.datris.model.User("u", "h", ai.datris.model.User.RoleAdmin, null, null, null))
         assert(admin.matchesResourceAction("protect", "reveal") && admin.matchesResourceAction("protect", "admin"))
     }
+
+    // Story: Catalog-scoped user access (plans/stories/catalog-scoped-user-access.md),
+    // Acceptance bullets 2 and 7. Pins ResolvedKey.restrictedSession and the
+    // User(restricted, catalogGrants) fields.
+
+    /** The editor bundle as served before the story; unrestricted users must keep it exactly. */
+    private val EditorBundleToday = Seq(
+        "pipeline:read",
+        "pipeline:create",
+        "pipeline:update",
+        "pipeline:delete",
+        "pipeline:run",
+        "tap:read",
+        "tap:create",
+        "tap:update",
+        "tap:delete",
+        "tap:run",
+        "document:upload",
+        "search:vector",
+        "query:postgres",
+        "query:mongodb",
+        "query:objectstore",
+        "query:snowflake",
+        "query:databricks",
+        "query:sqlserver",
+        "query:natural",
+        "job:read",
+        "job:kill",
+        "metadata:read",
+        "config:read",
+        "mcp:tool"
+    )
+
+    test("resolveFromSession of an unrestricted editor is unchanged") {
+        val rk = APIKeyValidator.resolveFromSession(ai.datris.model.User("ed", "h", ai.datris.model.User.RoleEditor, null, null, null))
+        assert(rk.label == "session:ed")
+        assert(rk.capabilities.map(_.raw) == EditorBundleToday)
+        assert(!rk.isLegacyFullAccess)
+        assert(!rk.restrictedSession)
+        assert(rk.tenantEnvironment.isEmpty && rk.keyId.isEmpty)
+    }
+
+    test("an existing user document without restricted/catalogGrants resolves exactly as before upgrade") {
+        // Shape of a user row written before the story (no new fields).
+        val legacyJson = """{"username":"ed","passwordHash":"h","role":"editor","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}"""
+        val legacy = new com.google.gson.Gson().fromJson(legacyJson, classOf[ai.datris.model.User])
+        assert(!legacy.restricted && legacy.catalogGrants == null)
+        val rk = APIKeyValidator.resolveFromSession(legacy)
+        assert(rk.capabilities.map(_.raw) == EditorBundleToday && !rk.restrictedSession && !rk.isLegacyFullAccess)
+        val viewerJson = legacyJson.replace("\"editor\"", "\"viewer\"")
+        val viewer = new com.google.gson.Gson().fromJson(viewerJson, classOf[ai.datris.model.User])
+        val vrk = APIKeyValidator.resolveFromSession(viewer)
+        assert(!vrk.restrictedSession && vrk.grants("pipeline", "read", Map.empty) && vrk.grants("query", "postgres", Map.empty))
+    }
+
+    test("restricted editor sets restrictedSession and catalog scopes") {
+        val g = new java.util.HashMap[String, String]()
+        g.put("Sales", "edit")
+        val bob = ai.datris.model.User("bob", "h", ai.datris.model.User.RoleEditor, null, null, null, restricted = true, catalogGrants = g)
+        val rk = APIKeyValidator.resolveFromSession(bob)
+        assert(rk.label == "session:bob")
+        assert(rk.restrictedSession)
+        assert(!rk.isLegacyFullAccess)
+        val raw = rk.capabilities.map(_.raw).toSet
+        assert(raw.contains("pipeline:read:catalog=Sales") && raw.contains("tap:update:catalog=Sales"), raw)
+        assert(!raw.contains("pipeline:read") && !raw.contains("tap:read"), s"no unscoped pipeline/tap read: $raw")
+        assert(rk.grants("pipeline", "update", Map("catalog" -> "Sales")))
+        assert(!rk.grants("pipeline", "read", Map("catalog" -> "HR")))
+        assert(!rk.grants("pipeline", "read", Map.empty), "an Uncataloged pipeline is outside every grant")
+        assert(!rk.grants("pipeline", "delete", Map("catalog" -> "Sales")), "edit does not include delete")
+    }
+
+    test("an admin is never restricted, whatever the stored flag says") {
+        val g = new java.util.HashMap[String, String]()
+        g.put("Sales", "view")
+        val admin = ai.datris.model.User("root", "h", ai.datris.model.User.RoleAdmin, null, null, null, restricted = true, catalogGrants = g)
+        val rk = APIKeyValidator.resolveFromSession(admin)
+        assert(rk.isLegacyFullAccess && !rk.restrictedSession)
+        assert(rk.capabilities == Seq(Capability.FullAccess))
+    }
 }

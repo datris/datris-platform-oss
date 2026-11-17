@@ -47,6 +47,45 @@ object PipelinePullTableUtil {
             NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline)
     }
 
+    /** Pipeline rename: the entry moves to `newName` with its `nextPullDate`
+      * and `lastPullTimestampUsed` (re-initializing would reset the pull
+      * position), then the old entry is removed. With no entry under `old`,
+      * `newName` is initialized from `cronExpression` when one is given. */
+    def rename(old: String, newName: String, cronExpression: String = null): Unit = {
+        val table = DatrisEnvironment.current.dataPullTableName
+        renameWith(
+            old,
+            newName,
+            cronExpression,
+            p => NoSQLDbUtil.getItemJSON(table, "pipeline", p, "json"),
+            (p, json) => NoSQLDbUtil.putItemJSON(table, "pipeline", p, "json", json),
+            p => NoSQLDbUtil.deleteItemJSON(table, "pipeline", p),
+            (p, cron) => initialize(p, cron)
+        )
+    }
+
+    /** [[rename]] on injected table operations (get, put and delete by
+      * pipeline; initialize from a cron) so specs run without Mongo. */
+    private[util] def renameWith(
+        old: String,
+        newName: String,
+        cronExpression: String,
+        get: String => Option[String],
+        put: (String, String) => Unit,
+        delete: String => Unit,
+        init: (String, String) => Unit
+    ): Unit = {
+        val gson = new Gson()
+        get(old) match {
+            case Some(json) =>
+                val pull = gson.fromJson(json, classOf[PipelinePull])
+                put(newName, gson.toJson(PipelinePull(newName, pull.nextPullDate, pull.lastPullTimestampUsed)))
+                delete(old)
+            case None =>
+                if (get(newName).isEmpty && cronExpression != null && cronExpression.trim.nonEmpty) init(newName, cronExpression)
+        }
+    }
+
     def getAll: List[PipelinePull] = {
         val jsonItems = NoSQLDbUtil.getAllItemsAsJSON(DatrisEnvironment.current.dataPullTableName)
         val gson = new Gson()

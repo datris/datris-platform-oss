@@ -271,7 +271,14 @@ object ColumnLineageService {
       * `runInference` true ⇒ compute (and cache) the inferred tier when the
       * pipeline has an AI transformation and no cache exists yet. Null when
       * the pipeline (or that version) does not exist. */
-    def forPipeline(pipeline: String, version: Option[Int], runInference: Boolean): Result = {
+    def forPipeline(pipeline: String, version: Option[Int], runInference: Boolean): Result =
+        forPipeline(pipeline, version, runInference, storedInference = true)
+
+    /** [[forPipeline]]; `storedInference` false ignores the inferred tier
+      * cached under this name and version (a restricted session that may not
+      * see records filed under a name reused after a hidden pipeline's
+      * rename: the cache may hold the earlier pipeline's inference). */
+    def forPipeline(pipeline: String, version: Option[Int], runInference: Boolean, storedInference: Boolean): Result = {
         val (c, versionSource) = configFor(pipeline, version).getOrElse(return null)
         val v = if (version.isDefined) version.get else math.max(c.version, 1)
         val src = fieldNames(if (c.source != null) c.source.schemaProperties else null)
@@ -287,7 +294,7 @@ object ColumnLineageService {
         inferredMeta.addProperty("available", canInfer)
         var inferredEdges: List[ColumnEdge] = Nil
         if (canInfer) {
-            val cached = readCache(pipeline, v)
+            val cached = if (storedInference) readCache(pipeline, v) else None
             val rec: Option[InferredColumnLineage] =
                 if (cached.isDefined) cached
                 else if (runInference && DatrisEnvironment.current.aiEnabled) {

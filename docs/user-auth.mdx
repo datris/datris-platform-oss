@@ -60,6 +60,34 @@ The default `admin` row is seeded on **every startup** (idempotent — only when
 
 All roles see the **Configuration** tab in the top nav, but the sub-tabs differ: admins see Secrets, API-Keys, Audit Log, and Agent Policy; editors and viewers see only AI Providers, Data Sources, Code Repository, and Users. Everything outside Configuration (Pipelines, Taps, Search, etc.) is accessible to all roles per the read/write rules above.
 
+### Catalog access
+
+By default a role applies to every tap and pipeline on the install. An admin can narrow an editor or viewer to specific [data catalogs](/data-catalog) instead:
+
+1. **Configuration → Users**, turn on **Scoped access** for the user.
+2. In the grants editor under the row, pick a catalog and a level, click **Add**, then **Save grants**.
+
+| Level | What the user can do with the catalog's taps and pipelines |
+|---|---|
+| **view** | See and read them |
+| **edit** | View, plus create, update and run |
+| **own** | Edit, plus delete, rename and move them between catalogs |
+
+The role still caps the level: a viewer granted **own** can only read.
+
+What a user with scoped access sees:
+
+- **Only their catalogs.** Lists, lookups, search and the Assistant show only the taps and pipelines in granted catalogs. The lineage graph and a pipeline's lineage panel, provenance for a run, data discovery (`find_data`) and the dashboard signals are limited to the same catalogs. Anything else behaves as if it does not exist (`404`), so names outside their grants never show up. If one of their pipelines is fed by a tap in a catalog they cannot see, its run history, status and provenance show that tap as `[hidden]`. A vector collection, class or table is searchable only when every pipeline writing to it is in their catalogs. Results hold only chunks written by pipelines in their catalogs; a chunk from any other pipeline, or with no recorded pipeline, is left out and not counted, so fewer than `topK` results can come back. A pipeline cannot be pointed at a table, collection, object-store prefix or topic that a pipeline outside their catalogs writes: the save is refused with `The destination ... is already in use by another pipeline. Choose another destination.`, whatever `authoritative` says. API keys scoped by `catalog=` or `owner=self` get the same refusal.
+- **No Uncataloged group.** Items with no catalog are visible only to users with install-wide access. Scoped users cannot file work there or move items there.
+- **Create defaults.** With one catalog at edit or own, new taps and pipelines go there automatically. With several, the create wizards and the Assistant ask which one; the API refuses a create without `catalog` with `Choose a catalog: <list>`. With none, creating is refused.
+- **Renames follow.** Renaming a catalog moves every user's grant to the new name, and the rename result lists the affected users. Deleting a catalog removes its grants. Renaming a pipeline needs **own** on its catalog, as deleting it does; the pipeline stays in the same catalog.
+- **No raw queries or table browsing.** Free-form PostgreSQL, MongoDB and natural-language queries, table and collection listings and Unity Catalog browsing cover the whole install, so they are refused for scoped users (`403`). Object-store, warehouse and vector searches tied to a granted pipeline still work, and so do AI schema generation and sample profiling in the create wizards.
+- **Catalog-wide actions stay with admins.** Scoped users cannot create or delete catalogs, or use a catalog name an admin has not granted. They can rename a catalog they own and restore a backup into a catalog they can edit.
+
+Only admins assign grants, and admins are never scoped. Turning **Scoped access** off keeps the stored grants (the row shows *Scoped access off*) but the user gets their role's full access again until it is turned back on. Each change is recorded in the [audit log](/audit-log). Through the API, `PATCH /api/v1/auth/users/{username}` takes `restricted` and a full-replacement `catalogGrants` map, and `/api/v1/auth/me` returns both fields.
+
+API keys are separate: a key's `catalog=` scopes keep working as described in [API keys](/api-keys).
+
 ## Adding users
 
 As an admin: **Configuration → Users → Add user**. Fill in username + role and an initial password (type one, or click the generate button for a strong random one). Send the user their username and password out-of-band, and ask them to change it after their first login. Through the API, a `POST /api/v1/auth/users` body that omits `password` generates a random temporary password and returns it once as `temporaryPassword`.

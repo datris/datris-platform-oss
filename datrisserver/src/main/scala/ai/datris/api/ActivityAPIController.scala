@@ -5,9 +5,12 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.util.ActivitySignals
+import ai.datris.auth.{CapabilityCheck, HiddenTapScrub}
+import ai.datris.model.DatrisEnvironment
+import ai.datris.util.{ActivitySignals, CatalogOps, PipelineAliases, PipelineConfigIO, TapConfigIO}
 import com.google.common.base.Throwables
 import com.google.gson.Gson
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -22,7 +25,7 @@ class ActivityAPIController {
     private val gson = new Gson()
 
     @GetMapping(path = Array("/signals"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def signals(@RequestParam(name = "window", required = false) window: String): ResponseEntity[String] = {
+    def signals(@RequestParam(name = "window", required = false) window: String, request: HttpServletRequest): ResponseEntity[String] = {
         try {
             val windowMs = Option(window).map(_.trim.toLowerCase).getOrElse("24h") match {
                 case "24h" | "" => 24L * 3600000L
@@ -32,7 +35,9 @@ class ActivityAPIController {
                     return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                         .body[String]("{\"error\":\"window must be 24h, 7d or 30d (got " + other.replace("\"", "") + ")\"}")
             }
-            new ResponseEntity[String](gson.toJson(ActivitySignals.compute(windowMs).toJson), HttpStatus.OK)
+            val computed = ActivitySignals.compute(windowMs)
+            val visible = if (CapabilityCheck.isRestrictedSession(request)) ActivityAPIController.restrictedView(request, computed) else computed
+            new ResponseEntity[String](gson.toJson(visible.toJson), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error computing activity signals: " + Throwables.getStackTraceAsString(e))
@@ -42,4 +47,67 @@ class ActivityAPIController {
                 ) + "\"}")
         }
     }
+}
+
+object ActivityAPIController {
+
+    /** A restricted user's session sees only the rows of taps and pipelines
+      * its grants allow it to read. Pipeline rows are judged on the stored
+      * pipeline's catalog (failing pipeline rows carry none); a pipeline no
+      * longer stored is dropped. A visible pipeline's related tap name is
+      * cleared when that tap is hidden, and a pipeline row's reason has any
+      * hidden feeding tap's name replaced. */
+    private[api] def restrictedView(request: HttpServletRequest, s: ActivitySignals.Signals): ActivitySignals.Signals = {
+        val env = DatrisEnvironment.current
+        val configs = PipelineConfigIO.readAll(env.pipelineTableName).filter(_ != null)
+        val pipelineCatalogs: Map[String, String] = ActivityAPIController.recordCatalogs(configs)
+        val taps = TapConfigIO.readAll(env.tapTableName).filter(_ != null)
+        val tapCatalogs: Map[String, String] = taps.map(t => t.name -> Option(t.catalog).getOrElse("")).toMap
+        def readable(resource: String, catalog: Option[String]): Boolean =
+            CapabilityCheck.grants(request, resource, "read", CatalogOps.scopeContext(catalog.orNull, null))
+        val keepTap: (String, Option[String]) => Boolean = (_, c) => readable("tap", c)
+        val keepPipeline: (String, Option[String]) => Boolean =
+            (n, _) => recordReadable(n, configs, c => readable("pipeline", Some(Option(c.catalog).getOrElse(""))))
+        val v = ActivitySignals.visibleTo(s, keepTap, keepPipeline, pipelineCatalogs.get)
+        val visiblePipelines = pipelineCatalogs.keys.filter(n => keepPipeline(n, None)).toSet
+        val tapHidden: String => Boolean = t => !tapCatalogs.get(t).exists(c => readable("tap", Some(c)))
+        v.copy(failing = scrubFailing(v.failing, tapHidden, HiddenTapScrub.hiddenFeedingTaps(request, taps, visiblePipelines)))
+    }
+
+    /** Record name -> catalog for activity rows: every pipeline's name, plus
+      * each previous name that resolves to it ([[PipelineAliases]]), so a
+      * renamed pipeline's earlier rows are judged on its catalog. */
+    def recordCatalogs(configs: Seq[ai.datris.model.PipelineConfig]): Map[String, String] = {
+        val live = configs.filter(_ != null)
+        live.map(p => p.name -> Option(p.catalog).getOrElse("")).toMap ++
+            PipelineAliases.aliasOwners(live).map { case (n, c) => n -> Option(c.catalog).getOrElse("") }
+    }
+
+    /** Whether a restricted session sees activity rows filed under `name`:
+      * [[PipelineAliases.recordShown]] with `catalogReadable` deciding which
+      * pipelines it can see, so a name reused after a rename needs every
+      * pipeline it may belong to readable. A name no pipeline carries or
+      * lists is hidden. */
+    def recordReadable(name: String, configs: Seq[ai.datris.model.PipelineConfig], catalogReadable: ai.datris.model.PipelineConfig => Boolean): Boolean =
+        PipelineAliases.recordShown(name, configs.filter(_ != null), catalogReadable)
+
+    /** Failing rows a restricted session sees, with hidden tap names gone:
+      * `relatedTapName` is cleared when `tapHidden` (a tap no longer stored
+      * counts as hidden), and a pipeline row's `reason` (the run's message)
+      * has `hiddenFeeding` and any hidden tap named by a `tap-<name>.csv|json`
+      * token replaced in tap contexts. Tap rows are visible taps (already
+      * filtered): their reason is untouched. */
+    def scrubFailing(
+        failing: List[ActivitySignals.FailingItem],
+        tapHidden: String => Boolean,
+        hiddenFeeding: Set[String]
+    ): List[ActivitySignals.FailingItem] =
+        failing.map { f =>
+            val related = if (f.relatedTapName.exists(tapHidden)) f.copy(relatedTapName = None) else f
+            if (f.kind != "pipeline") related
+            else {
+                val hidden = hiddenFeeding ++ HiddenTapScrub.feedFileNames(Option(f.reason).toSeq).filter(tapHidden)
+                related.copy(reason = HiddenTapScrub.scrubText(related.reason, hidden))
+            }
+        }
 }

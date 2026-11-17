@@ -7,6 +7,7 @@ import { SecretsService } from '../secrets.service';
 import { SearchService } from '../search.service';
 import { AuthService } from '../auth.service';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
+import { editableCatalogsOf, isCatalogRefusal, isRestrictedUser } from '../shared/catalog-access';
 import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, tapCatalogName } from '../shared/sanitize';
 import { httpErrorText } from '../shared/http-error';
 
@@ -33,6 +34,11 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   showNewCatalog = false;
   newCatalogName = '';
   newCatalogError = '';
+  /** Catalog-scoped access: true for a restricted user (from /me). The
+   *  catalog field then offers only the user's edit/own catalogs. */
+  restricted = false;
+  /** A server refusal about the catalog (e.g. "Choose a catalog: ..."), shown under the field. */
+  catalogError = '';
   availableSecrets: string[] = [];
   existingTapNames: string[] = [];
   showCreateSecret = false;
@@ -227,11 +233,18 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     const name = this.route.snapshot.paramMap.get('name');
+    // Catalog-scoped access: a restricted user files work only in an
+    // edit/own catalog. Read from /me via AuthService, never from lists.
+    this.restricted = isRestrictedUser(this.auth);
+    if (this.restricted) {
+      this.availableCatalogs = editableCatalogsOf(this.auth);
+      if (this.availableCatalogs.length === 1) this.catalog = this.availableCatalogs[0];
+    }
     // Pre-fill the catalog field when the user entered Create from a specific
     // catalog (e.g. clicked Create Tap inside a catalog card). Uncataloged
     // means "no catalog assignment" — leave the field empty.
     const catalogParam = this.route.snapshot.queryParamMap.get('catalog');
-    if (catalogParam && catalogParam !== 'Uncataloged') {
+    if (catalogParam && catalogParam !== 'Uncataloged' && (!this.restricted || this.availableCatalogs.includes(catalogParam))) {
       this.catalog = catalogParam;
     }
     if (name) {
@@ -254,6 +267,11 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.scriptMissing = tap.scriptMissing === true;
           this.secretName = tap.secretName || '';
           this.catalog = tap.catalog || '';
+          // Keep the select and the model in step when a restricted user opens
+          // a tap whose catalog is not one of their filing targets.
+          if (this.restricted && this.catalog && !this.availableCatalogs.includes(this.catalog)) {
+            this.availableCatalogs = [...this.availableCatalogs, this.catalog].sort();
+          }
           this.tagsInput = (tap.tags || []).join(', ');
           this.sourceInput = tap.source || '';
           this.targetPipeline = tap.targetPipeline || '';
@@ -296,6 +314,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     // catalog assignment via ngModel mismatch on save.
     const collectedCatalogs = new Set<string>();
     const finalizeCatalogs = () => {
+      if (this.restricted) return; // the editable list from /me stands
       this.availableCatalogs = Array.from(collectedCatalogs).sort();
     };
     this.tapService.getTaps().subscribe({
@@ -392,6 +411,11 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.error = '';
     if (this.step === 1) {
       if (!this.tapName.trim()) { this.error = 'Tap name is required'; return; }
+      if (this.restricted && !this.catalog) {
+        this.catalogError = this.availableCatalogs.length ? 'Choose a catalog' : 'No catalog you can edit';
+        this.error = this.catalogError;
+        return;
+      }
       if (this.isHttpTap) {
         if (!this.endpointUrl.trim()) { this.error = 'Endpoint URL is required'; return; }
         if (!/^https?:\/\//i.test(this.endpointUrl.trim())) { this.error = 'Endpoint URL must start with http:// or https://'; return; }
@@ -903,6 +927,13 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   }
 
   onCatalogChange(value: string): void {
+    this.catalogError = '';
+    // Restricted users cannot create catalogs; there is no inline input.
+    if (this.restricted && value === '__new__') {
+      this.showNewCatalog = false;
+      this.catalog = '';
+      return;
+    }
     if (value === '__new__') {
       this.showNewCatalog = true;
       this.newCatalogName = '';
@@ -1265,7 +1296,9 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             this.saveScheduledViaServerTest(config, onSaved, errText);
             return;
           }
-          this.error = 'Save failed: ' + errText(err);
+          const text = errText(err);
+          if (typeof text === 'string' && isCatalogRefusal(text)) this.catalogError = text;
+          this.error = 'Save failed: ' + text;
           this.saving = false;
         }
       });
@@ -1698,6 +1731,9 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   }
 
   private loadExistingDestNames(): void {
+    // Table/collection listings are refused for restricted users; the
+    // overwrite warning simply stays off for them.
+    if (this.restricted) { this.existingDestNames = []; return; }
     const dataType = (this.testDataType || 'json').toLowerCase();
     if (dataType === 'csv') {
       this.searchService.getPostgresTables('datris', 'public').subscribe({

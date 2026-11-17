@@ -151,7 +151,11 @@ case class ResolvedKey(
       * the old name. The audit log stores this alongside the label so those
       * two are distinguishable. None for keys seeded before ids existed,
       * for session-derived identities, and in anonymous mode. */
-    keyId: Option[String] = None
+    keyId: Option[String] = None,
+    /** True for a restricted user's session (directly or via on-behalf-of):
+      * resources outside the user's catalog grants are hidden (404), not
+      * forbidden (403), so their names never leak. */
+    restrictedSession: Boolean = false
 ) {
 
     /** Does this key grant (resource, action) given a runtime context?

@@ -30,12 +30,17 @@ class FileUploadAPIController {
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
         @RequestPart("file") multipartFile: MultipartFile,
         @RequestParam("pipeline") pipeline: String,
-        @RequestParam(required = false) publishertoken: String
+        @RequestParam(required = false) publishertoken: String,
+        request: jakarta.servlet.http.HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /pipeline/upload called for pipeline: " + pipeline + ", filename: " + multipartFile
                 .getOriginalFilename + ", publishertoken: " + publishertoken)
             APIKeyValidator.validate(apiKey)
+            // A restricted user uploads only into a pipeline it may run; a
+            // hidden or missing one answers the pipeline 404 (and no error
+            // status row is written for it).
+            PipelineAPIController.restrictedRefusal(request, pipeline, "run").foreach(r => return r)
 
             // Validate pipeline is registered before processing
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)

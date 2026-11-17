@@ -5,6 +5,8 @@ import { PipelineService } from '../pipeline.service';
 import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
 import { TapService } from '../tap.service';
+import { AuthService } from '../auth.service';
+import { editableCatalogsOf, isCatalogRefusal, isRestrictedUser } from '../shared/catalog-access';
 import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, tapCatalogName, sanitizeIdentifier } from '../shared/sanitize';
 import { httpErrorText } from '../shared/http-error';
 
@@ -89,6 +91,11 @@ export class PipelineCreateComponent implements OnInit {
   showNewCatalog = false;
   newCatalogName = '';
   newCatalogError = '';
+  /** Catalog-scoped access: true for a restricted user (from /me). The
+   *  catalog field then offers only the user's edit/own catalogs. */
+  restricted = false;
+  /** A server refusal about the catalog (e.g. "Choose a catalog: ..."), shown under the field. */
+  catalogError = '';
   pipelineSource = 'file';  // 'file' | 'tap' | 'manual'
   sampleFile: File | null = null;
   sourceType = 'csv';
@@ -300,9 +307,16 @@ export class PipelineCreateComponent implements OnInit {
     });
   }
 
-  constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private tapService: TapService, private route: ActivatedRoute, private router: Router, private http: HttpClient) { }
+  constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private tapService: TapService, private route: ActivatedRoute, private router: Router, private http: HttpClient, public auth: AuthService) { }
 
   ngOnInit(): void {
+    // Catalog-scoped access: a restricted user files work only in an
+    // edit/own catalog. Read from /me via AuthService, never from lists.
+    this.restricted = isRestrictedUser(this.auth);
+    if (this.restricted) {
+      this.availableCatalogs = editableCatalogsOf(this.auth);
+      if (this.availableCatalogs.length === 1) this.catalog = this.availableCatalogs[0];
+    }
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
         this.isTrial = data.multiTenant === 'true';
@@ -333,6 +347,7 @@ export class PipelineCreateComponent implements OnInit {
     // this.catalog, and a subsequent save can write null to the server.
     const collectedCatalogs = new Set<string>();
     const finalizeCatalogs = () => {
+      if (this.restricted) return; // the editable list from /me stands
       this.availableCatalogs = Array.from(collectedCatalogs).sort();
     };
     this.tapService.getTaps().subscribe({
@@ -362,7 +377,7 @@ export class PipelineCreateComponent implements OnInit {
     // catalog (e.g. clicked Create Pipeline inside a catalog card). Uncataloged
     // means "no catalog assignment" — leave the field empty.
     const catalogParam = this.route.snapshot.queryParamMap.get('catalog');
-    if (catalogParam && catalogParam !== 'Uncataloged') {
+    if (catalogParam && catalogParam !== 'Uncataloged' && (!this.restricted || this.availableCatalogs.includes(catalogParam))) {
       this.catalog = catalogParam;
     }
 
@@ -387,6 +402,11 @@ export class PipelineCreateComponent implements OnInit {
   loadFromConfig(config: any): void {
     this.pipelineName = config.name || '';
     this.catalog = config.catalog || '';
+    // Keep the select and the model in step when a restricted user opens an
+    // item whose catalog is not one of their filing targets.
+    if (this.restricted && this.catalog && !this.availableCatalogs.includes(this.catalog)) {
+      this.availableCatalogs = [...this.availableCatalogs, this.catalog].sort();
+    }
     this.tagsInput = (config.tags || []).join(', ');
     this.provenanceStamp = !!config.provenance?.stamp;
     this.derivedCopy = config.authoritative === false;
@@ -761,6 +781,13 @@ export class PipelineCreateComponent implements OnInit {
   }
 
   onCatalogChange(value: string): void {
+    this.catalogError = '';
+    // Restricted users cannot create catalogs; there is no inline input.
+    if (this.restricted && value === '__new__') {
+      this.showNewCatalog = false;
+      this.catalog = '';
+      return;
+    }
     if (value === '__new__') {
       this.showNewCatalog = true;
       this.newCatalogName = '';
@@ -1411,6 +1438,11 @@ export class PipelineCreateComponent implements OnInit {
       this.error = 'Pipeline name is required';
       return;
     }
+    if (this.step === 1 && this.restricted && !this.catalog) {
+      this.catalogError = this.availableCatalogs.length ? 'Choose a catalog' : 'No catalog you can edit';
+      this.error = this.catalogError;
+      return;
+    }
     if (this.step === 1 && this.generatingSchema) {
       this.error = 'Please wait for the file analysis to complete';
       return;
@@ -1893,8 +1925,16 @@ export class PipelineCreateComponent implements OnInit {
   }
 
   create(): void {
-    this.creating = true;
     this.error = '';
+    this.catalogError = '';
+    if (this.restricted && !this.catalog) {
+      this.catalogError = this.availableCatalogs.length
+        ? 'Choose a catalog: ' + this.availableCatalogs.join(', ')
+        : 'No catalog you can edit';
+      this.error = this.catalogError;
+      return;
+    }
+    this.creating = true;
 
     const config: any = this.buildConfig();
 
@@ -1938,6 +1978,8 @@ export class PipelineCreateComponent implements OnInit {
         } else {
           detail = err.message || 'Unknown error';
         }
+        // A catalog refusal (restricted users) belongs under the catalog field.
+        if (isCatalogRefusal(bodyText)) this.catalogError = bodyText;
         this.error = 'Failed to create dataset: ' + detail;
         this.creating = false;
       }

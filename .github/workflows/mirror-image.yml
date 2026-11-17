@@ -11,14 +11,14 @@ on:
         description: 'Source image reference to copy (tag@digest)'
         type: string
         required: true
-        default: 'cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd'
+        default: 'cgr.dev/chainguard/minio:latest@sha256:59953701f8f8d0de81aab456f0b0b6c0a1804119415559bf7ede79d944108879'
       repository:
         description: 'Target repository under the Datris org'
         type: string
         required: true
         default: 'minio'
       tag:
-        description: 'e.g. RELEASE.2026-11-10'
+        description: 'e.g. RELEASE.2026-11-16'
         type: string
         required: true
       also_latest:

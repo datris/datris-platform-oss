@@ -14,8 +14,9 @@ case class AuditRoute(category: String, action: String, resourceType: String)
 /** Maps `method + path` to an audit category/action.
   *
   * Reuses [[CapabilityRoutes]] as the source of truth — an audit category IS
-  * the capability resource, an audit action IS the capability action — so
-  * there is one route table to keep complete, not two. The small supplemental
+  * the capability resource, an audit action IS the capability action (one
+  * exception, `actionOverrides`: a pipeline rename) — so there is one route
+  * table to keep complete, not two. The small supplemental
   * table below covers the routes the capability check deliberately skips
   * (login, users, keys) because they are gated by role rather than by key.
   *
@@ -41,8 +42,10 @@ object AuditClassifier {
         Supplemental("POST", "/api/v1/auth/logout", AuditRoute("auth", "logout", "user")),
         Supplemental("POST", "/api/v1/auth/change-password", AuditRoute("auth", "change-password", "user")),
         Supplemental("POST", "/api/v1/auth/users", AuditRoute("user", "create", "user")),
-        // The controller records role changes (update, metadata.role) and password
-        // resets (reset-password) explicitly; this row covers a PATCH that does neither.
+        // The controller records role changes (update, metadata.role), password
+        // resets (reset-password), restricted flips (set-restricted) and catalog
+        // grant changes (grant-catalog / revoke-catalog, metadata {catalog, level,
+        // from}) explicitly; this row covers a PATCH that does none of these.
         Supplemental("PATCH", "/api/v1/auth/users/*", AuditRoute("user", "update", "user")),
         Supplemental("DELETE", "/api/v1/auth/users/*", AuditRoute("user", "delete", "user")),
         Supplemental("POST", "/api/v1/keys", AuditRoute("key", "issue", "key")),
@@ -68,6 +71,13 @@ object AuditClassifier {
         ("POST", "/api/v1/restendpoint/callback", "internal callback from the REST-endpoint runner, not a caller action")
     )
 
+    /** Capability-mapped routes whose audit action is not the capability
+      * action: a pipeline rename is checked as `pipeline:delete` (it needs
+      * own) but deletes nothing, so its row reads `pipeline / rename`. */
+    private val actionOverrides: Seq[(String, String, String)] = Seq(
+        ("POST", "/api/v1/pipelines/*/rename", "rename")
+    )
+
     private def isNeverAudited(method: String, path: String): Boolean =
         neverAudited.exists { case (m, pattern, _) => m == method && matcher.`match`(pattern, path) }
 
@@ -85,7 +95,10 @@ object AuditClassifier {
         CapabilityRoutes.lookup(m, path) match {
             case RouteCheck.Require(resource, action) =>
                 if (isRead(resource, action) && !logReads && resource != "secret") None
-                else Some(AuditRoute(resource, action, resource))
+                else {
+                    val audited = actionOverrides.collectFirst { case (om, p, a) if om == m && matcher.`match`(p, path) => a }.getOrElse(action)
+                    Some(AuditRoute(resource, audited, resource))
+                }
 
             case RouteCheck.Skip =>
                 supplemental

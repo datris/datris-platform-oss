@@ -23,7 +23,7 @@
     <div class="form-row">
       <label class="form-label">Query Type</label>
       <select class="form-input" [(ngModel)]="queryType" (ngModelChange)="onQueryTypeChange()">
-        <optgroup label="Database Query">
+        <optgroup label="Database Query" *ngIf="!restricted">
           <option value="postgres" *ngIf="healthService.isAvailable('postgres')">PostgreSQL</option>
           <option value="mongodb" *ngIf="healthService.isAvailable('mongodb')">MongoDB</option>
         </optgroup>
@@ -43,6 +43,7 @@
           <option value="pgvector" *ngIf="healthService.isAvailable('pgvector')">pgvector</option>
         </optgroup>
       </select>
+      <p class="form-hint restricted-query-note" *ngIf="restricted">Raw queries are available to users with install-wide access.</p>
     </div>
 
     <!-- PostgreSQL fields -->
@@ -178,13 +179,21 @@
           <label class="form-label">Class Name</label>
           <input class="form-input" [(ngModel)]="searchClassName" placeholder="Documents">
         </div>
-        <div class="form-field" *ngIf="queryType === 'pgvector'">
+        <div class="form-field" *ngIf="queryType === 'pgvector' && restricted">
+          <label class="form-label">Schema</label>
+          <input class="form-input" [(ngModel)]="searchSchema" placeholder="public">
+        </div>
+        <div class="form-field" *ngIf="queryType === 'pgvector' && restricted">
+          <label class="form-label">Collection</label>
+          <input class="form-input" [(ngModel)]="searchTable" placeholder="collection name">
+        </div>
+        <div class="form-field" *ngIf="queryType === 'pgvector' && !restricted">
           <label class="form-label">Schema</label>
           <select class="form-input" [(ngModel)]="searchSchema" (ngModelChange)="onSearchSchemaChange()">
             <option *ngFor="let s of pgSchemas" [value]="s">{{ s }}</option>
           </select>
         </div>
-        <div class="form-field" *ngIf="queryType === 'pgvector'">
+        <div class="form-field" *ngIf="queryType === 'pgvector' && !restricted">
           <label class="form-label">Collection</label>
           <select class="form-input" [(ngModel)]="searchTable">
             <option value="">Select collection...</option>

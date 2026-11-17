@@ -3,10 +3,16 @@ import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, Observable, of, tap } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 
+export type CatalogGrantLevel = 'view' | 'edit' | 'own';
+
 export interface CurrentUser {
   username: string;
   role: 'admin' | 'editor' | 'viewer';
   mustSetPassword: boolean;
+  /** Catalog-scoped access: true when this user only sees its granted catalogs. */
+  restricted?: boolean;
+  /** catalog -> level. Only meaningful while `restricted` is true. */
+  catalogGrants?: Record<string, CatalogGrantLevel>;
 }
 
 export interface UserListItem {
@@ -15,6 +21,8 @@ export interface UserListItem {
   createdAt: string;
   lastLoginAt: string | null;
   mustSetPassword: boolean;
+  restricted?: boolean;
+  catalogGrants?: Record<string, CatalogGrantLevel>;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -85,7 +93,12 @@ export class AuthService {
       { withCredentials: true });
   }
 
-  patchUser(username: string, body: { role?: string; resetPassword?: boolean }): Observable<void> {
+  patchUser(username: string, body: {
+    role?: string;
+    resetPassword?: boolean;
+    restricted?: boolean;
+    catalogGrants?: Record<string, CatalogGrantLevel>;
+  }): Observable<void> {
     return this.http.patch<void>('/api/v1/auth/users/' + encodeURIComponent(username),
       body, { withCredentials: true });
   }
@@ -105,6 +118,31 @@ export class AuthService {
     if (this.userAuthEnabled) return role === 'admin' || role === 'editor';
     // Legacy x-api-key mode has no role concept — any authenticated user can write.
     return true;
+  }
+
+  /** True when the signed-in user is narrowed to its catalog grants (from
+   *  /me). Admins are never restricted. Drives the restricted UI branches;
+   *  never infer this from list contents. */
+  isRestricted(): boolean {
+    const u = this.current();
+    return !!u && !!u.restricted && u.role !== 'admin';
+  }
+
+  /** The signed-in user's catalog grants (empty when unrestricted). */
+  catalogGrants(): Record<string, CatalogGrantLevel> {
+    if (!this.isRestricted()) return {};
+    return this.current()?.catalogGrants || {};
+  }
+
+  /** Grant level on a catalog for a restricted user; null when not granted. */
+  catalogLevel(catalog: string): CatalogGrantLevel | null {
+    return this.catalogGrants()[catalog] || null;
+  }
+
+  /** Catalogs a restricted user can file new work in (edit or own), sorted. */
+  editableCatalogs(): string[] {
+    const g = this.catalogGrants();
+    return Object.keys(g).filter(k => g[k] === 'edit' || g[k] === 'own').sort((a, b) => a.localeCompare(b));
   }
 
   isViewer(): boolean {

@@ -1135,6 +1135,10 @@ Live Read uses the same source shape as the structured destinations (a sample is
 
 All vector DB destinations require chunking and embedding config. Call `check_service_health` to see which vector DBs are available.
 
+One pipeline per container: a vector destination's collection, class or table must not already be used by another pipeline; the save is refused. Deleting a pipeline keeps a collection another pipeline also writes to and reports it in `warnings`. Likewise, on delete a table or collection another pipeline also writes to is kept and reported in `warnings` (a pgvector table and a Postgres destination table with the same schema and name count as one table).
+
+`metadata` keys named `source_pipeline` or `source_dataset` are reserved and ignored; do not use them (on pgvector a `source_pipeline` key fails the load).
+
 **qdrant:**
 ```json
 "destination": {
@@ -1745,9 +1749,67 @@ def _depends_on_list(value):
     return [str(d).strip() for d in value if str(d).strip()]
 
 
+# Catalog-scoped user access: a user an admin has limited to specific data
+# catalogs sees only those catalogs' taps and pipelines; everything else
+# answers 404 as if it did not exist. These notes go on every tool whose
+# results or lookups are narrowed that way (see _CATALOG_ACCESS_TOOLS).
+_CATALOG_ACCESS_NOTE = (
+    " Results reflect the caller's catalog access: a 404 for a tap, pipeline or catalog name you were given "
+    "means it is not available to this user, so say it is not available and do not retry other spellings or guess a similar name."
+)
+
+_CATALOG_ACCESS_CREATE_NOTE = (
+    " Results reflect the caller's catalog access: a 404 for a name you were given means it is not available to this user. "
+    "For a user limited to specific catalogs, a create without `catalog` is filled in with their only editable catalog, "
+    "or refused with a message listing the allowed catalogs; relay that message and ask which one to use."
+)
+
+_CATALOG_ACCESS_RAW_QUERY_NOTE = (
+    " A user limited to specific catalogs cannot run free-form queries: the server refuses this tool for them, so relay "
+    "the refusal and use a tool that takes a `pipeline` name instead. Otherwise results reflect the caller's catalog access, "
+    "and a 404 for a name you were given means it is not available to this user."
+)
+
+_CATALOG_ACCESS_LISTING_NOTE = (
+    " A user limited to specific catalogs cannot list tables or collections: the server refuses this tool for them; "
+    "use `find_data` or `get_pipeline` instead."
+)
+
+_CATALOG_ACCESS_TOOLS = frozenset({
+    "list_pipelines", "list_taps", "find_data", "get_pipeline", "get_tap",
+    "set_catalog", "rename_catalog", "get_lineage", "get_provenance",
+})
+# Raw table/collection and warehouse listings: they cannot be narrowed to a
+# catalog, so the server refuses them for catalog-limited users.
+_CATALOG_ACCESS_LISTING_TOOLS = frozenset({
+    "list_postgres_databases", "list_postgres_schemas", "list_postgres_tables", "list_postgres_columns",
+    "list_mongodb_databases", "list_mongodb_collections",
+    "list_qdrant_collections", "list_weaviate_classes", "list_milvus_collections",
+    "list_chroma_collections", "list_pgvector_collections", "browse_unity_catalog",
+})
+_CATALOG_ACCESS_CREATE_TOOLS = frozenset({"create_pipeline", "create_tap"})
+_CATALOG_ACCESS_RAW_QUERY_TOOLS = frozenset({"query_postgres", "query_mongodb", "query_natural"})
+
+
+def _catalog_access_note(name):
+    if name in _CATALOG_ACCESS_CREATE_TOOLS:
+        return _CATALOG_ACCESS_CREATE_NOTE
+    if name in _CATALOG_ACCESS_RAW_QUERY_TOOLS:
+        return _CATALOG_ACCESS_RAW_QUERY_NOTE
+    if name in _CATALOG_ACCESS_LISTING_TOOLS:
+        return _CATALOG_ACCESS_LISTING_NOTE
+    if name in _CATALOG_ACCESS_TOOLS or name.startswith("search_") or name.startswith("query_"):
+        return _CATALOG_ACCESS_NOTE
+    return ""
+
+
 def _all_tools():
     tools = _base_tools()
     for t in tools:
+        note = _catalog_access_note(t.name)
+        marker = "limited to specific catalogs" if note == _CATALOG_ACCESS_LISTING_NOTE else "catalog access"
+        if note and marker not in (t.description or ""):
+            t.description = (t.description or "") + note
         if t.name in _MUTATING_TOOLS:
             props = t.input_schema.setdefault("properties", {})
             if "reason" not in props:
@@ -1807,7 +1869,7 @@ def _base_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline. TAP-FED PIPELINES: when a tap will feed the pipeline, create and test the tap first, call propose_pipeline_schema, confirm the column types with the user, and pass the confirmed list as schema_fields — no sample content is needed and the destination gets typed columns on the first run (not mongodb: it stores documents as-is, so pass a few preview rows as JSON via content_text with a .json filename instead). FOUR destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks, sqlserver) — send schema_fields (tap-fed; not mongodb) or a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token) and database (the Unity Catalog name), plus warehouse (the SQL warehouse ID) unless the Databricks secret has a `warehouse` field — in that case omit warehouse and do NOT ask the human for it (list_platform_secrets / get_platform_secret_fields show the field names); sqlserver additionally REQUIRES credentialsSecret (a Platform secret with host plus the fields its authMethod needs) and database, schema defaults to dbo, and it takes a CSV, JSON or XML sample. OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. LIVE READ (a Live Read pipeline, destination `scratch`) — same sample-required shape as structured, nothing is landed; the run's rows come back on the status rollup (`resultPreview`) and via get_pipeline_result; results expire — use it when the user wants an answer now, a validation result, or a transformed view with no reason to keep the rows (see the KEEP-OR-READ-LIVE RULE). SAMPLE-SIZE RULE: content_text is the fallback for data without a tap (a file in hand, pasted rows); the sample exists ONLY for schema detection and every column lands as string — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you. FIELD PROTECTION: when the user asks to protect sensitive fields, pass `protect` (field name → {method: hmac|mask|redact|drop|encrypt}) so those fields are protected before any AI stage or destination sees them; confirm the fields with the user, never guess. CODEGEN SCRIPTS: an AI rule or AI transformation is turned into a Python script when the pipeline is saved and every run executes that stored script; the result's `codegenScripts` says per kind whether it is ready or pending (pending: the first run generates it) — relay a pending reason to the user. With a code repository configured the script is committed there; an entry's `warning` means the file was edited in the repository and was not overwritten — relay it as written.",
+            description="Create a pipeline. TAP-FED PIPELINES: when a tap will feed the pipeline, create and test the tap first, call propose_pipeline_schema, confirm the column types with the user, and pass the confirmed list as schema_fields — no sample content is needed and the destination gets typed columns on the first run (not mongodb: it stores documents as-is, so pass a few preview rows as JSON via content_text with a .json filename instead). FOUR destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks, sqlserver) — send schema_fields (tap-fed; not mongodb) or a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token) and database (the Unity Catalog name), plus warehouse (the SQL warehouse ID) unless the Databricks secret has a `warehouse` field — in that case omit warehouse and do NOT ask the human for it (list_platform_secrets / get_platform_secret_fields show the field names); sqlserver additionally REQUIRES credentialsSecret (a Platform secret with host plus the fields its authMethod needs) and database, schema defaults to dbo, and it takes a CSV, JSON or XML sample. OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all; a vector destination's collection, class or table must not already be used by another pipeline; the save is refused. LIVE READ (a Live Read pipeline, destination `scratch`) — same sample-required shape as structured, nothing is landed; the run's rows come back on the status rollup (`resultPreview`) and via get_pipeline_result; results expire — use it when the user wants an answer now, a validation result, or a transformed view with no reason to keep the rows (see the KEEP-OR-READ-LIVE RULE). SAMPLE-SIZE RULE: content_text is the fallback for data without a tap (a file in hand, pasted rows); the sample exists ONLY for schema detection and every column lands as string — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you. FIELD PROTECTION: when the user asks to protect sensitive fields, pass `protect` (field name → {method: hmac|mask|redact|drop|encrypt}) so those fields are protected before any AI stage or destination sees them; confirm the fields with the user, never guess. CODEGEN SCRIPTS: an AI rule or AI transformation is turned into a Python script when the pipeline is saved and every run executes that stored script; the result's `codegenScripts` says per kind whether it is ready or pending (pending: the first run generates it) — relay a pending reason to the user. With a code repository configured the script is committed there; an entry's `warning` means the file was edited in the repository and was not overwritten — relay it as written.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1962,7 +2024,7 @@ def _base_tools():
                     },
                     "authoritative": {
                         "type": "boolean",
-                        "description": "OMIT BY DEFAULT. Pass false only when the user says this pipeline lands a derived copy (a rollup, a replica, an index built from another dataset) rather than the system of record. A pipeline's single destination is the authoritative copy by default; lineage and find_data mark derived copies so agents cite the right one."
+                        "description": "OMIT BY DEFAULT. Pass false only when the user says this pipeline lands a derived copy (a rollup, a replica, an index built from another dataset) rather than the system of record. A pipeline's single destination is the authoritative copy by default; lineage and find_data mark derived copies so agents cite the right one. Setting it does not allow writing to a destination used by a pipeline you cannot see; that save is refused."
                     },
                     "unity_catalog": {
                         "type": "boolean",
@@ -2191,6 +2253,9 @@ def _base_tools():
                 "orphaning the data — that creates ghost state. "
                 "If you want to keep the config but wipe the destination data (\"reset\"), "
                 "pass keep_config=true; the config survives, the data does not. "
+                "A vector collection another pipeline also writes to is kept and reported in `warnings`; "
+                "a keep_config=true reset then leaves that shared collection and the document-tap ledgers as they are. "
+                "Likewise, a table or collection another pipeline also writes to is kept and reported in `warnings`. "
                 "ALWAYS confirm with the user before calling this tool."
             ),
             inputSchema={

@@ -271,6 +271,16 @@ object APIKeyValidator {
       * Phase 2 "Option 3" mapping — admin gets full access, editor gets
       * write capabilities on data resources, viewer gets read-only. */
     def resolveFromSession(user: User): ResolvedKey = {
+        // A restricted (non-admin) user gets the role bundle narrowed to its
+        // catalog grants; everyone else keeps the role bundle unchanged.
+        if (user.isRestricted)
+            return ResolvedKey(
+                tenantEnvironment = None,
+                label = "session:" + user.username,
+                capabilities = ai.datris.auth.CatalogGrants.capabilitiesFor(user.role, user.catalogGrants),
+                isLegacyFullAccess = false,
+                restrictedSession = true
+            )
         val capabilities = roleToCapabilities(user.role)
         ResolvedKey(
             tenantEnvironment = None,
@@ -289,7 +299,7 @@ object APIKeyValidator {
       * returns the original value of an `encrypt` field (PHI/PII) and admin
       * rotates its key, so both are granted explicitly on a key or held by
       * admins through FullAccess. Do not add them here. */
-    private def roleToCapabilities(role: String): Seq[Capability] = role match {
+    private[datris] def roleToCapabilities(role: String): Seq[Capability] = role match {
         case User.RoleAdmin =>
             Seq(Capability.FullAccess)
         case User.RoleEditor =>

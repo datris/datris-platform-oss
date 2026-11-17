@@ -30,6 +30,18 @@ class ChromaLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext) 
 
     private val chromaConfig = config.destination.chroma
 
+    /** Destination `metadata` written onto each chunk; the writer fields are
+      * reserved (see [[VectorChunkWriter]]). Computed, and warned about, once per load. */
+    private lazy val chunkMetadata: Seq[(String, String)] = {
+        val ignored = VectorChunkWriter.ignoredKeys(chromaConfig.metadata)
+        if (ignored.nonEmpty)
+            logger.warn(
+                "Chroma destination metadata keys " + ignored.mkString(", ") + " for pipeline " + config.name +
+                    " are reserved and ignored; source_pipeline is always the pipeline name"
+            )
+        VectorChunkWriter.staticMetadata(chromaConfig.metadata)
+    }
+
     override type Client = ChromaSession
 
     override protected def destinationType: String = "chroma"
@@ -84,11 +96,7 @@ class ChromaLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext) 
             meta.addProperty("chunk_index", row.chunkIndex)
             meta.addProperty("source_pipeline", config.name)
             meta.addProperty("filename", filename)
-            if (chromaConfig.metadata != null) {
-                chromaConfig.metadata.asScala.foreach { case (key, v) =>
-                    if (v != null) meta.addProperty(key, v)
-                }
-            }
+            chunkMetadata.foreach { case (key, v) => meta.addProperty(key, v) }
             metadatasArray.add(meta)
         }
 

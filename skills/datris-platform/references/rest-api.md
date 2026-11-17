@@ -34,6 +34,7 @@ The OpenAPI document is at `docs/openapi.yaml` in the Datris repository and at h
 | RAG answer | `POST /api/v1/ai/answer` | Context plus optional sources. |
 | Find data by meaning | `GET /api/v1/catalog/find` | Same ranking as `find_data`. |
 | Provenance and lineage | `GET /api/v1/provenance`, `/lineage`, `/lineage/{type}/{name}`, `/lineage/columns/{pipeline}` | |
+| Rename a pipeline | `POST /api/v1/pipelines/{name}/rename` | Body `{"newName"}`. Keeps data, versions and scripts; feeding taps follow. Needs the access a delete needs. Never create-then-delete to rename. |
 | Run a tap from code | `POST /api/v1/tap/run` | Prefer a cron on the tap over calling this from a scheduler. |
 | Health | `GET /api/v1/health/services`, `GET /api/v1/version` | |
 

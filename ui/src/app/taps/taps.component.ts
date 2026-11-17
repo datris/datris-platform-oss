@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
+import { canEditCatalog, canOwnCatalog, editableCatalogsOf, isRestrictedUser } from '../shared/catalog-access';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
 import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { httpErrorText } from '../shared/http-error';
@@ -58,7 +59,7 @@ export class TapsComponent implements OnInit, OnDestroy {
   toggleEnableMenu(tap: any, event: Event): void {
     event.stopPropagation();
     if (event.type === 'keydown') event.preventDefault();
-    if (!this.auth.canWrite() || this.enableBusy) return;
+    if (!this.canEditItem(tap) || this.enableBusy) return;
     if (this.enableMenuOpen === tap.name) {
       this.closeEnableMenu();
       return;
@@ -392,7 +393,8 @@ export class TapsComponent implements OnInit, OnDestroy {
     this.catalogGroups = named.map(([name, taps]) => ({
       name, taps, expanded: prevExpanded.has(name)
     }));
-    if (uncataloged && uncataloged.length > 0) {
+    // Restricted users never see an Uncataloged group.
+    if (uncataloged && uncataloged.length > 0 && !this.isRestricted) {
       this.catalogGroups.push({
         name: 'Uncataloged', taps: uncataloged,
         expanded: prevExpanded.has('Uncataloged')
@@ -710,7 +712,27 @@ export class TapsComponent implements OnInit, OnDestroy {
    *  Excludes the catalog the row already lives in. Uncataloged is included
    *  as a target — selecting it clears the row's catalog assignment. */
   moveTargets(): string[] {
-    return this.allCatalogs.filter(c => c !== this.embedCatalog);
+    const names = this.allCatalogs.filter(c => c !== this.embedCatalog);
+    if (!this.isRestricted) return names;
+    const editable = new Set(editableCatalogsOf(this.auth));
+    return names.filter(c => editable.has(c));
+  }
+
+  // Catalog-scoped access: restricted branches read the /me fields via
+  // AuthService, never list contents. Edit/run need edit or own on the tap's
+  // catalog; delete, rename and move need own.
+  get isRestricted(): boolean { return isRestrictedUser(this.auth); }
+
+  canEditItem(tap: any): boolean {
+    return this.auth.canWrite() && canEditCatalog(this.auth, tap && tap.catalog);
+  }
+
+  canOwnItem(tap: any): boolean {
+    return this.auth.canWrite() && canOwnCatalog(this.auth, tap && tap.catalog);
+  }
+
+  canEditCatalogName(name: string): boolean {
+    return this.auth.canWrite() && canEditCatalog(this.auth, name);
   }
 
   toggleMoveMenu(tapName: string, event: Event): void {

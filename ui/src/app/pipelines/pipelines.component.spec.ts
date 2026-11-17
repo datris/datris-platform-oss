@@ -13,10 +13,10 @@ import { CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { provideRouter } from '@angular/router';
 import { provideHttpClient } from '@angular/common/http';
-import { provideHttpClientTesting } from '@angular/common/http/testing';
-import { of } from 'rxjs';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { of, throwError } from 'rxjs';
 
-import { PipelinesComponent } from './pipelines.component';
+import { PipelinesComponent, renameNotes } from './pipelines.component';
 import { PipelineService } from '../pipeline.service';
 import { PipelineStatusService } from '../pipeline-status.service';
 import { TapService } from '../tap.service';
@@ -114,5 +114,166 @@ describe('PipelinesComponent — Live Read badge', () => {
     component.catalogGroups.forEach(g => g.expanded = true);
     fixture.detectChanges();
     expect(rowFor('orders').querySelector('.scratch-badge')).toBeNull();
+  });
+});
+
+/**
+ * Story: Pipeline rename keeps its data
+ * (plans/stories/pipeline-rename-keeps-data.md) — pipelines.component.spec.ts bullets.
+ *
+ * Pins: `saveEditName` makes one `PipelineService.renamePipeline(old, new)`
+ * call (POST /api/v1/pipelines/{old}/rename, body {newName}) and none of the
+ * old GET + createPipeline + deletePipeline chain; a refused rename alerts the
+ * server's `error` text and reloads the list; a blank or unchanged name sends
+ * nothing.
+ */
+describe('PipelinesComponent — server-side rename', () => {
+  let component: PipelinesComponent;
+  let svc: any;
+  const row = { name: 'orders', catalog: 'demo' };
+
+  beforeEach(async () => {
+    svc = {
+      getPipelines: jasmine.createSpy('getPipelines').and.returnValue(of([])),
+      getPipeline: jasmine.createSpy('getPipeline').and.returnValue(of({ ...postgresPipeline })),
+      createPipeline: jasmine.createSpy('createPipeline').and.returnValue(of({})),
+      deletePipeline: jasmine.createSpy('deletePipeline').and.returnValue(of({ warnings: [] })),
+      renamePipeline: jasmine.createSpy('renamePipeline').and.returnValue(
+        of({ name: 'orders_v2', previousName: 'orders', version: 4, repointedTaps: [], failed: [], warnings: [] })
+      )
+    };
+    await TestBed.configureTestingModule({
+      declarations: [PipelinesComponent],
+      imports: [FormsModule],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: PipelineService, useValue: svc },
+        { provide: PipelineStatusService, useValue: {} },
+        { provide: TapService, useValue: { getTaps: () => of([]) } },
+        { provide: AuthService, useValue: { canWrite: () => true } }
+      ]
+    }).compileComponents();
+    // No detectChanges: ngOnInit (and its refresh interval) never runs, so
+    // every getPipelines call below is a reload made by saveEditName.
+    component = TestBed.createComponent(PipelinesComponent).componentInstance;
+  });
+
+  function rename(to: string): void {
+    component.startEditName(new Event('click'), row);
+    component.editingNameValue = to;
+    component.saveEditName(row);
+  }
+
+  it('saveEditName calls renamePipeline(old, new) and never createPipeline or deletePipeline', () => {
+    rename('  orders_v2  ');
+    expect(svc.renamePipeline).toHaveBeenCalledOnceWith('orders', 'orders_v2');
+    expect(svc.createPipeline).not.toHaveBeenCalled();
+    expect(svc.deletePipeline).not.toHaveBeenCalled();
+    expect(svc.getPipeline).not.toHaveBeenCalled();
+    expect(svc.getPipelines).toHaveBeenCalled();
+    expect(component.editingName).toBe('');
+  });
+
+  it('a rename error shows the server error text and reloads', () => {
+    const alertSpy = spyOn(window, 'alert');
+    svc.renamePipeline.and.returnValue(
+      throwError(() => ({ status: 409, error: { error: "Pipeline 'orders_v2' already exists" } }))
+    );
+    rename('orders_v2');
+    expect(svc.renamePipeline).toHaveBeenCalledOnceWith('orders', 'orders_v2');
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.calls.mostRecent().args[0]).toContain("Pipeline 'orders_v2' already exists");
+    expect(svc.getPipelines).toHaveBeenCalled();
+    expect(svc.createPipeline).not.toHaveBeenCalled();
+    expect(svc.deletePipeline).not.toHaveBeenCalled();
+  });
+
+  it('an unchanged or blank name sends nothing', () => {
+    for (const value of ['orders', '  orders  ', '', '   ']) {
+      rename(value);
+    }
+    expect(svc.renamePipeline).not.toHaveBeenCalled();
+    expect(svc.getPipeline).not.toHaveBeenCalled();
+    expect(svc.createPipeline).not.toHaveBeenCalled();
+    expect(svc.deletePipeline).not.toHaveBeenCalled();
+    expect(component.editingName).toBe('');
+  });
+
+  it('PipelineService.renamePipeline posts {newName} to /api/v1/pipelines/{name}/rename', () => {
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    const real: any = TestBed.inject(PipelineService);
+    const http = TestBed.inject(HttpTestingController);
+    let body: any;
+    expect(typeof real.renamePipeline).toBe('function');
+    real.renamePipeline('my orders', 'orders_v2').subscribe((b: any) => (body = b));
+    const call = http.expectOne('/api/v1/pipelines/my%20orders/rename');
+    expect(call.request.method).toBe('POST');
+    expect(call.request.body).toEqual({ newName: 'orders_v2' });
+    call.flush({ name: 'orders_v2', previousName: 'my orders' });
+    expect(body.name).toBe('orders_v2');
+    http.verify();
+  });
+});
+
+/** Review follow-up: a rename's `warnings` (and `failed`) reach the user. */
+describe('PipelinesComponent — rename follow-up notes', () => {
+  let component: PipelinesComponent;
+  let svc: any;
+  const row = { name: 'orders', catalog: 'demo' };
+
+  beforeEach(async () => {
+    svc = {
+      getPipelines: jasmine.createSpy('getPipelines').and.returnValue(of([])),
+      renamePipeline: jasmine.createSpy('renamePipeline')
+    };
+    await TestBed.configureTestingModule({
+      declarations: [PipelinesComponent],
+      imports: [FormsModule],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: PipelineService, useValue: svc },
+        { provide: PipelineStatusService, useValue: {} },
+        { provide: TapService, useValue: { getTaps: () => of([]) } },
+        { provide: AuthService, useValue: { canWrite: () => true } }
+      ]
+    }).compileComponents();
+    component = TestBed.createComponent(PipelinesComponent).componentInstance;
+  });
+
+  function rename(to: string): void {
+    component.startEditName(new Event('click'), row);
+    component.editingNameValue = to;
+    component.saveEditName(row);
+  }
+
+  it('a 207 with only warnings (hidden taps) alerts the warning text', () => {
+    const alertSpy = spyOn(window, 'alert');
+    svc.renamePipeline.and.returnValue(of({ name: 'orders_v2', failed: [], warnings: ['1 tap(s) you cannot see could not be re-pointed'] }));
+    rename('orders_v2');
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.calls.mostRecent().args[0]).toContain('1 tap(s) you cannot see could not be re-pointed');
+    expect(svc.getPipelines).toHaveBeenCalled();
+  });
+
+  it('failed taps and warnings are both shown; a clean rename alerts nothing', () => {
+    const alertSpy = spyOn(window, 'alert');
+    svc.renamePipeline.and.returnValue(of({ failed: [{ name: 'feed', error: 'boom' }], warnings: ['pull position not moved'] }));
+    rename('orders_v2');
+    const text = alertSpy.calls.mostRecent().args[0];
+    expect(text).toContain('feed (boom)');
+    expect(text).toContain('pull position not moved');
+
+    alertSpy.calls.reset();
+    svc.renamePipeline.and.returnValue(of({ failed: [], warnings: [] }));
+    rename('orders_v3');
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(renameNotes(null)).toEqual([]);
   });
 });

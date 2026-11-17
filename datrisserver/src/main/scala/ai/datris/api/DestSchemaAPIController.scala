@@ -34,13 +34,17 @@ class DestSchemaAPIController {
     @GetMapping(path = Array("/pipeline/dest-types"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def propose(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestParam pipeline: String
+        @RequestParam pipeline: String,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /pipeline/dest-types called for pipeline: " + pipeline)
             APIKeyValidator.validate(apiKey)
             if (pipeline == null || pipeline.isEmpty)
                 throw new DatrisException("Pipeline name is required")
+            // Restricted users: a pipeline outside the grants reads exactly as a missing one.
+            if (PipelineAPIController.restrictedHidden(request, pipeline, "read"))
+                throw new DatrisException("Pipeline not found: " + pipeline)
 
             val proposal = DestSchemaApply.propose(pipeline)
             new ResponseEntity[String](new Gson().toJson(proposal), HttpStatus.OK)
@@ -116,6 +120,9 @@ class DestSchemaAPIController {
             APIKeyValidator.validate(apiKey)
             if (body.pipeline == null || body.pipeline.isEmpty)
                 throw new DatrisException("Pipeline name is required")
+            // Restricted users: a pipeline outside the grants (or not editable) reads as missing.
+            if (PipelineAPIController.restrictedHidden(request, body.pipeline, "update"))
+                throw new DatrisException("Pipeline not found: " + body.pipeline)
 
             val applied = DestSchemaApply.apply(body.pipeline, body.fields, VersionActor.resolve(request))
             new ResponseEntity[String](new Gson().toJson(applied), HttpStatus.OK)

@@ -129,6 +129,7 @@ class CodeRepoAPIController {
             APIKeyValidator.validate(apiKey)
             if (tapName == null || tapName.isEmpty)
                 throw new DatrisException("tapName is required")
+            TapAPIController.restrictedRefusal(request, tapName, "update").foreach(return _)
 
             val tap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
             if (tap == null)
@@ -194,6 +195,7 @@ class CodeRepoAPIController {
             APIKeyValidator.validate(apiKey)
             if (tapName == null || tapName.isEmpty)
                 throw new DatrisException("tapName is required")
+            TapAPIController.restrictedRefusal(request, tapName, "update").foreach(return _)
             if (target != "github" && target != "minio")
                 throw new DatrisException("target must be 'github' or 'minio'")
 

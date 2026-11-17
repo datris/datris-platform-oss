@@ -294,9 +294,22 @@ components:
           description: Labels of non-revoked API keys holding a capability scoped `catalog=<old name>`
           items:
             type: string
+        updatedUsers:
+          type: array
+          description: Users whose catalog grants on the old name now read the new name (grants follow a rename; a partial rename adds the new name and keeps the old one). Unlike `affectedKeys`, no follow-up is needed.
+          items:
+            type: string
         placeholder:
           type: string
           enum: [created, skipped, failed]
+    CatalogGrants:
+      type: object
+      description: A user's catalog grants, catalog name -> level. `view` reads the catalog's taps and pipelines; `edit` also creates, updates and runs them; `own` also deletes them and renames the catalog. Only enforced when the user is `restricted`. `{}` when none.
+      additionalProperties:
+        type: string
+        enum: [view, edit, own]
+      example:
+        Sales: edit
     CatalogEnableJobStatus:
       type: object
       description: An ordered enable job. Only `active` is present when there is no job.
@@ -362,6 +375,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CatalogFailure'
+        updatedUsers:
+          type: array
+          description: Users whose grant on the deleted catalog was removed (only when every member was detached or deleted; empty otherwise).
+          items:
+            type: string
         warnings:
           type: array
           description: Cascade only (always present there, possibly empty; absent for detach). Follow-up actions for items that were deleted, such as a Unity Catalog table committed through the REST catalog that an admin has to drop, or a script file kept in the code repository because it was edited there since its recorded commit. Pipeline entries come first, then tap entries. Never affects the 200/207 status.
@@ -1502,6 +1520,37 @@ components:
                   enum: [ai-providers, secrets, data-sources, code-repo, users, keys, agent-policy, audit-log, doctor]
                   description: The Configuration sub-tab the user is looking at
 
+    PipelineRenameResult:
+      type: object
+      properties:
+        name:
+          type: string
+          description: The new name
+        previousName:
+          type: string
+        version:
+          type: integer
+          description: Definition version of the renamed pipeline (the rename is a new version)
+        repointedTaps:
+          type: array
+          items:
+            type: string
+          description: Taps re-pointed to the new name that the caller can see
+        failed:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              error:
+                type: string
+          description: Taps that could not be re-pointed (response is 207 when non-empty)
+        warnings:
+          type: array
+          items:
+            type: string
+
     EntityVersionSummary:
       type: object
       properties:
@@ -1683,8 +1732,34 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  previousNames:
+                    type: array
+                    nullable: true
+                    readOnly: true
+                    items:
+                      type: string
+                    description: >-
+                      Names the pipeline had before a rename, oldest first;
+                      absent for a pipeline never renamed. Server-maintained:
+                      ignored in `POST /api/v1/pipeline` bodies and version
+                      restores (the stored value is kept; a new pipeline has
+                      none). Run history, lineage runs, provenance, activity
+                      and vector chunks recorded under an earlier name stay
+                      visible to the users who can see the pipeline. When
+                      another pipeline now carries that earlier name, a user
+                      with scoped catalog access sees the records under it
+                      only if they can see all of those pipelines (unrestricted users
+                      and API keys: unchanged). A caller who cannot see every
+                      pipeline cannot take an earlier name of a pipeline
+                      hidden from it: save, version restore and rename are
+                      refused as for a hidden pipeline of that name (500,
+                      nothing written, when the pipeline list cannot be read
+                      for this check).
+        '403':
+          description: The API key's scope (`owner=self`, `catalog=`) does not cover this pipeline
         '404':
-          description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`'
+          description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`. A restricted user gets the same 404 for a pipeline outside its catalog grants.'
           content:
             application/json:
               schema:
@@ -1705,6 +1780,33 @@ paths:
         field, any method but `hmac` on a `keyFields` column, or a source that is not
         delimited or JSON). Like every other validator error, the rejection
         returns HTTP 400 with `{"error": "..."}` naming the field.
+
+        One pipeline per vector container: a vector destination whose
+        collection, class or table (pgvector: schema plus table) another
+        pipeline already names is refused with 400 `{"error": "..."}` naming
+        the container (and the other pipeline only when the caller can see
+        it). A stored pipeline whose container is unchanged is not refused by
+        this rule; the other save checks, including the source-of-authority
+        rule, still apply. A source-of-authority refusal names the other
+        pipeline only when the caller can see it ("another pipeline"
+        otherwise).
+
+        A caller who cannot see every pipeline (a restricted user, or a key
+        scoped by `catalog=` or `owner=self`) is refused with 400 `The
+        destination <kind>:<coordinates> is already in use by another
+        pipeline. Choose another destination.` when the save adds a table,
+        collection, object-store prefix or topic that a pipeline hidden from
+        it writes, whatever `authoritative` says (a pgvector table and a
+        Postgres table with the same schema and name are one table); 500 and
+        nothing saved when the pipeline list cannot be read for that check.
+
+        Restricted users: a blank `catalog` is filled in with the one catalog
+        the user can edit (400 `{"error": "Choose a catalog: A, B"}` when there
+        are several, 400 `No catalog you can edit` when there are none). A named
+        catalog the user cannot edit, or an existing pipeline outside the
+        grants, is 404 (a new catalog name works only once an admin has granted
+        it). Moving a pipeline (`set_catalog`) needs edit on both catalogs;
+        moving it to Uncataloged is 400.
       parameters:
         - name: changeNote
           in: query
@@ -1809,12 +1911,28 @@ paths:
                             script was not committed and the recorded one stays.
                             Names the pull endpoint and regenerate with
                             `overwrite=true`; also listed in `warnings`.
+        '403':
+          description: >-
+            Capability denied: the key lacks `pipeline:create`, or a pipeline
+            of this name exists and the key's scope (`catalog=`, `owner=self`)
+            grants neither `pipeline:create` nor `pipeline:update` on it. A
+            scoped key cannot overwrite a pipeline outside its scope; nothing
+            is saved.
+        '409':
+          description: >-
+            For a caller who cannot see or write every pipeline (scoped
+            catalog access, scoped API key): the pipeline of this name was
+            created, deleted, renamed or moved to another catalog while the
+            save was being checked. Nothing was saved; send the save again.
         '400':
           description: >-
             The configuration was refused and nothing was saved: it failed
             validation, it selects a Postgres destination when no Postgres is
-            reachable, or it conflicts with another pipeline's source-of-authority
-            declaration. Fix the configuration and save again.
+            reachable, it conflicts with another pipeline's source-of-authority
+            declaration, or its vector collection, class or table is already
+            used by another pipeline, or (for a caller who cannot see every
+            pipeline) its destination is written by a pipeline it cannot see.
+            Fix the configuration and save again.
           content:
             application/json:
               schema:
@@ -1852,7 +1970,7 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand.
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a vector collection, class or table kept because another pipeline also names it (the warning starts with `Kept` and names the container; the other pipeline is named only when the caller can see it), a Postgres, SQL Server, Snowflake or Databricks table or MongoDB collection kept because another pipeline also writes to it (including a pgvector table and a Postgres table with the same schema and name; the warning starts with `Kept` and names it; it is dropped with the last pipeline that writes to it), a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand.
           content:
             application/json:
               schema:
@@ -1916,9 +2034,9 @@ paths:
         '400':
           description: Reserved or blank catalog name, missing or invalid `newName`, or `newName` equal to `name`
         '403':
-          description: 'The catalog holds only its placeholder and the key''s scope does not cover it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+          description: 'The catalog holds only its placeholder and the key''s scope does not cover it, or a restricted user holds `view`/`edit` but not `own` on it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
-          description: No tap, pipeline or placeholder carries this catalog
+          description: No tap, pipeline or placeholder carries this catalog, or (restricted user) the catalog is not in the user's grants
         '409':
           description: target catalog already exists
           content:
@@ -1936,7 +2054,7 @@ paths:
       tags: [Pipelines]
       summary: Delete a catalog (detach or cascade)
       description: |
-        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop; warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
+        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop or a vector container, table or collection kept because another pipeline still names it (it is dropped with the last one); warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -1973,9 +2091,9 @@ paths:
         '400':
           description: Reserved or blank catalog name, unknown mode, or cascade without a matching `confirm`
         '403':
-          description: 'The catalog holds only its placeholder and the key''s scope does not cover it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+          description: 'The catalog holds only its placeholder and the key''s scope does not cover it, or the caller is a restricted user (only admins and unrestricted users delete catalogs). Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
-          description: No tap, pipeline or placeholder carries this catalog
+          description: No tap, pipeline or placeholder carries this catalog, or (restricted user) the catalog is not in the user's grants
         '409':
           description: 'An ordered enable of the catalog is running. Body: `{"error": ..., "jobId": ...}`'
         '500':
@@ -2097,7 +2215,7 @@ paths:
       tags: [Pipelines]
       summary: Enable a catalog's taps in dependency order
       description: |
-        Starts one server-side job that walks the catalog's enable order (see `GET /api/v1/catalog/{name}/enable-order`) level by level, one tap at a time. Per tap: if any of its dependencies failed, was skipped or cancelled, or has not landed data, the tap is `skipped` with the reason; otherwise it is tested when it has no passing test (a failed test marks it `failed`), enabled (the test-before-cron gate applies; a refusal marks it `failed` with that text), given one real run (an error or zero records marks it `failed`) and the job waits until the run's pipeline loads have finished (`success`/`warning` = `landed`, `error` = `failed`, no finish within `datris.catalog.enableWaitMs`, default 30 minutes = `failed`). A tap that was already enabled with landed data is not re-run. No request body. Requires `tap:run`; the key must also hold `tap:update` and `tap:run` for every member tap (owner and catalog scope), otherwise 403 and nothing starts. Agent policy action `tap:run:enable-ordered` (inherits `tap:run`): an approval covers the whole job.
+        Starts one server-side job that walks the catalog's enable order (see `GET /api/v1/catalog/{name}/enable-order`) level by level, one tap at a time. Per tap: if any of its dependencies failed, was skipped or cancelled, or has not landed data, the tap is `skipped` with the reason; otherwise it is tested when it has no passing test (a failed test marks it `failed`), enabled (the test-before-cron gate applies; a refusal marks it `failed` with that text), given one real run (an error or zero records marks it `failed`) and the job waits until the run's pipeline loads have finished (`success`/`warning` = `landed`, `error` = `failed`, no finish within `datris.catalog.enableWaitMs`, default 30 minutes = `failed`). A tap that was already enabled with landed data is not re-run. No request body. Requires `tap:run`; the key must also hold `tap:update` and `tap:run` for every member tap (owner and catalog scope), otherwise 403 and nothing starts. For a restricted user the catalog must be in its grants (404 otherwise), and every member tap's `targetPipeline` must be a pipeline the user may run: one outside the grants answers the pipeline 404 (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`), one the user can view but not run is 403, and nothing starts. Agent policy action `tap:run:enable-ordered` (inherits `tap:run`): an approval covers the whole job.
       parameters:
         - name: name
           in: path
@@ -2235,7 +2353,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CatalogRestoreResult'
         '207':
-          description: Some members could not be restored; see `failed`
+          description: Some members could not be restored; see `failed`. A pipeline whose vector collection, class or table another pipeline already names (for example the second of two archived pipelines sharing one) is listed there with the refusal text, as is one whose destination a pipeline hidden from the caller writes; the rest of the restore goes ahead.
           content:
             application/json:
               schema:
@@ -2262,6 +2380,7 @@ paths:
     get:
       tags: [Pipelines]
       summary: List all pipeline configurations
+      description: Only the pipelines the caller may read are listed. An API key scoped `owner=self` or `catalog=<name>` sees the pipelines its scope covers; a restricted user sees the pipelines in its catalog grants (never Uncataloged ones).
       responses:
         '200':
           description: Array of pipeline configurations
@@ -2273,6 +2392,87 @@ paths:
                   type: object
         '500':
           description: Error
+
+  /api/v1/pipelines/{name}/rename:
+    post:
+      tags: [Pipelines]
+      summary: Rename a pipeline
+      description: >-
+        Changes the pipeline's name and nothing else: destination data is not
+        touched, definition versions and stored CodeGen scripts (with their
+        history) move to the new name, an incremental pull keeps its position,
+        and every tap whose targetPipeline is the old name is re-pointed
+        (taps the caller cannot see are re-pointed but never named). Needs the
+        access a delete needs (own on the pipeline's catalog, or
+        `pipeline:delete` for an API key). A rename that stopped part way is
+        finished by sending it again. Audited as `pipeline` / `rename` on the
+        old name with `newName` in the metadata. A caller who cannot see
+        every pipeline gets the taken-name 409 for a new name that a pipeline
+        hidden from it had before it was renamed (`previousNames`).
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+          description: Current pipeline name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newName]
+              properties:
+                newName:
+                  type: string
+                  maxLength: 80
+                  description: New name (trimmed)
+      responses:
+        '200':
+          description: Renamed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineRenameResult'
+        '207':
+          description: Renamed, but some taps could not be re-pointed (listed in `failed`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineRenameResult'
+        '400':
+          description: newName missing, blank, unchanged or over 80 characters, or the pipeline syncs to Unity Catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '403':
+          description: The caller can see the pipeline but may not rename it (own / pipeline:delete required)
+        '404':
+          description: No such pipeline, or one the caller cannot see
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '409':
+          description: >-
+            The new name is taken, a job for the pipeline is queued or running,
+            or a stored CodeGen script could not be copied to the new name.
+            Nothing is renamed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /api/v1/pipelines/{name}/unity-catalog:
     get:
@@ -2801,6 +3001,7 @@ paths:
       tags: [Pipelines]
       summary: Propose destination column types from landed data
       description: >-
+        Restricted users get the same "Pipeline not found" 400 for a pipeline outside their catalog grants (applying types needs edit).
         Agent-created pipelines store every destination column as text. This
         stateless call samples up to 1000 rows that already landed in the
         destination (postgres, snowflake, databricks, or sqlserver), infers real column
@@ -2927,6 +3128,7 @@ paths:
       tags: [Pipelines]
       summary: Suggest field protection from field names and types
       description: >-
+        Restricted users get the same "not configured" 400 for a named pipeline outside their catalog grants.
         Asks the configured CodeGen model which source fields should carry
         `protect` (hmac, mask with an optional preserve, redact, drop, or
         none), with a one-line reason per field. Only field names and types
@@ -3022,6 +3224,7 @@ paths:
       tags: [Pipelines]
       summary: Propose field protection from a preset (HIPAA Safe Harbor)
       description: >-
+        Restricted users get the same "not configured" 400 for a named pipeline outside their catalog grants.
         Classifies source fields against the preset's fixed name table (the
         18 HIPAA Safe Harbor identifier classes) and proposes each recognised
         field's default method, clamped by the same rules as
@@ -3227,7 +3430,7 @@ paths:
     post:
       tags: [Ingestion]
       summary: Upload a file for processing
-      description: Upload a data file to a registered pipeline. Returns a pipeline token for tracking job status.
+      description: Upload a data file to a registered pipeline. Returns a pipeline token for tracking job status. A restricted user gets the pipeline 404 for a pipeline outside its catalog grants, and 403 when it can view but not run it.
       requestBody:
         required: true
         content:
@@ -3360,7 +3563,9 @@ paths:
     get:
       tags: [Status]
       summary: Get job status
-      description: Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
+      description: >-
+        Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
+        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) stamped with such a tap omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
       parameters:
         - name: publishertoken
           in: query
@@ -3428,7 +3633,7 @@ paths:
     delete:
       tags: [Status]
       summary: Clear all ingestion history
-      description: Deletes every job status entry — detail rows and per-pipeline summaries — for the environment.
+      description: Deletes every job status entry — detail rows and per-pipeline summaries — for the environment. Refused (403) for restricted users.
       responses:
         '200':
           description: Number of entries deleted
@@ -3447,11 +3652,13 @@ paths:
       tags: [Status]
       summary: Get a Live Read (scratch) pipeline's result
       description: >-
+        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants.
         Page through the rows a Live Read (scratch destination) pipeline run
         produced. Paging reads the stored result and never re-runs the source.
         Only Live Read pipelines have a result. `limit` is clamped server-side to the
         inline cap, so the next page starts at `offset + returnedCount`, never
         `offset + limit`. Results expire after the retention window.
+        For a restricted user, rows stamped with a tap they cannot read (or one no longer stored) omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
       parameters:
         - name: pipelinetoken
           in: query
@@ -3518,7 +3725,7 @@ paths:
     post:
       tags: [Query]
       summary: Query PostgreSQL
-      description: Execute a read-only SQL SELECT query against PostgreSQL. Enforces SELECT-only, blocks dangerous keywords, and auto-appends LIMIT.
+      description: Execute a read-only SQL SELECT query against PostgreSQL. Enforces SELECT-only, blocks dangerous keywords, and auto-appends LIMIT. Not available to restricted users (403 from the capability check); free-form SQL cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3555,7 +3762,7 @@ paths:
     post:
       tags: [Query]
       summary: Query MongoDB
-      description: Query a MongoDB collection with optional filter and projection. Blocks $where and $function operators.
+      description: Query a MongoDB collection with optional filter and projection. Blocks $where and $function operators. Not available to restricted users (403 from the capability check); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3648,6 +3855,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '404':
+          description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
           description: Error
 
@@ -3701,6 +3910,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '404':
+          description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
           description: Error
 
@@ -3754,6 +3965,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '404':
+          description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
           description: Error
         '502':
@@ -3809,6 +4022,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '404':
+          description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
           description: Error
 
@@ -3816,7 +4031,7 @@ paths:
     post:
       tags: [Query]
       summary: Natural-language query (AI)
-      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results.
+      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. Not available to restricted users (403 from the capability check); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3905,6 +4120,12 @@ paths:
         ignored. Request fields vary slightly per store — qdrant, milvus, and
         chroma name their container with `collection`, weaviate with
         `className`, pgvector with `table` (plus an optional `schema`).
+        For a user with scoped catalog access, a container is searchable only
+        when every pipeline writing to it is in their catalogs (otherwise
+        `404`). Results hold only chunks written by pipelines in their
+        catalogs; a chunk from any other pipeline, or with no recorded
+        pipeline, is left out and not counted, so fewer than `topK` results
+        can come back.
       parameters:
         - name: store
           in: path
@@ -3958,6 +4179,8 @@ paths:
             stores, e.g. "Unknown vector store: 'faiss'. Valid stores: chroma,
             milvus, pgvector, qdrant, weaviate"), a missing `query`, or an
             embedding dimension mismatch between ingest and query.
+        '404':
+          description: 'Restricted users only: no pipeline writes to the requested collection / class / table, or one of the pipelines writing to it is outside the user''s catalog grants (a container is searchable only when every pipeline writing to it is visible). Body: `{"error": "<Collection|ClassName|Table>: <name> not found"}`.'
         '500':
           description: Error
 
@@ -4085,7 +4308,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL databases
-      description: List all PostgreSQL databases available in the platform.
+      description: List all PostgreSQL databases available in the platform. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of database names
@@ -4102,7 +4325,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL schemas
-      description: List all schemas in a PostgreSQL database.
+      description: List all schemas in a PostgreSQL database. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4126,7 +4349,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL tables
-      description: List all tables in a PostgreSQL schema. Set vectorOnly to true to filter to tables with an embedding column (pgvector tables).
+      description: List all tables in a PostgreSQL schema. Set vectorOnly to true to filter to tables with an embedding column (pgvector tables). Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4162,7 +4385,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List table columns
-      description: List all columns and their data types for a specific PostgreSQL table.
+      description: List all columns and their data types for a specific PostgreSQL table. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4198,7 +4421,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List MongoDB databases
-      description: List all MongoDB databases available in the platform. Excludes system databases (admin, config, local).
+      description: List all MongoDB databases available in the platform. Excludes system databases (admin, config, local). Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of database names
@@ -4215,7 +4438,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List MongoDB collections
-      description: List MongoDB collections. If database is specified, lists collections in that database. Otherwise lists all collections across all databases in "db.collection" format.
+      description: List MongoDB collections. If database is specified, lists collections in that database. Otherwise lists all collections across all databases in "db.collection" format. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4240,7 +4463,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Qdrant collections
-      description: List all collections in the Qdrant vector database. Returns an empty array if Qdrant is not configured.
+      description: List all collections in the Qdrant vector database. Returns an empty array if Qdrant is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4257,7 +4480,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Weaviate classes
-      description: List all classes in the Weaviate vector database. Returns an empty array if Weaviate is not configured.
+      description: List all classes in the Weaviate vector database. Returns an empty array if Weaviate is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of class names
@@ -4274,7 +4497,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Milvus collections
-      description: List all collections in the Milvus vector database. Returns an empty array if Milvus is not configured.
+      description: List all collections in the Milvus vector database. Returns an empty array if Milvus is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4291,7 +4514,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Chroma collections
-      description: List all collections in the Chroma vector database. Returns an empty array if Chroma is not configured.
+      description: List all collections in the Chroma vector database. Returns an empty array if Chroma is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4545,7 +4768,7 @@ paths:
     get:
       tags: [Taps]
       summary: List all taps
-      description: Returns all registered tap configurations.
+      description: Returns the tap configurations the caller may read. An API key scoped `owner=self` or `catalog=<name>` sees the taps its scope covers; a restricted user sees the taps in its catalog grants (never Uncataloged ones).
       responses:
         '200':
           description: Array of tap configurations
@@ -4575,8 +4798,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TapDetail'
+        '403':
+          description: The API key's scope (`owner=self`, `catalog=`) does not cover this tap
         '404':
-          description: 'No such tap: `{"error":"Tap: <name> not found"}`'
+          description: 'No such tap: `{"error":"Tap: <name> not found"}`. A restricted user gets the same 404 for a tap outside its catalog grants.'
           content:
             application/json:
               schema:
@@ -4602,6 +4827,15 @@ paths:
         cron, is refused with 409 and nothing is persisted. Remedy: save without
         `cronExpression`, run `POST /api/v1/tap/run` with `mode=test`, then save again
         with the cron.
+
+        Restricted users: a blank `catalog` is filled in with the one catalog the
+        user can edit (400 `{"error": "Choose a catalog: A, B"}` when there are
+        several, 400 `No catalog you can edit` when there are none). A named
+        catalog the user cannot edit, or an existing tap outside the grants, is
+        404. Moving a tap to Uncataloged is 400. A `targetPipeline` outside the
+        user's grants answers the pipeline 404 (`{"error": "Pipeline: <name> is
+        not configured in the NoSQL database"}`); one the user can view but
+        not run is 403.
       parameters:
         - name: changeNote
           in: query
@@ -4711,7 +4945,7 @@ paths:
     get:
       tags: [Taps]
       summary: Get run history across all taps
-      description: Returns run log entries for every tap, newest window first. Feeds the Ops activity dashboard's aggregation. Defaults to the last 30 days, capped at 2000 rows.
+      description: Returns run log entries for every tap, newest window first. Feeds the Ops activity dashboard's aggregation. Defaults to the last 30 days, capped at 2000 rows. Requires `job:read`. A restricted user sees only the runs of taps in its catalog grants.
       parameters:
         - name: since
           in: query
@@ -5310,7 +5544,7 @@ paths:
     post:
       tags: [Taps]
       summary: Run a tap
-      description: Executes a saved tap. Optionally sends data to the configured pipeline.
+      description: Executes a saved tap. Optionally sends data to the configured pipeline. For a restricted user, a tap outside its catalog grants is 404, and `mode=run` with a `targetPipeline` outside the grants answers the pipeline 404 (403 when the user can view but not run that pipeline).
       requestBody:
         required: true
         content:
@@ -5642,7 +5876,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EntityVersionSnapshot'
         '404':
-          description: No such version for this tap
+          description: No such version for this tap. A restricted user gets the same 404 when the tap is outside its catalog grants or has been deleted.
         '500':
           description: Error
 
@@ -5710,7 +5944,7 @@ paths:
         '400':
           description: 'The snapshot''s `cronExpression` is invalid, or its `secretName` may not be used by a tap (server-managed or unsafe name, or not tagged `_type=tap` while tap-secret scoping is enforced). Body: `{"error": ...}`'
         '404':
-          description: No such version for this tap
+          description: No such version for this tap. A restricted user gets the same 404 when the tap is outside its catalog grants or has been deleted.
         '409':
           description: >-
             The snapshot's script differs from the one that last passed a test while a
@@ -5765,7 +5999,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EntityVersionSnapshot'
         '404':
-          description: No such version for this pipeline
+          description: No such version for this pipeline. A restricted user gets the same 404 when the pipeline is outside its catalog grants or has been deleted.
         '500':
           description: Error
 
@@ -5827,7 +6061,11 @@ paths:
               schema:
                 type: object
         '404':
-          description: No such version for this pipeline
+          description: No such version for this pipeline. A restricted user gets the same 404 when the pipeline is outside its catalog grants or has been deleted.
+        '403':
+          description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope.
+        '400':
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes. Body: `{"error": "..."}`.'
         '500':
           description: Error
 
@@ -5974,6 +6212,11 @@ paths:
                     type: string
                   mustSetPassword:
                     type: boolean
+                  restricted:
+                    type: boolean
+                    description: True when the user sees only the taps and pipelines in its catalog grants. Always false for an admin.
+                  catalogGrants:
+                    $ref: '#/components/schemas/CatalogGrants'
         '401':
           description: Not authenticated
 
@@ -6032,6 +6275,11 @@ paths:
                       nullable: true
                     mustSetPassword:
                       type: boolean
+                    restricted:
+                      type: boolean
+                      description: Always false for an admin.
+                    catalogGrants:
+                      $ref: '#/components/schemas/CatalogGrants'
     post:
       tags: [Auth]
       summary: Create a user (admin)
@@ -6069,8 +6317,14 @@ paths:
       summary: Update a user (admin)
       description: >-
         Admin-only. Change a user's role and/or reset their password (back to
-        first-login mode). The built-in `admin` user is locked to the admin
-        role, and the last remaining admin cannot be demoted.
+        first-login mode), and set catalog-scoped access. The built-in `admin`
+        user is locked to the admin role, and the last remaining admin cannot
+        be demoted. A `restricted` user sees only the taps and pipelines in the
+        catalogs of `catalogGrants`; anything else answers 404 as if it did not
+        exist. Restricted users cannot run free-form Postgres, MongoDB or
+        natural-language queries, or read table metadata. Each restricted flip
+        and each added, changed or removed grant writes an audit entry
+        (`user/set-restricted`, `user/grant-catalog`, `user/revoke-catalog`).
       parameters:
         - name: username
           in: path
@@ -6089,11 +6343,18 @@ paths:
                 resetPassword:
                   type: boolean
                   description: If true, clears the password so the user must set a new one on next login
+                restricted:
+                  type: boolean
+                  description: Narrow the user to its catalog grants. Refused (400) for an admin and for the built-in `admin` user.
+                catalogGrants:
+                  allOf:
+                    - $ref: '#/components/schemas/CatalogGrants'
+                  description: Full replacement of the user's grants (catalog name -> `view` | `edit` | `own`). `null` or `{}` removes every grant; the user stays restricted.
       responses:
         '200':
           description: User updated
         '400':
-          description: Invalid role
+          description: Invalid role, `restricted` on an admin, or an invalid catalog name or grant level
         '404':
           description: User not found
         '409':
@@ -6437,6 +6698,7 @@ paths:
         One definition of operational signals — failures (with the recovered
         flag), stale scheduled taps, and pipeline volume anomalies — shared
         by the dashboard, the Ops chat context and the recovery agent.
+        For a restricted user, rows are limited to the taps and pipelines in their granted catalogs. On a pipeline row, `relatedTapName` is omitted when that tap is one the user cannot read, and such a tap's name reads `[hidden]` in `reason`.
       parameters:
         - in: query
           name: window
@@ -7420,6 +7682,7 @@ paths:
         run → script commit → pipeline config version → declared source and
         returns one document. Pass the row's `_datris_tap_run` and
         `_datris_config_version` values when available for exact resolution.
+        For a restricted user, a run whose pipeline is outside their granted catalogs (or cannot be determined) is 404 (`no such run`); the `pipeline` and `tapRun` hints are ignored for them. When the run was fed by a tap the user cannot read (filed in another catalog, or no longer stored), the response omits `tapRun`, `tap` and the top-level `source`, `input` keeps `kind` but omits `tapName`, `tapRunTime`, `scriptSha` and `source`, and feed filenames (`input.filename`, `job.filename`, and in `outputs[].error`) read `tap-[hidden].csv` / `.json`.
       parameters:
         - in: query
           name: runId
@@ -7475,6 +7738,7 @@ paths:
         configuration plus recorded runs (cached ~1 minute). Node ids are
         `type:name`. Datasets a pipeline landed into under an earlier
         configuration appear with `historical: true` (and a dashed edge).
+        For a restricted user, only nodes in their granted catalogs (and the sources and datasets linked to them) are returned.
       responses:
         '200':
           description: Nodes and edges
@@ -7543,6 +7807,7 @@ paths:
         between them, freshness for the pipeline the node is (or feeds), and
         optionally the most recent recorded runs touching the node — what each
         read and wrote, per destination.
+        For a restricted user, the walk covers only their granted catalogs: a node outside them is 404 (`no such node`), and hidden upstream or downstream items are left out. In `runs`, a run fed by a tap the user cannot read (filed in another catalog, or no longer stored) keeps `input.kind` but omits `input.tapName`, `tapRunTime`, `scriptSha` and `source`, and its feed filename reads `tap-[hidden].csv` / `.json`.
       parameters:
         - in: path
           name: nodeType
@@ -7677,6 +7942,7 @@ paths:
         mappings it can evidence (`rename` / `derive` / `drop`, confidence
         `inferred`). Inferred results are cached per definition version and
         never recomputed unless the definition changes.
+        For a restricted user, a pipeline outside their granted catalogs is 404 (`no such pipeline`).
       parameters:
         - in: path
           name: pipeline
@@ -7890,6 +8156,7 @@ paths:
         `warehouse` field (aliases `httpPath`, `http_path`,
         `DATABRICKS_WAREHOUSE`), else the warehouse of the first Databricks
         pipeline using the secret.
+        Not available to restricted users (403 from the capability check); warehouse listings cannot be limited to a catalog.
       parameters:
         - in: query
           name: secret

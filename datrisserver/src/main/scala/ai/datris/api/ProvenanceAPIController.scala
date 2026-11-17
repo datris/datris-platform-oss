@@ -5,9 +5,12 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.util.ProvenanceResolver
+import ai.datris.auth.{CapabilityCheck, HiddenTapScrub}
+import ai.datris.model.{DatrisEnvironment, PipelineConfig, TapConfig}
+import ai.datris.util.{PipelineAliases, PipelineConfigIO, ProvenanceResolver, TapConfigIO}
 import com.google.common.base.Throwables
-import com.google.gson.Gson
+import com.google.gson.{Gson, JsonObject}
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -26,23 +29,147 @@ class ProvenanceAPIController {
         @RequestParam(name = "runId") runId: String,
         @RequestParam(name = "pipeline", required = false) pipeline: String,
         @RequestParam(name = "tapRun", required = false) tapRun: String,
-        @RequestParam(name = "configVersion", required = false) configVersion: java.lang.Integer
+        @RequestParam(name = "configVersion", required = false) configVersion: java.lang.Integer,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             if (runId == null || runId.trim.isEmpty)
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"runId is required\"}")
+            // A restricted session's hints are ignored: the run's own records
+            // name its pipeline and tap run, so a visible pipeline name cannot
+            // vouch for a hidden run.
+            val restricted = CapabilityCheck.isRestrictedSession(request)
             val resolved = ProvenanceResolver.resolve(
-                if (pipeline != null) pipeline.trim else null,
+                if (pipeline != null && !restricted) pipeline.trim else null,
                 runId.trim,
-                if (tapRun != null) tapRun.trim else null,
+                if (tapRun != null && !restricted) tapRun.trim else null,
                 configVersion
             )
-            new ResponseEntity[String](gson.toJson(resolved), HttpStatus.OK)
+            // Read only for a restricted session (provenanceRefusal and the
+            // scrub below never call it otherwise).
+            lazy val configs = PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName).filter(_ != null)
+            val refused = ProvenanceAPIController.provenanceRefusal(
+                request,
+                runId.trim,
+                resolved,
+                // A run filed under a renamed pipeline's earlier name is
+                // judged on that pipeline; a reused name only when every
+                // pipeline it may belong to is visible (PipelineAliases).
+                n => ProvenanceAPIController.recordOwner(request, n, configs)
+            )
+            if (refused.isDefined) return refused.get
+            val shown =
+                if (!restricted) resolved
+                else {
+                    val env = DatrisEnvironment.current
+                    val pipelineName = resolved.get("pipeline").getAsString // present: provenanceRefusal passed
+                    val owner = Option(PipelineAliases.ownerOf(pipelineName, configs)).map(_.name).toSet
+                    val feeding = HiddenTapScrub.hiddenFeedingTaps(request, TapConfigIO.readAll(env.tapTableName), Set(pipelineName) ++ owner)
+                    ProvenanceAPIController.scrubProvenance(request, resolved, n => TapConfigIO.read(env.tapTableName, n), feeding)
+                }
+            new ResponseEntity[String](gson.toJson(shown), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error resolving provenance: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body[String]("{\"error\":\"" + Option(e.getMessage).getOrElse("").replace("\"", "'") + "\"}")
         }
+    }
+}
+
+object ProvenanceAPIController {
+
+    /** The `read` for [[provenanceRefusal]] on loaded configs: the owner of a
+      * run filed under `name` ([[PipelineAliases.ownerOf]]), or null (read as
+      * missing, so the run is refused) when the session may not see that
+      * name's records ([[PipelineAliases.recordShown]]: a reused name with a
+      * claimant outside the grants). */
+    def recordOwner(request: HttpServletRequest, name: String, configs: Seq[PipelineConfig]): PipelineConfig = {
+        val all = Option(configs).getOrElse(Nil).filter(_ != null)
+        if (!PipelineAliases.recordShown(name, all, c => !PipelineAPIController.hiddenConfig(request, c, "read"))) null
+        else PipelineAliases.ownerOf(name, all)
+    }
+
+    /** For a restricted user's session, after [[ProvenanceResolver.resolve]]:
+      * 404 `no such run: <runId>` when the resolved run names no pipeline, or
+      * one that is missing or outside the grants (`read` loads it; null =
+      * missing). The body never names the pipeline. None for everyone else. */
+    def provenanceRefusal(
+        request: HttpServletRequest,
+        runId: String,
+        resolved: JsonObject,
+        read: String => PipelineConfig
+    ): Option[ResponseEntity[String]] = {
+        if (!CapabilityCheck.isRestrictedSession(request)) return None
+        val pipeline =
+            if (resolved != null && resolved.has("pipeline") && resolved.get("pipeline").isJsonPrimitive) resolved.get("pipeline").getAsString
+            else null
+        val hidden = pipeline == null || pipeline.isEmpty || PipelineAPIController.hiddenConfig(request, read(pipeline), "read")
+        if (!hidden) None
+        else
+            Some(
+                ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body[String]("{\"error\":\"no such run: " + Option(runId).getOrElse("").replace("\"", "'").replace("\\", "") + "\"}")
+            )
+    }
+
+    /** For a restricted user's session, after [[provenanceRefusal]] passed:
+      * when the run's tap (from `input.tapName`, `tapRun.tapName` or
+      * `tap.name`) is one the session cannot read (`readTap` loads it; null =
+      * missing), the `tapRun` and `tap` blocks and the top-level `source` go,
+      * and the input loses the tap identity fields. Filenames (`input`,
+      * `job`) read `tap-[hidden]` for that tap, for `hiddenFeeding` (hidden
+      * taps feeding the run's pipeline) and for any hidden or no-longer-stored
+      * tap a feed filename or an `outputs[].error` names (not read from an
+      * `upload` run's own filename); `outputs[].error` is scrubbed the same
+      * way, and a `tap:<name>` source naming such a tap is dropped. Everyone else: `resolved` unchanged. Scrubs in
+      * place; returns `resolved`. */
+    def scrubProvenance(
+        request: HttpServletRequest,
+        resolved: JsonObject,
+        readTap: String => TapConfig,
+        hiddenFeeding: Set[String]
+    ): JsonObject = {
+        if (resolved == null || !CapabilityCheck.isRestrictedSession(request)) return resolved
+        def str(o: JsonObject, block: String, field: String): Option[String] =
+            if (o.has(block) && o.get(block).isJsonObject) {
+                val b = o.getAsJsonObject(block)
+                if (b.has(field) && b.get(field).isJsonPrimitive) Some(b.get(field).getAsString) else None
+            } else None
+        val named = Seq(str(resolved, "input", "tapName"), str(resolved, "tapRun", "tapName"), str(resolved, "tap", "name")).flatten.distinct
+        val hiddenNamed = named.filter(n => HiddenTapScrub.tapHidden(request, n, readTap)).toSet
+        if (hiddenNamed.nonEmpty) {
+            resolved.remove("tapRun")
+            resolved.remove("tap")
+            resolved.remove("source")
+            if (resolved.has("input") && resolved.get("input").isJsonObject)
+                HiddenTapScrub.TapIdentityFields.foreach(resolved.getAsJsonObject("input").remove)
+        }
+        // A tap no longer stored (or a run predating the recorded tap
+        // identity) shows only in a feed filename or a `tap:<name>` source.
+        // An upload's filename is the uploader's own: not read for tap names.
+        val upload = str(resolved, "input", "kind").contains("upload")
+        val fromFiles =
+            if (upload) Set.empty[String]
+            else
+                HiddenTapScrub.feedFileNames(
+                    Seq(str(resolved, "input", "filename"), str(resolved, "job", "filename")).flatten ++ HiddenTapScrub.outputErrors(resolved)
+                ).filter(n => HiddenTapScrub.tapHidden(request, n, readTap))
+        val scrub = hiddenNamed ++ hiddenFeeding ++ fromFiles
+        def tapSource(o: JsonObject, field: String): Boolean =
+            o.has(field) && o.get(field).isJsonPrimitive && {
+                val v = o.get(field).getAsString
+                v.startsWith("tap:") && HiddenTapScrub.tapHidden(request, v.stripPrefix("tap:"), readTap)
+            }
+        if (tapSource(resolved, "source")) resolved.remove("source")
+        if (resolved.has("input") && resolved.get("input").isJsonObject && tapSource(resolved.getAsJsonObject("input"), "source"))
+            resolved.getAsJsonObject("input").remove("source")
+        if (scrub.nonEmpty) {
+            Seq("input", "job").foreach { block =>
+                str(resolved, block, "filename").foreach(f => resolved.getAsJsonObject(block).addProperty("filename", HiddenTapScrub.scrubFilename(f, scrub)))
+            }
+            HiddenTapScrub.scrubOutputErrors(resolved, scrub)
+        }
+        resolved
     }
 }

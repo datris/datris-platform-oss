@@ -150,4 +150,47 @@ class ActivitySignalsSpec extends AnyFunSuite {
         assert(!row.json.rehearsal)
         assert(ActivitySignals.withoutRehearsals(List(row)).size == 1)
     }
+
+    // Story: Catalog-scoped user access, part 3
+    // (plans/stories/catalog-scoped-user-access-metadata-read.md), Acceptance bullet 4.
+    // Pinned: ActivitySignals.visibleTo(s, keepTap, keepPipeline, pipelineCatalog): Signals —
+    // `failing` filtered by kind, `staleTaps` by keepTap, `volumes` by keepPipeline on the
+    // catalog from pipelineCatalog (an unknown pipeline is dropped).
+    test("visibleTo drops failing, stale and volume rows of hidden taps and pipelines and volumes of unknown pipelines") {
+        import ActivitySignals.{FailingItem, PipelineVolume, Signals, StaleTap}
+        def failing(kind: String, name: String, catalog: String) =
+            FailingItem(kind, name, Option(catalog), "boom", None, recovered = false, failureCount = 1, pipelineToken = None, relatedTapName = None)
+        def vol(name: String) = PipelineVolume(name, None, 10L, 100L, 5, Some(-90))
+        val s = Signals(
+            windowMs = Day,
+            computedAtMs = 1000L,
+            failing = List(
+                failing("tap", "t_sales", "Sales"),
+                failing("tap", "t_hr", "HR"),
+                failing("pipeline", "orders", "Sales"),
+                failing("pipeline", "payroll", "HR")
+            ),
+            staleTaps = List(
+                StaleTap("t_sales", Some("Sales"), "daily", Day, None),
+                StaleTap("t_hr", Some("HR"), "daily", Day, None)
+            ),
+            volumes = List(vol("orders"), vol("payroll"), vol("deleted_pipeline"))
+        )
+        val sales: (String, Option[String]) => Boolean = (_, c) => c.contains("Sales")
+        val catalogs = Map("orders" -> "Sales", "payroll" -> "HR")
+        val v = ActivitySignals.visibleTo(s, sales, sales, n => catalogs.get(n))
+
+        assert(v.failing.map(f => f.kind + ":" + f.name) == List("tap:t_sales", "pipeline:orders"), v.failing)
+        assert(v.staleTaps.map(_.name) == List("t_sales"), v.staleTaps)
+        assert(v.volumes.map(_.name) == List("orders"), v.volumes)
+        assert(v.anomalies.map(_.name) == List("orders"))
+        assert(v.windowMs == s.windowMs && v.computedAtMs == s.computedAtMs)
+        // Kind decides which predicate applies: a tap row is never judged by keepPipeline.
+        val tapsOnly = ActivitySignals.visibleTo(s, (_, _) => true, (_, _) => false, n => catalogs.get(n))
+        assert(tapsOnly.failing.map(_.name) == List("t_sales", "t_hr"))
+        assert(tapsOnly.staleTaps.size == 2 && tapsOnly.volumes.isEmpty)
+        // Keeping everything (with every pipeline known) is the identity.
+        val all = ActivitySignals.visibleTo(s, (_, _) => true, (_, _) => true, n => Some(catalogs.getOrElse(n, "X")))
+        assert(all == s)
+    }
 }

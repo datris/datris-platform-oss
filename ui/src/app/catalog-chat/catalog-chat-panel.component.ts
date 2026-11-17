@@ -1,6 +1,8 @@
-import { Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild, AfterViewChecked } from '@angular/core';
+import { Component, ElementRef, HostListener, OnDestroy, OnInit, Optional, ViewChild, AfterViewChecked } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { CatalogAssistantStateService, ToolCard, AssistantTurn } from './catalog-assistant-state.service';
+import { AuthService } from '../auth.service';
+import { isRestrictedUser } from '../shared/catalog-access';
 
 interface StarterPrompt {
   label: string;
@@ -38,9 +40,17 @@ export class CatalogChatPanelComponent implements OnInit, OnDestroy, AfterViewCh
   private scrollPending = false;
   private openSub?: Subscription;
 
-  constructor(public state: CatalogAssistantStateService) {}
+  constructor(public state: CatalogAssistantStateService, @Optional() private auth: AuthService | null) {}
 
   ngOnInit(): void {
+    // Catalog-scoped access: a restricted user has no Uncataloged group, so
+    // the starters that talk about it are swapped for catalog-only ones.
+    if (isRestrictedUser(this.auth)) {
+      this.starterPrompts = [
+        { label: 'What\'s here?', prompt: 'Summarize what each of my catalogs contains.' },
+        ...this.starterPrompts.slice(2)
+      ];
+    }
     const raw = localStorage.getItem(CatalogChatPanelComponent.STORAGE_KEY);
     this.expanded = raw === 'true';
     this.scrollPending = true;

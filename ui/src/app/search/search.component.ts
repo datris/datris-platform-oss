@@ -8,6 +8,7 @@ import { HealthService } from '../health.service';
 import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
 import { httpErrorText } from '../shared/http-error';
+import { isRestrictedUser } from '../shared/catalog-access';
 
 @Component({
     selector: 'app-search',
@@ -111,6 +112,10 @@ export class SearchComponent implements OnInit, OnDestroy {
   mongoFlat = false;
 
   isTrial = false;
+  /** Catalog-scoped access: raw PostgreSQL / MongoDB queries and table
+   *  metadata are refused for restricted users, so those modes are hidden.
+   *  Pipeline-bound modes (object store, warehouses) and vector search stay. */
+  restricted = false;
   private routerSub: Subscription | null = null;
 
   // Sub-panel toggle: the new conversational "Chat" search vs. the existing
@@ -131,6 +136,8 @@ export class SearchComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     const savedView = (() => { try { return sessionStorage.getItem(SearchComponent.VIEW_KEY); } catch { return null; } })();
     if (savedView === 'chat' || savedView === 'traditional') this.activeView = savedView;
+    this.restricted = isRestrictedUser(this.auth);
+    if (this.restricted && this.isRawQueryType(this.queryType)) this.queryType = 'objectstore';
 
     // Re-fetch health when the tab opens so store gating recovers from a failed
     // bootstrap fetch or a server restart; then make sure the selected query
@@ -143,8 +150,10 @@ export class SearchComponent implements OnInit, OnDestroy {
         // Canonical, server-chosen db names.
         this.pgDatabase = data.postgresDatabase || 'datris';
         this.mongoDatabase = data.mongodbDatabase || 'datris';
-        this.loadPgSchemas();
-        this.loadMongoCollections();
+        if (!this.restricted) {
+          this.loadPgSchemas();
+          this.loadMongoCollections();
+        }
         this.loadObjectStorePipelines();
       }
     });
@@ -167,6 +176,7 @@ export class SearchComponent implements OnInit, OnDestroy {
   }
 
   refreshMetadata(): void {
+    if (this.restricted) { this.loadObjectStorePipelines(); return; }
     // Reload postgres schemas/tables and mongo collections so the user
     // sees any objects created since they last visited the tab.
     this.searchService.getPostgresSchemas(this.pgDatabase).subscribe({
@@ -380,12 +390,18 @@ export class SearchComponent implements OnInit, OnDestroy {
       postgres: 'postgres', mongodb: 'mongodb', objectstore: 'minio',
       qdrant: 'qdrant', weaviate: 'weaviate', milvus: 'milvus', chroma: 'chroma', pgvector: 'pgvector'
     };
-    if (this.healthService.isAvailable(healthKey[this.queryType])) return;
+    if (this.restricted) { delete healthKey['postgres']; delete healthKey['mongodb']; }
+    if (healthKey[this.queryType] && this.healthService.isAvailable(healthKey[this.queryType])) return;
     const fallback = Object.keys(healthKey).find(t => this.healthService.isAvailable(healthKey[t]));
     if (fallback) {
       this.queryType = fallback;
       this.onQueryTypeChange();
     }
+  }
+
+  /** Free-form query modes that cannot be narrowed to a catalog. */
+  isRawQueryType(t: string): boolean {
+    return t === 'postgres' || t === 'mongodb';
   }
 
   isVectorSearch(): boolean {

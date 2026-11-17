@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
-import ai.datris.util.{AgentLoop, APIKeyValidator, MCPClient, SecretsUtil}
+import ai.datris.util.{AgentLoop, APIKeyValidator, CatalogAccessPrompt, MCPClient, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.MediaType
 import org.springframework.web.bind.annotation._
@@ -148,12 +148,15 @@ class CatalogChatAPIController {
         // legitimate ask. (Matches the Ops controller's reasoning.)
         val toolDefs = reorderToolsCatalogFirst(MCPClient.listTools(uiKey))
 
-        val systemPrompt = buildCatalogSystemPrompt(env.environment)
+        // Catalog-scoped user access: a restricted session user gets the
+        // catalog-access block and no wording about the unassigned group.
+        val accessBlock = UserContext.get().flatMap(CatalogAccessPrompt.block)
+        val systemPrompt = buildCatalogSystemPrompt(env.environment, accessBlock)
 
         // Re-inject the catalog inventory snapshot on every turn as a leading
         // user message. Cheapest possible cadence — the inventory is small.
         val withContext: List[(String, String)] = contextSnapshot match {
-            case Some(ctx) => ("user", renderContextMessage(ctx)) :: userMessages
+            case Some(ctx) => ("user", renderContextMessage(ctx, accessBlock.isEmpty)) :: userMessages
             case None => userMessages
         }
 
@@ -225,7 +228,7 @@ class CatalogChatAPIController {
       * leading user message. Sent as `user` (not `system`) so the agent treats
       * it as "what the user is currently looking at" — grounding context for
       * the request that follows. */
-    private def renderContextMessage(ctx: JsonObject): String = {
+    private def renderContextMessage(ctx: JsonObject, unassignedGroup: Boolean = true): String = {
         val sb = new StringBuilder
         sb.append("(Current Catalog page snapshot — what I'm looking at right now)\n\n")
 
@@ -261,7 +264,8 @@ class CatalogChatAPIController {
 
         sb.append("Use this snapshot to ground your answers. Refer to catalogs, taps, and pipelines by name. ")
             .append("To reassign an item's catalog, call `set_catalog` with exactly one of `tap` or `pipeline` plus the target `catalog` ")
-            .append("(omit `catalog` to move it to Uncataloged) — but only after the user has explicitly approved that move.")
+        if (unassignedGroup) sb.append("(omit `catalog` to move it to Uncataloged) ")
+        sb.append("— but only after the user has explicitly approved that move.")
         sb.toString
     }
 
@@ -271,12 +275,19 @@ class CatalogChatAPIController {
     private def intOpt(o: JsonObject, key: String): Option[Int] =
         if (o.has(key) && !o.get(key).isJsonNull) Some(o.get(key).getAsInt) else None
 
-    private def buildCatalogSystemPrompt(tenantEnv: String): String = {
+    private def buildCatalogSystemPrompt(tenantEnv: String, accessBlock: Option[String] = None): String = {
+        // The Uncataloged wording applies only to unrestricted users; a
+        // restricted user cannot see or file into the unassigned group.
+        val unassigned = accessBlock.isEmpty
         val sb = new StringBuilder
         sb.append("# Datris Catalog Assistant\n\n")
         sb.append("You are the Catalog curation assistant for tenant `").append(tenantEnv).append("`. ")
-        sb.append(
-            "The user is looking at the Catalog page inside the Datris UI — their taps and pipelines grouped into named catalogs, plus an `Uncataloged` group for anything unassigned. "
+        if (unassigned)
+            sb.append(
+                "The user is looking at the Catalog page inside the Datris UI — their taps and pipelines grouped into named catalogs, plus an `Uncataloged` group for anything unassigned. "
+            )
+        else sb.append(
+            "The user is looking at the Catalog page inside the Datris UI — their taps and pipelines grouped into the named catalogs they have access to. "
         )
         sb.append(
             "When a catalog snapshot is provided as the leading user message in this conversation, treat it as ground truth for what the user is looking at *right now*. "
@@ -285,7 +296,9 @@ class CatalogChatAPIController {
 
         sb.append("## Mission\n\n")
         sb.append("Your job is to help the user ORGANIZE what already exists — not to build, run, or search data:\n")
-        sb.append("- **Describe & summarize.** Explain what's in a catalog, what's sitting in Uncataloged, and how the inventory is structured.\n")
+        if (unassigned)
+            sb.append("- **Describe & summarize.** Explain what's in a catalog, what's sitting in Uncataloged, and how the inventory is structured.\n")
+        else sb.append("- **Describe & summarize.** Explain what's in a catalog and how the inventory is structured.\n")
         sb.append("- **Propose groupings.** Suggest sensible catalogs (by source, domain, owner, lifecycle) and which taps/pipelines belong in each.\n")
         sb.append(
             "- **Move & rename on request.** Reassign taps and pipelines between catalogs with `set_catalog`. Suggest renames where names are unclear or inconsistent.\n"
@@ -311,15 +324,25 @@ class CatalogChatAPIController {
         sb.append(
             "- **Mutate only on an explicit, item-specific go-ahead.** `set_catalog` changes the user's organization. Call it only when the user's most recent message clearly authorizes that specific move — \"yes, do it\", \"move X into Y\", \"go ahead with that plan\". Vague replies (\"sounds good\", \"and?\", \"what else\") are NOT authorization to start moving things; ask which moves to apply.\n"
         )
-        sb.append(
-            "- **`set_catalog` takes exactly one of `tap` or `pipeline`.** Pass the item name and the target `catalog`. Omit `catalog` (or pass an empty string) to clear it — that moves the item to Uncataloged. One call per item; report what you moved.\n"
-        )
+        if (unassigned)
+            sb.append(
+                "- **`set_catalog` takes exactly one of `tap` or `pipeline`.** Pass the item name and the target `catalog`. Omit `catalog` (or pass an empty string) to clear it — that moves the item to Uncataloged. One call per item; report what you moved.\n"
+            )
+        else
+            sb.append(
+                "- **`set_catalog` takes exactly one of `tap` or `pipeline`.** Pass the item name and the target `catalog`; the target is always one of this user's filing targets. One call per item; report what you moved.\n"
+            )
         sb.append(
             "- **Watch for name clashes.** A catalog the user browses shouldn't contain two items with the same name. If a proposed move would collide with an existing item in the target catalog, call it out and suggest a rename instead of moving blindly.\n"
         )
-        sb.append(
-            "- **Renaming a catalog.** To rename catalog A to B call `rename_catalog`; it refuses Uncataloged and a `new_name` that already exists; never mass-`set_catalog` to emulate a rename. A rename never merges catalogs: to combine two, move the items with `set_catalog` when the user asks for that. Report any `failed` items and any `affectedKeys` (API keys scoped to the old name) it returns. `delete_catalog` moves a catalog's items to Uncataloged and removes the catalog; it never deletes items or data. Call either only when the user has explicitly asked for that catalog operation.\n"
-        )
+        if (unassigned)
+            sb.append(
+                "- **Renaming a catalog.** To rename catalog A to B call `rename_catalog`; it refuses Uncataloged and a `new_name` that already exists; never mass-`set_catalog` to emulate a rename. A rename never merges catalogs: to combine two, move the items with `set_catalog` when the user asks for that. Report any `failed` items and any `affectedKeys` (API keys scoped to the old name) it returns. `delete_catalog` moves a catalog's items to Uncataloged and removes the catalog; it never deletes items or data. Call either only when the user has explicitly asked for that catalog operation.\n"
+            )
+        else
+            sb.append(
+                "- **Renaming a catalog.** `rename_catalog` needs the own level on the catalog; never mass-`set_catalog` to emulate a rename. Deleting a catalog is for administrators. Call `rename_catalog` only when the user has explicitly asked for it, and relay any refusal verbatim.\n"
+            )
         sb.append(
             "- **Backup and restore.** `export_catalog` is read-only and returns a zip backup of a catalog (its manifest first); `restore_catalog` restores such an archive, so call it only when the user asks to restore and names the archive to use.\n"
         )
@@ -340,6 +363,12 @@ class CatalogChatAPIController {
         sb.append(
             "- This narrows nothing in the rules above: keep asking, proposing, confirming, and waiting exactly where they tell you to — scope/source choices, a plan to approve, destructive-action confirmation, acting only when explicitly authorized. The point is only this: once the next step is already decided or authorized and you are merely narrating it, perform it instead of ending the turn.\n\n"
         )
+
+        accessBlock.foreach { b =>
+            sb.append("## Catalog access\n\n")
+            sb.append(b)
+            sb.append("\n")
+        }
 
         sb.append("## Finish\n\n")
         sb.append(

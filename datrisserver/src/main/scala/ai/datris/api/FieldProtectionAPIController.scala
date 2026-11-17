@@ -58,7 +58,11 @@ class FieldProtectionAPIController {
             logger.info("API endpoint POST /pipeline/protect/suggest called" + Option(pipeline).map(" for pipeline: " + _).getOrElse(""))
             APIKeyValidator.validate(apiKey)
 
-            val (fields, keyFields, destTypes) = FieldProtectionAPIController.resolveFields(pipeline, Option(body).map(_.fields).orNull)
+            val (fields, keyFields, destTypes) = FieldProtectionAPIController.resolveFields(
+                pipeline,
+                Option(body).map(_.fields).orNull,
+                FieldProtectionAPIController.hideFromRestricted(request, pipeline)
+            )
 
             md = new JsonObject()
             val names = new JsonArray()
@@ -116,7 +120,10 @@ class FieldProtectionAPIController {
             val (fields, keyFields, destTypes) = FieldProtectionAPIController.resolveFields(
                 pipeline,
                 Option(body).map(_.fields).orNull,
-                config => ProtectionPreset.proposalRefusal(preset, config).foreach(m => throw new DatrisException(m))
+                config => {
+                    FieldProtectionAPIController.hideFromRestricted(request, pipeline)(config)
+                    ProtectionPreset.proposalRefusal(preset, config).foreach(m => throw new DatrisException(m))
+                }
             )
             val input = fields.filter(f => f.name != null && f.name.trim.nonEmpty)
             if (input.isEmpty) throw new DatrisException("No fields to propose protection for")
@@ -277,6 +284,23 @@ class FieldProtectionAPIController {
 }
 
 object FieldProtectionAPIController {
+
+    /** `checkStored` for a named pipeline: a restricted user's session gets
+      * the same error as a missing pipeline when the stored config is outside
+      * its catalog grants, so the field list and protection policy never
+      * leak. No-op for everyone else. */
+    private[api] def hideFromRestricted(request: HttpServletRequest, pipeline: String): ai.datris.model.PipelineConfig => Unit =
+        config =>
+            if (
+                ai.datris.auth.CapabilityCheck.isRestrictedSession(request) &&
+                !ai.datris.auth.CapabilityCheck.grants(
+                    request,
+                    "pipeline",
+                    "read",
+                    ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
+                )
+            )
+                throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
     /** The field list a suggest or preset call works on, with the pipeline's
       * constraints: the stored source schema when `pipeline` is named, else

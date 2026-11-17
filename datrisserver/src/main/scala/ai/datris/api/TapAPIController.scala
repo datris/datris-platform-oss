@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder, JsonElement, JsonNull, JsonParser}
-import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
+import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, ResourceHiddenException, VersionActor}
 import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion, PipelineConfig}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
@@ -32,6 +32,70 @@ object TapAPIController {
       * when no config was read for `name`, Right(config) otherwise. */
     def tapOr404(name: String, config: Option[TapConfig]): Either[ResponseEntity[String], TapConfig] =
         config.toRight(tapNotFound(name))
+
+    /** GET /taps: the taps the caller may read (per-item scope check on
+      * catalog + owner: owner=self keys, catalog-scoped keys and restricted
+      * users' catalog grants); nulls dropped. */
+    def visibleTaps(request: HttpServletRequest, taps: Seq[TapConfig]): Seq[TapConfig] =
+        taps.filter(t => t != null && CapabilityCheck.grants(request, "tap", "read", CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel)))
+
+    /** Scope check on a loaded tap, mapped to a response: None when allowed,
+      * the tap's 404 when hidden from a restricted user, 403 for an API
+      * key's scope miss. */
+    def scopeRefusal(request: HttpServletRequest, config: TapConfig, action: String): Option[ResponseEntity[String]] =
+        try {
+            CapabilityCheck.assertVisible(request, "tap", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+            None
+        } catch {
+            case _: ResourceHiddenException => Some(tapNotFound(config.name))
+            case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
+        }
+
+    /** For a restricted user's session only: the refusal for a tap named in
+      * a request (404 when missing or outside the grants, 403 when visible
+      * but `action` is not granted). None for everyone else, so API keys keep
+      * today's behaviour on these routes. */
+    def restrictedRefusal(request: HttpServletRequest, name: String, action: String): Option[ResponseEntity[String]] =
+        if (!CapabilityCheck.isRestrictedSession(request)) None
+        else
+            Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)) match {
+                case None => Some(tapNotFound(name))
+                case Some(t) => scopeRefusal(request, t, action)
+            }
+
+    /** [[restrictedRefusal]] for routes that also serve a tap not saved yet
+      * (generate / fix from the wizard): only an EXISTING tap is checked. */
+    def restrictedRefusalIfExists(request: HttpServletRequest, name: String, action: String): Option[ResponseEntity[String]] =
+        if (!CapabilityCheck.isRestrictedSession(request) || name == null || name.isEmpty) None
+        else Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)).flatMap(t => scopeRefusal(request, t, action))
+
+    /** For a restricted user's session only: refusal when the tap's
+      * `targetPipeline` is missing or outside the grants (pipeline 404) or
+      * visible but not runnable (403). None when no target or not restricted. */
+    def targetPipelineRefusal(
+        request: HttpServletRequest,
+        tap: TapConfig,
+        readPipeline: String => PipelineConfig = n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
+    ): Option[ResponseEntity[String]] =
+        if (tap == null || tap.targetPipeline == null || tap.targetPipeline.trim.isEmpty) None
+        else if (!CapabilityCheck.isRestrictedSession(request)) None
+        else PipelineAPIController.refusalFor(request, tap.targetPipeline, readPipeline(tap.targetPipeline), "run")
+
+    /** POST /tap catalog rules for a restricted user's session (no-op for
+      * everyone else); see [[RestrictedCatalogRules.catalogForSave]]. */
+    def catalogForSave(request: HttpServletRequest, config: TapConfig, existing: TapConfig): Either[ResponseEntity[String], TapConfig] =
+        RestrictedCatalogRules.catalogForSave(
+            request,
+            "tap",
+            config.catalog,
+            existing != null,
+            if (existing == null) null else existing.catalog,
+            if (existing == null) null else existing.createdByKeyLabel,
+            tapNotFound(config.name)
+        ).right.map {
+            case Some(c) if c != config.catalog => config.copy(catalog = c)
+            case _ => config
+        }
 
     /** Some(message) when the tap's secretName names a server-managed secret
       * (SecretNames.ServerManaged); checked on save. TapScriptRunner refuses
@@ -380,17 +444,9 @@ class TapAPIController {
             APIKeyValidator.validate(apiKey)
 
             val allTaps = TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)
-            // Scope-aware filter: a key whose only `tap:read` grant is
-            // `tap:read:owner=self` sees only its own taps. Same pattern as
-            // /pipelines above. Keys with unscoped `tap:read` or `*:*` see
-            // everything.
-            val filteredTaps =
-                if (CapabilityCheck.hasOnlyOwnerSelfScope(request, "tap", "read")) {
-                    val ownerLabel = ResolvedKeyAccess.keyLabel(request).orNull
-                    allTaps.filter(t => t != null && t.createdByKeyLabel != null && t.createdByKeyLabel == ownerLabel)
-                } else {
-                    allTaps
-                }
+            // Per-item scope filter (owner=self keys, catalog-scoped keys and
+            // restricted users' catalog grants), same as /pipelines.
+            val filteredTaps = TapAPIController.visibleTaps(request, allTaps)
             val gson = new Gson
             val json = gson.toJson(filteredTaps.asJava)
             new ResponseEntity[String](json, HttpStatus.OK)
@@ -402,7 +458,11 @@ class TapAPIController {
     }
 
     @GetMapping(path = Array("/tap"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
+    def getTap(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /tap called with name: " + name)
             APIKeyValidator.validate(apiKey)
@@ -410,6 +470,7 @@ class TapAPIController {
             val config = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
             if (config == null)
                 return TapAPIController.tapNotFound(name)
+            TapAPIController.scopeRefusal(request, config, "read").foreach(return _)
             val gson = new Gson
             // Include script content from MinIO. Track "missing" separately from
             // "never generated" so the UI can tell the user the script was deleted
@@ -466,7 +527,8 @@ class TapAPIController {
     def getAllTapLogs(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
         @RequestParam(required = false) since: java.lang.Long,
-        @RequestParam(required = false) limit: java.lang.Integer
+        @RequestParam(required = false) limit: java.lang.Integer,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
@@ -493,12 +555,26 @@ class TapAPIController {
             // exists to feed the Ops activity dashboard's tile/chart aggregation.
             val parser = new JsonParser()
             val out = new com.google.gson.JsonArray()
+            // A restricted user sees run logs of the taps in its grants only.
+            val visibleTap: String => Boolean =
+                if (!CapabilityCheck.isRestrictedSession(request)) _ => true
+                else {
+                    val names = TapAPIController.visibleTaps(request, TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)).map(_.name).toSet
+                    n => n != null && names.contains(n)
+                }
             rows.foreach { json =>
                 try {
                     val el = parser.parse(json)
                     if (el.isJsonObject) {
                         val obj = el.getAsJsonObject
-                        if (obj.has("value")) out.add(obj.get("value"))
+                        if (obj.has("value")) {
+                            val v = obj.get("value")
+                            val tapName =
+                                if (v.isJsonObject && v.getAsJsonObject.has("tapName") && !v.getAsJsonObject.get("tapName").isJsonNull)
+                                    v.getAsJsonObject.get("tapName").getAsString
+                                else null
+                            if (visibleTap(tapName)) out.add(v)
+                        }
                     }
                 } catch {
                     case e: Exception =>
@@ -516,10 +592,15 @@ class TapAPIController {
     }
 
     @GetMapping(path = Array("/tap/logs"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTapLogs(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
+    def getTapLogs(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /tap/logs called for tap: " + name)
             APIKeyValidator.validate(apiKey)
+            TapAPIController.restrictedRefusal(request, name, "read").foreach(return _)
 
             val allKeys = NoSQLDbUtil.getItemsKeysByKeyName(DatrisEnvironment.current.tapLogTableName, "key")
             val tapKeys = allKeys.filter(_.startsWith(name + "|")).sorted.reverse.take(50)
@@ -613,6 +694,28 @@ class TapAPIController {
         if (tapConfig.name == null || tapConfig.name.isEmpty)
             throw new DatrisException("Tap name is required")
 
+        // Restricted users: default a blank catalog and refuse targets
+        // outside their grants before anything is validated or written.
+        if (CapabilityCheck.isRestrictedSession(request)) {
+            val stored = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
+            TapAPIController.catalogForSave(request, tapConfig, stored) match {
+                case Left(refused) => return Left(refused)
+                case Right(c) =>
+                    // The tap feeds its target pipeline: that pipeline must be
+                    // one the user may run (hidden/missing -> pipeline 404).
+                    TapAPIController.targetPipelineRefusal(request, c).foreach(r => return Left(r))
+                    return saveTapScoped(c, changeNote, request, restored)
+            }
+        }
+        saveTapScoped(tapConfig, changeNote, request, restored)
+    }
+
+    private def saveTapScoped(
+        tapConfig: TapConfig,
+        changeNote: String,
+        request: HttpServletRequest,
+        restored: Boolean
+    ): Either[ResponseEntity[String], TapConfig] = {
         // A tap may never reference a server-managed secret (field-protection
         // keys, API-key stores): its fields would be injected into the script.
         // Field protection 8: and only a tap-typed secret unless
@@ -896,6 +999,8 @@ class TapAPIController {
             out.add("warnings", arr)
             ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
+            case _: ResourceHiddenException => TapAPIController.tapNotFound(name)
+            case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ApiErrors.internal(e)
@@ -920,7 +1025,8 @@ class TapAPIController {
         if (existing != null) {
             // Scope check: `tap:delete:owner=self` keys may only delete
             // taps they created. Loaded resource carries createdByKeyLabel.
-            if (checkScope) CapabilityCheck.assertOwnerScope(request, "tap", "delete", existing.createdByKeyLabel)
+            if (checkScope)
+                CapabilityCheck.assertVisible(request, "tap", "delete", CatalogOps.scopeContext(existing.catalog, existing.createdByKeyLabel))
             // For repo-backed taps this commits a file removal (history is
             // preserved — that's the point of the repo), unless the file was
             // hand-edited at branch head since the recorded commit: then it is
@@ -1027,6 +1133,7 @@ class TapAPIController {
             if (script == null || script.isEmpty)
                 throw new DatrisException("script is required")
 
+            TapAPIController.restrictedRefusal(request, tapName, "update").foreach(return _)
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
 
             // Test-before-cron, evaluated BEFORE any bytes are written: a script
@@ -1213,6 +1320,8 @@ class TapAPIController {
             val tapType = Option(body.get("tapType")).getOrElse("structured")
             logger.info("API endpoint POST /tap/generate called, tapName: " + tapName + ", tapType: " + tapType)
             APIKeyValidator.validate(apiKey)
+            // Generating for an existing tap repoints it: same visibility as an update.
+            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
 
             if (description == null || description.isEmpty)
                 throw new DatrisException("Description is required")
@@ -1261,12 +1370,17 @@ class TapAPIController {
     @GetMapping(path = Array("/tap/generate/status"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def generateStatus(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestParam tap: String
+        @RequestParam tap: String,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
             val gson = new Gson
-            val response = TapAPIController.generateStatusBody(TapGenerationProgress.get(tap), System.currentTimeMillis())
+            // A hidden tap's generation reads as "none running" for a restricted user.
+            val progress =
+                if (TapAPIController.restrictedRefusalIfExists(request, tap, "read").isDefined) None
+                else TapGenerationProgress.get(tap)
+            val response = TapAPIController.generateStatusBody(progress, System.currentTimeMillis())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -1293,6 +1407,8 @@ class TapAPIController {
             logger.info("API endpoint POST /tap/fix called, tapName: " + tapName +
                 ", priorIterations: " + priorIterations.size)
             APIKeyValidator.validate(apiKey)
+            // Fixing an existing tap repoints it: same visibility as an update.
+            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
 
             if (script == null || script.isEmpty)
                 throw new DatrisException("Script is required")
@@ -1337,6 +1453,7 @@ class TapAPIController {
             logger.info(s"API endpoint POST /tap/review called, tapName: $tapName, recordCount: $recordCount, " +
                 s"priorIterations: ${priorIterations.size}")
             APIKeyValidator.validate(apiKey)
+            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")
@@ -1386,6 +1503,7 @@ class TapAPIController {
             logger.info(s"API endpoint POST /tap/optimize called, tapName: $tapName, recordCount: $recordCount, " +
                 s"durationMs: $durationMs, priorIterations: ${priorIterations.size}")
             APIKeyValidator.validate(apiKey)
+            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")
@@ -1531,9 +1649,11 @@ class TapAPIController {
             // Scope check: `tap:run:owner=self` keys (e.g. rag-builder) may
             // only run taps they created. The loaded tap's createdByKeyLabel
             // is matched against the caller's label.
-            CapabilityCheck.assertOwnerScope(request, "tap", "run", tapConfig.createdByKeyLabel)
+            TapAPIController.scopeRefusal(request, tapConfig, "run").foreach(return _)
 
             val mode = requestedMode
+            // A run feeds the target pipeline: refuse one outside a restricted user's grants.
+            if (mode == "run") TapAPIController.targetPipelineRefusal(request, tapConfig).foreach(return _)
 
             // Optional per-run params. Stringify each value so the script sees
             // env vars regardless of whether the agent sent {start_date: "2026-05-01"}
@@ -1703,10 +1823,15 @@ class TapAPIController {
     }
 
     @GetMapping(path = Array("/tap/state"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTapState(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
+    def getTapState(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /tap/state called for tap: " + name)
             APIKeyValidator.validate(apiKey)
+            TapAPIController.restrictedRefusal(request, name, "read").foreach(return _)
 
             val row = TapStateIO.read(name)
             val gson = new Gson
@@ -1730,7 +1855,8 @@ class TapAPIController {
     @PostMapping(path = Array("/tap/state"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def setTapState(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, Any]
+        @RequestBody body: java.util.Map[String, Any],
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             val name = Option(body.get("name")).map(_.toString).orNull
@@ -1739,6 +1865,7 @@ class TapAPIController {
 
             if (name == null || name.isEmpty)
                 throw new DatrisException("Tap name is required")
+            TapAPIController.restrictedRefusal(request, name, "update").foreach(return _)
             TapAPIController.tapOr404(name, Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name))) match {
                 case Left(notFound) => return notFound
                 case Right(_) =>
@@ -1770,10 +1897,15 @@ class TapAPIController {
     }
 
     @DeleteMapping(path = Array("/tap/state"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def deleteTapState(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
+    def deleteTapState(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /tap/state called for tap: " + name)
             APIKeyValidator.validate(apiKey)
+            TapAPIController.restrictedRefusal(request, name, "update").foreach(return _)
 
             TapStateIO.delete(name)
             new ResponseEntity[String](
@@ -1788,10 +1920,15 @@ class TapAPIController {
     }
 
     @GetMapping(path = Array("/tap/ledger"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTapLedger(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
+    def getTapLedger(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /tap/ledger called for tap: " + name)
             APIKeyValidator.validate(apiKey)
+            TapAPIController.restrictedRefusal(request, name, "read").foreach(return _)
 
             val entries = TapDocumentLedgerIO.readByTap(DatrisEnvironment.current.tapLedgerTableName, name).asJava
             val gson = new Gson
@@ -1807,11 +1944,13 @@ class TapAPIController {
     def deleteTapLedger(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
         @RequestParam name: String,
-        @RequestParam(required = false) uri: String
+        @RequestParam(required = false) uri: String,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /tap/ledger called for tap: " + name + (if (uri != null) ", uri: " + uri else ""))
             APIKeyValidator.validate(apiKey)
+            TapAPIController.restrictedRefusal(request, name, "update").foreach(return _)
 
             val ledgerTable = DatrisEnvironment.current.tapLedgerTableName
             val bucket = DatrisEnvironment.current.environment + "-config"

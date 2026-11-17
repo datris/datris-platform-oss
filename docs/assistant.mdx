@@ -166,6 +166,13 @@ instructed to **never invoke a destructive tool without asking you first** —
 if you say "delete the broken tap," the agent will name what it's about to
 delete and wait for your confirmation in the chat before proceeding.
 
+The Assistant works within your [catalog access](/user-auth#catalog-access).
+If an admin has limited you to specific catalogs, it sees only their taps and
+pipelines, files new work in your only editable catalog (or asks which one when
+you have several), and says something is not available rather than guessing at
+a name it cannot see. A tap secret it creates for you is still visible to
+everyone on the install.
+
 The Stop button at the bottom of the chat aborts the loop server-side at the
 next checkpoint, so you can interrupt anytime. Stop halts the in-flight model
 call within a fraction of a second — cancelled responses cost only what was

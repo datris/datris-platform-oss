@@ -60,7 +60,8 @@ class CatalogFindAPIController {
                 ai != null && ai.booleanValue(),
                 visible,
                 taps.filter(t => t != null && CapabilityCheck.grants(request, "tap", "read", tapScopeContext(t))),
-                unityCatalog
+                unityCatalog,
+                CatalogFindAPIController.recordsShown(request, pipelines, visible)
             )
             new ResponseEntity[String](gson.toJson(result), HttpStatus.OK)
         } catch {
@@ -127,4 +128,21 @@ class CatalogFindAPIController {
         if (t.createdByKeyLabel != null && t.createdByKeyLabel.nonEmpty) ctx += ("owner" -> t.createdByKeyLabel)
         ctx
     }
+}
+
+object CatalogFindAPIController {
+
+    /** GET /catalog/find for a restricted session: whether a hit's stored runs
+      * (freshness, provenance run id, location evidence) are shown, by
+      * [[ai.datris.util.PipelineAliases.recordShown]] with `visible` (the
+      * pipelines the session can read) as what it can see: a name reused after
+      * a hidden pipeline's rename reads as if it had no runs. Null (shown, no
+      * extra work) for everyone else. */
+    def recordsShown(request: HttpServletRequest, pipelines: Seq[PipelineConfig], visible: Seq[PipelineConfig]): String => Boolean =
+        if (!CapabilityCheck.isRestrictedSession(request)) null
+        else {
+            val all = Option(pipelines).getOrElse(Nil).filter(_ != null)
+            val seen = Option(visible).getOrElse(Nil).filter(_ != null).map(_.name).toSet
+            name => ai.datris.util.PipelineAliases.recordShown(name, all, c => seen.contains(c.name))
+        }
 }

@@ -27,9 +27,11 @@ Offer all of these when the user has not chosen; do not default silently.
 
 Column types: a pipeline created from a sample may land every column as text. `get_dest_types` proposes real types from landed rows; `apply_dest_types` migrates with the user's explicit approval.
 
+Sharing a table: a destination written by a pipeline the caller cannot see (scoped catalog access, or a key scoped by catalog or owner) is refused on save whatever `authoritative` says; pick another table, collection, prefix or topic. Deleting a pipeline keeps a table or collection another pipeline also writes to and reports it in `warnings`; it is dropped with the last pipeline that writes to it.
+
 ## Vector stores (semantic search, RAG)
 
-pgvector (bundled Postgres), Qdrant, Weaviate, Milvus, Chroma. The source must be `unstructuredAttributes` for documents. The embedding model is pinned at creation and dimensions cannot change afterwards; confirm which embedder the instance uses (`run_doctor` reports it) before creating the pipeline. Chunking strategies: fixed-size, sentence, paragraph, recursive.
+pgvector (bundled Postgres), Qdrant, Weaviate, Milvus, Chroma. The source must be `unstructuredAttributes` for documents. The embedding model is pinned at creation and dimensions cannot change afterwards; confirm which embedder the instance uses (`run_doctor` reports it) before creating the pipeline. Chunking strategies: fixed-size, sentence, paragraph, recursive. Each collection, class or table belongs to one pipeline: a save onto one another pipeline already uses is refused, so pick a new name per pipeline. `metadata` keys named `source_pipeline` or `source_dataset` are reserved and ignored; do not use them (on pgvector a `source_pipeline` key fails the load).
 
 ## Messaging and callbacks
 

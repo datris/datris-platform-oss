@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.AuditLog
-import ai.datris.auth.OidcLogin
+import ai.datris.auth.{CatalogGrants, OidcLogin}
 import ai.datris.config.{RequiresRole, SessionAuthenticator}
 import ai.datris.model.{DatrisEnvironment, User, UserContext}
 import ai.datris.util.{PasswordHasher, SecretsUtil, SessionStore, UserStore}
@@ -267,6 +267,8 @@ class AuthAPIController {
             obj.addProperty("createdAt", formatTimestamp(u.createdAt))
             obj.addProperty("lastLoginAt", formatTimestamp(u.lastLoginAt))
             obj.addProperty("mustSetPassword", u.mustSetPassword)
+            obj.addProperty("restricted", u.isRestricted)
+            obj.add("catalogGrants", grantsJson(u))
             obj
         })
         val arr = new com.google.gson.JsonArray
@@ -339,6 +341,42 @@ class AuthAPIController {
             )
             val obj = JsonParser.parseString(body).getAsJsonObject
 
+            // Validate everything before any write. Types are strict: Gson's
+            // getAsBoolean / getAsString coerce strings and numbers ("maybe" ->
+            // false, 1 -> "1"), so a malformed body could otherwise widen a
+            // restricted user.
+            def isBool(name: String): Boolean = obj.get(name).isJsonPrimitive && obj.get(name).getAsJsonPrimitive.isBoolean
+            def isStr(name: String): Boolean = obj.get(name).isJsonPrimitive && obj.get(name).getAsJsonPrimitive.isString
+            if (obj.has("role") && !isStr("role"))
+                return ResponseEntity.badRequest().body("""{"error":"Invalid role"}""")
+            if (obj.has("resetPassword") && !obj.get("resetPassword").isJsonNull && !isBool("resetPassword"))
+                return badRequest("resetPassword must be true or false")
+            val effectiveRole =
+                if (obj.has("role")) obj.get("role").getAsString else current.role
+            val restrictedIn: Option[Boolean] =
+                if (!obj.has("restricted") || obj.get("restricted").isJsonNull) None
+                else if (!isBool("restricted")) return badRequest("restricted must be true or false")
+                else Some(obj.get("restricted").getAsBoolean)
+            if (restrictedIn.contains(true) && (effectiveRole == User.RoleAdmin || u == "admin"))
+                return badRequest("An admin cannot be restricted; admins always have access to every catalog")
+            val grantsIn: Option[java.util.Map[String, String]] =
+                if (!obj.has("catalogGrants")) None
+                else if (obj.get("catalogGrants").isJsonNull) Some(new java.util.LinkedHashMap[String, String]())
+                else if (!obj.get("catalogGrants").isJsonObject)
+                    return badRequest("catalogGrants must be an object of catalog -> view|edit|own")
+                else {
+                    val raw = new java.util.LinkedHashMap[String, String]()
+                    obj.getAsJsonObject("catalogGrants").entrySet().asScala.foreach { e =>
+                        val v = e.getValue
+                        // Only a JSON string is a level; numbers/booleans/objects are refused.
+                        raw.put(e.getKey, if (v.isJsonPrimitive && v.getAsJsonPrimitive.isString) v.getAsString else null)
+                    }
+                    CatalogGrants.validate(raw) match {
+                        case Left(err) => return badRequest(err)
+                        case Right(g) => Some(g)
+                    }
+                }
+
             // role change
             if (obj.has("role")) {
                 val newRole = obj.get("role").getAsString
@@ -355,10 +393,62 @@ class AuthAPIController {
                 md.addProperty("role", newRole)
                 md.addProperty("from", current.role)
                 AuditLog.record(request, "user", "update", "user", u, metadata = md)
+                // Promotion to admin clears a stored restricted flag (grants are
+                // kept), so a later demotion never silently re-restricts.
+                if (newRole == User.RoleAdmin && current.restricted && restrictedIn.isEmpty && grantsIn.isEmpty) {
+                    val kept = new java.util.LinkedHashMap[String, String]()
+                    CatalogGrants.grantsOf(current.catalogGrants).foreach { case (c, l) => kept.put(c, l) }
+                    UserStore.updateGrants(u, restricted = false, kept)
+                    if (current.isRestricted) {
+                        val rmd = new JsonObject
+                        rmd.addProperty("restricted", false)
+                        rmd.addProperty("from", true)
+                        AuditLog.record(request, "user", "set-restricted", "user", u, metadata = rmd)
+                    }
+                }
+            }
+
+            // restricted flag + catalog grants (full replacement). One audit row
+            // per flip and per added / changed / removed grant.
+            if (restrictedIn.isDefined || grantsIn.isDefined) {
+                val before = UserStore.find(u).getOrElse(current)
+                // Pre-PATCH snapshot: a role change earlier in this request must
+                // not hide a real restricted -> unrestricted flip from the audit.
+                val wasRestricted = current.isRestricted
+                val newRestricted = restrictedIn.getOrElse(wasRestricted) && effectiveRole != User.RoleAdmin
+                val oldGrants = CatalogGrants.grantsOf(before.catalogGrants).toMap
+                val newGrants = grantsIn.getOrElse(before.catalogGrants)
+                UserStore.updateGrants(u, newRestricted, newGrants)
+                if (newRestricted != wasRestricted) {
+                    val md = new JsonObject
+                    md.addProperty("restricted", newRestricted)
+                    md.addProperty("from", wasRestricted)
+                    AuditLog.record(request, "user", "set-restricted", "user", u, metadata = md)
+                }
+                grantsIn.foreach { g =>
+                    val next = g.asScala.toSeq
+                    next.foreach { case (catalog, level) =>
+                        val prior = oldGrants.get(catalog)
+                        if (!prior.contains(level)) {
+                            val md = new JsonObject
+                            md.addProperty("catalog", catalog)
+                            md.addProperty("level", level)
+                            prior.foreach(md.addProperty("from", _))
+                            AuditLog.record(request, "user", "grant-catalog", "user", u, metadata = md)
+                        }
+                    }
+                    val kept = next.map(_._1).toSet
+                    oldGrants.toSeq.sortBy(_._1).filterNot { case (c, _) => kept.contains(c) }.foreach { case (catalog, level) =>
+                        val md = new JsonObject
+                        md.addProperty("catalog", catalog)
+                        md.addProperty("from", level)
+                        AuditLog.record(request, "user", "revoke-catalog", "user", u, metadata = md)
+                    }
+                }
             }
 
             // reset password (admin sets back to null → user must set on next login)
-            if (obj.has("resetPassword") && obj.get("resetPassword").getAsBoolean) {
+            if (obj.has("resetPassword") && !obj.get("resetPassword").isJsonNull && obj.get("resetPassword").getAsBoolean) {
                 UserStore.updatePasswordHash(u, null)
                 AuditLog.record(request, "user", "reset-password", "user", u)
             }
@@ -400,11 +490,29 @@ class AuthAPIController {
     // -------- helpers --------
 
     private def toMeResponse(user: User): java.util.Map[String, Object] = {
-        Map[String, Object](
-            "username" -> user.username,
-            "role" -> user.role,
-            "mustSetPassword" -> Boolean.box(user.mustSetPassword)
-        ).asJava
+        val out = new java.util.LinkedHashMap[String, Object]()
+        out.put("username", user.username)
+        out.put("role", user.role)
+        out.put("mustSetPassword", Boolean.box(user.mustSetPassword))
+        // Admins are never restricted, whatever the stored flag says.
+        out.put("restricted", Boolean.box(user.isRestricted))
+        val grants = new java.util.LinkedHashMap[String, String]()
+        CatalogGrants.grantsOf(user.catalogGrants).foreach { case (c, l) => grants.put(c, l) }
+        out.put("catalogGrants", grants)
+        out
+    }
+
+    /** A user's catalog grants as a JSON object ({} when none). */
+    private def grantsJson(u: User): JsonObject = {
+        val o = new JsonObject
+        CatalogGrants.grantsOf(u.catalogGrants).foreach { case (c, l) => o.addProperty(c, l) }
+        o
+    }
+
+    private def badRequest(message: String): ResponseEntity[String] = {
+        val o = new JsonObject
+        o.addProperty("error", message)
+        ResponseEntity.badRequest().body(gson.toJson(o))
     }
 
     private def unauthorized(): ResponseEntity[String] =

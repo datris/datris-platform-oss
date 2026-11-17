@@ -34,7 +34,8 @@ import ai.datris.util.{
     TapScriptResult,
     TapState,
     TapStateIO,
-    TapTestPreviewCache
+    TapTestPreviewCache,
+    UserStore
 }
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -106,6 +107,8 @@ class CatalogAPIController {
                 )
             if (newName == name)
                 return badRequest("New name is the same as the current name")
+            // A restricted user renames only a catalog it owns (else hidden).
+            RestrictedCatalogRules.catalogRefusal(request, name, "delete").foreach(r => return r)
             // Registry check only (no Mongo read): a running ordered enable
             // reads and writes this catalog's taps by name.
             if (CatalogEnableJob.activeFor(name))
@@ -199,10 +202,25 @@ class CatalogAPIController {
                         }
 
                 val failures = failed.result()
+                // Users' catalog grants follow the catalog, in the same locked
+                // operation. A partial rename (some members left behind) keeps
+                // the old grant too, so nobody loses access to the leftovers.
+                val updatedUsers =
+                    if (okNames.isEmpty && placeholder != "created") Nil
+                    else
+                        try {
+                            if (failures.isEmpty) UserStore.renameCatalogInGrants(name, newName)
+                            else UserStore.copyCatalogInGrants(name, newName)
+                        } catch {
+                            case e: Exception =>
+                                logger.warn("Could not move user catalog grants " + name + " -> " + newName + ": " + e.getMessage)
+                                Nil
+                        }
                 val out = new JsonObject
                 out.add("renamed", toArray(okNames))
                 out.add("failed", failedArray(failures))
                 out.add("affectedKeys", toArray(affectedKeys(name)))
+                out.add("updatedUsers", toArray(updatedUsers))
                 out.addProperty("placeholder", placeholder)
                 respond(out, failures)
             }
@@ -235,6 +253,11 @@ class CatalogAPIController {
                     "Cascade delete removes every tap and pipeline in '" + name +
                         "' and their data; pass confirm=<catalog name> to proceed"
                 )
+            // Restricted users never delete catalogs (detach would land the
+            // members in Uncataloged, which they cannot see).
+            RestrictedCatalogRules.catalogRefusal(request, name, "read").foreach(r => return r)
+            if (CapabilityCheck.isRestrictedSession(request))
+                return PipelineAPIController.capabilityDenied(new DatrisException("capability denied: only an admin can delete a catalog"))
             if (CatalogEnableJob.activeFor(name))
                 return enableJobConflict(name, "deleted")
 
@@ -330,9 +353,21 @@ class CatalogAPIController {
                     placeholders.foreach(ph => removePlaceholder(ph.name, name, request).foreach(failed += _))
 
                 val failures = failed.result()
+                // Grants on a catalog that no longer exists are dropped; a
+                // partial delete keeps them for the members left behind.
+                val updatedUsers =
+                    if (failures.nonEmpty || denied.nonEmpty) Nil
+                    else
+                        try UserStore.removeCatalogFromGrants(name)
+                        catch {
+                            case e: Exception =>
+                                logger.warn("Could not remove user catalog grants for " + name + ": " + e.getMessage)
+                                Nil
+                        }
                 val out = new JsonObject
                 out.add(if (m == "detach") "detached" else "deleted", toArray(okNames))
                 out.add("failed", failedArray(failures))
+                out.add("updatedUsers", toArray(updatedUsers))
                 if (m == "cascade") out.add("warnings", CatalogAPIController.warningsArray(pipelineResult.warnings, tapResult.warnings))
                 respond(out, failures)
             }
@@ -357,6 +392,7 @@ class CatalogAPIController {
                 return jsonBytes(
                     badRequest("Catalog '" + Option(name).getOrElse("") + "' cannot be exported: Uncataloged and blank names are reserved")
                 )
+            RestrictedCatalogRules.catalogRefusal(request, name, "read").foreach(r => return jsonBytes(r))
 
             val (manifest, entries) = CatalogOps.withCatalogLock {
                 val (taps, pipelines) = loadAll()
@@ -397,6 +433,7 @@ class CatalogAPIController {
         try {
             logger.info("API endpoint GET /catalog/" + name + "/enable-order called")
             APIKeyValidator.validate(apiKey)
+            RestrictedCatalogRules.catalogRefusal(request, name, "read").foreach(r => return r)
 
             if (CatalogOps.isReserved(name))
                 return badRequest("Catalog '" + Option(name).getOrElse("") + "' has no enable order: Uncataloged and blank names are reserved")
@@ -469,6 +506,7 @@ class CatalogAPIController {
         try {
             logger.info("API endpoint POST /catalog/" + name + "/enable-ordered called")
             APIKeyValidator.validate(apiKey)
+            RestrictedCatalogRules.catalogRefusal(request, name, "run").foreach(r => return r)
 
             if (CatalogOps.isReserved(name))
                 return badRequest("Catalog '" + Option(name).getOrElse("") + "' cannot be enabled in order: Uncataloged and blank names are reserved")
@@ -515,6 +553,7 @@ class CatalogAPIController {
     ): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
+            RestrictedCatalogRules.catalogRefusal(request, name, "read").foreach(r => return r)
             // No job: nothing to read (and no owner to scope against).
             if (CatalogEnableJob.status(name).isEmpty)
                 return new ResponseEntity[String](CatalogEnableJob.statusBody(name).toString, HttpStatus.OK)
@@ -539,6 +578,7 @@ class CatalogAPIController {
         try {
             logger.info("API endpoint DELETE /catalog/" + name + "/enable-ordered called")
             APIKeyValidator.validate(apiKey)
+            RestrictedCatalogRules.catalogRefusal(request, name, "run").foreach(r => return r)
             CatalogAPIController.enableJobScopeDenial(request, "run", name).foreach(r => return r)
             val o = new JsonObject
             if (CatalogEnableJob.cancel(name)) {
@@ -602,6 +642,8 @@ class CatalogAPIController {
                 )
             if (file == null || file.isEmpty)
                 return badRequest("Request must include the archive as multipart field 'file'")
+            // A restricted user restores only into a catalog it may edit.
+            RestrictedCatalogRules.catalogRefusal(request, name, "create").foreach(r => return r)
             if (CatalogEnableJob.activeFor(name))
                 return enableJobConflict(name, "restored")
 
@@ -1390,7 +1432,11 @@ object CatalogAPIController {
       *  - 409 {"error", "cycles"} when TapDependencies.order has cycles;
       *  - 403 when the caller's key fails CapabilityCheck.assertScope for
       *    `tap:update` or `tap:run` on any member (scope = catalog + owner). */
-    def enableOrderedRefusal(request: HttpServletRequest, taps: Seq[TapConfig]): Option[ResponseEntity[String]] = {
+    def enableOrderedRefusal(
+        request: HttpServletRequest,
+        taps: Seq[TapConfig],
+        readPipeline: String => PipelineConfig = n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
+    ): Option[ResponseEntity[String]] = {
         val plan = TapDependencies.order(taps)
         if (plan.cycles.nonEmpty) {
             val o = new JsonObject
@@ -1420,6 +1466,9 @@ object CatalogAPIController {
                     )
             }
         }
+        // The job runs each tap in mode=run, feeding its target pipeline: same
+        // rule as POST /tap/run for a restricted user (no-op for everyone else).
+        for (t <- taps) TapAPIController.targetPipelineRefusal(request, t, readPipeline).foreach(r => return Some(r))
         None
     }
 
