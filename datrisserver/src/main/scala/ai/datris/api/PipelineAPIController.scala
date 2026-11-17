@@ -316,10 +316,18 @@ class PipelineAPIController {
         // one authoritative writer.
         // A failed read keeps the authority check fail-open, but a save that
         // adds a vector container is refused (500): it cannot be checked.
+        // A failed read is recorded for the hidden-writer rule (D6).
+        var configsUnreadable = false
         val others = PipelineAPIController.othersForSave(
             preserved,
             existing,
-            () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+            () =>
+                try PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+                catch {
+                    case e: Exception =>
+                        configsUnreadable = true
+                        throw e
+                }
         ) match {
             case Left(refused) =>
                 logger.warn("POST /pipeline " + preserved.name + " rejected: pipeline configs unreadable for the vector container check")
@@ -333,6 +341,22 @@ class PipelineAPIController {
         PipelineAPIController.vectorContainerRefusal(request, preserved, existing, others.filter(_ != null)).foreach { refused =>
             logger.warn("POST /pipeline " + preserved.name + " rejected: vector container in use by another pipeline")
             return Left(refused)
+        }
+        // A caller who cannot see every pipeline may not point this one at a
+        // table, collection, prefix or topic a pipeline hidden from it
+        // writes, whatever `authoritative` says. Runs before the authority
+        // check, whose remedy (authoritative=false) would be the bypass. The
+        // log line never names the hidden pipeline.
+        if (PipelineAPIController.limitedVisibility(request)) {
+            val dsEnv = PipelineAPIController.datasetEnv()
+            PipelineAPIController.hiddenWriterCheckUnavailable(request, preserved, existing, configsUnreadable, dsEnv).foreach { refused =>
+                logger.warn("POST /pipeline " + preserved.name + " rejected: pipeline configs unreadable for the shared destination check")
+                return Left(refused)
+            }
+            PipelineAPIController.hiddenWriterRefusal(request, preserved, existing, others.filter(_ != null), dsEnv).foreach { refused =>
+                logger.warn("POST /pipeline " + preserved.name + " rejected: destination in use by a pipeline the caller cannot see")
+                return Left(refused)
+            }
         }
         PipelineAPIController.authorityRefusal(request, preserved, others).foreach(refused => return Left(refused))
         val note = if (changeNote != null && changeNote.nonEmpty) changeNote
@@ -593,11 +617,14 @@ class PipelineAPIController {
 
         // Read before anything is deleted (this config's own row is in the
         // list and excluded by name), and only when the config names a vector
-        // container. A read failure propagates (500, nothing destroyed): a
-        // dropped container shared with another pipeline cannot be undone.
-        val otherConfigs = PipelineAPIController.vectorOthersForDelete(
+        // container, table or collection. A read failure propagates (500,
+        // nothing destroyed): a dropped container or table shared with another
+        // pipeline cannot be undone.
+        val dsEnv = PipelineAPIController.datasetEnv()
+        val otherConfigs = PipelineAPIController.othersForDelete(
             config,
             deleteDataBool,
+            dsEnv,
             () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
         )
 
@@ -616,14 +643,24 @@ class PipelineAPIController {
         if (deleteDataBool && config.destination != null) {
             // A vector container another pipeline also names is kept and reported.
             val sharedVector = VectorContainers.sharedOnDelete(config, otherConfigs)
-            val objectStoreDataDeleted = cleanupDestinationData(config, sharedVector.map(_._1).toSet)
+            // A table or collection another pipeline also writes (including a
+            // pgvector / Postgres table the other kind names) is kept and reported.
+            val sharedStructured = SharedDatasets.sharedOnDelete(config, otherConfigs, dsEnv)
+            val objectStoreDataDeleted = cleanupDestinationData(config, sharedVector.map(_._1).toSet, sharedStructured.map(_._1).toSet)
             sharedVector.foreach { case (k, sharers) =>
                 logger.warn(
                     "Skipped vector data delete for pipeline '" + pipeline + "': " + VectorContainers.label(VectorContainers.displayKey(k, config)) +
                         " is also named by pipeline(s): " + sharers.map(_.name).mkString(", ")
                 )
             }
+            sharedStructured.foreach { case (k, sharers) =>
+                logger.warn(
+                    "Skipped data delete for pipeline '" + pipeline + "': " + SharedDatasets.label(k) +
+                        " is also written by pipeline(s): " + sharers.map(_.name).mkString(", ")
+                )
+            }
             warnings ++= PipelineAPIController.vectorDeleteWarnings(request, config, otherConfigs)
+            warnings ++= PipelineAPIController.structuredDeleteWarnings(request, config, otherConfigs, dsEnv)
             UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
                 warnings += advice
                 ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, objectStoreDataDeleted, adviceGiven = true)
@@ -743,15 +780,22 @@ class PipelineAPIController {
 
     /** Returns true when the object-store destination's files were deleted
       * (false when there is none, the prefix is shared, or the delete failed). */
-    private def cleanupDestinationData(config: PipelineConfig, keepVector: Set[VectorContainers.Key]): Boolean = {
+    private def cleanupDestinationData(
+        config: PipelineConfig,
+        keepVector: Set[VectorContainers.Key],
+        keepStructured: Set[SharedDatasets.Key]
+    ): Boolean = {
         val dest = config.destination
         var objectStoreDataDeleted = false
         // A vector container another pipeline also names is kept.
         def dropVector(store: String, name: String, schema: Option[String] = None): Boolean =
             !VectorContainers.key(store, name, schema).exists(keepVector.contains)
+        // A table or collection another pipeline also writes is kept. The
+        // keys are this config's own, at most one per destination kind.
+        def dropStructured(kind: String): Boolean = !keepStructured.exists(_.kind == kind)
 
         // PostgreSQL — DROP TABLE
-        if (dest.database != null && dest.database.usePostgres) {
+        if (dest.database != null && dest.database.usePostgres && dropStructured("postgres")) {
             try {
                 val secrets = SecretsRetrieverUtil.postgresSecrets()
                 Class.forName("org.postgresql.Driver")
@@ -777,7 +821,7 @@ class PipelineAPIController {
         }
 
         // MongoDB — drop collection
-        if (dest.database != null && dest.database.useMongoDB) {
+        if (dest.database != null && dest.database.useMongoDB && dropStructured("mongodb")) {
             try {
                 val secrets = SecretsRetrieverUtil.mongoDbSecrets()
                 val connString = new com.mongodb.ConnectionString(secrets.connectionString)
@@ -799,7 +843,7 @@ class PipelineAPIController {
         // Snowflake — DROP TABLE in the external account, connecting with the
         // pipeline's own credentialsSecret/warehouse/role (the loader role owns
         // the tables it created, so it is allowed to drop them).
-        if (dest.database != null && dest.database.useSnowflake) {
+        if (dest.database != null && dest.database.useSnowflake && dropStructured("snowflake")) {
             try {
                 SnowflakeConnectionUtil.withConnection(dest.database) { conn =>
                     val stmt = conn.createStatement()
@@ -818,7 +862,7 @@ class PipelineAPIController {
         // SQL Server — DROP TABLE in the external database, connecting with the
         // pipeline's own credentialsSecret (the loader login created the table,
         // so it owns it and may drop it).
-        if (dest.database != null && dest.database.useSqlServer) {
+        if (dest.database != null && dest.database.useSqlServer && dropStructured("sqlserver")) {
             try {
                 SqlServerConnectionUtil.withConnection(dest.database) { conn =>
                     val stmt = conn.createStatement()
@@ -840,7 +884,7 @@ class PipelineAPIController {
         // the pipeline's own credentialsSecret/warehouse (the service principal
         // owns the tables it created, so it is allowed to drop them). The
         // shared datris_staging volume is left alone — other pipelines use it.
-        if (dest.database != null && dest.database.useDatabricks) {
+        if (dest.database != null && dest.database.useDatabricks && dropStructured("databricks")) {
             try {
                 DatabricksConnectionUtil.withConnection(dest.database, pipelineName = config.name) { conn =>
                     val stmt = conn.createStatement()
@@ -857,7 +901,7 @@ class PipelineAPIController {
         }
 
         // pgvector — DROP TABLE
-        if (dest.pgvector != null && dropVector("pgvector", dest.pgvector.tableName, Option(dest.pgvector.schemaName))) {
+        if (dest.pgvector != null && dropVector("pgvector", dest.pgvector.tableName, Option(dest.pgvector.schemaName)) && dropStructured("pgvector")) {
             try {
                 val secretName = DatrisEnvironment.current.pgvectorSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
@@ -1252,6 +1296,132 @@ object PipelineAPIController {
     def vectorDeleteWarnings(request: HttpServletRequest, config: PipelineConfig, others: Seq[PipelineConfig]): Seq[String] =
         VectorContainers.sharedOnDelete(config, others).map { case (k, sharers) =>
             VectorContainers.keptOnDeleteMessage(VectorContainers.displayKey(k, config), visibleNamesOf(request, sharers))
+        }
+
+    /** The environment values shared-dataset keys depend on: the default
+      * bucket, the tenant database (multiTenant) and the pgvector secret's
+      * database. Never throws: an unreadable environment or pgvector secret
+      * leaves that value unknown (an unknown pgvector database matches any
+      * Postgres database, the safe direction). */
+    def datasetEnv(): SharedDatasets.Env = {
+        val env = scala.util.Try(DatrisEnvironment.current).toOption.flatMap(Option(_))
+        val defaultBucket = env.flatMap(e => scala.util.Try(e.environment + "-data").toOption).getOrElse("")
+        val multiTenant = env.exists(e => scala.util.Try(e.multiTenant).getOrElse(false))
+        val tenantDatabase = if (multiTenant) env.flatMap(e => Option(e.environment)) else None
+        val pgvectorDatabase =
+            if (multiTenant) tenantDatabase
+            else
+                env.flatMap { e =>
+                    scala.util
+                        .Try(SecretsUtil.getSecretMap(e.pgvectorSecretName))
+                        .toOption
+                        .flatten
+                        .flatMap(m => Option(m.get("jdbcUrl")))
+                        .flatMap(SharedDatasets.databaseOfJdbcUrl)
+                }
+        SharedDatasets.Env(defaultBucket, tenantDatabase, pgvectorDatabase)
+    }
+
+    /** True when the caller cannot see every pipeline: a restricted user's
+      * session, or an API key whose pipeline read is scoped (`catalog=`,
+      * `owner=self`) or absent. False for unrestricted sessions, full keys
+      * and no key (auth off). */
+    def limitedVisibility(request: HttpServletRequest): Boolean =
+        !CapabilityCheck.grants(request, "pipeline", "read", Map.empty)
+
+    /** POST /pipeline (and version restore), limited-visibility callers
+      * only: 400 `{"error": ...}` when the candidate adds a dataset (not
+      * already written by `stored`) that a pipeline hidden from the caller
+      * writes. The text is the same whatever `authoritative` says and never
+      * names a pipeline or catalog. None for everyone else. */
+    def hiddenWriterRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env
+    ): Option[ResponseEntity[String]] =
+        if (!limitedVisibility(request)) None
+        else
+            SharedDatasets
+                .hiddenWriterConflicts(candidate, stored, others, o => visiblePipelines(request, Seq(o)).nonEmpty, env)
+                .headOption
+                .map { k =>
+                    val name = LineageService
+                        .datasets(candidate)
+                        .find(_.kind == k.kind)
+                        .map(_.name)
+                        .getOrElse(k.kind + ":" + k.parts.filter(_.nonEmpty).mkString("."))
+                    val body = new JsonObject()
+                    body.addProperty("error", SharedDatasets.refusalMessage(name))
+                    ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString)
+                }
+
+    /** POST /pipeline: 500 "nothing was saved" when the config read failed
+      * and a limited-visibility caller's candidate adds a dataset its stored
+      * config does not write (the hidden-writer rule cannot be checked).
+      * None for everyone else (fail-open, as before). */
+    def hiddenWriterCheckUnavailable(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        readFailed: Boolean,
+        env: SharedDatasets.Env
+    ): Option[ResponseEntity[String]] =
+        if (!readFailed || !limitedVisibility(request)) None
+        else {
+            val kept = SharedDatasets.keysOf(stored, env).toSet
+            if (!SharedDatasets.keysOf(candidate, env).exists(k => !kept.contains(k))) None
+            else
+                Some(
+                    ResponseEntity
+                        .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body[String](
+                            ApiErrors.errorBody(
+                                "Could not check whether the destination is used by another pipeline; nothing was saved. Try again."
+                            )
+                        )
+                )
+        }
+
+    /** DELETE /pipeline: the configs the vector and structured delete guards
+      * are checked against. Nil without reading when no data is deleted or
+      * the config names no vector container and no table or collection;
+      * otherwise `read()` (nulls dropped), whose failure propagates so the
+      * delete fails before anything is destroyed. */
+    def othersForDelete(
+        config: PipelineConfig,
+        deleteData: Boolean,
+        env: SharedDatasets.Env,
+        read: () => Seq[PipelineConfig]
+    ): Seq[PipelineConfig] = {
+        val guarded = VectorContainers.keysOf(config).nonEmpty ||
+            SharedDatasets.keysOf(config, env).exists(k => SharedDatasets.StructuredFamilies.contains(k.family))
+        if (!deleteData || !guarded) Nil
+        else
+            try read().filter(_ != null)
+            catch {
+                case e: Exception =>
+                    throw new IllegalStateException(
+                        "Could not read pipeline configs to check for shared tables, collections or vector containers; nothing was deleted: " +
+                            e.getMessage,
+                        e
+                    )
+            }
+    }
+
+    /** DELETE /pipeline: one warning per table or collection of `config`
+      * that another pipeline in `others` also writes (it is kept). Sharers
+      * are named only when the caller can see all of them. */
+    def structuredDeleteWarnings(
+        request: HttpServletRequest,
+        config: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env
+    ): Seq[String] =
+        SharedDatasets.sharedOnDelete(config, others, env).map { case (k, sharers) =>
+            SharedDatasets.keptOnDeleteMessage(SharedDatasets.label(k), visibleNamesOf(request, sharers))
         }
 
     /** GET /pipelines: the configs the caller may read (per-item scope

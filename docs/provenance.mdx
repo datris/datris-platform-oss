@@ -95,7 +95,7 @@ Each edge in the graph carries what actually traversed it in the last 90 days: r
 Provenance answers where a row came from; authority answers which copy you may cite. Every dataset node carries one of three labels, **declared, never inferred**:
 
 - **system of record** (`authoritative`) — the copy to cite. A pipeline with a single destination is authoritative by default, so existing configurations need no change.
-- **derived** — a copy: a rollup, a replica, an index built from another dataset, or a historical dataset nothing lands into anymore. Set `"authoritative": false` on the pipeline (wizard: *This pipeline lands a derived copy*; `create_pipeline`: `authoritative: false`).
+- **derived** — a copy: a rollup, a replica, an index built from another dataset, or a historical dataset nothing lands into anymore. Set `"authoritative": false` on the pipeline (wizard: *This pipeline lands a derived copy*; `create_pipeline`: `authoritative: false`). This does not let a user or key that cannot see every pipeline write to a dataset a pipeline hidden from them writes; that save is refused.
 - **undeclared** — more than one candidate and no decision: a pipeline with several destinations and no `destination.authoritative`, or two pipelines that both claim the same dataset. The graph shows an amber ring; saving a second authoritative writer for the same dataset is rejected.
 
 `find_data` lists the authoritative location first and labels the rest; `get_provenance` reports the authority of each dataset a run wrote; the graph's **Canonical only** filter shows just the systems of record and their chains.

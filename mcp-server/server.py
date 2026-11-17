@@ -1135,7 +1135,7 @@ Live Read uses the same source shape as the structured destinations (a sample is
 
 All vector DB destinations require chunking and embedding config. Call `check_service_health` to see which vector DBs are available.
 
-One pipeline per container: a vector destination's collection, class or table must not already be used by another pipeline; the save is refused. Deleting a pipeline keeps a collection another pipeline also writes to and reports it in `warnings`.
+One pipeline per container: a vector destination's collection, class or table must not already be used by another pipeline; the save is refused. Deleting a pipeline keeps a collection another pipeline also writes to and reports it in `warnings`. Likewise, on delete a table or collection another pipeline also writes to is kept and reported in `warnings` (a pgvector table and a Postgres destination table with the same schema and name count as one table).
 
 `metadata` keys named `source_pipeline` or `source_dataset` are reserved and ignored; do not use them (on pgvector a `source_pipeline` key fails the load).
 
@@ -2024,7 +2024,7 @@ def _base_tools():
                     },
                     "authoritative": {
                         "type": "boolean",
-                        "description": "OMIT BY DEFAULT. Pass false only when the user says this pipeline lands a derived copy (a rollup, a replica, an index built from another dataset) rather than the system of record. A pipeline's single destination is the authoritative copy by default; lineage and find_data mark derived copies so agents cite the right one."
+                        "description": "OMIT BY DEFAULT. Pass false only when the user says this pipeline lands a derived copy (a rollup, a replica, an index built from another dataset) rather than the system of record. A pipeline's single destination is the authoritative copy by default; lineage and find_data mark derived copies so agents cite the right one. Setting it does not allow writing to a destination used by a pipeline you cannot see; that save is refused."
                     },
                     "unity_catalog": {
                         "type": "boolean",
@@ -2255,6 +2255,7 @@ def _base_tools():
                 "pass keep_config=true; the config survives, the data does not. "
                 "A vector collection another pipeline also writes to is kept and reported in `warnings`; "
                 "a keep_config=true reset then leaves that shared collection and the document-tap ledgers as they are. "
+                "Likewise, a table or collection another pipeline also writes to is kept and reported in `warnings`. "
                 "ALWAYS confirm with the user before calling this tool."
             ),
             inputSchema={

@@ -33,14 +33,35 @@ object EntityVersionAPIController {
 
     /** Restoring a pipeline version is a save: a snapshot naming a vector
       * container that the live config (null when deleted) does not, and
-      * that another pipeline names, is refused like POST /pipeline. */
+      * that another pipeline names, is refused like POST /pipeline; so is a
+      * snapshot that, for a caller who cannot see every pipeline, adds a
+      * dataset a pipeline hidden from it writes. The environment values are
+      * read only for such a caller. */
     def pipelineRestoreRefusal(
         request: HttpServletRequest,
         snap: PipelineConfig,
         live: PipelineConfig,
         others: Seq[PipelineConfig]
     ): Option[ResponseEntity[String]] =
-        PipelineAPIController.vectorContainerRefusal(request, snap, live, others)
+        PipelineAPIController
+            .vectorContainerRefusal(request, snap, live, others)
+            .orElse(
+                if (PipelineAPIController.limitedVisibility(request))
+                    PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, PipelineAPIController.datasetEnv())
+                else None
+            )
+
+    /** [[pipelineRestoreRefusal]] with the shared-dataset environment given. */
+    def pipelineRestoreRefusal(
+        request: HttpServletRequest,
+        snap: PipelineConfig,
+        live: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env
+    ): Option[ResponseEntity[String]] =
+        PipelineAPIController
+            .vectorContainerRefusal(request, snap, live, others)
+            .orElse(PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, env))
 
     /** For a restricted user's session only: true when the item's history
       * must look absent, i.e. the live item is missing (orphaned history of a
