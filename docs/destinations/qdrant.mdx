@@ -41,7 +41,7 @@ Ingest unstructured documents (PDFs, text files, HTML) into [Qdrant](https://qdr
 |---|---|---|---|
 | `collectionName` | string | (required) | Qdrant collection name. Auto-created if it doesn't exist. Must not be used by another pipeline (the save is refused). |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
-| `metadata` | map | `{}` | Static key-value metadata stored on every chunk as Qdrant payload. Used for filtered search. |
+| `metadata` | map | `{}` | Static key-value metadata stored on every chunk as Qdrant payload. Used for filtered search. `source_pipeline` and `source_dataset` are reserved; a metadata key with either name is ignored. |
 | `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
 | `qdrantSecretName` | string | _server default_ | Vault secret name for the Qdrant connection. Only consulted when the server-level `secrets.qdrantSecretName` is unset; with the default configuration (`oss/qdrant`) the server-level secret is always used and this field is ignored. |
 

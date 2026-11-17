@@ -3960,6 +3960,12 @@ paths:
         ignored. Request fields vary slightly per store — qdrant, milvus, and
         chroma name their container with `collection`, weaviate with
         `className`, pgvector with `table` (plus an optional `schema`).
+        For a user with scoped catalog access, a container is searchable only
+        when every pipeline writing to it is in their catalogs (otherwise
+        `404`). Results hold only chunks written by pipelines in their
+        catalogs; a chunk from any other pipeline, or with no recorded
+        pipeline, is left out and not counted, so fewer than `topK` results
+        can come back.
       parameters:
         - name: store
           in: path

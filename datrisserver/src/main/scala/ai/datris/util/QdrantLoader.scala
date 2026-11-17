@@ -21,6 +21,18 @@ class QdrantLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext) 
 
     private val qdrantConfig = config.destination.qdrant
 
+    /** Destination `metadata` written onto each chunk; the writer fields are
+      * reserved (see [[VectorChunkWriter]]). Computed, and warned about, once per load. */
+    private lazy val chunkMetadata: Seq[(String, String)] = {
+        val ignored = VectorChunkWriter.ignoredKeys(qdrantConfig.metadata)
+        if (ignored.nonEmpty)
+            logger.warn(
+                "Qdrant destination metadata keys " + ignored.mkString(", ") + " for pipeline " + config.name +
+                    " are reserved and ignored; source_pipeline is always the pipeline name"
+            )
+        VectorChunkWriter.staticMetadata(qdrantConfig.metadata)
+    }
+
     override type Client = QdrantClient
 
     override protected def destinationType: String = "qdrant"
@@ -58,11 +70,7 @@ class QdrantLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext) 
             payload.put("filename", value(filename))
 
             // Static metadata from config
-            if (qdrantConfig.metadata != null) {
-                qdrantConfig.metadata.asScala.foreach { case (key, v) =>
-                    if (v != null) payload.put(key, value(v))
-                }
-            }
+            chunkMetadata.foreach { case (key, v) => payload.put(key, value(v)) }
 
             PointStruct.newBuilder()
                 .setId(id(row.id))

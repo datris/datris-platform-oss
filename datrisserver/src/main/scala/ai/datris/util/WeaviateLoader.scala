@@ -16,6 +16,18 @@ class WeaviateLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext
 
     private val weaviateConfig = config.destination.weaviate
 
+    /** Destination `metadata` written onto each chunk; the writer fields are
+      * reserved (see [[VectorChunkWriter]]). Computed, and warned about, once per load. */
+    private lazy val chunkMetadata: Seq[(String, String)] = {
+        val ignored = VectorChunkWriter.ignoredKeys(weaviateConfig.metadata)
+        if (ignored.nonEmpty)
+            logger.warn(
+                "Weaviate destination metadata keys " + ignored.mkString(", ") + " for pipeline " + config.name +
+                    " are reserved and ignored; source_pipeline is always the pipeline name"
+            )
+        VectorChunkWriter.staticMetadata(weaviateConfig.metadata)
+    }
+
     override type Client = WeaviateClient
 
     override protected def destinationType: String = "weaviate"
@@ -57,11 +69,7 @@ class WeaviateLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext
             properties.put("filename", filename)
 
             // Static metadata from config
-            if (weaviateConfig.metadata != null) {
-                weaviateConfig.metadata.asScala.foreach { case (key, v) =>
-                    if (v != null) properties.put(key, v)
-                }
-            }
+            chunkMetadata.foreach { case (key, v) => properties.put(key, v) }
 
             val weaviateObject = io.weaviate.client.v1.data.model.WeaviateObject.builder()
                 .className(weaviateConfig.className)
@@ -95,10 +103,8 @@ class WeaviateLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext
         properties.add(Property.builder().name("filename").dataType(java.util.Arrays.asList(DataType.TEXT)).build())
 
         // Add metadata field properties dynamically
-        if (weaviateConfig.metadata != null) {
-            weaviateConfig.metadata.asScala.keys.foreach { key =>
-                properties.add(Property.builder().name(key).dataType(java.util.Arrays.asList(DataType.TEXT)).build())
-            }
+        chunkMetadata.foreach { case (key, _) =>
+            properties.add(Property.builder().name(key).dataType(java.util.Arrays.asList(DataType.TEXT)).build())
         }
 
         val weaviateClass = WeaviateClass.builder()

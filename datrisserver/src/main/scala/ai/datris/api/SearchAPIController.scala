@@ -36,6 +36,43 @@ object SearchAPIController {
             )
         }
 
+    /** The search gate and its allowed writers. Unrestricted sessions and
+      * every API key: `Right(None)`, without calling `readAll`. A restricted
+      * user's session: one `readAll` (nulls dropped); the [[containerVisible]]
+      * rule on it, `Left` the existing 404 when it fails; otherwise
+      * `Right(Some(names))`, the names of every pipeline the session can read
+      * (in any store). A `readAll` failure propagates (fail closed). */
+    def searchWriters(
+        request: jakarta.servlet.http.HttpServletRequest,
+        store: String,
+        container: String,
+        schema: Option[String],
+        readAll: () => Seq[ai.datris.model.PipelineConfig]
+    ): Either[ResponseEntity[String], Option[Set[String]]] =
+        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) Right(None)
+        else {
+            val configs = Option(readAll()).getOrElse(Nil).filter(_ != null)
+            if (!containerVisible(request, store, container, schema, (s, c, sc) => VectorSearchRegistry.pipelinesForContainer(s, c, configs, sc))) {
+                val param = VectorSearchRegistry.forStore(store).map(_.containerParam).getOrElse("container")
+                Left(containerNotFound(param, container))
+            } else Right(Some(PipelineAPIController.visiblePipelines(request, configs).map(_.name).toSet))
+        }
+
+    /** The single place search hits are post-processed before the response.
+      * `writers` from [[searchWriters]]: None returns `hits` itself (same
+      * instance); Some keeps only chunks written by one of those pipelines
+      * ([[VectorChunkWriter.keepWrittenBy]]). Further per-hit scrubs belong
+      * here, after the writer check, applied to the survivors. */
+    def hitsFor(
+        request: jakarta.servlet.http.HttpServletRequest,
+        hits: java.util.List[java.util.Map[String, Any]],
+        writers: Option[Set[String]]
+    ): java.util.List[java.util.Map[String, Any]] =
+        writers match {
+            case None => hits
+            case Some(w) => VectorChunkWriter.keepWrittenBy(hits, w)
+        }
+
     def containerNotFound(param: String, container: String): ResponseEntity[String] =
         ResponseEntity
             .status(HttpStatus.NOT_FOUND)
@@ -72,15 +109,29 @@ class SearchAPIController {
             // A restricted user searches only containers fed by a pipeline in
             // its catalog grants; any other container is as if it did not exist.
             val schema = if (store == "pgvector") Option(body.get("schema")).map(_.toString) else None
-            if (!SearchAPIController.containerVisible(request, store, container, schema, VectorSearchRegistry.findPipelinesForContainer))
-                return SearchAPIController.containerNotFound(util.containerParam, container)
+            // A restricted user also gets only chunks written by pipelines it
+            // can read (a container no config names can hold other catalogs' chunks).
+            val writers = SearchAPIController.searchWriters(
+                request,
+                store,
+                container,
+                schema,
+                () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+            ) match {
+                case Left(notFound) => return notFound
+                case Right(w) => w
+            }
             // Always use the server's secret names — the client may have stale/incorrect
             // names, and in multi-tenant mode this enforces tenant isolation.
             val embeddingSecretName = DatrisEnvironment.current.embeddingSecretName
             val secretName = util.tenantSecretName
             val topK = optInt(body, "topK", 5)
 
-            val results = util.searchStore(query, container, embeddingSecretName, secretName, topK, body)
+            val results = SearchAPIController.hitsFor(
+                request,
+                util.searchStore(query, container, embeddingSecretName, secretName, topK, body),
+                writers
+            )
             buildResponse(results)
         } catch {
             case e: DatrisException =>

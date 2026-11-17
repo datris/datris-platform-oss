@@ -1137,6 +1137,8 @@ All vector DB destinations require chunking and embedding config. Call `check_se
 
 One pipeline per container: a vector destination's collection, class or table must not already be used by another pipeline; the save is refused. Deleting a pipeline keeps a collection another pipeline also writes to and reports it in `warnings`.
 
+`metadata` keys named `source_pipeline` or `source_dataset` are reserved and ignored; do not use them (on pgvector a `source_pipeline` key fails the load).
+
 **qdrant:**
 ```json
 "destination": {

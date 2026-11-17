@@ -45,7 +45,7 @@ pgvector uses your existing PostgreSQL infrastructure — no separate vector dat
 | `tableName` | string | (required) | PostgreSQL table name. Auto-created with vector column if it doesn't exist. Must not be used by another pipeline (the save is refused). |
 | `schemaName` | string | `"public"` | PostgreSQL schema name. Auto-created if it doesn't exist. |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
-| `metadata` | map | `{}` | Static key-value metadata stored as columns on every chunk. Use snake_case for column names. |
+| `metadata` | map | `{}` | Static key-value metadata stored as columns on every chunk. Use snake_case for column names. `source_pipeline` is reserved; using it as a metadata key fails the load. |
 | `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
 | `postgresSecretName` | string | _server default_ | Vault secret name for the PostgreSQL connection. Only consulted when the server-level `secrets.pgvectorSecretName` is unset; with the default configuration (`oss/pgvector`, seeded automatically) the server-level secret is always used and this field is ignored. |
 
