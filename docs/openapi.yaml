@@ -4580,8 +4580,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConfigUploadResponse'
+        '400':
+          description: '`type` is not `validation-schema` or `javascript`, or the file name is missing, has no usable segment, or contains characters outside letters, digits, `.`, `_`, `-`. Body: `{"error": ...}`'
         '500':
-          description: Error
+          description: 'Storage failure. Body: `{"error": ...}`'
 
   # ── Health Check ───────────────────────────────────────────
 
@@ -4759,8 +4761,10 @@ paths:
                     type: string
                   schema:
                     type: string
+        '400':
+          description: 'The body is not valid JSON or not a JSON object; `type`, `name` or `sampleData` is missing, null or not a string; `type` is not `json-schema` or `xsd`; `name` or `sampleData` is blank; or `name` is not a usable file name. Refused before the model is called. Body: `{"error": ...}`'
         '500':
-          description: Error
+          description: 'Model or storage failure. Body: `{"error": ...}`'
 
   # ── Taps (Beta) ──────────────────────────────────────────
 
