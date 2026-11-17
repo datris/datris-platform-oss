@@ -145,4 +145,61 @@ class RestrictedSearchStampsPlantedSpec extends AnyFunSuite with BeforeAndAfterE
         val hs = hits(hit(1, "_datris_tap_run" -> "t_sales|x", "_datris_source" -> "tap:t_hr_feed"))
         assert(SearchAPIController.hitsFor(req(editor), hs, None, readTap, failRun) eq hs)
     }
+
+    // ------------------------------------------------------------ planted filename
+
+    private def hrRun(id: String): Option[RunLineage] = Some(RunLineage(id, "orders", input = RunLineageInput("tap", tapName = "t_hr_feed")))
+
+    /** A chunk of a hidden tap's run whose `filename` was replaced by a
+      * static `metadata.filename` naming a readable tap (chunks written before
+      * `filename` became a reserved metadata key). */
+    private def plantedFile(id: Int): Hit =
+        hit(
+            id,
+            "_datris_run_id" -> "run-hr",
+            "_datris_source" -> "hr.internal",
+            "_datris_script_sha" -> "sha-hr",
+            "filename" -> "tap-t_sales.csv"
+        )
+
+    test("a planted readable feed filename does not vouch for a hidden tap's stamps: the run record decides") {
+        val out = SearchAPIController.hitsFor(req(bob), hits(plantedFile(1)), writers, readTap, id => hrRun(id))
+        assertStripped(out.get(0), "planted tap-t_sales.csv, run record t_hr_feed")
+        assert(out.get(0).get("_datris_run_id") == "run-hr")
+        assert(out.get(0).get("filename") == "tap-t_sales.csv", "a readable filename is not renamed")
+        val body = new Gson().toJson(out)
+        assert(!body.contains("hr.internal") && !body.contains("sha-hr"), body)
+
+        // no run record, or one filed under another pipeline: fail closed
+        val noRecord = SearchAPIController.hitsFor(req(bob), hits(plantedFile(2)), writers, readTap, _ => None)
+        assertStripped(noRecord.get(0), "planted filename, no run record")
+        val otherWriter = SearchAPIController.hitsFor(
+            req(bob),
+            hits(plantedFile(3)),
+            writers,
+            readTap,
+            id => Some(RunLineage(id, "payroll", input = RunLineageInput("tap", tapName = "t_sales")))
+        )
+        assertStripped(otherWriter.get(0), "planted filename, record of another pipeline")
+
+        // the run record of the readable tap keeps the columns
+        val readableRun: String => Option[RunLineage] = id => Some(RunLineage(id, "orders", input = RunLineageInput("tap", tapName = "t_sales")))
+        val keptHits = hits(plantedFile(4))
+        assert(SearchAPIController.hitsFor(req(bob), keptHits, writers, readTap, readableRun) eq keptHits)
+    }
+
+    test("a readable feed filename with no run id keeps the stamp columns and run is not called") {
+        // Pinned by RestrictedSearchStampsSpec (filename-only readable hits are kept
+        // with no run lookup); the planting route for new chunks is closed by
+        // filename being a reserved static metadata key.
+        val hs = hits(hit(1, "_datris_source" -> "feeds.example.com", "_datris_script_sha" -> "s", "filename" -> "tap-t_sales.json"))
+        assert(SearchAPIController.hitsFor(req(bob), hs, writers, readTap, failRun) eq hs)
+    }
+
+    test("a hidden feed filename strips the stamps even beside a run id, and run is not called") {
+        val h = hit(1, "_datris_run_id" -> "run-s", "_datris_source" -> "feeds.example.com", "_datris_script_sha" -> "s", "filename" -> "tap-t_hr_feed.csv")
+        val out = SearchAPIController.hitsFor(req(bob), hits(h), writers, readTap, failRun)
+        assertStripped(out.get(0), "hidden feed filename")
+        assert(out.get(0).get("filename") == "tap-[hidden].csv")
+    }
 }

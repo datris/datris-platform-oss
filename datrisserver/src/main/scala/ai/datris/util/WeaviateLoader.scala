@@ -16,14 +16,16 @@ class WeaviateLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext
 
     private val weaviateConfig = config.destination.weaviate
 
-    /** Destination `metadata` written onto each chunk; the writer fields are
-      * reserved (see [[VectorChunkWriter]]). Computed, and warned about, once per load. */
-    private lazy val chunkMetadata: Seq[(String, String)] = {
+    /** Destination `metadata` written onto each chunk; the writer and
+      * loader-written fields are reserved ([[VectorChunkWriter.ReservedKeys]]).
+      * Computed, and warned about, once per load. */
+    private[util] lazy val chunkMetadata: Seq[(String, String)] = {
         val ignored = VectorChunkWriter.ignoredKeys(weaviateConfig.metadata)
         if (ignored.nonEmpty)
             logger.warn(
                 "Weaviate destination metadata keys " + ignored.mkString(", ") + " for pipeline " + config.name +
-                    " are reserved and ignored; source_pipeline is always the pipeline name"
+                    " are reserved and ignored; source_pipeline is always the pipeline name and " +
+                    VectorChunkWriter.LoaderFields.mkString(", ") + " are written by the loader"
             )
         VectorChunkWriter.staticMetadata(weaviateConfig.metadata)
     }
