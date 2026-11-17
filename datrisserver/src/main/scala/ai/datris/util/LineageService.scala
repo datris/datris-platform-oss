@@ -610,7 +610,17 @@ object LineageService {
             val arr = new JsonArray()
             val visibleRuns =
                 if (graph == null) recentRuns(nodeType, name, runs)
-                else recentRuns(nodeType, name, runs).filter(r => r.pipeline != null && byId.contains("pipeline:" + r.pipeline))
+                else {
+                    // A run filed under a renamed pipeline's earlier name
+                    // counts for that pipeline (PipelineAliases).
+                    val aliases = PipelineAliases.aliasOwners(entry.pipelines)
+                    recentRuns(nodeType, name, runs).filter { r =>
+                        r.pipeline != null &&
+                        (byId.contains("pipeline:" + r.pipeline) ||
+                            (!entry.pipelines.exists(p => p != null && p.name == r.pipeline) &&
+                                aliases.get(r.pipeline).exists(o => byId.contains("pipeline:" + o.name))))
+                    }
+                }
             visibleRuns.foreach(r => arr.add(runToJson(r)))
             o.add("runs", arr)
         }

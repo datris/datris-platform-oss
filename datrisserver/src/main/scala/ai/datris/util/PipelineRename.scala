@@ -62,7 +62,33 @@ object PipelineRename {
       * a rename that stopped half way, which a repeated rename continues. */
     def resumable(old: PipelineConfig, existingNew: PipelineConfig): Boolean =
         old != null && existingNew != null &&
-            existingNew.copy(name = old.name, version = old.version) == old
+            existingNew.copy(name = old.name, version = old.version, previousNames = old.previousNames) == old
+
+    /** Evidence that `newName`'s stored history was written by an earlier
+      * attempt of this same rename (`old` -> `newName`), from the version
+      * rows of both names: the latest row of `newName` is the rename's own
+      * version (note `renamed <old> -> <newName>`), or every row of
+      * `newName` is a re-keyed copy of an `old` row (same version, time and
+      * note: the attempt stopped before its own version). A `newName` with no
+      * rows is not evidence (the rename always writes rows before the
+      * config). Without evidence an equal config is an unrelated pipeline:
+      * the caller answers 409. */
+    def priorAttempt(old: String, newName: String, newRows: Seq[EntityVersion], oldRows: Seq[EntityVersion]): Boolean = {
+        val rows = newRows.filter(_ != null)
+        rows.nonEmpty && {
+            val prefix = "renamed " + old + " -> " + newName
+            val latestNote = Option(rows.maxBy(_.version).changeNote).getOrElse("")
+            latestNote == prefix || latestNote.startsWith(prefix + " ") ||
+            rows.forall(n =>
+                n.changeNote == seedNote(old) ||
+                    oldRows.exists(o => o != null && o.version == n.version && o.createdAt == n.createdAt && o.changeNote == n.changeNote)
+            )
+        }
+    }
+
+    /** Note of the version a rename seeds under the new name for a pipeline
+      * saved before versioning (no rows to re-key). */
+    def seedNote(old: String): String = "(seeded from pre-versioning state of " + old + ")"
 
     /** Refusal text when the pipeline syncs to Unity Catalog, whose table is
       * named after the pipeline. */

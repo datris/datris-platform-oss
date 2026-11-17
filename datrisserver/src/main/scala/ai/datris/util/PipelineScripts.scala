@@ -784,8 +784,9 @@ class PipelineScripts(
       * delete commit (history is kept) unless its file changed at branch head
       * since the recorded commit, or that cannot be checked: then the file is
       * kept and one warning per kept file is returned. Records are deleted
-      * either way. Best effort, never throws. */
-    def deleteAll(pipeline: String): Seq[String] = {
+      * either way. `keepHistory` keeps the script versions (a rename whose
+      * history copy failed). Best effort, never throws. */
+    def deleteAll(pipeline: String, keepHistory: Boolean = false): Seq[String] = {
         val warnings = Kinds.flatMap { kind =>
             try removeKind(pipeline, kind)
             catch {
@@ -794,7 +795,7 @@ class PipelineScripts(
                     None
             }
         }
-        history.foreach { h =>
+        if (!keepHistory) history.foreach { h =>
             try h.deleteAllForPipeline(pipeline)
             catch {
                 case e: Throwable if scala.util.control.NonFatal(e) =>

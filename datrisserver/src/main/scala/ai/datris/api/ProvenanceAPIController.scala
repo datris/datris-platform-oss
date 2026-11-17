@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.auth.{CapabilityCheck, HiddenTapScrub}
 import ai.datris.model.{DatrisEnvironment, PipelineConfig, TapConfig}
-import ai.datris.util.{PipelineConfigIO, ProvenanceResolver, TapConfigIO}
+import ai.datris.util.{PipelineAliases, PipelineConfigIO, ProvenanceResolver, TapConfigIO}
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
@@ -49,7 +49,9 @@ class ProvenanceAPIController {
                 request,
                 runId.trim,
                 resolved,
-                n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
+                // A run filed under a renamed pipeline's earlier name is
+                // judged on that pipeline (PipelineAliases).
+                n => PipelineAliases.readOwner(n)
             )
             if (refused.isDefined) return refused.get
             val shown =
@@ -57,7 +59,8 @@ class ProvenanceAPIController {
                 else {
                     val env = DatrisEnvironment.current
                     val pipelineName = resolved.get("pipeline").getAsString // present: provenanceRefusal passed
-                    val feeding = HiddenTapScrub.hiddenFeedingTaps(request, TapConfigIO.readAll(env.tapTableName), Set(pipelineName))
+                    val owner = Option(PipelineAliases.readOwner(pipelineName)).map(_.name).toSet
+                    val feeding = HiddenTapScrub.hiddenFeedingTaps(request, TapConfigIO.readAll(env.tapTableName), Set(pipelineName) ++ owner)
                     ProvenanceAPIController.scrubProvenance(request, resolved, n => TapConfigIO.read(env.tapTableName, n), feeding)
                 }
             new ResponseEntity[String](gson.toJson(shown), HttpStatus.OK)

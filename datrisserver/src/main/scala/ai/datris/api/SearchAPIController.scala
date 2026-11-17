@@ -41,7 +41,8 @@ object SearchAPIController {
       * user's session: one `readAll` (nulls dropped); the [[containerVisible]]
       * rule on it, `Left` the existing 404 when it fails; otherwise
       * `Right(Some(names))`, the names of every pipeline the session can read
-      * (in any store). A `readAll` failure propagates (fail closed). */
+      * (in any store), plus the previous names of those among them that name
+      * this container ([[PipelineAliases.recordNames]]). A `readAll` failure propagates (fail closed). */
     def searchWriters(
         request: jakarta.servlet.http.HttpServletRequest,
         store: String,
@@ -55,7 +56,14 @@ object SearchAPIController {
             if (!containerVisible(request, store, container, schema, (s, c, sc) => VectorSearchRegistry.pipelinesForContainer(s, c, configs, sc))) {
                 val param = VectorSearchRegistry.forStore(store).map(_.containerParam).getOrElse("container")
                 Left(containerNotFound(param, container))
-            } else Right(Some(PipelineAPIController.visiblePipelines(request, configs).map(_.name).toSet))
+            } else {
+                // Chunks keep the name they were written under: a renamed
+                // pipeline's earlier names count for it, but only for a
+                // pipeline that names this container (PipelineAliases).
+                val visible = PipelineAPIController.visiblePipelines(request, configs)
+                val namers = VectorSearchRegistry.pipelinesForContainer(store, container, configs, schema).map(_.name).toSet
+                Right(Some(visible.map(_.name).toSet ++ PipelineAliases.recordNames(visible.filter(c => namers.contains(c.name)), configs)))
+            }
         }
 
     /** The single place search hits are post-processed before the response.

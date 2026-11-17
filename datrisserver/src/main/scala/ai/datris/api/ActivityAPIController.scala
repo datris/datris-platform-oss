@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.auth.{CapabilityCheck, HiddenTapScrub}
 import ai.datris.model.DatrisEnvironment
-import ai.datris.util.{ActivitySignals, CatalogOps, PipelineConfigIO, TapConfigIO}
+import ai.datris.util.{ActivitySignals, CatalogOps, PipelineAliases, PipelineConfigIO, TapConfigIO}
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import jakarta.servlet.http.HttpServletRequest
@@ -59,8 +59,8 @@ object ActivityAPIController {
       * hidden feeding tap's name replaced. */
     private[api] def restrictedView(request: HttpServletRequest, s: ActivitySignals.Signals): ActivitySignals.Signals = {
         val env = DatrisEnvironment.current
-        val pipelineCatalogs: Map[String, String] =
-            PipelineConfigIO.readAll(env.pipelineTableName).filter(_ != null).map(p => p.name -> Option(p.catalog).getOrElse("")).toMap
+        val configs = PipelineConfigIO.readAll(env.pipelineTableName).filter(_ != null)
+        val pipelineCatalogs: Map[String, String] = ActivityAPIController.recordCatalogs(configs)
         val taps = TapConfigIO.readAll(env.tapTableName).filter(_ != null)
         val tapCatalogs: Map[String, String] = taps.map(t => t.name -> Option(t.catalog).getOrElse("")).toMap
         def readable(resource: String, catalog: Option[String]): Boolean =
@@ -71,6 +71,15 @@ object ActivityAPIController {
         val visiblePipelines = pipelineCatalogs.collect { case (n, c) if readable("pipeline", Some(c)) => n }.toSet
         val tapHidden: String => Boolean = t => !tapCatalogs.get(t).exists(c => readable("tap", Some(c)))
         v.copy(failing = scrubFailing(v.failing, tapHidden, HiddenTapScrub.hiddenFeedingTaps(request, taps, visiblePipelines)))
+    }
+
+    /** Record name -> catalog for activity rows: every pipeline's name, plus
+      * each previous name that resolves to it ([[PipelineAliases]]), so a
+      * renamed pipeline's earlier rows are judged on its catalog. */
+    def recordCatalogs(configs: Seq[ai.datris.model.PipelineConfig]): Map[String, String] = {
+        val live = configs.filter(_ != null)
+        live.map(p => p.name -> Option(p.catalog).getOrElse("")).toMap ++
+            PipelineAliases.aliasOwners(live).map { case (n, c) => n -> Option(c.catalog).getOrElse("") }
     }
 
     /** Failing rows a restricted session sees, with hidden tap names gone:

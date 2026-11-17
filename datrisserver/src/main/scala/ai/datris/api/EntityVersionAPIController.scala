@@ -279,8 +279,11 @@ class EntityVersionAPIController {
                 }
                 val others = PipelineConfigIO.readAll(env.pipelineTableName).filter(_ != null)
                 EntityVersionAPIController.pipelineRestoreRefusal(request, snap, live, others).foreach(refused => return refused)
-                val restored =
-                    if (live != null) snap.copy(createdByKeyLabel = live.createdByKeyLabel) else snap
+                // `previousNames` is server-maintained: the live value, never the snapshot's.
+                val restored = PipelineAliases.carriedOver(
+                    if (live != null) snap.copy(createdByKeyLabel = live.createdByKeyLabel) else snap,
+                    live
+                )
                 val saved = PipelineConfigIO.writeVersioned(
                     restored,
                     "restored from version " + version,

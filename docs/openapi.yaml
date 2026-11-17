@@ -1732,6 +1732,22 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  previousNames:
+                    type: array
+                    nullable: true
+                    readOnly: true
+                    items:
+                      type: string
+                    description: >-
+                      Names the pipeline had before a rename, oldest first;
+                      absent for a pipeline never renamed. Server-maintained:
+                      ignored in `POST /api/v1/pipeline` bodies and version
+                      restores (the stored value is kept; a new pipeline has
+                      none). Run history, lineage runs, provenance and vector
+                      chunks recorded under an earlier name stay visible to
+                      the users who can see the pipeline, unless a pipeline
+                      now carries that name.
         '403':
           description: The API key's scope (`owner=self`, `catalog=`) does not cover this pipeline
         '404':

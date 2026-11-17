@@ -16,7 +16,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { of, throwError } from 'rxjs';
 
-import { PipelinesComponent } from './pipelines.component';
+import { PipelinesComponent, renameNotes } from './pipelines.component';
 import { PipelineService } from '../pipeline.service';
 import { PipelineStatusService } from '../pipeline-status.service';
 import { TapService } from '../tap.service';
@@ -216,5 +216,64 @@ describe('PipelinesComponent — server-side rename', () => {
     call.flush({ name: 'orders_v2', previousName: 'my orders' });
     expect(body.name).toBe('orders_v2');
     http.verify();
+  });
+});
+
+/** Review follow-up: a rename's `warnings` (and `failed`) reach the user. */
+describe('PipelinesComponent — rename follow-up notes', () => {
+  let component: PipelinesComponent;
+  let svc: any;
+  const row = { name: 'orders', catalog: 'demo' };
+
+  beforeEach(async () => {
+    svc = {
+      getPipelines: jasmine.createSpy('getPipelines').and.returnValue(of([])),
+      renamePipeline: jasmine.createSpy('renamePipeline')
+    };
+    await TestBed.configureTestingModule({
+      declarations: [PipelinesComponent],
+      imports: [FormsModule],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: PipelineService, useValue: svc },
+        { provide: PipelineStatusService, useValue: {} },
+        { provide: TapService, useValue: { getTaps: () => of([]) } },
+        { provide: AuthService, useValue: { canWrite: () => true } }
+      ]
+    }).compileComponents();
+    component = TestBed.createComponent(PipelinesComponent).componentInstance;
+  });
+
+  function rename(to: string): void {
+    component.startEditName(new Event('click'), row);
+    component.editingNameValue = to;
+    component.saveEditName(row);
+  }
+
+  it('a 207 with only warnings (hidden taps) alerts the warning text', () => {
+    const alertSpy = spyOn(window, 'alert');
+    svc.renamePipeline.and.returnValue(of({ name: 'orders_v2', failed: [], warnings: ['1 tap(s) you cannot see could not be re-pointed'] }));
+    rename('orders_v2');
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.calls.mostRecent().args[0]).toContain('1 tap(s) you cannot see could not be re-pointed');
+    expect(svc.getPipelines).toHaveBeenCalled();
+  });
+
+  it('failed taps and warnings are both shown; a clean rename alerts nothing', () => {
+    const alertSpy = spyOn(window, 'alert');
+    svc.renamePipeline.and.returnValue(of({ failed: [{ name: 'feed', error: 'boom' }], warnings: ['pull position not moved'] }));
+    rename('orders_v2');
+    const text = alertSpy.calls.mostRecent().args[0];
+    expect(text).toContain('feed (boom)');
+    expect(text).toContain('pull position not moved');
+
+    alertSpy.calls.reset();
+    svc.renamePipeline.and.returnValue(of({ failed: [], warnings: [] }));
+    rename('orders_v3');
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(renameNotes(null)).toEqual([]);
   });
 });

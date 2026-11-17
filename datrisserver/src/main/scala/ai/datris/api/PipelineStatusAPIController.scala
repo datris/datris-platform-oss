@@ -8,7 +8,17 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, PipelineJobRollup, PipelineStatus, PipelineStatusResponse, PipelineStatusSummary}
-import ai.datris.util.{APIKeyValidator, NoSQLDbUtil, PipelineConfigIO, PipelineStatusUtil, ScratchLoader, ScratchReader, ScratchResultException, TapConfigIO}
+import ai.datris.util.{
+    APIKeyValidator,
+    NoSQLDbUtil,
+    PipelineAliases,
+    PipelineConfigIO,
+    PipelineStatusUtil,
+    ScratchLoader,
+    ScratchReader,
+    ScratchResultException,
+    TapConfigIO
+}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -46,7 +56,10 @@ object PipelineStatusAPIController {
     ): Either[ResponseEntity[String], AnyRef] = {
         import ai.datris.auth.HiddenTapScrub
         if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) return Right(data)
-        val visible = PipelineAPIController.visiblePipelines(request, pipelines).map(_.name).toSet
+        // Run records keep the name they were written under: a visible
+        // pipeline's previous names count for it (PipelineAliases).
+        val configs = Option(pipelines).getOrElse(Nil).filter(_ != null)
+        val visible = PipelineAliases.recordNames(PipelineAPIController.visiblePipelines(request, configs), configs)
         filterFor(visible, data).map { shown =>
             val byName = taps.filter(t => t != null && t.name != null).map(t => t.name -> t).toMap
             val tapHidden: String => Boolean = n => HiddenTapScrub.tapHidden(request, n, byName.getOrElse(_, null))
@@ -247,7 +260,10 @@ class PipelineStatusAPIController {
             val job = ScratchReader.resolve(pipelinetoken, publishertoken)
             // Restricted users: a job of a pipeline outside the grants reads
             // exactly as an unknown token.
-            if (PipelineAPIController.restrictedHidden(request, job.pipeline, "read"))
+            if (
+                ai.datris.auth.CapabilityCheck.isRestrictedSession(request) &&
+                PipelineAPIController.hiddenConfig(request, PipelineAliases.readOwner(job.pipeline), "read")
+            )
                 throw PipelineStatusAPIController.unknownToken(pipelinetoken, publishertoken)
             val read = ScratchReader.read(ScratchLoader.settingsFromEnvironment(), job, offsetOpt, limitOpt)
             val page = PipelineStatusAPIController.scrubResultPage(

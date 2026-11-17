@@ -308,18 +308,22 @@ class PipelineAPIController {
         // scratch, so a body that omits these entirely must not wipe them
         // on an unrelated edit. An explicit empty list / stamp=false in the
         // body still clears/disables.
-        val preserved = if (existing != null)
-            tagged.copy(
-                tags = if (tagged.tags == null) existing.tags else tagged.tags,
-                provenance = if (tagged.provenance == null) existing.provenance else tagged.provenance,
-                // Authority declarations follow the same rule: omitted ⇒ keep.
-                authoritative = if (tagged.authoritative == null) existing.authoritative else tagged.authoritative,
-                destination =
-                    if (tagged.destination != null && tagged.destination.authoritative == null && existing.destination != null)
-                        tagged.destination.copy(authoritative = existing.destination.authoritative)
-                    else tagged.destination
-            )
-        else tagged
+        // `previousNames` is server-maintained: always the stored value.
+        val preserved = PipelineAliases.carriedOver(
+            if (existing != null)
+                tagged.copy(
+                    tags = if (tagged.tags == null) existing.tags else tagged.tags,
+                    provenance = if (tagged.provenance == null) existing.provenance else tagged.provenance,
+                    // Authority declarations follow the same rule: omitted ⇒ keep.
+                    authoritative = if (tagged.authoritative == null) existing.authoritative else tagged.authoritative,
+                    destination =
+                        if (tagged.destination != null && tagged.destination.authoritative == null && existing.destination != null)
+                            tagged.destination.copy(authoritative = existing.destination.authoritative)
+                        else tagged.destination
+                )
+            else tagged,
+            existing
+        )
         // Source-of-authority rules are validated against every other
         // pipeline: a declared kind must exist, and one dataset has at most
         // one authoritative writer.
@@ -633,14 +637,25 @@ class PipelineAPIController {
                     else PipelineConfigIO.read(table, newName)
                 val ucStateExists = old != null && UnityCatalogSyncIO.read(name) != null
                 val jobs = GlobalJobContext.synchronized(GlobalJobContext.getAll.toList).flatMap(jc => Option(jc.config).map(c => (c.name, jc.state)))
-                PipelineAPIController.renameRefusal(request, name, requested, old, existingNew, jobs, ucStateExists).foreach { refused =>
+                // A taken name is only continued when its history shows this
+                // rename wrote it (PipelineRename.priorAttempt), never for an
+                // unrelated pipeline that happens to have the same config.
+                val priorAttempt = existingNew != null && PipelineRename.priorAttempt(
+                    name,
+                    newName,
+                    EntityVersionIO.listVersions(env.pipelineVersionTableName, newName),
+                    EntityVersionIO.listVersions(env.pipelineVersionTableName, name)
+                )
+                PipelineAPIController.renameRefusal(request, name, requested, old, existingNew, jobs, ucStateExists, priorAttempt).foreach { refused =>
                     logger.warn("POST /pipelines/" + name + "/rename refused: HTTP " + refused.getStatusCode.value)
                     return refused
                 }
 
                 val actor = VersionActor.resolve(request)
                 val scriptActor = ResolvedKeyAccess.keyLabel(request).orNull
-                val renamedBase = PipelineRename.renamedConfig(old, newName)
+                // The old name joins previousNames (server-maintained) so stored
+                // records filed under it stay with this pipeline.
+                val renamedBase = PipelineRename.renamedConfig(old, newName).copy(previousNames = PipelineAliases.afterRename(old, newName))
                 val resuming = existingNew != null
                 val warnings = Seq.newBuilder[String]
 
@@ -662,7 +677,9 @@ class PipelineAPIController {
                         return PipelineAPIController.renameError(HttpStatus.CONFLICT, "Pipeline " + name + " was not renamed: " + reason)
                     case Right(w) => warnings ++= w
                 }
-                warnings ++= PipelineScripts.copyHistoryForRename(name, newName)
+                // A history that could not be copied is not deleted under the old name either.
+                val historyWarnings = PipelineScripts.copyHistoryForRename(name, newName)
+                warnings ++= historyWarnings
 
                 // 2. Definition versions re-keyed under the new name, then the
                 // new config as the next version.
@@ -676,7 +693,16 @@ class PipelineAPIController {
                         }
                     } catch {
                         case e: Exception =>
-                            logger.error("POST /pipelines/" + name + "/rename failed before the new config was written: " + Throwables.getStackTraceAsString(e))
+                            logger.error("POST /pipelines/" + name + "/rename failed while writing the new config: " + Throwables.getStackTraceAsString(e))
+                            val written =
+                                try PipelineConfigIO.read(table, newName) != null
+                                catch { case _: Exception => true } // unknown: keep everything
+                            if (written)
+                                return PipelineAPIController.renameError(
+                                    HttpStatus.INTERNAL_SERVER_ERROR,
+                                    "The rename of " + name + " to " + newName + " is incomplete: send the same rename again to finish it (" +
+                                        Option(e.getMessage).getOrElse(e.getClass.getSimpleName) + ")"
+                                )
                             removeCopies()
                             return PipelineAPIController.renameError(
                                 HttpStatus.INTERNAL_SERVER_ERROR,
@@ -722,7 +748,7 @@ class PipelineAPIController {
                 // 5. Old name's versions and scripts, then the old config row last.
                 try EntityVersionIO.deleteAllForEntity(env.pipelineVersionTableName, name)
                 catch { case e: Exception => logger.warn("Rename " + name + " -> " + newName + ": old version cleanup failed: " + e.getMessage) }
-                try warnings ++= PipelineScripts.deleteAll(name)
+                try warnings ++= PipelineScripts.deleteAll(name, keepHistory = historyWarnings.nonEmpty)
                 catch { case e: Exception => logger.warn("Rename " + name + " -> " + newName + ": old CodeGen script cleanup failed: " + e.getMessage) }
                 NoSQLDbUtil.deleteItemJSON(table, "name", name)
 
@@ -1688,7 +1714,8 @@ object PipelineAPIController {
       * it 403; an API key's scope miss 403); the new name (400); Unity Catalog
       * sync (400); a job initialized or processing (409); a taken new name
       * (409) unless it holds this pipeline from a rename that stopped half
-      * way. None = go ahead. The vector-container and authority rules are
+      * way (`resumable` and `priorAttempt`, [[PipelineRename.priorAttempt]]
+      * on the stored version history). None = go ahead. The vector-container and authority rules are
       * never consulted: the destination does not change. */
     def renameRefusal(
         request: HttpServletRequest,
@@ -1697,7 +1724,8 @@ object PipelineAPIController {
         old: PipelineConfig,
         existingNew: PipelineConfig,
         jobs: Seq[(String, ai.datris.model.JobState)],
-        ucStateExists: Boolean
+        ucStateExists: Boolean,
+        priorAttempt: Boolean = true
     ): Option[ResponseEntity[String]] = {
         if (old == null) return Some(pipelineNotFound(name))
         refusalFor(request, name, old, "delete").foreach(r => return Some(r))
@@ -1712,7 +1740,7 @@ object PipelineAPIController {
         PipelineRename.unityCatalogBlock(ucEnabled, ucStateExists).foreach(p => return Some(renameError(HttpStatus.BAD_REQUEST, p)))
         if (PipelineRename.jobBlock(jobs, name))
             return Some(renameError(HttpStatus.CONFLICT, "Pipeline " + name + " has a job running; rename it once the job has finished"))
-        if (existingNew != null && !PipelineRename.resumable(old, existingNew))
+        if (existingNew != null && !(PipelineRename.resumable(old, existingNew) && priorAttempt))
             return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
         None
     }
@@ -1758,36 +1786,56 @@ object PipelineAPIController {
       * before versioning) is seeded under the new name at its current
       * version, so the renamed config continues its numbering. Throws on a
       * read or write failure. */
-    private[api] def copyVersionsForRename(versionTable: String, old: PipelineConfig, newName: String): Unit = {
-        val have = EntityVersionIO.listVersions(versionTable, newName).map(_.key).toSet
-        val rows = EntityVersionIO.listVersions(versionTable, old.name).map(PipelineRename.rekeyVersion(_, newName))
-        rows.filterNot(v => have.contains(v.key)).foreach(EntityVersionIO.append(versionTable, _))
+    private[api] def copyVersionsForRename(versionTable: String, old: PipelineConfig, newName: String): Unit =
+        copyVersionsForRenameWith(old, newName, n => EntityVersionIO.listVersions(versionTable, n), v => EntityVersionIO.append(versionTable, v))
+
+    /** [[copyVersionsForRename]] on injected list and append. */
+    private[api] def copyVersionsForRenameWith(
+        old: PipelineConfig,
+        newName: String,
+        list: String => Seq[EntityVersion],
+        append: EntityVersion => Unit
+    ): Unit = {
+        val have = list(newName).map(_.key).toSet
+        val rows = list(old.name).map(PipelineRename.rekeyVersion(_, newName))
+        rows.filterNot(v => have.contains(v.key)).foreach(append)
         if (rows.isEmpty && have.isEmpty) {
             val seedVersion = if (old.version > 0) old.version else 1
-            EntityVersionIO.append(
-                versionTable,
+            append(
                 EntityVersion(
                     key = EntityVersionIO.docKey(newName, seedVersion),
                     entityName = newName,
                     version = seedVersion,
                     config = new Gson().toJson(PipelineRename.renamedConfig(old, newName).copy(version = seedVersion)),
-                    changeNote = "(seeded from pre-versioning state)",
+                    changeNote = PipelineRename.seedNote(old.name),
                     createdBy = "system"
                 )
             )
         }
     }
 
+    /** `existing` (the request's audit metadata attribute: a JsonObject, or
+      * anything else = none) with `operation: rename` and `newName` added;
+      * other keys are kept. */
+    private[api] def renameAuditMetadata(existing: Any, newName: String): JsonObject = {
+        val m = existing match {
+            case o: JsonObject => o
+            case _ => new JsonObject
+        }
+        m.addProperty("operation", "rename")
+        if (newName != null) m.addProperty("newName", newName.take(256))
+        m
+    }
+
     /** The rename's audit row: `operation: rename` and `newName` merged into
       * any metadata already on the request (PolicyInterceptor's approval
       * replay sets some). Never throws. */
     private[api] def auditRename(request: HttpServletRequest, newName: String): Unit =
-        try {
-            val m = Option(request.getAttribute(ai.datris.audit.AuditLog.MetadataAttr)).collect { case o: JsonObject => o }.getOrElse(new JsonObject)
-            m.addProperty("operation", "rename")
-            if (newName != null) m.addProperty("newName", newName.take(256))
-            request.setAttribute(ai.datris.audit.AuditLog.MetadataAttr, m)
-        } catch {
+        try request.setAttribute(
+                ai.datris.audit.AuditLog.MetadataAttr,
+                renameAuditMetadata(request.getAttribute(ai.datris.audit.AuditLog.MetadataAttr), newName)
+            )
+        catch {
             case e: Exception => auditLogger.warn("Could not record rename audit metadata: " + e.getMessage)
         }
 

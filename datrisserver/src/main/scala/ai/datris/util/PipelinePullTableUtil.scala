@@ -53,17 +53,36 @@ object PipelinePullTableUtil {
       * `newName` is initialized from `cronExpression` when one is given. */
     def rename(old: String, newName: String, cronExpression: String = null): Unit = {
         val table = DatrisEnvironment.current.dataPullTableName
+        renameWith(
+            old,
+            newName,
+            cronExpression,
+            p => NoSQLDbUtil.getItemJSON(table, "pipeline", p, "json"),
+            (p, json) => NoSQLDbUtil.putItemJSON(table, "pipeline", p, "json", json),
+            p => NoSQLDbUtil.deleteItemJSON(table, "pipeline", p),
+            (p, cron) => initialize(p, cron)
+        )
+    }
+
+    /** [[rename]] on injected table operations (get, put and delete by
+      * pipeline; initialize from a cron) so specs run without Mongo. */
+    private[util] def renameWith(
+        old: String,
+        newName: String,
+        cronExpression: String,
+        get: String => Option[String],
+        put: (String, String) => Unit,
+        delete: String => Unit,
+        init: (String, String) => Unit
+    ): Unit = {
         val gson = new Gson()
-        NoSQLDbUtil.getItemJSON(table, "pipeline", old, "json") match {
+        get(old) match {
             case Some(json) =>
                 val pull = gson.fromJson(json, classOf[PipelinePull])
-                val moved = PipelinePull(newName, pull.nextPullDate, pull.lastPullTimestampUsed)
-                NoSQLDbUtil.putItemJSON(table, "pipeline", newName, "json", gson.toJson(moved))
-                NoSQLDbUtil.deleteItemJSON(table, "pipeline", old)
+                put(newName, gson.toJson(PipelinePull(newName, pull.nextPullDate, pull.lastPullTimestampUsed)))
+                delete(old)
             case None =>
-                val existingNew = NoSQLDbUtil.getItemJSON(table, "pipeline", newName, "json")
-                if (existingNew.isEmpty && cronExpression != null && cronExpression.trim.nonEmpty)
-                    initialize(newName, cronExpression)
+                if (get(newName).isEmpty && cronExpression != null && cronExpression.trim.nonEmpty) init(newName, cronExpression)
         }
     }
 

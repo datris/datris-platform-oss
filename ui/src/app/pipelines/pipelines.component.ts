@@ -117,11 +117,8 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     // deleted from here.
     this.pipelineService.renamePipeline(oldName, newName).subscribe({
       next: (res) => {
-        const failed = (res && Array.isArray(res.failed)) ? res.failed : [];
-        if (failed.length > 0) {
-          alert('Renamed to ' + newName + ', but some taps could not be re-pointed: ' +
-            failed.map((f: any) => f.name + ' (' + f.error + ')').join(', '));
-        }
+        const notes = renameNotes(res);
+        if (notes.length > 0) alert('Renamed to ' + newName + '.\n\n' + notes.join('\n'));
         this.loadPipelines();
         this.loadTaps();
       },
@@ -449,4 +446,20 @@ export class PipelinesComponent implements OnInit, OnDestroy {
       }
     });
   }
+}
+
+/** Follow-up lines for a rename result: one per tap that could not be
+ *  re-pointed (`failed`) and one per server warning (a script not copied,
+ *  a pull position not moved, taps you cannot see that were not re-pointed).
+ *  Empty when the rename needs no follow-up. */
+export function renameNotes(res: any): string[] {
+  const failed = (res && Array.isArray(res.failed)) ? res.failed : [];
+  const warnings = (res && Array.isArray(res.warnings)) ? res.warnings : [];
+  const lines: string[] = [];
+  if (failed.length > 0) {
+    lines.push('Some taps could not be re-pointed: ' +
+      failed.map((f: any) => f.name + ' (' + f.error + ')').join(', '));
+  }
+  warnings.forEach((w: any) => { if (w != null && String(w).trim()) lines.push(String(w)); });
+  return lines;
 }

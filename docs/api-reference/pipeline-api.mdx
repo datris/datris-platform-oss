@@ -197,9 +197,9 @@ curl -X POST http://localhost:8080/api/v1/pipelines/sales_data/rename \
 | `404` | No such pipeline, or one you cannot see |
 | `409` | A pipeline with the new name already exists, a job for the pipeline is queued or running, or a stored CodeGen script could not be copied to the new name |
 
-If a rename stops part way (for example the server restarts), sending the same rename again finishes it.
+If a rename stops part way (for example the server restarts), sending the same rename again finishes it. A pipeline that already has the new name and was not created by that rename is always a `409`, even if its configuration is identical.
 
-What keeps the old name: run status and history, run lineage and provenance, audit entries, incidents and approvals, the `source_pipeline` recorded on chunks already in a vector store, older tap version snapshots, and scratch results already written. The audit log records the rename as `pipeline` / `rename` on the old name with `newName` in the details.
+What keeps the old name: run status and history, run lineage and provenance, audit entries, incidents and approvals, the `source_pipeline` recorded on chunks already in a vector store, older tap version snapshots, and scratch results already written. The renamed pipeline lists its earlier names in the read-only `previousNames` field, so users with scoped catalog access keep seeing its run history, provenance, lineage runs and search results recorded under an earlier name (unless a pipeline is later created with that name: those records then go with it). The audit log records the rename as `pipeline` / `rename` on the old name with `newName` in the details.
 
 ---
 
