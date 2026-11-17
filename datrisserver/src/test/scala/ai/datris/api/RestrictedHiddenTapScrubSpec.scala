@@ -265,6 +265,114 @@ class RestrictedHiddenTapScrubSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
+    // ------------------------------------------------------------ scratch rows (round 2, finding 1)
+
+    private def stampedRows: com.google.gson.JsonArray =
+        JsonParser.parseString(
+            """[{"id":1,"_datris_run_id":"tok","_datris_tap_run":"gone|2026-11-16T10:00:00Z","_datris_script_sha":"abc","_datris_source":"tap:gone"},
+              |{"id":2,"_datris_tap_run":"t_hr_feed|t","_datris_script_sha":"def","_datris_source":"feeds.example.com"},
+              |{"id":3,"_datris_tap_run":"t_sales|t","_datris_script_sha":"ghi","_datris_source":"tap:t_sales"},
+              |{"id":4,"_datris_source":"tap:gone"}]""".stripMargin
+        ).getAsJsonArray
+
+    private def assertRowsScrubbed(rows: com.google.gson.JsonArray): Unit = {
+        val r = rows.asScala.map(_.getAsJsonObject).toList
+        Seq(0, 1, 3).foreach { i =>
+            HiddenTapScrub.StampTapColumns.foreach(c => assert(!r(i).has(c), s"row $i keeps $c: ${r(i)}"))
+        }
+        assert(r.head.get("_datris_run_id").getAsString == "tok" && r.head.get("id").getAsInt == 1)
+        assert(r(2).get("_datris_tap_run").getAsString == "t_sales|t" && r(2).has("_datris_source"), "a visible tap's stamp stays")
+        assert(!rows.toString.contains("gone") && !rows.toString.contains("t_hr_feed"), rows.toString)
+    }
+
+    test("scratch preview rows in /pipeline/status lose a hidden or deleted tap's stamp columns even when no filename names it") {
+        val pipelines = Seq(PipelineConfig(name = "orders", catalog = "Sales"))
+        val stored = Seq(tap("t_sales", "orders", "Sales"), tap("t_hr_feed", "payroll", "HR"))
+        def payload = PipelineStatusResponse(
+            PipelineStatusRollup(
+                allDone = true,
+                status = "success",
+                jobs = List(PipelineJobRollup("tok", "orders", "upload.csv", "success", "s", "l", "1s", null, resultPreview = stampedRows)).asJava
+            ),
+            List(
+                PipelineStatus(
+                    1,
+                    "now",
+                    "orders",
+                    "p",
+                    "pub",
+                    "tok",
+                    "upload.csv",
+                    "end",
+                    "OK",
+                    "done",
+                    1L,
+                    scratchResult = ScratchResult("u", 4L, "e", stampedRows, false)
+                )
+            ).asJava
+        )
+        val shown = PipelineStatusAPIController.restrictedViewWith(req(bob, path = "/api/v1/pipeline/status"), payload, pipelines, stored).toOption.get
+            .asInstanceOf[PipelineStatusResponse]
+        assertRowsScrubbed(shown.rollup.jobs.get(0).resultPreview)
+        assertRowsScrubbed(shown.events.get(0).scratchResult.resultPreview)
+        // Unrestricted session and API key: the very same object, rows intact.
+        Seq(editor, salesKey).foreach { rk =>
+            val data = payload
+            assert(PipelineStatusAPIController.restrictedViewWith(req(rk), data, pipelines, stored).toOption.get eq data)
+        }
+    }
+
+    test("GET /pipeline/result page rows lose a hidden or deleted tap's stamp columns for a restricted session only") {
+        def page = ai.datris.util.ScratchReader.ScratchResultPage(stampedRows, 4L, 4, 0L, truncated = false, "u", "e")
+        assertRowsScrubbed(PipelineStatusAPIController.scrubResultPage(req(bob, path = "/api/v1/pipeline/result"), page, readTap).records)
+        Seq(editor, salesKey).foreach { rk =>
+            val p = page
+            assert(PipelineStatusAPIController.scrubResultPage(req(rk), p, readTap) eq p)
+        }
+        // Nothing stamped with a hidden tap: the same page back.
+        val clean =
+            ai.datris.util.ScratchReader.ScratchResultPage(JsonParser.parseString("""[{"id":1}]""").getAsJsonArray, 1L, 1, 0L, truncated = false, "u", "e")
+        assert(PipelineStatusAPIController.scrubResultPage(req(bob), clean, readTap) eq clean)
+    }
+
+    // ------------------------------------------------------------ outputs[].error and uploads (round 2, findings 2 and 3)
+
+    test("outputs[].error naming a hidden or deleted tap's feed file is scrubbed in lineage runs and provenance") {
+        val run = JsonParser.parseString(
+            """{"runId":"r","pipeline":"orders","input":{"kind":"tap","tapName":"t_hr_feed","filename":"tap-t_hr_feed.json"},
+              |"outputs":[{"kind":"pgvector","error":"failed on uploaded file: tap-t_hr_feed.json"},{"kind":"postgres","status":"SUCCESS"}]}""".stripMargin
+        ).getAsJsonObject
+        HiddenTapScrub.scrubRun(run, n => HiddenTapScrub.tapHidden(req(bob), n, readTap))
+        assert(!run.toString.contains("t_hr_feed"), run.toString)
+        assert(run.getAsJsonArray("outputs").get(0).getAsJsonObject.get("error").getAsString == "failed on uploaded file: tap-[hidden].json")
+
+        // Deleted tap, named only in an output error.
+        val p = JsonParser.parseString(
+            """{"runId":"run-1","pipeline":"orders","input":{"kind":"tap"},"outputs":[{"kind":"pgvector","error":"failed on uploaded file: tap-gone.json"}]}"""
+        ).getAsJsonObject
+        val out = ProvenanceAPIController.scrubProvenance(req(bob), p, readTap, Set.empty)
+        assert(out.getAsJsonArray("outputs").get(0).getAsJsonObject.get("error").getAsString == "failed on uploaded file: tap-[hidden].json", out.toString)
+
+        val original = """{"runId":"run-1","pipeline":"orders","input":{"kind":"tap"},"outputs":[{"kind":"pgvector","error":"x tap-gone.json"}]}"""
+        assert(ProvenanceAPIController.scrubProvenance(req(editor), JsonParser.parseString(original).getAsJsonObject, readTap, Set.empty).toString ==
+            JsonParser.parseString(original).getAsJsonObject.toString)
+    }
+
+    test("an upload's own tap-<name>.csv filename is not rewritten when no such tap is stored") {
+        val run = JsonParser.parseString(
+            """{"runId":"r","pipeline":"orders","input":{"kind":"upload","filename":"tap-foo.csv"},"outputs":[{"kind":"postgres","error":"bad row in tap-foo.csv"}]}"""
+        ).getAsJsonObject
+        val before = run.toString
+        HiddenTapScrub.scrubRun(run, n => HiddenTapScrub.tapHidden(req(bob), n, readTap))
+        assert(run.toString == before, run.toString)
+
+        val p = JsonParser.parseString(
+            """{"runId":"run-1","pipeline":"orders","job":{"filename":"tap-foo.csv"},"input":{"kind":"upload","filename":"tap-foo.csv"}}"""
+        ).getAsJsonObject
+        val pBefore = p.toString
+        assert(ProvenanceAPIController.scrubProvenance(req(bob), p, readTap, Set.empty).toString == pBefore)
+    }
+
     // ------------------------------------------------------------ activity signals
 
     test("activity failing rows: a pipeline row's reason is scrubbed, a tap row's reason is untouched, a hidden relatedTapName is cleared") {

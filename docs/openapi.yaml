@@ -3394,7 +3394,7 @@ paths:
       summary: Get job status
       description: >-
         Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
-        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`).
+        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) stamped with such a tap omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
       parameters:
         - name: publishertoken
           in: query
@@ -3487,6 +3487,7 @@ paths:
         Only Live Read pipelines have a result. `limit` is clamped server-side to the
         inline cap, so the next page starts at `offset + returnedCount`, never
         `offset + limit`. Results expire after the retention window.
+        For a restricted user, rows stamped with a tap they cannot read (or one no longer stored) omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
       parameters:
         - name: pipelinetoken
           in: query
@@ -7500,7 +7501,7 @@ paths:
         run → script commit → pipeline config version → declared source and
         returns one document. Pass the row's `_datris_tap_run` and
         `_datris_config_version` values when available for exact resolution.
-        For a restricted user, a run whose pipeline is outside their granted catalogs (or cannot be determined) is 404 (`no such run`); the `pipeline` and `tapRun` hints are ignored for them. When the run was fed by a tap the user cannot read (filed in another catalog, or no longer stored), the response omits `tapRun`, `tap` and the top-level `source`, `input` keeps `kind` but omits `tapName`, `tapRunTime`, `scriptSha` and `source`, and feed filenames (`input.filename`, `job.filename`) read `tap-[hidden].csv` / `.json`.
+        For a restricted user, a run whose pipeline is outside their granted catalogs (or cannot be determined) is 404 (`no such run`); the `pipeline` and `tapRun` hints are ignored for them. When the run was fed by a tap the user cannot read (filed in another catalog, or no longer stored), the response omits `tapRun`, `tap` and the top-level `source`, `input` keeps `kind` but omits `tapName`, `tapRunTime`, `scriptSha` and `source`, and feed filenames (`input.filename`, `job.filename`, and in `outputs[].error`) read `tap-[hidden].csv` / `.json`.
       parameters:
         - in: query
           name: runId

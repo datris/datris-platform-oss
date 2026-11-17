@@ -7,8 +7,10 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.model.TapConfig
 import ai.datris.util.CatalogOps
-import com.google.gson.JsonObject
+import com.google.gson.{JsonArray, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
+
+import scala.collection.JavaConverters._
 
 /** Catalog-scoped user access: a visible pipeline can be fed by a tap filed in
   * a catalog the restricted user cannot read. The pipeline's run records still
@@ -90,9 +92,11 @@ object HiddenTapScrub {
 
     /** Scrubs one run's JSON (as [[ai.datris.util.LineageService.runToJson]]
       * writes it) in place. When its input names a hidden tap, the tap
-      * identity fields go; a `tap-<name>.csv|json` filename naming a hidden
-      * tap (also one no longer stored) reads `tap-[hidden]`. Returns the same
-      * object. */
+      * identity fields go. A `tap-<name>.csv|json` feed filename naming a
+      * hidden tap (also one no longer stored) reads `tap-[hidden]`, in the
+      * input filename and in each output's `error`. For an `upload` run the
+      * filename is the uploader's own, so it is not read for tap names.
+      * Returns the same object. */
     def scrubRun(run: JsonObject, hidden: String => Boolean): JsonObject = {
         if (run == null || !run.has("input") || !run.get("input").isJsonObject) return run
         val in = run.getAsJsonObject("input")
@@ -101,10 +105,61 @@ object HiddenTapScrub {
         val hiddenTap = tap != null && hidden(tap)
         if (hiddenTap) TapIdentityFields.foreach(in.remove)
         val filename = str("filename")
-        if (filename != null) {
-            val names = feedFileNames(Seq(filename)).filter(hidden) ++ (if (hiddenTap) Set(tap) else Set.empty[String])
-            if (names.nonEmpty) in.addProperty("filename", scrubFilename(filename, names))
+        val upload = "upload" == str("kind")
+        val fromFiles =
+            if (upload) Set.empty[String] else feedFileNames(Seq(filename) ++ outputErrors(run)).filter(hidden)
+        val names = fromFiles ++ (if (hiddenTap) Set(tap) else Set.empty[String])
+        if (names.nonEmpty) {
+            if (filename != null) in.addProperty("filename", scrubFilename(filename, names))
+            scrubOutputErrors(run, names)
         }
         run
+    }
+
+    /** `error` text of each entry in `o.outputs`. */
+    def outputErrors(o: JsonObject): Seq[String] =
+        if (o == null || !o.has("outputs") || !o.get("outputs").isJsonArray) Nil
+        else
+            o.getAsJsonArray("outputs").asScala.toSeq.collect {
+                case e if e.isJsonObject && e.getAsJsonObject.has("error") && e.getAsJsonObject.get("error").isJsonPrimitive =>
+                    e.getAsJsonObject.get("error").getAsString
+            }
+
+    /** Each `o.outputs[].error` scrubbed in place ([[scrubText]]). */
+    def scrubOutputErrors(o: JsonObject, names: Set[String]): Unit =
+        if (names.nonEmpty && o != null && o.has("outputs") && o.get("outputs").isJsonArray)
+            o.getAsJsonArray("outputs").forEach { e =>
+                if (e.isJsonObject && e.getAsJsonObject.has("error") && e.getAsJsonObject.get("error").isJsonPrimitive) {
+                    val x = e.getAsJsonObject
+                    x.addProperty("error", scrubText(x.get("error").getAsString, names))
+                }
+            }
+
+    /** Provenance stamp columns that identify the feeding tap. */
+    val StampTapColumns: Seq[String] = Seq("_datris_tap_run", "_datris_script_sha", "_datris_source")
+
+    private def stampedTap(row: JsonObject): Option[String] = {
+        def str(f: String): Option[String] =
+            if (row.has(f) && row.get(f).isJsonPrimitive) Some(row.get(f).getAsString) else None
+        str("_datris_tap_run").map(v => v.takeWhile(_ != '|')).filter(_.nonEmpty)
+            .orElse(str("_datris_source").filter(_.startsWith("tap:")).map(_.stripPrefix("tap:")))
+    }
+
+    /** True when some row in `rows` is stamped with a tap `hidden` holds
+      * (`_datris_tap_run` = `<tap>|<runTime>`, or a `tap:<name>` source). */
+    def stampsHiddenTap(rows: JsonArray, hidden: String => Boolean): Boolean =
+        rows != null && rows.asScala.exists(r => r.isJsonObject && stampedTap(r.getAsJsonObject).exists(hidden))
+
+    /** Scratch result rows (provenance-stamped) with the tap stamp columns
+      * removed from every row stamped with a hidden tap. A copy when any row
+      * changes; `rows` itself otherwise (null stays null). */
+    def scrubStampedRows(rows: JsonArray, hidden: String => Boolean): JsonArray = {
+        if (!stampsHiddenTap(rows, hidden)) return rows
+        val out = rows.deepCopy()
+        out.forEach { r =>
+            if (r.isJsonObject && stampedTap(r.getAsJsonObject).exists(hidden))
+                StampTapColumns.foreach(r.getAsJsonObject.remove)
+        }
+        out
     }
 }
