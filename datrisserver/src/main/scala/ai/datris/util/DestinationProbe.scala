@@ -11,7 +11,7 @@ import org.slf4j.{Logger, LoggerFactory}
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 
 import java.io.FileNotFoundException
-import java.sql.{Connection, SQLException}
+import java.sql.{Connection, SQLException, Statement}
 import scala.util.Try
 
 /** Existence probe for the "new destinations only" save rule
@@ -110,10 +110,8 @@ object DestinationProbe {
                 catch {
                     case e: SQLException if !databricksMissingCatalog(e) && databricksInformationSchemaMissing(e) =>
                         val st = conn.createStatement()
-                        try {
-                            try { Try(st.executeQuery(describe).close()); true }
-                            catch { case x: SQLException if databricksObjectMissing(x) => false }
-                        } finally Try(st.close())
+                        try describeExists(st, describe)
+                        finally Try(st.close())
                 }
             }
         catch {
@@ -122,6 +120,18 @@ object DestinationProbe {
                 false
         }
     }
+
+    /** The `DESCRIBE TABLE` fallback on `st`: true when it answers, false
+      * when it says the table, schema or catalog is not found; any other
+      * failure (auth, network) propagates. */
+    private[util] def describeExists(st: Statement, describe: String): Boolean =
+        try {
+            val rs = st.executeQuery(describe)
+            Try(rs.close())
+            true
+        } catch {
+            case x: SQLException if databricksObjectMissing(x) => false
+        }
 
     private def upperMessages(e: Throwable): Seq[String] =
         causes(e).collect { case s: SQLException => Option(s.getMessage).getOrElse("").toUpperCase(java.util.Locale.ROOT) }

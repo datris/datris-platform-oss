@@ -1940,13 +1940,17 @@ paths:
             request are named; a missing database, catalog or schema counts as
             not existing; for SQL Server views, synonyms and system views count,
             and a letter-case change to the table name is checked again; a new
-            object-store Iceberg pipeline whose name has kept Unity Catalog
-            sync state recording a catalog commit counts as existing), or
-            (restricted users only) an object-store prefix or bucket is not a
-            plain path (a wildcard or escape character `* ? [ ] { } \`, or an
-            empty, `.` or `..` segment): `The object-store prefix and bucket
-            must be plain names: ... Choose a plain prefix.` Fix the
-            configuration and save again.
+            object-store pipeline of any format, or a save that turns a stored
+            pipeline into an object-store Iceberg one, whose name has kept
+            Unity Catalog sync state recording a catalog commit counts as
+            existing), or (restricted users only) an object-store prefix or
+            bucket is not a plain path (a wildcard or escape character
+            `* ? [ ] { } \`, leading or trailing spaces, or an empty, `.` or
+            `..` segment): `The object-store prefix and bucket must be plain
+            names: ... Choose a plain prefix.`, or (restricted users only) a
+            SQL Server temporary table (`#name`): `A SQL Server temporary table
+            (a name starting with #) cannot be a pipeline destination. Choose
+            another table name.` Fix the configuration and save again.
           content:
             application/json:
               schema:
@@ -2484,7 +2488,10 @@ paths:
           description: >-
             The new name is taken, a job for the pipeline is queued or running,
             or a stored CodeGen script could not be copied to the new name.
-            Nothing is renamed.
+            For a restricted user, an object-store pipeline also gets this 409
+            when Unity Catalog sync state kept for the new name records a
+            catalog commit (500 when that state cannot be read). Nothing is
+            renamed.
           content:
             application/json:
               schema:
@@ -3866,7 +3873,7 @@ paths:
                   count:
                     type: integer
         '400':
-          description: 'User-actionable error (e.g. unknown pipeline, no objectStore destination). Restricted users also get `The object-store prefix and bucket must be plain names: no wildcard or escape characters (* ? [ ] { } \) and no empty, ''.'' or ''..'' path segments. Choose a plain prefix.` when the pipeline''s saved prefix or bucket is not a plain path.'
+          description: 'User-actionable error (e.g. unknown pipeline, no objectStore destination). Restricted users also get `The object-store prefix and bucket must be plain names: no wildcard or escape characters (* ? [ ] { } \), no leading or trailing spaces and no empty, ''.'' or ''..'' path segments. Choose a plain prefix.` when the pipeline''s saved prefix or bucket is not a plain path (a pipeline saved earlier with such a prefix can no longer be previewed by a restricted user).'
           content:
             application/json:
               schema:
@@ -6097,7 +6104,7 @@ paths:
         '403':
           description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope.
         '400':
-          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed warehouse table or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.`). Body: `{"error": "..."}`.'
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed warehouse table or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.`). Body: `{"error": "..."}`.'
         '500':
           description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket; nothing is restored.'
 

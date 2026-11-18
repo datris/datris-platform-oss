@@ -31,6 +31,10 @@ class DestinationTargetsHardeningSpec extends AnyFunSuite {
             assert(DestinationTargets.unsafeObjectStorePath(os(bad)), bad)
         for (bad <- Seq("b*", "[b]", "b/c", "b{1}"))
             assert(DestinationTargets.unsafeObjectStorePath(os("a", bucket = bad)), bad)
+        for (bad <- Seq(" reports", "reports ", " a/b ", "\treports"))
+            assert(DestinationTargets.unsafeObjectStorePath(os(bad)), "'" + bad + "'")
+        assert(DestinationTargets.unsafeObjectStorePath(os("a", bucket = " dev-data")))
+        assert(DestinationTargets.unsafeObjectStorePath(os("a", bucket = "dev-data ")))
         for (ok <- Seq("a", "a/b", "/a/b/", "a/b/c", "", null, "a.b", "a..b", "a-b_c/2026=1", "a/.hidden"))
             assert(!DestinationTargets.unsafeObjectStorePath(os(ok)), String.valueOf(ok))
         assert(!DestinationTargets.unsafeObjectStorePath(os("a", bucket = "my.bucket-1")))
@@ -64,5 +68,16 @@ class DestinationTargetsHardeningSpec extends AnyFunSuite {
             )
         )
         assert(DestinationTargets.targetsOf(snow, env).head.exact.isEmpty)
+    }
+
+    test("sqlServerTempTable flags # and ## names only, for SQL Server only") {
+        for (t <- Seq("#t", "##t", " ##t")) assert(DestinationTargets.sqlServerTempTable(sqls("q", table = t)), t)
+        for (t <- Seq("t", "t#", "a#b", null)) assert(!DestinationTargets.sqlServerTempTable(sqls("q", table = t)), String.valueOf(t))
+        val snow = PipelineConfig(
+            name = "s",
+            destination = Destination(database = Database(dbName = "a", schema = "p", table = "#t", useSnowflake = true, credentialsSecret = "sf"))
+        )
+        assert(!DestinationTargets.sqlServerTempTable(snow))
+        assert(!DestinationTargets.sqlServerTempTable(null))
     }
 }

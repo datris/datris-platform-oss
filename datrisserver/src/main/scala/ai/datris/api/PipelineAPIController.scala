@@ -376,7 +376,15 @@ class PipelineAPIController {
             // read data no pipeline of theirs wrote). Probed with the
             // candidate's own connection; a failed probe refuses (500).
             PipelineAPIController
-                .existingDestinationRefusal(request, preserved, existing, others.filter(_ != null), dsEnv, t => DestinationProbe.exists(preserved, t))
+                .existingDestinationRefusal(
+                    request,
+                    preserved,
+                    existing,
+                    others.filter(_ != null),
+                    dsEnv,
+                    t => DestinationProbe.exists(preserved, t),
+                    DestinationProbe.catalogCommitted
+                )
                 .foreach { refused =>
                     logger.warn("POST /pipeline " + preserved.name + " rejected: new destination already exists or could not be checked (HTTP " +
                         refused.getStatusCode.value + ")")
@@ -692,7 +700,18 @@ class PipelineAPIController {
                             }
                         PipelineAPIController.hiddenAliasClaimant(request, newName, all).isDefined
                     }
-                PipelineAPIController.renameRefusal(request, name, requested, old, existingNew, jobs, ucStateExists, priorAttempt, hiddenAlias)
+                PipelineAPIController.renameRefusal(
+                    request,
+                    name,
+                    requested,
+                    old,
+                    existingNew,
+                    jobs,
+                    ucStateExists,
+                    priorAttempt,
+                    hiddenAlias,
+                    DestinationProbe.catalogCommitted
+                )
                     .foreach { refused =>
                         logger.warn("POST /pipelines/" + name + "/rename refused: HTTP " + refused.getStatusCode.value)
                         return refused
@@ -1647,19 +1666,30 @@ object PipelineAPIController {
 
     /** POST /pipeline and version restore, restricted users' sessions only:
       * each fresh target of the candidate in `DestinationTargets.ProbedFamilies`
-      * that no pipeline the caller can see covers is checked with `exists`
-      * (the candidate's own connection). 400 `ExistsRefusal` naming the
-      * caller's own coordinates on the first one that exists; 500
-      * `ProbeUnavailable` when `exists` throws (nothing else in the body).
-      * Before any probe: 400 `UnsafePathRefusal` for a fresh object-store
-      * target whose path is not a plain prefix, and, for a new pipeline (no
-      * stored config the caller can see) with an object-store Iceberg
-      * destination, 400 `ExistsRefusal` when Unity Catalog state kept for the
-      * name records a catalog commit (its read loads that table; a failed
-      * state read is the 500). `others` is filtered to the visible pipelines
-      * here. None for everyone else (unrestricted sessions, every API key,
-      * auth off): no probe. */
-    def existingDestinationRefusal(
+      * (plus a SQL Server letter-case change) that no pipeline the caller can
+      * see covers is checked with `exists` (the candidate's own connection).
+      * 400 `ExistsRefusal` naming the caller's own coordinates on the first
+      * one that exists; 500 `ProbeUnavailable` when `exists` throws (nothing
+      * else in the body).
+      *
+      * Before any probe: 400 `UnsafePathRefusal` for a changed object-store
+      * target whose path is not a plain prefix; 400 `TempTableRefusal` for a
+      * changed SQL Server table named `#...`; then, when the candidate has an
+      * object-store destination and either has no stored config the caller
+      * can see (any format) or turns a stored config into Iceberg, 400
+      * `ExistsRefusal` when Unity Catalog state kept for the name records a
+      * catalog commit (an Iceberg read of the name loads that table, wherever
+      * the catalog put it; a failed state read is the 500). A stored Iceberg
+      * config the caller can see keeps its own state unchecked; a flip back
+      * to Iceberg cannot tell its own earlier commit from a deleted
+      * pipeline's, so it is refused (fail closed). `others` is filtered to
+      * the visible pipelines here. None for everyone else (unrestricted
+      * sessions, every API key, auth off): no probe, no read.
+      *
+      * This six-argument form is the spec seam for the probe alone: it skips
+      * the Unity Catalog state check. Production paths call the seven-argument
+      * form below with `DestinationProbe.catalogCommitted`. */
+    private[api] def existingDestinationRefusal(
         request: HttpServletRequest,
         candidate: PipelineConfig,
         stored: PipelineConfig,
@@ -1667,7 +1697,7 @@ object PipelineAPIController {
         env: SharedDatasets.Env,
         exists: DestinationTargets.Target => Boolean
     ): Option[ResponseEntity[String]] =
-        existingDestinationRefusal(request, candidate, stored, others, env, exists, DestinationProbe.catalogCommitted)
+        existingDestinationRefusal(request, candidate, stored, others, env, exists, _ => false)
 
     /** [[existingDestinationRefusal]] with the Unity Catalog state check given. */
     def existingDestinationRefusal(
@@ -1691,11 +1721,16 @@ object PipelineAPIController {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body[String](ApiErrors.errorBody(DestinationTargets.ProbeUnavailable))
             )
-        val freshObjectStore = DestinationTargets.freshTargets(candidate, keptFrom, env).find(_.key.family == "objectstore")
-        if (freshObjectStore.isDefined && DestinationTargets.unsafeObjectStorePath(candidate.destination.objectStore))
+        val changed = DestinationTargets.freshTargets(candidate, keptFrom, env) ++ DestinationTargets.recasedTargets(candidate, keptFrom, env)
+        if (changed.exists(_.key.family == "objectstore") && DestinationTargets.unsafeObjectStorePath(candidate.destination.objectStore))
             return badRequest(DestinationTargets.UnsafePathRefusal)
-        val iceberg = Option(candidate.destination).flatMap(d => Option(d.objectStore)).exists(o => "iceberg".equalsIgnoreCase(o.fileFormat))
-        if (keptFrom == null && iceberg && freshObjectStore.isDefined) {
+        if (changed.exists(_.key.family == "sqlserver") && DestinationTargets.sqlServerTempTable(candidate))
+            return badRequest(DestinationTargets.TempTableRefusal)
+        val candidateTarget = DestinationTargets.targetsOf(candidate, env).find(_.key.family == "objectstore")
+        def iceberg(c: PipelineConfig): Boolean =
+            c != null && c.destination != null && c.destination.objectStore != null &&
+                "iceberg".equalsIgnoreCase(Option(c.destination.objectStore.fileFormat).map(_.trim).orNull)
+        if (candidateTarget.isDefined && (keptFrom == null || (iceberg(candidate) && !iceberg(keptFrom)))) {
             val committed =
                 try Right(catalogCommitted(candidate.name))
                 catch {
@@ -1708,7 +1743,7 @@ object PipelineAPIController {
                 }
             committed match {
                 case Left(_) => return unavailable
-                case Right(true) => return badRequest(DestinationTargets.ExistsRefusal(SharedDatasets.label(freshObjectStore.get.key)))
+                case Right(true) => return badRequest(DestinationTargets.ExistsRefusal(SharedDatasets.label(candidateTarget.get.key)))
                 case Right(false) =>
             }
         }
@@ -1982,7 +2017,8 @@ object PipelineAPIController {
         jobs: Seq[(String, ai.datris.model.JobState)],
         ucStateExists: Boolean,
         priorAttempt: Boolean = true,
-        hiddenAliasClaim: => Boolean = false
+        hiddenAliasClaim: => Boolean = false,
+        catalogCommitted: String => Boolean = _ => false
     ): Option[ResponseEntity[String]] = {
         if (old == null) return Some(pipelineNotFound(name))
         refusalFor(request, name, old, "delete").foreach(r => return Some(r))
@@ -2003,6 +2039,23 @@ object PipelineAPIController {
             return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
         if (existingNew != null && !(PipelineRename.resumable(old, existingNew) && priorAttempt))
             return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
+        // Restricted sessions, an object-store pipeline taking a free name
+        // whose kept Unity Catalog state records a catalog commit: an Iceberg
+        // read under that name would load the recorded table. The same 409
+        // as a taken name; a failed state read refuses (500).
+        if (
+            existingNew == null && CapabilityCheck.isRestrictedSession(request) &&
+            old.destination != null && old.destination.objectStore != null
+        ) {
+            val committed =
+                try catalogCommitted(target)
+                catch {
+                    case scala.util.control.NonFatal(e) =>
+                        auditLogger.warn("Unity Catalog state read failed for the rename check of " + name + ": " + e.getMessage)
+                        return Some(aliasCheckUnavailable("renamed"))
+                }
+            if (committed) return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
+        }
         None
     }
 

@@ -118,7 +118,8 @@ object DestinationTargets {
 
     /** True when an object-store destination's path is not a plain prefix: a
       * glob or escape character in `prefixKey` or `destinationBucketOverride`,
-      * a `/` in the bucket, or an empty, `.` or `..` segment in the prefix
+      * a `/` in the bucket, leading or trailing whitespace on either, or an
+      * empty, `.` or `..` segment in the prefix
       * (leading and trailing slashes aside). Such a path is read (globbed,
       * normalised) somewhere other than the key and the probe address. */
     def unsafeObjectStorePath(os: ObjectStore): Boolean = {
@@ -126,14 +127,28 @@ object DestinationTargets {
         def globbed(s: String): Boolean = s != null && s.exists(GlobCharacters.contains)
         val prefix = ObjectStoreSpark.normalizePrefix(os.prefixKey)
         val badSegment = prefix.nonEmpty && prefix.split("/", -1).exists(seg => seg.isEmpty || seg == "." || seg == "..")
+        def padded(s: String): Boolean = s != null && s != s.trim
+        // The key and the probe trim; the read does not.
+        padded(os.prefixKey) || padded(os.destinationBucketOverride) ||
         globbed(os.prefixKey) || globbed(os.destinationBucketOverride) ||
         (os.destinationBucketOverride != null && os.destinationBucketOverride.contains("/")) || badSegment
     }
 
     /** 400 refusal text for [[unsafeObjectStorePath]]; names nothing. */
     val UnsafePathRefusal: String =
-        "The object-store prefix and bucket must be plain names: no wildcard or escape characters (* ? [ ] { } \\) " +
-            "and no empty, '.' or '..' path segments. Choose a plain prefix."
+        "The object-store prefix and bucket must be plain names: no wildcard or escape characters (* ? [ ] { } \\), " +
+            "no leading or trailing spaces and no empty, '.' or '..' path segments. Choose a plain prefix."
+
+    /** True when the config's SQL Server table is a temporary one (`#name`,
+      * `##name`): SQL Server resolves it in tempdb whatever the schema, so
+      * neither the probe nor the key addresses what a preview would read. */
+    def sqlServerTempTable(c: PipelineConfig): Boolean =
+        c != null && c.destination != null && c.destination.database != null && c.destination.database.useSqlServer &&
+            Option(c.destination.database.table).exists(_.trim.startsWith("#"))
+
+    /** 400 refusal text for [[sqlServerTempTable]]; names nothing. */
+    val TempTableRefusal: String =
+        "A SQL Server temporary table (a name starting with #) cannot be a pipeline destination. Choose another table name."
 
     /** 400 refusal text; `label` is `SharedDatasets.label` of the caller's
       * own target, so it names nothing the caller did not type. */

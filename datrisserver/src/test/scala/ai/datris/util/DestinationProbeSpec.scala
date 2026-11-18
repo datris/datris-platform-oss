@@ -120,4 +120,31 @@ class DestinationProbeSpec extends AnyFunSuite {
         assert(!DestinationProbe.committed(doc("rest", "s3://b/p/metadata/1.json", null)))
         assert(!DestinationProbe.committed(doc(null, null, null)))
     }
+
+    test("the DESCRIBE TABLE fallback: an answer is true, not-found is false, anything else throws") {
+        import org.mockito.Mockito.{mock, when}
+        val sqlText = "DESCRIBE TABLE hive_metastore.default.t"
+        val answers = mock(classOf[java.sql.Statement])
+        when(answers.executeQuery(sqlText)).thenReturn(mock(classOf[java.sql.ResultSet]))
+        assert(DestinationProbe.describeExists(answers, sqlText))
+
+        for (
+            msg <- Seq(
+                "[TABLE_OR_VIEW_NOT_FOUND] The table or view `hive_metastore`.`default`.`t` cannot be found.",
+                "[SCHEMA_NOT_FOUND] The schema `hive_metastore`.`nope` cannot be found.",
+                "[NO_SUCH_CATALOG_EXCEPTION] Catalog 'nope' was not found."
+            )
+        ) {
+            val missing = mock(classOf[java.sql.Statement])
+            when(missing.executeQuery(sqlText)).thenThrow(sql(msg))
+            assert(!DestinationProbe.describeExists(missing, sqlText), msg)
+        }
+
+        for (e <- Seq(sql("[PERMISSION_DENIED] User does not have SELECT on table", 0, "42501"), sql("Communication link failure"))) {
+            val failing = mock(classOf[java.sql.Statement])
+            when(failing.executeQuery(sqlText)).thenThrow(e)
+            val thrown = intercept[SQLException](DestinationProbe.describeExists(failing, sqlText))
+            assert(thrown eq e)
+        }
+    }
 }

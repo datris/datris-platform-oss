@@ -100,7 +100,7 @@ object EntityVersionAPIController {
         PipelineAPIController
             .vectorContainerRefusal(request, snap, live, others)
             .orElse(PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, env))
-            .orElse(PipelineAPIController.existingDestinationRefusal(request, snap, live, others, env, exists))
+            .orElse(PipelineAPIController.existingDestinationRefusal(request, snap, live, others, env, exists, DestinationProbe.catalogCommitted))
 
     /** For a restricted user's session only: true when the item's history
       * must look absent, i.e. the live item is missing (orphaned history of a

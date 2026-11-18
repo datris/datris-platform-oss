@@ -156,22 +156,88 @@ class RestrictedDestinationHardeningSpec extends AnyFunSuite {
         assert(res.get.getBody == ApiErrors.errorBody(DestinationTargets.ProbeUnavailable), res.get.getBody)
     }
 
-    test("the Unity Catalog state is not read for a stored pipeline, a non-Iceberg format or an unrestricted caller") {
+    test("the Unity Catalog state is read for any new object-store pipeline, not for a kept or retargeted Iceberg one, and never for others") {
         val probe = new Counter[DestinationTargets.Target, Boolean](_ => false)
         val committed = new Counter[String, Boolean](_ => true)
+        // a new object-store pipeline of any format: read, refused
+        for (fmt <- Seq("parquet", "orc", "iceberg")) {
+            val err = errorOf(refuse(bob, os("dead_managed", "fresh_" + fmt, format = fmt), null, Nil, probe, committed), 400)
+            assert(err == DestinationTargets.ExistsRefusal("object-store prefix dev-data.fresh_" + fmt), err)
+        }
+        assert(committed.calls == 3)
+        // a stored Iceberg pipeline the caller can see keeps its own state: re-saved or retargeted, not read
         val stored = os("p", "pfx", format = "iceberg")
-        assert(refuse(
-            bob,
-            stored.copy(destination = stored.destination.copy(objectStore = stored.destination.objectStore.copy(prefixKey = "pfx2"))),
-            stored,
-            Nil,
-            probe,
-            committed
-        ).isEmpty)
+        val retargeted = stored.copy(destination = stored.destination.copy(objectStore = stored.destination.objectStore.copy(prefixKey = "pfx2")))
+        assert(refuse(bob, retargeted, stored, Nil, probe, committed).isEmpty)
         assert(refuse(bob, stored, stored, Nil, probe, committed).isEmpty)
-        assert(refuse(bob, os("p", "pfx", format = "parquet"), null, Nil, probe, committed).isEmpty)
+        // a stored parquet pipeline re-saved as parquet: not read
+        val storedParquet = os("p", "pfx")
+        assert(refuse(bob, storedParquet.copy(tags = java.util.Arrays.asList("t")), storedParquet, Nil, probe, committed).isEmpty)
+        // no object-store destination: not read
+        assert(refuse(bob, sqls("p", "t1"), null, Nil, probe, committed).isEmpty)
+        assert(committed.calls == 3)
+        // unrestricted callers: never read
         for (rk <- Seq(editor, fullKey, salesKey, null))
             assert(refuse(rk, os("p", "pfx", format = "iceberg"), null, Nil, probe, committed).isEmpty, String.valueOf(rk))
-        assert(committed.calls == 0)
+        assert(committed.calls == 3)
+    }
+
+    test("a parquet create followed by a flip to Iceberg is refused when the name has a kept catalog commit") {
+        val probe = new Counter[DestinationTargets.Target, Boolean](_ => false)
+        val committed = new Counter[String, Boolean](_ == "dead_managed")
+        // step 1, a parquet create under that name: already refused
+        assert(errorOf(refuse(bob, os("dead_managed", "fresh"), null, Nil, probe, committed), 400).contains("already exists"))
+        // step 2, a stored parquet config (saved by anyone) flipped to Iceberg, target unchanged
+        val storedParquet = os("dead_managed", "fresh")
+        val flipped = os("dead_managed", "fresh", format = "iceberg")
+        val err = errorOf(refuse(bob, flipped, storedParquet, Seq(storedParquet), probe, committed), 400)
+        assert(err == DestinationTargets.ExistsRefusal("object-store prefix dev-data.fresh"), err)
+        // a stored pipeline with no object store gaining an Iceberg one: read too
+        assert(refuse(bob, flipped, sqls("dead_managed", "t1"), Nil, probe, committed).isDefined)
+        // the same flip for a name with no kept commit goes ahead
+        assert(refuse(bob, os("clean", "fresh", format = "iceberg"), os("clean", "fresh"), Nil, probe, committed).isEmpty)
+        // a failed state read on the flip is the 500
+        val failing: String => Boolean = _ => throw new RuntimeException("down")
+        assert(refuse(bob, flipped, storedParquet, Nil, probe, failing).get.getStatusCode.value == 500)
+        // unrestricted callers flip freely
+        for (rk <- Seq(editor, fullKey, salesKey))
+            assert(refuse(rk, flipped, storedParquet, Nil, probe, committed).isEmpty)
+    }
+
+    test("a rename of an object-store pipeline to a free name with a kept catalog commit is refused for a restricted owner") {
+        val own =
+            APIKeyValidator.resolveFromSession(User("bob", "h", User.RoleEditor, null, null, null, restricted = true, catalogGrants = grants("Sales" -> "own")))
+        val old = os("never_run", "fresh", format = "iceberg")
+        val committed = new Counter[String, Boolean](_ == "dead_managed")
+        def rename(rk: ResolvedKey, cfg: PipelineConfig, to: String, check: String => Boolean) =
+            PipelineAPIController.renameRefusal(req(rk), cfg.name, to, cfg, null, Nil, ucStateExists = false, catalogCommitted = check)
+        val r = rename(own, old, "dead_managed", committed)
+        assert(r.isDefined && r.get.getStatusCode.value == 409, r)
+        assert(errorOf(r, 409) == "Pipeline 'dead_managed' already exists. Choose another name.")
+        assert(committed.calls == 1)
+        // a parquet pipeline too (it could flip later)
+        assert(rename(own, os("never_run", "fresh"), "dead_managed", committed).isDefined)
+        // a clean name: renamed
+        assert(rename(own, old, "clean_name", committed).isEmpty)
+        // a failed state read: 500, nothing renamed
+        val failing: String => Boolean = _ => throw new RuntimeException("down")
+        assert(rename(own, old, "dead_managed", failing).get.getStatusCode.value == 500)
+        // a pipeline with no object store: not read
+        val calls = committed.calls
+        assert(rename(own, sqls("never_run", "t1"), "dead_managed", committed).isEmpty)
+        // an unrestricted caller: not read
+        assert(rename(fullKey, old, "dead_managed", committed).isEmpty)
+        assert(committed.calls == calls)
+    }
+
+    test("a fresh SQL Server temporary table is refused for a restricted session before any probe") {
+        val probe = new Counter[DestinationTargets.Target, Boolean](_ => false)
+        for (t <- Seq("##shared", "#mine", " ##padded"))
+            assert(errorOf(refuse(bob, sqls("bob_q", t), null, Nil, probe), 400) == DestinationTargets.TempTableRefusal, t)
+        assert(probe.calls == 0)
+        assert(refuse(bob, sqls("bob_q", "plain"), null, Nil, probe).isEmpty)
+        assert(probe.calls == 1)
+        for (rk <- Seq(editor, fullKey, salesKey))
+            assert(refuse(rk, sqls("x", "##shared"), null, Nil, probe).isEmpty)
     }
 }
