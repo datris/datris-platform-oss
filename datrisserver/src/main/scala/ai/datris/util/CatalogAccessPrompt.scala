@@ -64,7 +64,7 @@ object CatalogAccessPrompt {
             "- **Raw queries and table browsing are not available.** Free-form SQL, MongoDB and natural-language queries and table/collection browsing are refused for this user. Query a pipeline's data through the tools that take a `pipeline` name instead; for this user the warehouse query tools only preview the pipeline's table, so do not pass `sql` (it is refused) and leave it out. `find_data`, `get_lineage` and `get_provenance` work and show only this user's catalogs.\n"
         )
         sb.append(
-            "- **New destinations only.** A new destination for this user's pipelines (a warehouse table or object-store prefix) must not exist yet. If a save is refused because the destination already exists, relay the refusal, then pick a new table or prefix name or ask a user with install-wide access to save that destination.\n"
+            "- **New destinations only.** A new destination for this user's pipelines (a table, collection or object-store prefix) must not exist yet. If a save is refused because the destination already exists, relay the refusal, then pick a new table or prefix name or ask a user with install-wide access to save that destination.\n"
         )
         sb.append(
             "- **Tap secrets are install-wide.** A tap secret you create is visible to everyone on this install, not only to this user's catalogs. Say so when you create one.\n"

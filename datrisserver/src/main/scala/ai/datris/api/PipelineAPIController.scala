@@ -371,9 +371,10 @@ class PipelineAPIController {
                 logger.warn("POST /pipeline " + preserved.name + " rejected: destination in use by a pipeline the caller cannot see")
                 return Left(refused)
             }
-            // Restricted sessions: a new or changed warehouse table or
-            // object-store prefix must not exist yet (else the preview would
-            // read data no pipeline of theirs wrote). Probed with the
+            // Restricted sessions: a new or changed table, collection or
+            // object-store prefix must not exist yet (else the preview or the
+            // destination-type sample would read, or a run overwrite, data no
+            // pipeline of theirs wrote). Probed with the
             // candidate's own connection; a failed probe refuses (500).
             PipelineAPIController
                 .existingDestinationRefusal(
@@ -622,13 +623,11 @@ class PipelineAPIController {
             if (config == null)
                 return PipelineAPIController.pipelineNotFound(pipeline)
 
-            // Scope first, so a pipeline hidden from the caller answers 404
-            // before a keep-data refusal could reveal anything about it.
-            CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
-            val plan = PipelineDeletePlan.of(deleteData, deleteConfig)
-            val refused = PipelineAPIController.keepDataRefusal(plan, config)
+            // Scope first (a pipeline hidden from the caller answers 404),
+            // then the keep-data refusal; nothing has been deleted yet.
+            val refused = PipelineAPIController.deleteRefusal(request, config, PipelineDeletePlan.of(deleteData, deleteConfig))
             if (refused.isDefined) {
-                logger.warn("Pipeline delete refused: " + pipeline + ": " + PipelineDeletePlan.KeepDataVectorRefusal)
+                logger.warn("Pipeline delete refused: " + pipeline + " (HTTP " + refused.get.getStatusCode.value + ")")
                 return refused.get
             }
 
@@ -965,10 +964,12 @@ class PipelineAPIController {
                 if (config.destination != null) cleanupScratchData(config)
                 UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, dataDeleted = false, configDeleted = true).foreach { advice =>
                     warnings += advice
-                    ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, dataDeleted = false, adviceGiven = true)
                     logger.warn("Pipeline delete: " + pipeline + ": " + advice)
                     auditUnityCatalogDelete(request, pipeline, advice)
                 }
+                // Only a committed table's state survives; an uncommitted
+                // (created-only) or register-mode doc goes, as on any delete.
+                ucTableFilesKept = PipelineDeletePlan.keepUnityCatalogState(config, ucPrevious)
                 val labels = PipelineDeletePlan.keptLabels(config, PipelineAPIController.keepDatasetEnv())
                 logger.info(
                     "Pipeline delete: " + pipeline + ": config deleted, destination data kept" +
@@ -1614,6 +1615,19 @@ object PipelineAPIController {
             out.add("kept", k)
         }
         out.toString
+    }
+
+    /** DELETE /pipeline once the config is loaded, before anything is
+      * deleted: the scope check first (a pipeline the caller cannot see is
+      * `404`, a scope miss `403`, exactly as before), then [[keepDataRefusal]].
+      * None = go ahead. */
+    def deleteRefusal(request: HttpServletRequest, config: PipelineConfig, plan: PipelineDeletePlan.Plan): Option[ResponseEntity[String]] = {
+        try CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+        catch {
+            case _: ResourceHiddenException => return Some(pipelineNotFound(config.name))
+            case e: CapabilityDeniedException => return Some(capabilityDenied(e))
+        }
+        keepDataRefusal(plan, config)
     }
 
     /** DELETE /pipeline: 400 `{"error": KeepDataVectorRefusal}` for a

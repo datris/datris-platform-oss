@@ -12,17 +12,20 @@ import java.util.Locale
 /** The save-time "new destinations only" rule for restricted users' sessions
   * (a logged-in user limited to catalog grants). Pure; no I/O.
   *
-  * A restricted user may not aim a pipeline at a warehouse table or
-  * object-store prefix that already holds data, then read it through the
-  * pipeline preview with the platform's stored credentials. Each fresh
-  * target of a candidate in [[ProbedFamilies]] (the destinations a preview
-  * reads back) is checked with [[DestinationProbe]]; a target that exists
-  * refuses the save.
+  * A restricted user may not aim a pipeline at a table, collection or
+  * object-store prefix that already holds data, then read it (a preview, the
+  * destination-type sample), overwrite it or drop it through the pipeline
+  * with the platform's stored credentials. Each fresh target of a candidate
+  * in [[ProbedFamilies]] is checked with [[DestinationProbe]]; a target that
+  * exists refuses the save. A pgvector table (family `pgtable`, kind
+  * `pgvector`) is not a target: vector containers have their own
+  * one-container rule.
   *
   * A target is the `SharedDatasets` key plus the connection that reaches it
-  * (`credentialsSecret`, `warehouse`, `role` for a database; `provider`,
-  * `endpoint`, `credentialsSecret` for an object store): the same key behind
-  * another secret is another account's data. Fresh = the stored config of the
+  * (`credentialsSecret`, `warehouse`, `role` for a warehouse; `provider`,
+  * `endpoint`, `credentialsSecret` for an object store; nothing for Postgres
+  * and MongoDB, which are always reached with the platform's own
+  * connection): the same key behind another secret is another account's data. Fresh = the stored config of the
   * same name does not have the same target. A target equal to (object store:
   * equal to or under the prefix of) a target of another pipeline the caller
   * can see is not probed: the caller can already preview it.
@@ -36,17 +39,24 @@ object DestinationTargets {
 
     case class Target(key: SharedDatasets.Key, connection: Seq[String], exact: Seq[String] = Nil)
 
-    /** Destination families a pipeline preview reads back. */
-    val ProbedFamilies: Set[String] = Set("snowflake", "sqlserver", "databricks", "objectstore")
+    /** Destination families checked: the ones a pipeline preview or the
+      * destination-type sample reads back, and the platform's Postgres tables
+      * and MongoDB collections. */
+    val ProbedFamilies: Set[String] = Set("snowflake", "sqlserver", "databricks", "objectstore", "pgtable", "mongodb")
+
+    /** Families reached with the platform's own connection (no per-pipeline
+      * credentials): their targets carry no connection. */
+    private val PlatformFamilies: Set[String] = Set("pgtable", "mongodb")
 
     private def norm(s: String): String = if (s == null) "" else s.trim
 
     /** The candidate's targets in [[ProbedFamilies]], in `SharedDatasets.keysOf` order. */
     def targetsOf(c: PipelineConfig, env: SharedDatasets.Env): Seq[Target] = {
         if (c == null || c.destination == null) return Nil
-        SharedDatasets.keysOf(c, env).filter(k => ProbedFamilies.contains(k.family)).map { k =>
+        SharedDatasets.keysOf(c, env).filter(k => ProbedFamilies.contains(k.family) && k.kind != "pgvector").map { k =>
             val connection =
-                if (k.family == "objectstore") {
+                if (PlatformFamilies.contains(k.family)) Nil
+                else if (k.family == "objectstore") {
                     val os = c.destination.objectStore
                     Seq(
                         Option(os.provider).map(_.trim.toLowerCase(Locale.ROOT)).filter(_.nonEmpty).getOrElse("minio"),

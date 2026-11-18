@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.PipelineConfig
+import ai.datris.model.{PipelineConfig, UnityCatalogSyncState}
 
 /** DELETE /pipeline flags, read once. Pure (no I/O).
   *
@@ -46,6 +46,20 @@ object PipelineDeletePlan {
     def refusal(plan: Plan, config: PipelineConfig): Option[String] =
         if (plan.keepData && VectorContainers.keysOf(config).nonEmpty) Some(KeepDataVectorRefusal)
         else None
+
+    /** Whether a keep-data delete keeps the pipeline's Unity Catalog state
+      * doc: only when it records a catalog commit of the table whose files
+      * stay (`catalogMode` managed, or rest committed at this pipeline's
+      * table root), so a later save under the name still sees the commit. A
+      * register-mode doc, or one that records only a table the catalog
+      * created and Datris never wrote, is removed, as on every other delete. */
+    def keepUnityCatalogState(config: PipelineConfig, previous: UnityCatalogSyncState): Boolean =
+        previous != null && (IcebergRestSession.managedCommitted(previous) || (icebergObjectStore(config) &&
+            IcebergRestSession.restCommitted(previous, UnityCatalogDeleteAdvice.tableRoot(config))))
+
+    private def icebergObjectStore(c: PipelineConfig): Boolean =
+        c != null && c.destination != null && c.destination.objectStore != null &&
+            Option(c.destination.objectStore.fileFormat).exists(_.trim.equalsIgnoreCase("iceberg"))
 
     /** Destination kinds a keep-data delete leaves in place. */
     private val KeptKinds: Set[String] = Set("postgres", "mongodb", "snowflake", "databricks", "sqlserver", "objectstore")

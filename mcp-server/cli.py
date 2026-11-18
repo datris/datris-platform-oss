@@ -703,12 +703,16 @@ def delete(pipeline_name, keep_data, json_output):
     if keep_data:
         args["keep_data"] = True
     result = mcp("delete_pipeline", args)
+    # A --keep-data refusal (e.g. a vector destination: nothing was deleted)
+    # exits 1, with or without --json.
+    refused = keep_data and isinstance(result, dict) and bool(result.get("error"))
     if json_output:
         click.echo(json.dumps(result, indent=2))
+        if refused:
+            sys.exit(1)
         return
     if keep_data:
-        if isinstance(result, dict) and result.get("error"):
-            # e.g. a vector destination: nothing was deleted
+        if refused:
             click.echo(f"  ✗ {result['error']}", err=True)
             sys.exit(1)
         click.echo(f"  ✓ Pipeline '{pipeline_name}' deleted (data kept)")

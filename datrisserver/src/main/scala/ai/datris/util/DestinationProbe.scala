@@ -195,6 +195,8 @@ object DestinationProbe {
             case "databricks" => databricks(database(c), seconds)
             case "sqlserver" => sqlServer(database(c), seconds)
             case "objectstore" => objectStore(c)
+            case "pgtable" if t.key.kind == "postgres" => postgres(t, seconds)
+            case "mongodb" => mongo(c, t, seconds)
             case other => throw new IllegalArgumentException("no existence probe for destination family " + other)
         }
     }
@@ -342,6 +344,127 @@ object DestinationProbe {
             case s: SQLException => s.getErrorCode == 4060 || Option(s.getMessage).exists(_.contains("Cannot open database"))
             case _ => false
         }
+
+    // ------------------------------------------------------------ Postgres
+
+    /** The JDBC URL the destination-type sample and the delete use: the
+      * platform secret's URL, with `/<database>` appended unless it already
+      * names a database. */
+    private[util] def postgresJdbcUrl(baseUrl: String, database: String): String = {
+        val afterProtocol = baseUrl.replaceFirst("^jdbc:postgresql://", "")
+        if (afterProtocol.contains("/")) baseUrl else baseUrl + "/" + database
+    }
+
+    /** `"schema"."table"`, each a quoted identifier (case kept, `"` doubled),
+      * as the loader and the sample address the table. */
+    private[util] def postgresRegclass(schema: String, table: String): String = {
+        def q(s: String): String = "\"" + s.replace("\"", "\"\"") + "\""
+        q(schema) + "." + q(table)
+    }
+
+    /** `to_regclass` of the quoted name, a bound parameter: anything
+      * `SELECT * FROM "schema"."table"` could resolve (table, view,
+      * materialized view, foreign or partitioned table) answers non-null. */
+    private[util] val PostgresExistsSql: String = "SELECT CASE WHEN to_regclass(CAST(? AS text)) IS NULL THEN 0 ELSE 1 END"
+
+    /** The platform Postgres destination: the key's database (the tenant
+      * database in multi-tenant mode, else `dbName`, as the loader), schema
+      * and table. Opened with the platform secret and the probe's timeouts,
+      * read-only, outside the pool. */
+    private def postgres(t: DestinationTargets.Target, seconds: Int): Boolean = {
+        val secrets = SecretsRetrieverUtil.postgresSecrets()
+        Class.forName("org.postgresql.Driver")
+        postgresWith(
+            t,
+            secrets.jdbcUrl,
+            seconds,
+            url => {
+                val props = new java.util.Properties()
+                props.setProperty("user", secrets.username)
+                props.setProperty("password", secrets.password)
+                props.setProperty("connectTimeout", seconds.toString)
+                props.setProperty("loginTimeout", seconds.toString)
+                props.setProperty("socketTimeout", seconds.toString)
+                java.sql.DriverManager.getConnection(url, props)
+            }
+        )
+    }
+
+    /** [[postgres]] over `open` (given the JDBC URL). A missing database
+      * (SQLSTATE 3D000) or schema (3F000) counts as "does not exist"; any
+      * other failure propagates. */
+    private[datris] def postgresWith(t: DestinationTargets.Target, baseUrl: String, seconds: Int, open: String => Connection): Boolean = {
+        require(t != null && t.key.family == "pgtable" && t.key.kind == "postgres" && t.key.parts.size == 3, "no postgres table to probe")
+        val Seq(database, schema, table) = t.key.parts
+        require(!blank(database) && !blank(schema) && !blank(table), "postgres destination without database, schema or table")
+        try {
+            val conn = open(postgresJdbcUrl(baseUrl, database))
+            try {
+                Try(conn.setReadOnly(true))
+                countAboveZero(conn, PostgresExistsSql, Seq(postgresRegclass(schema, table)), seconds)
+            } finally Try(conn.close())
+        } catch {
+            case e: Exception if postgresMissing(e) =>
+                logger.info("Destination probe: postgres database or schema of " + database + "." + schema + " does not exist")
+                false
+        }
+    }
+
+    private[util] def postgresMissing(e: Throwable): Boolean =
+        causes(e).exists {
+            case s: SQLException => s.getSQLState == "3D000" || s.getSQLState == "3F000"
+            case _ => false
+        }
+
+    // ------------------------------------------------------------ MongoDB
+
+    /** The databases a MongoDB destination is addressed as: the loader's
+      * `dbName` and the key's database (the tenant database in multi-tenant
+      * mode), distinct, blanks dropped. */
+    private[util] def mongoDatabases(c: PipelineConfig, t: DestinationTargets.Target): Seq[String] =
+        (Seq(t.key.parts.headOption.orNull) ++ Option(c.destination.database).map(_.dbName).toSeq).filterNot(blank).distinct
+
+    /** True when a collection or view named exactly `table` (case kept) is in
+      * any of [[mongoDatabases]]. A database that does not exist lists no
+      * collections (MongoDB creates databases on first write), so it is
+      * "does not exist"; any failure propagates. */
+    private[datris] def mongoWith(c: PipelineConfig, t: DestinationTargets.Target, collectionExists: (String, String) => Boolean): Boolean = {
+        require(c != null && c.destination != null && c.destination.database != null, "no mongodb destination to probe")
+        val coll = c.destination.database.table
+        require(!blank(coll), "mongodb destination without a collection")
+        val dbs = mongoDatabases(c, t)
+        require(dbs.nonEmpty, "mongodb destination without a database")
+        dbs.exists(d => collectionExists(d, coll))
+    }
+
+    /** The platform MongoDB (the loader's secret), on a client of its own
+      * with the probe's timeouts, closed here. */
+    private def mongo(c: PipelineConfig, t: DestinationTargets.Target, seconds: Int): Boolean = {
+        val secrets = SecretsRetrieverUtil.mongoDbSecrets()
+        val settings = com.mongodb.MongoClientSettings
+            .builder()
+            .applyConnectionString(new com.mongodb.ConnectionString(secrets.connectionString))
+            .applyToClusterSettings(b => { b.serverSelectionTimeout(seconds.toLong, TimeUnit.SECONDS); () })
+            .applyToSocketSettings(b => {
+                b.connectTimeout(seconds, TimeUnit.SECONDS)
+                b.readTimeout(seconds, TimeUnit.SECONDS)
+                ()
+            })
+            .build()
+        val client = com.mongodb.client.MongoClients.create(settings)
+        try
+            mongoWith(
+                c,
+                t,
+                (database, coll) =>
+                    client
+                        .getDatabase(database)
+                        .listCollections()
+                        .filter(com.mongodb.client.model.Filters.eq("name", coll))
+                        .first() != null
+            )
+        finally Try(client.close())
+    }
 
     // ------------------------------------------------------------ object store
 

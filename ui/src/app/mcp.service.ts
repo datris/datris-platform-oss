@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable, timer } from 'rxjs';
+import { Observable, throwError, timer } from 'rxjs';
 import { map, switchMap } from 'rxjs/operators';
 
 @Injectable({
@@ -15,6 +15,11 @@ export class McpService {
 
   getServiceHealth(): Observable<any> {
     return this.http.get<any>('/api/v1/health/services');
+  }
+
+  /** A boolean playground parameter: true or the text 'true' (any case). */
+  private flagSet(v: any): boolean {
+    return v === true || (typeof v === 'string' && v.trim().toLowerCase() === 'true');
   }
 
   executeTool(toolName: string, params: Record<string, any>): Observable<any> {
@@ -58,8 +63,25 @@ export class McpService {
           });
         });
       }
-      case 'delete_pipeline':
-        return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(params['pipeline']));
+      case 'delete_pipeline': {
+        // Mirrors the MCP server: keep_data deletes only the config,
+        // keep_config only the data; both together is an error and nothing
+        // is called.
+        const keepData = this.flagSet(params['keep_data']);
+        const keepConfig = this.flagSet(params['keep_config']);
+        if (keepData && keepConfig) {
+          return throwError(() => ({
+            error: {
+              error: 'keep_data and keep_config cannot both be true: keep_data deletes only the config, ' +
+                'keep_config deletes only the data. Nothing was deleted.'
+            }
+          }));
+        }
+        let url = '/api/v1/pipeline?pipeline=' + encodeURIComponent(params['pipeline']);
+        if (keepData) url += '&deleteData=false';
+        else if (keepConfig) url += '&deleteData=true&deleteConfig=false';
+        return this.http.delete<any>(url);
+      }
       case 'get_job_status': {
         let url = '/api/v1/pipeline/status?';
         const qp: string[] = [];

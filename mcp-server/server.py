@@ -1764,10 +1764,10 @@ _CATALOG_ACCESS_CREATE_NOTE = (
     "or refused with a message listing the allowed catalogs; relay that message and ask which one to use."
 )
 
-# Pipeline saves: for a catalog-limited user a new or changed warehouse
-# table or object-store prefix must not exist yet (the server checks it).
+# Pipeline saves: for a catalog-limited user a new or changed table,
+# collection or object-store prefix must not exist yet (the server checks it).
 _CATALOG_ACCESS_PIPELINE_CREATE_NOTE = _CATALOG_ACCESS_CREATE_NOTE + (
-    " For a user limited to specific catalogs, a new destination (a warehouse table or object-store prefix) must not exist yet: "
+    " For a user limited to specific catalogs, a new destination (a table, collection or object-store prefix) must not exist yet: "
     "the server refuses a save whose new destination already exists; relay that message, then choose a table or prefix name "
     "that does not exist yet or ask a user with install-wide access to save it."
 )

@@ -17,7 +17,7 @@ import org.scalatest.funsuite.AnyFunSuite
   * {{{
   * object DestinationTargets {
   *   case class Target(key: SharedDatasets.Key, connection: Seq[String])
-  *   val ProbedFamilies: Set[String]   // snowflake, sqlserver, databricks, objectstore
+  *   val ProbedFamilies: Set[String]   // snowflake, sqlserver, databricks, objectstore, pgtable, mongodb
   *   def targetsOf(c: PipelineConfig, env: SharedDatasets.Env): Seq[Target]
   *   def freshTargets(candidate: PipelineConfig, stored: PipelineConfig, env: SharedDatasets.Env): Seq[Target]
   *   def coveredBy(t: Target, other: Target): Boolean
@@ -105,8 +105,8 @@ class DestinationTargetsSpec extends AnyFunSuite {
 
     // ------------------------------------------------------------ targetsOf
 
-    test("targetsOf lists snowflake, sqlserver, databricks and objectstore targets and nothing for postgres, mongodb, kafka, activemq, pgvector or scratch") {
-        assert(DestinationTargets.ProbedFamilies == Set("snowflake", "sqlserver", "databricks", "objectstore"))
+    test("targetsOf lists snowflake, sqlserver, databricks, objectstore, postgres and mongodb targets and nothing for kafka, activemq, pgvector or scratch") {
+        assert(DestinationTargets.ProbedFamilies == Set("snowflake", "sqlserver", "databricks", "objectstore", "pgtable", "mongodb"))
 
         for ((c, fam) <- Seq(snow("s") -> "snowflake", sqls("q") -> "sqlserver", dbx("d") -> "databricks", os("o", "o/p") -> "objectstore")) {
             val ts = DestinationTargets.targetsOf(c, env)
@@ -125,7 +125,9 @@ class DestinationTargetsSpec extends AnyFunSuite {
         val amq = PipelineConfig(name = "a", destination = Destination(activeMQ = ActiveMQ("q1")))
         val pgv = PipelineConfig(name = "v", destination = Destination(pgvector = PGVectorConfig("vt", "public", ChunkingConfig(), null, null, null)))
         val scratch = PipelineConfig(name = "sc", destination = Destination(scratch = ScratchConfig()))
-        for (c <- Seq(pg, mongo, kafka, amq, pgv, scratch))
+        assert(families(DestinationTargets.targetsOf(pg, env)) == Set("pgtable"))
+        assert(families(DestinationTargets.targetsOf(mongo, env)) == Set("mongodb"))
+        for (c <- Seq(kafka, amq, pgv, scratch))
             assert(DestinationTargets.targetsOf(c, env).isEmpty, c.name)
 
         // several destinations: only the probed families
@@ -138,7 +140,7 @@ class DestinationTargetsSpec extends AnyFunSuite {
                 kafka = Kafka("topic1", null, null)
             )
         )
-        assert(families(DestinationTargets.targetsOf(multi, env)) == Set("snowflake", "objectstore"))
+        assert(families(DestinationTargets.targetsOf(multi, env)) == Set("snowflake", "pgtable", "objectstore"))
 
         assert(DestinationTargets.targetsOf(null, env).isEmpty)
         assert(DestinationTargets.targetsOf(PipelineConfig(name = "none"), env).isEmpty)
@@ -284,7 +286,7 @@ class DestinationTargetsSpec extends AnyFunSuite {
             )
         )
         val fresh = DestinationTargets.freshTargets(multi, null, env)
-        assert(families(fresh) == Set("snowflake", "objectstore"), fresh)
+        assert(families(fresh) == Set("snowflake", "pgtable", "objectstore"), fresh)
         assert(fresh.toSet == DestinationTargets.targetsOf(multi, env).toSet)
         for (c <- Seq(snow("s"), sqls("q"), dbx("d"), os("o", "o")))
             assert(DestinationTargets.freshTargets(c, null, env) == DestinationTargets.targetsOf(c, env), c)
