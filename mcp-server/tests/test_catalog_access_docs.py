@@ -126,3 +126,17 @@ def test_warehouse_query_tools_say_a_sql_argument_is_refused_for_catalog_limited
     if "refuses a `sql` argument" in d or "refuses a sql argument" in d:
         problems.append("query_objectstore: takes no sql, so it must not carry the sql refusal")
     assert not problems, "\n".join(problems)
+
+
+# Story: plans/stories/catalog-scoped-user-access-warehouse-preview-target.md, Acceptance.
+def test_pipeline_save_tool_says_an_existing_destination_is_refused_for_catalog_limited_users():
+    d = _norm(_tools()["create_pipeline"].description)
+    sentences = [s for s in d.replace("; ", ". ").split(". ") if "already exist" in s]
+    assert sentences, "create_pipeline: no sentence about a destination that already exists"
+    hit = [s for s in sentences if "destination" in s and "refuse" in s]
+    assert hit, f"create_pipeline: does not say an existing destination is refused: {sentences}"
+    assert "limited to specific catalogs" in d, "create_pipeline: does not name catalog-limited users"
+    assert any("not exist yet" in s or "does not exist" in s for s in d.split(". ")), (
+        "create_pipeline: does not say a new destination must not exist yet"
+    )
+    assert "install-wide" in d, "create_pipeline: does not point at a user with install-wide access"

@@ -104,4 +104,26 @@ class CatalogAccessPromptSpec extends AnyFunSuite {
         }
         assert(CatalogAccessPrompt.block(user(User.RoleEditor, restricted = false, "Sales" -> "edit")).isEmpty)
     }
+
+    // Story: plans/stories/catalog-scoped-user-access-warehouse-preview-target.md, Acceptance.
+    test("restricted block says a new destination must not exist yet") {
+        val cases = Seq(
+            user(User.RoleEditor, restricted = true, "Sales" -> "edit"),
+            user(User.RoleEditor, restricted = true, "Sales" -> "own", "Archive" -> "view")
+        )
+        cases.foreach { u =>
+            val text = CatalogAccessPrompt.block(u)
+            assert(text.isDefined)
+            val line = text.get.split("\n").find { l =>
+                val x = l.toLowerCase
+                x.contains("destination") && x.contains("not exist yet")
+            }
+            assert(line.isDefined, s"a rule must say a new destination must not exist yet:\n${text.get}")
+            val l = line.get.toLowerCase
+            assert(l.contains("new destination"), s"must speak of a new destination: ${line.get}")
+            assert(l.contains("refused"), s"must say what happens when a save is refused for that: ${line.get}")
+            assert(l.contains("install-wide"), s"must point at a user with install-wide access: ${line.get}")
+        }
+        assert(CatalogAccessPrompt.block(user(User.RoleEditor, restricted = false, "Sales" -> "edit")).isEmpty)
+    }
 }
