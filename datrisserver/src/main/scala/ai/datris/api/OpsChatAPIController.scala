@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{JsonObject, JsonParser}
-import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
+import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, User, UserContext}
 import ai.datris.incident.{Incident, IncidentIO}
 import ai.datris.util.{AgentLoop, APIKeyValidator, MCPClient, OpsAgentPrompt, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
@@ -34,6 +34,10 @@ import scala.collection.JavaConverters._
   *    failures and volumes the operator is staring at right now.
   *  - Operational tools (`run_tap`, `get_pipeline_status`, `kill_job`, etc.)
   *    sort to the front of the catalog so the agent reaches for them first.
+  *  - With the recovery agent on, open incidents are appended to the context
+  *    message, except for a restricted session (a user limited to catalog
+  *    grants): it gets no incidents block and the incident store is not read
+  *    (see `OpsChatAPIController.incidentsFor`).
   */
 @RestController
 @RequestMapping(Array("/api/v1"))
@@ -90,7 +94,7 @@ class OpsChatAPIController {
                 capturedTenant.foreach(TenantContext.set)
                 try {
                     APIKeyValidator.validate(apiKey)
-                    runChat(apiKey, body, emitter, cancelled)
+                    runChat(apiKey, body, emitter, cancelled, capturedUser)
                 } catch {
                     case e: Exception =>
                         try {
@@ -114,7 +118,13 @@ class OpsChatAPIController {
         emitter
     }
 
-    private def runChat(apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
+    private def runChat(
+        apiKey: String,
+        body: String,
+        emitter: SseEmitter,
+        cancelled: java.util.concurrent.atomic.AtomicBoolean,
+        user: Option[User]
+    ): Unit = {
         val req = JsonParser.parseString(body).getAsJsonObject
         val messagesArr = req.getAsJsonArray("messages")
         if (messagesArr == null || messagesArr.size() == 0)
@@ -153,7 +163,9 @@ class OpsChatAPIController {
         // message. Cheapest possible cadence — ship dumb, optimize if
         // token usage shows it is wasteful (decision recorded in the plan).
         val withContext: List[(String, String)] = contextSnapshot match {
-            case Some(ctx) => ("user", OpsAgentPrompt.renderContextMessage(ctx, openIncidents())) :: userMessages
+            case Some(ctx) =>
+                ("user", OpsAgentPrompt.renderContextMessage(ctx, OpsChatAPIController.incidentsFor(user, () => openIncidents()))) ::
+                    userMessages
             case None => userMessages
         }
 
@@ -197,7 +209,9 @@ class OpsChatAPIController {
 
     /** Open incidents for the context message — the platform's own recovery
       * work the operator should hear about instead of a re-diagnosis. Empty
-      * when the recovery agent is off or incidents can't be read. */
+      * when the recovery agent is off or incidents can't be read. Only ever
+      * called through `OpsChatAPIController.incidentsFor`, which skips it for
+      * a restricted session. */
     private def openIncidents(): List[Incident] =
         try {
             if (DatrisEnvironment.values != null && DatrisEnvironment.values.recoveryAgentEnabled) IncidentIO.listOpen()
@@ -205,4 +219,19 @@ class OpsChatAPIController {
         } catch {
             case _: Exception => Nil
         }
+}
+
+object OpsChatAPIController {
+
+    /** Open incidents the Ops chat context may carry for `user` (the session
+      * user captured on the request thread; the same identity `MCPClient`
+      * forwards as `X-Datris-On-Behalf-Of`, so ambient context and tools
+      * follow one person). A restricted session gets `Nil` and `load` is not
+      * called: incidents are closed to it on every surface (routes and tools
+      * require `incident:read`), and step summaries can name resources outside
+      * its catalogs. Everyone else (unrestricted users, API key callers, user
+      * auth off) gets `load()` unchanged. */
+    def incidentsFor(user: Option[User], load: () => List[Incident]): List[Incident] =
+        if (user.exists(_.isRestricted)) Nil
+        else load()
 }

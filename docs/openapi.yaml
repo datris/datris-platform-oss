@@ -7298,6 +7298,8 @@ paths:
         acts on runs by name, with operational tools (run, status, kill)
         prioritized. The optional `context` object is a dashboard snapshot
         that grounds answers in the failures and volumes currently on screen.
+        With the recovery agent on, open incidents are added to the context,
+        except for a user with scoped catalog access.
         Streams the same SSE event format as `/assistant/chat`.
       requestBody:
         required: true
