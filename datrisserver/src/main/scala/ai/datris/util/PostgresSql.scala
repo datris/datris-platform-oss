@@ -23,7 +23,8 @@ object PostgresSql {
 
     /** `baseUrl` (the platform secret's URL) when it already names a
       * database; otherwise `baseUrl` with `/` + `database` percent-encoded
-      * appended (before any `?` query). Plain names (letters, digits, `_`,
+      * appended (before any `?` query). A trailing `/` with an empty path
+      * names no database: the name goes after it. Plain names (letters, digits, `_`,
       * `-`, `.`, `~`) are appended unchanged. `IllegalArgumentException` for
       * a null or empty name or one containing NUL. */
     def jdbcUrl(baseUrl: String, database: String): String = {
@@ -37,8 +38,12 @@ object PostgresSql {
             val rest = baseUrl.substring(Prefix.length)
             val q = rest.indexOf('?')
             val authority = if (q >= 0) rest.substring(0, q) else rest
-            if (authority.contains("/")) baseUrl
-            else Prefix + authority + "/" + encode(database) + (if (q >= 0) rest.substring(q) else "")
+            val query = if (q >= 0) rest.substring(q) else ""
+            val slash = authority.indexOf('/')
+            if (slash < 0) Prefix + authority + "/" + encode(database) + query
+            // A trailing '/' with nothing after it names no database.
+            else if (slash == authority.length - 1) Prefix + authority + encode(database) + query
+            else baseUrl
         }
     }
 
@@ -82,8 +87,9 @@ object PostgresSql {
     /** `a, b, c`, each quoted. */
     def columnList(columns: Seq[String]): String = columns.map(PgIdentifier.quote).mkString(", ")
 
-    /** The loader's additive schema evolution. `colType` is the loader's
-      * mapped type, never a name. */
+    /** The loader's additive schema evolution. `colType` is type text taken
+      * from the pipeline config (`string` mapped to `text`, anything else as
+      * written); this helper neither validates nor escapes it. */
     def addColumn(database: String, schema: String, table: String, columnName: String, colType: String): String =
         "ALTER TABLE " + tableRef(database, schema, table) + " ADD COLUMN IF NOT EXISTS " + PgIdentifier.quote(columnName) + " " + colType
 

@@ -214,6 +214,33 @@ class PostgresSqlSpec extends AnyFunSuite {
         }
     }
 
+    test("a trailing slash with an empty path, with or without a query string, and a query string without a path get the encoded name") {
+        val defaults = new Properties()
+        defaults.setProperty("user", "datris")
+        val cases = Seq(
+            // (base, expected URL for "datris", extra properties the base itself carries)
+            ("jdbc:postgresql://postgres:5432/", "jdbc:postgresql://postgres:5432/datris", Map.empty[String, String]),
+            ("jdbc:postgresql://postgres:5432/?sslmode=require", "jdbc:postgresql://postgres:5432/datris?sslmode=require", Map("sslmode" -> "require")),
+            ("jdbc:postgresql://postgres:5432?sslmode=require", "jdbc:postgresql://postgres:5432/datris?sslmode=require", Map("sslmode" -> "require"))
+        )
+        for ((b, plainUrl, extra) <- cases) {
+            assert(PostgresSql.jdbcUrl(b, "datris") == plainUrl, b)
+            for (name <- Seq("datris", "acme-prod", "datris?user=nobody", "x?user=nobody&sslmode=disable&options=-c search_path=evil", "a/b", "my db")) {
+                val url = PostgresSql.jdbcUrl(b, name)
+                val parsed = org.postgresql.Driver.parseURL(url, defaults)
+                assert(parsed != null, b + " + " + name + ": driver rejected " + url)
+                assert(parsed.getProperty("PGDBNAME") == name, b + " + " + name + ": database " + parsed.getProperty("PGDBNAME") + " in " + url)
+                assert(parsed.getProperty("PGHOST") == "postgres" && parsed.getProperty("PGPORT") == "5432", b + " + " + name + ": host/port")
+                assert(parsed.getProperty("user") == "datris", b + " + " + name + ": user " + parsed.getProperty("user"))
+                extra.foreach { case (k, v) => assert(parsed.getProperty(k) == v, b + " + " + name + ": " + k) }
+                assert(
+                    parsed.stringPropertyNames.asScala.toSet == Set("user", "PGDBNAME", "PGHOST", "PGPORT") ++ extra.keySet,
+                    b + " + " + name + ": " + parsed.stringPropertyNames
+                )
+            }
+        }
+    }
+
     test("null, empty and NUL throw") {
         for (name <- Seq(null, "", "a\u0000b", "\u0000"))
             intercept[IllegalArgumentException](PostgresSql.jdbcUrl(base, name))
