@@ -30,7 +30,8 @@ object DatabricksConnectionUtil {
      *  the config's catalog/schema/warehouse, run `f`, and clean up. `onInfo`
      *  lets callers mirror progress into their own status log.
      *  `timeoutSeconds` (None for loaders and queries: driver defaults) sets
-     *  the driver's socket timeout. */
+     *  the driver's `socketTimeout` (seconds; the name databricks-jdbc 3.4.1 declares in
+     *  `DatabricksJdbcUrlParams`, looked up lower-cased). */
     def withConnection[T](db: Database, onInfo: String => Unit = _ => (), pipelineName: String = null, timeoutSeconds: Option[Int] = None)(
         f: Connection => T
     ): T = {
@@ -52,7 +53,7 @@ object DatabricksConnectionUtil {
             if (db.dbName != null) properties.setProperty("ConnCatalog", db.dbName)
             if (db.schema != null) properties.setProperty("ConnSchema", db.schema)
             properties.setProperty("UserAgentEntry", "Datris")
-            timeoutSeconds.foreach(s => properties.setProperty("SocketTimeout", s.toString))
+            timeoutSeconds.foreach(s => properties.setProperty("socketTimeout", s.toString))
             // Required for the driver's Unity Catalog volume operations (PUT/REMOVE):
             // it refuses to read local files outside this allowlist. Staging CSVs are
             // written to the JVM temp dir.
