@@ -74,12 +74,22 @@ object MCPClient {
         digest.map(b => f"${b & 0xff}%02x").mkString + "|" + suffix
     }
 
+    /** Cache suffix for the tool listing. The MCP server filters `tools/list`
+      * per key AND per on-behalf-of user (the `ui` key lists fewer tools for a
+      * restricted user), so the user `rpcCall` forwards is part of the entry.
+      * The user part is length-prefixed so no username can forge another's. */
+    private[util] def toolsSuffix(onBehalfOf: Option[String]): String =
+        onBehalfOf.filter(_.nonEmpty) match {
+            case Some(u) => "tools|user:" + u.length + ":" + u
+            case None => "tools"
+        }
+
     private def now(): Long = System.currentTimeMillis()
 
     /** Fetch `tools/list` from the MCP server. Each tool is a JsonObject with
-      * `name`, `description`, `inputSchema`. Cached ~60s per api-key prefix. */
+      * `name`, `description`, `inputSchema`. Cached ~60s per api key and on-behalf-of user. */
     def listTools(apiKey: String): List[JsonObject] = {
-        val key = cacheKey(apiKey, "tools")
+        val key = cacheKey(apiKey, toolsSuffix(UserContext.get().map(_.username)))
         Option(toolsCache.get(key)).filter(_.expiresAt > now()).map(_.value) match {
             case Some(cached) => cached
             case None =>

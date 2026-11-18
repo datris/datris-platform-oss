@@ -1677,18 +1677,26 @@ async def read_resource(ctx: ServerRequestContext | None,
 # Profile filter: ask the Scala server which tools this session's key may
 # see, so list_tools matches what the REST capability layer would actually
 # allow. The tool→route mapping lives ONLY on the server (MCPToolRoutes) —
-# never copy it here, it would drift. Cached per key with a short TTL so a
-# template edit applies on reconnect without hammering the endpoint.
-_allowed_tools_cache: dict[str, tuple[float, set | None]] = {}
+# never copy it here, it would drift. Cached per key and on-behalf-of user
+# with a short TTL so a template edit applies on reconnect without hammering
+# the endpoint.
+_allowed_tools_cache: dict[tuple[str, str], tuple[float, set | None]] = {}
 _allowed_tools_lock = threading.Lock()
 _ALLOWED_TOOLS_TTL = 60.0
+
+
+def _allowed_tools_cache_key(api_key: str | None, on_behalf_of: str | None) -> tuple[str, str]:
+    """Cache key for the tool listing: the key AND the on-behalf-of user,
+    because /api/v1/mcp/tools answers per user for the `ui` key (a restricted
+    user's listing is narrower than an admin's)."""
+    return (api_key or "", on_behalf_of or "")
 
 
 def _allowed_tool_names() -> set | None:
     """Return the set of tool names this session's key may see, or None for
     'no filtering' (keys off, legacy full-access key, or the server could
     not answer — visibility is UX, the REST 403 stays the boundary)."""
-    key = _effective_api_key()
+    key = _allowed_tools_cache_key(_effective_api_key(), _session_on_behalf_of.get())
     now = time.time()
     with _allowed_tools_lock:
         cached = _allowed_tools_cache.get(key)

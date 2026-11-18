@@ -81,6 +81,31 @@ object ChatCaller {
                     }
             }
 
+    /** [[decide]] plus the label the request's key carried BEFORE
+      * TenantInterceptor relabelled it for on-behalf-of
+      * (`AuditActor.CarrierKeyLabelAttr`). With API keys off any key may
+      * vouch for a user, so a tap-run token sending `X-Datris-On-Behalf-Of`
+      * arrives relabelled `session:<user>`; rule 1 must still see the tap. */
+    def decide(
+        sessionUser: Option[User],
+        onBehalfOf: Option[User],
+        resolved: Option[ResolvedKey],
+        rejection: Option[String],
+        carrierKeyLabel: Option[String]
+    ): ChatDecision =
+        if (carrierKeyLabel.exists(TapRunTokens.isTapLabel))
+            Refuse(HttpServletResponse.SC_FORBIDDEN, TapTokenRefusedBody)
+        else decide(sessionUser, onBehalfOf, resolved, rejection)
+
+    /** The carrier label `from` passes to [[decide]]: the attribute
+      * TenantInterceptor set when it relabelled the key, else the label of a
+      * live tap-run token presented as `x-api-key` (whatever relabelling
+      * happened afterwards). */
+    private[auth] def carrierLabel(carrierAttr: Option[String], presentedKey: String): Option[String] =
+        carrierAttr.filter(TapRunTokens.isTapLabel)
+            .orElse(TapRunTokens.resolve(presentedKey).map(_.label))
+            .orElse(carrierAttr)
+
     /** Install-wide full access. `grants` with no scope context, so a scoped
       * `*:*:catalog=x` does not count. */
     def isFullAccess(rk: ResolvedKey): Boolean =
@@ -110,7 +135,11 @@ object ChatCaller {
             UserContext.get(),
             Option(request.getAttribute(AuditActor.OnBehalfOfAttr)).collect { case u: User => u },
             ResolvedKeyAccess.fromRequest(request),
-            Option(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr)).map(_.toString)
+            Option(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr)).map(_.toString),
+            carrierLabel(
+                Option(request.getAttribute(AuditActor.CarrierKeyLabelAttr)).map(_.toString),
+                request.getHeader("x-api-key")
+            )
         )
 
     /** The platform's `ui` key for MCP-bound calls. Null with API keys off
