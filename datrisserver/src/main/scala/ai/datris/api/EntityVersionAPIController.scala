@@ -35,7 +35,8 @@ object EntityVersionAPIController {
       * container that the live config (null when deleted) does not, and
       * that another pipeline names, is refused like POST /pipeline; so is a
       * snapshot that, for a caller who cannot see every pipeline, adds a
-      * dataset a pipeline hidden from it writes. The environment values are
+      * dataset a pipeline hidden from it writes, and (restricted sessions)
+      * one whose new destination already exists. The environment values are
       * read only for such a caller. */
     def pipelineRestoreRefusal(
         request: HttpServletRequest,
@@ -43,13 +44,9 @@ object EntityVersionAPIController {
         live: PipelineConfig,
         others: Seq[PipelineConfig]
     ): Option[ResponseEntity[String]] =
-        PipelineAPIController
-            .vectorContainerRefusal(request, snap, live, others)
-            .orElse(
-                if (PipelineAPIController.limitedVisibility(request))
-                    PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, PipelineAPIController.datasetEnv())
-                else None
-            )
+        if (PipelineAPIController.limitedVisibility(request))
+            pipelineRestoreRefusal(request, snap, live, others, PipelineAPIController.datasetEnv())
+        else PipelineAPIController.vectorContainerRefusal(request, snap, live, others)
 
     /** Version restore, API keys: 403 when the key's scope does not grant
       * `pipeline:update` on the pipeline being restored over (the live
@@ -76,7 +73,9 @@ object EntityVersionAPIController {
         else if (CapabilityCheck.isRestrictedSession(request)) Some(hiddenResponse)
         else PipelineAPIController.hiddenAliasSaveRefusal(request, snap, all, PipelineAPIController.RestoreOverwriteActions)
 
-    /** [[pipelineRestoreRefusal]] with the shared-dataset environment given. */
+    /** [[pipelineRestoreRefusal]] with the shared-dataset environment given;
+      * a restricted session's fresh destination is probed with the
+      * snapshot's own connection ([[DestinationProbe]]). */
     def pipelineRestoreRefusal(
         request: HttpServletRequest,
         snap: PipelineConfig,
@@ -84,9 +83,53 @@ object EntityVersionAPIController {
         others: Seq[PipelineConfig],
         env: SharedDatasets.Env
     ): Option[ResponseEntity[String]] =
+        pipelineRestoreRefusal(request, snap, live, others, env, (t: DestinationTargets.Target) => DestinationProbe.exists(snap, t))
+
+    /** [[pipelineRestoreRefusal]] with the existence probe given: the vector
+      * container rule, then the hidden-writer rule, then (restricted
+      * sessions only) the new-destinations-only rule with `snap` as the
+      * candidate and `live` as the stored config. */
+    def pipelineRestoreRefusal(
+        request: HttpServletRequest,
+        snap: PipelineConfig,
+        live: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean
+    ): Option[ResponseEntity[String]] =
         PipelineAPIController
             .vectorContainerRefusal(request, snap, live, others)
             .orElse(PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, env))
+            .orElse(PipelineAPIController.existingDestinationRefusal(request, snap, live, others, env, exists, DestinationProbe.catalogCommitted))
+
+    /** [[pipelineRestoreRefusal]] with the pgvector table probe given too
+      * (the six-argument form probes the snapshot's pgvector table with
+      * `DestinationProbe.vectorTableExists`). */
+    def pipelineRestoreRefusal(
+        request: HttpServletRequest,
+        snap: PipelineConfig,
+        live: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        vectorTableExists: DestinationTargets.Target => Boolean
+    ): Option[ResponseEntity[String]] =
+        PipelineAPIController
+            .vectorContainerRefusal(request, snap, live, others)
+            .orElse(PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, env))
+            .orElse(
+                PipelineAPIController.existingDestinationRefusal(
+                    request,
+                    snap,
+                    live,
+                    others,
+                    env,
+                    exists,
+                    DestinationProbe.catalogCommitted,
+                    DestinationProbe.DefaultDeadline,
+                    vectorTableExists
+                )
+            )
 
     /** For a restricted user's session only: true when the item's history
       * must look absent, i.e. the live item is missing (orphaned history of a

@@ -1137,7 +1137,7 @@ All vector DB destinations require chunking and embedding config. Call `check_se
 
 One pipeline per container: a vector destination's collection, class or table must not already be used by another pipeline; the save is refused. Deleting a pipeline keeps a collection another pipeline also writes to and reports it in `warnings`. Likewise, on delete a table or collection another pipeline also writes to is kept and reported in `warnings` (a pgvector table and a Postgres destination table with the same schema and name count as one table).
 
-`metadata` keys named `source_pipeline` or `source_dataset` are reserved and ignored; do not use them (on pgvector a `source_pipeline` key fails the load).
+`metadata` keys named `source_pipeline` or `source_dataset` are reserved and ignored, and so are keys named `id`, `text`, `chunk_index`, `filename` or `embedding` (fields every chunk already carries); do not use them (on pgvector any of these keys fails the load).
 
 **qdrant:**
 ```json
@@ -1677,18 +1677,26 @@ async def read_resource(ctx: ServerRequestContext | None,
 # Profile filter: ask the Scala server which tools this session's key may
 # see, so list_tools matches what the REST capability layer would actually
 # allow. The tool→route mapping lives ONLY on the server (MCPToolRoutes) —
-# never copy it here, it would drift. Cached per key with a short TTL so a
-# template edit applies on reconnect without hammering the endpoint.
-_allowed_tools_cache: dict[str, tuple[float, set | None]] = {}
+# never copy it here, it would drift. Cached per key and on-behalf-of user
+# with a short TTL so a template edit applies on reconnect without hammering
+# the endpoint.
+_allowed_tools_cache: dict[tuple[str, str], tuple[float, set | None]] = {}
 _allowed_tools_lock = threading.Lock()
 _ALLOWED_TOOLS_TTL = 60.0
+
+
+def _allowed_tools_cache_key(api_key: str | None, on_behalf_of: str | None) -> tuple[str, str]:
+    """Cache key for the tool listing: the key AND the on-behalf-of user,
+    because /api/v1/mcp/tools answers per user for the `ui` key (a restricted
+    user's listing is narrower than an admin's)."""
+    return (api_key or "", on_behalf_of or "")
 
 
 def _allowed_tool_names() -> set | None:
     """Return the set of tool names this session's key may see, or None for
     'no filtering' (keys off, legacy full-access key, or the server could
     not answer — visibility is UX, the REST 403 stays the boundary)."""
-    key = _effective_api_key()
+    key = _allowed_tools_cache_key(_effective_api_key(), _session_on_behalf_of.get())
     now = time.time()
     with _allowed_tools_lock:
         cached = _allowed_tools_cache.get(key)
@@ -1764,6 +1772,14 @@ _CATALOG_ACCESS_CREATE_NOTE = (
     "or refused with a message listing the allowed catalogs; relay that message and ask which one to use."
 )
 
+# Pipeline saves: for a catalog-limited user a new or changed table,
+# collection or object-store prefix must not exist yet (the server checks it).
+_CATALOG_ACCESS_PIPELINE_CREATE_NOTE = _CATALOG_ACCESS_CREATE_NOTE + (
+    " For a user limited to specific catalogs, a new destination (a table, collection or object-store prefix) must not exist yet: "
+    "the server refuses a save whose new destination already exists; relay that message, then choose a table or prefix name "
+    "that does not exist yet or ask a user with install-wide access to save it."
+)
+
 _CATALOG_ACCESS_RAW_QUERY_NOTE = (
     " A user limited to specific catalogs cannot run free-form queries: the server refuses this tool for them, so relay "
     "the refusal and use a tool that takes a `pipeline` name instead. Otherwise results reflect the caller's catalog access, "
@@ -1773,6 +1789,18 @@ _CATALOG_ACCESS_RAW_QUERY_NOTE = (
 _CATALOG_ACCESS_LISTING_NOTE = (
     " A user limited to specific catalogs cannot list tables or collections: the server refuses this tool for them; "
     "use `find_data` or `get_pipeline` instead."
+)
+
+# Warehouse query tools: for a catalog-limited user the server runs only its
+# own preview of the pipeline's table and drops the tap-identity provenance
+# columns; a caller `sql` is refused. The object-store preview takes no SQL.
+_CATALOG_ACCESS_PREVIEW_NOTE = _CATALOG_ACCESS_NOTE + (
+    " For a user limited to specific catalogs this tool only previews the pipeline's own table: the server refuses "
+    "a `sql` argument for them, so omit it, and their rows leave out the provenance fields that identify the feeding tap."
+)
+
+_CATALOG_ACCESS_OBJECTSTORE_NOTE = _CATALOG_ACCESS_NOTE + (
+    " For a user limited to specific catalogs, rows leave out the provenance fields that identify the feeding tap."
 )
 
 _CATALOG_ACCESS_TOOLS = frozenset({
@@ -1789,15 +1817,22 @@ _CATALOG_ACCESS_LISTING_TOOLS = frozenset({
 })
 _CATALOG_ACCESS_CREATE_TOOLS = frozenset({"create_pipeline", "create_tap"})
 _CATALOG_ACCESS_RAW_QUERY_TOOLS = frozenset({"query_postgres", "query_mongodb", "query_natural"})
+_CATALOG_ACCESS_PREVIEW_TOOLS = frozenset({"query_snowflake", "query_sqlserver", "query_databricks"})
 
 
 def _catalog_access_note(name):
+    if name == "create_pipeline":
+        return _CATALOG_ACCESS_PIPELINE_CREATE_NOTE
     if name in _CATALOG_ACCESS_CREATE_TOOLS:
         return _CATALOG_ACCESS_CREATE_NOTE
     if name in _CATALOG_ACCESS_RAW_QUERY_TOOLS:
         return _CATALOG_ACCESS_RAW_QUERY_NOTE
     if name in _CATALOG_ACCESS_LISTING_TOOLS:
         return _CATALOG_ACCESS_LISTING_NOTE
+    if name in _CATALOG_ACCESS_PREVIEW_TOOLS:
+        return _CATALOG_ACCESS_PREVIEW_NOTE
+    if name == "query_objectstore":
+        return _CATALOG_ACCESS_OBJECTSTORE_NOTE
     if name in _CATALOG_ACCESS_TOOLS or name.startswith("search_") or name.startswith("query_"):
         return _CATALOG_ACCESS_NOTE
     return ""
@@ -2246,11 +2281,14 @@ def _base_tools():
             description=(
                 "Delete a pipeline. This is DESTRUCTIVE: by default it removes BOTH the "
                 "pipeline configuration AND all data already written to the destination "
-                "(MongoDB collection rows, Postgres table rows, vector-store entries). "
+                "(table rows, collection documents, files, vector-store entries). "
                 "It also wipes document-tap ledgers and staged files for any tap that "
                 "targets this pipeline, so a recreate gets a clean re-ingest. "
-                "The platform deliberately does NOT support deleting just the config and "
-                "orphaning the data — that creates ghost state. "
+                "Default (no flags): deletes both config and data. "
+                "keep_data=true removes the config and leaves the table, collection or files where they are; "
+                "the response lists what was left in `kept`. It is refused for a vector destination "
+                "(nothing is deleted), and the kept data is no longer managed by any pipeline. "
+                "keep_data and keep_config cannot be combined. "
                 "If you want to keep the config but wipe the destination data (\"reset\"), "
                 "pass keep_config=true; the config survives, the data does not. "
                 "A vector collection another pipeline also writes to is kept and reported in `warnings`; "
@@ -2268,6 +2306,11 @@ def _base_tools():
                     "keep_config": {
                         "type": "boolean",
                         "description": "If true, delete only the destination data but keep the pipeline config (useful for a clean reset). Default false (full delete of both config and data).",
+                        "default": False
+                    },
+                    "keep_data": {
+                        "type": "boolean",
+                        "description": "If true, delete only the pipeline config and leave the destination table, collection or files in place (listed in `kept`; no pipeline manages them afterwards). Refused for a vector destination. Cannot be combined with keep_config. Default false (full delete of both config and data).",
                         "default": False
                     }
                 },
@@ -4732,7 +4775,15 @@ def _dispatch(name: str, args: dict) -> str:
 
     elif name == "delete_pipeline":
         params = {"pipeline": args["pipeline"]}
-        if args.get("keep_config", False):
+        if args.get("keep_data", False) and args.get("keep_config", False):
+            return json.dumps({"error": "keep_data and keep_config cannot both be true: "
+                                        "keep_data deletes only the config, keep_config deletes only the data. "
+                                        "Nothing was deleted."})
+        if args.get("keep_data", False):
+            # Keep-data mode: delete the config, leave the destination data
+            # (the server lists it in `kept`; a vector destination is refused).
+            params["deleteData"] = "false"
+        elif args.get("keep_config", False):
             # Reset mode: wipe destination data but keep the pipeline config.
             params["deleteConfig"] = "false"
             params["deleteData"] = "true"

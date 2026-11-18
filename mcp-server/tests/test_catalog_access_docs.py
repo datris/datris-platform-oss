@@ -95,3 +95,48 @@ def test_listing_tools_say_the_server_refuses_them_for_catalog_limited_users():
         if "find_data" not in d or "get_pipeline" not in d:
             problems.append(f"{name}: does not point at find_data / get_pipeline")
     assert not problems, "\n".join(problems)
+
+
+# Story: plans/stories/catalog-scoped-user-access-query-stamps.md, Acceptance.
+WAREHOUSE_QUERY = ("query_snowflake", "query_sqlserver", "query_databricks")
+
+
+def test_warehouse_query_tools_say_a_sql_argument_is_refused_for_catalog_limited_users():
+    tools = _tools()
+    missing = [n for n in WAREHOUSE_QUERY + ("query_objectstore",) if n not in tools]
+    assert not missing, f"tools missing from _all_tools(): {missing}"
+    problems = []
+    for name in WAREHOUSE_QUERY:
+        d = _norm(tools[name].description)
+        if "catalog access" not in d:
+            problems.append(f"{name}: no 'catalog access'")
+        if "limited to specific catalogs" not in d:
+            problems.append(f"{name}: does not name catalog-limited users")
+        if "previews the pipeline's own table" not in d:
+            problems.append(f"{name}: does not say it only previews the pipeline's own table")
+        if "refuses a `sql` argument" not in d and "refuses a sql argument" not in d:
+            problems.append(f"{name}: does not say the server refuses a `sql` argument")
+        if "provenance fields that identify the feeding tap" not in d:
+            problems.append(f"{name}: does not say rows leave out the tap-identifying provenance fields")
+    d = _norm(tools["query_objectstore"].description)
+    if "catalog access" not in d:
+        problems.append("query_objectstore: no 'catalog access'")
+    if "provenance fields that identify the feeding tap" not in d:
+        problems.append("query_objectstore: does not say rows leave out the tap-identifying provenance fields")
+    if "refuses a `sql` argument" in d or "refuses a sql argument" in d:
+        problems.append("query_objectstore: takes no sql, so it must not carry the sql refusal")
+    assert not problems, "\n".join(problems)
+
+
+# Story: plans/stories/catalog-scoped-user-access-warehouse-preview-target.md, Acceptance.
+def test_pipeline_save_tool_says_an_existing_destination_is_refused_for_catalog_limited_users():
+    d = _norm(_tools()["create_pipeline"].description)
+    sentences = [s for s in d.replace("; ", ". ").split(". ") if "already exist" in s]
+    assert sentences, "create_pipeline: no sentence about a destination that already exists"
+    hit = [s for s in sentences if "destination" in s and "refuse" in s]
+    assert hit, f"create_pipeline: does not say an existing destination is refused: {sentences}"
+    assert "limited to specific catalogs" in d, "create_pipeline: does not name catalog-limited users"
+    assert any("not exist yet" in s or "does not exist" in s for s in d.split(". ")), (
+        "create_pipeline: does not say a new destination must not exist yet"
+    )
+    assert "install-wide" in d, "create_pipeline: does not point at a user with install-wide access"

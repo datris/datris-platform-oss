@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation._
 import scala.collection.JavaConverters._
 
 object SearchAPIController {
+    private val companionLogger: Logger = LoggerFactory.getLogger(classOf[SearchAPIController])
 
     /** False only for a restricted user's session unless at least one
       * pipeline names `container` and every pipeline naming it is in its
@@ -76,16 +77,60 @@ object SearchAPIController {
     /** The single place search hits are post-processed before the response.
       * `writers` from [[searchWriters]]: None returns `hits` itself (same
       * instance); Some keeps only chunks written by one of those pipelines
-      * ([[VectorChunkWriter.keepWrittenBy]]). Further per-hit scrubs belong
-      * here, after the writer check, applied to the survivors. */
+      * ([[VectorChunkWriter.keepWrittenBy]]), then drops the tap stamp
+      * columns of survivors fed by a tap the session cannot read
+      * ([[ai.datris.auth.HiddenTapScrub.scrubHits]]). Further per-hit scrubs
+      * belong here, after the writer check, applied to the survivors. Reads
+      * the tap and run-lineage stores, only for a surviving hit that carries
+      * a tap stamp or a feed filename. */
     def hitsFor(
         request: jakarta.servlet.http.HttpServletRequest,
         hits: java.util.List[java.util.Map[String, Any]],
         writers: Option[Set[String]]
     ): java.util.List[java.util.Map[String, Any]] =
+        hitsFor(request, hits, writers, n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n), id => RunLineageIO.read(id))
+
+    /** [[hitsFor]] with the tap reader and the run-lineage reader (by run id)
+      * given. `writers == None`: `hits` itself, neither function called.
+      * Both are memoised per call. A tap read that throws counts as a hidden
+      * tap, and a run read that throws as no record (both fail closed: the
+      * hit loses its tap stamp columns instead of the search failing). */
+    def hitsFor(
+        request: jakarta.servlet.http.HttpServletRequest,
+        hits: java.util.List[java.util.Map[String, Any]],
+        writers: Option[Set[String]],
+        readTap: String => ai.datris.model.TapConfig,
+        run: String => Option[ai.datris.model.RunLineage]
+    ): java.util.List[java.util.Map[String, Any]] =
         writers match {
             case None => hits
-            case Some(w) => VectorChunkWriter.keepWrittenBy(hits, w)
+            case Some(w) =>
+                val survivors = VectorChunkWriter.keepWrittenBy(hits, w)
+                val hiddenMemo = scala.collection.mutable.Map[String, Boolean]()
+                val runMemo = scala.collection.mutable.Map[String, Option[ai.datris.model.RunLineage]]()
+                ai.datris.auth.HiddenTapScrub.scrubHits(
+                    survivors,
+                    n =>
+                        hiddenMemo.getOrElseUpdate(
+                            n,
+                            try ai.datris.auth.HiddenTapScrub.tapHidden(request, n, readTap)
+                            catch {
+                                case e: Exception =>
+                                    companionLogger.warn("Search: tap '" + n + "' could not be read, treating it as hidden: " + e.getMessage)
+                                    true
+                            }
+                        ),
+                    id =>
+                        runMemo.getOrElseUpdate(
+                            id,
+                            try run(id)
+                            catch {
+                                case e: Exception =>
+                                    companionLogger.warn("Search: run record '" + id + "' could not be read, treating it as not found: " + e.getMessage)
+                                    None
+                            }
+                        )
+                )
         }
 
     def containerNotFound(param: String, container: String): ResponseEntity[String] =
@@ -145,7 +190,9 @@ class SearchAPIController {
             val results = SearchAPIController.hitsFor(
                 request,
                 util.searchStore(query, container, embeddingSecretName, secretName, topK, body),
-                writers
+                writers,
+                n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n),
+                id => RunLineageIO.read(id)
             )
             buildResponse(results)
         } catch {

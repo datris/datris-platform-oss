@@ -371,6 +371,26 @@ class PipelineAPIController {
                 logger.warn("POST /pipeline " + preserved.name + " rejected: destination in use by a pipeline the caller cannot see")
                 return Left(refused)
             }
+            // Restricted sessions: a new or changed table, collection or
+            // object-store prefix must not exist yet (else the preview or the
+            // destination-type sample would read, or a run overwrite, data no
+            // pipeline of theirs wrote). Probed with the
+            // candidate's own connection; a failed probe refuses (500).
+            PipelineAPIController
+                .existingDestinationRefusal(
+                    request,
+                    preserved,
+                    existing,
+                    others.filter(_ != null),
+                    dsEnv,
+                    t => DestinationProbe.exists(preserved, t),
+                    DestinationProbe.catalogCommitted
+                )
+                .foreach { refused =>
+                    logger.warn("POST /pipeline " + preserved.name + " rejected: new destination already exists or could not be checked (HTTP " +
+                        refused.getStatusCode.value + ")")
+                    return Left(refused)
+                }
         }
         PipelineAPIController.authorityRefusal(request, preserved, others).foreach(refused => return Left(refused))
         val note = if (changeNote != null && changeNote.nonEmpty) changeNote
@@ -603,13 +623,16 @@ class PipelineAPIController {
             if (config == null)
                 return PipelineAPIController.pipelineNotFound(pipeline)
 
-            val warnings = deletePipelineInternal(config, request, deleteData, deleteConfig)
+            // Scope first (a pipeline hidden from the caller answers 404),
+            // then the keep-data refusal; nothing has been deleted yet.
+            val refused = PipelineAPIController.deleteRefusal(request, config, PipelineDeletePlan.of(deleteData, deleteConfig))
+            if (refused.isDefined) {
+                logger.warn("Pipeline delete refused: " + pipeline + " (HTTP " + refused.get.getStatusCode.value + ")")
+                return refused.get
+            }
 
-            val out = new JsonObject
-            val arr = new com.google.gson.JsonArray
-            warnings.foreach(arr.add(_))
-            out.add("warnings", arr)
-            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
+            val (warnings, kept) = deletePipelineOutcome(config, request, deleteData, deleteConfig, checkScope = false)
+            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(PipelineAPIController.deleteResponseBody(warnings, kept))
         } catch {
             case _: ResourceHiddenException => PipelineAPIController.pipelineNotFound(pipeline)
             case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
@@ -681,7 +704,23 @@ class PipelineAPIController {
                             }
                         PipelineAPIController.hiddenAliasClaimant(request, newName, all).isDefined
                     }
-                PipelineAPIController.renameRefusal(request, name, requested, old, existingNew, jobs, ucStateExists, priorAttempt, hiddenAlias)
+                PipelineAPIController.renameRefusal(
+                    request,
+                    name,
+                    requested,
+                    old,
+                    existingNew,
+                    jobs,
+                    ucStateExists,
+                    priorAttempt,
+                    hiddenAlias,
+                    n =>
+                        DestinationProbe.withDeadline(
+                            DestinationProbe.StateReadDeadline,
+                            "Unity Catalog state read",
+                            PipelineAPIController.probeOwner(request)
+                        )(DestinationProbe.catalogCommitted(n))
+                )
                     .foreach { refused =>
                         logger.warn("POST /pipelines/" + name + "/rename refused: HTTP " + refused.getStatusCode.value)
                         return refused
@@ -817,7 +856,20 @@ class PipelineAPIController {
         deleteData: String = "true",
         deleteConfig: String = "true",
         checkScope: Boolean = true
-    ): Seq[String] = {
+    ): Seq[String] = deletePipelineOutcome(config, request, deleteData, deleteConfig, checkScope)._1
+
+    /** [[deletePipelineInternal]] plus, for a keep-data delete (explicit
+      * `deleteData=false` with the config delete), the labels of the tables,
+      * collections and prefixes left in place (None in every other mode).
+      * A keep-data delete of a vector pipeline throws before anything is
+      * deleted; DELETE /pipeline answers it with 400 first. */
+    def deletePipelineOutcome(
+        config: PipelineConfig,
+        request: HttpServletRequest,
+        deleteData: String,
+        deleteConfig: String,
+        checkScope: Boolean
+    ): (Seq[String], Option[Seq[String]]) = {
         val pipeline = config.name
         // Scope check: a key with `pipeline:delete:owner=self` may only
         // delete pipelines it created. Loaded resource provides the
@@ -825,12 +877,15 @@ class PipelineAPIController {
         if (checkScope)
             CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
 
-        // Deleting the config without also deleting the data is disallowed.
-        // Leaving orphaned rows/collections/tables behind with no pipeline to
-        // own them creates hard-to-debug ghost state; any caller asking for
-        // config-only gets data-delete folded in implicitly.
-        val deleteConfigBool = deleteConfig.equalsIgnoreCase("true")
-        val deleteDataBool = deleteData.equalsIgnoreCase("true") || deleteConfigBool
+        // By default the data is deleted with the config, so no table,
+        // collection or files are left with no pipeline to own them. Only an
+        // explicit deleteData=false with the config delete keeps the data
+        // (PipelineDeletePlan); that caller has accepted unowned data. A
+        // vector pipeline cannot keep its data (refused, nothing deleted).
+        val plan = PipelineDeletePlan.of(deleteData, deleteConfig)
+        PipelineDeletePlan.refusal(plan, config).foreach(msg => throw new ValidationException(msg))
+        val deleteConfigBool = plan.deleteConfig
+        val deleteDataBool = plan.deleteData
 
         // Read before anything is deleted (this config's own row is in the
         // list and excluded by name), and only when the config names a vector
@@ -891,11 +946,37 @@ class PipelineAPIController {
             // A data-only reset that kept a shared vector container keeps the
             // ledgers too: the chunks are still there, and a re-ingest would
             // duplicate them in a container that cannot be cleaned per pipeline.
-            if (PipelineAPIController.clearTapLedgersOnDelete(deleteConfigBool, sharedVector.nonEmpty))
+            if (PipelineAPIController.clearTapLedgersForPlan(plan, sharedVector.nonEmpty))
                 cleanupDocumentTapLedgers(pipeline)
             else
                 logger.warn("Pipeline reset: " + pipeline + ": document-tap ledgers kept because a shared vector container was kept")
         }
+
+        // Keep-data delete: no destination data is touched and no other
+        // config is read. The scratch folder is platform working storage keyed
+        // by name (a re-created pipeline would read it back), so it still goes.
+        // Document-tap ledgers and staged files mirror the kept data and stay
+        // (clearing them would re-ingest into it). A catalog-committed Iceberg
+        // table's Unity Catalog state stays too: its files are still there.
+        val kept =
+            if (!plan.keepData) None
+            else {
+                if (config.destination != null) cleanupScratchData(config)
+                UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, dataDeleted = false, configDeleted = true).foreach { advice =>
+                    warnings += advice
+                    logger.warn("Pipeline delete: " + pipeline + ": " + advice)
+                    auditUnityCatalogDelete(request, pipeline, advice)
+                }
+                // Only a committed table's state survives; an uncommitted
+                // (created-only) or register-mode doc goes, as on any delete.
+                ucTableFilesKept = PipelineDeletePlan.keepUnityCatalogState(config, ucPrevious)
+                val labels = PipelineDeletePlan.keptLabels(config, PipelineAPIController.keepDatasetEnv())
+                logger.info(
+                    "Pipeline delete: " + pipeline + ": config deleted, destination data kept" +
+                        (if (labels.isEmpty) " (nothing to keep)" else ": " + labels.mkString(", "))
+                )
+                Some(labels)
+            }
 
         // Delete the json configuration
         if (deleteConfigBool) {
@@ -927,7 +1008,7 @@ class PipelineAPIController {
                 }
             }
         }
-        warnings.result()
+        (warnings.result(), kept)
     }
 
     /** The pipeline's Unity Catalog sync state, or null (none, or unreadable:
@@ -1307,11 +1388,19 @@ class PipelineAPIController {
             }
         }
 
-        // Scratch — recursively delete `_scratch/<pipeline>/` from <env>-data and
-        // nothing else. The prefix comes from ScratchPaths.prefix, which refuses
-        // a blank or path-traversing pipeline segment; assert it here too before
-        // handing it to the recursive delete.
-        if (dest.scratch != null) {
+        cleanupScratchData(config)
+        objectStoreDataDeleted
+    }
+
+    /** Scratch — recursively delete `_scratch/<pipeline>/` from <env>-data and
+      * nothing else (no-op without a scratch destination). The prefix comes
+      * from ScratchPaths.prefix, which refuses a blank or path-traversing
+      * pipeline segment; asserted here too before the recursive delete. Run
+      * by every delete that deletes the data, and by a keep-data delete.
+      * Never throws. */
+    private def cleanupScratchData(config: PipelineConfig): Unit = {
+        val dest = config.destination
+        if (dest != null && dest.scratch != null) {
             try {
                 val prefix = ScratchPaths.prefix(config.name)
                 if (!prefix.startsWith(ScratchPaths.Root) || prefix == ScratchPaths.Root)
@@ -1321,7 +1410,6 @@ class PipelineAPIController {
                 case e: Exception => logger.warn("Failed to delete scratch data for pipeline '" + config.name + "': " + e.getMessage)
             }
         }
-        objectStoreDataDeleted
     }
 
     /** Names of other pipelines whose objectStore destination would be hit by a
@@ -1508,6 +1596,59 @@ object PipelineAPIController {
     def clearTapLedgersOnDelete(deleteConfig: Boolean, keptSharedVector: Boolean): Boolean =
         deleteConfig || !keptSharedVector
 
+    /** [[clearTapLedgersOnDelete]] for a delete plan: never for a keep-data
+      * delete (the ledgers mirror the kept data; clearing them would
+      * re-ingest into it). */
+    def clearTapLedgersForPlan(plan: PipelineDeletePlan.Plan, keptSharedVector: Boolean): Boolean =
+        !plan.keepData && clearTapLedgersOnDelete(plan.deleteConfig, keptSharedVector)
+
+    /** DELETE /pipeline 200 body: `{"warnings":[...]}`, plus `"kept":[...]`
+      * only for a keep-data delete (an empty array when nothing was kept). */
+    def deleteResponseBody(warnings: Seq[String], kept: Option[Seq[String]]): String = {
+        val out = new JsonObject
+        val arr = new com.google.gson.JsonArray
+        warnings.foreach(arr.add(_))
+        out.add("warnings", arr)
+        kept.foreach { ks =>
+            val k = new com.google.gson.JsonArray
+            ks.foreach(k.add(_))
+            out.add("kept", k)
+        }
+        out.toString
+    }
+
+    /** DELETE /pipeline once the config is loaded, before anything is
+      * deleted: the scope check first (a pipeline the caller cannot see is
+      * `404`, a scope miss `403`, exactly as before), then [[keepDataRefusal]].
+      * None = go ahead. */
+    def deleteRefusal(request: HttpServletRequest, config: PipelineConfig, plan: PipelineDeletePlan.Plan): Option[ResponseEntity[String]] = {
+        try CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+        catch {
+            case _: ResourceHiddenException => return Some(pipelineNotFound(config.name))
+            case e: CapabilityDeniedException => return Some(capabilityDenied(e))
+        }
+        keepDataRefusal(plan, config)
+    }
+
+    /** DELETE /pipeline: 400 `{"error": KeepDataVectorRefusal}` for a
+      * keep-data delete of a vector pipeline (nothing is deleted); None
+      * otherwise. */
+    def keepDataRefusal(plan: PipelineDeletePlan.Plan, config: PipelineConfig): Option[ResponseEntity[String]] =
+        PipelineDeletePlan
+            .refusal(plan, config)
+            .map(msg => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(msg)))
+
+    /** Dataset env for the kept-data labels: the default bucket and tenant
+      * database only. The pgvector database (a secret read) is never needed:
+      * a vector pipeline cannot keep its data. */
+    def keepDatasetEnv(): SharedDatasets.Env = {
+        val env = scala.util.Try(DatrisEnvironment.current).toOption.flatMap(Option(_))
+        val defaultBucket = env.flatMap(e => scala.util.Try(e.environment + "-data").toOption).getOrElse("")
+        val multiTenant = env.exists(e => scala.util.Try(e.multiTenant).getOrElse(false))
+        val tenantDatabase = if (multiTenant) env.flatMap(e => Option(e.environment)) else None
+        SharedDatasets.Env(defaultBucket, tenantDatabase, None)
+    }
+
     /** DELETE /pipeline: one warning per vector container of `config` that
       * another pipeline in `others` also names (the container is kept). */
     def vectorDeleteWarnings(request: HttpServletRequest, config: PipelineConfig, others: Seq[PipelineConfig]): Seq[String] =
@@ -1633,6 +1774,207 @@ object PipelineAPIController {
                     body.addProperty("error", SharedDatasets.refusalMessage(name))
                     ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString)
                 }
+
+    /** POST /pipeline and version restore, restricted users' sessions only:
+      * each fresh target of the candidate in `DestinationTargets.ProbedFamilies`
+      * (plus a SQL Server letter-case change) that no pipeline the caller can
+      * see covers is checked with `exists` (the candidate's own connection).
+      * 400 `ExistsRefusal` naming the caller's own coordinates on the first
+      * one that exists; 500 `ProbeUnavailable` when `exists` throws (nothing
+      * else in the body).
+      *
+      * Before any probe: 400 `UnsafePathRefusal` for a changed object-store
+      * target whose path is not a plain prefix; 400 `TempTableRefusal` for a
+      * changed SQL Server table named `#...`; then, when the candidate has an
+      * object-store destination and either has no stored config the caller
+      * can see (any format) or turns a stored config into Iceberg, 400
+      * `NameCommittedRefusal` when Unity Catalog state kept for the name
+      * records a catalog commit (an Iceberg read of the name
+      * loads that table, wherever the catalog put it; a failed state read is
+      * the 500). A stored Iceberg
+      * config the caller can see keeps its own state unchecked; a flip back
+      * to Iceberg cannot tell its own earlier commit from a deleted
+      * pipeline's, so it is refused (fail closed). `others` is filtered to
+      * the visible pipelines here. None for everyone else (unrestricted
+      * sessions, every API key, auth off): no probe, no read.
+      *
+      * A pgvector table is checked on its own path after those probes
+      * (`DestinationTargets.vectorTablesToProbe`, with `vectorTableExists`):
+      * 400 `UnsafeVectorTableRefusal` first for a changed pgvector table whose
+      * schema or name is not a plain quoted identifier, then the same 400 /
+      * 500 / 429 answers as above.
+      *
+      * This six-argument form is the spec seam for the probe alone: it skips
+      * the Unity Catalog state check and the pgvector table probe. Production
+      * paths call the seven-argument form below with
+      * `DestinationProbe.catalogCommitted`. */
+    private[api] def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean
+    ): Option[ResponseEntity[String]] =
+        existingDestinationRefusal(request, candidate, stored, others, env, exists, _ => false, DestinationProbe.DefaultDeadline, _ => false)
+
+    /** [[existingDestinationRefusal]] with the Unity Catalog state check
+      * given, under `DestinationProbe.DefaultDeadline`. */
+    def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        catalogCommitted: String => Boolean
+    ): Option[ResponseEntity[String]] =
+        existingDestinationRefusal(request, candidate, stored, others, env, exists, catalogCommitted, DestinationProbe.DefaultDeadline)
+
+    /** [[existingDestinationRefusal]] with the deadline given: the Unity
+      * Catalog state read and every probe together get at most `deadline`
+      * (each runs on a probe worker, `DestinationProbe.withDeadline`); past
+      * it the save answers 500 `ProbeUnavailable` and nothing is saved. Each
+      * read and probe takes one of the caller's `DestinationProbe.MaxPerOwner`
+      * slots (owner `ResolvedKey.label`); over the limit the save answers 429
+      * [[tooManyChecks]] and nothing is started or saved. The pgvector table
+      * is probed with `DestinationProbe.vectorTableExists` on `candidate`. */
+    def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        catalogCommitted: String => Boolean,
+        deadline: scala.concurrent.duration.FiniteDuration
+    ): Option[ResponseEntity[String]] =
+        existingDestinationRefusal(
+            request,
+            candidate,
+            stored,
+            others,
+            env,
+            exists,
+            catalogCommitted,
+            deadline,
+            (t: DestinationTargets.Target) => DestinationProbe.vectorTableExists(candidate, t)
+        )
+
+    /** [[existingDestinationRefusal]] with the pgvector table probe given
+      * (`vectorTableExists`, for `DestinationTargets.vectorTablesToProbe`
+      * targets); it runs after `exists`'s targets, under the same deadline
+      * and the same per-caller slots. */
+    def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        catalogCommitted: String => Boolean,
+        deadline: scala.concurrent.duration.FiniteDuration,
+        vectorTableExists: DestinationTargets.Target => Boolean
+    ): Option[ResponseEntity[String]] = {
+        if (!CapabilityCheck.isRestrictedSession(request) || candidate == null) return None
+        val deadlineAt = System.nanoTime() + deadline.toNanos
+        val owner = probeOwner(request)
+        def bounded[T](what: String)(body: => T): T =
+            DestinationProbe.withDeadline(scala.concurrent.duration.Duration.fromNanos(deadlineAt - System.nanoTime()), what, owner)(body)
+        // A stored config the caller cannot see grandfathers nothing.
+        val keptFrom = if (stored != null && visiblePipelines(request, Seq(stored)).isEmpty) null else stored
+        def badRequest(message: String): Option[ResponseEntity[String]] =
+            Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(message)))
+        val unavailable: Option[ResponseEntity[String]] =
+            Some(
+                ResponseEntity
+                    .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body[String](ApiErrors.errorBody(DestinationTargets.ProbeUnavailable))
+            )
+        val changed = DestinationTargets.freshTargets(candidate, keptFrom, env) ++ DestinationTargets.recasedTargets(candidate, keptFrom, env)
+        if (changed.exists(_.key.family == "objectstore") && DestinationTargets.unsafeObjectStorePath(candidate.destination.objectStore))
+            return badRequest(DestinationTargets.UnsafePathRefusal)
+        if (changed.exists(_.key.family == "sqlserver") && DestinationTargets.sqlServerTempTable(candidate))
+            return badRequest(DestinationTargets.TempTableRefusal)
+        val changedVectorTables = DestinationTargets.freshVectorTables(candidate, keptFrom, env)
+        if (changedVectorTables.nonEmpty && DestinationTargets.unsafeVectorTableName(candidate))
+            return badRequest(DestinationTargets.UnsafeVectorTableRefusal)
+        // A null or blank pgvector table has no target to probe, but the
+        // delete still drops "schema"."null" or the blank name: refused unless
+        // the visible stored config carries the identical schema and table.
+        if (DestinationTargets.blankVectorTableName(candidate) && !DestinationTargets.sameVectorTableNames(candidate, keptFrom))
+            return badRequest(DestinationTargets.BlankVectorTableRefusal)
+        val candidateTarget = DestinationTargets.targetsOf(candidate, env).find(_.key.family == "objectstore")
+        def iceberg(c: PipelineConfig): Boolean =
+            c != null && c.destination != null && c.destination.objectStore != null &&
+                "iceberg".equalsIgnoreCase(Option(c.destination.objectStore.fileFormat).map(_.trim).orNull)
+        if (candidateTarget.isDefined && (keptFrom == null || (iceberg(candidate) && !iceberg(keptFrom)))) {
+            val committed =
+                try Right(bounded("Unity Catalog state read")(catalogCommitted(candidate.name)))
+                catch {
+                    case _: DestinationProbe.TooManyChecks =>
+                        auditLogger.warn("Destination check of pipeline " + candidate.name + " not started: the caller's other checks are still running")
+                        return Some(tooManyChecks)
+                    case scala.util.control.NonFatal(e) =>
+                        auditLogger.warn(
+                            "Unity Catalog state read failed for the destination check of pipeline " + candidate.name + ": " +
+                                Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                        )
+                        Left(e)
+                }
+            committed match {
+                case Left(_) => return unavailable
+                case Right(true) => return badRequest(DestinationTargets.NameCommittedRefusal)
+                case Right(false) =>
+            }
+        }
+        val visible = visiblePipelines(request, Option(others).getOrElse(Nil))
+        // The pgvector table is probed after the other targets, with its own probe.
+        val probe: Seq[(DestinationTargets.Target, DestinationTargets.Target => Boolean)] =
+            DestinationTargets.toProbe(candidate, keptFrom, visible, env).map(_ -> exists) ++
+                DestinationTargets.vectorTablesToProbe(candidate, keptFrom, visible, env).map(_ -> vectorTableExists)
+        val it = probe.iterator
+        while (it.hasNext) {
+            val (t, check) = it.next()
+            val found =
+                try Right(bounded("destination probe (" + t.key.family + ")")(check(t)))
+                catch {
+                    case _: DestinationProbe.TooManyChecks =>
+                        auditLogger.warn(
+                            "Destination existence probe for pipeline " + candidate.name + " (" + t.key.family +
+                                ") not started: the caller's other checks are still running"
+                        )
+                        return Some(tooManyChecks)
+                    case scala.util.control.NonFatal(e) =>
+                        auditLogger.warn(
+                            "Destination existence probe failed for pipeline " + candidate.name + " (" + t.key.family + "): " +
+                                Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                        )
+                        Left(e)
+                }
+            found match {
+                case Left(_) => return unavailable
+                case Right(true) => return badRequest(DestinationTargets.ExistsRefusal(SharedDatasets.label(t.key)))
+                case Right(false) =>
+            }
+        }
+        None
+    }
+
+    /** Owner of the caller's destination-check slots: `ResolvedKey.label`
+      * (`session:<user>` for a session and for on-behalf-of). */
+    private[api] def probeOwner(request: HttpServletRequest): String =
+        CapabilityCheck.resolvedKey(request).map(_.label).getOrElse("anonymous")
+
+    /** 429: the caller already has `DestinationProbe.MaxPerOwner` destination
+      * checks running; nothing was started or saved. */
+    def tooManyChecks: ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.TOO_MANY_REQUESTS)
+            .header("Retry-After", DestinationTargets.RetryAfterSeconds)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody(DestinationTargets.TooManyChecksRefusal))
 
     /** POST /pipeline: 500 "nothing was saved" when the config read failed
       * and a limited-visibility caller's candidate adds a dataset its stored
@@ -1880,7 +2222,8 @@ object PipelineAPIController {
         jobs: Seq[(String, ai.datris.model.JobState)],
         ucStateExists: Boolean,
         priorAttempt: Boolean = true,
-        hiddenAliasClaim: => Boolean = false
+        hiddenAliasClaim: => Boolean = false,
+        catalogCommitted: String => Boolean = _ => false
     ): Option[ResponseEntity[String]] = {
         if (old == null) return Some(pipelineNotFound(name))
         refusalFor(request, name, old, "delete").foreach(r => return Some(r))
@@ -1901,6 +2244,29 @@ object PipelineAPIController {
             return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
         if (existingNew != null && !(PipelineRename.resumable(old, existingNew) && priorAttempt))
             return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
+        // Restricted sessions, an object-store pipeline taking a free name
+        // whose kept Unity Catalog state records a catalog commit: an Iceberg
+        // read under that name would load the recorded table. The same 409
+        // as a taken name; a failed state read refuses (500), and one not
+        // started because the caller's other checks still run answers 429.
+        if (
+            existingNew == null && CapabilityCheck.isRestrictedSession(request) &&
+            old.destination != null && old.destination.objectStore != null
+        ) {
+            val committed =
+                try catalogCommitted(target)
+                catch {
+                    case _: DestinationProbe.TooManyChecks =>
+                        auditLogger.warn(
+                            "Unity Catalog state read for the rename check of " + name + " not started: the caller's other checks are still running"
+                        )
+                        return Some(tooManyChecks)
+                    case scala.util.control.NonFatal(e) =>
+                        auditLogger.warn("Unity Catalog state read failed for the rename check of " + name + ": " + e.getMessage)
+                        return Some(aliasCheckUnavailable("renamed"))
+                }
+            if (committed) return Some(renameError(HttpStatus.CONFLICT, "Pipeline '" + target + "' already exists. Choose another name."))
+        }
         None
     }
 

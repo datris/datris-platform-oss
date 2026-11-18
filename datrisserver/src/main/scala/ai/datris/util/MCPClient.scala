@@ -64,15 +64,32 @@ object MCPClient {
     private val resourceCache: ConcurrentHashMap[String, CachedEntry[String]] = new ConcurrentHashMap()
     private val ttlMillis: Long = 60 * 1000L
 
-    private def cacheKey(apiKey: String, suffix: String): String =
-        (if (apiKey == null) "" else apiKey.take(6)) + "|" + suffix
+    /** Cache entry key: a SHA-256 of the whole api key plus `suffix`. Chat
+      * callers' own keys reach these caches (see ai.datris.auth.ChatCaller),
+      * so two keys must never share an entry; the key value itself is never
+      * held in the map. A null and an empty key share the anonymous entry. */
+    private[util] def cacheKey(apiKey: String, suffix: String): String = {
+        val k = if (apiKey == null) "" else apiKey
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(k.getBytes(StandardCharsets.UTF_8))
+        digest.map(b => f"${b & 0xff}%02x").mkString + "|" + suffix
+    }
+
+    /** Cache suffix for the tool listing. The MCP server filters `tools/list`
+      * per key AND per on-behalf-of user (the `ui` key lists fewer tools for a
+      * restricted user), so the user `rpcCall` forwards is part of the entry.
+      * The user part is length-prefixed so no username can forge another's. */
+    private[util] def toolsSuffix(onBehalfOf: Option[String]): String =
+        onBehalfOf.filter(_.nonEmpty) match {
+            case Some(u) => "tools|user:" + u.length + ":" + u
+            case None => "tools"
+        }
 
     private def now(): Long = System.currentTimeMillis()
 
     /** Fetch `tools/list` from the MCP server. Each tool is a JsonObject with
-      * `name`, `description`, `inputSchema`. Cached ~60s per api-key prefix. */
+      * `name`, `description`, `inputSchema`. Cached ~60s per api key and on-behalf-of user. */
     def listTools(apiKey: String): List[JsonObject] = {
-        val key = cacheKey(apiKey, "tools")
+        val key = cacheKey(apiKey, toolsSuffix(UserContext.get().map(_.username)))
         Option(toolsCache.get(key)).filter(_.expiresAt > now()).map(_.value) match {
             case Some(cached) => cached
             case None =>
@@ -190,11 +207,13 @@ object MCPClient {
         httpPost.addHeader(HttpHeaders.ACCEPT, "application/json, text/event-stream")
         if (apiKey != null && apiKey.nonEmpty)
             httpPost.addHeader("x-api-key", apiKey)
-        // The chat controllers restore the request's UserContext on their
-        // worker thread, so the human behind an Assistant / Ops / Catalog chat
-        // is known here. Forward them; the MCP server relays the header on its
-        // REST hop and TenantInterceptor attributes the resulting actions to
-        // the user (only for the trusted `ui` key — see AuditActor).
+        // The chat controllers set the acting user decided on the servlet
+        // thread (ai.datris.auth.ChatCaller) as the worker's UserContext, so
+        // the human behind a chat is known here. Forward them; the MCP server
+        // relays the header on its REST hop and TenantInterceptor attributes
+        // the resulting actions to the user (only for the trusted `ui` key —
+        // see AuditActor). A key caller with no user sends its own key and no
+        // header, so its calls are attributed to that key's label.
         UserContext.get().foreach(u => httpPost.addHeader(AuditActor.HeaderOnBehalfOf, u.username))
         // Recovery-agent calls carry the incident id so the audit log is the
         // incident's ledger; the MCP server relays it on the REST hop.

@@ -6,11 +6,12 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{JsonObject, JsonParser}
-import jakarta.servlet.http.HttpServletResponse
+import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
+import ai.datris.auth.{Allow, ChatCaller, ChatIdentity, Refuse}
 import ai.datris.config.RequiresRole
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
 import ai.datris.policy.PolicyIO
-import ai.datris.util.{AgentLoop, APIKeyValidator, ConfigAgentPrompt, ConfigAgentTools, ConfigToolExecutor, ConfigToolFilter, ConfirmationRegistry, SecretsUtil}
+import ai.datris.util.{AgentLoop, APIKeyValidator, ConfigAgentPrompt, ConfigAgentTools, ConfigToolExecutor, ConfigToolFilter, ConfirmationRegistry}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.MediaType
 import org.springframework.web.bind.annotation._
@@ -27,7 +28,9 @@ import scala.collection.JavaConverters._
   * its own: `confirm_request`.
   *
   * Differences vs. the other controllers:
-  *  - Admin only (class-level role gate), like the Configuration tab.
+  *  - Admin only (class-level role gate), like the Configuration tab. With
+  *    user auth off there is no role gate, and only a full-access key may use
+  *    it (`ChatCaller.mayConfigure`).
   *  - A Datris-defined tool list (`ConfigAgentTools`), not the MCP catalog,
   *    filtered to the sub-tabs the UI would show (`ConfigToolFilter`).
   *  - Tools run through `ConfigToolExecutor`: a mutating tool is performed
@@ -55,24 +58,23 @@ class ConfigChatAPIController {
 
     private val cancelFlags: ConcurrentHashMap[Long, java.util.concurrent.atomic.AtomicBoolean] = new ConcurrentHashMap()
 
-    /** Same resolveUiApiKey contract as the other chat controllers — see
-      * AssistantAPIController.resolveUiApiKey. */
-    private def resolveUiApiKey(userApiKey: String): String = {
-        if (!DatrisEnvironment.values.useApiKeys) return null
-
-        val secretPath = DatrisEnvironment.current.environment + "/ui-api-key"
-        SecretsUtil.getSecretMap(secretPath).flatMap(m => Option(m.get("apiKey"))) match {
-            case Some(v) if v != null && v.nonEmpty => v
-            case _ => userApiKey
-        }
-    }
-
     @PostMapping(path = Array("/config-chat/chat"), produces = Array(MediaType.TEXT_EVENT_STREAM_VALUE))
     def chat(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
         @RequestBody body: String,
+        request: HttpServletRequest,
         response: HttpServletResponse
     ): SseEmitter = {
+        // Decide who the caller is on the servlet thread (ChatCaller), before
+        // the stream opens: a tap-run token, no identity or a rejected key is
+        // refused here.
+        val identity: ChatIdentity = ChatCaller.from(request) match {
+            case Allow(id) => id
+            case r: Refuse =>
+                ChatCaller.refuse(request, response, r)
+                return null
+        }
+
         // With user auth on, the chat needs a signed-in user: confirmation
         // tokens are scoped to that user and the audit log names them. An
         // API-key caller has no session user, so it is refused here, before
@@ -80,9 +82,11 @@ class ConfigChatAPIController {
         // RoleEnforcementInterceptor.reject): an exception would go through
         // /error, whose JSON body cannot satisfy `Accept: text/event-stream`
         // and would turn into a 406. A null emitter tells Spring the request
-        // is already handled.
+        // is already handled. The actor is the session user read here, on the
+        // servlet thread; an on-behalf-of user is not accepted, as before.
+        val useUserAuth = DatrisEnvironment.values.useUserAuth
         val actor: String = ConfigChatAPIController.actorFor(
-            DatrisEnvironment.values.useUserAuth,
+            useUserAuth,
             UserContext.get().map(_.username).filter(u => u != null && u.nonEmpty)
         ) match {
             case Some(a) => a
@@ -94,6 +98,13 @@ class ConfigChatAPIController {
                 return null
         }
 
+        // With user auth off there is no role gate and `actorFor` answers
+        // "admin" for any caller, so the credential itself must be full access.
+        if (!useUserAuth && !ChatCaller.mayConfigure(identity)) {
+            ChatCaller.refuse(request, response, Refuse(HttpServletResponse.SC_FORBIDDEN, ChatCaller.ConfigureRefusedBody))
+            return null
+        }
+
         val emitter = new SseEmitter(TimeUnit.MINUTES.toMillis(30))
         val emitterId = System.identityHashCode(emitter).toLong
         val cancelled = new java.util.concurrent.atomic.AtomicBoolean(false)
@@ -103,17 +114,15 @@ class ConfigChatAPIController {
         emitter.onTimeout(() => { cancelled.set(true); cancelFlags.remove(emitterId); emitter.complete(); () })
         emitter.onError(_ => { cancelled.set(true); cancelFlags.remove(emitterId); () })
 
-        // Same ThreadLocal capture rationale as the other chat controllers.
-        val capturedUser = UserContext.get()
+        // The worker runs as the identity decided above (its user only) and
+        // the tenant captured here; it never reads this thread's state.
         val capturedTenant = TenantContext.get()
 
         chatExecutor.submit(new Runnable {
-            override def run(): Unit = {
-                capturedUser.foreach(UserContext.set)
-                capturedTenant.foreach(TenantContext.set)
+            override def run(): Unit = ChatCaller.onWorker(identity, capturedTenant) {
                 try {
                     APIKeyValidator.validate(apiKey)
-                    runChat(actor, apiKey, body, emitter, cancelled)
+                    runChat(actor, apiKey, body, emitter, cancelled, identity)
                 } catch {
                     case e: Exception =>
                         try {
@@ -127,9 +136,6 @@ class ConfigChatAPIController {
                             case e2: Exception =>
                                 logger.debug("Failed to complete SSE emitter after chat error; client likely disconnected", e2)
                         }
-                } finally {
-                    UserContext.clear()
-                    TenantContext.clear()
                 }
             }
         })
@@ -137,7 +143,14 @@ class ConfigChatAPIController {
         emitter
     }
 
-    private def runChat(username: String, apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
+    private def runChat(
+        username: String,
+        apiKey: String,
+        body: String,
+        emitter: SseEmitter,
+        cancelled: java.util.concurrent.atomic.AtomicBoolean,
+        identity: ChatIdentity
+    ): Unit = {
         val req = JsonParser.parseString(body).getAsJsonObject
         val messagesArr = req.getAsJsonArray("messages")
         if (messagesArr == null || messagesArr.size() == 0)
@@ -160,7 +173,9 @@ class ConfigChatAPIController {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the AI primary secret is configured.")
 
-        val uiKey = resolveUiApiKey(apiKey)
+        // The ui key for users and full-access callers (the only callers that
+        // reach this point); kept on toolKey so every chat decides alike.
+        val uiKey = ChatCaller.toolKey(identity, apiKey, () => ChatCaller.uiApiKey(apiKey))
 
         // A token issued in one POST is consumed in the next, so the scope is
         // the admin plus the chat session, never the emitter.

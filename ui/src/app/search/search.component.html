@@ -160,7 +160,10 @@
           ({{ warehouseLabel(meta.kind) }}).
         </p>
       </div>
-      <div class="form-row">
+      <div class="form-row" *ngIf="restricted">
+        <p class="form-hint">Showing the pipeline's table. Custom SQL is available to users with install-wide access.</p>
+      </div>
+      <div class="form-row" *ngIf="!restricted">
         <label class="form-label">SQL Query</label>
         <textarea class="form-input form-textarea" [(ngModel)]="whSql" [placeholder]="warehouseSqlPlaceholder()" rows="4"></textarea>
         <p class="form-hint" *ngIf="queryType !== 'sqlserver'">Read-only: queries must start with SELECT, WITH, SHOW, or DESCRIBE, without semicolons or comments. Runs on the pipeline's warehouse with its credentials. Leave empty to preview the destination table up to the limit.</p>

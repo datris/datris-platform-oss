@@ -1931,8 +1931,39 @@ paths:
             reachable, it conflicts with another pipeline's source-of-authority
             declaration, or its vector collection, class or table is already
             used by another pipeline, or (for a caller who cannot see every
-            pipeline) its destination is written by a pipeline it cannot see.
-            Fix the configuration and save again.
+            pipeline) its destination is written by a pipeline it cannot see,
+            or (restricted users only) a new or changed Postgres, SQL Server,
+            Snowflake or Databricks table, pgvector table, MongoDB collection
+            or object-store prefix already exists: `The
+            destination <kind> <coordinates> already exists. Choose a table or
+            prefix that does not exist yet, or ask a user with install-wide
+            access to save this destination.` (only the coordinates in the
+            request are named; a missing database, catalog or schema counts as
+            not existing; for Postgres views and materialized views count; for
+            MongoDB a view of that name counts; for SQL Server views, synonyms
+            and system views count,
+            and a letter-case change to the table name is checked again; a new
+            object-store pipeline of any format, or a save that turns a stored
+            pipeline into an object-store Iceberg one, whose name has kept
+            Unity Catalog sync state recording a catalog commit is refused with
+            `A pipeline of this name has an Iceberg table committed through
+            Unity Catalog on record. Choose another pipeline name, or ask a
+            user with install-wide access to save this destination.`), or (restricted users only) an object-store prefix or
+            bucket is not a plain path (a wildcard or escape character
+            `* ? [ ] { } \`, leading or trailing spaces, or an empty, `.` or
+            `..` segment): `The object-store prefix and bucket must be plain
+            names: ... Choose a plain prefix.`, or (restricted users only) a
+            SQL Server temporary table (`#name`): `A SQL Server temporary table
+            (a name starting with #) cannot be a pipeline destination. Choose
+            another table name.`, or (restricted users only) a new or changed
+            pgvector schema or table name with a double quote, or an empty
+            schema: `The pgvector schema and table names must not contain
+            double quotes, and the schema must not be empty. Choose plain
+            names.`, or (restricted users only) a pgvector destination with a
+            missing or blank `tableName` that the saved pipeline does not
+            already have: `A pgvector destination needs a table name. Set
+            destination.pgvector.tableName.` Fix the configuration and save
+            again.
           content:
             application/json:
               schema:
@@ -1942,7 +1973,33 @@ paths:
                     type: string
                     description: What is wrong with the configuration
         '500':
-          description: Server error (for example the configuration store is unreachable)
+          description: >-
+            Server error (for example the configuration store is unreachable).
+            For a restricted user, also when the check that a new destination
+            does not exist yet could not reach the database, warehouse or bucket (an
+            object-store endpoint that does not answer within a few seconds
+            counts; the check does not retry), or did not finish within 30
+            seconds: `Could not check whether the destination already
+            exists; nothing was saved. Try again.`
+        '429':
+          description: >-
+            Restricted users only: two destination checks of the same user
+            are still running, so this save's check was not started and
+            nothing was saved: `Another destination check of yours is still
+            running; nothing was saved. Wait a moment and try again.` Body:
+            `{"error": "..."}`.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
     delete:
       tags: [Pipelines]
@@ -1960,7 +2017,7 @@ paths:
           schema:
             type: string
             default: "true"
-          description: Delete destination data (default true). Only takes effect with deleteConfig=false; deleting the configuration always deletes the data, so deleteData=false alone still removes it.
+          description: Delete destination data (default true). deleteData=false (any letter case) with the configuration delete keeps the destination data (table, collection or object-store files) and lists it in `kept`; refused with 400 for a pipeline that writes to a vector store. With deleteConfig=false, deleteData=false deletes nothing. Any other value deletes the data.
         - name: deleteConfig
           in: query
           required: false
@@ -1980,6 +2037,20 @@ paths:
                     type: array
                     items:
                       type: string
+                  kept:
+                    type: array
+                    description: Only with deleteData=false (keep the data). The tables, collections and object-store prefixes left in place, e.g. `postgres table datris.public.orders`; an empty array when nothing could be kept. No pipeline manages them afterwards.
+                    items:
+                      type: string
+        '400':
+          description: 'deleteData=false for a pipeline that writes to a vector store; nothing was deleted: `{"error": "This pipeline writes to a vector store; its configuration cannot be deleted while keeping that data. Delete it with its data, or keep the pipeline."}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '404':
           description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`'
           content:
@@ -2353,7 +2424,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CatalogRestoreResult'
         '207':
-          description: Some members could not be restored; see `failed`. A pipeline whose vector collection, class or table another pipeline already names (for example the second of two archived pipelines sharing one) is listed there with the refusal text, as is one whose destination a pipeline hidden from the caller writes; the rest of the restore goes ahead.
+          description: Some members could not be restored; see `failed`. A pipeline whose vector collection, class or table another pipeline already names (for example the second of two archived pipelines sharing one) is listed there with the refusal text, as is one whose destination a pipeline hidden from the caller writes; the rest of the restore goes ahead. For a restricted user, a pipeline whose destination check could not start because two of the user's own checks were still running is listed with `Another destination check of yours is still running; nothing was saved. Wait a moment and try again.` (restore it again later); the restore itself does not answer 429.
           content:
             application/json:
               schema:
@@ -2465,7 +2536,29 @@ paths:
           description: >-
             The new name is taken, a job for the pipeline is queued or running,
             or a stored CodeGen script could not be copied to the new name.
-            Nothing is renamed.
+            For a restricted user, an object-store pipeline also gets this 409
+            when Unity Catalog sync state kept for the new name records a
+            catalog commit (500 when that state cannot be read within 5
+            seconds). Nothing is renamed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '429':
+          description: >-
+            Restricted users only, an object-store pipeline taking a free
+            name: two destination checks of the same user are still running,
+            so the Unity Catalog state read was not started and nothing was
+            renamed: `Another destination check of yours is still running;
+            nothing was saved. Wait a moment and try again.`
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -3565,7 +3658,7 @@ paths:
       summary: Get job status
       description: >-
         Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
-        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) stamped with such a tap omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) of a run fed by such a tap, or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
       parameters:
         - name: publishertoken
           in: query
@@ -3658,7 +3751,7 @@ paths:
         Only Live Read pipelines have a result. `limit` is clamped server-side to the
         inline cap, so the next page starts at `offset + returnedCount`, never
         `offset + limit`. Results expire after the retention window.
-        For a restricted user, rows stamped with a tap they cannot read (or one no longer stored) omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        For a restricted user, rows of a run fed by a tap they cannot read (or one no longer stored), or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
       parameters:
         - name: pipelinetoken
           in: query
@@ -3804,7 +3897,7 @@ paths:
     post:
       tags: [Query]
       summary: Query object store
-      description: Read rows back from the files an object-store-destination pipeline has written (Parquet, ORC, CSV, or JSON), without downloading them.
+      description: 'Read rows back from the files an object-store-destination pipeline has written (Parquet, ORC, CSV, or JSON), without downloading them. For a restricted user: the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
       requestBody:
         required: true
         content:
@@ -3847,7 +3940,7 @@ paths:
                   count:
                     type: integer
         '400':
-          description: User-actionable error (e.g. unknown pipeline, no objectStore destination)
+          description: 'User-actionable error (e.g. unknown pipeline, no objectStore destination). Restricted users also get `The object-store prefix and bucket must be plain names: no wildcard or escape characters (* ? [ ] { } \), no leading or trailing spaces and no empty, ''.'' or ''..'' path segments. Choose a plain prefix.` when the pipeline''s saved prefix or bucket is not a plain path (a pipeline saved earlier with such a prefix can no longer be previewed by a restricted user).'
           content:
             application/json:
               schema:
@@ -3864,7 +3957,7 @@ paths:
     post:
       tags: [Query]
       summary: Query Snowflake
-      description: Execute a read-only SQL query against the Snowflake destination of a pipeline. Connection credentials come from the pipeline's configured `credentialsSecret`.
+      description: 'Execute a read-only SQL query against the Snowflake destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
       requestBody:
         required: true
         content:
@@ -3910,6 +4003,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -3919,7 +4014,7 @@ paths:
     post:
       tags: [Query]
       summary: Query SQL Server
-      description: Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline's configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY and no TOP, left as written when it already has OFFSET, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q` (for a WITH statement only the final SELECT is wrapped). When SQL Server rejects the wrapper (an unnamed or duplicate column name, FOR JSON / FOR XML) the query runs unwrapped with the same row cap. Write, exec and session keywords (INSERT, UPDATE, DELETE, INTO, EXEC, USE, OPENROWSET and others) are rejected anywhere in the statement, string literals included. Requires the `query:sqlserver` capability.
+      description: 'Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY and no TOP, left as written when it already has OFFSET, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q` (for a WITH statement only the final SELECT is wrapped). When SQL Server rejects the wrapper (an unnamed or duplicate column name, FOR JSON / FOR XML) the query runs unwrapped with the same row cap. Write, exec and session keywords (INSERT, UPDATE, DELETE, INTO, EXEC, USE, OPENROWSET and others) are rejected anywhere in the statement, string literals included. Requires the `query:sqlserver` capability. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
       requestBody:
         required: true
         content:
@@ -3965,6 +4060,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -3976,7 +4073,7 @@ paths:
     post:
       tags: [Query]
       summary: Query Databricks
-      description: Execute a read-only SQL query against the Databricks destination of a pipeline (a Unity Catalog managed Delta table). Connection credentials come from the pipeline's configured `credentialsSecret`.
+      description: 'Execute a read-only SQL query against the Databricks destination of a pipeline (a Unity Catalog managed Delta table). Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
       requestBody:
         required: true
         content:
@@ -4022,6 +4119,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. Also returned when Databricks denies the query a permission.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -4125,7 +4224,10 @@ paths:
         `404`). Results hold only chunks written by pipelines in their
         catalogs; a chunk from any other pipeline, or with no recorded
         pipeline, is left out and not counted, so fewer than `topK` results
-        can come back.
+        can come back. For a restricted user, a result that came from a run
+        fed by a tap they cannot read (or one no longer stored), or whose
+        feeding tap cannot be determined, omits `_datris_tap_run`,
+        `_datris_script_sha` and `_datris_source`.
       parameters:
         - name: store
           in: path
@@ -4580,8 +4682,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConfigUploadResponse'
+        '400':
+          description: '`type` is not `validation-schema` or `javascript`, or the file name is missing, has no usable segment, or contains characters outside letters, digits, `.`, `_`, `-`. Body: `{"error": ...}`'
         '500':
-          description: Error
+          description: 'Storage failure. Body: `{"error": ...}`'
 
   # ── Health Check ───────────────────────────────────────────
 
@@ -4759,8 +4863,10 @@ paths:
                     type: string
                   schema:
                     type: string
+        '400':
+          description: 'The body is not valid JSON or not a JSON object; `type`, `name` or `sampleData` is missing, null or not a string; `type` is not `json-schema` or `xsd`; `name` or `sampleData` is blank; or `name` is not a usable file name. Refused before the model is called. Body: `{"error": ...}`'
         '500':
-          description: Error
+          description: 'Model or storage failure. Body: `{"error": ...}`'
 
   # ── Taps (Beta) ──────────────────────────────────────────
 
@@ -6065,9 +6171,16 @@ paths:
         '403':
           description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope.
         '400':
-          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes. Body: `{"error": "..."}`.'
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`). Body: `{"error": "..."}`.'
         '500':
-          description: Error
+          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket (an object-store endpoint that does not answer within a few seconds counts; the check does not retry) or did not finish within 30 seconds; nothing is restored.'
+        '429':
+          description: 'Restricted users only: two destination checks of the same user are still running, so this restore''s check was not started and nothing was restored: `Another destination check of yours is still running; nothing was saved. Wait a moment and try again.` Body: `{"error": "..."}`.'
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again (5).
+              schema:
+                type: string
 
   # ── Authentication & Users ─────────────────────────────────
 
@@ -7162,7 +7275,7 @@ paths:
     get:
       tags: [Assistant]
       summary: Initialize the Assistant
-      description: UI mount call — warms the MCP client caches and returns the tool catalog, the workflow reference resource, and the active chat model.
+      description: UI mount call — warms the MCP client caches and returns the tool catalog, the workflow reference resource, and the active chat model. The tool catalog is the one the caller's own access allows.
       responses:
         '200':
           description: Assistant bootstrap payload
@@ -7189,6 +7302,10 @@ paths:
                     type: boolean
         '400':
           description: User-actionable error
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
         '500':
           description: Error
 
@@ -7200,7 +7317,7 @@ paths:
         Runs the build-mode Assistant agent loop and streams agent-loop events
         (text deltas, tool calls, tool results, errors) as Server-Sent Events.
         The client cancels by disconnecting. Attachments reference files
-        previously staged via `/assistant/attachment`.
+        previously staged via `/assistant/attachment`. Tools run with the caller's own access.
       requestBody:
         required: true
         content:
@@ -7225,6 +7342,10 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
 
   /api/v1/assistant/attachment:
     post:
@@ -7235,7 +7356,8 @@ paths:
         server-side (tenant-scoped, TTL'd) and only the returned handle plus a
         small content sample travel through the chat; the platform substitutes
         the real bytes when the agent calls a file tool with the
-        `attachmentId`. Limit 25 MB per file.
+        `attachmentId`. Limit 25 MB per file. Accepts the same callers as
+        `/assistant/chat`.
       requestBody:
         required: true
         content:
@@ -7269,6 +7391,10 @@ paths:
                     description: Text sample for the model (capped; binary documents get a one-line note)
         '400':
           description: Empty file
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
         '413':
           description: File exceeds the 25 MB limit
         '500':
@@ -7285,6 +7411,9 @@ paths:
         acts on runs by name, with operational tools (run, status, kill)
         prioritized. The optional `context` object is a dashboard snapshot
         that grounds answers in the failures and volumes currently on screen.
+        With the recovery agent on, open incidents are added to the context,
+        only for a caller allowed to read incidents (not a user with scoped
+        catalog access, nor an API key without unscoped `incident:read`). Tools run with the caller's own access.
         Streams the same SSE event format as `/assistant/chat`.
       requestBody:
         required: true
@@ -7299,6 +7428,10 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
 
   /api/v1/search-chat/chat:
     post:
@@ -7311,7 +7444,8 @@ paths:
         discovery/query/search tools; the agent never sees mutating tools. The
         optional `context` object may carry a catalog scope, e.g.
         `{"catalog": "finance"}` (or "Uncataloged"; "All"/empty means
-        unscoped). Streams the same SSE event format as `/assistant/chat`.
+        unscoped). Tools run with the caller's own access. Streams the same SSE event format as
+        `/assistant/chat`.
       requestBody:
         required: true
         content:
@@ -7325,6 +7459,10 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
 
   /api/v1/catalog-chat/chat:
     post:
@@ -7334,8 +7472,8 @@ paths:
         Agent chat for organizing the inventory — group, move, rename, and
         describe taps and pipelines. Full tool catalog with catalog tools
         prioritized. The optional `context` object is a catalog inventory
-        snapshot that grounds answers in what the user is looking at. Streams
-        the same SSE event format as `/assistant/chat`.
+        snapshot that grounds answers in what the user is looking at. Tools run with the caller's own access.
+        Streams the same SSE event format as `/assistant/chat`.
       requestBody:
         required: true
         content:
@@ -7349,6 +7487,10 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
 
   /api/v1/config-chat/chat:
     post:
@@ -7365,7 +7507,7 @@ paths:
         it in the panel. Secret values are never passed through the model;
         they are collected through a `secret_request` form event. The optional
         `context` object is `{tab}`, the active sub-tab. Streams the same SSE
-        event format as `/assistant/chat`.
+        event format as `/assistant/chat`. Tools run with the caller's own access.
       requestBody:
         required: true
         content:
@@ -7379,8 +7521,13 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
         '403':
-          description: Admin session required when user auth is on (API-key callers are refused)
+          description: >-
+            Refused for this credential: a tap run's platform token; with user
+            auth on, any caller without an admin session; with user auth off,
+            an API key that is not full access
 
   # ── MCP Activity ───────────────────────────────────────────
 
@@ -7439,11 +7586,15 @@ paths:
   /api/v1/mcp/tools:
     get:
       tags: [MCP]
-      summary: MCP tools the calling key may use
+      summary: MCP tools the calling key or logged-in session may use
       description: >-
-        The MCP tool names the calling API key's capabilities allow. A legacy
-        full-access key (`*:*`, including the anonymous identity when API keys
-        are off) sees the whole catalog with `filtered: false`.
+        The MCP tool names the calling API key's capabilities allow, or, with
+        no API key, the logged-in session's role allows. A legacy full-access
+        key (`*:*`, including the anonymous identity when API keys are off)
+        and an admin session see the whole catalog with `filtered: false`;
+        editor and viewer sessions get their role's tools with
+        `filtered: true`. A presented API key takes precedence over the
+        session.
       responses:
         '200':
           description: Tool names
@@ -7454,13 +7605,13 @@ paths:
                 properties:
                   filtered:
                     type: boolean
-                    description: '`true` when the list was narrowed to the key''s capabilities'
+                    description: '`true` when the list was narrowed to the key''s or session''s capabilities'
                   tools:
                     type: array
                     items:
                       type: string
         '401':
-          description: 'API keys are required and this one is missing or invalid. Body: `{"error": "Authentication required"}`'
+          description: 'API keys are required and there is no API key and no logged-in session, or the presented key is invalid (even with a session). Body: `{"error": "Authentication required"}`'
         '500':
           description: Error
 

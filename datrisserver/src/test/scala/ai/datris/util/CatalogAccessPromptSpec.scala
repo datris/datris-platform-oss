@@ -86,4 +86,44 @@ class CatalogAccessPromptSpec extends AnyFunSuite {
             assert(!text.get.toLowerCase.contains("uncataloged"), s"grants $grants:\n${text.get}")
         }
     }
+
+    // Story: plans/stories/catalog-scoped-user-access-query-stamps.md, Acceptance.
+    test("restricted block says warehouse query tools preview the pipeline's table and take no sql") {
+        val cases = Seq(
+            user(User.RoleEditor, restricted = true, "Sales" -> "edit"),
+            user(User.RoleViewer, restricted = true, "Archive" -> "view")
+        )
+        cases.foreach { u =>
+            val text = CatalogAccessPrompt.block(u)
+            assert(text.isDefined)
+            val line = text.get.split("\n").find(l => l.toLowerCase.contains("warehouse query tools"))
+            assert(line.isDefined, s"a rule must name the warehouse query tools:\n${text.get}")
+            val l = line.get.toLowerCase
+            assert(l.contains("preview the pipeline's table"), s"must say they preview the pipeline's table: ${line.get}")
+            assert(l.contains("do not pass `sql`"), s"must say not to pass `sql`: ${line.get}")
+        }
+        assert(CatalogAccessPrompt.block(user(User.RoleEditor, restricted = false, "Sales" -> "edit")).isEmpty)
+    }
+
+    // Story: plans/stories/catalog-scoped-user-access-warehouse-preview-target.md, Acceptance.
+    test("restricted block says a new destination must not exist yet") {
+        val cases = Seq(
+            user(User.RoleEditor, restricted = true, "Sales" -> "edit"),
+            user(User.RoleEditor, restricted = true, "Sales" -> "own", "Archive" -> "view")
+        )
+        cases.foreach { u =>
+            val text = CatalogAccessPrompt.block(u)
+            assert(text.isDefined)
+            val line = text.get.split("\n").find { l =>
+                val x = l.toLowerCase
+                x.contains("destination") && x.contains("not exist yet")
+            }
+            assert(line.isDefined, s"a rule must say a new destination must not exist yet:\n${text.get}")
+            val l = line.get.toLowerCase
+            assert(l.contains("new destination"), s"must speak of a new destination: ${line.get}")
+            assert(l.contains("refused"), s"must say what happens when a save is refused for that: ${line.get}")
+            assert(l.contains("install-wide"), s"must point at a user with install-wide access: ${line.get}")
+        }
+        assert(CatalogAccessPrompt.block(user(User.RoleEditor, restricted = false, "Sales" -> "edit")).isEmpty)
+    }
 }

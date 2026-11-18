@@ -31,7 +31,7 @@ Sharing a table: a destination written by a pipeline the caller cannot see (scop
 
 ## Vector stores (semantic search, RAG)
 
-pgvector (bundled Postgres), Qdrant, Weaviate, Milvus, Chroma. The source must be `unstructuredAttributes` for documents. The embedding model is pinned at creation and dimensions cannot change afterwards; confirm which embedder the instance uses (`run_doctor` reports it) before creating the pipeline. Chunking strategies: fixed-size, sentence, paragraph, recursive. Each collection, class or table belongs to one pipeline: a save onto one another pipeline already uses is refused, so pick a new name per pipeline. `metadata` keys named `source_pipeline` or `source_dataset` are reserved and ignored; do not use them (on pgvector a `source_pipeline` key fails the load).
+pgvector (bundled Postgres), Qdrant, Weaviate, Milvus, Chroma. The source must be `unstructuredAttributes` for documents. The embedding model is pinned at creation and dimensions cannot change afterwards; confirm which embedder the instance uses (`run_doctor` reports it) before creating the pipeline. Chunking strategies: fixed-size, sentence, paragraph, recursive. Each collection, class or table belongs to one pipeline: a save onto one another pipeline already uses is refused, so pick a new name per pipeline. `metadata` keys named `source_pipeline` or `source_dataset` are reserved and ignored, and so are keys named `id`, `text`, `chunk_index`, `filename` or `embedding` (fields every chunk already carries); do not use them (on pgvector any of these keys fails the load).
 
 ## Messaging and callbacks
 

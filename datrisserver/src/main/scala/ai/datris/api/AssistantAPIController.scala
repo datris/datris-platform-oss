@@ -6,19 +6,11 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
-import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, User, UserContext}
-import ai.datris.util.{
-    AgentLoop,
-    APIKeyValidator,
-    AttachmentStore,
-    CatalogAccessPrompt,
-    DestinationAvailabilityUtil,
-    MCPClient,
-    SecretsUtil,
-    TapBudgets,
-    TapPromptInjector
-}
+import ai.datris.auth.{Allow, ChatCaller, ChatIdentity, Refuse}
+import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext}
+import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, CatalogAccessPrompt, DestinationAvailabilityUtil, MCPClient, TapBudgets, TapPromptInjector}
 import ai.datris.util.aiutil.AIStreaming.AIContentBlock
+import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -541,41 +533,28 @@ class AssistantAPIController {
     // GET /api/v1/assistant/init — warm caches, return tool catalog
     // ------------------------------------------------------------------
 
-    /** Resolves the API key the UI identity uses on MCP-bound REST calls
-      * driven by the Assistant. The UI is one logical caller — direct REST
-      * traffic and Assistant-routed MCP traffic share the same key — so this
-      * is just "what does the UI present to the auth layer."
-      *
-      *  - When `useApiKeys=false`: returns null. Anonymous mode; no
-      *    `x-api-key` header is sent on outbound calls.
-      *  - When `useApiKeys=true`: returns the `apiKey` field from the
-      *    `{env}/ui-api-key` Vault secret. Falls back to the user-supplied
-      *    key on the request if the secret is missing or empty (preserves
-      *    behavior for deployments upgraded before this secret existed). */
-    private def resolveUiApiKey(userApiKey: String): String = {
-        if (!DatrisEnvironment.values.useApiKeys) return null
-
-        val secretPath = DatrisEnvironment.current.environment + "/ui-api-key"
-        SecretsUtil.getSecretMap(secretPath).flatMap(m => Option(m.get("apiKey"))) match {
-            case Some(v) if v != null && v.nonEmpty => v
-            case _ => userApiKey
-        }
-    }
-
     @GetMapping(path = Array("/assistant/init"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def init(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+    def init(@RequestHeader(name = "x-api-key", required = false) apiKey: String, request: HttpServletRequest): ResponseEntity[String] = {
+        // Who the caller is (ChatCaller); a refusal is answered before any MCP call.
+        val identity: ChatIdentity = ChatCaller.from(request) match {
+            case Allow(id) => id
+            case r: Refuse => return ChatCaller.refusal(request, r)
+        }
         try {
             APIKeyValidator.validate(apiKey)
 
-            // MCP-bound calls go out under the UI identity (same as direct
-            // REST traffic from the UI tabs).
-            val uiKey = resolveUiApiKey(apiKey)
+            // The ui key for users and full-access callers (as the chat uses);
+            // any other key's own presented key, so the listed tools are what
+            // that key may call.
+            val uiKey = ChatCaller.toolKey(identity, apiKey, () => ChatCaller.uiApiKey(apiKey))
 
-            val tools = MCPClient.listTools(uiKey)
+            // The acting user rides on UserContext so MCPClient forwards it
+            // (an on-behalf-of caller has no session user on this thread).
+            val tools = ChatCaller.asUser(identity)(MCPClient.listTools(uiKey))
             val toolNames = tools.flatMap(t => Option(t.get("name")).map(_.getAsString)).toList
 
             val workflowReference: String =
-                try MCPClient.readResource("datris://pipeline-config-reference", uiKey)
+                try ChatCaller.asUser(identity)(MCPClient.readResource("datris://pipeline-config-reference", uiKey))
                 catch {
                     case e: Exception =>
                         logger.warn("Assistant init: could not read pipeline-config-reference resource: " + e.getMessage)
@@ -617,7 +596,22 @@ class AssistantAPIController {
     // ------------------------------------------------------------------
 
     @PostMapping(path = Array("/assistant/chat"), produces = Array(MediaType.TEXT_EVENT_STREAM_VALUE))
-    def chat(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): SseEmitter = {
+    def chat(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: String,
+        request: HttpServletRequest,
+        response: HttpServletResponse
+    ): SseEmitter = {
+        // Decide who the caller is on the servlet thread (ChatCaller), before
+        // the stream opens; a refusal is written directly and null tells
+        // Spring the request is handled.
+        val identity: ChatIdentity = ChatCaller.from(request) match {
+            case Allow(id) => id
+            case r: Refuse =>
+                ChatCaller.refuse(request, response, r)
+                return null
+        }
+
         // 30-minute timeout — sessions are interactive and can be long with many
         // tool calls, but anything beyond this is almost certainly a stuck loop.
         val emitter = new SseEmitter(TimeUnit.MINUTES.toMillis(30))
@@ -629,21 +623,17 @@ class AssistantAPIController {
         emitter.onTimeout(() => { cancelled.set(true); cancelFlags.remove(emitterId); emitter.complete(); () })
         emitter.onError(_ => { cancelled.set(true); cancelFlags.remove(emitterId); () })
 
-        // Capture the request-thread ThreadLocals so the worker thread can
-        // re-establish them. UserContext drives the session-bypass in
-        // APIKeyValidator.validate(); TenantContext routes multi-tenant
-        // requests. Without restoring these, the worker thread sees None
-        // for both and validate() rejects what was a session-authed call.
-        val capturedUser = UserContext.get()
+        // The worker runs as the identity decided above: its user (the
+        // session-bypass in APIKeyValidator.validate, and the on-behalf-of
+        // header MCPClient sends) and the tenant captured here, which routes
+        // multi-tenant requests. It never reads this thread's state.
         val capturedTenant = TenantContext.get()
 
         chatExecutor.submit(new Runnable {
-            override def run(): Unit = {
-                capturedUser.foreach(UserContext.set)
-                capturedTenant.foreach(TenantContext.set)
+            override def run(): Unit = ChatCaller.onWorker(identity, capturedTenant) {
                 try {
                     APIKeyValidator.validate(apiKey)
-                    runChat(apiKey, body, emitter, cancelled, capturedUser)
+                    runChat(apiKey, body, emitter, cancelled, identity)
                 } catch {
                     case e: Exception =>
                         try {
@@ -657,9 +647,6 @@ class AssistantAPIController {
                             case e2: Exception =>
                                 logger.debug("Failed to complete SSE emitter after chat error; client likely disconnected", e2)
                         }
-                } finally {
-                    UserContext.clear()
-                    TenantContext.clear()
                 }
             }
         })
@@ -672,7 +659,7 @@ class AssistantAPIController {
         body: String,
         emitter: SseEmitter,
         cancelled: java.util.concurrent.atomic.AtomicBoolean,
-        sessionUser: Option[User] = None
+        identity: ChatIdentity
     ): Unit = {
         // Parse request body: { messages: [{role, content, askUser?}], maxIterations?: Int }.
         val req = JsonParser.parseString(body).getAsJsonObject
@@ -717,9 +704,9 @@ class AssistantAPIController {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the AI primary secret is configured.")
 
-        // The UI identity for MCP-bound calls — same key the UI sends on
-        // direct REST traffic from other tabs.
-        val uiKey = resolveUiApiKey(apiKey)
+        // The ui key for users and full-access callers; any other key's own
+        // presented key, so its tools are exactly what that key may do.
+        val uiKey = ChatCaller.toolKey(identity, apiKey, () => ChatCaller.uiApiKey(apiKey))
 
         // Fetch MCP tool catalog + workflow reference resource (both cached).
         // Append the synthetic `request_tap_secret_from_user` tool. The agent
@@ -740,7 +727,7 @@ class AssistantAPIController {
 
         // Catalog-scoped user access: the block is injected only for a
         // restricted session user; everyone else gets today's prompt.
-        val catalogAccess = sessionUser.flatMap(CatalogAccessPrompt.block)
+        val catalogAccess = identity.user.flatMap(CatalogAccessPrompt.block)
         val systemPrompt = buildSystemPrompt(workflowReference, env.environment, catalogAccess)
 
         logger.info("Assistant chat starting: tenant=" + env.environment + ", provider=" + aiConfig.provider +

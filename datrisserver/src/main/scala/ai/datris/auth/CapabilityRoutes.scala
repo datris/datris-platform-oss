@@ -50,12 +50,13 @@ object CapabilityRoutes {
         "/api/v1/health/**",
         "/api/v1/version",
         "/api/v1/mcp/activity",
-        // Any valid key may ask which MCP tools it can see; the controller
-        // itself rejects requests that resolve to no key at all.
+        // Any valid key or logged-in session may ask which MCP tools it can
+        // see; the controller itself rejects requests with neither.
         "/api/v1/mcp/tools",
         "/api/v1/assistant/**",
         "/api/v1/ops-chat/**",
         "/api/v1/catalog-chat/**",
+        "/api/v1/search-chat/**",
         "/api/v1/config-chat/**"
     )
 

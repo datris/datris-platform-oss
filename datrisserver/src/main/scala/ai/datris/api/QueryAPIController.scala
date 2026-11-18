@@ -119,9 +119,16 @@ class QueryAPIController {
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
+            if (ai.datris.auth.CapabilityCheck.isRestrictedSession(request))
+                QueryAPIController
+                    .restrictedObjectStorePathRefusal(
+                        request,
+                        ai.datris.util.PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
+                    )
+                    .foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
-            val result = ObjectStoreQueryUtil.query(pipelineName, limit)
+            val result = QueryAPIController.restrictedObjectStoreResult(request, ObjectStoreQueryUtil.query(pipelineName, limit))
             new ResponseEntity[String](QueryAPIController.objectStoreResponseJson(pipelineName, result), HttpStatus.OK)
         } catch {
             case e: QueryAPIController.InvalidLimitException =>
@@ -150,16 +157,18 @@ class QueryAPIController {
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
+            QueryAPIController.restrictedSqlRefusal(request, sql).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = SnowflakeQueryUtil.query(pipelineName, sql, limit)
+            val rows = QueryAPIController.restrictedRows(request, result.results)
 
             val gson = new GsonBuilder().serializeNulls().create()
             val response = new java.util.LinkedHashMap[String, Any]()
             response.put("pipeline", pipelineName)
             response.put("sql", result.sql)
-            response.put("results", result.results)
-            response.put("count", result.results.size())
+            response.put("results", rows)
+            response.put("count", rows.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: QueryAPIController.InvalidLimitException =>
@@ -194,16 +203,18 @@ class QueryAPIController {
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
+            QueryAPIController.restrictedSqlRefusal(request, sql).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = SqlServerQueryUtil.query(pipelineName, sql, limit)
+            val rows = QueryAPIController.restrictedRows(request, result.results)
 
             val gson = new GsonBuilder().serializeNulls().create()
             val response = new java.util.LinkedHashMap[String, Any]()
             response.put("pipeline", pipelineName)
             response.put("sql", result.sql)
-            response.put("results", result.results)
-            response.put("count", result.results.size())
+            response.put("results", rows)
+            response.put("count", rows.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: QueryAPIController.InvalidLimitException =>
@@ -236,16 +247,18 @@ class QueryAPIController {
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
+            QueryAPIController.restrictedSqlRefusal(request, sql).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = DatabricksQueryUtil.query(pipelineName, sql, limit)
+            val rows = QueryAPIController.restrictedRows(request, result.results)
 
             val gson = new GsonBuilder().serializeNulls().create()
             val response = new java.util.LinkedHashMap[String, Any]()
             response.put("pipeline", pipelineName)
             response.put("sql", result.sql)
-            response.put("results", result.results)
-            response.put("count", result.results.size())
+            response.put("results", rows)
+            response.put("count", rows.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: QueryAPIController.InvalidLimitException =>
@@ -395,7 +408,12 @@ object QueryAPIController {
     /** Pipeline-bound queries (objectstore, snowflake, sqlserver,
       * databricks) for a restricted user's session: the named pipeline must
       * be in its catalog grants, else the same 404 as a missing pipeline.
-      * None for everyone else (and when allowed). */
+      * None for everyone else (and when allowed). Checked first, so a hidden
+      * pipeline never reveals the rules that follow for an allowed one: a
+      * caller `sql` is refused ([[restrictedSqlRefusal]], the warehouse
+      * routes then run only their server-built preview of the pipeline's
+      * table) and the tap stamp columns are dropped from the result
+      * ([[restrictedRows]], [[restrictedObjectStoreResult]]). */
     private[api] def restrictedPipelineRefusal(
         request: jakarta.servlet.http.HttpServletRequest,
         pipelineName: String
@@ -414,6 +432,67 @@ object QueryAPIController {
             ) Some(PipelineAPIController.pipelineNotFound(pipelineName))
             else None
         }
+
+    /** Object-store preview for a restricted user's session: 400
+      * `DestinationTargets.UnsafePathRefusal` when the pipeline's stored
+      * prefix or bucket is not a plain path (a glob, escape or `..` segment
+      * would make the read reach past the prefix; a pipeline saved before the
+      * save-time rule could carry one). None for everyone else and for plain
+      * paths. */
+    private[api] def restrictedObjectStorePathRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        config: ai.datris.model.PipelineConfig
+    ): Option[ResponseEntity[String]] =
+        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || config == null || config.destination == null) None
+        else if (!ai.datris.util.DestinationTargets.unsafeObjectStorePath(config.destination.objectStore)) None
+        else
+            Some(
+                ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body[String](ApiErrors.errorBody(ai.datris.util.DestinationTargets.UnsafePathRefusal))
+            )
+
+    /** Body text of the 403 a restricted session gets for a caller `sql`. */
+    val RestrictedSqlRefusal: String =
+        "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline's table."
+
+    /** Warehouse queries (snowflake, sqlserver, databricks) for a restricted
+      * user's session: any non-blank caller `sql` is refused with 403, since
+      * caller SQL can read any table the connection reaches and any column
+      * under any alias. Blank or whitespace `sql` counts as absent (the
+      * server-built preview). None for everyone else, API keys included. */
+    private[api] def restrictedSqlRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        sql: Option[String]
+    ): Option[ResponseEntity[String]] =
+        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || sql.forall(_.trim.isEmpty)) None
+        else Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](jsonError(RestrictedSqlRefusal)))
+
+    /** Query result rows for a restricted session: the tap stamp columns
+      * dropped from every row, whatever the tap
+      * ([[ai.datris.auth.HiddenTapScrub.dropTapStampColumns]]). `rows`
+      * itself for everyone else. */
+    private[api] def restrictedRows(
+        request: jakarta.servlet.http.HttpServletRequest,
+        rows: java.util.List[java.util.Map[String, Any]]
+    ): java.util.List[java.util.Map[String, Any]] =
+        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) rows
+        else ai.datris.auth.HiddenTapScrub.dropTapStampColumns(rows)
+
+    /** An object-store preview for a restricted session: the tap stamp
+      * columns dropped from both `columns` and `rows` (path, format and
+      * snapshot kept). `result` itself for everyone else. */
+    private[api] def restrictedObjectStoreResult(
+        request: jakarta.servlet.http.HttpServletRequest,
+        result: ObjectStoreQueryUtil.QueryResult
+    ): ObjectStoreQueryUtil.QueryResult =
+        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || result == null) result
+        else
+            result.copy(
+                columns = ai.datris.auth.HiddenTapScrub.dropTapStampNames(result.columns),
+                rows = ai.datris.auth.HiddenTapScrub.dropTapStampColumns(result.rows)
+            )
 
     /** A `limit` request field that is not an integer. */
     final class InvalidLimitException(message: String) extends DatrisException(message)

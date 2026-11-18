@@ -38,6 +38,10 @@ curl -X POST http://localhost:8080/api/v1/config/upload \
 }
 ```
 
+### Errors
+
+A `type` other than `validation-schema` or `javascript`, or a file name with no usable segment or with characters outside letters, digits, `.`, `_` and `-`, returns HTTP 400 with `{"error": "<message>"}`. A storage failure returns HTTP 500 with the same body shape.
+
 ---
 
 ## Generate Schema from Sample Data
@@ -80,3 +84,7 @@ curl -X POST http://localhost:8080/api/v1/config/generate-schema \
 For `xsd` type, the filename uses `.xsd` extension and the response contains a generated W3C XML Schema.
 
 When `DATRIS_AI_SAMPLE_VALUES=false`, the schema is generated from a value-free skeleton of the sample and the response also carries `"valuesWithheld": true`. See [AI Configuration](/ai-configuration) for the switch.
+
+### Errors
+
+Missing or invalid input returns HTTP 400 with `{"error": "<message>"}` naming the problem: a body that is not valid JSON or not a JSON object, missing fields (`type`, `name`, `sampleData`), a field that is not a string, an unknown schema type, a blank name or sample, or a name that is not a usable file name. Input errors are reported before the model is called. A model or storage failure returns HTTP 500 with the same body shape.

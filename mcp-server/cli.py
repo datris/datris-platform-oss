@@ -694,24 +694,33 @@ def status(pipeline_name, json_output):
 
 @cli.command()
 @click.argument("pipeline_name")
-@click.option("--keep-data", is_flag=True, help="Not supported: deleting a pipeline always deletes its destination data")
+@click.option("--keep-data", is_flag=True,
+              help="Delete only the configuration; leave the destination table, collection or files (refused for a vector destination)")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
 def delete(pipeline_name, keep_data, json_output):
-    """Delete a pipeline and its data."""
+    """Delete a pipeline and its data (or, with --keep-data, only its configuration)."""
+    args = {"pipeline": pipeline_name}
     if keep_data:
-        # The server always deletes a pipeline's destination data with its
-        # configuration; refuse before anything is deleted.
-        click.echo(
-            "Datris deletes a pipeline's destination data together with its configuration; --keep-data is not supported. "
-            "To keep the data, copy it or point a new pipeline at the same prefix before deleting.",
-            err=True,
-        )
-        sys.exit(1)
-    result = mcp("delete_pipeline", {"pipeline": pipeline_name})
+        args["keep_data"] = True
+    result = mcp("delete_pipeline", args)
+    # A --keep-data refusal (e.g. a vector destination: nothing was deleted)
+    # exits 1, with or without --json.
+    refused = keep_data and isinstance(result, dict) and bool(result.get("error"))
     if json_output:
         click.echo(json.dumps(result, indent=2))
+        if refused:
+            sys.exit(1)
         return
-    click.echo(f"  ✓ Pipeline '{pipeline_name}' deleted")
+    if keep_data:
+        if refused:
+            click.echo(f"  ✗ {result['error']}", err=True)
+            sys.exit(1)
+        click.echo(f"  ✓ Pipeline '{pipeline_name}' deleted (data kept)")
+        kept = result.get("kept") if isinstance(result, dict) else None
+        for entry in kept or []:
+            click.echo(f"    kept: {entry}")
+    else:
+        click.echo(f"  ✓ Pipeline '{pipeline_name}' deleted")
     # e.g. a Unity Catalog table an admin still has to drop
     warnings = result.get("warnings") if isinstance(result, dict) else None
     for warning in warnings or []:

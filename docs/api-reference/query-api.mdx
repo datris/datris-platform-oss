@@ -120,6 +120,8 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 
 Read rows from a pipeline's object store destination (MinIO or S3). The pipeline name selects the bucket, prefix, and credentials — the caller never supplies connection details.
 
+For a restricted user: the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`. When the pipeline's saved `prefixKey` or `destinationBucketOverride` is not a plain path (a wildcard or escape character `* ? [ ] { } \`, leading or trailing spaces, or an empty, `.` or `..` segment), the query is refused with `400` and `The object-store prefix and bucket must be plain names: no wildcard or escape characters (* ? [ ] { } \), no leading or trailing spaces and no empty, '.' or '..' path segments. Choose a plain prefix.`; change the prefix to preview it.
+
 ```
 POST /api/v1/query/objectstore
 ```
@@ -181,6 +183,8 @@ Returns `400 Bad Request` with `{"error": "..."}` when:
 ## Query Snowflake
 
 Execute a read-only query against the Snowflake account a pipeline loads into. The pipeline name selects the credentials, warehouse, database, and schema — credentials never leave the server.
+
+For a restricted user: `sql` is refused with `403` and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.
 
 ```
 POST /api/v1/query/snowflake
@@ -247,6 +251,8 @@ Returns `400 Bad Request` with `{"error": "..."}` when:
 
 Execute a read-only query against the Databricks workspace a pipeline loads into. The pipeline name selects the credentials, SQL warehouse, catalog, and schema — credentials never leave the server.
 
+For a restricted user: `sql` is refused with `403` and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.
+
 ```
 POST /api/v1/query/databricks
 ```
@@ -310,6 +316,8 @@ Returns `400 Bad Request` with `{"error": "..."}` when:
 ## Query SQL Server
 
 Execute a read-only T-SQL query against the SQL Server or Azure SQL database a pipeline loads into. The pipeline name selects the credentials secret, host, database, and schema — credentials never leave the server, and every `authMethod` the destination supports works here. Requires the `query:sqlserver` capability. The `read-only` and `reporting` key templates and the editor and viewer roles include it; a key issued before this capability existed keeps its explicit list, so add `query:sqlserver` to it or issue a new key.
+
+For a restricted user: `sql` is refused with `403` and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.
 
 ```
 POST /api/v1/query/sqlserver

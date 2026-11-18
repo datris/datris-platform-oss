@@ -252,19 +252,22 @@ to permissions depends on which auth mode the platform is running in:
   full access, editor gets create/update/run on data resources, viewer
   gets read-only. See [User Authentication](/user-auth) for the role-to-
   capability mapping.
-- **`USE_USER_AUTH=false` + `USE_API_KEYS=true`**: the Assistant uses
-  whatever value you pasted into the Connect prompt (typically the seeded
-  `ui` key). Same identity for everyone using the browser.
+- **`USE_USER_AUTH=false` + `USE_API_KEYS=true`**: the Assistant can do
+  what the key you pasted into the Connect prompt can do. A full-access
+  key (for example the seeded `ui` key) gets every tool; a key issued with
+  a capability list or a `catalog=` / `owner=self` scope gets only the
+  tools and resources that key allows, and its tool calls are recorded in
+  the audit log under that key's label. Such a key cannot use the
+  Configuration chat.
 - **`USE_API_KEYS=false`**: no auth on tool calls; the Assistant runs as
   the platform's anonymous identity.
 
-The Assistant doesn't have its own dedicated API key — its server-side
-MCP-bound tool calls use the same identity the chat endpoint was
-authenticated under. Want to give the Assistant *narrower* permissions
-than the human user has? That's not exposed today; the workaround is to
-log in as a different user (an editor or viewer) when running the
-Assistant, so the role mapping applies. See [API Keys](/api-keys) for
-the full capability model.
+The same rules apply to every in-platform chat (Assistant, Operations,
+catalog, Search and Configuration) and to programmatic calls to the chat
+endpoints. A key that is not full access never gets more through a chat
+than it gets through the MCP server directly. A tap run's platform token
+cannot use the chat endpoints. See [API Keys](/api-keys) for the full
+capability model.
 
 ## Limits
 

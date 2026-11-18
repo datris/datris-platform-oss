@@ -29,6 +29,13 @@ import scala.collection.JavaConverters._
   *    vector destination `metadata` maps; the vector loaders already write
   *    that map onto every chunk.
   *
+  * Only the stamper writes the [[AllFields]] names while stamping is on: a key
+  * of that name in a vector destination's static `metadata` is dropped (even
+  * when its field is not selected or has no value for this run), and so is
+  * one on a JSON object the stamper stamps. A delimited header that already
+  * holds a `_datris_` column is treated as stamped and gets no stamp values.
+  * With stamping off nothing is removed.
+  *
   * Rows are never rewritten retroactively: provenance starts at the first run
   * after the toggle is turned on.
   *
@@ -80,6 +87,45 @@ object ProvenanceStamper {
     /** `strict` = PROVENANCE_STRICT; the public overload reads the environment. */
     private[datris] def stamp(ctx: JobContext, strict: Boolean): JobContext = {
         if (!enabled(ctx.config)) return ctx
+        stampClean(withoutStaticStamps(ctx), strict)
+    }
+
+    /** `ctx` without any [[AllFields]] key in its vector destinations' static
+      * `metadata` maps: with stamping on, only the stamper's own values may
+      * carry those names onto stored chunks (an unselected field, or one with
+      * no value for this run, must not survive from the config). `ctx` itself
+      * when no map holds such a key. Applied before stamping is attempted, so
+      * a run that loads unstamped (best effort, or nothing to stamp) carries
+      * none of them either. */
+    private[util] def withoutStaticStamps(ctx: JobContext): JobContext = {
+        val dest = if (ctx.config != null) ctx.config.destination else null
+        if (dest == null) return ctx
+        def planted(m: java.util.Map[String, String]): Boolean = m != null && AllFields.exists(m.containsKey)
+        if (
+            !planted(if (dest.qdrant != null) dest.qdrant.metadata else null) &&
+            !planted(if (dest.weaviate != null) dest.weaviate.metadata else null) &&
+            !planted(if (dest.pgvector != null) dest.pgvector.metadata else null) &&
+            !planted(if (dest.milvus != null) dest.milvus.metadata else null) &&
+            !planted(if (dest.chroma != null) dest.chroma.metadata else null)
+        ) return ctx
+        def clean(m: java.util.Map[String, String]): java.util.Map[String, String] =
+            if (!planted(m)) m
+            else {
+                val out = new java.util.LinkedHashMap[String, String](m)
+                AllFields.foreach(out.remove)
+                out
+            }
+        val newDest = dest.copy(
+            qdrant = if (dest.qdrant != null) dest.qdrant.copy(metadata = clean(dest.qdrant.metadata)) else null,
+            weaviate = if (dest.weaviate != null) dest.weaviate.copy(metadata = clean(dest.weaviate.metadata)) else null,
+            pgvector = if (dest.pgvector != null) dest.pgvector.copy(metadata = clean(dest.pgvector.metadata)) else null,
+            milvus = if (dest.milvus != null) dest.milvus.copy(metadata = clean(dest.milvus.metadata)) else null,
+            chroma = if (dest.chroma != null) dest.chroma.copy(metadata = clean(dest.chroma.metadata)) else null
+        )
+        ctx.copy(config = ctx.config.copy(destination = newDest))
+    }
+
+    private def stampClean(ctx: JobContext, strict: Boolean): JobContext = {
         val attempt: Either[Exception, (JobContext, Outcome, List[(String, String)])] =
             try Right(stampOnce(ctx))
             catch { case e: Exception => Left(e) }
@@ -259,6 +305,7 @@ object ProvenanceStamper {
                         if (el.isJsonObject) {
                             val obj = el.getAsJsonObject
                             if (!obj.has(RunId)) {
+                                AllFields.foreach(obj.remove)
                                 nonNull.foreach { case (k, v) => obj.addProperty(k, v) }
                                 changed = true
                             }
@@ -302,6 +349,7 @@ object ProvenanceStamper {
 
         def injectObject(obj: JsonObject): Boolean = {
             if (obj.has(RunId)) return false
+            AllFields.foreach(obj.remove)
             nonNull.foreach { case (k, v) => obj.addProperty(k, v) }
             true
         }

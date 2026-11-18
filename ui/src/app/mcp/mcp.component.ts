@@ -453,11 +453,12 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'delete_pipeline',
-      description: 'DESTRUCTIVE. Deletes BOTH the pipeline config AND the destination data (rows, collection contents, vector store entries). Also wipes document-tap ledgers and staged files for any tap targeting this pipeline. Config-only delete (orphaning the data) is not supported — the platform forces data delete to come along to prevent ghost state. Pass keep_config=true to reset: wipes data, keeps config.',
+      description: 'DESTRUCTIVE. Deletes BOTH the pipeline config AND the destination data (rows, collection contents, vector store entries). Also wipes document-tap ledgers and staged files for any tap targeting this pipeline. Pass keep_config=true to reset: wipes data, keeps config. Pass keep_data=true to delete only the config: the table, collection or files stay and are listed in kept (refused for a vector destination; no pipeline manages the kept data afterwards).',
       category: 'Pipeline Management',
       parameters: [
         { name: 'pipeline', type: 'string', description: 'Pipeline name to delete', required: true, inputType: 'text' },
-        { name: 'keep_config', type: 'boolean', description: 'Optional. If true, delete only the destination data and keep the pipeline config (clean reset). Default false (full delete).', required: false, inputType: 'text' }
+        { name: 'keep_config', type: 'boolean', description: 'Optional. If true, delete only the destination data and keep the pipeline config (clean reset). Default false (full delete).', required: false, inputType: 'text' },
+        { name: 'keep_data', type: 'boolean', description: 'Optional. If true, delete only the pipeline config and keep the destination data (listed in kept; refused for a vector destination). Cannot be combined with keep_config. Default false (full delete).', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

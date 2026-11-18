@@ -38,7 +38,7 @@ How the fields land depends on the destination:
 - **MongoDB and JSON data** — keys on each document. XML data is not stamped: an XML source always loads unstamped, in strict mode too.
 - **Object store (CSV/Parquet)** — columns in the written files, from the first stamped run on.
 - **Kafka / ActiveMQ** — fields in each message; consumers that ignore unknown fields are unaffected.
-- **Vector stores** — payload metadata on every chunk, so search results cite the run and source per chunk.
+- **Vector stores** — payload metadata on every chunk, so search results cite the run and source per chunk. While stamping is on, any `_datris_*` provenance key in the destination's own `metadata` is dropped and only the platform's stamps for the selected fields are written; the same holds for such keys on a JSON record that gets stamped. A `filename` key (like the other fields every chunk already carries) is always ignored, so a chunk's `filename` is the file it was loaded from.
 
 Rows are **never rewritten retroactively**: provenance starts at the first run after the toggle is turned on, and older rows read as null/absent. Stamped columns are always stored as text and are never proposed for retyping by the destination-typing flow.
 

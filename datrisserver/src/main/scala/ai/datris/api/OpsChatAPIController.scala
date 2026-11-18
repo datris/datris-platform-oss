@@ -6,9 +6,11 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{JsonObject, JsonParser}
-import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
+import ai.datris.auth.{Allow, ChatCaller, ChatIdentity, Refuse}
+import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext}
 import ai.datris.incident.{Incident, IncidentIO}
-import ai.datris.util.{AgentLoop, APIKeyValidator, MCPClient, OpsAgentPrompt, SecretsUtil}
+import ai.datris.util.{AgentLoop, APIKeyValidator, MCPClient, OpsAgentPrompt}
+import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.MediaType
 import org.springframework.web.bind.annotation._
@@ -34,6 +36,13 @@ import scala.collection.JavaConverters._
   *    failures and volumes the operator is staring at right now.
   *  - Operational tools (`run_tap`, `get_pipeline_status`, `kill_job`, etc.)
   *    sort to the front of the catalog so the agent reaches for them first.
+  *  - With the recovery agent on, open incidents are appended to the context
+  *    message only for a caller allowed to read incidents
+  *    (`ChatCaller.mayReadIncidents`); for anyone else the incident store is
+  *    not read (see `OpsChatAPIController.incidentsFor`).
+  *
+  * The caller is decided on the servlet thread by `ChatCaller.from` and the
+  * resulting `ChatIdentity` is handed to the worker as a value.
   */
 @RestController
 @RequestMapping(Array("/api/v1"))
@@ -53,21 +62,23 @@ class OpsChatAPIController {
 
     private val cancelFlags: ConcurrentHashMap[Long, java.util.concurrent.atomic.AtomicBoolean] = new ConcurrentHashMap()
 
-    /** Same resolveUiApiKey contract as the build-mode controller — see
-      * AssistantAPIController.resolveUiApiKey. The UI identity used for
-      * outbound MCP calls is the same in either mode. */
-    private def resolveUiApiKey(userApiKey: String): String = {
-        if (!DatrisEnvironment.values.useApiKeys) return null
-
-        val secretPath = DatrisEnvironment.current.environment + "/ui-api-key"
-        SecretsUtil.getSecretMap(secretPath).flatMap(m => Option(m.get("apiKey"))) match {
-            case Some(v) if v != null && v.nonEmpty => v
-            case _ => userApiKey
-        }
-    }
-
     @PostMapping(path = Array("/ops-chat/chat"), produces = Array(MediaType.TEXT_EVENT_STREAM_VALUE))
-    def chat(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): SseEmitter = {
+    def chat(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: String,
+        request: HttpServletRequest,
+        response: HttpServletResponse
+    ): SseEmitter = {
+        // Decide who the caller is on the servlet thread, before the stream
+        // opens; a refusal is written directly and null tells Spring the
+        // request is handled.
+        val identity: ChatIdentity = ChatCaller.from(request) match {
+            case Allow(id) => id
+            case r: Refuse =>
+                ChatCaller.refuse(request, response, r)
+                return null
+        }
+
         val emitter = new SseEmitter(TimeUnit.MINUTES.toMillis(30))
         val emitterId = System.identityHashCode(emitter).toLong
         val cancelled = new java.util.concurrent.atomic.AtomicBoolean(false)
@@ -77,20 +88,15 @@ class OpsChatAPIController {
         emitter.onTimeout(() => { cancelled.set(true); cancelFlags.remove(emitterId); emitter.complete(); () })
         emitter.onError(_ => { cancelled.set(true); cancelFlags.remove(emitterId); () })
 
-        // Same ThreadLocal capture rationale as AssistantAPIController —
-        // session-authed requests need UserContext/TenantContext re-set on
-        // the worker thread so APIKeyValidator.validate doesn't reject
-        // them.
-        val capturedUser = UserContext.get()
+        // The worker runs as the identity decided above (its user only) and
+        // the tenant captured here; it never reads this thread's state.
         val capturedTenant = TenantContext.get()
 
         chatExecutor.submit(new Runnable {
-            override def run(): Unit = {
-                capturedUser.foreach(UserContext.set)
-                capturedTenant.foreach(TenantContext.set)
+            override def run(): Unit = ChatCaller.onWorker(identity, capturedTenant) {
                 try {
                     APIKeyValidator.validate(apiKey)
-                    runChat(apiKey, body, emitter, cancelled)
+                    runChat(apiKey, body, emitter, cancelled, identity)
                 } catch {
                     case e: Exception =>
                         try {
@@ -104,9 +110,6 @@ class OpsChatAPIController {
                             case e2: Exception =>
                                 logger.debug("Failed to complete SSE emitter after chat error; client likely disconnected", e2)
                         }
-                } finally {
-                    UserContext.clear()
-                    TenantContext.clear()
                 }
             }
         })
@@ -114,7 +117,13 @@ class OpsChatAPIController {
         emitter
     }
 
-    private def runChat(apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
+    private def runChat(
+        apiKey: String,
+        body: String,
+        emitter: SseEmitter,
+        cancelled: java.util.concurrent.atomic.AtomicBoolean,
+        identity: ChatIdentity
+    ): Unit = {
         val req = JsonParser.parseString(body).getAsJsonObject
         val messagesArr = req.getAsJsonArray("messages")
         if (messagesArr == null || messagesArr.size() == 0)
@@ -137,7 +146,9 @@ class OpsChatAPIController {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the AI primary secret is configured.")
 
-        val uiKey = resolveUiApiKey(apiKey)
+        // The ui key for users and full-access callers; any other key's own
+        // presented key, so its tools are exactly what that key may do.
+        val uiKey = ChatCaller.toolKey(identity, apiKey, () => ChatCaller.uiApiKey(apiKey))
 
         // Operational tools surface first so the agent reaches for run_tap /
         // get_pipeline_status / kill_job before less-relevant build tools.
@@ -153,7 +164,8 @@ class OpsChatAPIController {
         // message. Cheapest possible cadence — ship dumb, optimize if
         // token usage shows it is wasteful (decision recorded in the plan).
         val withContext: List[(String, String)] = contextSnapshot match {
-            case Some(ctx) => ("user", OpsAgentPrompt.renderContextMessage(ctx, openIncidents())) :: userMessages
+            case Some(ctx) =>
+                ("user", OpsChatAPIController.contextMessage(identity, ctx, () => openIncidents())) :: userMessages
             case None => userMessages
         }
 
@@ -197,7 +209,9 @@ class OpsChatAPIController {
 
     /** Open incidents for the context message — the platform's own recovery
       * work the operator should hear about instead of a re-diagnosis. Empty
-      * when the recovery agent is off or incidents can't be read. */
+      * when the recovery agent is off or incidents can't be read. Only ever
+      * called through `OpsChatAPIController.contextMessage`, which skips it for
+      * a caller not allowed to read incidents. */
     private def openIncidents(): List[Incident] =
         try {
             if (DatrisEnvironment.values != null && DatrisEnvironment.values.recoveryAgentEnabled) IncidentIO.listOpen()
@@ -205,4 +219,25 @@ class OpsChatAPIController {
         } catch {
             case _: Exception => Nil
         }
+}
+
+object OpsChatAPIController {
+
+    /** Open incidents the Ops chat context may carry for `identity` (decided
+      * on the request thread by `ChatCaller`; the same identity the agent's
+      * tools run as, so ambient context and tools follow one caller). A
+      * caller `ChatCaller.mayReadIncidents` refuses (a restricted session, or
+      * a key without unscoped `incident:read`) gets `Nil` and `load` is not
+      * called: step summaries can name resources outside its reach. Everyone
+      * else (unrestricted users, full-access keys, user auth off) gets
+      * `load()` unchanged. */
+    def incidentsFor(identity: ChatIdentity, load: () => List[Incident]): List[Incident] =
+        if (!ChatCaller.mayReadIncidents(identity)) Nil
+        else load()
+
+    /** The leading context message `runChat` sends for a dashboard snapshot
+      * `ctx`: the snapshot plus the open incidents `incidentsFor` allows
+      * `identity`. `load` is only called when incidents are allowed. */
+    def contextMessage(identity: ChatIdentity, ctx: JsonObject, load: () => List[Incident]): String =
+        OpsAgentPrompt.renderContextMessage(ctx, incidentsFor(identity, load))
 }
