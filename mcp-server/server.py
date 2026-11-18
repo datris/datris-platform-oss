@@ -3580,6 +3580,9 @@ def _base_tools():
                 "Roll a pipeline back (or forward) to a prior definition version. APPEND-ONLY and SIDE-EFFECTING: "
                 "reads snapshot `version` and writes it as a NEW latest version, preserving full history. 'Rolling "
                 "forward' is the same call with a higher version number. "
+                "The restore is checked like a save of that version: a version that would not be accepted on save "
+                "today is refused with the reason and nothing is written; the pipeline keeps its current name, "
+                "catalog and owner. "
                 "Only call this when the operator has explicitly asked to restore/roll back this specific pipeline to "
                 "a specific version. Report the new version and stop."
             ),

@@ -231,8 +231,9 @@ class PipelineAPIController {
       * preservation and authority check, versioned write, pull-table init and
       * the CodeGen save hook. Shared with the catalog restore
       * (`CatalogAPIController`) so a restored pipeline is saved exactly as a
-      * UI save would be. Left is the refusal response (400); a
-      * `ValidationException` or any other failure is thrown. */
+      * UI save would be; a pipeline version restore runs the same path
+      * through [[restorePipelineInternal]]. Left is the refusal response
+      * (400); a `ValidationException` or any other failure is thrown. */
     def savePipelineInternal(
         config: PipelineConfig,
         changeNote: String,
@@ -246,6 +247,39 @@ class PipelineAPIController {
         config: PipelineConfig,
         changeNote: String,
         request: HttpServletRequest
+    ): Either[ResponseEntity[String], (PipelineConfig, String)] =
+        savePipelineCore(config, changeNote, request, None)
+
+    /** `POST /api/v1/pipeline/version/restore` after the version lookup:
+      * `candidate` ([[EntityVersionAPIController.pipelineRestoreCandidate]])
+      * is saved through the same path as `POST /pipeline`, so a version the
+      * platform would refuse on save today is refused with the same answer.
+      * `live` is the ONE stored-config read the restore decision uses (null
+      * when the pipeline was deleted); `hidden` is the version 404 a hidden
+      * history answers. Left is the refusal; a `ValidationException` or any
+      * other failure is thrown. */
+    private[api] def restorePipelineInternal(
+        candidate: PipelineConfig,
+        live: PipelineConfig,
+        version: Int,
+        hidden: => ResponseEntity[String],
+        request: HttpServletRequest
+    ): Either[ResponseEntity[String], PipelineConfig] =
+        savePipelineCore(candidate, null, request, Some(PipelineAPIController.RestoreOf(live, version, () => hidden))).right.map(_._1)
+
+    /** The save path. `restore` None is `POST /pipeline`; Some is a version
+      * restore, which differs in four places only: (a) the guard is always
+      * taken, decided on `restore.live` by
+      * [[EntityVersionAPIController.restoreGuardDecision]]; (b) no owner
+      * stamp and no preservation of omitted fields (the candidate already
+      * carries the live owner, and the snapshot is taken verbatim); (c) the
+      * version note is `restored from version N`; (d) the re-check under the
+      * lock is [[EntityVersionAPIController.restoreRecheck]]. */
+    private def savePipelineCore(
+        config: PipelineConfig,
+        changeNote: String,
+        request: HttpServletRequest,
+        restore: Option[PipelineAPIController.RestoreOf]
     ): Either[ResponseEntity[String], (PipelineConfig, String)] = {
         // Callers who may not see or write every pipeline (scoped API keys,
         // scoped catalog access): the stored config of this name is read
@@ -255,12 +289,21 @@ class PipelineAPIController {
         // cannot turn a refused save into a create. Everyone else reads
         // nothing here.
         val table = DatrisEnvironment.current.pipelineTableName
-        val guarded = config != null && PipelineAPIController.saveGuardNeeded(request)
-        val guardStored: PipelineConfig = if (guarded) PipelineConfigIO.read(table, config.name) else null
+        // A version restore is always guarded and decided on the live config
+        // it has already read (it reads nothing more here).
+        val guarded = restore.isDefined || config != null && PipelineAPIController.saveGuardNeeded(request)
+        val guardStored: PipelineConfig =
+            if (restore.isDefined) restore.get.live
+            else if (guarded) PipelineConfigIO.read(table, config.name)
+            else null
         val scoped =
             if (!guarded) config
             else
-                PipelineAPIController.saveGuardDecision(request, config, guardStored, () => PipelineConfigIO.readAll(table)) match {
+                (restore match {
+                    case Some(r) =>
+                        EntityVersionAPIController.restoreGuardDecision(request, config, guardStored, () => PipelineConfigIO.readAll(table), r.hidden())
+                    case None => PipelineAPIController.saveGuardDecision(request, config, guardStored, () => PipelineConfigIO.readAll(table))
+                }) match {
                     case Left(refused) =>
                         logger.warn("POST /pipeline " + config.name + " rejected: HTTP " + refused.getStatusCode.value)
                         return Left(refused)
@@ -296,9 +339,10 @@ class PipelineAPIController {
         // match resources this key created. Null when no key is present
         // (auth disabled or public endpoint) — that resource will not
         // match `owner=self` for anyone, which is intended.
+        // A restore keeps the owner the candidate carries (the live one).
         val tagged = ResolvedKeyAccess.keyLabel(request) match {
-            case Some(label) => modifiedConfig.copy(createdByKeyLabel = label)
-            case None => modifiedConfig
+            case Some(label) if restore.isEmpty => modifiedConfig.copy(createdByKeyLabel = label)
+            case _ => modifiedConfig
         }
 
         // Definition-edit write → mints a new immutable version snapshot.
@@ -310,8 +354,9 @@ class PipelineAPIController {
         // on an unrelated edit. An explicit empty list / stamp=false in the
         // body still clears/disables.
         // `previousNames` is server-maintained: always the stored value.
+        // A restore takes the snapshot verbatim: nothing omitted is kept.
         val preserved = PipelineAliases.carriedOver(
-            if (existing != null)
+            if (existing != null && restore.isEmpty)
                 tagged.copy(
                     tags = if (tagged.tags == null) existing.tags else tagged.tags,
                     provenance = if (tagged.provenance == null) existing.provenance else tagged.provenance,
@@ -393,7 +438,8 @@ class PipelineAPIController {
                 }
         }
         PipelineAPIController.authorityRefusal(request, preserved, others).foreach(refused => return Left(refused))
-        val note = if (changeNote != null && changeNote.nonEmpty) changeNote
+        val note = if (restore.isDefined) "restored from version " + restore.get.version
+        else if (changeNote != null && changeNote.nonEmpty) changeNote
         else if (existing != null) "updated" else "created"
         // A new pipeline must not inherit Unity Catalog sync state left by
         // an earlier pipeline of the same name (deleted out of band).
@@ -411,7 +457,11 @@ class PipelineAPIController {
             else
                 CatalogOps.withCatalogLock {
                     val fresh = PipelineConfigIO.read(table, config.name)
-                    PipelineAPIController.saveRecheck(request, config, guardStored, fresh, () => PipelineConfigIO.readAll(table)).foreach { refused =>
+                    (restore match {
+                        case Some(r) =>
+                            EntityVersionAPIController.restoreRecheck(request, config, guardStored, fresh, () => PipelineConfigIO.readAll(table), r.hidden())
+                        case None => PipelineAPIController.saveRecheck(request, config, guardStored, fresh, () => PipelineConfigIO.readAll(table))
+                    }).foreach { refused =>
                         logger.warn("POST /pipeline " + config.name + " rejected at write: HTTP " + refused.getStatusCode.value)
                         return Left(refused)
                     }
@@ -1530,8 +1580,8 @@ object PipelineAPIController {
             ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"" + text.replace("\"", "'") + "\"}")
         }
 
-    /** POST /pipeline (and version restore): 400 `{"error": ...}` when the
-      * candidate names a vector container that it did not already name in
+    /** POST /pipeline (and version restore, which saves through the same
+      * path): 400 `{"error": ...}` when the candidate names a vector container that it did not already name in
       * `stored` (same name, or null) and another pipeline in `others` names.
       * One container belongs to one pipeline. */
     def vectorContainerRefusal(
@@ -1698,7 +1748,7 @@ object PipelineAPIController {
         CapabilityCheck.resolvedKey(request).isDefined && !CapabilityCheck.isRestrictedSession(request) &&
             !actions.exists(a => CapabilityCheck.grants(request, "pipeline", a, Map.empty))
 
-    /** POST /pipeline and version restore, API keys: 403 (capability-denied
+    /** POST /pipeline and version restore (its guard decision), API keys: 403 (capability-denied
       * shape) when a pipeline of that name exists and the key's scope
       * (`catalog=`, `owner=self`) grants none of `actions` on it, so a
       * scoped key cannot overwrite or restore a pipeline outside its scope.
@@ -1737,8 +1787,8 @@ object PipelineAPIController {
     def limitedVisibility(request: HttpServletRequest): Boolean =
         !CapabilityCheck.grants(request, "pipeline", "read", Map.empty)
 
-    /** POST /pipeline (and version restore), limited-visibility callers
-      * only: 400 `{"error": ...}` when the candidate adds a dataset (not
+    /** POST /pipeline (and version restore, which saves through the same
+      * path), limited-visibility callers only: 400 `{"error": ...}` when the candidate adds a dataset (not
       * already written by `stored`) that a pipeline hidden from the caller
       * writes. The text is the same whatever `authoritative` says and never
       * names a pipeline or catalog. None for everyone else. */
@@ -2141,6 +2191,19 @@ object PipelineAPIController {
             .status(HttpStatus.CONFLICT)
             .contentType(MediaType.APPLICATION_JSON)
             .body[String](ApiErrors.errorBody("Pipeline '" + name + "' changed while it was being saved; nothing was saved. Try again."))
+
+    /** 409 when the pipeline changed while a version restore was being
+      * checked: nothing was restored. */
+    def restoreConflict(name: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody("Pipeline '" + name + "' changed while it was being restored; nothing was restored. Try again."))
+
+    /** A version restore through the save path: the live config the restore
+      * decided on (null when deleted), the version restored and the 404 a
+      * hidden history answers. */
+    case class RestoreOf(live: PipelineConfig, version: Int, hidden: () => ResponseEntity[String])
 
     /** The capability-denied 403 for `pipeline:read` on `hidden`'s scope. */
     private def readScopeDenied(request: HttpServletRequest, hidden: PipelineConfig): ResponseEntity[String] =

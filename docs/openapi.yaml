@@ -6147,7 +6147,7 @@ paths:
     post:
       tags: [Versions]
       summary: Restore a pipeline version
-      description: Restores the pipeline's definition from the given version snapshot, preserving ownership. The restore itself is saved as a new version.
+      description: Restores the pipeline's definition from the given version snapshot. The restore is checked like a save of that version (`POST /api/v1/pipeline`), for every caller, and is saved as a new version. With a live pipeline, the restored config keeps the pipeline's current name, catalog, owner and earlier names (`previousNames`); a deleted pipeline is restored under the requested name in the version's catalog.
       parameters:
         - name: name
           in: query
@@ -6171,7 +6171,9 @@ paths:
         '403':
           description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope.
         '400':
-          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`). Body: `{"error": "..."}`.'
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`), or the version fails validation, with the same message as `POST /api/v1/pipeline` (for example a table name that is not a plain identifier, a server-managed secret, two destination engines, or Postgres not reachable). Nothing is restored. Body: `{"error": "..."}`.'
+        '409':
+          description: 'The pipeline was created, deleted, renamed or moved while the restore was being checked: `Pipeline ''<name>'' changed while it was being restored; nothing was restored. Try again.` Body: `{"error": "..."}`.'
         '500':
           description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket (an object-store endpoint that does not answer within a few seconds counts; the check does not retry) or did not finish within 30 seconds; nothing is restored.'
         '429':

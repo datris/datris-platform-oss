@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.auth.{CapabilityCheck, VersionActor}
-import ai.datris.model.{TapConfig, PipelineConfig, DatrisEnvironment, EntityVersion}
+import ai.datris.model.{TapConfig, PipelineConfig, DatrisEnvironment, EntityVersion, ValidationException}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -130,6 +130,68 @@ object EntityVersionAPIController {
                     vectorTableExists
                 )
             )
+
+    /** The config a pipeline version restore saves (decision D2): with a
+      * live pipeline, the snapshot's definition under the live `name`,
+      * `catalog`, owner (`createdByKeyLabel`) and earlier names, so a restore
+      * brings back the definition and never moves the pipeline; for a
+      * deleted pipeline (`live` null), the snapshot under the requested name. */
+    def pipelineRestoreCandidate(name: String, snap: PipelineConfig, live: PipelineConfig): PipelineConfig =
+        if (live != null)
+            snap.copy(name = name, catalog = live.catalog, createdByKeyLabel = live.createdByKeyLabel, previousNames = live.previousNames)
+        else snap.copy(name = name)
+
+    /** Version restore, every caller, decided from ONE live read (`stored`,
+      * null when the pipeline was deleted), in this order: a restricted
+      * session whose live pipeline is missing or outside its grants gets
+      * `hidden` (the version 404) ([[hiddenFromRestricted]]); an API key
+      * outside the scope of the live pipeline (or of the snapshot when
+      * deleted) gets the [[pipelineRestoreScopeRefusal]] 403; for a deleted
+      * pipeline and a limited-visibility caller, the previous-name check
+      * ([[pipelineRestoreAliasRefusal]]; `readAll` is called only then, and a
+      * failure is `aliasCheckUnavailable("restored")`, 500); then the
+      * restricted-session catalog rules
+      * ([[PipelineAPIController.catalogForSave]]). Right is the config to
+      * save. Reads nothing itself besides `readAll`. */
+    def restoreGuardDecision(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        readAll: () => Seq[PipelineConfig],
+        hidden: => ResponseEntity[String]
+    ): Either[ResponseEntity[String], PipelineConfig] = {
+        if (hiddenFromRestricted(request, "pipeline", "update", Option(stored).map(p => (p.catalog, p.createdByKeyLabel))))
+            return Left(hidden)
+        pipelineRestoreScopeRefusal(request, candidate, stored).foreach(refused => return Left(refused))
+        if (stored == null && PipelineAPIController.limitedVisibility(request)) {
+            val all =
+                try readAll()
+                catch { case _: Exception => return Left(PipelineAPIController.aliasCheckUnavailable("restored")) }
+            pipelineRestoreAliasRefusal(request, candidate, all, hidden).foreach(refused => return Left(refused))
+        }
+        PipelineAPIController.catalogForSave(request, candidate, stored)
+    }
+
+    /** Version restore, under `CatalogOps.withCatalogLock` just before the
+      * write: `fresh` is the config of that name read under the lock. A
+      * restore [[restoreGuardDecision]] refuses on `fresh` gets that refusal;
+      * one allowed on `fresh` whose stored config changed since the decision
+      * (`decided`: appeared, disappeared, or moved catalog, owner or earlier
+      * names) gets [[PipelineAPIController.restoreConflict]] (409). None:
+      * write. */
+    def restoreRecheck(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        decided: PipelineConfig,
+        fresh: PipelineConfig,
+        readAll: () => Seq[PipelineConfig],
+        hidden: => ResponseEntity[String]
+    ): Option[ResponseEntity[String]] =
+        restoreGuardDecision(request, candidate, fresh, readAll, hidden) match {
+            case Left(refused) => Some(refused)
+            case Right(_) if !PipelineAPIController.sameGuardState(decided, fresh) => Some(PipelineAPIController.restoreConflict(candidate.name))
+            case Right(_) => None
+        }
 
     /** For a restricted user's session only: true when the item's history
       * must look absent, i.e. the live item is missing (orphaned history of a
@@ -321,46 +383,42 @@ class EntityVersionAPIController {
     ): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         val env = DatrisEnvironment.current
-        if (pipelineHidden(request, name, "update")) return notFound("pipeline", name, version)
         EntityVersionIO.get(env.pipelineVersionTableName, name, version) match {
             case None => notFound("pipeline", name, version)
             case Some(snapshot) =>
                 val snap = gson.fromJson(snapshot.config, classOf[PipelineConfig])
+                // ONE live read: it decides the guard (scope, earlier names,
+                // catalog, restricted-session visibility) and the candidate.
                 val live = PipelineConfigIO.read(env.pipelineTableName, name)
-                // API keys: a pipeline outside the key's scope (the live
-                // config, or the snapshot when the pipeline was deleted)
-                // cannot be restored (403).
-                EntityVersionAPIController.pipelineRestoreScopeRefusal(request, snap, live).foreach(refused => return refused)
-                // Limited-visibility callers: re-creating a deleted pipeline
-                // under a name a pipeline hidden from them lists in
-                // previousNames is refused as that hidden pipeline would be
-                // (a failed config read refuses, nothing restored).
-                if (live == null && PipelineAPIController.limitedVisibility(request)) {
-                    val all =
-                        try PipelineConfigIO.readAll(env.pipelineTableName)
-                        catch { case _: Exception => return PipelineAPIController.aliasCheckUnavailable("restored") }
-                    EntityVersionAPIController.pipelineRestoreAliasRefusal(request, snap, all, notFound("pipeline", name, version))
-                        .foreach(refused => return refused)
-                }
-                // A restricted user may not restore a snapshot into a catalog
-                // outside its grants (same rules as a save).
-                PipelineAPIController.catalogForSave(request, snap, live) match {
-                    case Left(refused) => return refused
-                    case Right(_) =>
-                }
-                val others = PipelineConfigIO.readAll(env.pipelineTableName).filter(_ != null)
-                EntityVersionAPIController.pipelineRestoreRefusal(request, snap, live, others).foreach(refused => return refused)
-                // `previousNames` is server-maintained: the live value, never the snapshot's.
-                val restored = PipelineAliases.carriedOver(
-                    if (live != null) snap.copy(createdByKeyLabel = live.createdByKeyLabel) else snap,
-                    live
-                )
-                val saved = PipelineConfigIO.writeVersioned(
-                    restored,
-                    "restored from version " + version,
-                    VersionActor.resolve(request)
-                )
-                ok(gson.toJson(saved))
+                restorePipelineSnapshot(name, version, snap, live, request)
+        }
+    }
+
+    /** Restore `snap` (version `version` of `name`) over `live` (the one
+      * stored-config read, null when deleted): the candidate
+      * ([[EntityVersionAPIController.pipelineRestoreCandidate]]) is saved
+      * through the `POST /pipeline` path, so it is checked like a save of
+      * that version. A refusal is returned as is, a `ValidationException` is
+      * the 400 `POST /pipeline` gives, and the 200 body is the saved config. */
+    private[api] def restorePipelineSnapshot(
+        name: String,
+        version: Int,
+        snap: PipelineConfig,
+        live: PipelineConfig,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        val candidate = EntityVersionAPIController.pipelineRestoreCandidate(name, snap, live)
+        try
+            new PipelineAPIController().restorePipelineInternal(candidate, live, version, notFound("pipeline", name, version), request) match {
+                case Left(refused) =>
+                    logger.warn("Restore of pipeline " + name + " version " + version + " rejected: HTTP " + refused.getStatusCode.value)
+                    refused
+                case Right(saved) => ok(gson.toJson(saved))
+            }
+        catch {
+            case v: ValidationException =>
+                logger.warn("Restore of pipeline " + name + " version " + version + " rejected: " + v.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.errorBody(v))
         }
     }
 
