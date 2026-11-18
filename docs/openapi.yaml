@@ -1986,7 +1986,7 @@ paths:
           schema:
             type: string
             default: "true"
-          description: Delete destination data (default true). Only takes effect with deleteConfig=false; deleting the configuration always deletes the data, so deleteData=false alone still removes it.
+          description: Delete destination data (default true). deleteData=false (any letter case) with the configuration delete keeps the destination data (table, collection or object-store files) and lists it in `kept`; refused with 400 for a pipeline that writes to a vector store. With deleteConfig=false, deleteData=false deletes nothing. Any other value deletes the data.
         - name: deleteConfig
           in: query
           required: false
@@ -2006,6 +2006,20 @@ paths:
                     type: array
                     items:
                       type: string
+                  kept:
+                    type: array
+                    description: Only with deleteData=false (keep the data). The tables, collections and object-store prefixes left in place, e.g. `postgres table datris.public.orders`; an empty array when nothing could be kept. No pipeline manages them afterwards.
+                    items:
+                      type: string
+        '400':
+          description: 'deleteData=false for a pipeline that writes to a vector store; nothing was deleted: `{"error": "This pipeline writes to a vector store; its configuration cannot be deleted while keeping that data. Delete it with its data, or keep the pipeline."}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '404':
           description: 'No such pipeline: `{"error": "Pipeline: <name> is not configured in the NoSQL database"}`'
           content:

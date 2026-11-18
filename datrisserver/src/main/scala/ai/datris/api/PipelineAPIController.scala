@@ -622,13 +622,18 @@ class PipelineAPIController {
             if (config == null)
                 return PipelineAPIController.pipelineNotFound(pipeline)
 
-            val warnings = deletePipelineInternal(config, request, deleteData, deleteConfig)
+            // Scope first, so a pipeline hidden from the caller answers 404
+            // before a keep-data refusal could reveal anything about it.
+            CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+            val plan = PipelineDeletePlan.of(deleteData, deleteConfig)
+            val refused = PipelineAPIController.keepDataRefusal(plan, config)
+            if (refused.isDefined) {
+                logger.warn("Pipeline delete refused: " + pipeline + ": " + PipelineDeletePlan.KeepDataVectorRefusal)
+                return refused.get
+            }
 
-            val out = new JsonObject
-            val arr = new com.google.gson.JsonArray
-            warnings.foreach(arr.add(_))
-            out.add("warnings", arr)
-            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
+            val (warnings, kept) = deletePipelineOutcome(config, request, deleteData, deleteConfig, checkScope = false)
+            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(PipelineAPIController.deleteResponseBody(warnings, kept))
         } catch {
             case _: ResourceHiddenException => PipelineAPIController.pipelineNotFound(pipeline)
             case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
@@ -847,7 +852,20 @@ class PipelineAPIController {
         deleteData: String = "true",
         deleteConfig: String = "true",
         checkScope: Boolean = true
-    ): Seq[String] = {
+    ): Seq[String] = deletePipelineOutcome(config, request, deleteData, deleteConfig, checkScope)._1
+
+    /** [[deletePipelineInternal]] plus, for a keep-data delete (explicit
+      * `deleteData=false` with the config delete), the labels of the tables,
+      * collections and prefixes left in place (None in every other mode).
+      * A keep-data delete of a vector pipeline throws before anything is
+      * deleted; DELETE /pipeline answers it with 400 first. */
+    def deletePipelineOutcome(
+        config: PipelineConfig,
+        request: HttpServletRequest,
+        deleteData: String,
+        deleteConfig: String,
+        checkScope: Boolean
+    ): (Seq[String], Option[Seq[String]]) = {
         val pipeline = config.name
         // Scope check: a key with `pipeline:delete:owner=self` may only
         // delete pipelines it created. Loaded resource provides the
@@ -855,12 +873,15 @@ class PipelineAPIController {
         if (checkScope)
             CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
 
-        // Deleting the config without also deleting the data is disallowed.
-        // Leaving orphaned rows/collections/tables behind with no pipeline to
-        // own them creates hard-to-debug ghost state; any caller asking for
-        // config-only gets data-delete folded in implicitly.
-        val deleteConfigBool = deleteConfig.equalsIgnoreCase("true")
-        val deleteDataBool = deleteData.equalsIgnoreCase("true") || deleteConfigBool
+        // By default the data is deleted with the config, so no table,
+        // collection or files are left with no pipeline to own them. Only an
+        // explicit deleteData=false with the config delete keeps the data
+        // (PipelineDeletePlan); that caller has accepted unowned data. A
+        // vector pipeline cannot keep its data (refused, nothing deleted).
+        val plan = PipelineDeletePlan.of(deleteData, deleteConfig)
+        PipelineDeletePlan.refusal(plan, config).foreach(msg => throw new ValidationException(msg))
+        val deleteConfigBool = plan.deleteConfig
+        val deleteDataBool = plan.deleteData
 
         // Read before anything is deleted (this config's own row is in the
         // list and excluded by name), and only when the config names a vector
@@ -921,11 +942,35 @@ class PipelineAPIController {
             // A data-only reset that kept a shared vector container keeps the
             // ledgers too: the chunks are still there, and a re-ingest would
             // duplicate them in a container that cannot be cleaned per pipeline.
-            if (PipelineAPIController.clearTapLedgersOnDelete(deleteConfigBool, sharedVector.nonEmpty))
+            if (PipelineAPIController.clearTapLedgersForPlan(plan, sharedVector.nonEmpty))
                 cleanupDocumentTapLedgers(pipeline)
             else
                 logger.warn("Pipeline reset: " + pipeline + ": document-tap ledgers kept because a shared vector container was kept")
         }
+
+        // Keep-data delete: no destination data is touched and no other
+        // config is read. The scratch folder is platform working storage keyed
+        // by name (a re-created pipeline would read it back), so it still goes.
+        // Document-tap ledgers and staged files mirror the kept data and stay
+        // (clearing them would re-ingest into it). A catalog-committed Iceberg
+        // table's Unity Catalog state stays too: its files are still there.
+        val kept =
+            if (!plan.keepData) None
+            else {
+                if (config.destination != null) cleanupScratchData(config)
+                UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, dataDeleted = false, configDeleted = true).foreach { advice =>
+                    warnings += advice
+                    ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, dataDeleted = false, adviceGiven = true)
+                    logger.warn("Pipeline delete: " + pipeline + ": " + advice)
+                    auditUnityCatalogDelete(request, pipeline, advice)
+                }
+                val labels = PipelineDeletePlan.keptLabels(config, PipelineAPIController.keepDatasetEnv())
+                logger.info(
+                    "Pipeline delete: " + pipeline + ": config deleted, destination data kept" +
+                        (if (labels.isEmpty) " (nothing to keep)" else ": " + labels.mkString(", "))
+                )
+                Some(labels)
+            }
 
         // Delete the json configuration
         if (deleteConfigBool) {
@@ -957,7 +1002,7 @@ class PipelineAPIController {
                 }
             }
         }
-        warnings.result()
+        (warnings.result(), kept)
     }
 
     /** The pipeline's Unity Catalog sync state, or null (none, or unreadable:
@@ -1337,11 +1382,19 @@ class PipelineAPIController {
             }
         }
 
-        // Scratch — recursively delete `_scratch/<pipeline>/` from <env>-data and
-        // nothing else. The prefix comes from ScratchPaths.prefix, which refuses
-        // a blank or path-traversing pipeline segment; assert it here too before
-        // handing it to the recursive delete.
-        if (dest.scratch != null) {
+        cleanupScratchData(config)
+        objectStoreDataDeleted
+    }
+
+    /** Scratch — recursively delete `_scratch/<pipeline>/` from <env>-data and
+      * nothing else (no-op without a scratch destination). The prefix comes
+      * from ScratchPaths.prefix, which refuses a blank or path-traversing
+      * pipeline segment; asserted here too before the recursive delete. Run
+      * by every delete that deletes the data, and by a keep-data delete.
+      * Never throws. */
+    private def cleanupScratchData(config: PipelineConfig): Unit = {
+        val dest = config.destination
+        if (dest != null && dest.scratch != null) {
             try {
                 val prefix = ScratchPaths.prefix(config.name)
                 if (!prefix.startsWith(ScratchPaths.Root) || prefix == ScratchPaths.Root)
@@ -1351,7 +1404,6 @@ class PipelineAPIController {
                 case e: Exception => logger.warn("Failed to delete scratch data for pipeline '" + config.name + "': " + e.getMessage)
             }
         }
-        objectStoreDataDeleted
     }
 
     /** Names of other pipelines whose objectStore destination would be hit by a
@@ -1537,6 +1589,46 @@ object PipelineAPIController {
       * vector container was kept. */
     def clearTapLedgersOnDelete(deleteConfig: Boolean, keptSharedVector: Boolean): Boolean =
         deleteConfig || !keptSharedVector
+
+    /** [[clearTapLedgersOnDelete]] for a delete plan: never for a keep-data
+      * delete (the ledgers mirror the kept data; clearing them would
+      * re-ingest into it). */
+    def clearTapLedgersForPlan(plan: PipelineDeletePlan.Plan, keptSharedVector: Boolean): Boolean =
+        !plan.keepData && clearTapLedgersOnDelete(plan.deleteConfig, keptSharedVector)
+
+    /** DELETE /pipeline 200 body: `{"warnings":[...]}`, plus `"kept":[...]`
+      * only for a keep-data delete (an empty array when nothing was kept). */
+    def deleteResponseBody(warnings: Seq[String], kept: Option[Seq[String]]): String = {
+        val out = new JsonObject
+        val arr = new com.google.gson.JsonArray
+        warnings.foreach(arr.add(_))
+        out.add("warnings", arr)
+        kept.foreach { ks =>
+            val k = new com.google.gson.JsonArray
+            ks.foreach(k.add(_))
+            out.add("kept", k)
+        }
+        out.toString
+    }
+
+    /** DELETE /pipeline: 400 `{"error": KeepDataVectorRefusal}` for a
+      * keep-data delete of a vector pipeline (nothing is deleted); None
+      * otherwise. */
+    def keepDataRefusal(plan: PipelineDeletePlan.Plan, config: PipelineConfig): Option[ResponseEntity[String]] =
+        PipelineDeletePlan
+            .refusal(plan, config)
+            .map(msg => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(msg)))
+
+    /** Dataset env for the kept-data labels: the default bucket and tenant
+      * database only. The pgvector database (a secret read) is never needed:
+      * a vector pipeline cannot keep its data. */
+    def keepDatasetEnv(): SharedDatasets.Env = {
+        val env = scala.util.Try(DatrisEnvironment.current).toOption.flatMap(Option(_))
+        val defaultBucket = env.flatMap(e => scala.util.Try(e.environment + "-data").toOption).getOrElse("")
+        val multiTenant = env.exists(e => scala.util.Try(e.multiTenant).getOrElse(false))
+        val tenantDatabase = if (multiTenant) env.flatMap(e => Option(e.environment)) else None
+        SharedDatasets.Env(defaultBucket, tenantDatabase, None)
+    }
 
     /** DELETE /pipeline: one warning per vector container of `config` that
       * another pipeline in `others` also names (the container is kept). */

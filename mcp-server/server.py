@@ -2273,11 +2273,14 @@ def _base_tools():
             description=(
                 "Delete a pipeline. This is DESTRUCTIVE: by default it removes BOTH the "
                 "pipeline configuration AND all data already written to the destination "
-                "(MongoDB collection rows, Postgres table rows, vector-store entries). "
+                "(table rows, collection documents, files, vector-store entries). "
                 "It also wipes document-tap ledgers and staged files for any tap that "
                 "targets this pipeline, so a recreate gets a clean re-ingest. "
-                "The platform deliberately does NOT support deleting just the config and "
-                "orphaning the data — that creates ghost state. "
+                "Default (no flags): deletes both config and data. "
+                "keep_data=true removes the config and leaves the table, collection or files where they are; "
+                "the response lists what was left in `kept`. It is refused for a vector destination "
+                "(nothing is deleted), and the kept data is no longer managed by any pipeline. "
+                "keep_data and keep_config cannot be combined. "
                 "If you want to keep the config but wipe the destination data (\"reset\"), "
                 "pass keep_config=true; the config survives, the data does not. "
                 "A vector collection another pipeline also writes to is kept and reported in `warnings`; "
@@ -2295,6 +2298,11 @@ def _base_tools():
                     "keep_config": {
                         "type": "boolean",
                         "description": "If true, delete only the destination data but keep the pipeline config (useful for a clean reset). Default false (full delete of both config and data).",
+                        "default": False
+                    },
+                    "keep_data": {
+                        "type": "boolean",
+                        "description": "If true, delete only the pipeline config and leave the destination table, collection or files in place (listed in `kept`; no pipeline manages them afterwards). Refused for a vector destination. Cannot be combined with keep_config. Default false (full delete of both config and data).",
                         "default": False
                     }
                 },
@@ -4759,7 +4767,15 @@ def _dispatch(name: str, args: dict) -> str:
 
     elif name == "delete_pipeline":
         params = {"pipeline": args["pipeline"]}
-        if args.get("keep_config", False):
+        if args.get("keep_data", False) and args.get("keep_config", False):
+            return json.dumps({"error": "keep_data and keep_config cannot both be true: "
+                                        "keep_data deletes only the config, keep_config deletes only the data. "
+                                        "Nothing was deleted."})
+        if args.get("keep_data", False):
+            # Keep-data mode: delete the config, leave the destination data
+            # (the server lists it in `kept`; a vector destination is refused).
+            params["deleteData"] = "false"
+        elif args.get("keep_config", False):
             # Reset mode: wipe destination data but keep the pipeline config.
             params["deleteConfig"] = "false"
             params["deleteData"] = "true"

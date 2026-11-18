@@ -217,10 +217,10 @@ DELETE /api/v1/pipeline?pipeline={name}
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `pipeline` | query | Yes | Pipeline name |
-| `deleteData` | query | No | Delete destination data (default: `true`). Only takes effect together with `deleteConfig=false`: deleting the configuration always deletes the data too, so `deleteData=false` on its own still removes the data. |
+| `deleteData` | query | No | Delete destination data (default: `true`). `deleteData=false` (any letter case) together with the configuration delete keeps the destination data: see **Keep the data** below. With `deleteConfig=false`, `deleteData=false` deletes nothing. Any other value deletes the data. |
 | `deleteConfig` | query | No | Delete pipeline configuration (default: `true`). Set to `false` to delete data only while keeping the pipeline config. |
 
-There is no way to delete a pipeline's configuration and keep its destination data; a pipeline with no configuration would leave tables, collections, and files behind that nothing owns.
+**Keep the data:** `deleteData=false` without `deleteConfig=false` deletes the pipeline's configuration, its definition versions and its AI scripts, and leaves the Postgres, SQL Server, Snowflake or Databricks table, the MongoDB collection or the object-store files where they are. The `200` body then also carries `kept`, the tables, collections and prefixes left in place (an empty array when the pipeline wrote nothing that can be kept, such as a [Live Read](/destinations/live-read) pipeline, a Kafka topic, an ActiveMQ queue or a REST endpoint). No pipeline manages the kept data afterwards: nothing writes to it, and a later delete does not remove it. The document-tap ledgers of a tap feeding the pipeline are kept with the data, so a pipeline re-created under the same name does not ingest every document again; a Live Read pipeline's working folder is still deleted. For an Iceberg table committed through Unity Catalog, the table and its Unity Catalog state stay (see [Unity Catalog](/destinations/unity-catalog)). Keeping the data of a pipeline that writes to a vector store (pgvector, Qdrant, Weaviate, Milvus, Chroma) is refused with `400` and nothing is deleted: delete it with its data, or keep the pipeline. A user with scoped catalog access can keep data but cannot then re-create a pipeline over it (see [Catalog access](/user-auth#catalog-access)).
 
 **Examples:**
 ```bash
@@ -229,12 +229,27 @@ curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data"
 
 # Delete data only, keep pipeline configuration
 curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data&deleteData=true&deleteConfig=false"
+
+# Delete the pipeline configuration, keep the destination data
+curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data&deleteData=false"
 ```
 
 **Response:** `200 OK` with a JSON body:
 
 ```json
 { "warnings": [] }
+```
+
+With `deleteData=false` (keep the data), the body also lists what was kept:
+
+```json
+{ "warnings": [], "kept": ["postgres table datris.public.sales_data"] }
+```
+
+`kept` is present only in that mode. Keeping the data of a vector-store pipeline returns `400 Bad Request` and deletes nothing:
+
+```json
+{ "error": "This pipeline writes to a vector store; its configuration cannot be deleted while keeping that data. Delete it with its data, or keep the pipeline." }
 ```
 
 `warnings` lists anything left for you to handle. For an object-store Iceberg pipeline whose table was committed through Unity Catalog (`catalogMode: rest`), it says `Unity Catalog still holds <catalog>.<schema>.<table>; have an admin drop it`, because Datris removes the files but never drops the catalog table (see [Unity Catalog](/destinations/unity-catalog)). For a `catalogMode: managed` table it says `Unity Catalog owns <catalog>.<schema>.<table> and its files (catalogMode managed); Datris deleted nothing there; drop <catalog>.<schema>.<table> in Unity Catalog to remove the data`.
