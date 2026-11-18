@@ -715,7 +715,12 @@ class PipelineAPIController {
                     ucStateExists,
                     priorAttempt,
                     hiddenAlias,
-                    n => DestinationProbe.withDeadline(DestinationProbe.DefaultDeadline, "Unity Catalog state read")(DestinationProbe.catalogCommitted(n))
+                    n =>
+                        DestinationProbe.withDeadline(
+                            DestinationProbe.StateReadDeadline,
+                            "Unity Catalog state read",
+                            PipelineAPIController.probeOwner(request)
+                        )(DestinationProbe.catalogCommitted(n))
                 )
                     .foreach { refused =>
                         logger.warn("POST /pipelines/" + name + "/rename refused: HTTP " + refused.getStatusCode.value)
@@ -1808,7 +1813,10 @@ object PipelineAPIController {
     /** [[existingDestinationRefusal]] with the deadline given: the Unity
       * Catalog state read and every probe together get at most `deadline`
       * (each runs on a probe worker, `DestinationProbe.withDeadline`); past
-      * it the save answers 500 `ProbeUnavailable` and nothing is saved. */
+      * it the save answers 500 `ProbeUnavailable` and nothing is saved. Each
+      * read and probe takes one of the caller's `DestinationProbe.MaxPerOwner`
+      * slots (owner `ResolvedKey.label`); over the limit the save answers 429
+      * [[tooManyChecks]] and nothing is started or saved. */
     def existingDestinationRefusal(
         request: HttpServletRequest,
         candidate: PipelineConfig,
@@ -1821,8 +1829,9 @@ object PipelineAPIController {
     ): Option[ResponseEntity[String]] = {
         if (!CapabilityCheck.isRestrictedSession(request) || candidate == null) return None
         val deadlineAt = System.nanoTime() + deadline.toNanos
+        val owner = probeOwner(request)
         def bounded[T](what: String)(body: => T): T =
-            DestinationProbe.withDeadline(scala.concurrent.duration.Duration.fromNanos(deadlineAt - System.nanoTime()), what)(body)
+            DestinationProbe.withDeadline(scala.concurrent.duration.Duration.fromNanos(deadlineAt - System.nanoTime()), what, owner)(body)
         // A stored config the caller cannot see grandfathers nothing.
         val keptFrom = if (stored != null && visiblePipelines(request, Seq(stored)).isEmpty) null else stored
         def badRequest(message: String): Option[ResponseEntity[String]] =
@@ -1847,6 +1856,9 @@ object PipelineAPIController {
             val committed =
                 try Right(bounded("Unity Catalog state read")(catalogCommitted(candidate.name)))
                 catch {
+                    case _: DestinationProbe.TooManyChecks =>
+                        auditLogger.warn("Destination check of pipeline " + candidate.name + " not started: the caller's other checks are still running")
+                        return Some(tooManyChecks)
                     case scala.util.control.NonFatal(e) =>
                         auditLogger.warn(
                             "Unity Catalog state read failed for the destination check of pipeline " + candidate.name + ": " +
@@ -1868,6 +1880,12 @@ object PipelineAPIController {
             val found =
                 try Right(bounded("destination probe (" + t.key.family + ")")(exists(t)))
                 catch {
+                    case _: DestinationProbe.TooManyChecks =>
+                        auditLogger.warn(
+                            "Destination existence probe for pipeline " + candidate.name + " (" + t.key.family +
+                                ") not started: the caller's other checks are still running"
+                        )
+                        return Some(tooManyChecks)
                     case scala.util.control.NonFatal(e) =>
                         auditLogger.warn(
                             "Destination existence probe failed for pipeline " + candidate.name + " (" + t.key.family + "): " +
@@ -1883,6 +1901,20 @@ object PipelineAPIController {
         }
         None
     }
+
+    /** Owner of the caller's destination-check slots: `ResolvedKey.label`
+      * (`session:<user>` for a session and for on-behalf-of). */
+    private[api] def probeOwner(request: HttpServletRequest): String =
+        CapabilityCheck.resolvedKey(request).map(_.label).getOrElse("anonymous")
+
+    /** 429: the caller already has `DestinationProbe.MaxPerOwner` destination
+      * checks running; nothing was started or saved. */
+    def tooManyChecks: ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.TOO_MANY_REQUESTS)
+            .header("Retry-After", DestinationTargets.RetryAfterSeconds)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody(DestinationTargets.TooManyChecksRefusal))
 
     /** POST /pipeline: 500 "nothing was saved" when the config read failed
       * and a limited-visibility caller's candidate adds a dataset its stored
@@ -2155,7 +2187,8 @@ object PipelineAPIController {
         // Restricted sessions, an object-store pipeline taking a free name
         // whose kept Unity Catalog state records a catalog commit: an Iceberg
         // read under that name would load the recorded table. The same 409
-        // as a taken name; a failed state read refuses (500).
+        // as a taken name; a failed state read refuses (500), and one not
+        // started because the caller's other checks still run answers 429.
         if (
             existingNew == null && CapabilityCheck.isRestrictedSession(request) &&
             old.destination != null && old.destination.objectStore != null
@@ -2163,6 +2196,11 @@ object PipelineAPIController {
             val committed =
                 try catalogCommitted(target)
                 catch {
+                    case _: DestinationProbe.TooManyChecks =>
+                        auditLogger.warn(
+                            "Unity Catalog state read for the rename check of " + name + " not started: the caller's other checks are still running"
+                        )
+                        return Some(tooManyChecks)
                     case scala.util.control.NonFatal(e) =>
                         auditLogger.warn("Unity Catalog state read failed for the rename check of " + name + ": " + e.getMessage)
                         return Some(aliasCheckUnavailable("renamed"))

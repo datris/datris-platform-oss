@@ -8,13 +8,27 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.model.{Database, PipelineConfig}
 import org.slf4j.{Logger, LoggerFactory}
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 
 import ai.datris.model.{TenantContext, UserContext}
 
 import java.io.FileNotFoundException
-import java.util.concurrent.{Callable, ExecutionException, SynchronousQueue, ThreadFactory, ThreadPoolExecutor, TimeUnit, TimeoutException}
-import java.util.concurrent.atomic.AtomicInteger
+import java.net.URI
+import java.util.concurrent.{
+    Callable,
+    CancellationException,
+    ConcurrentHashMap,
+    ExecutionException,
+    Future,
+    RejectedExecutionException,
+    SynchronousQueue,
+    ThreadFactory,
+    ThreadPoolExecutor,
+    TimeUnit,
+    TimeoutException
+}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import scala.concurrent.duration._
 import java.sql.{Connection, SQLException, Statement}
 import scala.util.Try
@@ -41,7 +55,49 @@ object DestinationProbe {
       * caller answers 500; nothing is saved). */
     class DeadlineExceeded(what: String, timeout: FiniteDuration) extends RuntimeException(what + " did not finish within " + timeout)
 
+    /** Deadline for the Unity Catalog state read of a rename, which runs
+      * inside the catalog lock. */
+    val StateReadDeadline: FiniteDuration = 5.seconds
+
+    /** Checks one owner (`ResolvedKey.label`) may have running at once,
+      * counted until each worker really ends: a check abandoned at its
+      * deadline still counts until its blocking call returns. */
+    val MaxPerOwner: Int = 2
+
+    /** Thrown, before anything is started, when the owner already has
+      * [[MaxPerOwner]] checks running (the caller answers 429; nothing is
+      * saved). Never an answer about the destination. */
+    class TooManyChecks(what: String)
+        extends RuntimeException(what + " not started: " + MaxPerOwner + " destination checks of the same caller are still running")
+
     private val threadCounter = new AtomicInteger(0)
+
+    /** owner -> checks in flight; an owner with none has no entry. */
+    private val inFlightByOwner = new ConcurrentHashMap[String, Integer]()
+
+    /** Checks of `owner` in flight (spec seam). */
+    private[datris] def inFlight(owner: String): Int = Option(inFlightByOwner.get(owner)).map(_.intValue).getOrElse(0)
+
+    private def acquire(owner: String): Boolean = {
+        val taken = new AtomicBoolean(false)
+        inFlightByOwner.compute(
+            owner,
+            (_, n) => {
+                val cur = if (n == null) 0 else n.intValue
+                if (cur >= MaxPerOwner) n
+                else {
+                    taken.set(true)
+                    Integer.valueOf(cur + 1)
+                }
+            }
+        )
+        taken.get
+    }
+
+    private def release(owner: String): Unit = {
+        inFlightByOwner.computeIfPresent(owner, (_, n) => if (n.intValue <= 1) null else Integer.valueOf(n.intValue - 1))
+        ()
+    }
 
     /** Daemon worker pool for probes, capped so hung probes cannot pile up
       * threads without bound; a full pool refuses (the save answers 500). */
@@ -62,32 +118,66 @@ object DestinationProbe {
       * failure is rethrown as is. The request's tenant environment is the only
       * request state carried over: the worker gets it, never the session user,
       * and both thread-locals are cleared when `body` ends, so nothing from one
-      * request is left on a pooled thread. */
+      * request is left on a pooled thread. Takes no owner slot. */
     def withDeadline[T](timeout: FiniteDuration, what: String = "destination check")(body: => T): T = {
         if (timeout.toNanos <= 0) throw new DeadlineExceeded(what, timeout)
+        run(timeout, what, () => ())(body)
+    }
+
+    /** As above, counted against `owner` (`ResolvedKey.label`):
+      * [[TooManyChecks]] at once, nothing started, when `owner` already has
+      * [[MaxPerOwner]] checks in flight. The slot is taken before the submit
+      * and freed by the worker when `body` really ends (an abandoned body
+      * keeps it until then), or at once when the pool rejects the submit or
+      * the task is cancelled before it starts. */
+    def withDeadline[T](timeout: FiniteDuration, what: String, owner: String)(body: => T): T = {
+        if (timeout.toNanos <= 0) throw new DeadlineExceeded(what, timeout)
+        if (!acquire(owner)) throw new TooManyChecks(what)
+        val freed = new AtomicBoolean(false)
+        run(timeout, what, () => if (freed.compareAndSet(false, true)) release(owner))(body)
+    }
+
+    /** `onEnd` runs once: in the worker's `finally`, or on the calling
+      * thread when the task never runs (rejected, or cancelled before it
+      * started). */
+    private def run[T](timeout: FiniteDuration, what: String, onEnd: () => Unit)(body: => T): T = {
         val tenant = TenantContext.get()
+        val started = new AtomicBoolean(false)
         val task = new Callable[T] {
             def call(): T = {
-                TenantContext.clear()
-                UserContext.clear()
-                tenant.foreach(TenantContext.set)
-                try body
-                finally {
+                if (!started.compareAndSet(false, true)) throw new CancellationException(what + " cancelled before it started")
+                try {
                     TenantContext.clear()
                     UserContext.clear()
+                    tenant.foreach(TenantContext.set)
+                    body
+                } finally {
+                    TenantContext.clear()
+                    UserContext.clear()
+                    onEnd()
                 }
             }
         }
-        val future = pool.submit(task)
+        def abandon(f: Future[T]): Unit = {
+            f.cancel(true)
+            if (started.compareAndSet(false, true)) onEnd()
+        }
+        val future =
+            try pool.submit(task)
+            catch {
+                case e: RejectedExecutionException =>
+                    onEnd()
+                    throw e
+            }
         try future.get(timeout.toNanos, TimeUnit.NANOSECONDS)
         catch {
             case _: TimeoutException =>
-                future.cancel(true)
+                abandon(future)
                 logger.warn("Destination probe: " + what + " did not finish within " + timeout + "; abandoned (worker interrupted)")
                 throw new DeadlineExceeded(what, timeout)
             case e: ExecutionException => throw Option(e.getCause).getOrElse(e)
             case e: InterruptedException =>
-                future.cancel(true)
+                abandon(future)
                 Thread.currentThread().interrupt()
                 throw e
         }
@@ -255,20 +345,58 @@ object DestinationProbe {
 
     // ------------------------------------------------------------ object store
 
+    /** S3A settings of the probe's own FileSystem, as per-bucket keys (they
+      * win over any global): connect within 5 s, a read answered within
+      * 10 s, no SDK or S3A retries. A dead endpoint fails in about 5 s; a
+      * worker is never busy long past the deadline. Loaders and readers keep
+      * their own settings. */
+    def ProbeS3ASettings(bucket: String): Seq[(String, String)] = {
+        val p = "fs.s3a.bucket." + bucket + "."
+        Seq(
+            p + "connection.establish.timeout" -> "5000",
+            p + "connection.timeout" -> "10000",
+            p + "attempts.maximum" -> "0",
+            p + "retry.limit" -> "0"
+        )
+    }
+
     /** Any object under `<bucket>/<prefix>/` (the whole bucket for an empty
       * prefix), listed through the Hadoop FileSystem with the per-bucket
       * settings applied, as reads and deletes do. A missing prefix or bucket
       * counts as "does not exist". */
-    private def objectStore(c: PipelineConfig): Boolean = {
+    private def objectStore(c: PipelineConfig): Boolean =
+        objectStoreWith(c, SparkSessionManager.getOrCreate().sparkContext.hadoopConfiguration, (u, conf) => FileSystem.newInstance(u, conf))
+
+    /** [[objectStore]] over `shared` (the Spark Hadoop configuration) and
+      * `open` (production: `FileSystem.newInstance`, uncached). The
+      * candidate's per-bucket settings (endpoint checked by `SsrfGuard`
+      * before anything is opened) and [[ProbeS3ASettings]] go on a COPY of
+      * `shared`; the probe's FileSystem is its own and is closed here, on
+      * this thread, after an answer, a failure or an interrupt. `shared`, the
+      * fingerprint map and the cached FileSystem are never touched, so an
+      * unsaved candidate changes nothing other pipelines of the bucket use. */
+    private[datris] def objectStoreWith(c: PipelineConfig, shared: Configuration, open: (URI, Configuration) => FileSystem): Boolean = {
+        require(c != null && c.destination != null, "no destination to probe")
         val os = c.destination.objectStore
         require(os != null, "no object-store destination to probe")
         val bucket = ObjectStoreSpark.resolveBucket(os)
         val prefix = ObjectStoreSpark.normalizePrefix(os.prefixKey)
-        val spark = SparkSessionManager.getOrCreate()
-        ObjectStoreSpark.applyPerBucketConfig(spark, bucket, os)
+        val conf = new Configuration(shared)
+        ObjectStoreSpark.applyPerBucketSettings(conf, bucket, os)
+        ProbeS3ASettings(bucket).foreach { case (k, v) => conf.set(k, v) }
         val path = new Path("s3a://" + bucket + "/" + prefix)
-        // The FileSystem is the shared cached instance: never closed here.
-        anyObjectUnder(path.getFileSystem(spark.sparkContext.hadoopConfiguration), path)
+        val fs = open(new URI("s3a://" + bucket), conf)
+        try anyObjectUnder(fs, path)
+        finally {
+            // An interrupt (the deadline) must not cut the close short: clear
+            // the flag for the close and set it again afterwards.
+            val interrupted = Thread.interrupted()
+            try
+                Try(fs.close()).failed.foreach(e =>
+                    logger.warn("Destination probe: closing the probe FileSystem for s3a://" + bucket + "/ failed: " + e.getMessage)
+                )
+            finally if (interrupted) Thread.currentThread().interrupt()
+        }
     }
 
     /** True when `path` (expanded as a glob, as a Spark read expands it, and

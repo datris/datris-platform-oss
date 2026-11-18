@@ -1965,10 +1965,30 @@ paths:
           description: >-
             Server error (for example the configuration store is unreachable).
             For a restricted user, also when the check that a new destination
-            does not exist yet could not reach the warehouse or bucket, or did
-            not finish within 30 seconds: `Could
-            not check whether the destination already exists; nothing was
-            saved. Try again.`
+            does not exist yet could not reach the warehouse or bucket (an
+            object-store endpoint that does not answer within a few seconds
+            counts; the check does not retry), or did not finish within 30
+            seconds: `Could not check whether the destination already
+            exists; nothing was saved. Try again.`
+        '429':
+          description: >-
+            Restricted users only: two destination checks of the same user
+            are still running, so this save's check was not started and
+            nothing was saved: `Another destination check of yours is still
+            running; nothing was saved. Wait a moment and try again.` Body:
+            `{"error": "..."}`.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
     delete:
       tags: [Pipelines]
@@ -2393,7 +2413,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CatalogRestoreResult'
         '207':
-          description: Some members could not be restored; see `failed`. A pipeline whose vector collection, class or table another pipeline already names (for example the second of two archived pipelines sharing one) is listed there with the refusal text, as is one whose destination a pipeline hidden from the caller writes; the rest of the restore goes ahead.
+          description: Some members could not be restored; see `failed`. A pipeline whose vector collection, class or table another pipeline already names (for example the second of two archived pipelines sharing one) is listed there with the refusal text, as is one whose destination a pipeline hidden from the caller writes; the rest of the restore goes ahead. For a restricted user, a pipeline whose destination check could not start because two of the user's own checks were still running is listed with `Another destination check of yours is still running; nothing was saved. Wait a moment and try again.` (restore it again later); the restore itself does not answer 429.
           content:
             application/json:
               schema:
@@ -2507,8 +2527,27 @@ paths:
             or a stored CodeGen script could not be copied to the new name.
             For a restricted user, an object-store pipeline also gets this 409
             when Unity Catalog sync state kept for the new name records a
-            catalog commit (500 when that state cannot be read). Nothing is
-            renamed.
+            catalog commit (500 when that state cannot be read within 5
+            seconds). Nothing is renamed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '429':
+          description: >-
+            Restricted users only, an object-store pipeline taking a free
+            name: two destination checks of the same user are still running,
+            so the Unity Catalog state read was not started and nothing was
+            renamed: `Another destination check of yours is still running;
+            nothing was saved. Wait a moment and try again.`
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -6123,7 +6162,14 @@ paths:
         '400':
           description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed warehouse table or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`). Body: `{"error": "..."}`.'
         '500':
-          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket or did not finish within 30 seconds; nothing is restored.'
+          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket (an object-store endpoint that does not answer within a few seconds counts; the check does not retry) or did not finish within 30 seconds; nothing is restored.'
+        '429':
+          description: 'Restricted users only: two destination checks of the same user are still running, so this restore''s check was not started and nothing was restored: `Another destination check of yours is still running; nothing was saved. Wait a moment and try again.` Body: `{"error": "..."}`.'
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again (5).
+              schema:
+                type: string
 
   # ── Authentication & Users ─────────────────────────────────
 

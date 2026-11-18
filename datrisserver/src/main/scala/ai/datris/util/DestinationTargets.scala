@@ -165,4 +165,12 @@ object DestinationTargets {
 
     /** 500 text when the probe failed (fail closed). */
     val ProbeUnavailable: String = "Could not check whether the destination already exists; nothing was saved. Try again."
+
+    /** 429 text when the caller already has `DestinationProbe.MaxPerOwner`
+      * checks running: their own limit, nothing about the destination. */
+    val TooManyChecksRefusal: String =
+        "Another destination check of yours is still running; nothing was saved. Wait a moment and try again."
+
+    /** `Retry-After` (seconds) of the 429. */
+    val RetryAfterSeconds: String = "5"
 }

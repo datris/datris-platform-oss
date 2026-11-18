@@ -160,6 +160,35 @@ object ObjectStoreSpark {
       *  bucket name — hangs on connect / SSL until the request times out. */
     def applyPerBucketConfig(spark: SparkSession, bucket: String, objectStore: ObjectStore): Unit = {
         val hadoopConf = spark.sparkContext.hadoopConfiguration
+        // Spark runs local[*] (SparkSessionManager), so the driver's
+        // FileSystem.CACHE is the only cache involved. The per-output-path
+        // write lock in SparkObjectStoreLoader.withPipelineWriteLock does
+        // not cover query threads, so eviction is guarded by its own lock
+        // and is best-effort rather than assumed exclusive: a read already
+        // in flight against this bucket may see "Filesystem closed" and
+        // must be re-run — today's alternative is a container restart.
+        settingsOn(hadoopConf, bucket, objectStore).foreach { fingerprint =>
+            evictionLock.synchronized {
+                if (credentialsChanged(bucket, fingerprint)) evictCachedFileSystem(bucket, hadoopConf)
+            }
+        }
+        // provider=minio: uses the global fs.s3a.* config; the global s3a://
+        // filesystem is shared by other pipelines and must never be closed here.
+    }
+
+    /** The settings part of [[applyPerBucketConfig]] on `conf` (scheme
+      * mapping, resolved credentials, and for provider=s3 the per-bucket
+      * endpoint after `SsrfGuard`): records no fingerprint and evicts no
+      * cached FileSystem. For a private copy of the configuration (the
+      * destination probe). */
+    def applyPerBucketSettings(conf: Configuration, bucket: String, objectStore: ObjectStore): Unit = {
+        settingsOn(conf, bucket, objectStore)
+        ()
+    }
+
+    /** Sets the per-bucket keys on `hadoopConf`; the fingerprint of the
+      * effective S3 settings for provider=s3, None for minio. */
+    private def settingsOn(hadoopConf: Configuration, bucket: String, objectStore: ObjectStore): Option[String] = {
         mapS3Schemes(hadoopConf)
         val creds = CredentialResolver.resolve(objectStore)
 
@@ -200,27 +229,17 @@ object ObjectStoreSpark {
                 s"S3A per-bucket config for s3a://$bucket/: endpoint=$effectiveEndpoint, region=${creds.region.getOrElse("<unset>")}, provider=$providerClass"
             )
 
-            // Spark runs local[*] (SparkSessionManager), so the driver's
-            // FileSystem.CACHE is the only cache involved. The per-output-path
-            // write lock in SparkObjectStoreLoader.withPipelineWriteLock does
-            // not cover query threads, so eviction is guarded by its own lock
-            // and is best-effort rather than assumed exclusive: a read already
-            // in flight against this bucket may see "Filesystem closed" and
-            // must be re-run — today's alternative is a container restart.
-            val fingerprint = fingerprintOf(
-                creds.accessKey,
-                creds.secretKey,
-                creds.sessionToken,
-                effectiveEndpoint,
-                creds.region,
-                providerClass
+            Some(
+                fingerprintOf(
+                    creds.accessKey,
+                    creds.secretKey,
+                    creds.sessionToken,
+                    effectiveEndpoint,
+                    creds.region,
+                    providerClass
+                )
             )
-            evictionLock.synchronized {
-                if (credentialsChanged(bucket, fingerprint)) evictCachedFileSystem(bucket, hadoopConf)
-            }
-        }
-        // provider=minio: uses the global fs.s3a.* config; the global s3a://
-        // filesystem is shared by other pipelines and must never be closed here.
+        } else None
     }
 
     /** Hex SHA-256 over the effective S3 settings for a bucket. Only the digest
