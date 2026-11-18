@@ -56,6 +56,7 @@ object CapabilityRoutes {
         "/api/v1/assistant/**",
         "/api/v1/ops-chat/**",
         "/api/v1/catalog-chat/**",
+        "/api/v1/search-chat/**",
         "/api/v1/config-chat/**"
     )
 

@@ -64,8 +64,15 @@ object MCPClient {
     private val resourceCache: ConcurrentHashMap[String, CachedEntry[String]] = new ConcurrentHashMap()
     private val ttlMillis: Long = 60 * 1000L
 
-    private def cacheKey(apiKey: String, suffix: String): String =
-        (if (apiKey == null) "" else apiKey.take(6)) + "|" + suffix
+    /** Cache entry key: a SHA-256 of the whole api key plus `suffix`. Chat
+      * callers' own keys reach these caches (see ai.datris.auth.ChatCaller),
+      * so two keys must never share an entry; the key value itself is never
+      * held in the map. A null and an empty key share the anonymous entry. */
+    private[util] def cacheKey(apiKey: String, suffix: String): String = {
+        val k = if (apiKey == null) "" else apiKey
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(k.getBytes(StandardCharsets.UTF_8))
+        digest.map(b => f"${b & 0xff}%02x").mkString + "|" + suffix
+    }
 
     private def now(): Long = System.currentTimeMillis()
 
@@ -190,11 +197,13 @@ object MCPClient {
         httpPost.addHeader(HttpHeaders.ACCEPT, "application/json, text/event-stream")
         if (apiKey != null && apiKey.nonEmpty)
             httpPost.addHeader("x-api-key", apiKey)
-        // The chat controllers restore the request's UserContext on their
-        // worker thread, so the human behind an Assistant / Ops / Catalog chat
-        // is known here. Forward them; the MCP server relays the header on its
-        // REST hop and TenantInterceptor attributes the resulting actions to
-        // the user (only for the trusted `ui` key — see AuditActor).
+        // The chat controllers set the acting user decided on the servlet
+        // thread (ai.datris.auth.ChatCaller) as the worker's UserContext, so
+        // the human behind a chat is known here. Forward them; the MCP server
+        // relays the header on its REST hop and TenantInterceptor attributes
+        // the resulting actions to the user (only for the trusted `ui` key —
+        // see AuditActor). A key caller with no user sends its own key and no
+        // header, so its calls are attributed to that key's label.
         UserContext.get().foreach(u => httpPost.addHeader(AuditActor.HeaderOnBehalfOf, u.username))
         // Recovery-agent calls carry the incident id so the audit log is the
         // incident's ledger; the MCP server relays it on the REST hop.

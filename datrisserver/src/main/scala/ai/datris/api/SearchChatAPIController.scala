@@ -6,8 +6,10 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{JsonObject, JsonParser}
-import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
-import ai.datris.util.{AgentLoop, APIKeyValidator, CatalogAccessPrompt, MCPClient, SecretsUtil}
+import ai.datris.auth.{Allow, ChatCaller, ChatIdentity, Refuse}
+import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext}
+import ai.datris.util.{AgentLoop, APIKeyValidator, CatalogAccessPrompt, MCPClient}
+import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.MediaType
 import org.springframework.web.bind.annotation._
@@ -58,21 +60,23 @@ class SearchChatAPIController {
 
     private val cancelFlags: ConcurrentHashMap[Long, java.util.concurrent.atomic.AtomicBoolean] = new ConcurrentHashMap()
 
-    /** Same resolveUiApiKey contract as the other chat controllers — see
-      * AssistantAPIController.resolveUiApiKey. The UI identity used for
-      * outbound MCP calls is the same across all chat modes. */
-    private def resolveUiApiKey(userApiKey: String): String = {
-        if (!DatrisEnvironment.values.useApiKeys) return null
-
-        val secretPath = DatrisEnvironment.current.environment + "/ui-api-key"
-        SecretsUtil.getSecretMap(secretPath).flatMap(m => Option(m.get("apiKey"))) match {
-            case Some(v) if v != null && v.nonEmpty => v
-            case _ => userApiKey
-        }
-    }
-
     @PostMapping(path = Array("/search-chat/chat"), produces = Array(MediaType.TEXT_EVENT_STREAM_VALUE))
-    def chat(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): SseEmitter = {
+    def chat(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: String,
+        request: HttpServletRequest,
+        response: HttpServletResponse
+    ): SseEmitter = {
+        // Decide who the caller is on the servlet thread (ChatCaller), before
+        // the stream opens; a refusal is written directly and null tells
+        // Spring the request is handled.
+        val identity: ChatIdentity = ChatCaller.from(request) match {
+            case Allow(id) => id
+            case r: Refuse =>
+                ChatCaller.refuse(request, response, r)
+                return null
+        }
+
         val emitter = new SseEmitter(TimeUnit.MINUTES.toMillis(30))
         val emitterId = System.identityHashCode(emitter).toLong
         val cancelled = new java.util.concurrent.atomic.AtomicBoolean(false)
@@ -82,19 +86,15 @@ class SearchChatAPIController {
         emitter.onTimeout(() => { cancelled.set(true); cancelFlags.remove(emitterId); emitter.complete(); () })
         emitter.onError(_ => { cancelled.set(true); cancelFlags.remove(emitterId); () })
 
-        // Same ThreadLocal capture rationale as the other chat controllers —
-        // session-authed requests need UserContext/TenantContext re-set on the
-        // worker thread so APIKeyValidator.validate doesn't reject them.
-        val capturedUser = UserContext.get()
+        // The worker runs as the identity decided above (its user only) and
+        // the tenant captured here; it never reads this thread's state.
         val capturedTenant = TenantContext.get()
 
         chatExecutor.submit(new Runnable {
-            override def run(): Unit = {
-                capturedUser.foreach(UserContext.set)
-                capturedTenant.foreach(TenantContext.set)
+            override def run(): Unit = ChatCaller.onWorker(identity, capturedTenant) {
                 try {
                     APIKeyValidator.validate(apiKey)
-                    runChat(apiKey, body, emitter, cancelled)
+                    runChat(apiKey, body, emitter, cancelled, identity)
                 } catch {
                     case e: Exception =>
                         try {
@@ -108,9 +108,6 @@ class SearchChatAPIController {
                             case e2: Exception =>
                                 logger.debug("Failed to complete SSE emitter after chat error; client likely disconnected", e2)
                         }
-                } finally {
-                    UserContext.clear()
-                    TenantContext.clear()
                 }
             }
         })
@@ -118,7 +115,13 @@ class SearchChatAPIController {
         emitter
     }
 
-    private def runChat(apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
+    private def runChat(
+        apiKey: String,
+        body: String,
+        emitter: SseEmitter,
+        cancelled: java.util.concurrent.atomic.AtomicBoolean,
+        identity: ChatIdentity
+    ): Unit = {
         val req = JsonParser.parseString(body).getAsJsonObject
         val messagesArr = req.getAsJsonArray("messages")
         if (messagesArr == null || messagesArr.size() == 0)
@@ -146,7 +149,9 @@ class SearchChatAPIController {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the AI primary secret is configured.")
 
-        val uiKey = resolveUiApiKey(apiKey)
+        // The ui key for users and full-access callers; any other key's own
+        // presented key, so its tools are exactly what that key may do.
+        val uiKey = ChatCaller.toolKey(identity, apiKey, () => ChatCaller.uiApiKey(apiKey))
 
         // READ-ONLY: filter the MCP catalog to discovery/query/search tools.
         // Enforced here so the agent physically cannot create, delete, run, or
@@ -156,7 +161,7 @@ class SearchChatAPIController {
 
         // Catalog-scoped user access: a restricted session user gets the
         // catalog-access block and no wording about the unassigned group.
-        val accessBlock = UserContext.get().flatMap(CatalogAccessPrompt.block)
+        val accessBlock = identity.user.flatMap(CatalogAccessPrompt.block)
         val systemPrompt = buildSearchSystemPrompt(env.environment, accessBlock)
 
         // Prepend the catalog scope (if any) as a leading user message, mirroring

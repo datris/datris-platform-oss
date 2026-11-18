@@ -6,8 +6,10 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{Gson, JsonObject}
+import ai.datris.auth.{Allow, ChatCaller, Refuse}
 import ai.datris.model.{DatrisEnvironment, DatrisException}
 import ai.datris.util.{APIKeyValidator, AiSampleValues, AttachmentStore, CodeGenTransformationEvaluator}
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -36,7 +38,18 @@ class AssistantAttachmentController {
     private val SampleMaxLines: Int = 50
 
     @PostMapping(path = Array("/assistant/attachment"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def stage(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestPart("file") file: MultipartFile): ResponseEntity[String] = {
+    def stage(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestPart("file") file: MultipartFile,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        // Same caller decision as the Assistant chat (ChatCaller): a tap-run
+        // token, no identity or a rejected key is refused before the bytes
+        // are read.
+        ChatCaller.from(request) match {
+            case _: Allow =>
+            case r: Refuse => return ChatCaller.refusal(request, r)
+        }
         try {
             APIKeyValidator.validate(apiKey)
 

@@ -7267,7 +7267,7 @@ paths:
     get:
       tags: [Assistant]
       summary: Initialize the Assistant
-      description: UI mount call — warms the MCP client caches and returns the tool catalog, the workflow reference resource, and the active chat model.
+      description: UI mount call — warms the MCP client caches and returns the tool catalog, the workflow reference resource, and the active chat model. The tool catalog is the one the caller's own access allows.
       responses:
         '200':
           description: Assistant bootstrap payload
@@ -7294,6 +7294,10 @@ paths:
                     type: boolean
         '400':
           description: User-actionable error
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
         '500':
           description: Error
 
@@ -7305,7 +7309,7 @@ paths:
         Runs the build-mode Assistant agent loop and streams agent-loop events
         (text deltas, tool calls, tool results, errors) as Server-Sent Events.
         The client cancels by disconnecting. Attachments reference files
-        previously staged via `/assistant/attachment`.
+        previously staged via `/assistant/attachment`. Tools run with the caller's own access.
       requestBody:
         required: true
         content:
@@ -7330,6 +7334,10 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
 
   /api/v1/assistant/attachment:
     post:
@@ -7340,7 +7348,8 @@ paths:
         server-side (tenant-scoped, TTL'd) and only the returned handle plus a
         small content sample travel through the chat; the platform substitutes
         the real bytes when the agent calls a file tool with the
-        `attachmentId`. Limit 25 MB per file.
+        `attachmentId`. Limit 25 MB per file. Accepts the same callers as
+        `/assistant/chat`.
       requestBody:
         required: true
         content:
@@ -7374,6 +7383,10 @@ paths:
                     description: Text sample for the model (capped; binary documents get a one-line note)
         '400':
           description: Empty file
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
         '413':
           description: File exceeds the 25 MB limit
         '500':
@@ -7391,7 +7404,8 @@ paths:
         prioritized. The optional `context` object is a dashboard snapshot
         that grounds answers in the failures and volumes currently on screen.
         With the recovery agent on, open incidents are added to the context,
-        except for a user with scoped catalog access.
+        only for a caller allowed to read incidents (not a user with scoped
+        catalog access, nor an API key without unscoped `incident:read`). Tools run with the caller's own access.
         Streams the same SSE event format as `/assistant/chat`.
       requestBody:
         required: true
@@ -7406,6 +7420,10 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
 
   /api/v1/search-chat/chat:
     post:
@@ -7418,7 +7436,8 @@ paths:
         discovery/query/search tools; the agent never sees mutating tools. The
         optional `context` object may carry a catalog scope, e.g.
         `{"catalog": "finance"}` (or "Uncataloged"; "All"/empty means
-        unscoped). Streams the same SSE event format as `/assistant/chat`.
+        unscoped). Tools run with the caller's own access. Streams the same SSE event format as
+        `/assistant/chat`.
       requestBody:
         required: true
         content:
@@ -7432,6 +7451,10 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
 
   /api/v1/catalog-chat/chat:
     post:
@@ -7441,8 +7464,8 @@ paths:
         Agent chat for organizing the inventory — group, move, rename, and
         describe taps and pipelines. Full tool catalog with catalog tools
         prioritized. The optional `context` object is a catalog inventory
-        snapshot that grounds answers in what the user is looking at. Streams
-        the same SSE event format as `/assistant/chat`.
+        snapshot that grounds answers in what the user is looking at. Tools run with the caller's own access.
+        Streams the same SSE event format as `/assistant/chat`.
       requestBody:
         required: true
         content:
@@ -7456,6 +7479,10 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
+        '403':
+          description: Refused for this credential (a tap run's platform token)
 
   /api/v1/config-chat/chat:
     post:
@@ -7472,7 +7499,7 @@ paths:
         it in the panel. Secret values are never passed through the model;
         they are collected through a `secret_request` form event. The optional
         `context` object is `{tab}`, the active sub-tab. Streams the same SSE
-        event format as `/assistant/chat`.
+        event format as `/assistant/chat`. Tools run with the caller's own access.
       requestBody:
         required: true
         content:
@@ -7486,8 +7513,13 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: No credential where one is required, or a revoked or unknown API key
         '403':
-          description: Admin session required when user auth is on (API-key callers are refused)
+          description: >-
+            Refused for this credential: a tap run's platform token; with user
+            auth on, any caller without an admin session; with user auth off,
+            an API key that is not full access
 
   # ── MCP Activity ───────────────────────────────────────────
 
