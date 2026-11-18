@@ -211,4 +211,48 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(row.getDouble(3) == 1.0)
         assert(row.getDate(4) == java.sql.Date.valueOf("2024-01-01"))
     }
+
+    // ---- plans/stories/ingest-column-name-escaping.md: an odd column name ----
+    //  Parquet and ORC take column names through StructField (no SQL), via the
+    //  same staged read the loader uses. A column named with a space, a double
+    //  quote and a semicolon either round-trips under exactly that name or the
+    //  write fails; nothing outside the write path is touched.
+
+    private def filesUnder(root: java.nio.file.Path, excluding: java.nio.file.Path): Set[String] = {
+        import scala.collection.JavaConverters._
+        val s = Files.walk(root)
+        try s.iterator().asScala.filter(p => !p.startsWith(excluding)).map(p =>
+                root.relativize(p).toString + (if (Files.isDirectory(p)) "/" else "@" + Files.size(p))
+            ).toSet
+        finally s.close()
+    }
+
+    test(
+        "a column named with a space, a double quote and a semicolon either round-trips under exactly that name or fails the write; no other table or path is touched"
+    ) {
+        val odd = "unit \"price\"; drop table canary"
+        val fields = List(SchemaField("id", "int"), SchemaField(odd, "string"))
+        val root = Files.createTempDirectory("spark-object-store-odd-names-")
+        val canaryDf =
+            SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(List("1,x", "2,y")), List(SchemaField("id", "int"), SchemaField("v", "string")), ",")
+        for (fmt <- Seq("parquet", "orc")) {
+            val canary = root.resolve(fmt + "-canary")
+            canaryDf.write.format(fmt).save(canary.toUri.toString)
+            val out = root.resolve("pipeline").resolve(fmt)
+            Files.createDirectories(out.getParent)
+            val before = filesUnder(root, out)
+
+            val df = SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(List("1,a", "2,\"b;c\"")), fields, ",")
+            val written = scala.util.Try(df.write.mode("append").format(fmt).save(out.toUri.toString))
+            info(fmt + ": " + written.map(_ => "round-trips").recover { case e => "fails: " + String.valueOf(e.getMessage).split("\n").head }.get)
+            if (written.isSuccess) {
+                val back = spark.read.format(fmt).load(out.toUri.toString)
+                assert(back.columns.toSeq == Seq("id", odd), fmt + ": " + back.columns.toSeq)
+                val rows = back.collect().map(r => r.getInt(0) -> r.getString(1)).toMap
+                assert(rows == Map(1 -> "a", 2 -> "b;c"), fmt + ": " + rows)
+            }
+            assert(filesUnder(root, out) == before, fmt + ": a path outside " + out + " changed")
+            assert(spark.read.format(fmt).load(canary.toUri.toString).count() == 2, fmt + ": canary")
+        }
+    }
 }

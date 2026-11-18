@@ -207,4 +207,61 @@ class SqlServerLoaderSqlSpec extends AnyFunSuite {
         val noRow = intercept[ai.datris.model.DatrisException](SqlServerLoader.normalizeBoolean("maybe", "flag"))
         assert(!noRow.getMessage.contains("data row"), noRow.getMessage)
     }
+
+    // ---- plans/stories/ingest-column-name-escaping.md, Step 6 ---------------
+
+    test("for plain names every statement equals the text the v1.60.0 code built") {
+        val keyed = db.copy(keyFields = java.util.Arrays.asList("id"))
+        assert(
+            SqlServerLoader.createTableSql(keyed, Seq(SchemaField("id", "string"), SchemaField("amount", "int"))) ==
+                "IF NOT EXISTS (SELECT 1 FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id WHERE s.name = N'dbo' AND t.name = N'orders')" +
+                " CREATE TABLE dbo.orders (id NVARCHAR(450) NOT NULL, amount INT, PRIMARY KEY (id))"
+        )
+        assert(
+            SqlServerLoader.createTableSql(db, Seq(SchemaField("id", "string"), SchemaField("_json", "string"))) ==
+                "IF NOT EXISTS (SELECT 1 FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id WHERE s.name = N'dbo' AND t.name = N'orders')" +
+                " CREATE TABLE dbo.orders (id NVARCHAR(MAX), _json NVARCHAR(MAX) CHECK (ISJSON(_json) = 1))"
+        )
+        assert(SqlServerLoader.columnDef(SchemaField("note", "string"), isKey = false) == "note NVARCHAR(MAX)")
+        assert(
+            SqlServerLoader.mergeSql("dbo.orders", "#DATRIS_STG_x", Seq("id", "amount", "price"), Seq("id")) ==
+                "MERGE INTO dbo.orders AS t USING #DATRIS_STG_x AS s ON t.id = s.id " +
+                "WHEN MATCHED THEN UPDATE SET t.amount = s.amount, t.price = s.price " +
+                "WHEN NOT MATCHED BY TARGET THEN INSERT (id, amount, price) VALUES (s.id, s.amount, s.price);"
+        )
+    }
+
+    test(
+        "a column, key-field or merge-key name holding that engine's delimiter and a semicolon yields one statement whose only unescaped delimiters bound identifiers"
+    ) {
+        val evil = "x]; DROP TABLE canary; --"
+        val evil2 = "a]]b;]c"
+        for (n <- Seq(evil, evil2)) {
+            val allowed = Set(n)
+            val keyed = db.copy(keyFields = java.util.Arrays.asList("id", n))
+            val fs = Seq(SchemaField("id", "string"), SchemaField(n, "string"), SchemaField("_json", "string"))
+            SqlIdentifierScan.assertOneStatement(SqlServerLoader.createTableSql(keyed, fs), '[', ']', allowed, Seq(n), "createTable")
+            SqlIdentifierScan.assertOneStatement(SqlServerLoader.columnDef(SchemaField(n, "string"), isKey = true), '[', ']', allowed, Seq(n), "columnDef")
+            val keyMerge = SqlIdentifierScan.assertOneStatement(
+                SqlServerLoader.mergeSql("dbo.orders", "#s", Seq("id", n, "amount"), Seq(n)),
+                '[',
+                ']',
+                allowed,
+                Seq(n),
+                "merge on key",
+                trailingSemicolon = true
+            )
+            assert(keyMerge.identifiers.size == 4, "ON t.k = s.k + INSERT (k) + VALUES (s.k): " + keyMerge)
+            val colMerge = SqlIdentifierScan.assertOneStatement(
+                SqlServerLoader.mergeSql("dbo.orders", "#s", Seq("id", n), Seq("id")),
+                '[',
+                ']',
+                allowed,
+                Seq(n),
+                "merge column",
+                trailingSemicolon = true
+            )
+            assert(colMerge.identifiers.size == 4, "SET t.c = s.c + INSERT (c) + VALUES (s.c): " + colMerge)
+        }
+    }
 }

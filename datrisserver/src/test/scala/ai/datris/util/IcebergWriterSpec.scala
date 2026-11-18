@@ -1238,4 +1238,74 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(w.contains("state doc remains the only record of the adoption"), w)
         assert(!w.contains("\n"), w)
     }
+
+    // ---- plans/stories/ingest-column-name-escaping.md: an odd column name ----
+    //  A column named with a space, a double quote and a semicolon either
+    //  round-trips under exactly that name (create, append, MERGE on another
+    //  key, MERGE with it as the key) or the write fails; no other table or
+    //  path is touched. The MERGE ON clause quotes through IcebergWriter.quote.
+
+    private def filesUnder(root: Path, excluding: Path): Set[String] = {
+        val s = Files.walk(root)
+        try s.iterator().asScala.filter(p => !p.startsWith(excluding)).map(p =>
+                root.relativize(p).toString + (if (Files.isDirectory(p)) "/" else "@" + Files.size(p))
+            ).toSet
+        finally s.close()
+    }
+
+    test(
+        "a column named with a space, a double quote and a semicolon either round-trips under exactly that name or fails the write; no other table or path is touched"
+    ) {
+        val odd = "unit \"price\"; drop table canary"
+        val canary = newLocation("odd-names/canary")
+        write(df((1L, "east", 1.0), (2L, "west", 2.0)), canary, "append")
+        val canarySnapshots = snapshots(canary).size
+
+        val location = newLocation("odd-names/t")
+        val oddRoot = java.nio.file.Paths.get(java.net.URI.create(location))
+        val before = filesUnder(warehouse, oddRoot)
+
+        val oddSchema = StructType(Seq(StructField("id", LongType, nullable = false), StructField(odd, StringType, nullable = true)))
+        def oddDf(rows: (Long, String)*): DataFrame = spark.createDataFrame(rows.map { case (i, v) => Row(i, v) }.asJava, oddSchema)
+
+        // Each step runs only if the previous one round-tripped; after a
+        // successful step the table holds exactly the odd name and the values.
+        def state(): Map[Long, String] = {
+            val read = readAll(location)
+            assert(read.columns.toSeq == Seq("id", odd), read.columns.toSeq)
+            assert(loadTable(location).schema().findField(odd) != null)
+            read.collect().map(r => r.getLong(0) -> r.getString(1)).toMap
+        }
+        val steps: Seq[(String, () => Any, Map[Long, String])] = Seq(
+            ("append", () => write(oddDf((1L, "a"), (2L, "b")), location, "append", destSchema = oddSchema), Map(1L -> "a", 2L -> "b")),
+            (
+                "merge on id",
+                () => write(oddDf((2L, "bb"), (3L, "c")), location, "merge", keyFields = Seq("id"), destSchema = oddSchema),
+                Map(1L -> "a", 2L -> "bb", 3L -> "c")
+            ),
+            (
+                "merge on the odd column",
+                () => write(oddDf((9L, "c")), location, "merge", keyFields = Seq(odd), destSchema = oddSchema),
+                Map(1L -> "a", 2L -> "bb", 9L -> "c")
+            )
+        )
+        var failed = false
+        steps.foreach { case (label, run, expected) =>
+            if (!failed) {
+                scala.util.Try(run()) match {
+                    case scala.util.Success(_) =>
+                        info("iceberg " + label + ": round-trips")
+                        assert(state() == expected, label)
+                    case scala.util.Failure(e) =>
+                        info("iceberg " + label + ": fails: " + String.valueOf(e.getMessage).split("\n").head)
+                        failed = true
+                }
+            }
+        }
+
+        // nothing outside the table's own root changed
+        assert(filesUnder(warehouse, oddRoot) == before, "a path outside " + location + " changed")
+        assert(snapshots(canary).size == canarySnapshots, "the canary table gained a snapshot")
+        assert(readAll(canary).count() == 2)
+    }
 }

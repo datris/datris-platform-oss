@@ -245,4 +245,22 @@ class PostgresSqlSpec extends AnyFunSuite {
         for (name <- Seq(null, "", "a\u0000b", "\u0000"))
             intercept[IllegalArgumentException](PostgresSql.jdbcUrl(base, name))
     }
+
+    // ------------------------------------- key list (ingest-column-name-escaping, Decision 7)
+    //  object PostgresSql { def primaryKey(keyFields: Seq[String]): String }
+    //  `primary key (<k>, ...)`: a key matching [A-Za-z0-9_]+ is written bare,
+    //  exactly as v1.60.0's `field + ", "` list did; any other key goes through
+    //  PgIdentifier.quote. PostgresLoader.createTableIfUndefined appends
+    //  ", " + primaryKey(keys) after the column definitions.
+
+    test("a plain key list is unquoted as before; a key holding a double quote is quoted") {
+        assert(PostgresSql.primaryKey(Seq("id")) == "primary key (id)")
+        assert(PostgresSql.primaryKey(Seq("id", "region")) == "primary key (id, region)")
+        assert(PostgresSql.primaryKey(Seq("Region", "order_id_2")) == "primary key (Region, order_id_2)", "mixed case stays bare, as before")
+        assert(PostgresSql.primaryKey(Seq("id", "a\"b")) == "primary key (id, \"a\"\"b\")")
+        assert(PostgresSql.primaryKey(Seq("unit price")) == "primary key (\"unit price\")")
+        val evil = "x\"); DROP TABLE public.canary; --"
+        assertOneStatement(PostgresSql.primaryKey(Seq("id", evil)), Seq(evil), "primaryKey")
+        assert(PostgresSql.primaryKey(Seq("id", evil)) == "primary key (id, " + PgIdentifier.quote(evil) + ")")
+    }
 }
