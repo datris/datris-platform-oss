@@ -1900,6 +1900,11 @@ object PipelineAPIController {
         val changedVectorTables = DestinationTargets.freshVectorTables(candidate, keptFrom, env)
         if (changedVectorTables.nonEmpty && DestinationTargets.unsafeVectorTableName(candidate))
             return badRequest(DestinationTargets.UnsafeVectorTableRefusal)
+        // A null or blank pgvector table has no target to probe, but the
+        // delete still drops "schema"."null" or the blank name: refused unless
+        // the visible stored config carries the identical schema and table.
+        if (DestinationTargets.blankVectorTableName(candidate) && !DestinationTargets.sameVectorTableNames(candidate, keptFrom))
+            return badRequest(DestinationTargets.BlankVectorTableRefusal)
         val candidateTarget = DestinationTargets.targetsOf(candidate, env).find(_.key.family == "objectstore")
         def iceberg(c: PipelineConfig): Boolean =
             c != null && c.destination != null && c.destination.objectStore != null &&

@@ -1959,7 +1959,11 @@ paths:
             pgvector schema or table name with a double quote, or an empty
             schema: `The pgvector schema and table names must not contain
             double quotes, and the schema must not be empty. Choose plain
-            names.` Fix the configuration and save again.
+            names.`, or (restricted users only) a pgvector destination with a
+            missing or blank `tableName` that the saved pipeline does not
+            already have: `A pgvector destination needs a table name. Set
+            destination.pgvector.tableName.` Fix the configuration and save
+            again.
           content:
             application/json:
               schema:

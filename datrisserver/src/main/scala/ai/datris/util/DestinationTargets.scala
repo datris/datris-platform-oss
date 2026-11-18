@@ -184,6 +184,25 @@ object DestinationTargets {
     val UnsafeVectorTableRefusal: String =
         "The pgvector schema and table names must not contain double quotes, and the schema must not be empty. Choose plain names."
 
+    /** True when the config has a pgvector destination whose `tableName` is
+      * null or blank: it has no [[vectorTableTargets]] target (nothing is
+      * probed), yet the delete's DROP still addresses `"schema"."null"` or
+      * the blank name. */
+    def blankVectorTableName(c: PipelineConfig): Boolean =
+        c != null && c.destination != null && c.destination.pgvector != null &&
+            (c.destination.pgvector.tableName == null || c.destination.pgvector.tableName.trim.isEmpty)
+
+    /** True when `stored` has a pgvector destination with exactly the
+      * candidate's `schemaName` and `tableName` (nulls included). */
+    def sameVectorTableNames(candidate: PipelineConfig, stored: PipelineConfig): Boolean = {
+        def names(c: PipelineConfig): Option[(String, String)] =
+            Option(c).flatMap(x => Option(x.destination)).flatMap(d => Option(d.pgvector)).map(p => (p.schemaName, p.tableName))
+        names(candidate).isDefined && names(candidate) == names(stored)
+    }
+
+    /** 400 refusal text for [[blankVectorTableName]]; names nothing. */
+    val BlankVectorTableRefusal: String = "A pgvector destination needs a table name. Set destination.pgvector.tableName."
+
     /** Characters a Hadoop / Spark path read expands as a glob or escape. */
     val GlobCharacters: Set[Char] = Set('*', '?', '[', ']', '{', '}', '\\')
 
