@@ -1931,8 +1931,14 @@ paths:
             reachable, it conflicts with another pipeline's source-of-authority
             declaration, or its vector collection, class or table is already
             used by another pipeline, or (for a caller who cannot see every
-            pipeline) its destination is written by a pipeline it cannot see.
-            Fix the configuration and save again.
+            pipeline) its destination is written by a pipeline it cannot see,
+            or (restricted users only) a new or changed Snowflake, SQL Server or
+            Databricks table or object-store prefix already exists: `The
+            destination <kind> <coordinates> already exists. Choose a table or
+            prefix that does not exist yet, or ask a user with install-wide
+            access to save this destination.` (only the coordinates in the
+            request are named; a missing database, catalog or schema counts as
+            not existing). Fix the configuration and save again.
           content:
             application/json:
               schema:
@@ -1942,7 +1948,12 @@ paths:
                     type: string
                     description: What is wrong with the configuration
         '500':
-          description: Server error (for example the configuration store is unreachable)
+          description: >-
+            Server error (for example the configuration store is unreachable).
+            For a restricted user, also when the check that a new destination
+            does not exist yet could not reach the warehouse or bucket: `Could
+            not check whether the destination already exists; nothing was
+            saved. Try again.`
 
     delete:
       tags: [Pipelines]
@@ -6078,9 +6089,9 @@ paths:
         '403':
           description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope.
         '400':
-          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes. Body: `{"error": "..."}`.'
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed warehouse table or object-store prefix that already exists (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.`). Body: `{"error": "..."}`.'
         '500':
-          description: Error
+          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket; nothing is restored.'
 
   # ── Authentication & Users ─────────────────────────────────
 

@@ -371,6 +371,17 @@ class PipelineAPIController {
                 logger.warn("POST /pipeline " + preserved.name + " rejected: destination in use by a pipeline the caller cannot see")
                 return Left(refused)
             }
+            // Restricted sessions: a new or changed warehouse table or
+            // object-store prefix must not exist yet (else the preview would
+            // read data no pipeline of theirs wrote). Probed with the
+            // candidate's own connection; a failed probe refuses (500).
+            PipelineAPIController
+                .existingDestinationRefusal(request, preserved, existing, others.filter(_ != null), dsEnv, t => DestinationProbe.exists(preserved, t))
+                .foreach { refused =>
+                    logger.warn("POST /pipeline " + preserved.name + " rejected: new destination already exists or could not be checked (HTTP " +
+                        refused.getStatusCode.value + ")")
+                    return Left(refused)
+                }
         }
         PipelineAPIController.authorityRefusal(request, preserved, others).foreach(refused => return Left(refused))
         val note = if (changeNote != null && changeNote.nonEmpty) changeNote
@@ -1633,6 +1644,58 @@ object PipelineAPIController {
                     body.addProperty("error", SharedDatasets.refusalMessage(name))
                     ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString)
                 }
+
+    /** POST /pipeline and version restore, restricted users' sessions only:
+      * each fresh target of the candidate in `DestinationTargets.ProbedFamilies`
+      * that no pipeline the caller can see covers is checked with `exists`
+      * (the candidate's own connection). 400 `ExistsRefusal` naming the
+      * caller's own coordinates on the first one that exists; 500
+      * `ProbeUnavailable` when `exists` throws (nothing else in the body).
+      * `others` is filtered to the visible pipelines here. None for everyone
+      * else (unrestricted sessions, every API key, auth off): no probe. */
+    def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean
+    ): Option[ResponseEntity[String]] = {
+        if (!CapabilityCheck.isRestrictedSession(request) || candidate == null) return None
+        // A stored config the caller cannot see grandfathers nothing.
+        val keptFrom = if (stored != null && visiblePipelines(request, Seq(stored)).isEmpty) null else stored
+        val visible = visiblePipelines(request, Option(others).getOrElse(Nil))
+        val probe = DestinationTargets.toProbe(candidate, keptFrom, visible, env)
+        val it = probe.iterator
+        while (it.hasNext) {
+            val t = it.next()
+            val found =
+                try Right(exists(t))
+                catch {
+                    case scala.util.control.NonFatal(e) =>
+                        auditLogger.warn(
+                            "Destination existence probe failed for pipeline " + candidate.name + " (" + t.key.family + "): " +
+                                Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                        )
+                        Left(e)
+                }
+            found match {
+                case Left(_) =>
+                    return Some(
+                        ResponseEntity
+                            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body[String](ApiErrors.errorBody(DestinationTargets.ProbeUnavailable))
+                    )
+                case Right(true) =>
+                    val body = new JsonObject()
+                    body.addProperty("error", DestinationTargets.ExistsRefusal(SharedDatasets.label(t.key)))
+                    return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString))
+                case Right(false) =>
+            }
+        }
+        None
+    }
 
     /** POST /pipeline: 500 "nothing was saved" when the config read failed
       * and a limited-visibility caller's candidate adds a dataset its stored
