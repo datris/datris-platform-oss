@@ -1,17 +1,22 @@
 # Release Notes
 
-## v1.59.0 — November 17, 2026
+## v1.60.0 — November 18, 2026
 
-**Limit a user to specific catalogs, and rename a pipeline without losing anything.**
+**Delete a pipeline and keep its data, and tighter boundaries for scoped users and API keys.**
 
-- **Scoped access by catalog.** An admin can now narrow an editor or viewer to specific data catalogs under Configuration → Users. Each grant has a level: **view** to see and read, **edit** to also create, update and run, and **own** to also delete, rename and move. Admins always keep install-wide access, and every existing user keeps the access they have today until an admin turns scoped access on for them.
-- **Outside their catalogs, nothing shows.** A scoped user sees only the taps and pipelines in their catalogs everywhere: the tabs, search, lineage, run history, provenance, data discovery, the dashboard signals and MCP tools. Anything else behaves as if it does not exist, so names never leak. Grants follow a catalog when it is renamed. Free-form database queries and table browsing cover the whole install, so they are not available to scoped users.
-- **The Assistant works within the user's catalogs.** It knows which catalogs the signed-in user holds, files new taps and pipelines there, and asks which one when there are several. The create wizards do the same.
-- **Renaming a pipeline keeps everything.** Rename is now a single operation that keeps the destination data, version history, generated scripts, incremental position and the taps that feed the pipeline. In earlier versions the rename on the Pipelines tab was refused for most pipelines and, in the cases where it went through, could remove the destination data. Pipelines synced to Unity Catalog cannot be renamed yet, and a rename waits for a running job to finish.
-- **One pipeline per vector collection.** A pipeline can no longer be created on, or moved onto, a vector collection, class or table that another pipeline already writes to. Pipelines that share one today keep working unchanged.
-- **Deleting a pipeline keeps data another pipeline still uses.** When two pipelines write to the same table or collection, deleting or resetting one of them now leaves the data in place and says so in the result. The data is removed when the last pipeline that writes to it is deleted. Before, the first delete removed it for both.
-- **Hardening for scoped API keys.** Keys limited to a catalog or to their own pipelines are now held to that limit in more places, including lists, lookups and saves. A scoped key may get a refusal where an earlier version accepted the request; keys with install-wide access are unaffected.
-- **Stricter user updates.** Changing a user through the API now rejects a value of the wrong type instead of guessing what was meant.
-- **Security updates.** The mirrored MinIO image moved to the current release, clearing the open vulnerability reports against it. No behaviour change.
+- **Delete a pipeline, keep the data.** Deleting a pipeline can now leave its destination data in place. Ask for it with the keep-data option in the API, the CLI or the MCP delete tool, and the result lists what was kept. Pipelines that write to a vector store cannot be deleted this way yet. A plain delete still removes the configuration and the data, as before.
+- **Scoped users start on new destinations.** A user limited to specific catalogs can no longer point a pipeline at a table, collection or storage location that already exists, unless a pipeline they can see already uses it. This covers saving, restoring an earlier version and renaming. An admin or any user with install-wide access can still adopt existing data.
+- **Scoped users see less about work outside their catalogs.** Provenance fields that identify a feeding tap are left out of search results, Live Read rows and query results when the user cannot see that tap. On Snowflake, SQL Server and Databricks, a scoped user gets a preview of the pipeline's own table and cannot run custom SQL. The Operations chat no longer tells a scoped user about open incidents.
+- **Chats act with the caller's own access.** An API key limited to a catalog, to its own pipelines or to specific capabilities now gets exactly that access in the Assistant and the other chats. Signed-in users and keys with install-wide access are unaffected. Tap scripts can no longer call the chats.
+- **MCP tools list for signed-in users.** The tools list now loads for a user who is signed in without an API key, filtered to their role.
+- **Clearer errors from schema generation.** Invalid or empty input now returns a clear message instead of a server error.
+- **Reserved metadata names.** With provenance stamping on, the platform's own provenance values replace any custom metadata that uses the same names. On Qdrant, Milvus, Chroma and Weaviate, custom metadata named `id`, `text`, `chunk_index`, `filename` or `embedding` is now ignored.
+- **Security hardening.** Several fixes tighten what scoped users and limited API keys can reach. We recommend upgrading.
 
-**Upgrading:** `docker compose pull && docker compose up -d`; the server, UI, MCP server and MinIO images changed. No configuration changes are required and nothing is migrated: scoped access is off for every user until an admin turns it on. Agents using the published skill get the rename and scoped-access guidance with skill 1.7.4. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
+**Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. No configuration changes are required and nothing is migrated. Three things to check:
+
+- If a script already asks a pipeline delete to keep data, that request is now honoured. Earlier versions removed the data anyway.
+- If you label vector chunks with custom metadata named `filename` or another reserved name above, switch to a different name.
+- If an integration calls the chats with a limited API key, it now gets that key's access, and a sign-in failure comes back as an error response instead of an error inside the stream.
+
+Agents using the published skill get the keep-data and new-destination guidance with skill 1.7.9. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
