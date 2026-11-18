@@ -196,11 +196,43 @@ object HiddenTapScrub {
       * value when it has none. The stamper builds the value from the run's
       * own tap name, so the true name is always one of them; a tap name or
       * run time holding `|` only adds candidates. The value vouches for a
-      * readable tap only when every candidate is readable. */
-    private def tapRunNames(value: String): Set[String] =
-        if (value == null || value.isEmpty) Set.empty
-        else if (value.indexOf('|') < 0) Set(value)
-        else value.indices.filter(i => value.charAt(i) == '|' && i > 0).map(i => value.substring(0, i)).toSet
+      * readable tap only when every candidate is readable. Bounded: a value
+      * holding more than [[MaxTapRunPipes]] pipes is not split at all (no
+      * substring, no tap lookup) and counts as naming a tap that cannot be
+      * read, so its row or hit loses the columns (fail closed). Candidates
+      * are shortest first, so the first hidden or unknown one ends a scan. */
+    private def tapRunNames(value: String): TapRunNames =
+        if (value == null || value.isEmpty) TapRunNames.Empty
+        else {
+            var pipes = 0
+            var i = 0
+            while (i < value.length && pipes <= MaxTapRunPipes) {
+                if (value.charAt(i) == '|') pipes += 1
+                i += 1
+            }
+            if (pipes == 0) TapRunNames(Seq(value), unresolvable = false)
+            else if (pipes > MaxTapRunPipes) TapRunNames(Nil, unresolvable = true)
+            else TapRunNames((1 until value.length).filter(value.charAt(_) == '|').map(value.substring(0, _)), unresolvable = false)
+        }
+
+    /** Most `|` a `_datris_tap_run` value may hold and still be split into
+      * candidate tap names ([[tapRunNames]]). The default stamp holds one. */
+    private val MaxTapRunPipes = 8
+
+    /** The candidate tap names of a `_datris_tap_run` value, shortest first;
+      * `unresolvable` when the value held too many pipes to split. */
+    private final case class TapRunNames(names: Seq[String], unresolvable: Boolean) {
+
+        /** True when the value cannot vouch: too many pipes, or any candidate hidden or unknown. */
+        def hides(hidden: String => Boolean): Boolean = unresolvable || names.exists(hidden)
+
+        /** True when the value names a tap (so it decides without run evidence). */
+        def namesTap: Boolean = unresolvable || names.nonEmpty
+    }
+
+    private object TapRunNames {
+        val Empty: TapRunNames = TapRunNames(Nil, unresolvable = false)
+    }
 
     /** The tap named by a `tap:<name>` `_datris_source`. Author text: it can
       * only cause a strip (a hidden name), never vouch for the stamps. */
@@ -209,10 +241,10 @@ object HiddenTapScrub {
 
     /** The tap names a stamped row's `_datris_tap_run` holds ([[tapRunNames]])
       * and the tap its `tap:<name>` source names: see [[stampTaps]]. */
-    private def stampedTaps(row: JsonObject): (Set[String], Option[String]) = {
+    private def stampedTaps(row: JsonObject): (TapRunNames, Option[String]) = {
         def str(f: String): Option[String] =
             if (row.has(f) && row.get(f).isJsonPrimitive) Option(row.get(f).getAsString) else None
-        (str("_datris_tap_run").map(tapRunNames).getOrElse(Set.empty), sourceTap(str("_datris_source")))
+        (str("_datris_tap_run").map(tapRunNames).getOrElse(TapRunNames.Empty), sourceTap(str("_datris_source")))
     }
 
     private def holdsStampColumn(row: JsonObject): Boolean = StampTapColumns.exists(row.has)
@@ -305,8 +337,8 @@ object HiddenTapScrub {
         if (jobHidden) holdsStampColumn(row)
         else {
             val (named, source) = stampedTaps(row)
-            if (named.exists(hidden) || source.exists(hidden)) true
-            else if (feed == null || named.nonEmpty || !holdsNonEmptyStampColumn(row)) false
+            if (named.hides(hidden) || source.exists(hidden)) true
+            else if (feed == null || named.namesTap || !holdsNonEmptyStampColumn(row)) false
             else {
                 val record = rowStr(row, "_datris_run_id")
                     .orElse(Option(feed.runId).filter(_.nonEmpty))
@@ -379,8 +411,8 @@ object HiddenTapScrub {
       * `tap-<name>.csv|json` filename is not among them: it is weighed
       * separately in [[scrubHit]], because a chunk written before
       * `filename` became a reserved metadata key can carry a planted one. */
-    private def stampTaps(hit: java.util.Map[String, Any]): (Set[String], Option[String]) =
-        (hitStr(hit, "_datris_tap_run").map(tapRunNames).getOrElse(Set.empty), sourceTap(hitStr(hit, "_datris_source")))
+    private def stampTaps(hit: java.util.Map[String, Any]): (TapRunNames, Option[String]) =
+        (hitStr(hit, "_datris_tap_run").map(tapRunNames).getOrElse(TapRunNames.Empty), sourceTap(hitStr(hit, "_datris_source")))
 
     /** Vector search hits (already limited to readable writers) with the tap
       * stamp columns ([[StampTapColumns]]) removed from each hit fed by a tap
@@ -436,8 +468,8 @@ object HiddenTapScrub {
         lazy val (stampNamed, sourceNamed) = stampTaps(hit)
         lazy val runId = hitStr(hit, "_datris_run_id")
         val strip = stamped && (
-            renameFile || stampNamed.exists(hidden) || sourceNamed.exists(hidden) ||
-                (stampNamed.isEmpty && {
+            renameFile || stampNamed.hides(hidden) || sourceNamed.exists(hidden) ||
+                (!stampNamed.namesTap && {
                     val record = runId
                         .flatMap(id => Option(run(id)).flatten)
                         .filter(r => r != null && r.input != null && r.pipeline != null && VectorChunkWriter.writerOf(hit).contains(r.pipeline))
