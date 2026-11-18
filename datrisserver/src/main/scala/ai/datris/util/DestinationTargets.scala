@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.PipelineConfig
+import ai.datris.model.{ObjectStore, PipelineConfig}
 
 import java.util.Locale
 
@@ -25,10 +25,16 @@ import java.util.Locale
   * another secret is another account's data. Fresh = the stored config of the
   * same name does not have the same target. A target equal to (object store:
   * equal to or under the prefix of) a target of another pipeline the caller
-  * can see is not probed: the caller can already preview it. */
+  * can see is not probed: the caller can already preview it.
+  *
+  * `exact` carries coordinates the key normalises away but the destination
+  * may not: for SQL Server the raw database, effective schema and table, since
+  * a case-sensitive collation tells `Customers` from `customers`. A change
+  * there alone keeps the target out of [[freshTargets]] (the shared-dataset
+  * key is unchanged) but puts it in [[toProbe]], and a cover needs it equal. */
 object DestinationTargets {
 
-    case class Target(key: SharedDatasets.Key, connection: Seq[String])
+    case class Target(key: SharedDatasets.Key, connection: Seq[String], exact: Seq[String] = Nil)
 
     /** Destination families a pipeline preview reads back. */
     val ProbedFamilies: Set[String] = Set("snowflake", "sqlserver", "databricks", "objectstore")
@@ -51,15 +57,31 @@ object DestinationTargets {
                     val db = c.destination.database
                     Seq(norm(db.credentialsSecret), norm(db.warehouse), norm(db.role))
                 }
-            Target(k, connection)
+            val exact =
+                if (k.family == "sqlserver") {
+                    val db = c.destination.database
+                    Seq(norm(db.dbName), SqlServerConnectionUtil.schemaName(db), Option(db.table).getOrElse(""))
+                } else Nil
+            Target(k, connection, exact)
         }
     }
 
     /** The candidate's targets its stored config (same name; null for a new
       * pipeline) does not have. */
     def freshTargets(candidate: PipelineConfig, stored: PipelineConfig, env: SharedDatasets.Env): Seq[Target] = {
-        val kept = targetsOf(stored, env).toSet
-        targetsOf(candidate, env).filterNot(kept.contains)
+        val kept = targetsOf(stored, env)
+        targetsOf(candidate, env).filterNot(t => kept.exists(k => sameTarget(t, k)))
+    }
+
+    /** Same key and connection (`exact` aside). */
+    private def sameTarget(a: Target, b: Target): Boolean = a.key == b.key && a.connection == b.connection
+
+    /** The candidate's targets the stored config has with the same key and
+      * connection but other exact coordinates (a SQL Server letter-case
+      * change): not fresh, still probed. */
+    def recasedTargets(candidate: PipelineConfig, stored: PipelineConfig, env: SharedDatasets.Env): Seq[Target] = {
+        val kept = targetsOf(stored, env)
+        targetsOf(candidate, env).filter(t => kept.exists(k => sameTarget(t, k)) && !kept.exists(k => sameTarget(t, k) && k.exact == t.exact))
     }
 
     /** True when a caller who can preview `other` can already read `t`: a
@@ -67,7 +89,8 @@ object DestinationTargets {
       * same bucket with the same connection, equal to or under `other`'s
       * prefix on a path-segment boundary. */
     def coveredBy(t: Target, other: Target): Boolean = {
-        if (t == null || other == null || t.key.family != other.key.family || t.connection != other.connection) return false
+        if (t == null || other == null || t.key.family != other.key.family || t.connection != other.connection || t.exact != other.exact)
+            return false
         if (t.key.family == "objectstore") {
             if (t.key.parts.head != other.key.parts.head) false
             else {
@@ -83,12 +106,34 @@ object DestinationTargets {
     /** The fresh targets of `candidate` that no pipeline in `visibleOthers`
       * (another name, one the caller can see) covers: the ones to probe. */
     def toProbe(candidate: PipelineConfig, stored: PipelineConfig, visibleOthers: Seq[PipelineConfig], env: SharedDatasets.Env): Seq[Target] = {
-        val fresh = freshTargets(candidate, stored, env)
+        val fresh = freshTargets(candidate, stored, env) ++ recasedTargets(candidate, stored, env)
         if (fresh.isEmpty) return Nil
         val name = if (candidate == null) null else candidate.name
         val visibleTargets = Option(visibleOthers).getOrElse(Nil).filter(o => o != null && o.name != name).flatMap(o => targetsOf(o, env))
         fresh.filterNot(t => visibleTargets.exists(v => coveredBy(t, v)))
     }
+
+    /** Characters a Hadoop / Spark path read expands as a glob or escape. */
+    val GlobCharacters: Set[Char] = Set('*', '?', '[', ']', '{', '}', '\\')
+
+    /** True when an object-store destination's path is not a plain prefix: a
+      * glob or escape character in `prefixKey` or `destinationBucketOverride`,
+      * a `/` in the bucket, or an empty, `.` or `..` segment in the prefix
+      * (leading and trailing slashes aside). Such a path is read (globbed,
+      * normalised) somewhere other than the key and the probe address. */
+    def unsafeObjectStorePath(os: ObjectStore): Boolean = {
+        if (os == null) return false
+        def globbed(s: String): Boolean = s != null && s.exists(GlobCharacters.contains)
+        val prefix = ObjectStoreSpark.normalizePrefix(os.prefixKey)
+        val badSegment = prefix.nonEmpty && prefix.split("/", -1).exists(seg => seg.isEmpty || seg == "." || seg == "..")
+        globbed(os.prefixKey) || globbed(os.destinationBucketOverride) ||
+        (os.destinationBucketOverride != null && os.destinationBucketOverride.contains("/")) || badSegment
+    }
+
+    /** 400 refusal text for [[unsafeObjectStorePath]]; names nothing. */
+    val UnsafePathRefusal: String =
+        "The object-store prefix and bucket must be plain names: no wildcard or escape characters (* ? [ ] { } \\) " +
+            "and no empty, '.' or '..' path segments. Choose a plain prefix."
 
     /** 400 refusal text; `label` is `SharedDatasets.label` of the caller's
       * own target, so it names nothing the caller did not type. */

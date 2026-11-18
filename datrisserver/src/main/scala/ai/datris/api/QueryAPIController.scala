@@ -119,6 +119,13 @@ class QueryAPIController {
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
+            if (ai.datris.auth.CapabilityCheck.isRestrictedSession(request))
+                QueryAPIController
+                    .restrictedObjectStorePathRefusal(
+                        request,
+                        ai.datris.util.PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
+                    )
+                    .foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = QueryAPIController.restrictedObjectStoreResult(request, ObjectStoreQueryUtil.query(pipelineName, limit))
@@ -425,6 +432,26 @@ object QueryAPIController {
             ) Some(PipelineAPIController.pipelineNotFound(pipelineName))
             else None
         }
+
+    /** Object-store preview for a restricted user's session: 400
+      * `DestinationTargets.UnsafePathRefusal` when the pipeline's stored
+      * prefix or bucket is not a plain path (a glob, escape or `..` segment
+      * would make the read reach past the prefix; a pipeline saved before the
+      * save-time rule could carry one). None for everyone else and for plain
+      * paths. */
+    private[api] def restrictedObjectStorePathRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        config: ai.datris.model.PipelineConfig
+    ): Option[ResponseEntity[String]] =
+        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || config == null || config.destination == null) None
+        else if (!ai.datris.util.DestinationTargets.unsafeObjectStorePath(config.destination.objectStore)) None
+        else
+            Some(
+                ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body[String](ApiErrors.errorBody(ai.datris.util.DestinationTargets.UnsafePathRefusal))
+            )
 
     /** Body text of the 403 a restricted session gets for a caller `sql`. */
     val RestrictedSqlRefusal: String =

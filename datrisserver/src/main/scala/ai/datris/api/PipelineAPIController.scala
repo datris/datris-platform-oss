@@ -1651,8 +1651,14 @@ object PipelineAPIController {
       * (the candidate's own connection). 400 `ExistsRefusal` naming the
       * caller's own coordinates on the first one that exists; 500
       * `ProbeUnavailable` when `exists` throws (nothing else in the body).
-      * `others` is filtered to the visible pipelines here. None for everyone
-      * else (unrestricted sessions, every API key, auth off): no probe. */
+      * Before any probe: 400 `UnsafePathRefusal` for a fresh object-store
+      * target whose path is not a plain prefix, and, for a new pipeline (no
+      * stored config the caller can see) with an object-store Iceberg
+      * destination, 400 `ExistsRefusal` when Unity Catalog state kept for the
+      * name records a catalog commit (its read loads that table; a failed
+      * state read is the 500). `others` is filtered to the visible pipelines
+      * here. None for everyone else (unrestricted sessions, every API key,
+      * auth off): no probe. */
     def existingDestinationRefusal(
         request: HttpServletRequest,
         candidate: PipelineConfig,
@@ -1660,10 +1666,52 @@ object PipelineAPIController {
         others: Seq[PipelineConfig],
         env: SharedDatasets.Env,
         exists: DestinationTargets.Target => Boolean
+    ): Option[ResponseEntity[String]] =
+        existingDestinationRefusal(request, candidate, stored, others, env, exists, DestinationProbe.catalogCommitted)
+
+    /** [[existingDestinationRefusal]] with the Unity Catalog state check given. */
+    def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        catalogCommitted: String => Boolean
     ): Option[ResponseEntity[String]] = {
         if (!CapabilityCheck.isRestrictedSession(request) || candidate == null) return None
         // A stored config the caller cannot see grandfathers nothing.
         val keptFrom = if (stored != null && visiblePipelines(request, Seq(stored)).isEmpty) null else stored
+        def badRequest(message: String): Option[ResponseEntity[String]] =
+            Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(message)))
+        val unavailable: Option[ResponseEntity[String]] =
+            Some(
+                ResponseEntity
+                    .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body[String](ApiErrors.errorBody(DestinationTargets.ProbeUnavailable))
+            )
+        val freshObjectStore = DestinationTargets.freshTargets(candidate, keptFrom, env).find(_.key.family == "objectstore")
+        if (freshObjectStore.isDefined && DestinationTargets.unsafeObjectStorePath(candidate.destination.objectStore))
+            return badRequest(DestinationTargets.UnsafePathRefusal)
+        val iceberg = Option(candidate.destination).flatMap(d => Option(d.objectStore)).exists(o => "iceberg".equalsIgnoreCase(o.fileFormat))
+        if (keptFrom == null && iceberg && freshObjectStore.isDefined) {
+            val committed =
+                try Right(catalogCommitted(candidate.name))
+                catch {
+                    case scala.util.control.NonFatal(e) =>
+                        auditLogger.warn(
+                            "Unity Catalog state read failed for the destination check of pipeline " + candidate.name + ": " +
+                                Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                        )
+                        Left(e)
+                }
+            committed match {
+                case Left(_) => return unavailable
+                case Right(true) => return badRequest(DestinationTargets.ExistsRefusal(SharedDatasets.label(freshObjectStore.get.key)))
+                case Right(false) =>
+            }
+        }
         val visible = visiblePipelines(request, Option(others).getOrElse(Nil))
         val probe = DestinationTargets.toProbe(candidate, keptFrom, visible, env)
         val it = probe.iterator
@@ -1680,17 +1728,8 @@ object PipelineAPIController {
                         Left(e)
                 }
             found match {
-                case Left(_) =>
-                    return Some(
-                        ResponseEntity
-                            .status(HttpStatus.INTERNAL_SERVER_ERROR)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .body[String](ApiErrors.errorBody(DestinationTargets.ProbeUnavailable))
-                    )
-                case Right(true) =>
-                    val body = new JsonObject()
-                    body.addProperty("error", DestinationTargets.ExistsRefusal(SharedDatasets.label(t.key)))
-                    return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString))
+                case Left(_) => return unavailable
+                case Right(true) => return badRequest(DestinationTargets.ExistsRefusal(SharedDatasets.label(t.key)))
                 case Right(false) =>
             }
         }

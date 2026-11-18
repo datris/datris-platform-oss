@@ -8,6 +8,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.model.{Database, PipelineConfig}
 import org.slf4j.{Logger, LoggerFactory}
 
+import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
+
 import java.io.FileNotFoundException
 import java.sql.{Connection, SQLException}
 import scala.util.Try
@@ -90,15 +92,29 @@ object DestinationProbe {
     // ------------------------------------------------------------ Databricks
 
     /** `<catalog>.information_schema.tables`, the loader's `tableExists`
-      * query. Opened without ConnCatalog / ConnSchema; a missing catalog
-      * (its information_schema not found) counts as "does not exist". */
+      * query (tables and views). Opened without ConnCatalog / ConnSchema. A
+      * missing catalog (NO_SUCH_CATALOG / CATALOG_NOT_FOUND) counts as "does
+      * not exist". A catalog without an information_schema (`hive_metastore`,
+      * `spark_catalog`: TABLE_OR_VIEW_NOT_FOUND on the view itself) falls back
+      * to `DESCRIBE TABLE <catalog>.<schema>.<table>`, quoted identifiers only:
+      * it answers for whatever the preview's `SELECT *` would resolve, and a
+      * not-found table, schema or catalog there counts as "does not exist". */
     private def databricks(db: Database): Boolean = {
         import DatabricksConnectionUtil.{effectiveName, ident}
         require(!blank(db.schema), "databricks destination without schema")
         val sql = "SELECT COUNT(*) FROM " + ident(db.dbName) + ".information_schema.tables WHERE lower(table_schema) = ? AND lower(table_name) = ?"
+        val describe = "DESCRIBE TABLE " + ident(db.dbName) + "." + ident(db.schema) + "." + ident(db.table)
         try
             DatabricksConnectionUtil.withConnection(db.copy(dbName = null, schema = null)) { conn =>
-                countAboveZero(conn, sql, Seq(effectiveName(db.schema), effectiveName(db.table)))
+                try countAboveZero(conn, sql, Seq(effectiveName(db.schema), effectiveName(db.table)))
+                catch {
+                    case e: SQLException if !databricksMissingCatalog(e) && databricksInformationSchemaMissing(e) =>
+                        val st = conn.createStatement()
+                        try {
+                            try { Try(st.executeQuery(describe).close()); true }
+                            catch { case x: SQLException if databricksObjectMissing(x) => false }
+                        } finally Try(st.close())
+                }
             }
         catch {
             case e: Exception if databricksMissingCatalog(e) =>
@@ -107,22 +123,35 @@ object DestinationProbe {
         }
     }
 
+    private def upperMessages(e: Throwable): Seq[String] =
+        causes(e).collect { case s: SQLException => Option(s.getMessage).getOrElse("").toUpperCase(java.util.Locale.ROOT) }
+
+    /** The catalog itself is absent. */
     private[util] def databricksMissingCatalog(e: Throwable): Boolean =
-        causes(e).exists {
-            case s: SQLException =>
-                val m = Option(s.getMessage).getOrElse("").toUpperCase(java.util.Locale.ROOT)
-                m.contains("NO_SUCH_CATALOG") || m.contains("CATALOG_NOT_FOUND") || m.contains("TABLE_OR_VIEW_NOT_FOUND")
-            case _ => false
-        }
+        upperMessages(e).exists(m => m.contains("NO_SUCH_CATALOG") || m.contains("CATALOG_NOT_FOUND"))
+
+    /** The `information_schema.tables` view is absent (a non-Unity catalog);
+      * says nothing about the table. */
+    private[util] def databricksInformationSchemaMissing(e: Throwable): Boolean =
+        upperMessages(e).exists(_.contains("TABLE_OR_VIEW_NOT_FOUND"))
+
+    /** `DESCRIBE TABLE` found no table, schema or catalog. */
+    private[util] def databricksObjectMissing(e: Throwable): Boolean =
+        upperMessages(e).exists(m =>
+            m.contains("TABLE_OR_VIEW_NOT_FOUND") || m.contains("SCHEMA_NOT_FOUND") || m.contains("NO_SUCH_CATALOG") ||
+                m.contains("CATALOG_NOT_FOUND")
+        )
 
     // ------------------------------------------------------------ SQL Server
 
-    /** The loader's `sys.tables JOIN sys.schemas` test. The connection opens
-      * the destination database; a database the login cannot open (error
-      * 4060: missing, or no user for the login there) counts as "does not
-      * exist"; a missing schema simply matches nothing. */
+    /** Every object `SELECT * FROM schema.table` can resolve (tables, views,
+      * synonyms, system views): `sys.all_objects JOIN sys.schemas`, compared
+      * under the database collation. The connection opens the destination
+      * database; a database the login cannot open (error 4060: missing, or no
+      * user for the login there) counts as "does not exist"; a missing schema
+      * simply matches nothing. */
     private def sqlServer(db: Database): Boolean = {
-        val sql = "SELECT COUNT(*) FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id WHERE s.name = ? AND t.name = ?"
+        val sql = "SELECT COUNT(*) FROM sys.all_objects o JOIN sys.schemas s ON o.schema_id = s.schema_id WHERE s.name = ? AND o.name = ?"
         try
             SqlServerConnectionUtil.withConnection(db) { conn =>
                 countAboveZero(conn, sql, Seq(SqlServerConnectionUtil.schemaName(db), db.table))
@@ -153,18 +182,43 @@ object DestinationProbe {
         val prefix = ObjectStoreSpark.normalizePrefix(os.prefixKey)
         val spark = SparkSessionManager.getOrCreate()
         ObjectStoreSpark.applyPerBucketConfig(spark, bucket, os)
-        val path = new org.apache.hadoop.fs.Path("s3a://" + bucket + "/" + prefix)
+        val path = new Path("s3a://" + bucket + "/" + prefix)
         // The FileSystem is the shared cached instance: never closed here.
-        val fs = path.getFileSystem(spark.sparkContext.hadoopConfiguration)
-        try fs.listFiles(path, true).hasNext
-        catch {
+        anyObjectUnder(path.getFileSystem(spark.sparkContext.hadoopConfiguration), path)
+    }
+
+    /** True when `path` (expanded as a glob, as a Spark read expands it, and
+      * normalised by `Path`) matches a file or a directory holding any file.
+      * A path or bucket that is not there is false; any other failure throws. */
+    private[util] def anyObjectUnder(fs: FileSystem, path: Path): Boolean =
+        try {
+            val matched = Option(fs.globStatus(path)).getOrElse(Array.empty[FileStatus])
+            matched.exists { st =>
+                if (st.isFile) true
+                else
+                    try fs.listFiles(st.getPath, true).hasNext
+                    catch { case e: Exception if objectStoreMissing(e) => false }
+            }
+        } catch {
             case e: Exception if objectStoreMissing(e) => false
         }
-    }
 
     private[util] def objectStoreMissing(e: Throwable): Boolean =
         causes(e).exists {
             case _: FileNotFoundException => true
-            case x => x.getClass.getSimpleName == "UnknownStoreException"
+            case _: org.apache.hadoop.fs.s3a.UnknownStoreException => true
+            case _ => false
         }
+
+    // ------------------------------------------------------------ Unity Catalog state
+
+    /** True when the Unity Catalog sync state kept for `pipeline` records a
+      * catalog commit (`catalogMode` managed or rest). An object-store Iceberg
+      * read of a pipeline of that name loads the recorded table, which for a
+      * managed commit lives outside the prefix. A failed read throws. */
+    def catalogCommitted(pipeline: String): Boolean = committed(UnityCatalogSyncIO.read(pipeline))
+
+    private[util] def committed(doc: ai.datris.model.UnityCatalogSyncState): Boolean =
+        doc != null && (IcebergRestSession.managedCommitted(doc) ||
+            (doc.catalogMode == "rest" && doc.restMetadataLocation != null && doc.lastRestCommitAt != null))
 }
