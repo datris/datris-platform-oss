@@ -140,7 +140,7 @@ class RestrictedDestinationHardeningSpec extends AnyFunSuite {
         val probe = new Counter[DestinationTargets.Target, Boolean](_ => false)
         val committed = new Counter[String, Boolean](_ == "dead_managed")
         val err = errorOf(refuse(bob, os("dead_managed", "fresh_prefix", format = "iceberg"), null, Nil, probe, committed), 400)
-        assert(err == DestinationTargets.ExistsRefusal("object-store prefix dev-data.fresh_prefix"), err)
+        assert(err == DestinationTargets.NameCommittedRefusal, err)
         assert(!err.contains("dead_managed"), err)
         assert(committed.calls == 1)
         assert(probe.calls == 0)
@@ -162,7 +162,7 @@ class RestrictedDestinationHardeningSpec extends AnyFunSuite {
         // a new object-store pipeline of any format: read, refused
         for (fmt <- Seq("parquet", "orc", "iceberg")) {
             val err = errorOf(refuse(bob, os("dead_managed", "fresh_" + fmt, format = fmt), null, Nil, probe, committed), 400)
-            assert(err == DestinationTargets.ExistsRefusal("object-store prefix dev-data.fresh_" + fmt), err)
+            assert(err == DestinationTargets.NameCommittedRefusal, err)
         }
         assert(committed.calls == 3)
         // a stored Iceberg pipeline the caller can see keeps its own state: re-saved or retargeted, not read
@@ -186,12 +186,12 @@ class RestrictedDestinationHardeningSpec extends AnyFunSuite {
         val probe = new Counter[DestinationTargets.Target, Boolean](_ => false)
         val committed = new Counter[String, Boolean](_ == "dead_managed")
         // step 1, a parquet create under that name: already refused
-        assert(errorOf(refuse(bob, os("dead_managed", "fresh"), null, Nil, probe, committed), 400).contains("already exists"))
+        assert(errorOf(refuse(bob, os("dead_managed", "fresh"), null, Nil, probe, committed), 400) == DestinationTargets.NameCommittedRefusal)
         // step 2, a stored parquet config (saved by anyone) flipped to Iceberg, target unchanged
         val storedParquet = os("dead_managed", "fresh")
         val flipped = os("dead_managed", "fresh", format = "iceberg")
         val err = errorOf(refuse(bob, flipped, storedParquet, Seq(storedParquet), probe, committed), 400)
-        assert(err == DestinationTargets.ExistsRefusal("object-store prefix dev-data.fresh"), err)
+        assert(err == DestinationTargets.NameCommittedRefusal, err)
         // a stored pipeline with no object store gaining an Iceberg one: read too
         assert(refuse(bob, flipped, sqls("dead_managed", "t1"), Nil, probe, committed).isDefined)
         // the same flip for a name with no kept commit goes ahead

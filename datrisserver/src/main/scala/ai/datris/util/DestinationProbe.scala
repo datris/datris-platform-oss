@@ -10,7 +10,12 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 
+import ai.datris.model.{TenantContext, UserContext}
+
 import java.io.FileNotFoundException
+import java.util.concurrent.{Callable, ExecutionException, SynchronousQueue, ThreadFactory, ThreadPoolExecutor, TimeUnit, TimeoutException}
+import java.util.concurrent.atomic.AtomicInteger
+import scala.concurrent.duration._
 import java.sql.{Connection, SQLException, Statement}
 import scala.util.Try
 
@@ -26,12 +31,79 @@ import scala.util.Try
 object DestinationProbe {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
-    def exists(c: PipelineConfig, t: DestinationTargets.Target): Boolean = {
+    /** Deadline for the whole destination check of one save (every probe
+      * and the Unity Catalog state read), and the JDBC login / network /
+      * statement timeout of each probe connection, so an abandoned probe's
+      * connection is closed by the driver soon after. */
+    val DefaultDeadline: FiniteDuration = 30.seconds
+
+    /** Thrown when a deadline-bounded call did not finish in time (the
+      * caller answers 500; nothing is saved). */
+    class DeadlineExceeded(what: String, timeout: FiniteDuration) extends RuntimeException(what + " did not finish within " + timeout)
+
+    private val threadCounter = new AtomicInteger(0)
+
+    /** Daemon worker pool for probes, capped so hung probes cannot pile up
+      * threads without bound; a full pool refuses (the save answers 500). */
+    private lazy val pool: ThreadPoolExecutor = {
+        val tf = new ThreadFactory {
+            def newThread(r: Runnable): Thread = {
+                val t = new Thread(r, "destination-probe-" + threadCounter.incrementAndGet())
+                t.setDaemon(true)
+                t
+            }
+        }
+        new ThreadPoolExecutor(0, 16, 60L, TimeUnit.SECONDS, new SynchronousQueue[Runnable](), tf)
+    }
+
+    /** Run `body` on a probe worker and wait at most `timeout` for it. On
+      * time-out the worker is interrupted (an S3A / SDK retry pause or a
+      * Mongo wait ends there) and [[DeadlineExceeded]] is thrown; `body`'s own
+      * failure is rethrown as is. The request's tenant environment is the only
+      * request state carried over: the worker gets it, never the session user,
+      * and both thread-locals are cleared when `body` ends, so nothing from one
+      * request is left on a pooled thread. */
+    def withDeadline[T](timeout: FiniteDuration, what: String = "destination check")(body: => T): T = {
+        if (timeout.toNanos <= 0) throw new DeadlineExceeded(what, timeout)
+        val tenant = TenantContext.get()
+        val task = new Callable[T] {
+            def call(): T = {
+                TenantContext.clear()
+                UserContext.clear()
+                tenant.foreach(TenantContext.set)
+                try body
+                finally {
+                    TenantContext.clear()
+                    UserContext.clear()
+                }
+            }
+        }
+        val future = pool.submit(task)
+        try future.get(timeout.toNanos, TimeUnit.NANOSECONDS)
+        catch {
+            case _: TimeoutException =>
+                future.cancel(true)
+                logger.warn("Destination probe: " + what + " did not finish within " + timeout + "; abandoned (worker interrupted)")
+                throw new DeadlineExceeded(what, timeout)
+            case e: ExecutionException => throw Option(e.getCause).getOrElse(e)
+            case e: InterruptedException =>
+                future.cancel(true)
+                Thread.currentThread().interrupt()
+                throw e
+        }
+    }
+
+    def exists(c: PipelineConfig, t: DestinationTargets.Target): Boolean = exists(c, t, DefaultDeadline)
+
+    /** As above; `timeout` sets the JDBC login, network and statement
+      * timeouts of the probe's connection. */
+    def exists(c: PipelineConfig, t: DestinationTargets.Target, timeout: FiniteDuration): Boolean = {
         require(c != null && c.destination != null && t != null, "no destination to probe")
+        val seconds = math.max(1L, timeout.toSeconds).toInt
         t.key.family match {
-            case "snowflake" => snowflake(database(c))
-            case "databricks" => databricks(database(c))
-            case "sqlserver" => sqlServer(database(c))
+            case "snowflake" => snowflake(database(c), seconds)
+            case "databricks" => databricks(database(c), seconds)
+            case "sqlserver" => sqlServer(database(c), seconds)
             case "objectstore" => objectStore(c)
             case other => throw new IllegalArgumentException("no existence probe for destination family " + other)
         }
@@ -48,9 +120,10 @@ object DestinationProbe {
 
     /** One prepared statement with bound string parameters; true when its
       * first row's first column is above zero. */
-    private def countAboveZero(conn: Connection, sql: String, params: Seq[String]): Boolean = {
+    private def countAboveZero(conn: Connection, sql: String, params: Seq[String], seconds: Int): Boolean = {
         val ps = conn.prepareStatement(sql)
         try {
+            Try(ps.setQueryTimeout(seconds))
             params.zipWithIndex.foreach { case (p, i) => ps.setString(i + 1, p) }
             val rs = ps.executeQuery()
             try rs.next() && rs.getLong(1) > 0
@@ -68,13 +141,13 @@ object DestinationProbe {
       * database or schema so a missing one cannot fail the login; a missing
       * database is Snowflake error 2003 ("does not exist or not authorized")
       * and counts as "does not exist". */
-    private def snowflake(db: Database): Boolean = {
+    private def snowflake(db: Database, seconds: Int): Boolean = {
         import SnowflakeConnectionUtil.{effectiveName, ident}
         require(!blank(db.schema), "snowflake destination without schema")
         val sql = "SELECT COUNT(*) FROM " + ident(db.dbName) + ".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
         try
-            SnowflakeConnectionUtil.withConnection(db.copy(dbName = null, schema = null)) { conn =>
-                countAboveZero(conn, sql, Seq(effectiveName(db.schema), effectiveName(db.table)))
+            SnowflakeConnectionUtil.withConnection(db.copy(dbName = null, schema = null), timeoutSeconds = Some(seconds)) { conn =>
+                countAboveZero(conn, sql, Seq(effectiveName(db.schema), effectiveName(db.table)), seconds)
             }
         catch {
             case e: Exception if snowflakeMissingDatabase(e) =>
@@ -99,17 +172,18 @@ object DestinationProbe {
       * to `DESCRIBE TABLE <catalog>.<schema>.<table>`, quoted identifiers only:
       * it answers for whatever the preview's `SELECT *` would resolve, and a
       * not-found table, schema or catalog there counts as "does not exist". */
-    private def databricks(db: Database): Boolean = {
+    private def databricks(db: Database, seconds: Int): Boolean = {
         import DatabricksConnectionUtil.{effectiveName, ident}
         require(!blank(db.schema), "databricks destination without schema")
         val sql = "SELECT COUNT(*) FROM " + ident(db.dbName) + ".information_schema.tables WHERE lower(table_schema) = ? AND lower(table_name) = ?"
         val describe = "DESCRIBE TABLE " + ident(db.dbName) + "." + ident(db.schema) + "." + ident(db.table)
         try
-            DatabricksConnectionUtil.withConnection(db.copy(dbName = null, schema = null)) { conn =>
-                try countAboveZero(conn, sql, Seq(effectiveName(db.schema), effectiveName(db.table)))
+            DatabricksConnectionUtil.withConnection(db.copy(dbName = null, schema = null), timeoutSeconds = Some(seconds)) { conn =>
+                try countAboveZero(conn, sql, Seq(effectiveName(db.schema), effectiveName(db.table)), seconds)
                 catch {
                     case e: SQLException if !databricksMissingCatalog(e) && databricksInformationSchemaMissing(e) =>
                         val st = conn.createStatement()
+                        Try(st.setQueryTimeout(seconds))
                         try describeExists(st, describe)
                         finally Try(st.close())
                 }
@@ -160,11 +234,11 @@ object DestinationProbe {
       * database; a database the login cannot open (error 4060: missing, or no
       * user for the login there) counts as "does not exist"; a missing schema
       * simply matches nothing. */
-    private def sqlServer(db: Database): Boolean = {
+    private def sqlServer(db: Database, seconds: Int): Boolean = {
         val sql = "SELECT COUNT(*) FROM sys.all_objects o JOIN sys.schemas s ON o.schema_id = s.schema_id WHERE s.name = ? AND o.name = ?"
         try
-            SqlServerConnectionUtil.withConnection(db) { conn =>
-                countAboveZero(conn, sql, Seq(SqlServerConnectionUtil.schemaName(db), db.table))
+            SqlServerConnectionUtil.withConnection(db, timeoutSeconds = Some(seconds)) { conn =>
+                countAboveZero(conn, sql, Seq(SqlServerConnectionUtil.schemaName(db), db.table), seconds)
             }
         catch {
             case e: Exception if sqlServerMissingDatabase(e) =>

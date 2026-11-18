@@ -29,8 +29,9 @@ object SqlServerConnectionUtil {
     /** Resolve the pipeline's `credentialsSecret`, open a connection to
      *  `dbName`, run `f`, and close the connection. `onInfo` lets callers mirror
      *  progress into their own status log (the loader routes it to the job
-     *  status). */
-    def withConnection[T](db: Database, onInfo: String => Unit = _ => ())(f: Connection => T): T = {
+     *  status). `timeoutSeconds` (None for loaders and queries: driver
+     *  defaults) bounds login, each socket read and each statement. */
+    def withConnection[T](db: Database, onInfo: String => Unit = _ => (), timeoutSeconds: Option[Int] = None)(f: Connection => T): T = {
         val creds = CredentialResolver.resolveSqlServer(db.credentialsSecret)
 
         Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
@@ -42,8 +43,15 @@ object SqlServerConnectionUtil {
         var conn: Connection = null
         try {
             conn =
-                try DriverManager.getConnection(url, connectionProperties(creds))
-                catch {
+                try {
+                    val props = connectionProperties(creds)
+                    timeoutSeconds.foreach { s =>
+                        props.setProperty("loginTimeout", s.toString)
+                        props.setProperty("socketTimeout", (s * 1000L).toString)
+                        props.setProperty("queryTimeout", s.toString)
+                    }
+                    DriverManager.getConnection(url, props)
+                } catch {
                     case e: SQLException => throw connectError(e, creds, db.dbName)
                 }
             onInfo("SQL Server connection acquired")

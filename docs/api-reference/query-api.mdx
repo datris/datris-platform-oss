@@ -120,7 +120,7 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 
 Read rows from a pipeline's object store destination (MinIO or S3). The pipeline name selects the bucket, prefix, and credentials — the caller never supplies connection details.
 
-For a restricted user: the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.
+For a restricted user: the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`. When the pipeline's saved `prefixKey` or `destinationBucketOverride` is not a plain path (a wildcard or escape character `* ? [ ] { } \`, leading or trailing spaces, or an empty, `.` or `..` segment), the query is refused with `400` and `The object-store prefix and bucket must be plain names: no wildcard or escape characters (* ? [ ] { } \), no leading or trailing spaces and no empty, '.' or '..' path segments. Choose a plain prefix.`; change the prefix to preview it.
 
 ```
 POST /api/v1/query/objectstore

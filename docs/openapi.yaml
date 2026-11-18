@@ -1942,8 +1942,10 @@ paths:
             and a letter-case change to the table name is checked again; a new
             object-store pipeline of any format, or a save that turns a stored
             pipeline into an object-store Iceberg one, whose name has kept
-            Unity Catalog sync state recording a catalog commit counts as
-            existing), or (restricted users only) an object-store prefix or
+            Unity Catalog sync state recording a catalog commit is refused with
+            `A pipeline of this name has an Iceberg table committed through
+            Unity Catalog on record. Choose another pipeline name, or ask a
+            user with install-wide access to save this destination.`), or (restricted users only) an object-store prefix or
             bucket is not a plain path (a wildcard or escape character
             `* ? [ ] { } \`, leading or trailing spaces, or an empty, `.` or
             `..` segment): `The object-store prefix and bucket must be plain
@@ -1963,7 +1965,8 @@ paths:
           description: >-
             Server error (for example the configuration store is unreachable).
             For a restricted user, also when the check that a new destination
-            does not exist yet could not reach the warehouse or bucket: `Could
+            does not exist yet could not reach the warehouse or bucket, or did
+            not finish within 30 seconds: `Could
             not check whether the destination already exists; nothing was
             saved. Try again.`
 
@@ -6104,9 +6107,9 @@ paths:
         '403':
           description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope.
         '400':
-          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed warehouse table or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.`). Body: `{"error": "..."}`.'
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed warehouse table or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`). Body: `{"error": "..."}`.'
         '500':
-          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket; nothing is restored.'
+          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket or did not finish within 30 seconds; nothing is restored.'
 
   # ── Authentication & Users ─────────────────────────────────
 

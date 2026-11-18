@@ -24,8 +24,10 @@ object SnowflakeConnectionUtil {
     /** Resolve the pipeline's `credentialsSecret`, open a connection with the
      *  config's db/schema/warehouse/role, run `f`, and clean up the connection
      *  and the temporary key file. `onInfo` lets callers mirror progress into
-     *  their own status log (the loader routes it to the job status). */
-    def withConnection[T](db: Database, onInfo: String => Unit = _ => ())(f: Connection => T): T = {
+     *  their own status log (the loader routes it to the job status).
+     *  `timeoutSeconds` (None for loaders and queries: driver defaults) bounds
+     *  login, each network read and each statement. */
+    def withConnection[T](db: Database, onInfo: String => Unit = _ => (), timeoutSeconds: Option[Int] = None)(f: Connection => T): T = {
         val creds = CredentialResolver.resolveSnowflake(db.credentialsSecret)
 
         Class.forName("net.snowflake.client.jdbc.SnowflakeDriver")
@@ -39,6 +41,11 @@ object SnowflakeConnectionUtil {
             if (db.schema != null) properties.setProperty("schema", db.schema)
             if (db.warehouse != null) properties.setProperty("warehouse", db.warehouse)
             if (db.role != null) properties.setProperty("role", db.role)
+            timeoutSeconds.foreach { s =>
+                properties.setProperty("loginTimeout", s.toString)
+                properties.setProperty("networkTimeout", (s * 1000L).toString)
+                properties.setProperty("queryTimeout", s.toString)
+            }
 
             // Key-pair auth is the default (write the PEM to a temp file and let the
             // driver parse/decrypt it — handles encrypted keys without BouncyCastle).

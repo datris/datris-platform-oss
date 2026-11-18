@@ -710,7 +710,7 @@ class PipelineAPIController {
                     ucStateExists,
                     priorAttempt,
                     hiddenAlias,
-                    DestinationProbe.catalogCommitted
+                    n => DestinationProbe.withDeadline(DestinationProbe.DefaultDeadline, "Unity Catalog state read")(DestinationProbe.catalogCommitted(n))
                 )
                     .foreach { refused =>
                         logger.warn("POST /pipelines/" + name + "/rename refused: HTTP " + refused.getStatusCode.value)
@@ -1677,9 +1677,10 @@ object PipelineAPIController {
       * changed SQL Server table named `#...`; then, when the candidate has an
       * object-store destination and either has no stored config the caller
       * can see (any format) or turns a stored config into Iceberg, 400
-      * `ExistsRefusal` when Unity Catalog state kept for the name records a
-      * catalog commit (an Iceberg read of the name loads that table, wherever
-      * the catalog put it; a failed state read is the 500). A stored Iceberg
+      * `NameCommittedRefusal` when Unity Catalog state kept for the name
+      * records a catalog commit (an Iceberg read of the name
+      * loads that table, wherever the catalog put it; a failed state read is
+      * the 500). A stored Iceberg
       * config the caller can see keeps its own state unchecked; a flip back
       * to Iceberg cannot tell its own earlier commit from a deleted
       * pipeline's, so it is refused (fail closed). `others` is filtered to
@@ -1699,7 +1700,8 @@ object PipelineAPIController {
     ): Option[ResponseEntity[String]] =
         existingDestinationRefusal(request, candidate, stored, others, env, exists, _ => false)
 
-    /** [[existingDestinationRefusal]] with the Unity Catalog state check given. */
+    /** [[existingDestinationRefusal]] with the Unity Catalog state check
+      * given, under `DestinationProbe.DefaultDeadline`. */
     def existingDestinationRefusal(
         request: HttpServletRequest,
         candidate: PipelineConfig,
@@ -1708,8 +1710,27 @@ object PipelineAPIController {
         env: SharedDatasets.Env,
         exists: DestinationTargets.Target => Boolean,
         catalogCommitted: String => Boolean
+    ): Option[ResponseEntity[String]] =
+        existingDestinationRefusal(request, candidate, stored, others, env, exists, catalogCommitted, DestinationProbe.DefaultDeadline)
+
+    /** [[existingDestinationRefusal]] with the deadline given: the Unity
+      * Catalog state read and every probe together get at most `deadline`
+      * (each runs on a probe worker, `DestinationProbe.withDeadline`); past
+      * it the save answers 500 `ProbeUnavailable` and nothing is saved. */
+    def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        catalogCommitted: String => Boolean,
+        deadline: scala.concurrent.duration.FiniteDuration
     ): Option[ResponseEntity[String]] = {
         if (!CapabilityCheck.isRestrictedSession(request) || candidate == null) return None
+        val deadlineAt = System.nanoTime() + deadline.toNanos
+        def bounded[T](what: String)(body: => T): T =
+            DestinationProbe.withDeadline(scala.concurrent.duration.Duration.fromNanos(deadlineAt - System.nanoTime()), what)(body)
         // A stored config the caller cannot see grandfathers nothing.
         val keptFrom = if (stored != null && visiblePipelines(request, Seq(stored)).isEmpty) null else stored
         def badRequest(message: String): Option[ResponseEntity[String]] =
@@ -1732,7 +1753,7 @@ object PipelineAPIController {
                 "iceberg".equalsIgnoreCase(Option(c.destination.objectStore.fileFormat).map(_.trim).orNull)
         if (candidateTarget.isDefined && (keptFrom == null || (iceberg(candidate) && !iceberg(keptFrom)))) {
             val committed =
-                try Right(catalogCommitted(candidate.name))
+                try Right(bounded("Unity Catalog state read")(catalogCommitted(candidate.name)))
                 catch {
                     case scala.util.control.NonFatal(e) =>
                         auditLogger.warn(
@@ -1743,7 +1764,7 @@ object PipelineAPIController {
                 }
             committed match {
                 case Left(_) => return unavailable
-                case Right(true) => return badRequest(DestinationTargets.ExistsRefusal(SharedDatasets.label(candidateTarget.get.key)))
+                case Right(true) => return badRequest(DestinationTargets.NameCommittedRefusal)
                 case Right(false) =>
             }
         }
@@ -1753,7 +1774,7 @@ object PipelineAPIController {
         while (it.hasNext) {
             val t = it.next()
             val found =
-                try Right(exists(t))
+                try Right(bounded("destination probe (" + t.key.family + ")")(exists(t)))
                 catch {
                     case scala.util.control.NonFatal(e) =>
                         auditLogger.warn(

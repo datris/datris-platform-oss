@@ -150,6 +150,13 @@ object DestinationTargets {
     val TempTableRefusal: String =
         "A SQL Server temporary table (a name starting with #) cannot be a pipeline destination. Choose another table name."
 
+    /** 400 refusal text when Unity Catalog state kept for the pipeline's
+      * name records a catalog commit: the remedy is another name, not
+      * another prefix. Names nothing. */
+    val NameCommittedRefusal: String =
+        "A pipeline of this name has an Iceberg table committed through Unity Catalog on record. " +
+            "Choose another pipeline name, or ask a user with install-wide access to save this destination."
+
     /** 400 refusal text; `label` is `SharedDatasets.label` of the caller's
       * own target, so it names nothing the caller did not type. */
     def ExistsRefusal(label: String): String =
