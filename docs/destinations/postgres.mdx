@@ -100,15 +100,17 @@ Connection credentials are configured globally in `application.yaml` via `secret
 
 | Field                 | Required | Default  | Description                                      |
 |-----------------------|----------|----------|--------------------------------------------------|
-| `dbName`              | yes      |          | Target database name                             |
-| `schema`              | yes      |          | Target schema. The literal placeholder `SCHEMA_NAME` is replaced with `public` when the pipeline is saved (likewise `DATABASE_NAME` in `dbName` becomes the configured Postgres database); any other value is used as-is |
-| `table`               | yes      |          | Target table name                                |
+| `dbName`              | yes      |          | Target database name. Letters, digits and `_` only, at most 63 bytes |
+| `schema`              | yes      |          | Target schema. The literal placeholder `SCHEMA_NAME` is replaced with `public` when the pipeline is saved (likewise `DATABASE_NAME` in `dbName` becomes the configured Postgres database); any other value is used as-is. Letters, digits and `_` only, at most 63 bytes |
+| `table`               | yes      |          | Target table name. Letters, digits and `_` only, at most 63 bytes |
 | `usePostgres`         | yes      | `false`  | Must be `true` to enable PostgreSQL destination  |
 | `manageTableManually` | no       | `false`  | If `true`, skip auto-creation of the table       |
 | `truncateBeforeWrite` | no       | `false`  | Truncate the table before loading                |
 | `keyFields`           | no       |          | Array of column names for the natural key. Sets a `PRIMARY KEY` constraint on auto-created tables AND switches the load strategy to upsert (`INSERT ... ON CONFLICT DO UPDATE`) when `truncateBeforeWrite` is `false`. See [Primary Key and Upsert](#primary-key-and-upsert). |
 | `useTransaction`      | no       | `true`   | Wrap the COPY in a database transaction          |
-| `options`             | no       |          | Array of additional COPY option strings          |
+| `options`             | no       |          | Array of additional COPY option strings (no `;`) |
+
+These rules apply to every pipeline type, including an unstructured pipeline that carries a `destination.database` section, and to version restore and catalog restore. A save that keeps exactly the names the saved pipeline already has is not refused by them. Deleting a pipeline (or resetting its data) drops its table only when its database, schema and table names meet them; otherwise the table is kept and the delete response's `warnings` says so ([Delete a Pipeline](/api-reference/pipeline-api#delete-a-pipeline)).
 
 ## Querying from Datris
 

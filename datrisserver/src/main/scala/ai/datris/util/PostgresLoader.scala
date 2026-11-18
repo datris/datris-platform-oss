@@ -28,11 +28,11 @@ class PostgresLoader(jobContext: JobContext) {
     def process(): Unit = {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
 
-        // Defense in depth: dbName/schema/table are interpolated into DDL/DML
-        // below (both quoted identifiers and an unquoted CREATE SCHEMA), never
-        // bound as parameters. PipelineValidatorUtil enforces the safe charset
-        // at config time; re-check here so any config that reaches the loader
-        // by another path still can't inject SQL.
+        // Every name is a quoted identifier in the statements below
+        // (PostgresSql) and the database name is percent-encoded into the
+        // URL. Defense in depth: PipelineValidatorUtil enforces the safe
+        // charset at config time; re-check here so a config that reaches the
+        // loader by another path still loads only into a plain name.
         PipelineValidatorUtil.validateSqlIdentifier(dbName, "destination.database.dbName")
         PipelineValidatorUtil.validateSqlIdentifier(config.destination.database.schema, "destination.database.schema")
         PipelineValidatorUtil.validateSqlIdentifier(config.destination.database.table, "destination.database.table")
@@ -44,7 +44,7 @@ class PostgresLoader(jobContext: JobContext) {
         Class.forName("org.postgresql.Driver")
         statusUtil.info("processing", "Postgres driver loaded successfully")
 
-        val jdbcUrl = secrets.jdbcUrl + "/" + dbName
+        val jdbcUrl = PostgresSql.jdbcUrl(secrets.jdbcUrl, dbName)
         statusUtil.info("processing", "jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl))
         // Pooled: close() below returns the connection to the pool; Hikari
         // resets autoCommit on return, so the transaction toggle is safe.
@@ -113,7 +113,7 @@ class PostgresLoader(jobContext: JobContext) {
         // don't fail against a not-yet-existing table.
         if (config.destination.database.truncateBeforeWrite) {
             statusUtil.info("processing", "'truncateTableBeforeWrite' is set to true, truncating table")
-            statement.execute("truncate table \"" + dbName + "\".\"" + config.destination.database.schema + "\".\"" + config.destination.database.table + "\"")
+            statement.execute(PostgresSql.truncate(dbName, config.destination.database.schema, config.destination.database.table))
         }
 
         // Routing: when keyFields are configured AND truncateBeforeWrite is false,
@@ -135,18 +135,14 @@ class PostgresLoader(jobContext: JobContext) {
      *  unique constraint fail the load — that's the contract for non-keyFields
      *  pipelines, and that's what truncate prevents in the truncate case. */
     private def rawCopyInto(conn: Connection, statement: Statement): Unit = {
-        val sql = new StringBuilder()
-        sql.append("COPY " + "\"" + config.destination.database.schema + "\"" + "." + "\"" + config.destination.database.table + "\"")
-
         // Only include columns that are present in the data (handles dropped columns)
         val destFields = config.destination.schemaProperties.fields.asScala
         val copyFields = if (jobContext.data.header != null && jobContext.data.header.nonEmpty) {
             val headerSet = jobContext.data.header.map(_.toLowerCase).toSet
             destFields.filter(f => headerSet.contains(f.name.toLowerCase))
         } else destFields
-        sql.append(" (")
-        sql.append(copyFields.map(f => "\"" + f.name + "\"").mkString(", "))
-        sql.append(")")
+        val sql = new StringBuilder()
+        sql.append(PostgresSql.copyTarget(config.destination.database.schema, config.destination.database.table, copyFields.map(_.name).toSeq))
 
         sql.append(" FROM STDIN (")
 
@@ -181,7 +177,7 @@ class PostgresLoader(jobContext: JobContext) {
     private def upsertInto(conn: Connection, statement: Statement): Unit = {
         val schema = config.destination.database.schema
         val tableName = config.destination.database.table
-        val targetRef = "\"" + dbName + "\".\"" + schema + "\".\"" + tableName + "\""
+        val targetRef = PostgresSql.tableRef(dbName, schema, tableName)
 
         // Pre-flight: ON CONFLICT (cols) requires a matching unique constraint
         // or unique index. Tables Datris created with keyFields already have a
@@ -204,7 +200,7 @@ class PostgresLoader(jobContext: JobContext) {
         // the finally block below handles the in-flight cleanup for both
         // autocommit and transaction-mode connections.
         val stagingName = "datris_staging_" + java.util.UUID.randomUUID().toString.replace("-", "_")
-        val stagingRef = "\"" + stagingName + "\""
+        val stagingRef = PgIdentifier.quote(stagingName)
 
         try {
             statement.execute(s"CREATE TEMP TABLE $stagingRef (LIKE $targetRef INCLUDING DEFAULTS)")
@@ -216,7 +212,8 @@ class PostgresLoader(jobContext: JobContext) {
                 destFields.filter(f => headerSet.contains(f.name.toLowerCase))
             } else destFields
 
-            val colList = copyFields.map(f => "\"" + f.name + "\"").mkString(", ")
+            val keyFieldNames = config.destination.database.keyFields.asScala.toList
+            val (colList, keyList, setClause) = PostgresSql.upsertLists(copyFields.map(_.name).toSeq, keyFieldNames)
 
             // COPY into staging (identical SQL shape to the raw path, just a different target).
             val copySql = new StringBuilder()
@@ -235,17 +232,9 @@ class PostgresLoader(jobContext: JobContext) {
             // Upsert: INSERT...SELECT ON CONFLICT. If every column in the load
             // is a key column there's nothing to update on conflict, so we
             // emit DO NOTHING — preserves the existing row, doesn't error.
-            val keyFieldNames = config.destination.database.keyFields.asScala.toList
-            val keyFieldSet = keyFieldNames.map(_.toLowerCase).toSet
-            val copyFieldNames = copyFields.map(_.name).toList
-            val nonKeyFields = copyFieldNames.filterNot(f => keyFieldSet.contains(f.toLowerCase))
-            val keyList = keyFieldNames.map(k => "\"" + k + "\"").mkString(", ")
-
-            val upsertSql = if (nonKeyFields.isEmpty) {
-                s"INSERT INTO $targetRef ($colList) SELECT $colList FROM $stagingRef ON CONFLICT ($keyList) DO NOTHING"
-            } else {
-                val setClause = nonKeyFields.map(f => "\"" + f + "\" = EXCLUDED.\"" + f + "\"").mkString(", ")
-                s"INSERT INTO $targetRef ($colList) SELECT $colList FROM $stagingRef ON CONFLICT ($keyList) DO UPDATE SET $setClause"
+            val upsertSql = setClause match {
+                case None => s"INSERT INTO $targetRef ($colList) SELECT $colList FROM $stagingRef ON CONFLICT ($keyList) DO NOTHING"
+                case Some(set) => s"INSERT INTO $targetRef ($colList) SELECT $colList FROM $stagingRef ON CONFLICT ($keyList) DO UPDATE SET $set"
             }
 
             statusUtil.info("processing", "Upsert command: " + upsertSql)
@@ -278,27 +267,23 @@ class PostgresLoader(jobContext: JobContext) {
         // Scan pg_constraint AND pg_indexes for any unique grouping that matches.
         // pg_constraint covers PRIMARY KEY + UNIQUE constraints; pg_indexes
         // covers bare unique indexes that weren't promoted to constraints.
-        val findConstraintSql =
-            s"""SELECT array_agg(a.attname::text ORDER BY a.attname) as cols
-               |FROM pg_constraint c
-               |JOIN pg_class t ON c.conrelid = t.oid
-               |JOIN pg_namespace n ON t.relnamespace = n.oid
-               |JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
-               |WHERE n.nspname = '$schema'
-               |  AND t.relname = '$tableName'
-               |  AND c.contype IN ('p', 'u')
-               |GROUP BY c.conname""".stripMargin
-
-        val rs = statement.executeQuery(findConstraintSql)
+        // Names bound, never spliced into the text.
+        val ps = statement.getConnection.prepareStatement(PostgresSql.ConstraintColumnsSql)
         var found = false
-        while (rs.next() && !found) {
-            val arr = rs.getArray(1)
-            if (arr != null) {
-                val cols = arr.getArray.asInstanceOf[Array[AnyRef]].map(_.toString.toLowerCase).toList.sorted
-                if (cols == expectedCols) found = true
-            }
-        }
-        rs.close()
+        try {
+            ps.setString(1, schema)
+            ps.setString(2, tableName)
+            val rs = ps.executeQuery()
+            try {
+                while (rs.next() && !found) {
+                    val arr = rs.getArray(1)
+                    if (arr != null) {
+                        val cols = arr.getArray.asInstanceOf[Array[AnyRef]].map(_.toString.toLowerCase).toList.sorted
+                        if (cols == expectedCols) found = true
+                    }
+                }
+            } finally rs.close()
+        } finally ps.close()
 
         if (found) return
 
@@ -309,8 +294,7 @@ class PostgresLoader(jobContext: JobContext) {
         // anything else).
         val safeColPart = keyFieldNames.map(_.toLowerCase.replaceAll("[^a-z0-9_]", "_")).mkString("_")
         val indexName = ("datris_uniq_" + tableName + "_" + safeColPart).take(63) // Postgres identifier limit
-        val cols = keyFieldNames.map(k => "\"" + k + "\"").mkString(", ")
-        val createIdx = s"""CREATE UNIQUE INDEX IF NOT EXISTS "$indexName" ON "$dbName"."$schema"."$tableName" ($cols)"""
+        val createIdx = PostgresSql.uniqueIndex(indexName, dbName, schema, tableName, keyFieldNames)
         statusUtil.info("processing", "Adding unique index to enable keyFields upsert: " + createIdx)
         try {
             statement.execute(createIdx)
@@ -337,11 +321,11 @@ class PostgresLoader(jobContext: JobContext) {
 
         // Begin
         val schema = config.destination.database.schema
-        sql.append("create table if not exists \"" + dbName + "\".\"" + schema + "\".\"" + tableName + "\" (")
+        sql.append(PostgresSql.createTableHead(dbName, schema, tableName))
 
         // Fields
         config.destination.schemaProperties.fields.forEach(field => {
-            sql.append("\"" + field.name + "\" ")
+            sql.append(PostgresSql.column(field.name) + " ")
             // Force the semi-structured field type to SUPER
             if (field.name.compareToIgnoreCase("_json") == 0)
                 sql.append("json, ")
@@ -377,29 +361,31 @@ class PostgresLoader(jobContext: JobContext) {
 
         // Create schema if it doesn't exist
         if (config.destination.database.schema != null && config.destination.database.schema.nonEmpty) {
-            statement.execute("CREATE SCHEMA IF NOT EXISTS " + config.destination.database.schema + ";")
+            statement.execute(PostgresSql.createSchema(config.destination.database.schema))
         }
 
         statusUtil.info("processing", "Postgres create table statement: " + sql.mkString)
         statement.execute(sql.mkString)
 
         // Additive schema evolution: add any new columns that don't exist in the table yet
-        val existingColumnsRs = statement.executeQuery(
-            s"""SELECT column_name FROM information_schema.columns
-               |WHERE table_catalog = '$dbName' AND table_schema = '${config.destination.database.schema}'
-               |AND table_name = '$tableName'""".stripMargin
-        )
         val existingColumns = scala.collection.mutable.Set[String]()
-        while (existingColumnsRs.next()) {
-            existingColumns.add(existingColumnsRs.getString("column_name").toLowerCase)
-        }
-        existingColumnsRs.close()
+        val existingPs = statement.getConnection.prepareStatement(PostgresSql.ExistingColumnsSql)
+        try {
+            existingPs.setString(1, dbName)
+            existingPs.setString(2, config.destination.database.schema)
+            existingPs.setString(3, tableName)
+            val existingColumnsRs = existingPs.executeQuery()
+            try {
+                while (existingColumnsRs.next()) {
+                    existingColumns.add(existingColumnsRs.getString("column_name").toLowerCase)
+                }
+            } finally existingColumnsRs.close()
+        } finally existingPs.close()
 
         config.destination.schemaProperties.fields.forEach(field => {
             if (!existingColumns.contains(field.name.toLowerCase)) {
                 val colType = if (field.`type`.equalsIgnoreCase("string")) "text" else field.`type`
-                val alterSql =
-                    s"""ALTER TABLE "$dbName"."${config.destination.database.schema}"."$tableName" ADD COLUMN IF NOT EXISTS "${field.name}" $colType"""
+                val alterSql = PostgresSql.addColumn(dbName, config.destination.database.schema, tableName, field.name, colType)
                 statusUtil.info("processing", "Schema evolution: " + alterSql)
                 statement.execute(alterSql)
             }

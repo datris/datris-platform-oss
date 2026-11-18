@@ -65,8 +65,7 @@ object PostgresQueryUtil {
             properties.setProperty("loginTimeout", "2")
 
             // Append a database name when the URL has none (same pattern as query()).
-            val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
-            val jdbcUrl = if (afterProtocol.contains("/")) secrets.jdbcUrl else secrets.jdbcUrl + "/datris"
+            val jdbcUrl = PostgresSql.jdbcUrl(secrets.jdbcUrl, "datris")
 
             var conn: Connection = null
             try {
@@ -86,7 +85,17 @@ object PostgresQueryUtil {
         }
     }
 
-    def query(sql: String, database: String = null, limit: Int = DEFAULT_LIMIT): java.util.List[java.util.Map[String, Any]] = {
+    def query(sql: String, database: String = null, limit: Int = DEFAULT_LIMIT): java.util.List[java.util.Map[String, Any]] =
+        run(sql, Nil, database, limit)
+
+    /** [[query]] with `params` bound, in order, to the `?` placeholders of
+      * `sql` (a server-built statement: names and values are never spliced
+      * into its text). Same validation, read-only connection, limit and
+      * timeout handling as [[query]]. */
+    def queryBound(sql: String, params: Seq[String], database: String = null, limit: Int = DEFAULT_LIMIT): java.util.List[java.util.Map[String, Any]] =
+        run(sql, params, database, limit)
+
+    private def run(sql: String, params: Seq[String], database: String, limit: Int): java.util.List[java.util.Map[String, Any]] = {
         validateQuery(sql)
 
         val effectiveDb = if (database != null && database.nonEmpty) database
@@ -105,13 +114,9 @@ object PostgresQueryUtil {
         val secrets = SecretsRetrieverUtil.postgresSecrets()
         Class.forName("org.postgresql.Driver")
 
-        // Append database name to JDBC URL (same pattern as PostgresLoader)
-        // URL format: jdbc:postgresql://host:port/dbname — check if dbname is already present after host:port
-        val jdbcUrl = {
-            val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
-            val hasDatabase = afterProtocol.contains("/")
-            if (hasDatabase) secrets.jdbcUrl else secrets.jdbcUrl + "/" + effectiveDb
-        }
+        // The secret's URL, with the database percent-encoded into its path
+        // when it names none: the name can never add connection settings.
+        val jdbcUrl = PostgresSql.jdbcUrl(secrets.jdbcUrl, effectiveDb)
 
         // Pooled: this is the interactive path where per-request DriverManager
         // connections hurt most. Connect/login timeouts live in PostgresPool;
@@ -120,13 +125,17 @@ object PostgresQueryUtil {
             conn.setReadOnly(true)
             conn.setAutoCommit(true)
 
-            val stmt = conn.createStatement()
+            // The caller's own SQL (no params) stays a plain statement, so a
+            // `?` in it (e.g. a jsonb operator) is not read as a placeholder.
+            val prepared = if (params.isEmpty) None else Some(conn.prepareStatement(finalSql))
+            prepared.foreach(ps => params.zipWithIndex.foreach { case (p, i) => ps.setString(i + 1, p) })
+            val stmt: java.sql.Statement = prepared.getOrElse(conn.createStatement())
             // Cancel a runaway *limited* query after QUERY_TIMEOUT_SECONDS (pgjdbc
             // maps setQueryTimeout to statement_timeout). Unlimited tap-script
             // reads (limit < 0) keep the prior no-timeout behavior so a legitimate
             // full-table export isn't cut off mid-stream.
             if (!unlimited) stmt.setQueryTimeout(QUERY_TIMEOUT_SECONDS)
-            val rs = stmt.executeQuery(finalSql)
+            val rs = prepared.map(_.executeQuery()).getOrElse(stmt.executeQuery(finalSql))
             val metaData = rs.getMetaData
             val columnCount = metaData.getColumnCount
 

@@ -238,8 +238,12 @@ class DatabaseDestinationNamesSpec extends AnyFunSuite {
             assert(DatabaseDestinationNames.postgresDropProblem(pgDb(dbName = d), None).isDefined, "[" + d + "] dbName, no tenant")
             assert(DatabaseDestinationNames.postgresDropProblem(pgDb(dbName = d), Some("datris")).isEmpty, "[" + d + "] dbName, tenant")
         }
-        // the tenant database itself is checked when given
-        assert(DatabaseDestinationNames.postgresDropProblem(pgDb(), Some("t?user=nobody")).isDefined, "failing tenant database")
+        // the tenant database is percent-encoded into the URL and quoted in SQL (Decision 5):
+        // a hyphen or URL characters are no problem; only what neither can carry is
+        assert(DatabaseDestinationNames.postgresDropProblem(pgDb(), Some("acme-prod")).isEmpty, "hyphenated tenant database")
+        assert(DatabaseDestinationNames.postgresDropProblem(pgDb(), Some("t?user=nobody&sslmode=disable")).isEmpty, "tenant with URL characters")
+        assert(DatabaseDestinationNames.postgresDropProblem(pgDb(), Some("a\u0000b")).isDefined, "NUL tenant database")
+        assert(DatabaseDestinationNames.postgresDropProblem(pgDb(), Some("")).isDefined, "empty tenant database")
         // schema and table: charset, empty and length, tenant or not
         for (
             v <- Seq("x\"; DROP TABLE public.canary; --", "a;b", "a b", "", "a" * 64);

@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, DatrisException}
-import ai.datris.util.{APIKeyValidator, PipelineConfigIO, SecretsRetrieverUtil, SecretsUtil}
+import ai.datris.util.{APIKeyValidator, PgIdentifier, PipelineConfigIO, PostgresSql, SecretsRetrieverUtil, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -31,16 +31,19 @@ class MetadataAPIController {
             val properties = new Properties()
             properties.setProperty("user", secrets.username)
             properties.setProperty("password", secrets.password)
-            val conn = DriverManager.getConnection(secrets.jdbcUrl + "/postgres", properties)
+            val conn = DriverManager.getConnection(PostgresSql.jdbcUrl(secrets.jdbcUrl, "postgres"), properties)
             try {
-                val rs = conn.createStatement().executeQuery(
-                    "SELECT 1 FROM pg_database WHERE datname = '" + env.replace("'", "''") + "'"
-                )
-                if (!rs.next()) {
-                    conn.createStatement().execute("CREATE DATABASE \"" + env.replace("\"", "\"\"") + "\"")
-                    logger.info("Created tenant database: " + env)
-                }
-                rs.close()
+                val ps = conn.prepareStatement("SELECT 1 FROM pg_database WHERE datname = ?")
+                try {
+                    ps.setString(1, env)
+                    val rs = ps.executeQuery()
+                    try {
+                        if (!rs.next()) {
+                            conn.createStatement().execute("CREATE DATABASE " + PgIdentifier.quote(env))
+                            logger.info("Created tenant database: " + env)
+                        }
+                    } finally rs.close()
+                } finally ps.close()
             } finally { conn.close() }
         } catch {
             case e: Exception => logger.warn("Could not ensure tenant database: " + e.getMessage)
@@ -147,28 +150,13 @@ class MetadataAPIController {
             logger.info("API endpoint GET /metadata/postgres/tables called, database: " + dbName + ", schema: " + schema + ", vectorOnly: " + vectorOnly)
             APIKeyValidator.validate(apiKey)
 
-            val sql = if (vectorOnly.equalsIgnoreCase("true")) {
-                // Only return tables that have an 'embedding' column (pgvector tables)
-                "SELECT DISTINCT t.table_name FROM information_schema.tables t " +
-                    "JOIN information_schema.columns c ON t.table_name = c.table_name AND t.table_schema = c.table_schema " +
-                    "WHERE t.table_schema = '" + schema.replace("'", "''") + "' " +
-                    "AND t.table_type = 'BASE TABLE' " +
-                    "AND c.column_name = 'embedding' " +
-                    "ORDER BY t.table_name"
-            } else {
-                // Exclude tables that have an 'embedding' column (pgvector tables)
-                "SELECT table_name FROM information_schema.tables " +
-                    "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
-                    "AND table_type = 'BASE TABLE' " +
-                    "AND table_name NOT IN (" +
-                    "SELECT DISTINCT table_name FROM information_schema.columns " +
-                    "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
-                    "AND column_name = 'embedding'" +
-                    ") " +
-                    "ORDER BY table_name"
-            }
-
-            val results = queryPostgres(dbName, sql)
+            val results =
+                if (vectorOnly.equalsIgnoreCase("true"))
+                    // Only return tables that have an 'embedding' column (pgvector tables)
+                    queryPostgres(dbName, PostgresSql.VectorTablesOfSchemaSql, Seq(schema))
+                else
+                    // Exclude tables that have an 'embedding' column (pgvector tables)
+                    queryPostgres(dbName, PostgresSql.TablesOfSchemaSql, Seq(schema, schema))
             val tables = results.map(_.get("table_name").toString)
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(tables.asJava), HttpStatus.OK)
@@ -193,13 +181,7 @@ class MetadataAPIController {
             logger.info("API endpoint GET /metadata/postgres/columns called, database: " + dbName + ", schema: " + schema + ", table: " + table)
             APIKeyValidator.validate(apiKey)
 
-            val results = queryPostgres(
-                dbName,
-                "SELECT column_name, data_type FROM information_schema.columns " +
-                    "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
-                    "AND table_name = '" + table.replace("'", "''") + "' " +
-                    "ORDER BY ordinal_position"
-            )
+            val results = queryPostgres(dbName, PostgresSql.ColumnsOfTableSql, Seq(schema, table))
             val columns = results.map { row =>
                 val col = new java.util.LinkedHashMap[String, String]()
                 col.put("name", row.get("column_name").toString)
@@ -517,7 +499,10 @@ class MetadataAPIController {
         }
     }
 
-    private def queryPostgres(database: String, sql: String): List[java.util.Map[String, Any]] = {
+    /** `sql` with `params` bound in order, read-only, on `database` (the
+      * secret's URL when it names a database, else the name percent-encoded
+      * into the URL path). */
+    private def queryPostgres(database: String, sql: String, params: Seq[String] = Nil): List[java.util.Map[String, Any]] = {
         val secrets = SecretsRetrieverUtil.postgresSecrets()
         Class.forName("org.postgresql.Driver")
 
@@ -525,17 +510,16 @@ class MetadataAPIController {
         properties.setProperty("user", secrets.username)
         properties.setProperty("password", secrets.password)
 
-        val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
-        val hasDatabase = afterProtocol.contains("/")
-        val jdbcUrl = if (hasDatabase) secrets.jdbcUrl else secrets.jdbcUrl + "/" + database
+        val jdbcUrl = PostgresSql.jdbcUrl(secrets.jdbcUrl, database)
 
         var conn: Connection = null
         try {
             conn = DriverManager.getConnection(jdbcUrl, properties)
             conn.setReadOnly(true)
 
-            val stmt = conn.createStatement()
-            val rs = stmt.executeQuery(sql)
+            val stmt = conn.prepareStatement(sql)
+            params.zipWithIndex.foreach { case (p, i) => stmt.setString(i + 1, p) }
+            val rs = stmt.executeQuery()
             val metaData = rs.getMetaData
             val columnCount = metaData.getColumnCount
 

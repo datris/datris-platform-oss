@@ -1781,6 +1781,17 @@ paths:
         delimited or JSON). Like every other validator error, the rejection
         returns HTTP 400 with `{"error": "..."}` naming the field.
 
+        Database destination names: on every pipeline type (structured,
+        semi-structured and unstructured) a new or changed
+        `destination.database` section must pass the structured validator's
+        checks (`dbName`, `table` and, except MongoDB, `schema` required and
+        limited to `a-z`, `A-Z`, `0-9` and `_`; no `;` in an `options` entry;
+        exactly one engine flag), and with `usePostgres` its `dbName`,
+        `schema` and `table` are at most 63 bytes. Otherwise 400 with that
+        check's message. A save that keeps exactly the stored `dbName`,
+        `schema`, `table`, `warehouse`, `options` and engine flags is not
+        refused by this rule. Version restore and catalog restore apply it too.
+
         One pipeline per vector container: a vector destination whose
         collection, class or table (pgvector: schema plus table) another
         pipeline already names is refused with 400 `{"error": "..."}` naming
@@ -1927,7 +1938,8 @@ paths:
         '400':
           description: >-
             The configuration was refused and nothing was saved: it failed
-            validation, it selects a Postgres destination when no Postgres is
+            validation (including a new or changed `destination.database`
+            name that breaks the naming rule, on any pipeline type), it selects a Postgres destination when no Postgres is
             reachable, it conflicts with another pipeline's source-of-authority
             declaration, or its vector collection, class or table is already
             used by another pipeline, or (for a caller who cannot see every
@@ -3835,7 +3847,7 @@ paths:
                 database:
                   type: string
                   default: datris
-                  description: PostgreSQL database name
+                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database, and in multi-tenant installs.
                 limit:
                   type: integer
                   default: 100
@@ -4149,7 +4161,7 @@ paths:
                 database:
                   type: string
                   default: datris
-                  description: PostgreSQL database name
+                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database, and in multi-tenant installs.
                 schema:
                   type: string
                   default: public
@@ -4439,7 +4451,7 @@ paths:
           schema:
             type: string
             default: datris
-          description: Database name
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
       responses:
         '200':
           description: Array of schema names
@@ -4463,7 +4475,7 @@ paths:
           schema:
             type: string
             default: datris
-          description: Database name
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
         - name: schema
           in: query
           schema:
@@ -4499,7 +4511,7 @@ paths:
           schema:
             type: string
             default: datris
-          description: Database name
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
         - name: schema
           in: query
           schema:
@@ -6176,7 +6188,7 @@ paths:
         '403':
           description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope.
         '400':
-          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`), or (every caller) a pgvector schema or table name the live pipeline does not have exactly and that holds a double quote, an empty schema or no table name (`The pgvector schema and table names must not contain double quotes, and the schema must not be empty. Choose plain names.` or `A pgvector destination needs a table name. Set destination.pgvector.tableName.`), or the version fails validation, with the same message as `POST /api/v1/pipeline` (for example a table name that is not a plain identifier, a server-managed secret, two destination engines, or Postgres not reachable). Nothing is restored. Body: `{"error": "..."}`.'
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`), or (every caller) a pgvector schema or table name the live pipeline does not have exactly and that holds a double quote, an empty schema or no table name (`The pgvector schema and table names must not contain double quotes, and the schema must not be empty. Choose plain names.` or `A pgvector destination needs a table name. Set destination.pgvector.tableName.`), or (every caller) a new or changed `destination.database` section that fails the save rule of `POST /api/v1/pipeline` (allowed characters, required fields, one engine, no `;` in options, 63 bytes for Postgres names), with the same message, or the version fails validation, with the same message as `POST /api/v1/pipeline` (for example a table name that is not a plain identifier, a server-managed secret, two destination engines, or Postgres not reachable). Nothing is restored. Body: `{"error": "..."}`.'
         '409':
           description: 'The pipeline was created, deleted, renamed or moved while the restore was being checked: `Pipeline ''<name>'' changed while it was being restored; nothing was restored. Try again.` Body: `{"error": "..."}`.'
         '500':

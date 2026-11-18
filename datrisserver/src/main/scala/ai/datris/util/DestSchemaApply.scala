@@ -149,7 +149,7 @@ object DestSchemaApply {
             case "postgres" =>
                 if (!postgresTableExists(config)) return None
                 val db = config.destination.database
-                val sql = "SELECT * FROM \"" + db.schema + "\".\"" + db.table + "\""
+                val sql = PostgresSql.sampleSelect(db.schema, db.table)
                 PostgresQueryUtil.query(sql, postgresDbName(config), limit).asScala.map(_.asScala.toMap).toSeq
             case "snowflake" =>
                 val exists = SnowflakeConnectionUtil.withConnection(config.destination.database) { conn =>
@@ -295,11 +295,14 @@ object DestSchemaApply {
     private def postgresTableExists(config: PipelineConfig): Boolean = {
         val db = config.destination.database
         withPostgres(config) { statement =>
-            val rs = statement.executeQuery(
-                "SELECT to_regclass('\"" + db.schema + "\".\"" + db.table + "\"')"
-            )
-            try { rs.next() && rs.getString(1) != null }
-            finally Try(rs.close())
+            // The qualified name is bound, never spliced into a literal.
+            val ps = statement.getConnection.prepareStatement(DestinationProbe.PostgresExistsSql)
+            try {
+                ps.setString(1, PgIdentifier.qualified(db.schema, db.table))
+                val rs = ps.executeQuery()
+                try { rs.next() && rs.getInt(1) > 0 }
+                finally Try(rs.close())
+            } finally Try(ps.close())
         }
     }
 
@@ -314,9 +317,7 @@ object DestSchemaApply {
                 typed.foreach { f =>
                     val pgType = postgresType(f.`type`)
                     // NULLIF: empty strings in landed TEXT become NULL, not a cast error.
-                    val sql = "ALTER TABLE \"" + db.schema + "\".\"" + db.table + "\" " +
-                        "ALTER COLUMN \"" + f.name + "\" TYPE " + pgType +
-                        " USING NULLIF(\"" + f.name + "\", '')::" + pgType
+                    val sql = PostgresSql.alterColumnType(db.schema, db.table, f.name, pgType)
                     logger.info("Dest-types migration (postgres): " + sql)
                     statement.execute(sql)
                 }
@@ -334,7 +335,7 @@ object DestSchemaApply {
     private def withPostgres[T](config: PipelineConfig)(f: Statement => T): T = {
         val secrets = SecretsRetrieverUtil.postgresSecrets()
         Class.forName("org.postgresql.Driver")
-        val jdbcUrl = secrets.jdbcUrl + "/" + postgresDbName(config)
+        val jdbcUrl = PostgresSql.jdbcUrl(secrets.jdbcUrl, postgresDbName(config))
         PostgresPool.withConnection(jdbcUrl, secrets.username, secrets.password) { conn =>
             val statement = conn.createStatement()
             try f(statement)

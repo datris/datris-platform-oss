@@ -393,6 +393,14 @@ class PipelineAPIController {
                 return Left(refused)
             case Right(o) => o
         }
+        // A new or changed destination.database block must pass the
+        // validator's database rules (and the Postgres 63-byte limit) on
+        // every pipeline type, so an unstructured pipeline's block is checked
+        // too. Every caller; a stored config with the same block keeps it.
+        PipelineAPIController.databaseNameRefusal(preserved, existing).foreach { refused =>
+            logger.warn("POST /pipeline " + preserved.name + " rejected: destination.database name")
+            return Left(refused)
+        }
         // A new or changed pgvector schema or table must be one Postgres can
         // address as a single quoted identifier, and the table must be named.
         // Every caller; a stored config with the same names keeps them.
@@ -975,7 +983,8 @@ class PipelineAPIController {
             // A table or collection another pipeline also writes (including a
             // pgvector / Postgres table the other kind names) is kept and reported.
             val sharedStructured = SharedDatasets.sharedOnDelete(config, otherConfigs, dsEnv)
-            val objectStoreDataDeleted = cleanupDestinationData(config, sharedVector.map(_._1).toSet, sharedStructured.map(_._1).toSet)
+            val objectStoreDataDeleted =
+                cleanupDestinationData(config, sharedVector.map(_._1).toSet, sharedStructured.map(_._1).toSet, dsEnv.tenantDatabase)
             sharedVector.foreach { case (k, sharers) =>
                 logger.warn(
                     "Skipped vector data delete for pipeline '" + pipeline + "': " + VectorContainers.label(VectorContainers.displayKey(k, config)) +
@@ -990,6 +999,7 @@ class PipelineAPIController {
             }
             warnings ++= PipelineAPIController.vectorDeleteWarnings(request, config, otherConfigs)
             warnings ++= PipelineAPIController.blankVectorTableDeleteWarning(config)
+            warnings ++= PipelineAPIController.postgresNameDeleteWarning(config, dsEnv)
             warnings ++= PipelineAPIController.structuredDeleteWarnings(request, config, otherConfigs, dsEnv)
             UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
                 warnings += advice
@@ -1139,7 +1149,8 @@ class PipelineAPIController {
     private def cleanupDestinationData(
         config: PipelineConfig,
         keepVector: Set[VectorContainers.Key],
-        keepStructured: Set[SharedDatasets.Key]
+        keepStructured: Set[SharedDatasets.Key],
+        tenantDatabase: Option[String]
     ): Boolean = {
         val dest = config.destination
         var objectStoreDataDeleted = false
@@ -1150,22 +1161,27 @@ class PipelineAPIController {
         // keys are this config's own, at most one per destination kind.
         def dropStructured(kind: String): Boolean = !keepStructured.exists(_.kind == kind)
 
-        // PostgreSQL — DROP TABLE
-        if (dest.database != null && dest.database.usePostgres && dropStructured("postgres")) {
+        // PostgreSQL — DROP TABLE. Never for a database, schema or table name
+        // that fails the naming rule (DatabaseDestinationNames.postgresDropProblem):
+        // no connection, no drop; postgresNameDeleteWarning reports it.
+        val pgDropProblem =
+            if (dest.database != null && dest.database.usePostgres) DatabaseDestinationNames.postgresDropProblem(dest.database, tenantDatabase)
+            else None
+        pgDropProblem.foreach(p => logger.warn("Skipped PostgreSQL table drop for pipeline '" + config.name + "': " + p))
+        if (dest.database != null && dest.database.usePostgres && pgDropProblem.isEmpty && dropStructured("postgres")) {
             try {
                 val secrets = SecretsRetrieverUtil.postgresSecrets()
                 Class.forName("org.postgresql.Driver")
                 val properties = new Properties()
                 properties.setProperty("user", secrets.username)
                 properties.setProperty("password", secrets.password)
-                val pgDbName = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment else dest.database.dbName
-                val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
-                val jdbcUrl = if (afterProtocol.contains("/")) secrets.jdbcUrl else secrets.jdbcUrl + "/" + pgDbName
+                val pgDbName = tenantDatabase.getOrElse(dest.database.dbName)
+                val jdbcUrl = PostgresSql.jdbcUrl(secrets.jdbcUrl, pgDbName)
                 val conn = DriverManager.getConnection(jdbcUrl, properties)
                 try {
                     val schema = if (dest.database.schema != null) dest.database.schema else "public"
                     val stmt = conn.createStatement()
-                    stmt.execute("DROP TABLE IF EXISTS \"" + schema + "\".\"" + dest.database.table + "\" CASCADE")
+                    stmt.execute(PostgresSql.dropTable(schema, dest.database.table))
                     stmt.close()
                     logger.info("Dropped PostgreSQL table: " + schema + "." + dest.database.table)
                 } finally {
@@ -1630,6 +1646,41 @@ object PipelineAPIController {
             else if (DestinationTargets.unsafeVectorTableName(candidate)) Some(DestinationTargets.UnsafeVectorTableRefusal)
             else None
         text.map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
+    }
+
+    /** POST /pipeline (every caller and entry point) and pipeline version
+      * restore: 400 `{"error": ...}` with the save validator's message
+      * ([[DatabaseDestinationNames.problem]]) for a `destination.database`
+      * block that fails the validator's database rules or the Postgres
+      * 63-byte limit, on every pipeline type. Skipped when `stored` (the
+      * stored config of this name, the live one for a restore; null when
+      * there is none) has the identical block
+      * ([[DatabaseDestinationNames.same]]): such a pipeline keeps working
+      * with it. None for a null candidate or one without a block. No
+      * request, no I/O. */
+    def databaseNameRefusal(candidate: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] = {
+        if (candidate == null || candidate.destination == null || candidate.destination.database == null) return None
+        if (DatabaseDestinationNames.same(candidate, stored)) return None
+        DatabaseDestinationNames
+            .problem(candidate.destination.database)
+            .map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
+    }
+
+    /** DELETE /pipeline with data (and reset): the one warning line for a
+      * Postgres destination whose effective database, schema or table fails
+      * [[DatabaseDestinationNames.postgresDropProblem]] (the tenant database
+      * from `env` replaces `dbName`). No connection is made and no table is
+      * dropped for such a config. None for every other config. */
+    def postgresNameDeleteWarning(config: PipelineConfig, env: SharedDatasets.Env): Option[String] = {
+        val db = Option(config).flatMap(c => Option(c.destination)).flatMap(d => Option(d.database)).orNull
+        if (db == null || !db.usePostgres) None
+        else
+            DatabaseDestinationNames.postgresDropProblem(db, env.tenantDatabase).map { p =>
+                // One line, whatever the stored name holds.
+                val reason = p.map(c => if (Character.isISOControl(c)) ' ' else c)
+                "The PostgreSQL table was not dropped because its name does not meet the naming rule (" + reason +
+                    "); drop it in PostgreSQL if it is no longer needed."
+            }
     }
 
     /** DELETE /pipeline with data: the one warning line for a pgvector

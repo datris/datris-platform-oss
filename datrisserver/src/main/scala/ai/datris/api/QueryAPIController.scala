@@ -15,6 +15,7 @@ import ai.datris.util.{
     DatabricksQueryUtil,
     ObjectStoreQueryUtil,
     PostgresQueryUtil,
+    PostgresSql,
     MongoDBQueryUtil,
     SecretsRetrieverUtil,
     SnowflakeQueryUtil,
@@ -302,10 +303,7 @@ class QueryAPIController {
             }.getOrElse(100)
 
             // Step 1: Get table columns
-            val columnsSql = "SELECT column_name, data_type FROM information_schema.columns " +
-                "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
-                "AND table_name = '" + table.replace("'", "''") + "' ORDER BY ordinal_position"
-            val columnsResult = PostgresQueryUtil.query(columnsSql, database, 200)
+            val columnsResult = PostgresQueryUtil.queryBound(PostgresSql.ColumnsOfTableSql, Seq(schema, table), database, 200)
             val columnDefs = columnsResult.asScala.map(row =>
                 row.get("column_name").toString + " (" + row.get("data_type").toString + ")"
             ).mkString(", ")

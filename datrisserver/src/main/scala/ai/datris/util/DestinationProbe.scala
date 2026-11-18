@@ -364,18 +364,12 @@ object DestinationProbe {
 
     /** The JDBC URL the destination-type sample and the delete use: the
       * platform secret's URL, with `/<database>` appended unless it already
-      * names a database. */
-    private[util] def postgresJdbcUrl(baseUrl: String, database: String): String = {
-        val afterProtocol = baseUrl.replaceFirst("^jdbc:postgresql://", "")
-        if (afterProtocol.contains("/")) baseUrl else baseUrl + "/" + database
-    }
+      * names a database ([[PostgresSql.jdbcUrl]]: the name percent-encoded). */
+    private[util] def postgresJdbcUrl(baseUrl: String, database: String): String = PostgresSql.jdbcUrl(baseUrl, database)
 
     /** `"schema"."table"`, each a quoted identifier (case kept, `"` doubled),
       * as the loader and the sample address the table. */
-    private[util] def postgresRegclass(schema: String, table: String): String = {
-        def q(s: String): String = "\"" + s.replace("\"", "\"\"") + "\""
-        q(schema) + "." + q(table)
-    }
+    private[util] def postgresRegclass(schema: String, table: String): String = PgIdentifier.qualified(schema, table)
 
     /** `to_regclass` of the quoted name, a bound parameter: anything
       * `SELECT * FROM "schema"."table"` could resolve (table, view,

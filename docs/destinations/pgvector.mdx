@@ -42,8 +42,8 @@ pgvector uses your existing PostgreSQL infrastructure — no separate vector dat
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `tableName` | string | (required) | PostgreSQL table name, used exactly as written (case, spaces, dots and hyphens kept). Auto-created with vector column if it doesn't exist. Must not be empty or contain double quotes, and must not be used by another pipeline (the save is refused with HTTP 400). |
-| `schemaName` | string | `"public"` | PostgreSQL schema name, used exactly as written. Auto-created if it doesn't exist. Must not be empty (leave it out for `public`) or contain double quotes (the save is refused with HTTP 400). |
+| `tableName` | string | (required) | PostgreSQL table name, used exactly as written (case, spaces, dots and hyphens kept). Auto-created with vector column if it doesn't exist. Must not be empty or contain double quotes or a NUL character, and must not be used by another pipeline (the save is refused with HTTP 400). |
+| `schemaName` | string | `"public"` | PostgreSQL schema name, used exactly as written. Auto-created if it doesn't exist. Must not be empty (leave it out for `public`) or contain double quotes or a NUL character (the save is refused with HTTP 400). |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored as columns on every chunk. Use snake_case for column names. `source_pipeline`, `id`, `text`, `chunk_index`, `filename` and `embedding` are reserved (the platform writes them as columns); using one as a metadata key fails the load. |
 | `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
