@@ -142,7 +142,7 @@ Set under the agent policy's `recovery` section; enforced by the runner, not the
 - **Agents**: `list_incidents`, `get_incident` and `get_incident_evidence` MCP tools (read-only: only the platform opens incidents).
 - **Metrics**: `datris_incidents_total{kind,outcome}` and `datris_incident_duration_seconds` on the Prometheus endpoint.
 
-Incidents (the Activity panel, the three incident tools and the chat context) are available to users with install-wide access.
+The Activity panel's incident list and the three incident tools need the `incident:read` capability (admins, or an API key granted it). The Ops chat context includes open incidents for every user except those with scoped catalog access.
 
 ## Related
 

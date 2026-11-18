@@ -164,8 +164,7 @@ class OpsChatAPIController {
         // token usage shows it is wasteful (decision recorded in the plan).
         val withContext: List[(String, String)] = contextSnapshot match {
             case Some(ctx) =>
-                ("user", OpsAgentPrompt.renderContextMessage(ctx, OpsChatAPIController.incidentsFor(user, () => openIncidents()))) ::
-                    userMessages
+                ("user", OpsChatAPIController.contextMessage(user, ctx, () => openIncidents())) :: userMessages
             case None => userMessages
         }
 
@@ -210,7 +209,7 @@ class OpsChatAPIController {
     /** Open incidents for the context message — the platform's own recovery
       * work the operator should hear about instead of a re-diagnosis. Empty
       * when the recovery agent is off or incidents can't be read. Only ever
-      * called through `OpsChatAPIController.incidentsFor`, which skips it for
+      * called through `OpsChatAPIController.contextMessage`, which skips it for
       * a restricted session. */
     private def openIncidents(): List[Incident] =
         try {
@@ -234,4 +233,10 @@ object OpsChatAPIController {
     def incidentsFor(user: Option[User], load: () => List[Incident]): List[Incident] =
         if (user.exists(_.isRestricted)) Nil
         else load()
+
+    /** The leading context message `runChat` sends for a dashboard snapshot
+      * `ctx`: the snapshot plus the open incidents `incidentsFor` allows
+      * `user`. `load` is only called when incidents are allowed. */
+    def contextMessage(user: Option[User], ctx: JsonObject, load: () => List[Incident]): String =
+        OpsAgentPrompt.renderContextMessage(ctx, incidentsFor(user, load))
 }

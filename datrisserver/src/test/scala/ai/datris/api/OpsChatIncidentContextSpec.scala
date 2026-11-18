@@ -168,4 +168,28 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
             assert(CapabilityRoutes.lookup("GET", p) == RouteCheck.Require("incident", "read"), p)
         }
     }
+
+    test("contextMessage for a restricted user equals the no-incidents message and the incident store is not read") {
+        Seq(bob, user(User.RoleViewer, restricted = true)).foreach { u =>
+            val msg = OpsChatAPIController.contextMessage(Some(u), ctx, failingLoad)
+            assert(msg == OpsAgentPrompt.renderContextMessage(ctx))
+            Seq("Open incidents", "inc-hr", "hr_payroll", "hr_feed").foreach { s =>
+                assert(!msg.contains(s), s"restricted context must not contain '$s'")
+            }
+        }
+    }
+
+    test("contextMessage for an unrestricted user or no session user is the message with the loaded incidents") {
+        val expected = OpsAgentPrompt.renderContextMessage(ctx, List(incHr, incSales))
+        val callers: Seq[Option[User]] =
+            Seq(None) ++ Seq(User.RoleAdmin, User.RoleEditor, User.RoleViewer).map(r => Some(user(r, restricted = false))) ++
+                Seq(Some(user(User.RoleAdmin, restricted = true, "Sales" -> "own")))
+        callers.foreach { u =>
+            var reads = 0
+            val msg = OpsChatAPIController.contextMessage(u, ctx, () => { reads += 1; List(incHr, incSales) })
+            assert(msg == expected, s"caller $u")
+            assert(reads == 1, s"caller $u must read the incident store once")
+            assert(msg.contains("inc-hr: pipeline_failure on pipeline `hr_payroll`"), msg)
+        }
+    }
 }
