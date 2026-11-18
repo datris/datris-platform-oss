@@ -21,7 +21,6 @@ import java.util.concurrent.{
     ConcurrentHashMap,
     ExecutionException,
     Future,
-    RejectedExecutionException,
     SynchronousQueue,
     ThreadFactory,
     ThreadPoolExecutor,
@@ -121,54 +120,70 @@ object DestinationProbe {
       * request is left on a pooled thread. Takes no owner slot. */
     def withDeadline[T](timeout: FiniteDuration, what: String = "destination check")(body: => T): T = {
         if (timeout.toNanos <= 0) throw new DeadlineExceeded(what, timeout)
-        run(timeout, what, () => ())(body)
+        run(timeout, what, () => (), defaultSubmit[T])(body)
     }
 
     /** As above, counted against `owner` (`ResolvedKey.label`):
       * [[TooManyChecks]] at once, nothing started, when `owner` already has
       * [[MaxPerOwner]] checks in flight. The slot is taken before the submit
       * and freed by the worker when `body` really ends (an abandoned body
-      * keeps it until then), or at once when the pool rejects the submit or
-      * the task is cancelled before it starts. */
-    def withDeadline[T](timeout: FiniteDuration, what: String, owner: String)(body: => T): T = {
+      * keeps it until then), or at once when the submit fails in any way
+      * (the pool rejects it, or the worker thread cannot be started) or the
+      * task is cancelled before it starts. */
+    def withDeadline[T](timeout: FiniteDuration, what: String, owner: String)(body: => T): T =
+        withDeadlineSubmitting(timeout, what, owner, defaultSubmit[T])(body)
+
+    /** [[withDeadline]] with the submit given (spec seam; production uses
+      * the probe pool). */
+    private[datris] def withDeadlineSubmitting[T](timeout: FiniteDuration, what: String, owner: String, submit: Callable[T] => Future[T])(
+        body: => T
+    ): T = {
         if (timeout.toNanos <= 0) throw new DeadlineExceeded(what, timeout)
-        if (!acquire(owner)) throw new TooManyChecks(what)
+        // The release is built before the slot is taken, so nothing between
+        // acquire and the submit inside run can throw.
         val freed = new AtomicBoolean(false)
-        run(timeout, what, () => if (freed.compareAndSet(false, true)) release(owner))(body)
+        val onEnd: () => Unit = () => if (freed.compareAndSet(false, true)) release(owner)
+        if (!acquire(owner)) throw new TooManyChecks(what)
+        run(timeout, what, onEnd, submit)(body)
     }
 
+    private def defaultSubmit[T]: Callable[T] => Future[T] = task => pool.submit(task)
+
     /** `onEnd` runs once: in the worker's `finally`, or on the calling
-      * thread when the task never runs (rejected, or cancelled before it
-      * started). */
-    private def run[T](timeout: FiniteDuration, what: String, onEnd: () => Unit)(body: => T): T = {
-        val tenant = TenantContext.get()
+      * thread when the task never runs (the submit threw anything, e.g. a
+      * rejection or an `OutOfMemoryError` starting the worker thread, or the
+      * task was cancelled before it started). */
+    private def run[T](timeout: FiniteDuration, what: String, onEnd: () => Unit, submit: Callable[T] => Future[T])(body: => T): T = {
         val started = new AtomicBoolean(false)
-        val task = new Callable[T] {
-            def call(): T = {
-                if (!started.compareAndSet(false, true)) throw new CancellationException(what + " cancelled before it started")
-                try {
-                    TenantContext.clear()
-                    UserContext.clear()
-                    tenant.foreach(TenantContext.set)
-                    body
-                } finally {
-                    TenantContext.clear()
-                    UserContext.clear()
-                    onEnd()
+        val future =
+            try {
+                val tenant = TenantContext.get()
+                val task = new Callable[T] {
+                    def call(): T = {
+                        if (!started.compareAndSet(false, true)) throw new CancellationException(what + " cancelled before it started")
+                        try {
+                            TenantContext.clear()
+                            UserContext.clear()
+                            tenant.foreach(TenantContext.set)
+                            body
+                        } finally {
+                            TenantContext.clear()
+                            UserContext.clear()
+                            onEnd()
+                        }
+                    }
                 }
+                submit(task)
+            } catch {
+                case e: Throwable =>
+                    // The task never ran: free the slot here (onEnd is idempotent).
+                    if (started.compareAndSet(false, true)) onEnd()
+                    throw e
             }
-        }
         def abandon(f: Future[T]): Unit = {
             f.cancel(true)
             if (started.compareAndSet(false, true)) onEnd()
         }
-        val future =
-            try pool.submit(task)
-            catch {
-                case e: RejectedExecutionException =>
-                    onEnd()
-                    throw e
-            }
         try future.get(timeout.toNanos, TimeUnit.NANOSECONDS)
         catch {
             case _: TimeoutException =>
@@ -470,7 +485,7 @@ object DestinationProbe {
 
     /** S3A settings of the probe's own FileSystem, as per-bucket keys (they
       * win over any global): connect within 5 s, a read answered within
-      * 10 s, no SDK or S3A retries. A dead endpoint fails in about 5 s; a
+      * 10 s, no SDK or S3A retries, throttled (503) answers included. A dead endpoint fails in about 5 s; a
       * worker is never busy long past the deadline. Loaders and readers keep
       * their own settings. */
     def ProbeS3ASettings(bucket: String): Seq[(String, String)] = {
@@ -479,7 +494,8 @@ object DestinationProbe {
             p + "connection.establish.timeout" -> "5000",
             p + "connection.timeout" -> "10000",
             p + "attempts.maximum" -> "0",
-            p + "retry.limit" -> "0"
+            p + "retry.limit" -> "0",
+            p + "retry.throttle.limit" -> "0"
         )
     }
 
