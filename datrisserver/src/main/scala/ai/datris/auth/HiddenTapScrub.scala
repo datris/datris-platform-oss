@@ -368,9 +368,10 @@ object HiddenTapScrub {
       * tap is the input of the run record `run` returns for it, trusted only
       * when the record's `pipeline` is the hit's own stored writer
       * ([[VectorChunkWriter.writerOf]]) and it has an input (an upload, or no
-      * tapName, keeps the columns): a readable feed filename does not vouch
-      * then, since older chunks can carry a planted one. With no run id, a
-      * readable feed filename keeps the columns. A hit whose tap cannot be
+      * tapName, keeps the columns). A feed filename never keeps the columns
+      * (a hidden document tap can name its document like a readable tap's
+      * feed, and older chunks can carry a planted one): with no stamp-named
+      * tap and no run id the hit is unresolved. A hit whose tap cannot be
       * determined loses any non-empty tap stamp column (fail closed). A
       * `tap-<name>.csv|json` filename of a hidden tap reads `tap-[hidden]`.
       * `run` is called only when the hit's stamp columns name no tap, its
@@ -404,14 +405,13 @@ object HiddenTapScrub {
         val fileTap = feedTap(filename)
         if (!stamped && fileTap.isEmpty) return hit
         val renameFile = fileTap.exists(hidden)
-        // A filename only ever causes a strip on its own; it vouches for the
-        // stamps only when nothing better (stamp names, a run id) is present.
+        // A filename only ever causes a strip; it never vouches for the
+        // stamps (only stamp names or the run record can).
         lazy val stampNamed = stampTaps(hit)
         lazy val runId = hitStr(hit, "_datris_run_id")
         val strip = stamped && (
             renameFile ||
                 (if (stampNamed.nonEmpty) stampNamed.exists(hidden)
-                 else if (runId.isEmpty && fileTap.isDefined) false
                  else {
                      val record = runId
                          .flatMap(id => Option(run(id)).flatten)
