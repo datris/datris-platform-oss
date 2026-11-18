@@ -307,13 +307,16 @@ class RestrictedSearchStampsSpec extends AnyFunSuite with BeforeAndAfterEach {
 
         val readable = hits(
             tapStamped(1, "orders", "t_sales|2026-11-01T00:00:00Z"),
-            hit(2, "source_pipeline" -> "orders", "_datris_source" -> "tap:t_sales"),
             subsetHit(3, "orders"),
             hit(4, "source_pipeline" -> "orders")
         )
         val out = bobHits(readable, runs("run-1" -> record("orders", RunLineageInput("upload"))))
         assert(out eq readable)
         assertKept(out.get(0), "t_sales")
+
+        // a tap:<readableTap> source with no tap run and no run id does not vouch (author text)
+        val sourceOnly = bobHits(hits(hit(2, "source_pipeline" -> "orders", "_datris_source" -> "tap:t_sales")), failRun)
+        assert(!sourceOnly.get(0).containsKey("_datris_source"), sourceOnly)
 
         // a readable feed filename with no run id does not vouch for the stamps
         val feedNamed = hits(hit(5, "source_pipeline" -> "orders", "filename" -> "tap-t_sales.json", "_datris_script_sha" -> "s"))
