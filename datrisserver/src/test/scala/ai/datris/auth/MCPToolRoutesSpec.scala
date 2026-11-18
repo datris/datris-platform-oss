@@ -202,6 +202,14 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(CapabilityRoutes.lookup("GET", "/api/v1/mcp/tools") == RouteCheck.Skip)
     }
 
+    // plans/stories/chat-endpoints-caller-identity.md: every chat route is classified alike.
+    test("the search chat route is skip-class like its sibling chat routes") {
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/search-chat/chat") == RouteCheck.Skip)
+        Seq("/api/v1/ops-chat/chat", "/api/v1/assistant/chat", "/api/v1/catalog-chat/chat", "/api/v1/config-chat/chat").foreach { p =>
+            assert(CapabilityRoutes.lookup("POST", p) == RouteCheck.Skip, p)
+        }
+    }
+
     test("legacy full-access key sees the entire catalog") {
         assert(MCPToolRoutes.allowedTools(legacyKey) == MCPToolRoutes.allToolNames)
     }

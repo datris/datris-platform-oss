@@ -5,9 +5,9 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.auth.{CapabilityRoutes, MCPToolRoutes, RouteCheck}
+import ai.datris.auth.{CapabilityRoutes, ChatIdentity, MCPToolRoutes, RouteCheck}
 import ai.datris.incident.{Incident, IncidentStep}
-import ai.datris.model.User
+import ai.datris.model.{Capability, ResolvedKey, User}
 import ai.datris.util.{APIKeyValidator, OpsAgentPrompt}
 import com.google.gson.JsonObject
 import org.scalatest.funsuite.AnyFunSuite
@@ -18,7 +18,12 @@ import java.time.Instant
   * restricted user about open incidents
   * (plans/stories/catalog-scoped-user-access-ops-chat-incidents.md).
   *
-  * `OpsChatAPIController.incidentsFor(user, load)` decides which open
+  * Story: Chat endpoints act with the caller's own authority
+  * (plans/stories/chat-endpoints-caller-identity.md): the decision now takes
+  * the request's `ChatIdentity` and uses `ChatCaller.mayReadIncidents`, so an
+  * API key without unscoped `incident:read` gets none either.
+  *
+  * `OpsChatAPIController.incidentsFor(identity, load)` decides which open
   * incidents go into the Ops chat context: a restricted session gets `Nil`
   * and the incident store is not read; everyone else gets `load()` as the
   * same instance. The tool-closure tests at the end are pins: they pass
@@ -43,6 +48,19 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
     }
 
     private val bob: User = user(User.RoleEditor, restricted = true, "Sales" -> "own")
+
+    /** A session caller as ChatCaller.decide leaves it: the user, its session bundle, the ui key. */
+    private def sess(u: User): ChatIdentity =
+        ChatIdentity(Some(u), Some(APIKeyValidator.resolveFromSession(u)), ownKey = false)
+
+    private val legacyKey: ResolvedKey =
+        ResolvedKey(None, "legacy", Seq(Capability.FullAccess), isLegacyFullAccess = true)
+
+    /** No session user: a full-access API key, or user auth off. */
+    private val noSession: ChatIdentity = ChatIdentity(None, Some(legacyKey), ownKey = false)
+
+    private def keyIdentity(label: String, caps: String*): ChatIdentity =
+        ChatIdentity(None, Some(ResolvedKey(None, label, Capability.parseList(caps), isLegacyFullAccess = false)), ownKey = true)
 
     private val t0: Instant = Instant.parse("2026-11-18T10:00:00Z")
 
@@ -81,46 +99,46 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
     }
 
     test("a restricted user gets no open incidents and the incident store is not read") {
-        assert(OpsChatAPIController.incidentsFor(Some(bob), failingLoad) == Nil)
+        assert(OpsChatAPIController.incidentsFor(sess(bob), failingLoad) == Nil)
     }
 
     test("a restricted user gets none even for an incident on a tap or pipeline in a catalog they own") {
         var reads = 0
         val load = () => { reads += 1; List(incSales) }
-        assert(OpsChatAPIController.incidentsFor(Some(bob), load) == Nil)
+        assert(OpsChatAPIController.incidentsFor(sess(bob), load) == Nil)
         assert(reads == 0, "the incident store must not be read for a restricted session")
     }
 
     test("a restricted user with no grants gets none") {
         val noGrants = user(User.RoleViewer, restricted = true)
         assert(noGrants.isRestricted)
-        assert(OpsChatAPIController.incidentsFor(Some(noGrants), failingLoad) == Nil)
+        assert(OpsChatAPIController.incidentsFor(sess(noGrants), failingLoad) == Nil)
     }
 
     test("an unrestricted admin, editor and viewer get the loaded list as the same instance") {
         Seq(User.RoleAdmin, User.RoleEditor, User.RoleViewer).foreach { role =>
             val loaded = List(incHr, incSales)
-            val got = OpsChatAPIController.incidentsFor(Some(user(role, restricted = false)), () => loaded)
+            val got = OpsChatAPIController.incidentsFor(sess(user(role, restricted = false)), () => loaded)
             assert(got eq loaded, s"$role must get the loaded list itself")
         }
     }
 
     test("a caller with no session user (API key, user auth off) gets the loaded list as the same instance") {
         val loaded = List(incHr, incSales)
-        assert(OpsChatAPIController.incidentsFor(None, () => loaded) eq loaded)
+        assert(OpsChatAPIController.incidentsFor(noSession, () => loaded) eq loaded)
     }
 
     test("an admin flagged restricted is not restricted and gets the loaded list") {
         val admin = user(User.RoleAdmin, restricted = true, "Sales" -> "own")
         assert(!admin.isRestricted)
         val loaded = List(incHr)
-        assert(OpsChatAPIController.incidentsFor(Some(admin), () => loaded) eq loaded)
+        assert(OpsChatAPIController.incidentsFor(sess(admin), () => loaded) eq loaded)
     }
 
     test("the context message for a restricted user equals the message with no incidents") {
         val msg = OpsAgentPrompt.renderContextMessage(
             ctx,
-            OpsChatAPIController.incidentsFor(Some(bob), () => List(incHr, incSales))
+            OpsChatAPIController.incidentsFor(sess(bob), () => List(incHr, incSales))
         )
         assert(msg == OpsAgentPrompt.renderContextMessage(ctx))
         Seq("Open incidents", "inc-hr", "inc-sales", "hr_payroll", "hr_feed", "t_sales").foreach { s =>
@@ -132,7 +150,7 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
         val ed = user(User.RoleEditor, restricted = false)
         val msg = OpsAgentPrompt.renderContextMessage(
             ctx,
-            OpsChatAPIController.incidentsFor(Some(ed), () => List(incHr, incSales))
+            OpsChatAPIController.incidentsFor(sess(ed), () => List(incHr, incSales))
         )
         val lines = msg.split("\n").toSeq
         assert(lines.exists(_.startsWith("Open incidents (")), msg)
@@ -171,7 +189,7 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
 
     test("contextMessage for a restricted user equals the no-incidents message and the incident store is not read") {
         Seq(bob, user(User.RoleViewer, restricted = true)).foreach { u =>
-            val msg = OpsChatAPIController.contextMessage(Some(u), ctx, failingLoad)
+            val msg = OpsChatAPIController.contextMessage(sess(u), ctx, failingLoad)
             assert(msg == OpsAgentPrompt.renderContextMessage(ctx))
             Seq("Open incidents", "inc-hr", "hr_payroll", "hr_feed").foreach { s =>
                 assert(!msg.contains(s), s"restricted context must not contain '$s'")
@@ -181,9 +199,9 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
 
     test("contextMessage for an unrestricted user or no session user is the message with the loaded incidents") {
         val expected = OpsAgentPrompt.renderContextMessage(ctx, List(incHr, incSales))
-        val callers: Seq[Option[User]] =
-            Seq(None) ++ Seq(User.RoleAdmin, User.RoleEditor, User.RoleViewer).map(r => Some(user(r, restricted = false))) ++
-                Seq(Some(user(User.RoleAdmin, restricted = true, "Sales" -> "own")))
+        val callers: Seq[ChatIdentity] =
+            Seq(noSession) ++ Seq(User.RoleAdmin, User.RoleEditor, User.RoleViewer).map(r => sess(user(r, restricted = false))) ++
+                Seq(sess(user(User.RoleAdmin, restricted = true, "Sales" -> "own")))
         callers.foreach { u =>
             var reads = 0
             val msg = OpsChatAPIController.contextMessage(u, ctx, () => { reads += 1; List(incHr, incSales) })
@@ -191,5 +209,32 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
             assert(reads == 1, s"caller $u must read the incident store once")
             assert(msg.contains("inc-hr: pipeline_failure on pipeline `hr_payroll`"), msg)
         }
+    }
+
+    private val keyFailingLoad: () => List[Incident] =
+        () => fail("the incident store must not be read for a key without incident:read")
+
+    test("a key without incident:read gets no incidents and the store is not read") {
+        Seq(
+            keyIdentity("ops-ro", "pipeline:read", "tap:read"),
+            keyIdentity("ci_scoped", "pipeline:read:catalog=Sales", "tap:read:catalog=Sales"),
+            keyIdentity("ops-inc-sales", "incident:read:catalog=Sales", "pipeline:read"),
+            keyIdentity("scoped-star", "*:*:catalog=Sales")
+        ).foreach { id =>
+            assert(OpsChatAPIController.incidentsFor(id, keyFailingLoad) == Nil, s"$id")
+            val msg = OpsChatAPIController.contextMessage(id, ctx, keyFailingLoad)
+            assert(msg == OpsAgentPrompt.renderContextMessage(ctx), s"$id")
+            Seq("Open incidents", "inc-hr", "hr_payroll").foreach(t => assert(!msg.contains(t), s"$id must not see '$t'"))
+        }
+    }
+
+    test("a key holding incident:read gets the loaded list as the same instance") {
+        val id = keyIdentity("ops-inc", "incident:read", "pipeline:read")
+        val loaded = List(incHr, incSales)
+        assert(OpsChatAPIController.incidentsFor(id, () => loaded) eq loaded)
+        var reads = 0
+        val msg = OpsChatAPIController.contextMessage(id, ctx, () => { reads += 1; loaded })
+        assert(reads == 1)
+        assert(msg == OpsAgentPrompt.renderContextMessage(ctx, loaded))
     }
 }
