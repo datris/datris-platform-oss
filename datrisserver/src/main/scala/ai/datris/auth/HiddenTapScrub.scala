@@ -191,13 +191,28 @@ object HiddenTapScrub {
         if (columns == null || !columns.asScala.exists(isTapStampColumn)) columns
         else new java.util.ArrayList[String](columns.asScala.filterNot(isTapStampColumn).asJava)
 
-    /** Every tap a stamped row names (`_datris_tap_run` up to `|` and a
-      * `tap:<name>` source), not only the first: see [[stampTaps]]. */
-    private def stampedTaps(row: JsonObject): Set[String] = {
+    /** Every tap name a `_datris_tap_run` value (`<tapName>|<runTime>`) can
+      * hold: each non-empty prefix ending just before a `|`, or the whole
+      * value when it has none. The stamper builds the value from the run's
+      * own tap name, so the true name is always one of them; a tap name or
+      * run time holding `|` only adds candidates. The value vouches for a
+      * readable tap only when every candidate is readable. */
+    private def tapRunNames(value: String): Set[String] =
+        if (value == null || value.isEmpty) Set.empty
+        else if (value.indexOf('|') < 0) Set(value)
+        else value.indices.filter(i => value.charAt(i) == '|' && i > 0).map(i => value.substring(0, i)).toSet
+
+    /** The tap named by a `tap:<name>` `_datris_source`. Author text: it can
+      * only cause a strip (a hidden name), never vouch for the stamps. */
+    private def sourceTap(value: Option[String]): Option[String] =
+        value.filter(_.startsWith("tap:")).map(_.stripPrefix("tap:")).filter(_.nonEmpty)
+
+    /** The tap names a stamped row's `_datris_tap_run` holds ([[tapRunNames]])
+      * and the tap its `tap:<name>` source names: see [[stampTaps]]. */
+    private def stampedTaps(row: JsonObject): (Set[String], Option[String]) = {
         def str(f: String): Option[String] =
-            if (row.has(f) && row.get(f).isJsonPrimitive) Some(row.get(f).getAsString) else None
-        str("_datris_tap_run").map(v => v.takeWhile(_ != '|')).filter(_.nonEmpty).toSet ++
-            str("_datris_source").filter(_.startsWith("tap:")).map(_.stripPrefix("tap:"))
+            if (row.has(f) && row.get(f).isJsonPrimitive) Option(row.get(f).getAsString) else None
+        (str("_datris_tap_run").map(tapRunNames).getOrElse(Set.empty), sourceTap(str("_datris_source")))
     }
 
     private def holdsStampColumn(row: JsonObject): Boolean = StampTapColumns.exists(row.has)
@@ -268,8 +283,12 @@ object HiddenTapScrub {
     /** Whether `row` loses its tap stamp columns. Every row holding one when
       * the job's feeding tap (`jobTap`, from its `tap-<name>.csv|json`
       * filename, [[feedTap]]) is hidden, whatever `provenance.fields`
-      * selected; otherwise a row stamped with a hidden tap. With a `feed`,
-      * a row holding a non-empty tap stamp column that names no tap is tied
+      * selected; otherwise a row whose `_datris_tap_run` holds a hidden or
+      * unknown tap name ([[tapRunNames]]) or whose `tap:<name>` source names
+      * a hidden tap. A `_datris_tap_run` whose names are all readable keeps
+      * the columns; a readable `tap:<name>` source never does. With a `feed`,
+      * a row holding a non-empty tap stamp column whose `_datris_tap_run`
+      * names no tap is tied
       * to its tap by the run record of its `_datris_run_id` (else the job's
       * token), trusted only when filed under the job's own pipeline (an
       * upload, or no tapName, keeps the columns); with no such record, by
@@ -285,8 +304,8 @@ object HiddenTapScrub {
     ): Boolean =
         if (jobHidden) holdsStampColumn(row)
         else {
-            val named = stampedTaps(row)
-            if (named.exists(hidden)) true
+            val (named, source) = stampedTaps(row)
+            if (named.exists(hidden) || source.exists(hidden)) true
             else if (feed == null || named.nonEmpty || !holdsNonEmptyStampColumn(row)) false
             else {
                 val record = rowStr(row, "_datris_run_id")
@@ -304,12 +323,14 @@ object HiddenTapScrub {
         }
 
     /** True when some row in `rows` loses its tap stamp columns
-      * ([[rowStripped]]): stamped with a tap `hidden` holds
-      * (`_datris_tap_run` = `<tap>|<runTime>`, or a `tap:<name>` source),
-      * holding any tap stamp column while `jobTap` is hidden, or, with a
-      * `feed`, tied to a hidden tap (or to none, fail closed) through the
-      * run record or the job's events. `run` is called only for a row with
-      * a non-empty tap stamp column that names no tap. */
+      * ([[rowStripped]]): a `_datris_tap_run` (`<tap>|<runTime>`) holding
+      * any tap name `hidden` holds ([[tapRunNames]]), a `tap:<name>` source
+      * naming a hidden tap, holding any tap stamp column while `jobTap` is
+      * hidden, or, with a `feed`, tied to a hidden tap (or to none, fail
+      * closed) through the run record or the job's events. A readable
+      * `tap:<name>` source never keeps the columns. `run` is called only
+      * for a row with a non-empty tap stamp column whose `_datris_tap_run`
+      * names no tap. */
     def stampsHiddenTap(
         rows: JsonArray,
         hidden: String => Boolean,
@@ -347,24 +368,29 @@ object HiddenTapScrub {
     private def hitStr(hit: java.util.Map[String, Any], key: String): Option[String] =
         Option(hit.get(key)).map(v => String.valueOf(v)).filter(_.nonEmpty)
 
-    /** Every tap a search hit's stamp columns name: `_datris_tap_run` up to
-      * `|` and a `tap:<name>` `_datris_source`. All of them, not the first
-      * match: a chunk written with a static destination `metadata` key under
-      * a stamp name (before the stamper dropped those) can name a readable
-      * tap in one column while another column names the real, hidden one.
-      * The `tap-<name>.csv|json` filename is not among them: it is weighed
+    /** The taps a search hit's stamp columns name, split by trust: every
+      * tap name its `_datris_tap_run` can hold ([[tapRunNames]]), and the
+      * tap a `tap:<name>` `_datris_source` names. Both are weighed, not the
+      * first match: a chunk written with a static destination `metadata` key
+      * under a stamp name (before the stamper dropped those) can name a
+      * readable tap in one column while another column names the real,
+      * hidden one. Only the tap-run names can keep the columns (when all are
+      * readable); the source is author text and can only strip. The
+      * `tap-<name>.csv|json` filename is not among them: it is weighed
       * separately in [[scrubHit]], because a chunk written before
       * `filename` became a reserved metadata key can carry a planted one. */
-    private def stampTaps(hit: java.util.Map[String, Any]): Set[String] =
-        hitStr(hit, "_datris_tap_run").map(_.takeWhile(_ != '|')).filter(_.nonEmpty).toSet ++
-            hitStr(hit, "_datris_source").filter(_.startsWith("tap:")).map(_.stripPrefix("tap:")).filter(_.nonEmpty)
+    private def stampTaps(hit: java.util.Map[String, Any]): (Set[String], Option[String]) =
+        (hitStr(hit, "_datris_tap_run").map(tapRunNames).getOrElse(Set.empty), sourceTap(hitStr(hit, "_datris_source")))
 
     /** Vector search hits (already limited to readable writers) with the tap
       * stamp columns ([[StampTapColumns]]) removed from each hit fed by a tap
       * `hidden` holds. A stamped hit is stripped when its feed filename
       * (`tap-<name>.csv|json`) names a hidden tap, or when its stamp columns
-      * name taps ([[stampTaps]]) and any of them is hidden. Otherwise, when
-      * the stamp columns name no tap and the hit has a `_datris_run_id`, the
+      * name taps ([[stampTaps]]) and any of them is hidden or unknown; it
+      * keeps them when `_datris_tap_run` names only readable taps. A
+      * `tap:<name>` source naming a readable tap never keeps them (author
+      * text). Otherwise, when `_datris_tap_run` names no tap and the hit has
+      * a `_datris_run_id`, the
       * tap is the input of the run record `run` returns for it, trusted only
       * when the record's `pipeline` is the hit's own stored writer
       * ([[VectorChunkWriter.writerOf]]) and it has an input (an upload, or no
@@ -374,9 +400,9 @@ object HiddenTapScrub {
       * tap and no run id the hit is unresolved. A hit whose tap cannot be
       * determined loses any non-empty tap stamp column (fail closed). A
       * `tap-<name>.csv|json` filename of a hidden tap reads `tap-[hidden]`.
-      * `run` is called only when the hit's stamp columns name no tap, its
-      * filename names no hidden tap, and it holds a non-empty stamp column
-      * and a run id. No name-keyed lookups: chunks and run
+      * `run` is called only when the hit's `_datris_tap_run` names no tap
+      * and its source names no hidden tap, its filename names no hidden
+      * tap, and it holds a non-empty stamp column and a run id. No name-keyed lookups: chunks and run
       * records keep the name they were written under. Changed hits are
       * copies (key order kept); the input maps are never modified; `hits`
       * itself when no hit changes. */
@@ -405,22 +431,21 @@ object HiddenTapScrub {
         val fileTap = feedTap(filename)
         if (!stamped && fileTap.isEmpty) return hit
         val renameFile = fileTap.exists(hidden)
-        // A filename only ever causes a strip; it never vouches for the
-        // stamps (only stamp names or the run record can).
-        lazy val stampNamed = stampTaps(hit)
+        // A filename or a `tap:<name>` source only ever causes a strip; neither
+        // vouches for the stamps (only `_datris_tap_run` or the run record can).
+        lazy val (stampNamed, sourceNamed) = stampTaps(hit)
         lazy val runId = hitStr(hit, "_datris_run_id")
         val strip = stamped && (
-            renameFile ||
-                (if (stampNamed.nonEmpty) stampNamed.exists(hidden)
-                 else {
-                     val record = runId
-                         .flatMap(id => Option(run(id)).flatten)
-                         .filter(r => r != null && r.input != null && r.pipeline != null && VectorChunkWriter.writerOf(hit).contains(r.pipeline))
-                     record match {
-                         case Some(r) => r.input.kind != "upload" && Option(r.input.tapName).filter(_.nonEmpty).exists(hidden)
-                         case None => true
-                     }
-                 })
+            renameFile || stampNamed.exists(hidden) || sourceNamed.exists(hidden) ||
+                (stampNamed.isEmpty && {
+                    val record = runId
+                        .flatMap(id => Option(run(id)).flatten)
+                        .filter(r => r != null && r.input != null && r.pipeline != null && VectorChunkWriter.writerOf(hit).contains(r.pipeline))
+                    record match {
+                        case Some(r) => r.input.kind != "upload" && Option(r.input.tapName).filter(_.nonEmpty).exists(hidden)
+                        case None => true
+                    }
+                })
         )
         if (!strip && !renameFile) return hit
         val copy = new java.util.LinkedHashMap[String, Any](hit)
