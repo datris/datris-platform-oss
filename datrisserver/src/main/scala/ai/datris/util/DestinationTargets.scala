@@ -169,10 +169,12 @@ object DestinationTargets {
         fresh.filterNot(visibleTables.contains)
     }
 
-    /** True when the pgvector schema or table cannot be addressed as one
-      * quoted identifier the way the loader and the delete's DROP build it
-      * (`"` + name + `"`, nothing escaped): a double quote or NUL in either,
-      * or an empty (not null) schema. No probe can answer for such a name. */
+    /** True when the pgvector schema or table is not a plain name: a double
+      * quote or NUL in either, or an empty (not null) schema. The pgvector
+      * SQL escapes every name (`PGVectorSql`), so a stored config with such a
+      * name keeps addressing its one table; a new or changed one is refused
+      * for every caller (`PipelineAPIController.vectorTableNameRefusal`) and,
+      * restricted sessions, by the existing-destination rule. */
     def unsafeVectorTableName(c: PipelineConfig): Boolean = {
         if (c == null || c.destination == null || c.destination.pgvector == null) return false
         val p = c.destination.pgvector
@@ -186,8 +188,9 @@ object DestinationTargets {
 
     /** True when the config has a pgvector destination whose `tableName` is
       * null or blank: it has no [[vectorTableTargets]] target (nothing is
-      * probed), yet the delete's DROP still addresses `"schema"."null"` or
-      * the blank name. */
+      * probed) and no container key, so the delete never drops its table
+      * (it warns instead). A new or changed one is refused for every caller
+      * (`PipelineAPIController.vectorTableNameRefusal`). */
     def blankVectorTableName(c: PipelineConfig): Boolean =
         c != null && c.destination != null && c.destination.pgvector != null &&
             (c.destination.pgvector.tableName == null || c.destination.pgvector.tableName.trim.isEmpty)

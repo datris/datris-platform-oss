@@ -393,6 +393,13 @@ class PipelineAPIController {
                 return Left(refused)
             case Right(o) => o
         }
+        // A new or changed pgvector schema or table must be one Postgres can
+        // address as a single quoted identifier, and the table must be named.
+        // Every caller; a stored config with the same names keeps them.
+        PipelineAPIController.vectorTableNameRefusal(preserved, existing).foreach { refused =>
+            logger.warn("POST /pipeline " + preserved.name + " rejected: pgvector schema or table name")
+            return Left(refused)
+        }
         // One vector container per pipeline: refuse a new or changed
         // container another pipeline already names. Runs before the
         // authority check, whose remedy (authoritative=false) does not apply
@@ -982,6 +989,7 @@ class PipelineAPIController {
                 )
             }
             warnings ++= PipelineAPIController.vectorDeleteWarnings(request, config, otherConfigs)
+            warnings ++= PipelineAPIController.blankVectorTableDeleteWarning(config)
             warnings ++= PipelineAPIController.structuredDeleteWarnings(request, config, otherConfigs, dsEnv)
             UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
                 warnings += advice
@@ -1248,8 +1256,13 @@ class PipelineAPIController {
             }
         }
 
-        // pgvector — DROP TABLE
-        if (dest.pgvector != null && dropVector("pgvector", dest.pgvector.tableName, Option(dest.pgvector.schemaName)) && dropStructured("pgvector")) {
+        // pgvector — DROP TABLE. Never for a null or blank table name: no
+        // shared-table guard has a key for it, so the table may be another
+        // pipeline's (the delete warns instead, blankVectorTableDeleteWarning).
+        if (
+            dest.pgvector != null && !DestinationTargets.blankVectorTableName(config) &&
+            dropVector("pgvector", dest.pgvector.tableName, Option(dest.pgvector.schemaName)) && dropStructured("pgvector")
+        ) {
             try {
                 val secretName = DatrisEnvironment.current.pgvectorSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
@@ -1268,11 +1281,12 @@ class PipelineAPIController {
                         properties.setProperty("password", password)
                         val conn = DriverManager.getConnection(pgvJdbcUrl, properties)
                         try {
-                            val schema = if (dest.pgvector.schemaName != null) dest.pgvector.schemaName else "public"
+                            val schema = PGVectorSql.schemaOf(dest.pgvector)
+                            val table = PGVectorSql.tableOf(dest.pgvector)
                             val stmt = conn.createStatement()
-                            stmt.execute("DROP TABLE IF EXISTS \"" + schema + "\".\"" + dest.pgvector.tableName + "\" CASCADE")
+                            stmt.execute(PGVectorSql.dropTable(schema, table))
                             stmt.close()
-                            logger.info("Dropped pgvector table: " + schema + "." + dest.pgvector.tableName)
+                            logger.info("Dropped pgvector table: " + schema + "." + table)
                         } finally {
                             conn.close()
                         }
@@ -1596,6 +1610,37 @@ object PipelineAPIController {
             ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString)
         }
 
+    /** POST /pipeline (every caller: sessions, API keys, auth off, MCP, CLI,
+      * catalog restore) and pipeline version restore: 400 `{"error": ...}`
+      * for a new or changed pgvector schema or table that can never be
+      * right. `DestinationTargets.BlankVectorTableRefusal` for a null or
+      * blank table, then `DestinationTargets.UnsafeVectorTableRefusal` for a
+      * double quote or NUL in either name or an empty schema. Skipped when
+      * `stored` (the stored config of this name, the live one for a restore;
+      * null when there is none) has exactly the same schema and table
+      * (`DestinationTargets.sameVectorTableNames`, nulls included): such a
+      * pipeline keeps working with its table. None for a null candidate or a
+      * non-pgvector config. No request, no I/O. Restricted sessions also get
+      * their own branch in [[existingDestinationRefusal]]. */
+    def vectorTableNameRefusal(candidate: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] = {
+        if (candidate == null || candidate.destination == null || candidate.destination.pgvector == null) return None
+        if (DestinationTargets.sameVectorTableNames(candidate, stored)) return None
+        val text =
+            if (DestinationTargets.blankVectorTableName(candidate)) Some(DestinationTargets.BlankVectorTableRefusal)
+            else if (DestinationTargets.unsafeVectorTableName(candidate)) Some(DestinationTargets.UnsafeVectorTableRefusal)
+            else None
+        text.map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
+    }
+
+    /** DELETE /pipeline with data: the one warning line for a pgvector
+      * destination whose `tableName` is null or blank. No table is dropped
+      * for such a config (no shared-table guard can protect it). None for
+      * every other config. */
+    def blankVectorTableDeleteWarning(config: PipelineConfig): Option[String] =
+        if (DestinationTargets.blankVectorTableName(config))
+            Some("The pgvector table was not dropped because this pipeline has no table name; drop it in PostgreSQL if it is no longer needed.")
+        else None
+
     /** POST /pipeline: the other configs for the authority and vector
       * container checks. A failed read is `Nil` (fail-open, as before)
       * unless the candidate adds a vector container its stored config does
@@ -1851,8 +1896,13 @@ object PipelineAPIController {
       * A pgvector table is checked on its own path after those probes
       * (`DestinationTargets.vectorTablesToProbe`, with `vectorTableExists`):
       * 400 `UnsafeVectorTableRefusal` first for a changed pgvector table whose
-      * schema or name is not a plain quoted identifier, then the same 400 /
-      * 500 / 429 answers as above.
+      * schema or name holds a double quote or NUL (or an empty schema), and
+      * `BlankVectorTableRefusal` for a null or blank table, then the same 400 /
+      * 500 / 429 answers as above. Every caller already gets those two
+      * refusals from [[vectorTableNameRefusal]], which runs first on the save
+      * path; this branch adds that a stored config the caller cannot see
+      * grandfathers nothing. The pgvector SQL itself escapes every name
+      * (`PGVectorSql`).
       *
       * This six-argument form is the spec seam for the probe alone: it skips
       * the Unity Catalog state check and the pgvector table probe. Production

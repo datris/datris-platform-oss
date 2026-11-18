@@ -31,7 +31,10 @@ object EntityVersionAPIController {
     def tapRestoreProblem(restored: TapConfig, typeOf: String => Option[Option[String]], enforced: Boolean): Option[String] =
         TapAPIController.tapSecretSaveProblem(restored, typeOf, enforced)
 
-    /** Restoring a pipeline version is a save: a snapshot naming a vector
+    /** Restoring a pipeline version is a save: a snapshot whose new or
+      * changed pgvector schema or table can never be right is refused for
+      * every caller ([[PipelineAPIController.vectorTableNameRefusal]], with
+      * the live config as the stored one); a snapshot naming a vector
       * container that the live config (null when deleted) does not, and
       * that another pipeline names, is refused like POST /pipeline; so is a
       * snapshot that, for a caller who cannot see every pipeline, adds a
@@ -44,9 +47,11 @@ object EntityVersionAPIController {
         live: PipelineConfig,
         others: Seq[PipelineConfig]
     ): Option[ResponseEntity[String]] =
-        if (PipelineAPIController.limitedVisibility(request))
-            pipelineRestoreRefusal(request, snap, live, others, PipelineAPIController.datasetEnv())
-        else PipelineAPIController.vectorContainerRefusal(request, snap, live, others)
+        PipelineAPIController.vectorTableNameRefusal(snap, live).orElse(
+            if (PipelineAPIController.limitedVisibility(request))
+                pipelineRestoreRefusal(request, snap, live, others, PipelineAPIController.datasetEnv())
+            else PipelineAPIController.vectorContainerRefusal(request, snap, live, others)
+        )
 
     /** Version restore, API keys: 403 when the key's scope does not grant
       * `pipeline:update` on the pipeline being restored over (the live
@@ -85,7 +90,9 @@ object EntityVersionAPIController {
     ): Option[ResponseEntity[String]] =
         pipelineRestoreRefusal(request, snap, live, others, env, (t: DestinationTargets.Target) => DestinationProbe.exists(snap, t))
 
-    /** [[pipelineRestoreRefusal]] with the existence probe given: the vector
+    /** [[pipelineRestoreRefusal]] with the existence probe given: the
+      * pgvector name rule ([[PipelineAPIController.vectorTableNameRefusal]],
+      * every caller; a restore does not run the save validator), the vector
       * container rule, then the hidden-writer rule, then (restricted
       * sessions only) the new-destinations-only rule with `snap` as the
       * candidate and `live` as the stored config. */
@@ -98,7 +105,8 @@ object EntityVersionAPIController {
         exists: DestinationTargets.Target => Boolean
     ): Option[ResponseEntity[String]] =
         PipelineAPIController
-            .vectorContainerRefusal(request, snap, live, others)
+            .vectorTableNameRefusal(snap, live)
+            .orElse(PipelineAPIController.vectorContainerRefusal(request, snap, live, others))
             .orElse(PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, env))
             .orElse(PipelineAPIController.existingDestinationRefusal(request, snap, live, others, env, exists, DestinationProbe.catalogCommitted))
 
@@ -115,7 +123,8 @@ object EntityVersionAPIController {
         vectorTableExists: DestinationTargets.Target => Boolean
     ): Option[ResponseEntity[String]] =
         PipelineAPIController
-            .vectorContainerRefusal(request, snap, live, others)
+            .vectorTableNameRefusal(snap, live)
+            .orElse(PipelineAPIController.vectorContainerRefusal(request, snap, live, others))
             .orElse(PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, env))
             .orElse(
                 PipelineAPIController.existingDestinationRefusal(

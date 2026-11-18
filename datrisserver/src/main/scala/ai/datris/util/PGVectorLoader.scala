@@ -61,6 +61,18 @@ class PGVectorLoader(jobContext: JobContext) {
         val username = Option(pgSecret.get("username")).getOrElse("postgres")
         val password = Option(pgSecret.get("password")).getOrElse("")
 
+        // Names, checked before connecting. A pipeline saved without a table
+        // name keeps writing the table earlier versions wrote (`null`).
+        val schemaName = PGVectorSql.schemaOf(pgvectorConfig)
+        val tableName = PGVectorSql.tableOf(pgvectorConfig)
+        if (pgvectorConfig.tableName == null)
+            statusUtil.warn(
+                "processing",
+                "This pipeline has no pgvector table name, so chunks are written to the table named null as in earlier versions. " +
+                    "Set destination.pgvector.tableName."
+            )
+        requireNames(schemaName, tableName, metadataKeysNow)
+
         // Connect
         Class.forName("org.postgresql.Driver")
         val props = new Properties()
@@ -75,12 +87,10 @@ class PGVectorLoader(jobContext: JobContext) {
 
             // Ensure pgvector extension and table exist
             val dimension = EmbeddingUtil.embeddingDimension(embeddingConfig)
-            val schemaName = Option(pgvectorConfig.schemaName).getOrElse("public")
-            val tableName = pgvectorConfig.tableName
             ensureTable(conn, schemaName, tableName, dimension)
 
             // Build column lists for metadata
-            val metadataKeys = if (pgvectorConfig.metadata != null) pgvectorConfig.metadata.asScala.keys.toList else List.empty
+            val metadataKeys = metadataKeysNow
 
             // Batch: embed + upsert. globalChunkIdx is the row's chunk_index AND
             // part of the deterministic PK seed; it advances per fitted chunk
@@ -90,13 +100,7 @@ class PGVectorLoader(jobContext: JobContext) {
             chunks.grouped(UPSERT_BATCH_SIZE).foreach { batch =>
                 val embedded = EmbeddingUtil.generateEmbeddings(batch, embeddingConfig)
 
-                val allColumns = List("id", "text", "chunk_index", "source_pipeline", "filename") ++ metadataKeys ++ List("embedding")
-                val placeholders = allColumns.map(_ => "?").mkString(", ")
-                val updateSet = allColumns.filter(_ != "id").map(c => "\"" + c + "\" = EXCLUDED.\"" + c + "\"").mkString(", ")
-
-                val sql = s"""INSERT INTO "$schemaName"."$tableName" (${allColumns.map(c => "\"" + c + "\"").mkString(", ")})
-                             |VALUES ($placeholders)
-                             |ON CONFLICT (id) DO UPDATE SET $updateSet""".stripMargin
+                val sql = PGVectorSql.upsert(schemaName, tableName, metadataKeys)
 
                 val stmt = conn.prepareStatement(sql)
 
@@ -166,7 +170,7 @@ class PGVectorLoader(jobContext: JobContext) {
             stmt.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
             // Create schema if needed
-            stmt.execute("CREATE SCHEMA IF NOT EXISTS \"" + schemaName + "\"")
+            stmt.execute(PGVectorSql.createSchema(schemaName))
 
             // Serialize concurrent ensureTable calls on this specific table.
             // CREATE TABLE IF NOT EXISTS alone is NOT race-safe: concurrent
@@ -220,19 +224,7 @@ class PGVectorLoader(jobContext: JobContext) {
                 dimCheck.close()
             }
 
-            val metadataColumns = if (pgvectorConfig.metadata != null) {
-                pgvectorConfig.metadata.asScala.keys.map(key => "\"" + key + "\" TEXT").mkString(", ", ", ", "")
-            } else ""
-
-            val createSql =
-                s"""CREATE TABLE IF NOT EXISTS "$schemaName"."$tableName" (
-                   |    id UUID PRIMARY KEY,
-                   |    text TEXT,
-                   |    chunk_index INTEGER,
-                   |    source_pipeline TEXT,
-                   |    filename TEXT$metadataColumns,
-                   |    embedding vector($dimension)
-                   |)""".stripMargin
+            val createSql = PGVectorSql.createTable(schemaName, tableName, metadataKeysNow, dimension)
 
             statusUtil.info("processing", "Ensuring table: " + schemaName + "." + tableName + " with vector dimension: " + dimension)
             stmt.execute(createSql)
@@ -240,21 +232,32 @@ class PGVectorLoader(jobContext: JobContext) {
             // Additive evolution for metadata columns: a table created before a
             // metadata key existed (user-added key, or provenance stamping turned
             // on) must gain the column or the INSERT column list fails.
-            if (pgvectorConfig.metadata != null) {
-                pgvectorConfig.metadata.asScala.keys.foreach { key =>
-                    stmt.execute(
-                        "ALTER TABLE \"" + schemaName + "\".\"" + tableName + "\" ADD COLUMN IF NOT EXISTS \"" + key + "\" TEXT"
-                    )
-                }
-            }
+            metadataKeysNow.foreach(key => stmt.execute(PGVectorSql.addColumn(schemaName, tableName, key)))
             conn.commit()
         } finally {
             stmt.close()
         }
     }
 
+    /** The metadata keys as configured now (each becomes a TEXT column). */
+    private def metadataKeysNow: List[String] =
+        if (pgvectorConfig.metadata != null) pgvectorConfig.metadata.asScala.keys.toList else List.empty
+
+    /** A schema, table or metadata key Postgres cannot take as a quoted
+      * identifier (empty, or holding NUL) fails the load with a plain message
+      * before any statement is built. */
+    private def requireNames(schemaName: String, tableName: String, metadataKeys: Seq[String]): Unit = {
+        def bad(s: String): Boolean = s == null || s.isEmpty || s.indexOf('\u0000') >= 0
+        if (bad(schemaName))
+            throw new DatrisException("The pgvector schema name must not be empty or contain NUL characters. Set destination.pgvector.schemaName.")
+        if (bad(tableName))
+            throw new DatrisException("The pgvector table name must not contain NUL characters. Set destination.pgvector.tableName.")
+        if (metadataKeys.exists(bad))
+            throw new DatrisException("pgvector metadata keys must not be empty or contain NUL characters. Fix destination.pgvector.metadata.")
+    }
+
     private def sendNotification(): Unit = {
-        val schemaName = Option(pgvectorConfig.schemaName).getOrElse("public")
+        val schemaName = PGVectorSql.schemaOf(pgvectorConfig)
         val attributes = Map(
             "database" -> "",
             "schema" -> schemaName,

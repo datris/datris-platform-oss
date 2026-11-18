@@ -43,6 +43,12 @@ object PGVectorSearchUtil extends VectorSearchUtility {
 
         if (query == null || query.trim.isEmpty)
             throw new DatrisException("Search query cannot be empty")
+        // The table and schema come from the request: each is looked up as
+        // exactly the name given (a quoted identifier). Postgres has no empty
+        // or NUL identifier, so those are refused here (400).
+        def unusable(s: String): Boolean = s == null || s.isEmpty || s.indexOf('\u0000') >= 0
+        if (unusable(table) || unusable(schema))
+            throw new DatrisException("The pgvector table and schema must not be empty or contain NUL characters")
 
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
@@ -70,6 +76,8 @@ object PGVectorSearchUtil extends VectorSearchUtility {
             conn = DriverManager.getConnection(jdbcUrl, props)
             conn.setReadOnly(true)
 
+            // A missing table answers no row here (to_regclass is null) and
+            // then "No queryable columns found" below.
             // Dim guard: switching the embedding provider between ingest and
             // query (e.g. Ollama bge-m3 1024-dim → OpenAI text-embedding-3-small
             // 1536-dim) leaves the collection's stored vectors at the old dim.
@@ -77,9 +85,9 @@ object PGVectorSearchUtil extends VectorSearchUtility {
             // dimensions X and Y" exception that surfaces as a stack trace.
             val storedDimStmt = conn.prepareStatement(
                 "SELECT atttypmod FROM pg_attribute " +
-                    "WHERE attrelid = (?::regclass) AND attname = 'embedding' AND NOT attisdropped"
+                    "WHERE attrelid = to_regclass(CAST(? AS text)) AND attname = 'embedding' AND NOT attisdropped"
             )
-            storedDimStmt.setString(1, "\"" + schema + "\".\"" + table + "\"")
+            storedDimStmt.setString(1, PgIdentifier.qualified(schema, table))
             val storedDim: Option[Int] =
                 try {
                     val rs = storedDimStmt.executeQuery()
@@ -98,12 +106,10 @@ object PGVectorSearchUtil extends VectorSearchUtility {
             }
 
             // Discover columns (exclude id and embedding)
-            val metaStmt = conn.createStatement()
-            val metaRs = metaStmt.executeQuery(
-                "SELECT column_name FROM information_schema.columns WHERE table_schema = '" +
-                    schema.replace("'", "''") + "' AND table_name = '" +
-                    table.replace("'", "''") + "' ORDER BY ordinal_position"
-            )
+            val metaStmt = conn.prepareStatement(PGVectorSql.ColumnsSql)
+            metaStmt.setString(1, schema)
+            metaStmt.setString(2, table)
+            val metaRs = metaStmt.executeQuery()
             val allColumns = new java.util.ArrayList[String]()
             while (metaRs.next()) {
                 allColumns.add(metaRs.getString("column_name"))
@@ -117,11 +123,7 @@ object PGVectorSearchUtil extends VectorSearchUtility {
 
             // Build the vector search query
             val vectorStr = "[" + queryEmbedding.mkString(",") + "]"
-            val columnList = columns.map(c => "\"" + c + "\"").mkString(", ")
-            val sql = "SELECT " + columnList + ", 1 - (embedding <=> '" + vectorStr + "'::vector) AS similarity" +
-                " FROM \"" + schema + "\".\"" + table + "\"" +
-                " ORDER BY embedding <=> '" + vectorStr + "'::vector" +
-                " LIMIT " + topK
+            val sql = PGVectorSql.search(schema, table, columns, vectorStr, topK)
 
             val stmt = conn.createStatement()
             val rs = stmt.executeQuery(sql)
