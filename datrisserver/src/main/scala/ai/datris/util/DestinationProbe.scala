@@ -11,7 +11,7 @@ import org.slf4j.{Logger, LoggerFactory}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 
-import ai.datris.model.{TenantContext, UserContext}
+import ai.datris.model.{DatrisEnvironment, TenantContext, UserContext}
 
 import java.io.FileNotFoundException
 import java.net.URI
@@ -430,6 +430,81 @@ object DestinationProbe {
             case s: SQLException => s.getSQLState == "3D000" || s.getSQLState == "3F000"
             case _ => false
         }
+
+    // ------------------------------------------------------------ pgvector
+
+    /** The pgvector secret the loader uses: the environment's
+      * `pgvectorSecretName`, else the config's `postgresSecretName` (the
+      * delete's DROP uses the environment's, which is set on every install). */
+    private[util] def pgvectorSecretName(envSecretName: String, c: PipelineConfig): String =
+        if (envSecretName != null) envSecretName else Option(c.destination.pgvector).map(_.postgresSecretName).orNull
+
+    /** The JDBC URL the pgvector loader and the delete's DROP connect to: the
+      * secret's `jdbcUrl` as is, or with its last path segment replaced by the
+      * tenant database in multi-tenant mode. */
+    private[util] def pgvectorJdbcUrl(rawJdbcUrl: String, tenantDatabase: Option[String]): String =
+        tenantDatabase match {
+            case Some(db) => rawJdbcUrl.replaceFirst("/[^/]*$", "/" + db)
+            case None => rawJdbcUrl
+        }
+
+    def vectorTableExists(c: PipelineConfig, t: DestinationTargets.Target): Boolean = vectorTableExists(c, t, DefaultDeadline)
+
+    /** Does the candidate's pgvector table (a
+      * `DestinationTargets.vectorTableTargets` target) already exist where
+      * the pgvector loader writes and the delete drops it: the pgvector
+      * secret's database (the tenant database in multi-tenant mode), the
+      * schema and table of the target's `exact`, `to_regclass` of the quoted
+      * name. A missing secret or `jdbcUrl` throws (the save answers 500). */
+    def vectorTableExists(c: PipelineConfig, t: DestinationTargets.Target, timeout: FiniteDuration): Boolean = {
+        require(c != null && c.destination != null && c.destination.pgvector != null && t != null, "no pgvector destination to probe")
+        val seconds = math.max(1L, timeout.toSeconds).toInt
+        val env = DatrisEnvironment.current
+        val secretName = pgvectorSecretName(env.pgvectorSecretName, c)
+        require(!blank(secretName), "no pgvector secret configured")
+        val secret = SecretsUtil.getSecretMap(secretName).getOrElse(throw new IllegalStateException("pgvector secret not found"))
+        val rawUrl = secret.get("jdbcUrl")
+        require(!blank(rawUrl), "pgvector secret without jdbcUrl")
+        val username = Option(secret.get("username")).getOrElse("postgres")
+        val password = Option(secret.get("password")).getOrElse("")
+        val tenant = if (env.multiTenant) Option(env.environment) else None
+        Class.forName("org.postgresql.Driver")
+        vectorTableWith(
+            t,
+            pgvectorJdbcUrl(rawUrl, tenant),
+            seconds,
+            url => {
+                val props = new java.util.Properties()
+                props.setProperty("user", username)
+                props.setProperty("password", password)
+                props.setProperty("connectTimeout", seconds.toString)
+                props.setProperty("loginTimeout", seconds.toString)
+                props.setProperty("socketTimeout", seconds.toString)
+                java.sql.DriverManager.getConnection(url, props)
+            }
+        )
+    }
+
+    /** [[vectorTableExists]] over `open` (given the JDBC URL, used as is). A
+      * missing database (SQLSTATE 3D000) or schema (3F000) counts as "does
+      * not exist"; any other failure propagates. */
+    private[datris] def vectorTableWith(t: DestinationTargets.Target, jdbcUrl: String, seconds: Int, open: String => Connection): Boolean = {
+        require(t != null && t.key.family == "pgtable" && t.key.kind == "pgvector" && t.exact.size == 2, "no pgvector table to probe")
+        val Seq(schema, table) = t.exact
+        require(schema != null && schema.nonEmpty && !blank(table), "pgvector destination without schema or table")
+        require(!schema.contains('"') && !table.contains('"'), "pgvector schema or table not a plain quoted identifier")
+        try {
+            val conn = open(jdbcUrl)
+            try {
+                Try(conn.setReadOnly(true))
+                countAboveZero(conn, PostgresExistsSql, Seq(postgresRegclass(schema, table)), seconds)
+            } finally Try(conn.close())
+        } catch {
+            case e: Exception if postgresMissing(e) =>
+                logger.info("Destination probe: pgvector database or schema " + schema + " does not exist")
+                false
+        }
+    }
 
     // ------------------------------------------------------------ MongoDB
 

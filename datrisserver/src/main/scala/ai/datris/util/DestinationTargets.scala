@@ -18,8 +18,9 @@ import java.util.Locale
   * with the platform's stored credentials. Each fresh target of a candidate
   * in [[ProbedFamilies]] is checked with [[DestinationProbe]]; a target that
   * exists refuses the save. A pgvector table (family `pgtable`, kind
-  * `pgvector`) is not a target: vector containers have their own
-  * one-container rule.
+  * `pgvector`) is not a target of [[targetsOf]]: it is checked on its own
+  * path ([[vectorTableTargets]], [[vectorTablesToProbe]],
+  * `DestinationProbe.vectorTableExists`), beside the one-container rule.
   *
   * A target is the `SharedDatasets` key plus the connection that reaches it
   * (`credentialsSecret`, `warehouse`, `role` for a warehouse; `provider`,
@@ -122,6 +123,66 @@ object DestinationTargets {
         val visibleTargets = Option(visibleOthers).getOrElse(Nil).filter(o => o != null && o.name != name).flatMap(o => targetsOf(o, env))
         fresh.filterNot(t => visibleTargets.exists(v => coveredBy(t, v)))
     }
+
+    // ------------------------------------------------------------ pgvector tables
+
+    /** The candidate's pgvector table, on a path separate from [[targetsOf]]
+      * (which leaves pgvector to the one-container rule): a pgvector
+      * pipeline's delete drops `"schema"."table"` in the pgvector secret's
+      * database whatever the table holds, so a restricted user's new or
+      * changed pgvector table must not exist yet either. The key is the
+      * `SharedDatasets` pgvector key; `exact` is the schema and table as the
+      * loader and the delete's DROP address them: the schema as written
+      * (`public` only when null), the table as written, each one quoted
+      * identifier (case kept). No connection: there is one pgvector secret
+      * per environment. */
+    def vectorTableTargets(c: PipelineConfig, env: SharedDatasets.Env): Seq[Target] = {
+        if (c == null || c.destination == null || c.destination.pgvector == null) return Nil
+        val p = c.destination.pgvector
+        SharedDatasets.keysOf(c, env).filter(k => k.family == "pgtable" && k.kind == "pgvector").map { k =>
+            Target(k, Nil, Seq(Option(p.schemaName).getOrElse("public"), p.tableName))
+        }
+    }
+
+    /** The candidate's pgvector tables its stored config (same name; null
+      * for a new pipeline) does not have with the same key and exact names. */
+    def freshVectorTables(candidate: PipelineConfig, stored: PipelineConfig, env: SharedDatasets.Env): Seq[Target] = {
+        val kept = vectorTableTargets(stored, env)
+        vectorTableTargets(candidate, env).filterNot(kept.contains)
+    }
+
+    /** The fresh pgvector tables of `candidate` that no pgvector pipeline in
+      * `visibleOthers` (another name, one the caller can see) names with the
+      * same key and exact names: the ones to probe. A visible Postgres
+      * destination table at the same place covers nothing here. */
+    def vectorTablesToProbe(
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        visibleOthers: Seq[PipelineConfig],
+        env: SharedDatasets.Env
+    ): Seq[Target] = {
+        val fresh = freshVectorTables(candidate, stored, env)
+        if (fresh.isEmpty) return Nil
+        val name = if (candidate == null) null else candidate.name
+        val visibleTables =
+            Option(visibleOthers).getOrElse(Nil).filter(o => o != null && o.name != name).flatMap(o => vectorTableTargets(o, env))
+        fresh.filterNot(visibleTables.contains)
+    }
+
+    /** True when the pgvector schema or table cannot be addressed as one
+      * quoted identifier the way the loader and the delete's DROP build it
+      * (`"` + name + `"`, nothing escaped): a double quote or NUL in either,
+      * or an empty (not null) schema. No probe can answer for such a name. */
+    def unsafeVectorTableName(c: PipelineConfig): Boolean = {
+        if (c == null || c.destination == null || c.destination.pgvector == null) return false
+        val p = c.destination.pgvector
+        def bad(s: String): Boolean = s != null && (s.contains('"') || s.contains('\u0000'))
+        bad(p.schemaName) || bad(p.tableName) || (p.schemaName != null && p.schemaName.isEmpty)
+    }
+
+    /** 400 refusal text for [[unsafeVectorTableName]]; names nothing. */
+    val UnsafeVectorTableRefusal: String =
+        "The pgvector schema and table names must not contain double quotes, and the schema must not be empty. Choose plain names."
 
     /** Characters a Hadoop / Spark path read expands as a glob or escape. */
     val GlobCharacters: Set[Char] = Set('*', '?', '[', ']', '{', '}', '\\')

@@ -1933,8 +1933,8 @@ paths:
             used by another pipeline, or (for a caller who cannot see every
             pipeline) its destination is written by a pipeline it cannot see,
             or (restricted users only) a new or changed Postgres, SQL Server,
-            Snowflake or Databricks table, MongoDB collection or object-store
-            prefix already exists: `The
+            Snowflake or Databricks table, pgvector table, MongoDB collection
+            or object-store prefix already exists: `The
             destination <kind> <coordinates> already exists. Choose a table or
             prefix that does not exist yet, or ask a user with install-wide
             access to save this destination.` (only the coordinates in the
@@ -1955,7 +1955,11 @@ paths:
             names: ... Choose a plain prefix.`, or (restricted users only) a
             SQL Server temporary table (`#name`): `A SQL Server temporary table
             (a name starting with #) cannot be a pipeline destination. Choose
-            another table name.` Fix the configuration and save again.
+            another table name.`, or (restricted users only) a new or changed
+            pgvector schema or table name with a double quote, or an empty
+            schema: `The pgvector schema and table names must not contain
+            double quotes, and the schema must not be empty. Choose plain
+            names.` Fix the configuration and save again.
           content:
             application/json:
               schema:

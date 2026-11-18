@@ -1798,9 +1798,16 @@ object PipelineAPIController {
       * the visible pipelines here. None for everyone else (unrestricted
       * sessions, every API key, auth off): no probe, no read.
       *
+      * A pgvector table is checked on its own path after those probes
+      * (`DestinationTargets.vectorTablesToProbe`, with `vectorTableExists`):
+      * 400 `UnsafeVectorTableRefusal` first for a changed pgvector table whose
+      * schema or name is not a plain quoted identifier, then the same 400 /
+      * 500 / 429 answers as above.
+      *
       * This six-argument form is the spec seam for the probe alone: it skips
-      * the Unity Catalog state check. Production paths call the seven-argument
-      * form below with `DestinationProbe.catalogCommitted`. */
+      * the Unity Catalog state check and the pgvector table probe. Production
+      * paths call the seven-argument form below with
+      * `DestinationProbe.catalogCommitted`. */
     private[api] def existingDestinationRefusal(
         request: HttpServletRequest,
         candidate: PipelineConfig,
@@ -1809,7 +1816,7 @@ object PipelineAPIController {
         env: SharedDatasets.Env,
         exists: DestinationTargets.Target => Boolean
     ): Option[ResponseEntity[String]] =
-        existingDestinationRefusal(request, candidate, stored, others, env, exists, _ => false)
+        existingDestinationRefusal(request, candidate, stored, others, env, exists, _ => false, DestinationProbe.DefaultDeadline, _ => false)
 
     /** [[existingDestinationRefusal]] with the Unity Catalog state check
       * given, under `DestinationProbe.DefaultDeadline`. */
@@ -1830,7 +1837,8 @@ object PipelineAPIController {
       * it the save answers 500 `ProbeUnavailable` and nothing is saved. Each
       * read and probe takes one of the caller's `DestinationProbe.MaxPerOwner`
       * slots (owner `ResolvedKey.label`); over the limit the save answers 429
-      * [[tooManyChecks]] and nothing is started or saved. */
+      * [[tooManyChecks]] and nothing is started or saved. The pgvector table
+      * is probed with `DestinationProbe.vectorTableExists` on `candidate`. */
     def existingDestinationRefusal(
         request: HttpServletRequest,
         candidate: PipelineConfig,
@@ -1840,6 +1848,33 @@ object PipelineAPIController {
         exists: DestinationTargets.Target => Boolean,
         catalogCommitted: String => Boolean,
         deadline: scala.concurrent.duration.FiniteDuration
+    ): Option[ResponseEntity[String]] =
+        existingDestinationRefusal(
+            request,
+            candidate,
+            stored,
+            others,
+            env,
+            exists,
+            catalogCommitted,
+            deadline,
+            (t: DestinationTargets.Target) => DestinationProbe.vectorTableExists(candidate, t)
+        )
+
+    /** [[existingDestinationRefusal]] with the pgvector table probe given
+      * (`vectorTableExists`, for `DestinationTargets.vectorTablesToProbe`
+      * targets); it runs after `exists`'s targets, under the same deadline
+      * and the same per-caller slots. */
+    def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        catalogCommitted: String => Boolean,
+        deadline: scala.concurrent.duration.FiniteDuration,
+        vectorTableExists: DestinationTargets.Target => Boolean
     ): Option[ResponseEntity[String]] = {
         if (!CapabilityCheck.isRestrictedSession(request) || candidate == null) return None
         val deadlineAt = System.nanoTime() + deadline.toNanos
@@ -1862,6 +1897,9 @@ object PipelineAPIController {
             return badRequest(DestinationTargets.UnsafePathRefusal)
         if (changed.exists(_.key.family == "sqlserver") && DestinationTargets.sqlServerTempTable(candidate))
             return badRequest(DestinationTargets.TempTableRefusal)
+        val changedVectorTables = DestinationTargets.freshVectorTables(candidate, keptFrom, env)
+        if (changedVectorTables.nonEmpty && DestinationTargets.unsafeVectorTableName(candidate))
+            return badRequest(DestinationTargets.UnsafeVectorTableRefusal)
         val candidateTarget = DestinationTargets.targetsOf(candidate, env).find(_.key.family == "objectstore")
         def iceberg(c: PipelineConfig): Boolean =
             c != null && c.destination != null && c.destination.objectStore != null &&
@@ -1887,12 +1925,15 @@ object PipelineAPIController {
             }
         }
         val visible = visiblePipelines(request, Option(others).getOrElse(Nil))
-        val probe = DestinationTargets.toProbe(candidate, keptFrom, visible, env)
+        // The pgvector table is probed after the other targets, with its own probe.
+        val probe: Seq[(DestinationTargets.Target, DestinationTargets.Target => Boolean)] =
+            DestinationTargets.toProbe(candidate, keptFrom, visible, env).map(_ -> exists) ++
+                DestinationTargets.vectorTablesToProbe(candidate, keptFrom, visible, env).map(_ -> vectorTableExists)
         val it = probe.iterator
         while (it.hasNext) {
-            val t = it.next()
+            val (t, check) = it.next()
             val found =
-                try Right(bounded("destination probe (" + t.key.family + ")")(exists(t)))
+                try Right(bounded("destination probe (" + t.key.family + ")")(check(t)))
                 catch {
                     case _: DestinationProbe.TooManyChecks =>
                         auditLogger.warn(
