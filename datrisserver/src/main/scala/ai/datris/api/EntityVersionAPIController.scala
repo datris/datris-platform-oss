@@ -383,13 +383,36 @@ class EntityVersionAPIController {
     ): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         val env = DatrisEnvironment.current
-        EntityVersionIO.get(env.pipelineVersionTableName, name, version) match {
+        restorePipelineVersionWith(
+            name,
+            version,
+            request,
+            () => PipelineConfigIO.read(env.pipelineTableName, name),
+            () => EntityVersionIO.get(env.pipelineVersionTableName, name, version)
+        )
+    }
+
+    /** [[restorePipelineVersion]] after key validation, with the reads given.
+      * ONE live read (`readLive`) decides the guard (scope, earlier names,
+      * catalog, restricted-session visibility) and the candidate. It comes
+      * first: a restricted session whose live pipeline is missing or outside
+      * its grants gets the version 404 before the version is read, as the
+      * other version endpoints answer it, so the answer and the reads do not
+      * depend on whether the version exists or parses. */
+    private[api] def restorePipelineVersionWith(
+        name: String,
+        version: Int,
+        request: HttpServletRequest,
+        readLive: () => PipelineConfig,
+        readVersion: () => Option[EntityVersion]
+    ): ResponseEntity[String] = {
+        val live = readLive()
+        if (EntityVersionAPIController.hiddenFromRestricted(request, "pipeline", "update", Option(live).map(p => (p.catalog, p.createdByKeyLabel))))
+            return notFound("pipeline", name, version)
+        readVersion() match {
             case None => notFound("pipeline", name, version)
             case Some(snapshot) =>
                 val snap = gson.fromJson(snapshot.config, classOf[PipelineConfig])
-                // ONE live read: it decides the guard (scope, earlier names,
-                // catalog, restricted-session visibility) and the candidate.
-                val live = PipelineConfigIO.read(env.pipelineTableName, name)
                 restorePipelineSnapshot(name, version, snap, live, request)
         }
     }

@@ -32,8 +32,7 @@ import scala.collection.JavaConverters._
   * no stores, so a 400 proves nothing was written.
   *
   * Tests named "D2 catalog: ..." pin that a restore keeps the LIVE pipeline's
-  * catalog (decision D2, catalog part, awaiting the owner's confirmation).
-  * They are kept apart so they can be dropped alone if the owner refuses it. */
+  * catalog (decision D2, catalog part, confirmed by the owner). */
 class PipelineVersionRestoreSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     // ------------------------------------------------------------ environment
@@ -420,6 +419,37 @@ class PipelineVersionRestoreSpec extends AnyFunSuite with BeforeAndAfterEach {
             assert(restored.getStatusCode == saved.getStatusCode, s"${restored.getBody} vs ${saved.getBody}")
             assert(restored.getBody == saved.getBody, s"${restored.getBody} vs ${saved.getBody}")
         }
+    }
+
+    test("a restricted session on a hidden pipeline gets the version 404 without the version being read") {
+        val ctl = new EntityVersionAPIController()
+        Seq[PipelineConfig](hiddenLive, null).foreach { live =>
+            Seq[Option[EntityVersion]](
+                Some(EntityVersion("mkt_old|1", "mkt_old", 1, gson.toJson(pg("mkt_old", "mine")))),
+                Some(EntityVersion("mkt_old|1", "mkt_old", 1, null)),
+                Some(EntityVersion("mkt_old|1", "mkt_old", 1, "{not json")),
+                None
+            ).foreach { stored =>
+                var liveReads = 0
+                var versionReads = 0
+                val out = ctl.restorePipelineVersionWith(
+                    "mkt_old",
+                    1,
+                    bobMine,
+                    () => { liveReads += 1; live },
+                    () => { versionReads += 1; stored }
+                )
+                sameResponse(out, versionNotFound("mkt_old"))
+                assert(liveReads == 1, s"live reads $liveReads")
+                assert(versionReads == 0, s"version read for hidden history (live $live, stored $stored)")
+            }
+        }
+        // A missing version of a visible pipeline is still the version 404.
+        val mine = pg("p", "mine")
+        var versionReads = 0
+        val missing = ctl.restorePipelineVersionWith("p", 1, bobMine, () => mine, () => { versionReads += 1; None })
+        sameResponse(missing, versionNotFound("p"))
+        assert(versionReads == 1)
     }
 
     test("validation applies with no key and with a full key") {
