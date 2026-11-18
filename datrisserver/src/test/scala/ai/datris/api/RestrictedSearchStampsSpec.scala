@@ -309,12 +309,17 @@ class RestrictedSearchStampsSpec extends AnyFunSuite with BeforeAndAfterEach {
             tapStamped(1, "orders", "t_sales|2026-11-01T00:00:00Z"),
             hit(2, "source_pipeline" -> "orders", "_datris_source" -> "tap:t_sales"),
             subsetHit(3, "orders"),
-            hit(4, "source_pipeline" -> "orders"),
-            hit(5, "source_pipeline" -> "orders", "filename" -> "tap-t_sales.json", "_datris_script_sha" -> "s")
+            hit(4, "source_pipeline" -> "orders")
         )
         val out = bobHits(readable, runs("run-1" -> record("orders", RunLineageInput("upload"))))
         assert(out eq readable)
         assertKept(out.get(0), "t_sales")
+
+        // a readable feed filename with no run id does not vouch for the stamps
+        val feedNamed = hits(hit(5, "source_pipeline" -> "orders", "filename" -> "tap-t_sales.json", "_datris_script_sha" -> "s"))
+        val fOut = bobHits(feedNamed, failRun)
+        assert(!fOut.get(0).containsKey("_datris_script_sha"), fOut)
+        assert(fOut.get(0).get("filename") == "tap-t_sales.json")
     }
 
     test("the stamp scrub runs after the writer check") {
@@ -356,13 +361,13 @@ class RestrictedSearchStampsSpec extends AnyFunSuite with BeforeAndAfterEach {
         val out = bobHits(storeHits)
         assert(ids(out) == Seq(1, 2, 3, 4, 5, 6), "writer check drops 7, order is kept")
         assert(!(out eq storeHits))
-        Seq(0, 2, 5).foreach(i => assert(out.get(i) eq storeHits.get(i), s"hit ${i + 1} is unchanged and not copied"))
+        Seq(0, 2).foreach(i => assert(out.get(i) eq storeHits.get(i), s"hit ${i + 1} is unchanged and not copied"))
         assertKept(out.get(0), "t_sales")
         assertStripped(out.get(1), "t_hr_feed")
         assertStripped(out.get(3), "tap:gone")
         assertStripped(out.get(4), "StringBuilder t_hr_feed")
-        assert(out.get(5).get("_datris_script_sha") == "s" && out.get(5).get("filename") == "tap-t_sales.csv")
-        Seq(1, 3, 4).foreach { i =>
+        assert(!out.get(5).containsKey("_datris_script_sha") && out.get(5).get("filename") == "tap-t_sales.csv")
+        Seq(1, 3, 4, 5).foreach { i =>
             assert(keys(out.get(i)) == keys(storeHits.get(i)).filterNot(HiddenTapScrub.StampTapColumns.contains), s"hit ${i + 1} key order")
         }
         assert(storeHits.asScala.toList == before, "the store's hits are not modified")

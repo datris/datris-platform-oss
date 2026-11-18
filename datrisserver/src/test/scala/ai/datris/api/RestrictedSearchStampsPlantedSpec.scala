@@ -188,12 +188,35 @@ class RestrictedSearchStampsPlantedSpec extends AnyFunSuite with BeforeAndAfterE
         assert(SearchAPIController.hitsFor(req(bob), keptHits, writers, readTap, readableRun) eq keptHits)
     }
 
-    test("a readable feed filename with no run id keeps the stamp columns and run is not called") {
-        // Pinned by RestrictedSearchStampsSpec (filename-only readable hits are kept
-        // with no run lookup); the planting route for new chunks is closed by
-        // filename being a reserved static metadata key.
-        val hs = hits(hit(1, "_datris_source" -> "feeds.example.com", "_datris_script_sha" -> "s", "filename" -> "tap-t_sales.json"))
-        assert(SearchAPIController.hitsFor(req(bob), hs, writers, readTap, failRun) eq hs)
+    private def feedNamed(id: Int, extra: (String, Any)*): Hit =
+        hit(id, (Seq[(String, Any)]("_datris_source" -> "feeds.example.com", "_datris_script_sha" -> "sha-doc", "filename" -> "tap-t_sales.json") ++ extra): _*)
+
+    test("a readable feed filename with no run id does not vouch: the stamp columns are dropped and run is not called") {
+        // A hidden document tap can name its document tap-<readableTap>.json.
+        val h = feedNamed(1)
+        val before = new java.util.LinkedHashMap[String, Any](h)
+        val hs = hits(h)
+        val out = SearchAPIController.hitsFor(req(bob), hs, writers, readTap, failRun)
+        assert(!(out eq hs), "a new list is returned")
+        assertStripped(out.get(0), "readable feed filename, no run id")
+        assert(out.get(0).get("filename") == "tap-t_sales.json", "the filename is kept as stored")
+        assert(out.get(0).get("id") == 1)
+        assert(out.get(0).get("text") == "chunk 1")
+        assert(out.get(0).get("source_pipeline") == "orders")
+        assert(h == before, "the input map is not modified")
+        val body = new Gson().toJson(out)
+        assert(!body.contains("feeds.example.com") && !body.contains("sha-doc"), body)
+    }
+
+    test("a hit with a readable feed filename and no run id keeps its columns only when _datris_tap_run names a readable tap") {
+        val kept = hits(feedNamed(1, "_datris_tap_run" -> "t_sales|x"))
+        assert(SearchAPIController.hitsFor(req(bob), kept, writers, readTap, failRun) eq kept)
+
+        val hidden = hits(feedNamed(2, "_datris_tap_run" -> "t_hr_feed|x"))
+        val out = SearchAPIController.hitsFor(req(bob), hidden, writers, readTap, failRun)
+        assertStripped(out.get(0), "readable feed filename, hidden _datris_tap_run")
+        val body = new Gson().toJson(out)
+        assert(!body.contains("feeds.example.com") && !body.contains("sha-doc") && !body.contains("t_hr_feed"), body)
     }
 
     test("a hidden feed filename strips the stamps even beside a run id, and run is not called") {
