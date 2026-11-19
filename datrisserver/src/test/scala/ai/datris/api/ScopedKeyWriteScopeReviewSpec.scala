@@ -18,7 +18,7 @@ import ai.datris.auth.{
 }
 import ai.datris.incident.RecoveryKey
 import ai.datris.model._
-import ai.datris.util.APIKeyValidator
+import ai.datris.util.{APIKeyValidator, CatalogOps}
 import ai.datris.util.InMemoryUserDb.grants
 import com.google.gson.JsonParser
 import jakarta.servlet.http.HttpServletRequest
@@ -393,7 +393,7 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         // tap save, /tap/run mode=run and tap version restore all call this seam
         val tapSrc = source("src/main/scala/ai/datris/api/TapAPIController.scala")
         assert(methodBody(tapSrc, "def saveTapInternal(").contains("TapAPIController.targetPipelineRefusal(request, scoped)"))
-        assert(methodBody(tapSrc, "def runTap(").contains("if (mode == \"run\") TapAPIController.targetPipelineRefusal(request, tapConfig)"))
+        assert(methodBody(tapSrc, "def runTap(").contains("if (mode != \"test\") TapAPIController.targetPipelineRefusal(request, tapConfig)"))
         assert(methodBody(source("src/main/scala/ai/datris/api/EntityVersionAPIController.scala"), "def restoreTapVersion(").contains(
             "TapAPIController.targetPipelineRefusal(request, snap)"
         ))
@@ -447,10 +447,11 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         assert(methodBody(source("src/main/scala/ai/datris/api/TapAPIController.scala"), "def deleteTapInternal(").contains(
             "assertVisibleToWrite(request, \"tap\", \"delete\""
         ))
-        assert(
-            source("src/main/scala/ai/datris/api/CatalogAPIController.scala").split("assertWriteReadable").length - 1 == 7,
-            "rename x2, detach x2, delete x2, restore overwrite"
-        )
+        // per-member decision: one helper at all six member sites, restore through restoreMemberDenial
+        // (behaviour: "catalog per-member rule" below)
+        val catSrc = source("src/main/scala/ai/datris/api/CatalogAPIController.scala")
+        assert(catSrc.split("CatalogAPIController.assertMemberWrite\\(request").length - 1 == 6, "rename x2, detach x2, delete x2")
+        assert(catSrc.contains("CatalogAPIController.restoreMemberDenial(request, resource, name, caller, live)"))
         assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"update\""))
         assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"delete\""))
     }
@@ -503,6 +504,72 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         val own = key("own", caps: _*)
         val body = TapConfig(name = "new_feed", description = "d", targetPipeline = null, secretName = "ui_made")
         assertDenied(TapAPIController.testRefusal(req(own), body, _ => null, _ => Some(None)), "own", "tap", "read", caps, Nil)
+    }
+
+    // ------------------------------------------------------------ round 4, finding 2: tap run modes
+
+    test("/tap/run: only run and test are modes; every mode but test checks the target pipeline") {
+        for (m <- Seq("scratch", "foo", "", "dry-run"))
+            assert(TapAPIController.runModeRefusal(m).exists(r => r.getStatusCode.value == 400 && r.getBody.contains("Valid values: run, test")), m)
+        for (m <- TapAPIController.RunModes) assert(TapAPIController.runModeRefusal(m).isEmpty, m)
+        val run = methodBody(source("src/main/scala/ai/datris/api/TapAPIController.scala"), "def runTap(")
+        val modeCheck = run.indexOf("TapAPIController.runModeRefusal(requestedMode)")
+        assert(modeCheck >= 0 && modeCheck < run.indexOf("TapConfigIO.read("), "the mode is refused before the tap is read")
+        assert(run.contains("if (mode != \"test\") TapAPIController.targetPipelineRefusal(request, tapConfig)"))
+        assert(run.indexOf("targetPipelineRefusal") < run.indexOf("TapRunner.run("), "the target check comes before the run")
+        // a restricted session is checked on the target too: hidden target -> the pipeline 404
+        val session = restricted("Sales" -> "edit")
+        val hidden = TapAPIController.targetPipelineRefusal(req(session), tap("feed", "Sales", target = "hr_payroll"), _ => pg("hr_payroll", "HR"))
+        assert(hidden.exists(r => r.getStatusCode.value == 404 && r.getBody == PipelineAPIController.pipelineNotFound("hr_payroll").getBody))
+        assert(TapAPIController.targetPipelineRefusal(req(session), tap("feed", "Sales", target = "orders"), _ => pg("orders", "Sales")).isEmpty)
+    }
+
+    // ------------------------------------------------------------ round 4, finding 9: catalog per-member rule
+
+    test("catalog per-member rule: a member the key may write but not read fails and is untouched; the others proceed") {
+        val caps = Seq("pipeline:update", "pipeline:delete", "pipeline:create", "pipeline:read:owner=self", "tap:update", "tap:delete", "tap:read:owner=self")
+        val k = key("k", caps: _*)
+        val members = Seq("mine_a" -> "k", "theirs" -> "someone", "mine_b" -> "k")
+        for (
+            (resource, action, op) <- Seq(
+                ("pipeline", "update", "rename"),
+                ("tap", "update", "rename"),
+                ("pipeline", "delete", "detach"),
+                ("tap", "delete", "detach"),
+                ("pipeline", "delete", "delete"),
+                ("tap", "delete", "delete")
+            )
+        ) {
+            val store = scala.collection.mutable.Map(members.map { case (n, _) => n -> "HR" }: _*)
+            val r = req(k, if (op == "rename") "PUT" else "DELETE", "/api/v1/catalog/HR")
+            val result = CatalogOps.execute(members.map(_._1)) { n =>
+                val owner = members.toMap.apply(n)
+                CatalogAPIController.assertMemberWrite(r, resource, action, "HR", owner)
+                op match {
+                    case "rename" => store(n) = "HR2"
+                    case "detach" => store(n) = null
+                    case _ => store -= n
+                }
+            }
+            assert(result.ok == Seq("mine_a", "mine_b"), op + " " + resource + ": " + result)
+            assert(result.failed.map(_._1) == Seq("theirs"), op + " " + resource + ": " + result)
+            assert(result.failed.head._2 == ScopeDenialWording.message("k", resource, "read", caps), result.failed.head._2)
+            assert(store.get("theirs").contains("HR"), op + " " + resource + ": the unreadable member is left as it was")
+            assert(AuditLog.scopeDenials(r).nonEmpty)
+        }
+        // restore: overwriting a live member needs read; a new item and an own member pass
+        val rr = req(k, uri = "/api/v1/catalog/HR/restore")
+        val d = CatalogAPIController.restoreMemberDenial(rr, "pipeline", "HR", "k", Some(("HR", "someone")))
+        assert(d.contains(ScopeDenialWording.message("k", "pipeline", "read", caps)), d)
+        assert(CatalogAPIController.restoreMemberDenial(req(k), "pipeline", "HR", "k", Some(("HR", "k"))).isEmpty)
+        assert(CatalogAPIController.restoreMemberDenial(req(k), "pipeline", "HR", "k", None).isEmpty)
+        // unchanged callers on every member
+        for (rk <- Seq(full, editor, key(RecoveryKey.Label, RecoveryKey.Capabilities: _*)); (n, owner) <- members)
+            try CatalogAPIController.assertMemberWrite(req(rk), "pipeline", "update", "HR", owner)
+            catch { case e: CapabilityDeniedException => fail(rk.label + " " + n + ": " + e.getMessage) }
+        // a restricted session keeps assertScope's answer exactly (no read half)
+        val session = restricted("HR" -> "edit")
+        CatalogAPIController.assertMemberWrite(req(session), "pipeline", "update", "HR", "someone")
     }
 
     private def source(rel: String): String = {

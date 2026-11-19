@@ -28,6 +28,22 @@ object TapAPIController {
             .contentType(MediaType.APPLICATION_JSON)
             .body[String](ApiErrors.errorBody("Tap: " + name + " not found"))
 
+    /** The modes `POST /tap/run` accepts. `scratch` (TapRunner.ScratchMode)
+      * is internal to the recovery agent's rehearsal and is not one of them. */
+    val RunModes: Seq[String] = Seq("run", "test")
+
+    /** `POST /tap/run`: 400 for a `mode` (already lower-cased) other than
+      * [[RunModes]]; None otherwise. */
+    def runModeRefusal(mode: String): Option[ResponseEntity[String]] =
+        if (RunModes.contains(mode)) None
+        else
+            Some(
+                ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body[String](ApiErrors.errorBody("Unknown mode '" + mode + "'. Valid values: run, test (default)."))
+            )
+
     /** Tap lookup for POST /tap/run and POST /tap/state: Left(tapNotFound(name))
       * when no config was read for `name`, Right(config) otherwise. */
     def tapOr404(name: String, config: Option[TapConfig]): Either[ResponseEntity[String], TapConfig] =
@@ -1820,6 +1836,10 @@ class TapAPIController {
 
             if (name == null || name.isEmpty)
                 throw new DatrisException("Tap name is required")
+            // Only run and test are modes of this route; anything else (a
+            // typo, or the recovery agent's internal scratch rehearsal) is
+            // refused before anything is read or run.
+            TapAPIController.runModeRefusal(requestedMode).foreach(return _)
 
             val tapConfig = TapAPIController.tapOr404(name, Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name))) match {
                 case Left(notFound) => return notFound
@@ -1833,7 +1853,8 @@ class TapAPIController {
 
             val mode = requestedMode
             // A run feeds the target pipeline: refuse one outside a restricted user's grants.
-            if (mode == "run") TapAPIController.targetPipelineRefusal(request, tapConfig).foreach(return _)
+            // Every mode other than test feeds the target pipeline.
+            if (mode != "test") TapAPIController.targetPipelineRefusal(request, tapConfig).foreach(return _)
 
             // Optional per-run params. Stringify each value so the script sees
             // env vars regardless of whether the agent sent {start_date: "2026-05-01"}

@@ -139,21 +139,14 @@ class CatalogAPIController {
                 val tapResult = CatalogOps.execute(members.taps.map(_.name)) { n =>
                     trackDenied(denied, n) {
                         val live = readTap(n, name)
-                        CapabilityCheck.assertScope(request, "tap", "update", CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel))
-                        CapabilityCheck.assertWriteReadable(request, "tap", "update", CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel))
+                        CatalogAPIController.assertMemberWrite(request, "tap", "update", live.catalog, live.createdByKeyLabel)
                         TapConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
                     }
                 }
                 val pipelineResult = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                     trackDenied(denied, n) {
                         val live = readPipeline(n, name)
-                        CapabilityCheck.assertScope(
-                            request,
-                            "pipeline",
-                            "update",
-                            CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
-                        )
-                        CapabilityCheck.assertWriteReadable(request, "pipeline", "update", CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel))
+                        CatalogAPIController.assertMemberWrite(request, "pipeline", "update", live.catalog, live.createdByKeyLabel)
                         PipelineConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
                     }
                 }
@@ -282,31 +275,14 @@ class CatalogAPIController {
                         val t = CatalogOps.execute(members.taps.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readTap(n, name)
-                                CapabilityCheck.assertScope(
-                                    request,
-                                    "tap",
-                                    "delete",
-                                    CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
-                                )
-                                CapabilityCheck.assertWriteReadable(request, "tap", "delete", CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel))
+                                CatalogAPIController.assertMemberWrite(request, "tap", "delete", live.catalog, live.createdByKeyLabel)
                                 TapConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
                             }
                         }
                         val p = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readPipeline(n, name)
-                                CapabilityCheck.assertScope(
-                                    request,
-                                    "pipeline",
-                                    "delete",
-                                    CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
-                                )
-                                CapabilityCheck.assertWriteReadable(
-                                    request,
-                                    "pipeline",
-                                    "delete",
-                                    CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
-                                )
+                                CatalogAPIController.assertMemberWrite(request, "pipeline", "delete", live.catalog, live.createdByKeyLabel)
                                 PipelineConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
                             }
                         }
@@ -322,13 +298,7 @@ class CatalogAPIController {
                         val t = CatalogOps.executeCollecting(members.taps.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readTap(n, name)
-                                CapabilityCheck.assertScope(
-                                    request,
-                                    "tap",
-                                    "delete",
-                                    CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
-                                )
-                                CapabilityCheck.assertWriteReadable(request, "tap", "delete", CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel))
+                                CatalogAPIController.assertMemberWrite(request, "tap", "delete", live.catalog, live.createdByKeyLabel)
                                 tapController.deleteTapInternal(n, request, checkScope = false).getOrElse(Nil)
                             }
                         }
@@ -343,18 +313,7 @@ class CatalogAPIController {
                                 CatalogOps.executeCollecting(members.pipelines.map(_.name)) { n =>
                                     trackDenied(denied, n) {
                                         val live = readPipeline(n, name)
-                                        CapabilityCheck.assertScope(
-                                            request,
-                                            "pipeline",
-                                            "delete",
-                                            CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
-                                        )
-                                        CapabilityCheck.assertWriteReadable(
-                                            request,
-                                            "pipeline",
-                                            "delete",
-                                            CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
-                                        )
+                                        CatalogAPIController.assertMemberWrite(request, "pipeline", "delete", live.catalog, live.createdByKeyLabel)
                                         pipelineController.deletePipelineInternal(live, request, checkScope = false)
                                     }
                                 }
@@ -731,14 +690,7 @@ class CatalogAPIController {
                 //    refused member lands in `failed` and nothing of it (not
                 //    even its validation schema) is written.
                 def denial(resource: String, live: Option[(String, String)]): Option[String] =
-                    CatalogArchive.restoreScopeChecks(name, caller, live).view.flatMap { case (action, ctx) =>
-                        try {
-                            CapabilityCheck.assertScope(request, resource, action, ctx)
-                            // Overwriting a live member: the key must also read it.
-                            if (action == "update") CapabilityCheck.assertWriteReadable(request, resource, action, ctx)
-                            None
-                        } catch { case e: CapabilityDeniedException => Some(Option(e.getMessage).getOrElse("capability denied")) }
-                    }.headOption
+                    CatalogAPIController.restoreMemberDenial(request, resource, name, caller, live)
                 val pipelineDenied = contents.pipelines.flatMap { p =>
                     denial("pipeline", pipelines.find(_.name == p.name).map(l => (l.catalog, l.createdByKeyLabel))).map(p.name -> _)
                 }
@@ -1317,6 +1269,41 @@ class CatalogAPIController {
 }
 
 object CatalogAPIController {
+
+    /** The per-member decision of catalog rename (`update`), detach and
+      * cascade delete (`delete`), before a member is written or deleted:
+      * `<resource>:<action>` on the member's (catalog, owner)
+      * ([[CapabilityCheck.assertScope]]) and, for an API key, read in scope
+      * as well ([[CapabilityCheck.assertWriteReadable]], the shared
+      * stored-item rule). Throws [[CapabilityDeniedException]], which the
+      * member loop records as that member's failure (denied) and the other
+      * members proceed. */
+    def assertMemberWrite(request: HttpServletRequest, resource: String, action: String, catalog: String, owner: String): Unit = {
+        val ctx = CatalogOps.scopeContext(catalog, owner)
+        CapabilityCheck.assertScope(request, resource, action, ctx)
+        CapabilityCheck.assertWriteReadable(request, resource, action, ctx)
+    }
+
+    /** The per-member decision of a catalog restore before an archived item
+      * is written into catalog `target` as `caller`
+      * ([[CatalogArchive.restoreScopeChecks]]): `create` in the target, and
+      * for an item that already exists (`live` = its catalog and owner)
+      * `update` on it plus, for an API key, read in scope, so a member the
+      * key cannot read is never overwritten. Some(refusal message) or None. */
+    def restoreMemberDenial(
+        request: HttpServletRequest,
+        resource: String,
+        target: String,
+        caller: String,
+        live: Option[(String, String)]
+    ): Option[String] =
+        CatalogArchive.restoreScopeChecks(target, caller, live).view.flatMap { case (action, ctx) =>
+            try {
+                CapabilityCheck.assertScope(request, resource, action, ctx)
+                if (action == "update") CapabilityCheck.assertWriteReadable(request, resource, action, ctx)
+                None
+            } catch { case e: CapabilityDeniedException => Some(Option(e.getMessage).getOrElse("capability denied")) }
+        }.headOption
     private val logger: Logger = LoggerFactory.getLogger(classOf[CatalogAPIController])
 
     /** The cascade delete's `warnings`: pipeline warnings as
