@@ -275,8 +275,25 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         // only tap capabilities is checked since the owner closed finding 3:
         // see "tap target, owner decision" below)
         val rag = key("rb", KeyTemplatesForSpecs.capabilities("rag-builder"): _*)
-        for (rk <- Seq(rag, full, editor, key("ops", KeyTemplatesForSpecs.capabilities("ops"): _*)))
+        for (rk <- Seq(full, editor))
             assert(TapAPIController.targetPipelineRefusal(req(rk), tap("t", "Sales", target = "hr_payroll"), failPipeline).isEmpty, rk.label)
+        // ops (unscoped pipeline:run and read) is checked since the owner's round-4 decision and passes trivially
+        assert(TapAPIController.targetPipelineRefusal(
+            req(key("ops", KeyTemplatesForSpecs.capabilities("ops"): _*)),
+            tap("t", "Sales", target = "hr_payroll"),
+            pipelines
+        ).isEmpty)
+        // rag-builder (pipeline:run:owner=self) feeds by tap only pipelines it created (owner decision)
+        val ragCaps = KeyTemplatesForSpecs.capabilities("rag-builder")
+        assertDenied(
+            TapAPIController.targetPipelineRefusal(req(rag), tap("t", "Sales", target = "hr_payroll"), pipelines),
+            "rb",
+            "pipeline",
+            "run",
+            ragCaps,
+            Seq("HR", "someone")
+        )
+        assert(TapAPIController.targetPipelineRefusal(req(rag), tap("t", "Sales", target = "rb_docs"), _ => pg("rb_docs", "HR", owner = "rb")).isEmpty)
         // no request (scheduler, enable job, tap runs): never refused
         assert(TapAPIController.targetPipelineRefusal(null, tap("t", "Sales", target = "hr_payroll"), failPipeline).isEmpty)
     }
@@ -386,8 +403,21 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         assert(TapAPIController.targetPipelineRefusal(req(tapOnly), tap("t", "HR"), failPipeline).isEmpty)
         assert(TapAPIController.targetPipelineRefusal(req(tapOnly), tap("t", "HR", target = "not_yet"), pipelines).isEmpty)
         val rag = key("rb", KeyTemplatesForSpecs.capabilities("rag-builder"): _*)
-        for (rk <- Seq(rag, full, editor, key("monitor", "job:read", "tap:run"), key(RecoveryKey.Label, RecoveryKey.Capabilities: _*)))
+        for (rk <- Seq(full, editor, key("monitor", "job:read", "tap:run"), key(RecoveryKey.Label, RecoveryKey.Capabilities: _*)))
             assert(TapAPIController.targetPipelineRefusal(req(rk), tap("t", "HR", target = "theirs"), failPipeline).isEmpty, rk.label)
+        // rag-builder: another key's pipeline is refused on run; a target it created, no target, or one not stored yet pass
+        val ragCaps = KeyTemplatesForSpecs.capabilities("rag-builder")
+        assertDenied(
+            TapAPIController.targetPipelineRefusal(req(rag), tap("t", "HR", target = "theirs"), pipelines),
+            "rb",
+            "pipeline",
+            "run",
+            ragCaps,
+            Seq("other-key")
+        )
+        assert(TapAPIController.targetPipelineRefusal(req(rag), tap("t", "HR", target = "rb_docs"), _ => pg("rb_docs", "HR", owner = "rb")).isEmpty)
+        assert(TapAPIController.targetPipelineRefusal(req(rag), tap("t", "HR"), failPipeline).isEmpty)
+        assert(TapAPIController.targetPipelineRefusal(req(rag), tap("t", "HR", target = "not_yet"), pipelines).isEmpty)
         assert(TapAPIController.targetPipelineRefusal(null, tap("t", "HR", target = "theirs"), failPipeline).isEmpty)
         assert(CatalogAPIController.enableOrderedRefusal(null, members, failPipeline).isEmpty, "the enable job and schedulers run with no request")
         // tap save, /tap/run mode=run and tap version restore all call this seam
@@ -450,7 +480,7 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         // per-member decision: one helper at all six member sites, restore through restoreMemberDenial
         // (behaviour: "catalog per-member rule" below)
         val catSrc = source("src/main/scala/ai/datris/api/CatalogAPIController.scala")
-        assert(catSrc.split("CatalogAPIController.assertMemberWrite\\(request").length - 1 == 6, "rename x2, detach x2, delete x2")
+        assert(catSrc.split("CatalogAPIController.assertMemberWrite\\(request").length - 1 == 7, "rename x2, detach x2, delete x2, enable-in-order")
         assert(catSrc.contains("CatalogAPIController.restoreMemberDenial(request, resource, name, caller, live)"))
         assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"update\""))
         assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"delete\""))
@@ -570,6 +600,29 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         // a restricted session keeps assertScope's answer exactly (no read half)
         val session = restricted("HR" -> "edit")
         CatalogAPIController.assertMemberWrite(req(session), "pipeline", "update", "HR", "someone")
+    }
+
+    // ------------------------------------------------------------ round 4 addendum, finding 4: enable-in-order
+
+    test("enable-in-order: a key that may update and run Sales taps but not read them is refused before any tap is tested, enabled or run") {
+        val caps = Seq("tap:update:catalog=Sales", "tap:run:catalog=Sales", "pipeline:run:catalog=Sales")
+        val k = key("enabler", caps: _*)
+        val members = Seq(
+            TapConfig(name = "a", description = "d", targetPipeline = null, catalog = "Sales", createdByKeyLabel = "someone"),
+            TapConfig(name = "b", description = "d", targetPipeline = null, catalog = "Sales", createdByKeyLabel = "someone")
+        )
+        val r = req(k, uri = "/api/v1/catalog/Sales/enable-ordered")
+        val refused = CatalogAPIController.enableOrderedRefusal(r, members, failPipeline)
+        assert(refused.exists(_.getStatusCode.value == 403), refused.map(_.getBody))
+        val msg = message(refused.get)
+        assert(msg.startsWith(ScopeDenialWording.message("enabler", "tap", "read", caps)), msg)
+        ScopeDenialWording.assertHides(msg, Seq("someone"))
+        assert(AuditLog.scopeDenials(r).nonEmpty)
+        // with tap:read in Sales: passes
+        val withRead = key("enabler", (caps :+ "tap:read:catalog=Sales"): _*)
+        assert(CatalogAPIController.enableOrderedRefusal(req(withRead), members, failPipeline).isEmpty)
+        val src = source("src/main/scala/ai/datris/api/CatalogAPIController.scala")
+        assert(src.contains("try CatalogAPIController.assertMemberWrite(request, \"tap\", action, t.catalog, t.createdByKeyLabel)"))
     }
 
     private def source(rel: String): String = {

@@ -1461,7 +1461,10 @@ object CatalogAPIController {
             return Some(ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON).body[String](o.toString))
         }
         for (t <- taps; action <- Seq("update", "run")) {
-            try CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel))
+            // The same per-member rule as rename, detach and delete: the
+            // action in scope and, for an API key, tap read in scope, on every
+            // member before any tap is tested, enabled or run.
+            try CatalogAPIController.assertMemberWrite(request, "tap", action, t.catalog, t.createdByKeyLabel)
             catch {
                 case e: CapabilityDeniedException =>
                     return Some(

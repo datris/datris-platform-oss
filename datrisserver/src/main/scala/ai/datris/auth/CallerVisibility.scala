@@ -114,7 +114,12 @@ object CallerVisibility {
     /** Whether a load into a pipeline is checked against the caller's scope:
       * a restricted session, or a key that is not full access and holds a
       * `pipeline:run` capability or is limited for pipelines. Others keep
-      * today's answer (a `document:upload`-only key, the ops template). */
+      * today's answer (a `document:upload`-only key), and so does a caller
+      * holding unscoped `pipeline:run` and `pipeline:read` (the ops template,
+      * editor sessions), which every load grants. */
     def loadChecked(rk: ResolvedKey): Boolean =
-        rk != null && (rk.restrictedSession || !rk.isFullAccess && (holdsAny(rk, "pipeline", "run") || limitedPipelines(rk)))
+        rk != null && (rk.restrictedSession || !rk.isFullAccess && (holdsAny(rk, "pipeline", "run") || limitedPipelines(rk)) &&
+            // unscoped pipeline:run and read (the ops template, editor sessions)
+            // pass every load: nothing is read to decide
+            !(holdsUnscoped(rk, "pipeline", "run") && holdsUnscoped(rk, "pipeline", "read")))
 }

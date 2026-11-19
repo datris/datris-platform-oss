@@ -140,14 +140,17 @@ object TapAPIController {
 
     /** Refusal when the tap's `targetPipeline` is outside the caller's
       * scope. A restricted session: missing or outside the grants (pipeline
-      * 404), visible but not runnable (403). An API key limited for
-      * pipelines ([[ai.datris.auth.CallerVisibility.limitedPipelines]]),
-      * whether or not it holds a pipeline capability (owner decision): 403
+      * 404), visible but not runnable (403). An API key checked on loads
+      * ([[ai.datris.auth.CallerVisibility.loadChecked]]: it holds a
+      * `pipeline:run` capability or is limited for pipelines, the same keys
+      * as upload and kill_job; owner decisions), whether or not it holds a
+      * pipeline capability: 403
       * when its scope does not grant `pipeline:run` on the stored target
       * (`pipeline:read` when it holds no `pipeline:run`), so a key holding
       * only tap capabilities feeds no stored pipeline; a target not stored
       * yet is left to the save. None when no target and for everyone else
-      * (keys not limited for pipelines, such as rag-builder; no request),
+      * (keys with no `pipeline:run` that are not limited for pipelines; no
+      * request),
       * who read nothing here. */
     def targetPipelineRefusal(
         request: HttpServletRequest,
@@ -159,7 +162,7 @@ object TapAPIController {
             PipelineAPIController.refusalFor(request, tap.targetPipeline, readPipeline(tap.targetPipeline), "run")
         else
             CapabilityCheck.resolvedKey(request) match {
-                case Some(rk) if ai.datris.auth.CallerVisibility.limitedPipelines(rk) =>
+                case Some(rk) if ai.datris.auth.CallerVisibility.loadChecked(rk) =>
                     Option(readPipeline(tap.targetPipeline)).flatMap { p =>
                         val action = ai.datris.auth.CallerVisibility.loadAction(rk)
                         val ctx = CatalogOps.scopeContext(p.catalog, p.createdByKeyLabel)
