@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
-import ai.datris.auth.{CapabilityCheck, VersionActor}
+import ai.datris.auth.CapabilityCheck
 import ai.datris.model.{TapConfig, PipelineConfig, DatrisEnvironment, EntityVersion, ValidationException}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
@@ -346,6 +346,112 @@ object EntityVersionAPIController {
     def tapRestoreRefusal(request: HttpServletRequest, snap: TapConfig, live: TapConfig): Option[ResponseEntity[String]] =
         if (snap == null) None
         else TapAPIController.storedTapWriteRefusal(request, snap.catalog, if (live != null) live.createdByKeyLabel else snap.createdByKeyLabel)
+
+    /** The config a tap version restore saves (decisions D2 and D3): with a
+      * live tap, the snapshot's definition under the live `name`, `catalog`,
+      * `createdAt`, owner (`createdByKeyLabel`), `enabled` state, run state
+      * (every `lastRun*` field, `lastRunTrigger`, `lastRunRetrySafe`,
+      * `retryCount`) and test state (every `lastTestRun*` field), so a
+      * restore brings back the definition and never moves the tap, turns it
+      * on or off, or rewrites its run, retry and test state. For a deleted
+      * tap (`live` null, D4), the snapshot under the requested name; the save
+      * path then creates it as `POST /tap` creates a tap. `version`,
+      * `updatedAt` and `inferredDependsOn` are left to the save path. */
+    def tapRestoreCandidate(name: String, snap: TapConfig, live: TapConfig): TapConfig =
+        if (live == null) snap.copy(name = name)
+        else
+            snap.copy(
+                name = name,
+                catalog = live.catalog,
+                createdAt = live.createdAt,
+                createdByKeyLabel = live.createdByKeyLabel,
+                enabled = live.enabled,
+                lastRunStatus = live.lastRunStatus,
+                lastRunTime = live.lastRunTime,
+                lastRunRecordCount = live.lastRunRecordCount,
+                lastRunError = live.lastRunError,
+                lastRunDataType = live.lastRunDataType,
+                lastRunColumns = live.lastRunColumns,
+                lastRunTrigger = live.lastRunTrigger,
+                lastRunRetrySafe = live.lastRunRetrySafe,
+                retryCount = live.retryCount,
+                lastTestRunStatus = live.lastTestRunStatus,
+                lastTestRunTime = live.lastTestRunTime,
+                lastTestRunRecordCount = live.lastTestRunRecordCount,
+                lastTestRunError = live.lastTestRunError,
+                lastTestRunDataType = live.lastTestRunDataType,
+                lastTestRunColumns = live.lastTestRunColumns,
+                lastTestRunScriptId = live.lastTestRunScriptId
+            )
+
+    /** Tap version restore, every caller, decided from ONE live read
+      * (`stored`, null when the tap was deleted), in this order: a
+      * restricted session whose live tap is missing or outside its grants
+      * gets `hidden` (the version 404) ([[hiddenFromRestricted]]); an API key
+      * writes the stored tap only under the stored-tap write rule
+      * ([[TapAPIController.storedTapWriteRefusal]]) and the tap as it would
+      * be restored only under the same rule ([[tapRestoreRefusal]]); the
+      * restricted-session catalog rules ([[TapAPIController.catalogForSave]]);
+      * then the target pipeline must be one the caller may load into
+      * ([[TapAPIController.targetPipelineRefusal]], `readPipeline` called only
+      * for a restricted session or a load-checked key with a target). Right
+      * is the config to save. Reads nothing itself besides `readPipeline`. */
+    def tapRestoreGuardDecision(
+        request: HttpServletRequest,
+        candidate: TapConfig,
+        stored: TapConfig,
+        readPipeline: String => PipelineConfig,
+        hidden: => ResponseEntity[String]
+    ): Either[ResponseEntity[String], TapConfig] = {
+        if (
+            CapabilityCheck.isRestrictedSession(request) &&
+            hiddenFromRestricted(request, "tap", "update", Option(stored).map(t => (t.catalog, t.createdByKeyLabel)))
+        )
+            return Left(hidden)
+        if (stored != null) TapAPIController.storedTapWriteRefusal(request, stored.catalog, stored.createdByKeyLabel).foreach(r => return Left(r))
+        tapRestoreRefusal(request, candidate, stored).foreach(r => return Left(r))
+        TapAPIController.catalogForSave(request, candidate, stored) match {
+            case Left(refused) => Left(refused)
+            case Right(c) => TapAPIController.targetPipelineRefusal(request, c, readPipeline).toLeft(c)
+        }
+    }
+
+    /** The stored tap fields [[tapRestoreGuardDecision]] and the restore's
+      * kept live state depend on: both absent, or the same `catalog`, owner
+      * (`createdByKeyLabel`) and `enabled` state. */
+    def sameTapGuardState(a: TapConfig, b: TapConfig): Boolean =
+        if (a == null || b == null) a == null && b == null
+        else a.catalog == b.catalog && a.createdByKeyLabel == b.createdByKeyLabel && a.enabled == b.enabled
+
+    /** Tap version restore, under `CatalogOps.withCatalogLock` just before
+      * the write: `fresh` is the tap of that name read under the lock. A
+      * restore [[tapRestoreGuardDecision]] refuses on `fresh` gets that
+      * refusal; one allowed on `fresh` whose stored tap changed since the
+      * decision (`decided`: appeared, disappeared, or moved catalog, changed
+      * owner or enabled state) gets [[TapAPIController.restoreConflict]]
+      * (409). None: write. */
+    def tapRestoreRecheck(
+        request: HttpServletRequest,
+        candidate: TapConfig,
+        decided: TapConfig,
+        fresh: TapConfig,
+        readPipeline: String => PipelineConfig,
+        hidden: => ResponseEntity[String]
+    ): Option[ResponseEntity[String]] =
+        tapRestoreGuardDecision(request, candidate, fresh, readPipeline, hidden) match {
+            case Left(refused) => Some(refused)
+            case Right(_) if !sameTapGuardState(decided, fresh) => Some(TapAPIController.restoreConflict(candidate.name))
+            case Right(_) => None
+        }
+
+    /** The config a tap version restore writes, under the lock, once
+      * [[tapRestoreRecheck]] has passed: the checked config with the live
+      * fields of [[tapRestoreCandidate]] taken from `fresh` (the tap read
+      * under the lock), so a run, retry or test stamp written since the
+      * decision is never rolled back. `fresh` null (a deleted tap re-created):
+      * the checked config itself. */
+    def tapRestoreWriteConfig(checked: TapConfig, fresh: TapConfig): TapConfig =
+        if (fresh == null) checked else tapRestoreCandidate(checked.name, checked, fresh)
 }
 
 @RestController
@@ -406,72 +512,70 @@ class EntityVersionAPIController {
     ): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         val env = DatrisEnvironment.current
-        versionScopeRefusal(request, "tap", name, "update", notFound("tap", name, version)).foreach(return _)
-        EntityVersionIO.get(env.tapVersionTableName, name, version) match {
+        restoreTapVersionWith(
+            name,
+            version,
+            request,
+            () => TapConfigIO.read(env.tapTableName, name),
+            () => EntityVersionIO.listVersions(env.tapVersionTableName, name),
+            () => EntityVersionIO.get(env.tapVersionTableName, name, version)
+        )
+    }
+
+    /** [[restoreTapVersion]] after key validation, with the reads given.
+      * ONE live read (`readLive`) decides the route's scope answer, the save
+      * guard and the candidate. The scope answer comes before the version is
+      * read: a restricted session whose live tap is missing or outside its
+      * grants gets the version 404, and an API key outside the live tap's
+      * scope (or, for a deleted tap, the newest stored version's, from
+      * `readVersions`, read only then) gets the shared 403, so the answer and
+      * the reads do not depend on whether the version exists or parses. */
+    private[api] def restoreTapVersionWith(
+        name: String,
+        version: Int,
+        request: HttpServletRequest,
+        readLive: () => TapConfig,
+        readVersions: () => Seq[EntityVersion],
+        readVersion: () => Option[EntityVersion]
+    ): ResponseEntity[String] = {
+        val live = readLive()
+        EntityVersionAPIController
+            .versionScopeRefusalWith(
+                request,
+                "tap",
+                "update",
+                () => Option(live).map(t => (t.catalog, t.createdByKeyLabel)),
+                readVersions,
+                notFound("tap", name, version)
+            )
+            .foreach(return _)
+        readVersion() match {
             case None => notFound("tap", name, version)
             case Some(snapshot) =>
                 val snap = gson.fromJson(snapshot.config, classOf[TapConfig])
-                val live = TapConfigIO.read(env.tapTableName, name)
-                // The tap as it would be restored (the snapshot's catalog, the
-                // live owner, or the snapshot's when deleted) must be in an API
-                // key's scope for tap:update, as on a save.
-                EntityVersionAPIController.tapRestoreRefusal(request, snap, live).foreach(return _)
-                // A restricted user may not restore a snapshot into a catalog
-                // outside its grants (same rules as a save).
-                TapAPIController.catalogForSave(request, snap, live) match {
-                    case Left(refused) => return refused
-                    case Right(_) =>
-                }
-                TapAPIController.targetPipelineRefusal(request, snap).foreach(r => return r)
-                // Restore the DEFINITION; preserve current run-status + ownership.
-                val restored = TapCronGate.normalizeCron(
-                    if (live != null)
-                        snap.copy(
-                            createdAt = live.createdAt,
-                            createdByKeyLabel = live.createdByKeyLabel,
-                            lastRunStatus = live.lastRunStatus,
-                            lastRunTime = live.lastRunTime,
-                            lastRunRecordCount = live.lastRunRecordCount,
-                            lastRunError = live.lastRunError,
-                            lastRunDataType = live.lastRunDataType,
-                            lastRunColumns = live.lastRunColumns,
-                            lastTestRunStatus = live.lastTestRunStatus,
-                            lastTestRunTime = live.lastTestRunTime,
-                            lastTestRunRecordCount = live.lastTestRunRecordCount,
-                            lastTestRunError = live.lastTestRunError,
-                            lastTestRunDataType = live.lastTestRunDataType,
-                            lastTestRunColumns = live.lastTestRunColumns,
-                            lastTestRunScriptId = live.lastTestRunScriptId
-                        )
-                    else snap
-                )
-                // Cron validation: a snapshot minted with an unparseable cron is
-                // refused (400) rather than restored as a never-running schedule.
-                // `handle` maps exceptions to 500, so answer the 400 explicitly.
-                val cronError = TapCronValidation.check(restored.name, restored.cronExpression)
-                // Test-before-cron gate: restoring a snapshot whose script bytes differ
-                // from the tested stamp while a cron is set is refused, same as a save.
-                lazy val secretProblem = EntityVersionAPIController.tapRestoreProblem(
-                    restored,
-                    TapAPIController.liveSecretType,
-                    SecretNames.tapScopeEnforced
-                )
-                if (cronError.isDefined)
-                    ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](TapCronValidation.errorBody(cronError.get))
-                else if (secretProblem.isDefined)
-                    ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
-                        .body[String]("{\"error\": " + gson.toJson(secretProblem.get) + "}")
-                else TapCronGate.check(live, restored) match {
-                    case Some(msg) =>
-                        ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")
-                    case None =>
-                        val saved = TapConfigIO.writeVersioned(
-                            restored,
-                            "restored from version " + version,
-                            VersionActor.resolve(request)
-                        )
-                        ok(gson.toJson(saved))
-                }
+                restoreTapSnapshot(name, version, snap, live, request)
+        }
+    }
+
+    /** Restore `snap` (version `version` of `name`) over `live` (the one
+      * stored-tap read, null when deleted): the candidate
+      * ([[EntityVersionAPIController.tapRestoreCandidate]]) is saved through
+      * the `POST /tap` path ([[TapAPIController.restoreTapInternal]]), so it
+      * is checked like a save of that version and nothing is written on a
+      * refusal. A refusal is returned as is; the 200 body is the saved tap. */
+    private[api] def restoreTapSnapshot(
+        name: String,
+        version: Int,
+        snap: TapConfig,
+        live: TapConfig,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
+        val candidate = EntityVersionAPIController.tapRestoreCandidate(name, snap, live)
+        new TapAPIController().restoreTapInternal(candidate, live, version, notFound("tap", name, version), request) match {
+            case Left(refused) =>
+                logger.warn("Restore of tap " + name + " version " + version + " rejected: HTTP " + refused.getStatusCode.value)
+                refused
+            case Right(saved) => ok(gson.toJson(saved))
         }
     }
 

@@ -329,6 +329,22 @@ object TapAPIController {
             CapabilityCheck.keyScopeApplies(request, "tap", "create") ||
             CapabilityCheck.keyScopeApplies(request, "tap", "update")
 
+    /** The stored pipeline of a name, as [[targetPipelineRefusal]] reads it
+      * by default; tap version restore passes it to its guard explicitly. */
+    private[api] val readPipelineForSave: String => PipelineConfig = n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
+
+    /** A tap version restore through the save path: the live tap the
+      * restore decided on (null when deleted) and the version restored. */
+    case class RestoreOf(live: TapConfig, version: Int)
+
+    /** 409 when the tap changed while a version restore was being checked:
+      * nothing was restored. */
+    def restoreConflict(name: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody("Tap '" + name + "' changed while it was being restored; nothing was restored. Try again."))
+
     /** POST /tap catalog rules for a restricted user's session (no-op for
       * everyone else); see [[RestrictedCatalogRules.catalogForSave]]. */
     def catalogForSave(request: HttpServletRequest, config: TapConfig, existing: TapConfig): Either[ResponseEntity[String], TapConfig] =
@@ -925,12 +941,55 @@ class TapAPIController {
       * save that re-enables it. For a NEW tap the archived
       * `lastTestRunScriptId` is also kept (it names the same bytes on built-in
       * storage); an existing tap keeps its stored, server-owned test fields as
-      * on any save. */
+      * on any save.
+      *
+      * Tap version restore saves through the same path
+      * ([[restoreTapInternal]]); `restored` is still the catalog restore
+      * only. */
     def saveTapInternal(
         tapConfig: TapConfig,
         changeNote: String,
         request: HttpServletRequest,
         restored: Boolean = false
+    ): Either[ResponseEntity[String], TapConfig] =
+        saveTapCore(tapConfig, changeNote, request, restored, None, () => null)
+
+    /** `POST /api/v1/tap/version/restore` after the version lookup:
+      * `candidate` ([[EntityVersionAPIController.tapRestoreCandidate]]) is
+      * saved through the same path as `POST /tap`, so a version the platform
+      * would refuse on save today is refused with the same answer and nothing
+      * is written. `live` is the ONE stored-tap read the restore decision
+      * uses (null when the tap was deleted); `hidden` is the version 404 a
+      * hidden history answers. Left is the refusal; other failures are
+      * thrown. */
+    private[api] def restoreTapInternal(
+        candidate: TapConfig,
+        live: TapConfig,
+        version: Int,
+        hidden: => ResponseEntity[String],
+        request: HttpServletRequest
+    ): Either[ResponseEntity[String], TapConfig] =
+        saveTapCore(candidate, null, request, restored = false, Some(TapAPIController.RestoreOf(live, version)), () => hidden)
+
+    /** The save path. `versionRestore` None is `POST /tap` and the catalog
+      * restore (`restored`), unchanged. Some is a tap version restore, which
+      * differs in four places only: (a) the guard is always taken, decided on
+      * `versionRestore.live` (no read) by
+      * [[EntityVersionAPIController.tapRestoreGuardDecision]], which also
+      * holds the target-pipeline rule; (b) `existing` is that live tap and no
+      * omitted field is carried over from it (the candidate is complete);
+      * (c) no no-change shortcut, and the version note is `restored from
+      * version N`; (d) the re-read, the re-check
+      * ([[EntityVersionAPIController.tapRestoreRecheck]]) and the write run
+      * under `CatalogOps.withCatalogLock`. `hidden` is used only when
+      * `versionRestore` is Some. */
+    private def saveTapCore(
+        tapConfig: TapConfig,
+        changeNote: String,
+        request: HttpServletRequest,
+        restored: Boolean,
+        versionRestore: Option[TapAPIController.RestoreOf],
+        hidden: () => ResponseEntity[String]
     ): Either[ResponseEntity[String], TapConfig] = {
         if (tapConfig.name == null || tapConfig.name.isEmpty)
             throw new DatrisException("Tap name is required")
@@ -939,8 +998,22 @@ class TapAPIController {
         // outside their grants; scoped API keys: no overwrite of a tap outside
         // the scope and no save outside it (TapAPIController.saveGuardDecision).
         // Both before anything is validated or written.
+        // A version restore is always guarded, on the live tap it has already
+        // read (it reads nothing more here); its guard holds the target
+        // pipeline rule too.
         val scoped =
-            if (!TapAPIController.saveGuardNeeded(request)) tapConfig
+            if (versionRestore.isDefined)
+                EntityVersionAPIController.tapRestoreGuardDecision(
+                    request,
+                    tapConfig,
+                    versionRestore.get.live,
+                    TapAPIController.readPipelineForSave,
+                    hidden()
+                ) match {
+                    case Left(refused) => return Left(refused)
+                    case Right(c) => c
+                }
+            else if (!TapAPIController.saveGuardNeeded(request)) tapConfig
             else
                 TapAPIController.saveGuardDecision(request, tapConfig, TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)) match {
                     case Left(refused) => return Left(refused)
@@ -949,15 +1022,17 @@ class TapAPIController {
         // The tap feeds its target pipeline: that pipeline must be one the
         // caller may load into (restricted session: hidden/missing -> pipeline
         // 404; pipeline-limited key: 403).
-        TapAPIController.targetPipelineRefusal(request, scoped).foreach(r => return Left(r))
-        saveTapScoped(scoped, changeNote, request, restored)
+        if (versionRestore.isEmpty) TapAPIController.targetPipelineRefusal(request, scoped).foreach(r => return Left(r))
+        saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden)
     }
 
     private def saveTapScoped(
         tapConfig: TapConfig,
         changeNote: String,
         request: HttpServletRequest,
-        restored: Boolean
+        restored: Boolean,
+        versionRestore: Option[TapAPIController.RestoreOf],
+        hidden: () => ResponseEntity[String]
     ): Either[ResponseEntity[String], TapConfig] = {
         // A tap may never reference a server-managed secret (field-protection
         // keys, API-key stores): its fields would be injected into the script.
@@ -1077,7 +1152,11 @@ class TapAPIController {
         // fields entirely. If the body carries NO script reference but the
         // stored tap has one, carry it over — otherwise an unrelated edit
         // (description, cron) would silently orphan the script.
-        val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
+        // A version restore: the live tap its guard decided on, and no
+        // omitted field is carried over (the candidate is complete).
+        val existing =
+            if (versionRestore.isDefined) versionRestore.get.live
+            else TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
         val bodyHasScriptRef =
             (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
                 (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
@@ -1087,6 +1166,7 @@ class TapAPIController {
         // explicit scriptKind) is the deliberate way to convert back to python.
         val tapConfigWithKind =
             if (
+                versionRestore.isEmpty &&
                 (tapConfig.scriptKind == null || tapConfig.scriptKind.isEmpty) &&
                 existing != null && existing.isHttp && !bodyHasScriptRef
             )
@@ -1100,7 +1180,7 @@ class TapAPIController {
         // Script-reference preservation is a script-lane concern: an HTTP tap save
         // (including a python→http conversion) must NOT re-attach the old script.
         val tapConfigWithScript =
-            if (!bodyHasScriptRef && existing != null && !tapConfigWithKind.isHttp)
+            if (versionRestore.isEmpty && !bodyHasScriptRef && existing != null && !tapConfigWithKind.isHttp)
                 tapConfigWithKind.copy(
                     scriptStorage = existing.scriptStorage,
                     scriptPath = existing.scriptPath,
@@ -1124,12 +1204,14 @@ class TapAPIController {
                 createdByKeyLabel = existing.createdByKeyLabel,
                 // Tags preservation: a body that omits tags entirely must not
                 // wipe them on an unrelated edit; an explicit empty list clears.
-                tags = if (tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags,
+                // A version restore takes the snapshot's, nulls included.
+                tags = if (versionRestore.isEmpty && tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags,
                 // Same rule for the declared source: omitted ⇒ keep; "" ⇒ clear.
-                source = if (tapConfigWithScript.source == null) existing.source else tapConfigWithScript.source,
+                source = if (versionRestore.isEmpty && tapConfigWithScript.source == null) existing.source else tapConfigWithScript.source,
                 // Same rule for declared dependencies: omitted ⇒ keep; [] is an
                 // explicit "none" (it overrides inference).
-                dependsOn = if (tapConfigWithScript.dependsOn == null) existing.dependsOn else tapConfigWithScript.dependsOn,
+                dependsOn =
+                    if (versionRestore.isEmpty && tapConfigWithScript.dependsOn == null) existing.dependsOn else tapConfigWithScript.dependsOn,
                 // Test outcome + script stamp are server-owned (written only by
                 // the run endpoint in mode=test). Clients echo stale copies in the
                 // save body; never let a body promote a tap to "tested".
@@ -1214,10 +1296,29 @@ class TapAPIController {
         // A save that changes nothing (e.g. the config write that follows a
         // script store, which already versioned the new script) mints no
         // version and leaves the stored tap as it is.
-        if (existing != null && TapScriptStoreVersioning.sameDefinition(existing, stamped)) return Right(existing)
-        val note = if (changeNote != null && changeNote.nonEmpty) changeNote
+        // A version restore always mints a version.
+        if (versionRestore.isEmpty && existing != null && TapScriptStoreVersioning.sameDefinition(existing, stamped)) return Right(existing)
+        val note = if (versionRestore.isDefined) "restored from version " + versionRestore.get.version
+        else if (changeNote != null && changeNote.nonEmpty) changeNote
         else if (existing != null) "updated" else "created"
-        val saved = TapConfigIO.writeVersioned(stamped, note, VersionActor.resolve(request))
+        // A version restore re-reads, re-checks and writes under the lock a
+        // rename, a catalog restore and the enable-in-order job hold, so a
+        // change since its decision is seen before anything is written; the
+        // live run, retry and test state written are the tap's under the
+        // lock. Only the re-read, re-check and write are held.
+        val saved =
+            if (versionRestore.isEmpty) TapConfigIO.writeVersioned(stamped, note, VersionActor.resolve(request))
+            else
+                CatalogOps.withCatalogLock {
+                    val fresh = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
+                    EntityVersionAPIController
+                        .tapRestoreRecheck(request, tapConfig, existing, fresh, TapAPIController.readPipelineForSave, hidden())
+                        .foreach { refused =>
+                            logger.warn("Restore of tap " + tapConfig.name + " rejected at write: HTTP " + refused.getStatusCode.value)
+                            return Left(refused)
+                        }
+                    TapConfigIO.writeVersioned(EntityVersionAPIController.tapRestoreWriteConfig(stamped, fresh), note, VersionActor.resolve(request))
+                }
         Right(saved)
     }
 

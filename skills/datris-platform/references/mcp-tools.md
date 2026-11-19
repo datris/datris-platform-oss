@@ -53,7 +53,7 @@ Grouped by purpose. Tool names are exact. Every tool that changes state accepts 
 | `get_tap_state`, `set_tap_state` | Incremental bookmark. `reset=true` forces a full first-run fetch next time. |
 | `get_tap_ledger` | Document taps: which files were seen and processed. `clear_uri` or `clear_all` forces reprocessing. |
 | `delete_tap` | Removes the tap, its script, ledger and staged objects. Policy-gated as a rule. |
-| `list_tap_versions`, `get_tap_version`, `diff_tap_versions`, `restore_tap_version` | History of config plus script. Restore does not run the tap. |
+| `list_tap_versions`, `get_tap_version`, `diff_tap_versions`, `restore_tap_version` | History of config plus script. Restore does not run the tap. Restore is checked like a save of that version (refused with the reason, nothing written) and never changes the tap's catalog or enabled state. |
 | `wait_seconds` | Sleep 1 to 120 seconds between polls. Start at 5, back off toward 60, reset when a poll shows progress. |
 
 ## Secrets

@@ -455,7 +455,7 @@ AI agents can manage taps via MCP:
 | `list_tap_versions` | List the change history of a tap's definition, newest first (`version`, `createdAt`, `createdBy`, `changeNote`). An empty result means the tap has not been edited since versioning was enabled; the current version number is the `version` field on the tap itself. |
 | `get_tap_version` | View one historical snapshot of a tap: the full config and pinned script as they were at that version. Read-only. |
 | `diff_tap_versions` | Compare two versions of a tap: a field-by-field config diff plus a line-level script diff. `version` is the selected snapshot, `against` the baseline. |
-| `restore_tap_version` | Roll a tap back (or forward) to a prior version. Append-only: the chosen snapshot is written as a new latest version, so history is never overwritten. |
+| `restore_tap_version` | Roll a tap back (or forward) to a prior version. Append-only: the chosen snapshot is written as a new latest version, so history is never overwritten. Checked like a save of that version: a version the platform would not accept on save today is refused with the reason and nothing is written. Never changes the tap's catalog or enabled state. |
 | `delete_tap` | Delete a tap and its stored script |
 
 End-to-end agent flow when a tap needs credentials:

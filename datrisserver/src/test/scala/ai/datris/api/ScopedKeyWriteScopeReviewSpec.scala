@@ -436,10 +436,10 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         assert(CatalogAPIController.enableOrderedRefusal(null, members, failPipeline).isEmpty, "the enable job and schedulers run with no request")
         // tap save, /tap/run mode=run and tap version restore all call this seam
         val tapSrc = source("src/main/scala/ai/datris/api/TapAPIController.scala")
-        assert(methodBody(tapSrc, "def saveTapInternal(").contains("TapAPIController.targetPipelineRefusal(request, scoped)"))
+        assert(methodBody(tapSrc, "def saveTapCore(").contains("TapAPIController.targetPipelineRefusal(request, scoped)"))
         assert(methodBody(tapSrc, "def runTap(").contains("if (mode != \"test\") TapAPIController.targetPipelineRefusal(request, tapConfig)"))
-        assert(methodBody(source("src/main/scala/ai/datris/api/EntityVersionAPIController.scala"), "def restoreTapVersion(").contains(
-            "TapAPIController.targetPipelineRefusal(request, snap)"
+        assert(methodBody(source("src/main/scala/ai/datris/api/EntityVersionAPIController.scala"), "def tapRestoreGuardDecision(").contains(
+            "TapAPIController.targetPipelineRefusal("
         ))
     }
 
