@@ -108,8 +108,7 @@ object ChatCaller {
 
     /** Install-wide full access. `grants` with no scope context, so a scoped
       * `*:*:catalog=x` does not count. */
-    def isFullAccess(rk: ResolvedKey): Boolean =
-        rk.isLegacyFullAccess || rk.grants("*", "*")
+    def isFullAccess(rk: ResolvedKey): Boolean = rk.isFullAccess
 
     /** May the Ops chat context carry open incidents for this caller? A user
       * unless restricted; otherwise a full-access key or one holding unscoped

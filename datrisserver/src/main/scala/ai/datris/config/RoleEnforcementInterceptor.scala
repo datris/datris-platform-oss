@@ -177,20 +177,27 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
 object RoleEnforcementInterceptor {
 
     /** Does this validated key satisfy a role-gated endpoint reached without
-      * a user session? Full access (`*:*`) always does. A scoped key does
-      * only when the route is capability-mapped and the key holds the
-      * required capability — the same grant the CapabilityInterceptor
-      * already enforced earlier in the chain. Skip-listed and unmapped
-      * routes (key minting, user management) never accept a scoped key. */
+      * a user session? Full access ([[ResolvedKey.isFullAccess]]: a legacy
+      * key or unscoped `*:*`) always does. A scoped key does only when the
+      * route is capability-mapped and the key holds the required capability
+      * — the same grant the CapabilityInterceptor already enforced earlier
+      * in the chain. Skip-listed and unmapped routes (key minting, user
+      * management, the Configuration chat) never accept a scoped key.
+      *
+      * A scoped wildcard (`*:*:catalog=Sales`, `*:read:owner=self`) never
+      * satisfies a role gate, in either `DATRIS_KEY_INERT_SCOPES` mode
+      * (owner decision, api-key-inert-scopes review): the scope-blind
+      * `matchesResourceAction("*", "*")` used before let such a key mint keys
+      * and manage users. */
     private[config] def programmaticKeySatisfiesRoleGate(
         rk: ResolvedKey,
         method: String,
         path: String
     ): Boolean = {
-        if (rk.matchesResourceAction("*", "*")) return true
+        if (rk.isFullAccess) return true
         ai.datris.auth.CapabilityRoutes.lookup(method, path) match {
             case ai.datris.auth.RouteCheck.Require(resource, action) =>
-                rk.matchesResourceAction(resource, action)
+                rk.effectiveCapabilities.exists(c => !c.isScopedWildcard && c.matchesResourceAction(resource, action))
             case _ => false
         }
     }

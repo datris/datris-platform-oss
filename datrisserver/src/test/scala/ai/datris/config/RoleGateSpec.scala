@@ -49,4 +49,88 @@ class RoleGateSpec extends AnyFunSuite {
     test("unmapped routes are refused for scoped keys") {
         assert(!gate(key("tap:read"), "GET", "/api/v1/does-not-exist"))
     }
+
+    // Owner decision on the api-key-inert-scopes review (finding 2): a scoped
+    // wildcard key never counts as full access for admin checks, with or
+    // without DATRIS_KEY_INERT_SCOPES=allow.
+
+    private def inMode[A](value: Option[String])(body: => A): A = {
+        val prop = ai.datris.auth.CapabilityScopes.InertScopesProperty
+        val previous = sys.props.get(prop)
+        value match {
+            case Some(v) => sys.props(prop) = v
+            case None => sys.props -= prop
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(prop) = v
+                case None => sys.props -= prop
+            }
+    }
+
+    /** A stored key as APIKeyValidator.resolveAgainst builds it. */
+    private def stored(label: String, raw: String*): ResolvedKey = {
+        val (kept, inert) = ai.datris.auth.CapabilityScopes.partition(Capability.parseList(raw))
+        ResolvedKey(None, label, kept, isLegacyFullAccess = false, inertCapabilities = inert)
+    }
+
+    private val AdminRoutes = Seq(
+        ("POST", "/api/v1/keys"),
+        ("GET", "/api/v1/keys"),
+        ("POST", "/api/v1/keys/x/rotate"),
+        ("DELETE", "/api/v1/keys/x"),
+        ("POST", "/api/v1/users"),
+        ("POST", "/api/v1/auth/users"),
+        ("DELETE", "/api/v1/auth/users/someone"),
+        ("POST", "/api/v1/config-chat/chat"),
+        ("GET", "/api/v1/audit-log"),
+        ("PUT", "/api/v1/policy"),
+        ("GET", "/api/v1/secrets"),
+        ("PUT", "/api/v1/secrets/x")
+    )
+
+    private val scopedWildcards = Seq("*:*:catalog=Sales", "*:*:owner=self", "*:read:catalog=Sales", "*:*:catalog=*")
+
+    test("a scoped wildcard key never satisfies an admin role gate, in refuse mode and under the opt-out") {
+        for (mode <- Seq(None, Some("allow")); raw <- scopedWildcards) {
+            inMode(mode) {
+                val rk = stored("sales_all", raw)
+                for ((m, p) <- AdminRoutes) assert(!gate(rk, m, p), s"$raw $m $p mode=$mode")
+                assert(!rk.isFullAccess, s"$raw mode=$mode")
+                assert(!ai.datris.auth.ChatCaller.isFullAccess(rk), s"$raw mode=$mode")
+                val id = ai.datris.auth.ChatIdentity(None, Some(rk), ownKey = true)
+                assert(!ai.datris.auth.ChatCaller.mayConfigure(id), s"$raw mode=$mode")
+                assert(!ai.datris.auth.ChatCaller.mayReadIncidents(id), s"$raw mode=$mode")
+                // the same capability held without partition (a v1.60.0-shaped key)
+                val raw160 = key(raw)
+                for ((m, p) <- AdminRoutes) assert(!gate(raw160, m, p), s"unpartitioned $raw $m $p mode=$mode")
+            }
+        }
+    }
+
+    test("plain *:*, a legacy key and the ui key still satisfy every admin role gate in both modes") {
+        for (mode <- Seq(None, Some("allow"))) {
+            inMode(mode) {
+                val plain = stored("admin-key", "*:*")
+                val uiLegacy = ResolvedKey(None, "ui", Seq(Capability.FullAccess), isLegacyFullAccess = true)
+                val uiScoped = stored("ui", "*:*")
+                for (rk <- Seq(plain, full, uiLegacy, uiScoped); (m, p) <- AdminRoutes) assert(gate(rk, m, p), s"${rk.label} $m $p mode=$mode")
+                for (rk <- Seq(plain, full, uiLegacy, uiScoped)) {
+                    assert(rk.isFullAccess && ai.datris.auth.ChatCaller.isFullAccess(rk), rk.label)
+                    assert(ai.datris.auth.ChatCaller.mayConfigure(ai.datris.auth.ChatIdentity(None, Some(rk), ownKey = false)), rk.label)
+                }
+            }
+        }
+    }
+
+    test("a narrowed pipeline or tap capability still satisfies a role gate only on its own mapped routes") {
+        for (mode <- Seq(None, Some("allow"))) {
+            inMode(mode) {
+                val rk = stored("sales_all", "*:*:catalog=Sales", "secret:read:_type=tap")
+                assert(gate(rk, "GET", "/api/v1/secrets"), "secret:read is an applied capability of the key")
+                assert(!gate(rk, "PUT", "/api/v1/secrets/x"))
+                assert(!gate(rk, "GET", "/api/v1/audit-log"))
+            }
+        }
+    }
 }

@@ -58,6 +58,11 @@ case class Capability(
         }
     }
 
+    /** A wildcard resource (`*:...`) carrying a scope, e.g.
+      * `*:*:catalog=Sales` or `*:read:owner=self`. Never counts toward an
+      * administrator decision (role gates, full access), in any mode. */
+    def isScopedWildcard: Boolean = resource == "*" && scope.nonEmpty
+
     /** Scope-agnostic match for the pre-action interceptor gate. Returns
       * true if this capability's resource and action are compatible with
       * the required pair, ignoring scope predicates entirely. The interceptor
@@ -188,6 +193,13 @@ case class ResolvedKey(
     def inertMatching(resource: String, action: String): Seq[Capability] =
         if (isLegacyFullAccess || inertCapabilities.isEmpty || capabilities.exists(_.matchesResourceAction(resource, action))) Nil
         else inertCapabilities.filter(_.matchesResourceAction(resource, action))
+
+    /** Install-wide full access: a legacy key, or one holding `*:*` with
+      * no scope. Uses `grants` with an empty context, so a scoped wildcard
+      * (`*:*:catalog=x`, `*:*:owner=self`, `*:*:catalog=*`) never counts, with
+      * or without `DATRIS_KEY_INERT_SCOPES=allow`. The one test for
+      * "administrator key" (role gates, chat full access). */
+    def isFullAccess: Boolean = isLegacyFullAccess || grants("*", "*")
 
     /** Does this key grant (resource, action) given a runtime context?
       * Legacy keys always grant. */
