@@ -347,14 +347,8 @@ class PostgresLoader(jobContext: JobContext) {
         sql.setLength(sql.length - 2)
 
         // Keys?
-        if (config.destination.database.keyFields != null) {
-            sql.append(", primary key (")
-            config.destination.database.keyFields.forEach(field => {
-                sql.append(field + ", ")
-            })
-            sql.setLength(sql.length - 2)
-            sql.append(")")
-        }
+        if (config.destination.database.keyFields != null && !config.destination.database.keyFields.isEmpty)
+            sql.append(", " + PostgresSql.primaryKey(config.destination.database.keyFields.asScala.toList))
 
         // End
         sql.append(");")

@@ -88,6 +88,14 @@ object DataUtil {
             schemaColumns.exists(_.equalsIgnoreCase(col))
         )
 
+        // A new name no configured destination can hold fails the run here,
+        // before anything is logged, reported or persisted, so the stored
+        // schema stays unchanged. Names already in the schema are not examined.
+        if (newColumns.nonEmpty)
+            IngestColumnNames.problem(newColumns, schemaColumns, IngestColumnNames.limitsFor(config)).foreach { p =>
+                throw new DatrisException("Pipeline " + config.name + ": " + p + ". The run is stopped and the pipeline schema is unchanged")
+            }
+
         if (newColumns.nonEmpty) {
             logger.info("Schema evolved: added fields [" + newColumns.mkString(", ") + "] to pipeline " + config.name)
             statusUtil.info("processing", "Schema evolution: new columns detected [" + newColumns.mkString(", ") + "], adding to pipeline schema")

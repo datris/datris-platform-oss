@@ -736,15 +736,17 @@ object TapRunner {
         if (staged == null || staged.isEmpty || staged.format != StagedFormat.NdJson)
             throw new DatrisException("the tap payload is not a JSON record list")
 
+        // One CSV cell: wrapped in quotes (inner quotes doubled) when it holds
+        // the delimiter, a quote or a line break. Header cells and value cells
+        // share it, so a record key is always exactly one header cell.
+        def quoted(s: String): String =
+            if (s.contains(delimiter) || s.contains("\"") || s.contains("\n") || s.contains("\r"))
+                "\"" + s.replace("\"", "\"\"") + "\""
+            else s
         def cell(elem: JsonElement): String =
             if (elem == null || elem.isJsonNull) ""
-            else {
-                val s = if (elem.isJsonPrimitive) elem.getAsJsonPrimitive.getAsString // raw number string: "1782800", "254.2"
-                else elem.toString
-                if (s.contains(delimiter) || s.contains("\"") || s.contains("\n") || s.contains("\r"))
-                    "\"" + s.replace("\"", "\"\"") + "\""
-                else s
-            }
+            else quoted(if (elem.isJsonPrimitive) elem.getAsJsonPrimitive.getAsString // raw number string: "1782800", "254.2"
+            else elem.toString)
         def kind(e: JsonElement): String =
             if (e.isJsonObject) "a JSON object" else if (e.isJsonArray) "a JSON array" else if (e.isJsonNull) "null" else "a JSON scalar"
 
@@ -772,7 +774,7 @@ object TapRunner {
                 finally pass1.close()
                 val columns = seen.toList
                 if (columns.nonEmpty) {
-                    writer.write(columns.mkString(delimiter))
+                    writer.write(columns.map(quoted).mkString(delimiter))
                     val pass2 = StagedRows.lines(staged.path)
                     try while (pass2.hasNext) {
                             val obj = JsonParser.parseString(pass2.next()).getAsJsonObject

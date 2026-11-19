@@ -81,6 +81,12 @@ object PostgresSql {
     def createTableHead(database: String, schema: String, table: String): String =
         "create table if not exists " + tableRef(database, schema, table) + " ("
 
+    /** The loader's `primary key (...)` clause. A key matching
+      * `[A-Za-z0-9_]+` is written bare, exactly as the loader always wrote
+      * it (so it folds to lower case as before); any other key is quoted. */
+    def primaryKey(keyFields: Seq[String]): String =
+        "primary key (" + keyFields.map(k => if (k != null && k.matches("[A-Za-z0-9_]+")) k else PgIdentifier.quote(k)).mkString(", ") + ")"
+
     /** One column name. */
     def column(name: String): String = PgIdentifier.quote(name)
 

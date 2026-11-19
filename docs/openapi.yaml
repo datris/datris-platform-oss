@@ -3570,7 +3570,13 @@ paths:
                 type: string
                 description: Bare token or message text, not JSON-encoded
         '500':
-          description: 'Error, including an unregistered pipeline. Body: `{"error": ...}`'
+          description: >-
+            Error, including an unregistered pipeline, or a CSV header with a
+            new column whose name the destination cannot hold (a control
+            character, a name equal to an existing or another new column once
+            spaces and letter case are ignored, or longer than the destination
+            allows). The error names the header cell; the pipeline schema is
+            left unchanged. Body: `{"error": ...}`
 
   /api/v1/pipeline/generate:
     post:

@@ -188,15 +188,7 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         val collection = database.getCollection(tableName)
         val doc = Document.parse(json)
 
-        // Build a compound filter from all key fields
-        val filters = keyFields.asScala.map(keyField => {
-            val value = doc.get(keyField)
-            if (value == null)
-                throw new DatrisException("Key field '" + keyField + "' not found in document")
-            Filters.eq(keyField, value)
-        })
-
-        val filter = if (filters.size == 1) filters.head else Filters.and(filters.asJava)
+        val filter = MongoDBUtil.keyFilter(doc, keyFields.asScala.toList)
 
         collection.replaceOne(filter, doc, new ReplaceOptions().upsert(true))
     }
@@ -205,14 +197,7 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         val collection = database.getCollection(tableName)
         val doc = Document.parse(json)
 
-        val filters = keyFields.asScala.map(keyField => {
-            val value = doc.get(keyField)
-            if (value == null)
-                throw new DatrisException("Key field '" + keyField + "' not found in document")
-            Filters.eq(keyField, value)
-        })
-
-        val filter = if (filters.size == 1) filters.head else Filters.and(filters.asJava)
+        val filter = MongoDBUtil.keyFilter(doc, keyFields.asScala.toList)
 
         collection.replaceOne(session, filter, doc, new ReplaceOptions().upsert(true))
     }
@@ -255,6 +240,28 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
             Filters.and(Filters.eq(keyName, key), Filters.eq(sortKeyName, concreteValue))
         } else
             Filters.eq(keyName, key)
+    }
+}
+
+object MongoDBUtil {
+
+    /** The upsert's match on `keyFields`, taken from `doc`: one
+      * `{field: {$eq: value}}` clause per key field (ANDed when there are
+      * several), so a key value is always compared as a value, whatever it
+      * holds. A key field name starting with `$` cannot name a document
+      * field and is refused, as is a key field missing from the document. */
+    private[util] def keyFilter(doc: Document, keyFields: Seq[String]): org.bson.conversions.Bson = {
+        val clauses = keyFields.map { keyField =>
+            if (keyField == null || keyField.startsWith("$"))
+                throw new DatrisException(
+                    "Key field '" + keyField + "' cannot be matched: a MongoDB key field name must not start with '$'"
+                )
+            val value = doc.get(keyField)
+            if (value == null)
+                throw new DatrisException("Key field '" + keyField + "' not found in document")
+            new Document(keyField, new Document("$eq", value)): org.bson.conversions.Bson
+        }
+        if (clauses.size == 1) clauses.head else Filters.and(clauses.asJava)
     }
 }
 

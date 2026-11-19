@@ -27,6 +27,8 @@ The effective default depends on whether the `jsonAttributes` block is present: 
 
 Specify one or more fields in `keyFields` to perform an upsert instead of a plain insert. The pipeline matches existing documents by the compound key formed from these fields. If a matching document exists it is replaced; otherwise a new document is inserted.
 
+Each key value is matched by equality: a scalar value (string, number, boolean, date, ObjectId) matches the documents holding that value, and a sub-document value matches only a stored sub-document equal to it. A key field name must not start with `$`; a load with such a key field fails with an error naming it, as does a document missing a key field.
+
 ## Truncate Before Write
 
 Set `truncateBeforeWrite` to `true` to delete all documents from the target collection before writing. This effectively replaces the entire collection on each run.
@@ -63,7 +65,7 @@ MongoDB connection credentials are configured globally in `application.yaml` via
 | `dbName`              | yes      |         | Target database name                                 |
 | `table`               | yes      |         | Target collection name                               |
 | `useMongoDB`          | yes      | `false` | Must be `true` to enable MongoDB destination         |
-| `keyFields`           | no       |         | Array of field names forming the compound upsert key |
+| `keyFields`           | no       |         | Array of field names forming the compound upsert key (matched by equality; names must not start with `$`) |
 | `truncateBeforeWrite` | no       | `false` | Delete all documents before writing                  |
 | `useTransaction`      | no       | `true`  | Wrap all writes in a MongoDB transaction             |
 

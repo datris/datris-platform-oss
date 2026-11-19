@@ -627,5 +627,5 @@ object IcebergWriter {
         }
     }
 
-    private def quote(name: String): String = "`" + name.replace("`", "``") + "`"
+    private[util] def quote(name: String): String = "`" + name.replace("`", "``") + "`"
 }

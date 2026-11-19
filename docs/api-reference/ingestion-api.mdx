@@ -22,7 +22,7 @@ Content-Type: multipart/form-data
 **Behavior:**
 - **Compressed files** (`.zip`, `.gz`, `.tar`, `.jar`): Extracted in-process. For a CSV pipeline with several files in the archive, the files are concatenated (headers on files 2+ skipped) and submitted as one batch job; otherwise each extracted file is submitted as its own job
 - **Uncompressed files**: Processed immediately in-memory
-- **Schema evolution**: If a CSV file contains new columns not in the pipeline schema, they are automatically added (as `string` type) and the destination table is altered. See [Schema Evolution](/schemas#schema-evolution).
+- **Schema evolution**: If a CSV file contains new columns not in the pipeline schema, they are automatically added (as `string` type) and the destination table is altered. A new column whose name the destination cannot hold (a control character, a duplicate, or longer than the destination allows) fails the run and leaves the schema unchanged. See [Schema Evolution](/schemas#what-a-new-column-name-may-hold).
 
 **Example:**
 ```bash
