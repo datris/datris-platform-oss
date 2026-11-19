@@ -18,9 +18,11 @@ import org.springframework.web.bind.annotation._
 
 /** Deterministic lineage views built from configuration alone (see
   * [[LineageService]]). Read-only. Node types: source, tap, pipeline,
-  * dataset, catalog. A restricted user's session sees only the part of the
-  * graph inside its granted catalogs (see [[LineageAPIController.visibleGraph]]);
-  * anything outside answers the same 404 as an unknown node or pipeline. */
+  * dataset, catalog. A limited caller (a restricted user's session, or an
+  * API key limited by a `catalog=` / `owner=` scope) sees only the part of
+  * the graph it may read (see [[LineageAPIController.visibleGraph]]); a node
+  * outside answers the same 404 as an unknown node, and a named pipeline's
+  * columns outside it the pipeline 404 (session) or 403 (key). */
 @RestController
 @RequestMapping(Array("/api/v1/lineage"))
 class LineageAPIController {
@@ -68,18 +70,15 @@ class LineageAPIController {
                 if (depth == null) 0 else math.max(0, depth.intValue()),
                 if (runs == null) 0 else math.max(0, runs.intValue()),
                 columns != null && columns.booleanValue(),
-                // A restricted session walks only its visible graph; null = the whole cached graph.
-                if (CapabilityCheck.isRestrictedSession(request)) LineageAPIController.callerGraph(request)
+                // A limited caller walks only its visible graph; null = the whole cached graph.
+                if (CapabilityCheck.isLimited(request)) LineageAPIController.callerGraph(request)
                 else null
             )
             if (result == null)
                 ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body[String]("{\"error\":\"no such node: " + t + ":" + Option(name).getOrElse("").replace("\"", "'") + "\"}")
             else {
-                val shown =
-                    if (CapabilityCheck.isRestrictedSession(request))
-                        LineageAPIController.scrubNeighborhood(request, result, n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n))
-                    else result
+                val shown = LineageAPIController.scrubNeighborhood(request, result, n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n))
                 new ResponseEntity[String](gson.toJson(shown), HttpStatus.OK)
             }
         } catch {
@@ -111,7 +110,7 @@ class LineageAPIController {
             val v = Option(version).map(_.intValue()).filter(_ > 0)
             val inferOn = infer != null && infer.booleanValue()
             val result =
-                if (!CapabilityCheck.isRestrictedSession(request)) ai.datris.util.ColumnLineageService.forPipeline(pipeline, v, inferOn)
+                if (!CapabilityCheck.isLimited(request)) ai.datris.util.ColumnLineageService.forPipeline(pipeline, v, inferOn)
                 else
                     ai.datris.util.ColumnLineageService.forPipeline(
                         pipeline,
@@ -145,21 +144,30 @@ class LineageAPIController {
 
 object LineageAPIController {
 
-    /** The graph a caller may see: for a restricted user's session, only
-      * pipeline and tap nodes its grants allow it to read and catalog nodes
-      * among its visible catalogs, plus the sources and datasets still linked
-      * to them ([[LineageService.visibleTo]]). Everyone else: `g` unchanged. */
+    /** The graph a caller may see. A limited caller
+      * ([[CapabilityCheck.isLimited]]: a restricted user's session, or an API
+      * key limited by a `catalog=` / `owner=` scope) keeps only the pipeline
+      * and tap nodes it may read, judged on the stored item's catalog and
+      * owner (the node's `catalog` and `owner`, taken from the stored config
+      * when the graph was built), and catalog nodes it may see: a session's
+      * granted catalogs ([[CatalogGrants.visibleCatalogs]]), for a key the
+      * catalogs of the pipeline and tap nodes it keeps. Sources and datasets
+      * still linked to them stay ([[LineageService.visibleTo]]). Everyone
+      * else: `g` itself. */
     def visibleGraph(request: HttpServletRequest, g: LineageService.Graph): LineageService.Graph =
-        CapabilityCheck.resolvedKey(request).filter(_.restrictedSession) match {
+        CapabilityCheck.resolvedKey(request).filter(ai.datris.auth.CallerVisibility.limited) match {
             case None => g
             case Some(rk) =>
-                val catalogs = CatalogGrants.visibleCatalogs(rk).toSet
+                def itemKept(n: LineageService.Node): Boolean =
+                    ai.datris.auth.CallerVisibility.mayReadStored(Some(rk), n.nodeType, n.catalog.orNull, n.owner.orNull)
+                val catalogs: Set[String] =
+                    if (rk.restrictedSession) CatalogGrants.visibleCatalogs(rk).toSet
+                    else g.nodes.filter(n => (n.nodeType == "pipeline" || n.nodeType == "tap") && itemKept(n)).flatMap(_.catalog).filter(_.nonEmpty).toSet
                 LineageService.visibleTo(
                     g,
                     n =>
                         n.nodeType match {
-                            case "pipeline" | "tap" =>
-                                CapabilityCheck.grants(request, n.nodeType, "read", CatalogOps.scopeContext(n.catalog.orNull, null))
+                            case "pipeline" | "tap" => itemKept(n)
                             case "catalog" => catalogs.contains(n.name)
                             case _ => true
                         }
@@ -167,29 +175,31 @@ object LineageAPIController {
         }
 
     /** The graph GET /lineage returns and GET /lineage/{type}/{name} walks:
-      * [[visibleGraph]], and for a restricted session without the runs it may
+      * [[visibleGraph]], and for a limited caller without the runs it may
       * not see ([[LineageService.withoutHiddenRuns]]). */
     def callerGraph(request: HttpServletRequest): LineageService.Graph =
-        if (!CapabilityCheck.isRestrictedSession(request)) visibleGraph(request, LineageService.graph())
+        if (!CapabilityCheck.isLimited(request)) visibleGraph(request, LineageService.graph())
         else LineageService.withoutHiddenRuns(visibleGraph(request, LineageService.graph()), LineageService.pipelines())
 
-    /** Restricted sessions: whether records filed under `name` are shown
+    /** Limited callers: whether records filed under `name` are shown
       * ([[ai.datris.util.PipelineAliases.recordShown]] with the pipelines the
-      * session can read). True for everyone else. */
+      * caller can read, [[PipelineAPIController.mayRead]]). True for everyone
+      * else. */
     def recordsShown(request: HttpServletRequest, name: String, all: Seq[PipelineConfig]): Boolean =
-        !CapabilityCheck.isRestrictedSession(request) ||
+        !CapabilityCheck.isLimited(request) ||
             ai.datris.util.PipelineAliases.recordShown(
                 name,
                 Option(all).getOrElse(Nil).filter(_ != null),
-                c => !PipelineAPIController.hiddenConfig(request, c, "read")
+                c => PipelineAPIController.mayRead(request, c)
             )
 
-    /** GET /lineage/{type}/{name} for a restricted session: recorded runs
-      * whose input names a tap the session cannot read (`readTap` loads it;
-      * null = missing) lose that tap's identity ([[HiddenTapScrub.scrubRun]]).
-      * Everyone else: `result` unchanged. Scrubs in place; returns `result`. */
+    /** GET /lineage/{type}/{name} for a limited caller: recorded runs whose
+      * input names a tap it cannot read (`readTap` loads it; null = missing)
+      * lose that tap's identity ([[HiddenTapScrub.scrubRun]]). Everyone else:
+      * `result` unchanged, `readTap` not called. Scrubs in place; returns
+      * `result`. */
     def scrubNeighborhood(request: HttpServletRequest, result: JsonObject, readTap: String => TapConfig): JsonObject = {
-        if (result == null || !CapabilityCheck.isRestrictedSession(request)) return result
+        if (result == null || !CapabilityCheck.isLimited(request)) return result
         if (result.has("runs") && result.get("runs").isJsonArray) {
             val memo = scala.collection.mutable.Map[String, Boolean]()
             val hidden: String => Boolean = n => memo.getOrElseUpdate(n, HiddenTapScrub.tapHidden(request, n, readTap))
@@ -200,15 +210,23 @@ object LineageAPIController {
         result
     }
 
-    /** GET /lineage/columns/{pipeline} for a restricted session: the
-      * `no such pipeline` 404 when the pipeline is missing or outside the
-      * grants (`read` loads it; null = missing). None for everyone else. */
+    /** GET /lineage/columns/{pipeline} for a limited caller (`read` loads the
+      * pipeline; null = missing): a restricted session gets the `no such
+      * pipeline` 404 when it is missing or outside the grants; an API key
+      * gets the capability-denied 403 on `pipeline:read` (shared wording)
+      * when the stored pipeline is outside its scope, and a missing one the
+      * route's own 404. None for everyone else, `read` not called. */
     def columnsRefusal(request: HttpServletRequest, pipeline: String, read: String => PipelineConfig): Option[ResponseEntity[String]] =
-        if (!CapabilityCheck.isRestrictedSession(request)) None
-        else if (PipelineAPIController.hiddenConfig(request, read(pipeline), "read"))
-            Some(
-                ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body[String]("{\"error\":\"no such pipeline: " + Option(pipeline).getOrElse("").replace("\"", "'") + "\"}")
+        if (!CapabilityCheck.isLimited(request)) None
+        else if (CapabilityCheck.isRestrictedSession(request)) {
+            if (PipelineAPIController.hiddenConfig(request, read(pipeline), "read"))
+                Some(
+                    ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body[String]("{\"error\":\"no such pipeline: " + Option(pipeline).getOrElse("").replace("\"", "'") + "\"}")
+                )
+            else None
+        } else
+            Option(read(pipeline)).flatMap(c =>
+                PipelineAPIController.keyRefusal(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel))
             )
-        else None
 }

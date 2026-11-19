@@ -50,6 +50,16 @@ object CallerVisibility {
         else if (!ScopedResources.contains(resource) || rk.isFullAccess) false
         else holdsScopedPipelineOrTap(rk) && !holdsUnscoped(rk, resource, "read")
 
+    /** The one per-item read rule for a STORED pipeline or tap
+      * (plans/stories/scoped-key-read-routes.md, Part B): the identity's
+      * grants or key scope allow `<resource>:read` on the stored item's
+      * catalog and owner (`createdByKeyLabel`), never on request input. No
+      * identity (auth off): true. Record routes apply it only to a limited
+      * caller ([[limited]]); `PipelineAPIController.mayRead` and
+      * `TapAPIController.mayRead` are this rule on a request. */
+    def mayReadStored(rk: Option[ResolvedKey], resource: String, catalog: String, owner: String): Boolean =
+        rk.forall(_.grants(resource, "read", ai.datris.util.CatalogOps.scopeContext(catalog, owner)))
+
     /** True when some stored capability on `pipeline` or `tap` carries a
       * `catalog=` or `owner=` scope. Read from the applied AND the inert
       * capabilities in both modes, so a scoped capability whose other scope

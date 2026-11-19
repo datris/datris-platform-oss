@@ -132,14 +132,15 @@ class CatalogFindAPIController {
 
 object CatalogFindAPIController {
 
-    /** GET /catalog/find for a restricted session: whether a hit's stored runs
-      * (freshness, provenance run id, location evidence) are shown, by
-      * [[ai.datris.util.PipelineAliases.recordShown]] with `visible` (the
-      * pipelines the session can read) as what it can see: a name reused after
-      * a hidden pipeline's rename reads as if it had no runs. Null (shown, no
-      * extra work) for everyone else. */
+    /** GET /catalog/find for a limited caller ([[CapabilityCheck.isLimited]]:
+      * a restricted session, or a catalog- / owner-scoped API key): whether a
+      * hit's stored runs (freshness, provenance run id, location evidence) are
+      * shown, by [[ai.datris.util.PipelineAliases.recordShown]] with
+      * `visible` (the pipelines the caller can read) as what it can see: a
+      * name reused after a hidden pipeline's rename reads as if it had no
+      * runs. Null (shown, no extra work) for everyone else. */
     def recordsShown(request: HttpServletRequest, pipelines: Seq[PipelineConfig], visible: Seq[PipelineConfig]): String => Boolean =
-        if (!CapabilityCheck.isRestrictedSession(request)) null
+        if (!CapabilityCheck.isLimited(request)) null
         else {
             val all = Option(pipelines).getOrElse(Nil).filter(_ != null)
             val seen = Option(visible).getOrElse(Nil).filter(_ != null).map(_.name).toSet

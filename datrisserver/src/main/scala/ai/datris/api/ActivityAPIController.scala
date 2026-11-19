@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.auth.{CapabilityCheck, HiddenTapScrub}
 import ai.datris.model.DatrisEnvironment
-import ai.datris.util.{ActivitySignals, CatalogOps, PipelineAliases, PipelineConfigIO, TapConfigIO}
+import ai.datris.util.{ActivitySignals, PipelineAliases, PipelineConfigIO, TapConfigIO}
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import jakarta.servlet.http.HttpServletRequest
@@ -36,7 +36,12 @@ class ActivityAPIController {
                         .body[String]("{\"error\":\"window must be 24h, 7d or 30d (got " + other.replace("\"", "") + ")\"}")
             }
             val computed = ActivitySignals.compute(windowMs)
-            val visible = if (CapabilityCheck.isRestrictedSession(request)) ActivityAPIController.restrictedView(request, computed) else computed
+            val visible = ActivityAPIController.callerView(
+                request,
+                computed,
+                () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName),
+                () => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)
+            )
             new ResponseEntity[String](gson.toJson(visible.toJson), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -51,27 +56,54 @@ class ActivityAPIController {
 
 object ActivityAPIController {
 
-    /** A restricted user's session sees only the rows of taps and pipelines
-      * its grants allow it to read. Pipeline rows are judged on the stored
-      * pipeline's catalog (failing pipeline rows carry none); a pipeline no
-      * longer stored is dropped. A visible pipeline's related tap name is
-      * cleared when that tap is hidden, and a pipeline row's reason has any
-      * hidden feeding tap's name replaced. */
+    /** GET /activity/signals: what the caller sees. A limited caller
+      * ([[CapabilityCheck.isLimited]]: a restricted user's session, or an API
+      * key limited by a `catalog=` / `owner=` scope;
+      * plans/stories/scoped-key-read-routes.md, Part B) gets
+      * [[restrictedViewWith]] on the stores `pipelines` and `taps` read (each
+      * once). Everyone else: `s` itself, neither reader called. */
+    def callerView(
+        request: HttpServletRequest,
+        s: ActivitySignals.Signals,
+        pipelines: () => Seq[ai.datris.model.PipelineConfig],
+        taps: () => Seq[ai.datris.model.TapConfig]
+    ): ActivitySignals.Signals =
+        if (!CapabilityCheck.isLimited(request)) s
+        else restrictedViewWith(request, s, Option(pipelines()).getOrElse(Nil), Option(taps()).getOrElse(Nil))
+
+    /** [[callerView]] on the live stores. */
     private[api] def restrictedView(request: HttpServletRequest, s: ActivitySignals.Signals): ActivitySignals.Signals = {
         val env = DatrisEnvironment.current
-        val configs = PipelineConfigIO.readAll(env.pipelineTableName).filter(_ != null)
+        callerView(request, s, () => PipelineConfigIO.readAll(env.pipelineTableName), () => TapConfigIO.readAll(env.tapTableName))
+    }
+
+    /** A limited caller sees only the rows of taps and pipelines it may read,
+      * judged on the STORED item's catalog and owner (`createdByKeyLabel`),
+      * so an `owner=self` key sees its own: a tap row by the stored tap of
+      * that name ([[TapAPIController.mayRead]]; a tap no longer stored is
+      * dropped), a pipeline row by [[recordReadable]] with
+      * [[PipelineAPIController.mayRead]] (a pipeline no longer stored is
+      * dropped). A visible pipeline's related tap name is cleared when that
+      * tap is hidden, and a pipeline row's reason has any hidden feeding
+      * tap's name replaced. Anomalies are derived from the kept volumes. */
+    def restrictedViewWith(
+        request: HttpServletRequest,
+        s: ActivitySignals.Signals,
+        pipelines: Seq[ai.datris.model.PipelineConfig],
+        taps: Seq[ai.datris.model.TapConfig]
+    ): ActivitySignals.Signals = {
+        val configs = pipelines.filter(_ != null)
         val pipelineCatalogs: Map[String, String] = ActivityAPIController.recordCatalogs(configs)
-        val taps = TapConfigIO.readAll(env.tapTableName).filter(_ != null)
-        val tapCatalogs: Map[String, String] = taps.map(t => t.name -> Option(t.catalog).getOrElse("")).toMap
-        def readable(resource: String, catalog: Option[String]): Boolean =
-            CapabilityCheck.grants(request, resource, "read", CatalogOps.scopeContext(catalog.orNull, null))
-        val keepTap: (String, Option[String]) => Boolean = (_, c) => readable("tap", c)
+        val stored = taps.filter(t => t != null && t.name != null)
+        val tapByName = stored.map(t => t.name -> t).toMap
+        val tapReadable: String => Boolean = n => tapByName.get(n).exists(t => TapAPIController.mayRead(request, t))
+        val keepTap: (String, Option[String]) => Boolean = (n, _) => tapReadable(n)
         val keepPipeline: (String, Option[String]) => Boolean =
-            (n, _) => recordReadable(n, configs, c => readable("pipeline", Some(Option(c.catalog).getOrElse(""))))
+            (n, _) => recordReadable(n, configs, c => PipelineAPIController.mayRead(request, c))
         val v = ActivitySignals.visibleTo(s, keepTap, keepPipeline, pipelineCatalogs.get)
         val visiblePipelines = pipelineCatalogs.keys.filter(n => keepPipeline(n, None)).toSet
-        val tapHidden: String => Boolean = t => !tapCatalogs.get(t).exists(c => readable("tap", Some(c)))
-        v.copy(failing = scrubFailing(v.failing, tapHidden, HiddenTapScrub.hiddenFeedingTaps(request, taps, visiblePipelines)))
+        val tapHidden: String => Boolean = t => !tapReadable(t)
+        v.copy(failing = scrubFailing(v.failing, tapHidden, HiddenTapScrub.hiddenFeedingTaps(request, stored, visiblePipelines)))
     }
 
     /** Record name -> catalog for activity rows: every pipeline's name, plus
@@ -83,7 +115,7 @@ object ActivityAPIController {
             PipelineAliases.aliasOwners(live).map { case (n, c) => n -> Option(c.catalog).getOrElse("") }
     }
 
-    /** Whether a restricted session sees activity rows filed under `name`:
+    /** Whether a limited caller sees activity rows filed under `name`:
       * [[PipelineAliases.recordShown]] with `catalogReadable` deciding which
       * pipelines it can see, so a name reused after a rename needs every
       * pipeline it may belong to readable. A name no pipeline carries or
@@ -91,7 +123,7 @@ object ActivityAPIController {
     def recordReadable(name: String, configs: Seq[ai.datris.model.PipelineConfig], catalogReadable: ai.datris.model.PipelineConfig => Boolean): Boolean =
         PipelineAliases.recordShown(name, configs.filter(_ != null), catalogReadable)
 
-    /** Failing rows a restricted session sees, with hidden tap names gone:
+    /** Failing rows a limited caller sees, with hidden tap names gone:
       * `relatedTapName` is cleared when `tapHidden` (a tap no longer stored
       * counts as hidden), and a pipeline row's `reason` (the run's message)
       * has `hiddenFeeding` and any hidden tap named by a `tap-<name>.csv|json`

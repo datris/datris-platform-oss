@@ -35,17 +35,18 @@ class ProvenanceAPIController {
         try {
             if (runId == null || runId.trim.isEmpty)
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"runId is required\"}")
-            // A restricted session's hints are ignored: the run's own records
-            // name its pipeline and tap run, so a visible pipeline name cannot
-            // vouch for a hidden run.
-            val restricted = CapabilityCheck.isRestrictedSession(request)
+            // A limited caller's hints are ignored (a restricted session, or a
+            // catalog- / owner-scoped key): the run's own records name its
+            // pipeline and tap run, so a visible pipeline name cannot vouch
+            // for a hidden run.
+            val limited = CapabilityCheck.isLimited(request)
             val resolved = ProvenanceResolver.resolve(
-                if (pipeline != null && !restricted) pipeline.trim else null,
+                if (pipeline != null && !limited) pipeline.trim else null,
                 runId.trim,
-                if (tapRun != null && !restricted) tapRun.trim else null,
+                if (tapRun != null && !limited) tapRun.trim else null,
                 configVersion
             )
-            // Read only for a restricted session (provenanceRefusal and the
+            // Read only for a limited caller (provenanceRefusal and the
             // scrub below never call it otherwise).
             lazy val configs = PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName).filter(_ != null)
             val refused = ProvenanceAPIController.provenanceRefusal(
@@ -59,7 +60,7 @@ class ProvenanceAPIController {
             )
             if (refused.isDefined) return refused.get
             val shown =
-                if (!restricted) resolved
+                if (!limited) resolved
                 else {
                     val env = DatrisEnvironment.current
                     val pipelineName = resolved.get("pipeline").getAsString // present: provenanceRefusal passed
@@ -81,30 +82,34 @@ object ProvenanceAPIController {
 
     /** The `read` for [[provenanceRefusal]] on loaded configs: the owner of a
       * run filed under `name` ([[PipelineAliases.ownerOf]]), or null (read as
-      * missing, so the run is refused) when the session may not see that
-      * name's records ([[PipelineAliases.recordShown]]: a reused name with a
-      * claimant outside the grants). */
+      * missing, so the run is refused) when the caller may not see that
+      * name's records ([[PipelineAliases.recordShown]] with
+      * [[PipelineAPIController.mayRead]]: a reused name with a claimant
+      * outside the grants or key scope). */
     def recordOwner(request: HttpServletRequest, name: String, configs: Seq[PipelineConfig]): PipelineConfig = {
         val all = Option(configs).getOrElse(Nil).filter(_ != null)
-        if (!PipelineAliases.recordShown(name, all, c => !PipelineAPIController.hiddenConfig(request, c, "read"))) null
+        if (!PipelineAliases.recordShown(name, all, c => PipelineAPIController.mayRead(request, c))) null
         else PipelineAliases.ownerOf(name, all)
     }
 
-    /** For a restricted user's session, after [[ProvenanceResolver.resolve]]:
-      * 404 `no such run: <runId>` when the resolved run names no pipeline, or
-      * one that is missing or outside the grants (`read` loads it; null =
-      * missing). The body never names the pipeline. None for everyone else. */
+    /** For a limited caller ([[CapabilityCheck.isLimited]]: a restricted
+      * user's session, or a catalog- / owner-scoped API key), after
+      * [[ProvenanceResolver.resolve]]: 404 `no such run: <runId>` when the
+      * resolved run names no pipeline, or one that is missing or that it may
+      * not read (`read` loads it; null = missing). A run id is a lookup, so
+      * keys get the same 404 (D2). The body never names the pipeline. None
+      * for everyone else, `read` not called. */
     def provenanceRefusal(
         request: HttpServletRequest,
         runId: String,
         resolved: JsonObject,
         read: String => PipelineConfig
     ): Option[ResponseEntity[String]] = {
-        if (!CapabilityCheck.isRestrictedSession(request)) return None
+        if (!CapabilityCheck.isLimited(request)) return None
         val pipeline =
             if (resolved != null && resolved.has("pipeline") && resolved.get("pipeline").isJsonPrimitive) resolved.get("pipeline").getAsString
             else null
-        val hidden = pipeline == null || pipeline.isEmpty || PipelineAPIController.hiddenConfig(request, read(pipeline), "read")
+        val hidden = pipeline == null || pipeline.isEmpty || !PipelineAPIController.mayRead(request, read(pipeline))
         if (!hidden) None
         else
             Some(
@@ -113,7 +118,7 @@ object ProvenanceAPIController {
             )
     }
 
-    /** For a restricted user's session, after [[provenanceRefusal]] passed:
+    /** For a limited caller, after [[provenanceRefusal]] passed:
       * when the run's tap (from `input.tapName`, `tapRun.tapName` or
       * `tap.name`) is one the session cannot read (`readTap` loads it; null =
       * missing), the `tapRun` and `tap` blocks and the top-level `source` go,
@@ -130,7 +135,7 @@ object ProvenanceAPIController {
         readTap: String => TapConfig,
         hiddenFeeding: Set[String]
     ): JsonObject = {
-        if (resolved == null || !CapabilityCheck.isRestrictedSession(request)) return resolved
+        if (resolved == null || !CapabilityCheck.isLimited(request)) return resolved
         def str(o: JsonObject, block: String, field: String): Option[String] =
             if (o.has(block) && o.get(block).isJsonObject) {
                 val b = o.getAsJsonObject(block)

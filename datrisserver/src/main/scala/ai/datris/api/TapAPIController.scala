@@ -58,7 +58,32 @@ object TapAPIController {
       * catalog + owner: owner=self keys, catalog-scoped keys and restricted
       * users' catalog grants); nulls dropped. */
     def visibleTaps(request: HttpServletRequest, taps: Seq[TapConfig]): Seq[TapConfig] =
-        taps.filter(t => t != null && CapabilityCheck.grants(request, "tap", "read", CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel)))
+        taps.filter(t => mayRead(request, t))
+
+    /** The one per-item read rule for a STORED tap: `tap:read` on its
+      * catalog and owner (`createdByKeyLabel`). False for null. */
+    def mayRead(request: HttpServletRequest, t: TapConfig): Boolean =
+        t != null && ai.datris.auth.CallerVisibility.mayReadStored(CapabilityCheck.resolvedKey(request), "tap", t.catalog, t.createdByKeyLabel)
+
+    /** GET /tap/logs/all: the run-log values (each `{tapName, ...}`) the
+      * caller sees. A limited caller ([[CapabilityCheck.isLimited]]: a
+      * restricted session, or an API key limited by a `catalog=` / `owner=`
+      * scope): one `readAll`, then only logs whose `tapName` names a stored
+      * tap it may read ([[mayRead]]); a log with a null or missing
+      * `tapName`, or naming a tap no longer stored, is hidden. Everyone
+      * else: `logs` itself, `readAll` not called. The route caps the rows it
+      * reads before this filter; the response carries no count. */
+    def visibleTapLogs(request: HttpServletRequest, logs: Seq[JsonElement], readAll: () => Seq[TapConfig]): Seq[JsonElement] =
+        if (!CapabilityCheck.isLimited(request)) logs
+        else {
+            val names = visibleTaps(request, Option(readAll()).getOrElse(Nil)).map(_.name).filter(_ != null).toSet
+            logs.filter { l =>
+                l != null && l.isJsonObject && {
+                    val o = l.getAsJsonObject
+                    o.has("tapName") && o.get("tapName").isJsonPrimitive && names.contains(o.get("tapName").getAsString)
+                }
+            }
+        }
 
     /** Scope check on a loaded tap, mapped to a response: None when allowed,
       * the tap's 404 when hidden from a restricted user, 403 for an API
@@ -751,35 +776,21 @@ class TapAPIController {
             // here — that's only needed by the per-tap detail view; this endpoint
             // exists to feed the Ops activity dashboard's tile/chart aggregation.
             val parser = new JsonParser()
-            val out = new com.google.gson.JsonArray()
-            // A restricted user sees run logs of the taps in its grants only.
-            val visibleTap: String => Boolean =
-                if (!CapabilityCheck.isRestrictedSession(request)) _ => true
-                else {
-                    val names = TapAPIController.visibleTaps(request, TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)).map(_.name).toSet
-                    n => n != null && names.contains(n)
-                }
-            rows.foreach { json =>
+            val values = rows.flatMap { json =>
                 try {
                     val el = parser.parse(json)
-                    if (el.isJsonObject) {
-                        val obj = el.getAsJsonObject
-                        if (obj.has("value")) {
-                            val v = obj.get("value")
-                            val tapName =
-                                if (v.isJsonObject && v.getAsJsonObject.has("tapName") && !v.getAsJsonObject.get("tapName").isJsonNull)
-                                    v.getAsJsonObject.get("tapName").getAsString
-                                else null
-                            if (visibleTap(tapName)) out.add(v)
-                        }
-                    }
+                    if (el.isJsonObject && el.getAsJsonObject.has("value")) Some(el.getAsJsonObject.get("value")) else None
                 } catch {
                     case e: Exception =>
                         // skip malformed row, don't fail the whole request
                         logger.debug("Skipping malformed tap run log row", e)
-                        ()
+                        None
                 }
             }
+            // A limited caller (restricted user, catalog- or owner-scoped key)
+            // sees run logs of the taps it may read only.
+            val out = new com.google.gson.JsonArray()
+            TapAPIController.visibleTapLogs(request, values, () => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)).foreach(out.add)
             new ResponseEntity[String](out.toString, HttpStatus.OK)
         } catch {
             case e: Exception =>

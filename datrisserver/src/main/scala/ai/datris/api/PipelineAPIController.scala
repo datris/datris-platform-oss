@@ -2446,7 +2446,16 @@ object PipelineAPIController {
     /** GET /pipelines: the configs the caller may read (per-item scope
       * check on catalog + owner); nulls dropped. */
     def visiblePipelines(request: HttpServletRequest, configs: Seq[PipelineConfig]): Seq[PipelineConfig] =
-        configs.filter(c => c != null && CapabilityCheck.grants(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel)))
+        configs.filter(c => mayRead(request, c))
+
+    /** The one per-item read rule for a STORED pipeline: the caller's grants
+      * or key scope allow `pipeline:read` on its catalog and owner
+      * (`createdByKeyLabel`), never on request input. False for null (a
+      * pipeline that is not stored). The record routes apply it only for a
+      * limited caller ([[CapabilityCheck.isLimited]];
+      * plans/stories/scoped-key-read-routes.md, Part B). */
+    def mayRead(request: HttpServletRequest, c: PipelineConfig): Boolean =
+        c != null && ai.datris.auth.CallerVisibility.mayReadStored(CapabilityCheck.resolvedKey(request), "pipeline", c.catalog, c.createdByKeyLabel)
 
     /** POST /pipeline catalog rules for a restricted user's session (no-op
       * for everyone else). `existing` is the stored config of the same name,

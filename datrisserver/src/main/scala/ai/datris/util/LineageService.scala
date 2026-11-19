@@ -68,7 +68,11 @@ object LineageService {
       * since. `tags` come straight from the tap/pipeline definition.
       * `format` is the objectstore dataset's effective file format (iceberg,
       * parquet, orc) — a label only, never part of the id; absent on every
-      * other node type so their JSON is unchanged. */
+      * other node type so their JSON is unchanged. `owner` is the stored
+      * tap's or pipeline's `createdByKeyLabel`, kept so a caller's
+      * `owner=self` scope is judged on the stored item
+      * (plans/stories/scoped-key-read-routes.md, Part B); it is never
+      * written to the node's JSON. */
     case class Node(
         id: String,
         nodeType: String,
@@ -77,7 +81,8 @@ object LineageService {
         tags: List[String] = Nil,
         historical: Boolean = false,
         authority: Option[String] = None,
-        format: Option[String] = None
+        format: Option[String] = None,
+        owner: Option[String] = None
     ) {
         def toJson: JsonObject = {
             val o = new JsonObject()
@@ -284,7 +289,7 @@ object LineageService {
 
         taps.filter(_ != null).foreach { t =>
             val tapId = "tap:" + t.name
-            addNode(Node(tapId, "tap", t.name, Option(t.catalog), tagsOf(t.tags)))
+            addNode(Node(tapId, "tap", t.name, Option(t.catalog), tagsOf(t.tags), owner = Option(t.createdByKeyLabel)))
             val source = TapRunner.declaredSource(t)
             addNode(Node("source:" + source, "source", source))
             edges += edge("source:" + source, tapId)
@@ -299,7 +304,7 @@ object LineageService {
 
         live.foreach { p =>
             val pipelineId = "pipeline:" + p.name
-            addNode(Node(pipelineId, "pipeline", p.name, Option(p.catalog), tagsOf(p.tags)))
+            addNode(Node(pipelineId, "pipeline", p.name, Option(p.catalog), tagsOf(p.tags), owner = Option(p.createdByKeyLabel)))
             datasets(p).foreach { ds =>
                 addNode(Node(ds.id, "dataset", ds.name, Option(p.catalog), authority = authority.get(ds.id), format = ds.format))
                 edges += edge(pipelineId, ds.id)

@@ -166,6 +166,11 @@ object CapabilityCheck {
     def isLimited(request: HttpServletRequest): Boolean =
         readResolvedKey(request).exists(CallerVisibility.limited)
 
+    /** [[isLimited]] for one resource ([[CallerVisibility.limitedFor]]):
+      * `pipeline` or `tap`. False with no identity and for a null request. */
+    def isLimitedFor(request: HttpServletRequest, resource: String): Boolean =
+        readResolvedKey(request).exists(CallerVisibility.limitedFor(_, resource))
+
     /** For an API key only: throws [[CapabilityDeniedException]] (through
       * [[assertScope]], so the wording and the audit note are the shared ones)
       * when the key's scope refuses (resource, action) on an item with scope

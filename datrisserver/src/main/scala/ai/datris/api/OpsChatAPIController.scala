@@ -225,15 +225,40 @@ object OpsChatAPIController {
 
     /** Open incidents the Ops chat context may carry for `identity` (decided
       * on the request thread by `ChatCaller`; the same identity the agent's
-      * tools run as, so ambient context and tools follow one caller). A
-      * caller `ChatCaller.mayReadIncidents` refuses (a restricted session, or
-      * a key without unscoped `incident:read`) gets `Nil` and `load` is not
-      * called: step summaries can name resources outside its reach. Everyone
-      * else (unrestricted users, full-access keys, user auth off) gets
-      * `load()` unchanged. */
-    def incidentsFor(identity: ChatIdentity, load: () => List[Incident]): List[Incident] =
+      * tools run as, so ambient context and tools follow one caller), with
+      * the incident filter read from the live stores
+      * ([[IncidentsAPIController.storeReaders]], read only for a limited
+      * key). */
+    def incidentsFor(identity: ChatIdentity, load: () => List[Incident]): List[Incident] = {
+        val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
+        incidentsFor(identity, load, readPipeline, readTap)
+    }
+
+    /** [[incidentsFor]] with the readers given. A caller
+      * `ChatCaller.mayReadIncidents` refuses (a restricted session, or a key
+      * without unscoped `incident:read`) gets `Nil` and `load` is not called:
+      * step summaries can name resources outside its reach. A key holding
+      * `incident:read` that is limited by a `catalog=` / `owner=` scope
+      * ([[ai.datris.auth.CallerVisibility.limited]];
+      * plans/stories/scoped-key-read-routes.md, Part B) gets exactly what
+      * `GET /incidents` shows it ([[IncidentsAPIController.visibleIncidents]]).
+      * Everyone else (unrestricted users, full-access and unlimited keys,
+      * user auth off) gets `load()` itself, neither reader called. */
+    def incidentsFor(
+        identity: ChatIdentity,
+        load: () => List[Incident],
+        readPipeline: String => ai.datris.model.PipelineConfig,
+        readTap: String => ai.datris.model.TapConfig
+    ): List[Incident] =
         if (!ChatCaller.mayReadIncidents(identity)) Nil
-        else load()
+        else
+            identity.key.filter(ai.datris.auth.CallerVisibility.limited) match {
+                // A store that cannot be read gives no incidents (fail closed), as openIncidents does.
+                case Some(k) =>
+                    try IncidentsAPIController.visibleIncidentsFor(k, load(), readPipeline, readTap)
+                    catch { case _: Exception => Nil }
+                case None => load()
+            }
 
     /** The leading context message `runChat` sends for a dashboard snapshot
       * `ctx`: the snapshot plus the open incidents `incidentsFor` allows

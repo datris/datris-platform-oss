@@ -453,31 +453,39 @@ object QueryAPIController {
         }
 
     /** Pipeline-bound queries (objectstore, snowflake, sqlserver,
-      * databricks) for a restricted user's session: the named pipeline must
-      * be in its catalog grants, else the same 404 as a missing pipeline.
-      * None for everyone else (and when allowed). Checked first, so a hidden
-      * pipeline never reveals the rules that follow for an allowed one: a
-      * caller `sql` is refused ([[restrictedSqlRefusal]], the warehouse
-      * routes then run only their server-built preview of the pipeline's
-      * table) and the tap stamp columns are dropped from the result
-      * ([[restrictedRows]], [[restrictedObjectStoreResult]]). */
+      * databricks) for a limited caller ([[ai.datris.auth.CapabilityCheck.isLimited]];
+      * plans/stories/scoped-key-read-routes.md, Part B): the named pipeline
+      * must be one it may read ([[PipelineAPIController.mayRead]] on the
+      * stored pipeline's catalog and owner). A restricted user's session gets
+      * the same 404 as a missing pipeline; a limited API key gets the
+      * capability-denied 403 on `pipeline:read` (shared wording), and a key
+      * naming a pipeline that is not stored gets the route's own answer.
+      * None for everyone else (nothing read) and when allowed. Checked first,
+      * so a hidden pipeline never reveals the rules that follow for an
+      * allowed one: a caller `sql` is refused ([[restrictedSqlRefusal]], the
+      * warehouse routes then run only their server-built preview of the
+      * pipeline's table) and the tap stamp columns are dropped from the
+      * result ([[restrictedRows]], [[restrictedObjectStoreResult]]). */
     private[api] def restrictedPipelineRefusal(
         request: jakarta.servlet.http.HttpServletRequest,
         pipelineName: String
     ): Option[ResponseEntity[String]] =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) None
+        restrictedPipelineRefusal(request, pipelineName, n => ai.datris.util.PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n))
+
+    /** [[restrictedPipelineRefusal]] with the pipeline read given (called
+      * only for a limited caller). */
+    private[api] def restrictedPipelineRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        pipelineName: String,
+        read: String => PipelineConfig
+    ): Option[ResponseEntity[String]] =
+        if (!ai.datris.auth.CapabilityCheck.isLimited(request)) None
         else {
-            val config = ai.datris.util.PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
-            if (
-                config == null ||
-                !ai.datris.auth.CapabilityCheck.grants(
-                    request,
-                    "pipeline",
-                    "read",
-                    ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
-                )
-            ) Some(PipelineAPIController.pipelineNotFound(pipelineName))
-            else None
+            val config = read(pipelineName)
+            if (ai.datris.auth.CapabilityCheck.isRestrictedSession(request))
+                if (PipelineAPIController.mayRead(request, config)) None else Some(PipelineAPIController.pipelineNotFound(pipelineName))
+            else if (config == null) None
+            else PipelineAPIController.keyRefusal(request, "pipeline", "read", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
         }
 
     /** Object-store preview for a restricted user's session: 400
@@ -516,25 +524,35 @@ object QueryAPIController {
         if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || sql.forall(_.trim.isEmpty)) None
         else Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](jsonError(RestrictedSqlRefusal)))
 
-    /** Query result rows for a restricted session: the tap stamp columns
-      * dropped from every row, whatever the tap
-      * ([[ai.datris.auth.HiddenTapScrub.dropTapStampColumns]]). `rows`
-      * itself for everyone else. */
+    /** Whether a pipeline-bound query result loses its tap stamp columns:
+      * the caller is limited for taps
+      * ([[ai.datris.auth.CallerVisibility.limitedTaps]]: a restricted
+      * session, or an API key that does not read every tap). A key limited
+      * for pipelines only reads every tap, so its rows keep the columns
+      * (lead ruling 7, plans/stories/scoped-key-read-routes.md, Part B). */
+    private def dropsTapStamps(request: jakarta.servlet.http.HttpServletRequest): Boolean =
+        ai.datris.auth.CapabilityCheck.isLimitedFor(request, "tap")
+
+    /** Query result rows for a caller limited for taps ([[dropsTapStamps]]):
+      * the tap stamp columns dropped from every row, whatever the tap
+      * ([[ai.datris.auth.HiddenTapScrub.dropTapStampColumns]]); the row count
+      * is unchanged. `rows` itself for everyone else. */
     private[api] def restrictedRows(
         request: jakarta.servlet.http.HttpServletRequest,
         rows: java.util.List[java.util.Map[String, Any]]
     ): java.util.List[java.util.Map[String, Any]] =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) rows
+        if (!dropsTapStamps(request)) rows
         else ai.datris.auth.HiddenTapScrub.dropTapStampColumns(rows)
 
-    /** An object-store preview for a restricted session: the tap stamp
-      * columns dropped from both `columns` and `rows` (path, format and
-      * snapshot kept). `result` itself for everyone else. */
+    /** An object-store preview for a caller limited for taps
+      * ([[dropsTapStamps]]): the tap stamp columns dropped from both
+      * `columns` and `rows` (path, format and snapshot kept). `result`
+      * itself for everyone else. */
     private[api] def restrictedObjectStoreResult(
         request: jakarta.servlet.http.HttpServletRequest,
         result: ObjectStoreQueryUtil.QueryResult
     ): ObjectStoreQueryUtil.QueryResult =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || result == null) result
+        if (!dropsTapStamps(request) || result == null) result
         else
             result.copy(
                 columns = ai.datris.auth.HiddenTapScrub.dropTapStampNames(result.columns),

@@ -47,31 +47,35 @@ object PipelineStatusAPIController {
         if (publishertoken != null) new ScratchResultException(404, "No pipeline run found for publishertoken '" + publishertoken + "'")
         else new ScratchResultException(404, "No pipeline run found for pipelinetoken '" + pipelinetoken + "'")
 
-    /** GET /pipeline/result, restricted user's session: true when the
+    /** GET /pipeline/result, limited caller ([[ai.datris.auth.CapabilityCheck.isLimited]]:
+      * a restricted user's session, or an API key limited by a `catalog=` /
+      * `owner=` scope, plans/stories/scoped-key-read-routes.md): true when the
       * scratch result of a job filed under `pipeline` must read as an unknown
-      * token, i.e. the name's records are not shown to the session under
+      * token, i.e. the name's records are not shown to the caller under
       * [[PipelineAliases.recordShown]] (its owner missing or outside the
-      * grants, or a reused name with a claimant outside them). Always false
-      * for everyone else. */
+      * grants or key scope, or a reused name with a claimant outside them).
+      * Always false for everyone else. */
     def resultHidden(
         request: jakarta.servlet.http.HttpServletRequest,
         pipeline: String,
         configs: Seq[ai.datris.model.PipelineConfig]
     ): Boolean =
-        ai.datris.auth.CapabilityCheck.isRestrictedSession(request) &&
+        ai.datris.auth.CapabilityCheck.isLimited(request) &&
             !PipelineAliases.recordShown(
                 pipeline,
                 Option(configs).getOrElse(Nil).filter(_ != null),
-                c => !PipelineAPIController.hiddenConfig(request, c, "read")
+                c => PipelineAPIController.mayRead(request, c)
             )
 
-    /** GET /pipeline/status for a restricted user's session: summary rows of
-      * pipelines outside the grants are dropped; a token query that touches
-      * any hidden pipeline is 404 (as if the token were unknown); tap names
-      * the session cannot see are scrubbed from what remains (see
-      * [[restrictedViewWith]]). Everyone else: `data` unchanged. */
+    /** GET /pipeline/status for a limited caller (a restricted user's
+      * session, or a catalog- / owner-scoped API key): summary rows of
+      * pipelines it may not read are dropped; a token query that touches any
+      * hidden pipeline is 404 (as if the token were unknown, for keys too:
+      * D2); tap names the caller cannot see are scrubbed from what remains
+      * (see [[restrictedViewWith]]). Everyone else: `data` unchanged, nothing
+      * read. */
     def restrictedView(request: jakarta.servlet.http.HttpServletRequest, data: AnyRef): Either[ResponseEntity[String], AnyRef] =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) Right(data)
+        if (!ai.datris.auth.CapabilityCheck.isLimited(request)) Right(data)
         else {
             val env = DatrisEnvironment.current
             restrictedViewWith(
@@ -99,7 +103,7 @@ object PipelineStatusAPIController {
         run: String => Option[ai.datris.model.RunLineage] = _ => None
     ): Either[ResponseEntity[String], AnyRef] = {
         import ai.datris.auth.HiddenTapScrub
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) return Right(data)
+        if (!ai.datris.auth.CapabilityCheck.isLimited(request)) return Right(data)
         // Run records keep the name they were written under: a visible
         // pipeline's previous names count for it, and a name reused after a
         // rename only when every pipeline it may belong to is visible
@@ -224,8 +228,8 @@ object PipelineStatusAPIController {
         }
     }
 
-    /** GET /pipeline/result for a restricted user's session: rows stamped
-      * with a tap the session cannot read (or one no longer stored) lose
+    /** GET /pipeline/result for a limited caller (restricted session or
+      * scoped key): rows stamped with a tap the caller cannot read (or one no longer stored) lose
       * their tap stamp columns, as do all rows when `jobFilename` (the job's
       * own filename) is the `tap-<name>.csv|json` feed of such a tap.
       * Rows of a `provenance.fields` subset are tied to their tap as in
@@ -246,7 +250,7 @@ object PipelineStatusAPIController {
         run: String => Option[ai.datris.model.RunLineage] = _ => None,
         jobDescriptions: () => Seq[String] = () => Nil
     ): ScratchReader.ScratchResultPage =
-        if (page == null || !ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) page
+        if (page == null || !ai.datris.auth.CapabilityCheck.isLimited(request)) page
         else {
             import ai.datris.auth.HiddenTapScrub
             val memo = scala.collection.mutable.Map[String, Boolean]()
@@ -354,11 +358,13 @@ class PipelineStatusAPIController {
             val offsetOpt = Option(offset).map(_.trim).filter(_.nonEmpty).map(_.toLong)
             val limitOpt = Option(limit).map(_.trim).filter(_.nonEmpty).map(_.toInt)
             val job = ScratchReader.resolve(pipelinetoken, publishertoken)
-            // Restricted users: a job of a pipeline outside the grants reads
-            // exactly as an unknown token. The job's name is judged by the
-            // previous-name rule (PipelineAliases.recordShown).
+            // Limited callers (restricted users, catalog- or owner-scoped
+            // keys): a job of a pipeline they may not read reads exactly as
+            // an unknown token. The job's name is judged by the previous-name
+            // rule (PipelineAliases.recordShown). The configs are read only
+            // for them (the same decision resultHidden makes).
             if (
-                ai.datris.auth.CapabilityCheck.isRestrictedSession(request) &&
+                ai.datris.auth.CapabilityCheck.isLimited(request) &&
                 PipelineStatusAPIController.resultHidden(
                     request,
                     job.pipeline,
