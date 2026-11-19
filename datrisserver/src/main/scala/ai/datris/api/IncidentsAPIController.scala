@@ -9,8 +9,8 @@ import ai.datris.audit.AuditLog
 import ai.datris.config.RequiresRole
 import ai.datris.auth.{CallerVisibility, CapabilityCheck, HiddenTapScrub}
 import ai.datris.incident.{Incident, IncidentIO, IncidentRunner}
-import ai.datris.model.{DatrisEnvironment, PipelineConfig, ResolvedKey, TapConfig}
-import ai.datris.util.{PipelineConfigIO, TapConfigIO}
+import ai.datris.model.{DatrisEnvironment, PipelineConfig, ResolvedKey, RunLineage, TapConfig}
+import ai.datris.util.{PipelineConfigIO, RunLineageIO, TapConfigIO}
 import ai.datris.policy.PolicyActor
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject}
@@ -56,7 +56,8 @@ class IncidentsAPIController {
                     request,
                     IncidentIO.list(st, Option(limit).map(_.intValue()).getOrElse(50)),
                     readPipeline,
-                    readTap
+                    readTap,
+                    IncidentsAPIController.storeRuns()
                 ))
             }
             out.add("incidents", arr)
@@ -73,7 +74,7 @@ class IncidentsAPIController {
         try {
             if (!enabled) return disabled()
             val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
-            IncidentsAPIController.getResponse(request, id, IncidentIO.get(id), readPipeline, readTap)
+            IncidentsAPIController.getResponse(request, id, IncidentIO.get(id), readPipeline, readTap, IncidentsAPIController.storeRuns())
         } catch {
             case e: Exception =>
                 logger.error("Error reading incident: " + Throwables.getStackTraceAsString(e))
@@ -89,7 +90,7 @@ class IncidentsAPIController {
         try {
             if (!enabled) return disabled()
             val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
-            IncidentsAPIController.evidenceResponse(request, id, IncidentIO.get(id), readPipeline, readTap)
+            IncidentsAPIController.evidenceResponse(request, id, IncidentIO.get(id), readPipeline, readTap, IncidentsAPIController.storeRuns())
         } catch {
             case e: Exception =>
                 logger.error("Error reading incident evidence: " + Throwables.getStackTraceAsString(e))
@@ -116,7 +117,8 @@ class IncidentsAPIController {
             IncidentIO.transition(id, Incident.OpenStates, Incident.Abandoned, "outcome" -> ("abandoned by " + by))
             IncidentIO.appendStep(id, ai.datris.incident.IncidentStep(java.time.Instant.now(), "close", "abandoned by " + by))
             AuditLog.record(request, "incident", "abandon", "incident", id)
-            val updated = IncidentsAPIController.shownIncident(request, IncidentIO.get(id).getOrElse(incident), readPipeline, readTap)
+            val updated =
+                IncidentsAPIController.shownIncident(request, IncidentIO.get(id).getOrElse(incident), readPipeline, readTap, IncidentsAPIController.storeRuns())
             new ResponseEntity[String](gson.toJson(updated.toPublicJson), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -143,7 +145,13 @@ class IncidentsAPIController {
                 case Left(msg) => ResponseEntity.status(HttpStatus.CONFLICT).body[String](errorJson(msg))
                 case Right(_) =>
                     AuditLog.record(request, "incident", "proceed", "incident", id)
-                    val updated = IncidentsAPIController.shownIncident(request, IncidentIO.get(id).getOrElse(incident), readPipeline, readTap)
+                    val updated = IncidentsAPIController.shownIncident(
+                        request,
+                        IncidentIO.get(id).getOrElse(incident),
+                        readPipeline,
+                        readTap,
+                        IncidentsAPIController.storeRuns()
+                    )
                     new ResponseEntity[String](gson.toJson(updated.toPublicJson), HttpStatus.OK)
             }
         } catch {
@@ -183,6 +191,19 @@ object IncidentsAPIController {
         (n => pipelines.getOrElse(n, null), n => taps.getOrElse(n, null))
     }
 
+    /** No run record for any id: profiles whose run cannot be established
+      * are judged hidden (fail closed). The default where no run reader is
+      * given. */
+    val NoRuns: String => Option[RunLineage] = _ => None
+
+    /** The live run-lineage reader for [[shownIncident]], memoised for one
+      * request; called only for a limited caller's visible incident whose
+      * evidence holds a profile of a recorded run. A failed read is None. */
+    def storeRuns(): String => Option[RunLineage] = memo(id =>
+        try RunLineageIO.read(id)
+        catch { case _: Exception => None }
+    )
+
     private def limitedKey(request: HttpServletRequest): Option[ResolvedKey] =
         CapabilityCheck.resolvedKey(request).filter(CallerVisibility.limited)
 
@@ -212,11 +233,12 @@ object IncidentsAPIController {
         request: HttpServletRequest,
         incidents: List[Incident],
         readPipeline: String => PipelineConfig,
-        readTap: String => TapConfig
+        readTap: String => TapConfig,
+        run: String => Option[RunLineage] = NoRuns
     ): List[Incident] =
         limitedKey(request) match {
             case None => incidents
-            case Some(rk) => visibleIncidentsFor(rk, incidents, readPipeline, readTap)
+            case Some(rk) => visibleIncidentsFor(rk, incidents, readPipeline, readTap, run)
         }
 
     /** [[visibleIncidents]] for a limited identity `rk` (the Ops chat block,
@@ -225,13 +247,14 @@ object IncidentsAPIController {
         rk: ResolvedKey,
         incidents: List[Incident],
         readPipeline: String => PipelineConfig,
-        readTap: String => TapConfig
+        readTap: String => TapConfig,
+        run: String => Option[RunLineage] = NoRuns
     ): List[Incident] =
         if (incidents == null) incidents
         else {
             val rp = memo(readPipeline)
             val rt = memo(readTap)
-            incidents.filter(i => resourceReadable(rk, i, rp, rt)).map(i => shownFor(rk, i, rp, rt))
+            incidents.filter(i => resourceReadable(rk, i, rp, rt)).map(i => shownFor(rk, i, rp, rt, run))
         }
 
     /** GET /incidents/{id}, /{id}/evidence, POST /{id}/proceed and
@@ -262,11 +285,12 @@ object IncidentsAPIController {
         request: HttpServletRequest,
         i: Incident,
         readPipeline: String => PipelineConfig,
-        readTap: String => TapConfig
+        readTap: String => TapConfig,
+        run: String => Option[RunLineage] = NoRuns
     ): Incident =
         limitedKey(request) match {
             case None => i
-            case Some(rk) => shownFor(rk, i, readPipeline, readTap)
+            case Some(rk) => shownFor(rk, i, readPipeline, readTap, run)
         }
 
     /** The structured evidence of a visible incident as a limited identity
@@ -279,13 +303,17 @@ object IncidentsAPIController {
       * `ucTables` and `consumersFromContracts` cannot be tied to a pipeline,
       * so a non-empty list becomes one `[hidden]` entry when any downstream
       * pipeline is hidden; `agentsThatQueriedLast7d` (other callers' labels)
-      * and `secretName` are removed; `lastDownstreamRunAt` stays. For a tap
-      * incident whose stored target pipeline it may not read (or that is no
-      * longer stored), the `baseline`, `candidate` and `real` profiles and
-      * the `diff` and `checks` computed from them are removed (`verdict`
-      * stays). A copy; the stored incident is never altered. `i` itself
+      * and `secretName` are removed, and `lastDownstreamRunAt` when any
+      * downstream pipeline is hidden. Row profiles are judged on the run each
+      * describes (see the body); `verdict` stays. A copy; the stored incident is never altered. `i` itself
       * when nothing changes. Free text stays as it is. */
-    private def shownFor(rk: ResolvedKey, i: Incident, readPipeline: String => PipelineConfig, readTap: String => TapConfig): Incident =
+    private def shownFor(
+        rk: ResolvedKey,
+        i: Incident,
+        readPipeline: String => PipelineConfig,
+        readTap: String => TapConfig,
+        run: String => Option[RunLineage]
+    ): Incident =
         if (i == null || i.evidence.isEmpty || i.evidence.get == null) i
         else {
             val e = i.evidence.get
@@ -338,25 +366,71 @@ object IncidentsAPIController {
                 Seq("agentsThatQueriedLast7d", "secretName").foreach { k =>
                     if (blast.has(k)) { blast.remove(k); changed = true }
                 }
+                // when a downstream pipeline is hidden, its last run time may be what this is
+                if (anyHidden && blast.has("lastDownstreamRunAt")) { blast.remove("lastDownstreamRunAt"); changed = true }
             }
-            if (i.resourceType == "tap" && i.resourceName != null) {
-                val target = Option(readTap(i.resourceName)).flatMap(t => Option(t.targetPipeline)).map(_.trim).filter(_.nonEmpty)
-                if (target.exists(n => !pipelineReadable(rk, readPipeline(n))))
-                    // the target's row profiles and everything computed from them: the
-                    // diff (column names, null-rate and quantile shifts) and the threshold
-                    // checks (record delta, removed and retyped column counts, null-rate
-                    // increase, DQ pass rate of its landed rows)
-                    Seq("baseline", "candidate", "real", "diff", "checks").foreach { k =>
-                        if (copy.has(k)) { copy.remove(k); changed = true }
+            // Row profiles. Each is judged on the run it describes (its `runId`):
+            // a tap's own last run (`tap:<name>@<time>`) describes that tap; any
+            // other run id is resolved through `run` to its recorded pipeline and
+            // feeding tap. On a tap incident a profile whose pipeline the caller
+            // may not read, or whose run cannot be established (no run id, no
+            // record), is removed, and with it the diff and checks computed from
+            // the profiles (column names, record delta, removed and retyped column
+            // counts, null-rate increase, DQ pass rate of the landed rows); the
+            // tap may have been retargeted since, so its current target is not
+            // what decides. On any incident a kept profile loses the tap identity
+            // fields ([[HiddenTapScrub.RunProfileTapFields]]) unless its feeding
+            // tap is established and readable.
+            val tapOwn = "tap:"
+            def runIdOf(o: JsonObject): Option[String] =
+                if (o.has("runId") && o.get("runId").isJsonPrimitive) Option(o.get("runId").getAsString).filter(_.nonEmpty) else None
+            def tapReadable(name: String): Boolean = {
+                val t = readTap(name)
+                t != null && CallerVisibility.mayReadStored(Some(rk), "tap", t.catalog, t.createdByKeyLabel)
+            }
+            var profileRemoved = false
+            Seq("baseline", "candidate", "real").foreach { k =>
+                if (copy.has(k) && copy.get(k).isJsonObject) {
+                    val prof = copy.getAsJsonObject(k)
+                    val id = runIdOf(prof)
+                    val ownTapRun = id.exists(_.startsWith(tapOwn))
+                    val record = if (ownTapRun) None else id.flatMap(x => Option(run(x)).flatten)
+                    val describesReadable =
+                        ownTapRun || record.exists(rl => rl.pipeline != null && pipelineReadable(rk, readPipeline(rl.pipeline)))
+                    if (i.resourceType == "tap" && !describesReadable) {
+                        copy.remove(k); changed = true; profileRemoved = true
+                    } else {
+                        val feedingTapReadable =
+                            if (ownTapRun) tapReadable(id.get.stripPrefix(tapOwn).takeWhile(_ != '@'))
+                            else
+                                record.exists { rl =>
+                                    val in = rl.input
+                                    in == null || in.kind == "upload" || in.tapName == null || in.tapName.isEmpty || tapReadable(in.tapName)
+                                }
+                        if (!feedingTapReadable)
+                            HiddenTapScrub.RunProfileTapFields.foreach { f =>
+                                if (prof.has(f)) { prof.remove(f); changed = true }
+                            }
                     }
+                }
             }
+            if (profileRemoved)
+                Seq("diff", "checks").foreach { k =>
+                    if (copy.has(k)) { copy.remove(k); changed = true }
+                }
             if (changed) i.copy(evidence = Some(copy)) else i
         }
 
     /** GET /incidents: the `incidents` array the caller sees ([[visibleIncidents]]). */
-    def listedJson(request: HttpServletRequest, incidents: List[Incident], readPipeline: String => PipelineConfig, readTap: String => TapConfig): JsonArray = {
+    def listedJson(
+        request: HttpServletRequest,
+        incidents: List[Incident],
+        readPipeline: String => PipelineConfig,
+        readTap: String => TapConfig,
+        run: String => Option[RunLineage] = NoRuns
+    ): JsonArray = {
         val arr = new JsonArray()
-        visibleIncidents(request, incidents, readPipeline, readTap).foreach(i => arr.add(i.toPublicJson))
+        visibleIncidents(request, incidents, readPipeline, readTap, run).foreach(i => arr.add(i.toPublicJson))
         arr
     }
 
@@ -368,10 +442,11 @@ object IncidentsAPIController {
         id: String,
         stored: Option[Incident],
         readPipeline: String => PipelineConfig,
-        readTap: String => TapConfig
+        readTap: String => TapConfig,
+        run: String => Option[RunLineage] = NoRuns
     ): ResponseEntity[String] =
         incidentRefusal(request, id, stored, readPipeline, readTap).getOrElse {
-            stored.map(i => shownIncident(request, i, readPipeline, readTap)) match {
+            stored.map(i => shownIncident(request, i, readPipeline, readTap, run)) match {
                 case Some(i) => new ResponseEntity[String](new Gson().toJson(i.toPublicJson), HttpStatus.OK)
                 case None => ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](errorJson("no incident " + id))
             }
@@ -384,10 +459,11 @@ object IncidentsAPIController {
         id: String,
         stored: Option[Incident],
         readPipeline: String => PipelineConfig,
-        readTap: String => TapConfig
+        readTap: String => TapConfig,
+        run: String => Option[RunLineage] = NoRuns
     ): ResponseEntity[String] =
         incidentRefusal(request, id, stored, readPipeline, readTap).getOrElse {
-            stored.map(i => shownIncident(request, i, readPipeline, readTap)) match {
+            stored.map(i => shownIncident(request, i, readPipeline, readTap, run)) match {
                 case Some(i) =>
                     i.evidence match {
                         case Some(e) => new ResponseEntity[String](new Gson().toJson(e), HttpStatus.OK)

@@ -37,6 +37,12 @@ object HiddenTapScrub {
     /** Run-input fields that identify the feeding tap. */
     val TapIdentityFields: Seq[String] = Seq("tapName", "tapRunTime", "scriptSha", "source")
 
+    /** The fields of an incident's row profile (`RunProfile`) that identify
+      * the feeding tap: its script commit (`scriptSha`, as in
+      * [[TapIdentityFields]]) and its config version. A profile's `source`
+      * is the profiling method, not the tap. */
+    val RunProfileTapFields: Seq[String] = TapIdentityFields.filter(_ == "scriptSha") :+ "tapVersion"
+
     /** True when `tapName` names a tap a limited caller
       * ([[CapabilityCheck.isLimited]]) cannot read: missing, or outside its
       * grants or key scope, judged on the stored tap's catalog and owner.

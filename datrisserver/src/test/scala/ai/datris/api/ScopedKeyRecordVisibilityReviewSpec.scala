@@ -574,6 +574,20 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
         extra(e)
         e
     }
+
+    /** Sets `runId` on each row profile of `e`. */
+    private def withRunIds(e: JsonObject, id: String): Unit =
+        Seq("baseline", "candidate", "real").foreach(k => if (e.has(k)) e.getAsJsonObject(k).addProperty("runId", id))
+
+    /** Run records: own_p's runs fed by t_own, payroll's by t_hr, orders' by an upload. */
+    private val ownRuns: String => Option[RunLineage] = {
+        case "run-own" => Some(RunLineage("run-own", "own_p", input = RunLineageInput("tap", tapName = "t_own")))
+        case "run-payroll" => Some(RunLineage("run-payroll", "payroll", input = RunLineageInput("tap", tapName = "t_hr")))
+        case "run-orders-hr" => Some(RunLineage("run-orders-hr", "orders", input = RunLineageInput("tap", tapName = "t_hr")))
+        case "run-orders-upload" => Some(RunLineage("run-orders-upload", "orders", input = RunLineageInput("upload", filename = "o.csv")))
+        case _ => None
+    }
+
     private def kc(p: PipelineConfig): (String, String) = {
         val d = LineageService.datasets(p).head
         (d.kind, d.name.stripPrefix(d.kind + ":"))
@@ -591,7 +605,8 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
         assert(dsets == List(kc(ownP)._2, HiddenTapScrub.Placeholder), dsets)
         assert(b.getAsJsonArray("ucTables").asScala.map(_.getAsString).toList == List(HiddenTapScrub.Placeholder))
         assert(b.getAsJsonArray("consumersFromContracts").asScala.map(_.getAsString).toList == List(HiddenTapScrub.Placeholder))
-        assert(!b.has("agentsThatQueriedLast7d") && !b.has("secretName") && b.get("lastDownstreamRunAt").getAsString == "2026-11-18T09:00:00Z", b)
+        // review round 2, lead ruling on finding 4: lastDownstreamRunAt goes when a downstream pipeline is hidden
+        assert(!b.has("agentsThatQueriedLast7d") && !b.has("secretName") && !b.has("lastDownstreamRunAt"), b)
         // the incident's own pipeline is visible: its profiles stay
         assert(shown.evidence.get.has("baseline") && shown.evidence.get.has("real"))
         Seq("payroll", "payroll_secret_tbl", "main.hr.payroll", "other-agent", "hr_db_secret", "finance-dashboard").foreach(x =>
@@ -656,9 +671,15 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             n => if (n == "t_gone_target") gone else readTap(n)
         )
         Seq("baseline", "candidate", "real", "diff", "checks").foreach(k => assert(!goneShown.evidence.get.has(k), k))
-        // its own tap's target is readable: everything stays
-        val ownTap =
-            IncidentsAPIController.shownIncident(r, incident("inc-6", "tap", "t_own", evidenceWith(Nil, Nil, withDiffAndChecks)), readPipeline, readTap)
+        // its own tap's target is readable: everything stays (review round 2: the profiles name the runs they
+        // describe, and those runs are of own_p, fed by t_own)
+        val ownTap = IncidentsAPIController.shownIncident(
+            r,
+            incident("inc-6", "tap", "t_own", evidenceWith(Nil, Nil, e => { withDiffAndChecks(e); withRunIds(e, "run-own") })),
+            readPipeline,
+            readTap,
+            ownRuns
+        )
         Seq("baseline", "candidate", "real", "diff", "checks").foreach(k => assert(ownTap.evidence.get.has(k), k))
         // a pipeline incident on a visible pipeline keeps them too
         val ownPipe =
@@ -748,6 +769,267 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             val data = statusResponse("payroll", "tap-t_hr.csv")
             assert(PipelineStatusAPIController.restrictedViewWith(r, data, pipelines, taps).toOption.get eq data, "allow=" + allow)
         }
+    }
+
+    // ================================================================== review round 2
+
+    test("round 2, finding 4: a profile keeps scriptSha and tapVersion only when its feeding tap is established and readable") {
+        def prof(e: JsonObject, id: String): Unit =
+            Seq("baseline", "candidate", "real").foreach { k =>
+                val p = e.getAsJsonObject(k); p.addProperty("runId", id); p.addProperty("scriptSha", "hr-sha"); p.addProperty("tapVersion", 7)
+            }
+        // key reading every pipeline, only Sales taps: orders is fed by the HR tap t_hr
+        val r = req(key("k", "pipeline:read", "tap:read:catalog=Sales", "incident:read"))
+        val hrFed = IncidentsAPIController.shownIncident(
+            r,
+            incident("inc-1", "pipeline", "orders", evidenceWith(Nil, Nil, prof(_, "run-orders-hr"))),
+            readPipeline,
+            readTap,
+            ownRuns
+        )
+        Seq("baseline", "candidate", "real").foreach { k =>
+            val p = hrFed.evidence.get.getAsJsonObject(k)
+            HiddenTapScrub.RunProfileTapFields.foreach(f => assert(!p.has(f), k + "." + f))
+            assert(p.has("topK") && p.get("runId").getAsString == "run-orders-hr", "the profile itself stays on a visible pipeline incident")
+        }
+        assert(!gson.toJson(hrFed.toPublicJson).contains("hr-sha"))
+        // an upload run has no feeding tap: kept
+        val upload = IncidentsAPIController.shownIncident(
+            r,
+            incident("inc-1", "pipeline", "orders", evidenceWith(Nil, Nil, prof(_, "run-orders-upload"))),
+            readPipeline,
+            readTap,
+            ownRuns
+        )
+        assert(upload.evidence.get.getAsJsonObject("baseline").has("scriptSha"))
+        // a run that cannot be established: removed (fail closed)
+        val unknown = IncidentsAPIController.shownIncident(
+            r,
+            incident("inc-1", "pipeline", "orders", evidenceWith(Nil, Nil, prof(_, "run-missing"))),
+            readPipeline,
+            readTap,
+            ownRuns
+        )
+        assert(!unknown.evidence.get.getAsJsonObject("baseline").has("scriptSha"))
+        // the owner=self key's own pipeline fed by its own tap keeps them
+        val own = IncidentsAPIController.shownIncident(
+            req(ownKey("incident:read")),
+            incident("inc-1", "pipeline", "own_p", evidenceWith(Nil, Nil, prof(_, "run-own"))),
+            readPipeline,
+            readTap,
+            ownRuns
+        )
+        assert(own.evidence.get.getAsJsonObject("real").get("scriptSha").getAsString == "hr-sha")
+        // unchanged callers: as stored, no reader called
+        for ((name, rr) <- unchanged) {
+            val i = incident("inc-1", "pipeline", "orders", evidenceWith(Nil, Nil, prof(_, "run-orders-hr")))
+            assert(IncidentsAPIController.shownIncident(rr, i, failReadPipeline, failReadTap, _ => fail("run read")) eq i, name)
+        }
+    }
+
+    test("round 2, finding 4: lastDownstreamRunAt goes when a downstream pipeline is hidden and stays otherwise") {
+        val r = req(ownKey("incident:read"))
+        val hidden =
+            IncidentsAPIController.shownIncident(r, incident("inc-1", "pipeline", "own_p", evidenceWith(Seq("own_p", "payroll"), Nil)), readPipeline, readTap)
+        assert(!hidden.evidence.get.getAsJsonObject("blastRadius").has("lastDownstreamRunAt"))
+        val visible = IncidentsAPIController.shownIncident(r, incident("inc-1", "pipeline", "own_p", evidenceWith(Seq("own_p"), Nil)), readPipeline, readTap)
+        assert(visible.evidence.get.getAsJsonObject("blastRadius").get("lastDownstreamRunAt").getAsString == "2026-11-18T09:00:00Z")
+    }
+
+    test("round 2, finding 4 note: a tap incident's profiles are judged on the pipeline their run describes, not the tap's current target") {
+        val r = req(pipelineOnly("incident:read"))
+        // t_own targets own_p today, but the profiles describe payroll's runs (it was retargeted since): removed
+        val retargeted = IncidentsAPIController.shownIncident(
+            r,
+            incident("inc-6", "tap", "t_own", evidenceWith(Nil, Nil, e => withRunIds(e, "run-payroll"))),
+            readPipeline,
+            readTap,
+            ownRuns
+        )
+        Seq("baseline", "candidate", "real").foreach(k => assert(!retargeted.evidence.get.has(k), k))
+        // t_hr targets payroll today, but the profiles describe own_p's runs: kept
+        val fromOwn = IncidentsAPIController.shownIncident(
+            r,
+            incident("inc-5", "tap", "t_hr", evidenceWith(Nil, Nil, e => withRunIds(e, "run-own"))),
+            readPipeline,
+            readTap,
+            ownRuns
+        )
+        Seq("baseline", "candidate", "real").foreach(k => assert(fromOwn.evidence.get.has(k), k))
+        // the tap's own last run (`tap:<name>@<time>`) describes the tap: kept
+        val tapRun = IncidentsAPIController.shownIncident(
+            r,
+            incident("inc-5", "tap", "t_hr", evidenceWith(Nil, Nil, e => withRunIds(e, "tap:t_hr@2026-11-18T09:00:00Z"))),
+            readPipeline,
+            readTap,
+            ownRuns
+        )
+        assert(tapRun.evidence.get.has("real"))
+    }
+
+    private def pending(incidentId: Option[String]): ai.datris.policy.PendingAction = {
+        val now = Instant.parse("2026-11-18T10:00:00Z")
+        ai.datris.policy.PendingAction(
+            id = "pa_1",
+            action = "tap:run",
+            resourceType = Some("tap"),
+            resourceName = Some("t_sales"),
+            resourceVersion = None,
+            actor = ai.datris.audit.AuditActorInfo("api-key", "sales"),
+            reason = None,
+            agentSession = None,
+            incidentId = incidentId,
+            method = "POST",
+            path = "/api/v1/tap/run",
+            query = None,
+            contentType = None,
+            body = Some("{}"),
+            bodyHash = "h",
+            createdAt = now,
+            expiresAt = now.plusSeconds(3600),
+            state = "pending"
+        )
+    }
+
+    test("round 2, finding 1: an approval carries an incident's evidence only for a caller that may see the incident, scrubbed") {
+        val hrInc = incident("inc-9", "pipeline", "payroll", evidenceWith(Seq("payroll"), Seq(kc(payroll))))
+        val load: String => Option[Incident] = { case "inc-9" => Some(hrInc); case _ => None }
+        val withHr = pending(Some("inc-9"))
+        // the shape of an approval whose incident does not exist
+        val absent = ApprovalsAPIController.withIncidentEvidence(req(editor), pending(Some("inc-none")), load, failReadPipeline, failReadTap, _ => None)
+        assert(!absent.has("incidentEvidence"))
+        for (rk <- Seq(salesKey("approval:read"), key("k", "pipeline:read:catalog=Sales", "tap:run:catalog=Sales", "approval:read"), bob)) {
+            val got = ApprovalsAPIController.withIncidentEvidence(req(rk, uri = "/api/v1/approvals/pa_1"), withHr, load, readPipeline, readTap, ownRuns)
+            assert(!got.has("incidentEvidence"), rk.label + ": " + got)
+            assert(got.toString == absent.toString.replace("inc-none", "inc-9"), rk.label + ": same shape as an approval whose incident does not exist")
+        }
+        // a caller that may see it gets the scrubbed view
+        val ownInc = incident("inc-8", "pipeline", "own_p", evidenceWith(Seq("own_p", "payroll"), Seq(kc(ownP), kc(payroll))))
+        val ownGot = ApprovalsAPIController.withIncidentEvidence(
+            req(ownKey("approval:read")),
+            pending(Some("inc-8")),
+            { case "inc-8" => Some(ownInc); case _ => None },
+            readPipeline,
+            readTap,
+            ownRuns
+        )
+        assert(ownGot.has("incidentEvidence"))
+        val b = ownGot.getAsJsonObject("incidentEvidence").getAsJsonObject("blastRadius")
+        assert(!b.has("secretName") && !b.has("agentsThatQueriedLast7d") && !ownGot.toString.contains("payroll"), ownGot)
+        // unchanged callers: the stored evidence as before, no store reader but the incident load
+        for ((name, r) <- unchanged) {
+            var loads = 0
+            val got =
+                ApprovalsAPIController.withIncidentEvidence(r, withHr, id => { loads += 1; load(id) }, failReadPipeline, failReadTap, _ => fail("run read"))
+            assert(loads == 1 && got.get("incidentEvidence").toString == hrInc.evidence.get.toString, name)
+        }
+        // no incident on the approval: nothing loaded
+        assert(!ApprovalsAPIController.withIncidentEvidence(req(bob), pending(None), _ => fail("loaded"), failReadPipeline, failReadTap, _ => None).has(
+            "incidentEvidence"
+        ))
+        // wiring: list and get build approvals through the seam
+        val src = source("datrisserver/src/main/scala/ai/datris/api/ApprovalsAPIController.scala")
+        assert(methodBody(src, "def list(").contains("ApprovalsAPIController.withIncidentEvidence(request"))
+        assert(methodBody(src, "def get(").contains("ApprovalsAPIController.withIncidentEvidence(request"))
+    }
+
+    private def sharedFixture: (Seq[PipelineConfig], LineageService.Graph) = {
+        val ownHr = pg("own_hr", "HR", "own_hr_t", owner = "own")
+        val ownSales = pg("own_sales", "Sales", "shared_t", owner = "own")
+        val hrHidden = pg("hr_hidden", "HR", "shared_t")
+        val salesOrders = pg("sales_orders", "Sales", "shared2_t")
+        val hrShared2 = pg("hr_shared2", "HR", "shared2_t")
+        val ps = Seq(ownHr, ownSales, hrHidden, salesOrders, hrShared2)
+        val oldBoth = "dataset:postgres:datris.public.old_both"
+        val g = LineageService.build(
+            List(tap("t_hr_feed2", "HR", "hr_hidden", "hrsrc.api")),
+            ps.toList,
+            List(LineageService.ObservedDataset("own_sales", oldBoth), LineageService.ObservedDataset("hr_hidden", oldBoth)),
+            Map.empty
+        )
+        (ps, g)
+    }
+
+    test("round 2, finding 2: a key's kept shared dataset says nothing about a hidden writer (catalog edge, catalog, authority); no isolated catalog") {
+        val (ps, g) = sharedFixture
+        def dsOf(name: String) = LineageService.datasets(ps.find(_.name == name).get).head.id
+        val shared = dsOf("own_sales")
+        val shared2 = dsOf("sales_orders")
+        val oldBoth = "dataset:postgres:datris.public.old_both"
+        // (a) owner=self: own_hr keeps catalog:HR; the shared datasets are written in HR only by hidden pipelines
+        val own = LineageAPIController.visibleGraph(req(ownKey("metadata:read")), g)
+        assert(ids(own).contains(shared) && ids(own).contains(oldBoth), ids(own))
+        for (d <- Seq(shared, oldBoth)) {
+            assert(!own.edges.exists(e => e.from == d && e.to == "catalog:HR"), d + " " + own.edges)
+            assert(own.edges.exists(e => e.from == d && e.to == "catalog:Sales"), d)
+        }
+        // every dataset -> catalog:X edge left has a kept pipeline of X writing that dataset
+        def pinned(v: LineageService.Graph): Unit = {
+            val byId = v.nodes.map(n => n.id -> n).toMap
+            v.edges.filter(e => e.to.startsWith("catalog:")).foreach { e =>
+                val x = e.to.stripPrefix("catalog:")
+                assert(v.edges.exists(w => w.to == e.from && byId.get(w.from).exists(n => n.nodeType == "pipeline" && n.catalog.contains(x))), e)
+            }
+            v.nodes.filter(_.nodeType == "catalog").foreach(c => assert(v.edges.exists(e => e.from == c.id || e.to == c.id), "isolated " + c.id))
+        }
+        pinned(own)
+        // (b) catalog=Sales key: the shared dataset's catalog comes from its kept Sales writer and authority is omitted
+        val sales = LineageAPIController.visibleGraph(req(salesKey("metadata:read")), g)
+        pinned(sales)
+        val node = sales.nodes.find(_.id == shared2).get
+        assert(node.catalog.contains("Sales") && node.authority.isEmpty, node)
+        assert(!node.toJson.toString.contains("HR") && !node.toJson.toString.contains("undeclared"), node.toJson)
+        // a key whose catalog:HR is kept through HR taps only: no isolated catalog node is left
+        val taps = LineageAPIController.visibleGraph(req(salesPlusTaps("metadata:read")), g)
+        pinned(taps)
+        assert(!ids(taps).contains("catalog:HR"), ids(taps))
+        assert(ids(taps).contains("tap:t_hr_feed2"))
+        // restricted sessions keep exactly today's graph (catalog anchors, the node as built)
+        val sess = LineageAPIController.visibleGraph(req(bob), g)
+        val expected = LineageService.visibleTo(
+            g,
+            n =>
+                n.nodeType match {
+                    case "pipeline" | "tap" => n.catalog.contains("Sales")
+                    case "catalog" => n.name == "Sales"
+                    case _ => true
+                }
+        )
+        assert(sess == expected, sess)
+        // unchanged callers: the same instance
+        for ((name, r) <- unchanged) assert(LineageAPIController.visibleGraph(r, g) eq g, name)
+    }
+
+    test("round 2, finding 3: restrictedView's gate filters a scoped key through injected readers; unchanged callers get the same instance unread") {
+        val data = java.util.Arrays.asList(
+            PipelineStatusSummary("t", 0L, 0L, "orders", "tok-o", "proc", "s", "e", "1s", "success"),
+            PipelineStatusSummary("t", 0L, 0L, "payroll", "tok-p", "proc", "s", "e", "1s", "success")
+        )
+        for (rk <- Seq(salesKey("job:read"), ownKey("job:read"), bob)) {
+            var reads = 0
+            val got = PipelineStatusAPIController.restrictedViewFrom(
+                req(rk, uri = "/api/v1/pipeline/status"),
+                data,
+                () => { reads += 1; pipelines },
+                () => { reads += 1; taps },
+                _ => None
+            )
+            val names = got.toOption.get.asInstanceOf[java.util.List[PipelineStatusSummary]].asScala.map(_.pipeline).toSet
+            assert(!names.contains("payroll") && reads == 2, rk.label + " " + names)
+        }
+        for ((name, r) <- unchanged) {
+            assert(PipelineStatusAPIController.restrictedViewFrom(r, data, failPipelines, failTaps, _ => fail("run")).toOption.get eq data, name)
+        }
+        val status = source("datrisserver/src/main/scala/ai/datris/api/PipelineStatusAPIController.scala")
+        assert(methodBody(status, "def restrictedView(").contains("restrictedViewFrom("))
+        assert(methodBody(status, "def getPipelineStatus(").contains("PipelineStatusAPIController.restrictedView(request, data)"))
+        // lineage: the whole graph and the neighbourhood walk use the caller's graph
+        val lineage = source("datrisserver/src/main/scala/ai/datris/api/LineageAPIController.scala")
+        val whole = methodBody(lineage, "def wholeGraph(")
+        assert(whole.contains("LineageAPIController.callerGraph(request)") && !whole.contains("LineageService.graph()"), whole)
+        val nb = methodBody(lineage, "def neighborhood(")
+        assert(nb.contains("() => LineageAPIController.callerGraph(request)") && !nb.contains("LineageService.graph()"), nb)
+        assert(methodBody(lineage, "def callerGraph(").contains("callerGraphOf(request, LineageService.graph()"))
     }
 
     // ================================================================== helpers

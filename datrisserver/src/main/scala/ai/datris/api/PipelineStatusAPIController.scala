@@ -74,18 +74,29 @@ object PipelineStatusAPIController {
       * D2); tap names the caller cannot see are scrubbed from what remains
       * (see [[restrictedViewWith]]). Everyone else: `data` unchanged, nothing
       * read. */
-    def restrictedView(request: jakarta.servlet.http.HttpServletRequest, data: AnyRef): Either[ResponseEntity[String], AnyRef] =
+    def restrictedView(request: jakarta.servlet.http.HttpServletRequest, data: AnyRef): Either[ResponseEntity[String], AnyRef] = {
+        val env = DatrisEnvironment.current
+        restrictedViewFrom(
+            request,
+            data,
+            () => PipelineConfigIO.readAll(env.pipelineTableName),
+            () => TapConfigIO.readAll(env.tapTableName),
+            ai.datris.util.RunLineageIO.read
+        )
+    }
+
+    /** [[restrictedView]] with the stores given: for a limited caller
+      * [[restrictedViewWith]] on `pipelines()` and `taps()` (each read once);
+      * everyone else `Right(data)`, no reader called. */
+    def restrictedViewFrom(
+        request: jakarta.servlet.http.HttpServletRequest,
+        data: AnyRef,
+        pipelines: () => Seq[ai.datris.model.PipelineConfig],
+        taps: () => Seq[ai.datris.model.TapConfig],
+        run: String => Option[ai.datris.model.RunLineage]
+    ): Either[ResponseEntity[String], AnyRef] =
         if (!ai.datris.auth.CapabilityCheck.isLimited(request)) Right(data)
-        else {
-            val env = DatrisEnvironment.current
-            restrictedViewWith(
-                request,
-                data,
-                PipelineConfigIO.readAll(env.pipelineTableName),
-                TapConfigIO.readAll(env.tapTableName),
-                ai.datris.util.RunLineageIO.read
-            )
-        }
+        else restrictedViewWith(request, data, pipelines(), taps(), run)
 
     /** [[restrictedView]] on loaded configs. A visible pipeline's events can
       * name a tap the session cannot read: one that feeds it from another

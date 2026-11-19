@@ -495,7 +495,45 @@ object LineageService {
             g.edges.exists(e => (e.from == id && keptAnchors.contains(e.to)) || (e.to == id && keptAnchors.contains(e.from)))
         val nodes = g.nodes.filter(n => if (gated.contains(n.nodeType)) keptGated.contains(n.id) else linkedToKept(n.id))
         val ids = nodes.map(_.id).toSet
-        Graph(nodes, g.edges.filter(e => ids.contains(e.from) && ids.contains(e.to)))
+        val base = Graph(nodes, g.edges.filter(e => ids.contains(e.from) && ids.contains(e.to)))
+        if (anchors.contains("catalog")) base else withoutDroppedWriters(g, base)
+    }
+
+    /** For a graph anchored by pipelines and taps only (an API key's,
+      * [[visibleTo]]), what a kept shared dataset still says about the
+      * pipelines dropped from `kept`: a `dataset -> catalog:X` edge stays
+      * only when a kept pipeline of catalog X writes that dataset; a catalog
+      * node left with no edge goes; a kept dataset's `catalog` comes from a
+      * kept writer, and its `authority` (decided over every writer) is
+      * omitted when any writer was dropped. `kept` itself when nothing
+      * changes. Pure. */
+    private def withoutDroppedWriters(g: Graph, kept: Graph): Graph = {
+        val keptPipelineCatalog: Map[String, Option[String]] =
+            kept.nodes.filter(_.nodeType == "pipeline").map(n => n.id -> n.catalog.filter(_.nonEmpty)).toMap
+        val nodeType: Map[String, String] = kept.nodes.map(n => n.id -> n.nodeType).toMap
+        def writers(graph: Graph, dataset: String): List[String] =
+            graph.edges.filter(e => e.to == dataset && e.from.startsWith("pipeline:")).map(_.from).distinct
+        val catalogName: Map[String, String] = kept.nodes.filter(_.nodeType == "catalog").map(n => n.id -> n.name).toMap
+        val edges = kept.edges.filter { e =>
+            if (nodeType.get(e.from).contains("dataset") && nodeType.get(e.to).contains("catalog"))
+                writers(kept, e.from).exists(w => keptPipelineCatalog.get(w).flatten == catalogName.get(e.to))
+            else true
+        }
+        val linked = edges.flatMap(e => Seq(e.from, e.to)).toSet
+        val nodes = kept.nodes.filter(n => n.nodeType != "catalog" || linked.contains(n.id)).map { n =>
+            if (n.nodeType != "dataset") n
+            else {
+                val all = writers(g, n.id)
+                val keptWriters = all.filter(keptPipelineCatalog.contains)
+                val catalog =
+                    if (keptWriters.isEmpty || keptWriters.exists(w => keptPipelineCatalog(w) == n.catalog)) n.catalog
+                    else keptPipelineCatalog(keptWriters.head)
+                val authority = if (keptWriters.size < all.size) None else n.authority
+                if (catalog == n.catalog && authority == n.authority) n else n.copy(catalog = catalog, authority = authority)
+            }
+        }
+        if (edges.size == kept.edges.size && nodes.size == kept.nodes.size && nodes.zip(kept.nodes).forall { case (a, b) => a eq b }) kept
+        else Graph(nodes, edges)
     }
 
     /** The recorded-run filter of a caller-filtered [[neighborhood]]: a run
