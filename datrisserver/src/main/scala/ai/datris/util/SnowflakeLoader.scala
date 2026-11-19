@@ -192,14 +192,26 @@ class SnowflakeLoader(jobContext: JobContext) {
         } else destFields.toSeq
     }
 
+    /** Create the table when it is missing, then add any configured column
+      * it lacks. When every non-document field's type passes
+      * [[ColumnTypeText.safe]] the statements are those earlier versions ran,
+      * in the same order. Otherwise the existing columns are read first and
+      * the run fails before any statement when a stored type that is not safe
+      * would be needed ([[ColumnTypeText.loadProblem]]); else the table is not
+      * created again and only missing columns are added. */
     private def createTableIfUndefined(statement: Statement): Unit = {
-        val sql = SnowflakeLoader.createTableSql(db, config.destination.schemaProperties.fields.asScala.toList)
+        val fields = config.destination.schemaProperties.fields.asScala.toList
+        val unsafe = ColumnTypeText.unsafeFields(fields)
 
-        if (db.schema != null && db.schema.nonEmpty)
-            statement.execute("CREATE SCHEMA IF NOT EXISTS " + schemaRef())
+        if (unsafe.isEmpty) {
+            val sql = SnowflakeLoader.createTableSql(db, fields)
 
-        statusUtil.info("processing", "Snowflake create table statement: " + sql)
-        statement.execute(sql)
+            if (db.schema != null && db.schema.nonEmpty)
+                statement.execute("CREATE SCHEMA IF NOT EXISTS " + schemaRef())
+
+            statusUtil.info("processing", "Snowflake create table statement: " + sql)
+            statement.execute(sql)
+        }
 
         // Additive schema evolution: add any new columns the table doesn't have yet.
         // Match information_schema on the effective stored names (unquoted
@@ -217,7 +229,16 @@ class SnowflakeLoader(jobContext: JobContext) {
             rs.close()
         }
 
-        config.destination.schemaProperties.fields.forEach(field => {
+        if (unsafe.nonEmpty) {
+            ColumnTypeText.loadProblem(fields, existing.toSet).foreach(p => throw new DatrisException(p))
+            statusUtil.info(
+                "processing",
+                "The table already has column(s) " + unsafe.map(_.name).mkString(", ") +
+                    "; their stored type is not a supported type and was not used. Change it to a supported type and save the pipeline."
+            )
+        }
+
+        fields.foreach(field => {
             if (!existing.contains(field.name.toLowerCase)) {
                 val alter = SnowflakeLoader.addColumnSql(db, field)
                 statusUtil.info("processing", "Schema evolution: " + alter)
@@ -331,13 +352,15 @@ object SnowflakeLoader {
         merge.toString()
     }
 
-    /** Platform type -> Snowflake DDL type. Mirrors the inline mapping in
-     *  PostgresLoader.createTableIfUndefined; `_json` -> VARIANT is the analog of
-     *  Postgres' `_json` -> json. Unknown types pass through (e.g. decimal(p,s),
-     *  which Snowflake accepts as a NUMBER synonym). */
+    /** Platform type -> Snowflake DDL type. Mirrors [[PostgresSql.columnType]];
+     *  `_json` -> VARIANT is the analog of Postgres' `_json` -> json. Any other
+     *  type is passed as written only when it passes [[ColumnTypeText.safe]]
+     *  (e.g. decimal(p,s), which Snowflake accepts as a NUMBER synonym);
+     *  every other type text, null included, is a `DatrisException`. */
     private[util] def snowflakeType(field: SchemaField): String = {
         if (field.name.equalsIgnoreCase("_json")) "VARIANT"
         else if (field.name.equalsIgnoreCase("_xml")) "VARCHAR"
+        else if (!ColumnTypeText.safe(field.`type`)) throw new DatrisException(ColumnTypeText.problem(field, "destination").get)
         else field.`type`.toLowerCase match {
             case "string" => "VARCHAR"
             case "int" | "integer" | "tinyint" |

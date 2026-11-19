@@ -41,6 +41,11 @@ class DatabricksLoader(jobContext: JobContext) {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
         statusUtil.info("begin", "Loading the data into Databricks catalog: " + db.dbName + ", schema: " + db.schema + ", table: " + db.table)
 
+        // Every load CASTs each column to its type (COPY INTO, MERGE and
+        // INSERT OVERWRITE alike), so a stored type that is not a supported
+        // type fails the run here, before anything is staged or sent.
+        ColumnTypeText.loadProblem(config.destination.schemaProperties.fields.asScala.toList, Set.empty).foreach(p => throw new DatrisException(p))
+
         if (db.useTransaction)
             statusUtil.info(
                 "processing",
@@ -412,11 +417,14 @@ object DatabricksLoader {
     }
 
     /** Platform type -> Delta SQL DDL type. Mirrors SnowflakeLoader.snowflakeType;
-     *  `_json` -> VARIANT is the analog of Snowflake's VARIANT. Unknown types pass
-     *  through (e.g. decimal(p,s), which Delta accepts). */
+     *  `_json` -> VARIANT is the analog of Snowflake's VARIANT. Any other type
+     *  is passed as written only when it passes [[ColumnTypeText.safe]] (e.g.
+     *  decimal(p,s), which Delta accepts); every other type text, null
+     *  included, is a `DatrisException`. */
     private[util] def databricksType(field: SchemaField): String = {
         if (field.name.equalsIgnoreCase("_json")) "VARIANT"
         else if (field.name.equalsIgnoreCase("_xml")) "STRING"
+        else if (!ColumnTypeText.safe(field.`type`)) throw new DatrisException(ColumnTypeText.problem(field, "destination").get)
         else field.`type`.toLowerCase match {
             case "string" => "STRING"
             case "int" | "integer" | "tinyint" |

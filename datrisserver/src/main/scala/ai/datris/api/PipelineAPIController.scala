@@ -401,6 +401,14 @@ class PipelineAPIController {
             logger.warn("POST /pipeline " + preserved.name + " rejected: destination.database name")
             return Left(refused)
         }
+        // A new or changed source or destination field type must be exactly
+        // one of the documented forms (ColumnTypeText.safe), on every pipeline
+        // type, so an unstructured pipeline's schema is checked too. Every
+        // caller; a stored field with the same name and type keeps it.
+        PipelineAPIController.columnTypeRefusal(preserved, existing).foreach { refused =>
+            logger.warn("POST /pipeline " + preserved.name + " rejected: schema field type")
+            return Left(refused)
+        }
         // A new or changed pgvector schema or table must be one Postgres can
         // address as a single quoted identifier, and the table must be named.
         // Every caller; a stored config with the same names keeps them.
@@ -1665,6 +1673,19 @@ object PipelineAPIController {
             .problem(candidate.destination.database)
             .map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
     }
+
+    /** POST /pipeline (every caller and entry point) and pipeline version
+      * restore: 400 `{"error": ...}` with [[ColumnTypeText.changedProblem]]'s
+      * text for the first source or destination field whose type is not
+      * exactly one of the documented forms ([[ColumnTypeText.safe]]), on
+      * every pipeline type. A field that `stored` (the stored config of this
+      * name, the live one for a restore; null when there is none) has under
+      * the same name in the same schema with the same type is kept. None for
+      * a null candidate. No request, no I/O. */
+    def columnTypeRefusal(candidate: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] =
+        ColumnTypeText
+            .changedProblem(candidate, stored)
+            .map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
 
     /** DELETE /pipeline with data (and reset): the one warning line for a
       * Postgres destination whose effective database, schema or table fails

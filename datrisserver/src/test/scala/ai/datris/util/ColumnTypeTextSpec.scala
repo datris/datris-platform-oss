@@ -318,4 +318,16 @@ class ColumnTypeTextSpec extends AnyFunSuite {
         // integer is tolerated at load (Decision 6)
         assert(ColumnTypeText.loadProblem(Seq(SchemaField("n", "integer")), Set.empty).isEmpty)
     }
+
+    // ------------------------------------------- implementer additions (lead ruling C)
+
+    test("a space between the type name and the parenthesis, or before or after the whole type, is not safe") {
+        // v1.60.0's validateColumns refuses each of these (it neither trims nor
+        // allows a space before the parenthesis), so no structured config saved
+        // through the API carries one.
+        for (t <- Seq("decimal (10,2)", "varchar (255)", "char (1)", "varchar (max)", " int", "int ", " decimal(10,2)", "decimal(10,2) ", "decimal(10,  2)x"))
+            assert(!ColumnTypeText.safe(t), "[" + t + "]")
+        // more than one space beside a parenthesis or the comma is still a space beside it
+        assert(ColumnTypeText.safe("decimal(  10  ,  2  )"))
+    }
 }

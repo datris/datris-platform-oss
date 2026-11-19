@@ -213,17 +213,31 @@ class SqlServerLoader(jobContext: JobContext) {
         } else destFields.toSeq
     }
 
+    /** Create the schema and table when missing, then add any configured
+      * column the table lacks. When every non-document field's type passes
+      * [[ColumnTypeText.safe]] (a null type is `string` here, as in
+      * [[SqlServerLoader.sqlServerType]]) the statements are those earlier
+      * versions ran, in the same order. Otherwise the existing columns are
+      * read first and the run fails before any statement when a stored type
+      * that is not safe would be needed ([[ColumnTypeText.loadProblem]]);
+      * else the table is not created again and only missing columns are
+      * added. */
     private def createTableIfUndefined(statement: Statement): Unit = {
         val schema = SqlServerConnectionUtil.schemaName(db)
-        // CREATE SCHEMA must be the only statement in its batch, hence EXEC.
-        statement.execute(
-            s"IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ${nLiteral(schema)}) EXEC(${nLiteral("CREATE SCHEMA " + ident(schema))})"
-        )
-
         val fields = config.destination.schemaProperties.fields.asScala.toSeq
-        val ddl = SqlServerLoader.createTableSql(db, fields)
-        statusUtil.info("processing", "SQL Server create table statement: " + ddl)
-        statement.execute(ddl)
+        val typed = SqlServerLoader.withNullAsString(fields)
+        val unsafe = ColumnTypeText.unsafeFields(typed)
+
+        if (unsafe.isEmpty) {
+            // CREATE SCHEMA must be the only statement in its batch, hence EXEC.
+            statement.execute(
+                s"IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ${nLiteral(schema)}) EXEC(${nLiteral("CREATE SCHEMA " + ident(schema))})"
+            )
+
+            val ddl = SqlServerLoader.createTableSql(db, fields)
+            statusUtil.info("processing", "SQL Server create table statement: " + ddl)
+            statement.execute(ddl)
+        }
 
         // Additive schema evolution: add any new columns the table doesn't have yet.
         val existing = scala.collection.mutable.Set[String]()
@@ -234,6 +248,15 @@ class SqlServerLoader(jobContext: JobContext) {
             while (rs.next()) existing.add(rs.getString(1).toLowerCase)
         } finally {
             rs.close()
+        }
+
+        if (unsafe.nonEmpty) {
+            ColumnTypeText.loadProblem(typed, existing.toSet).foreach(p => throw new DatrisException(p))
+            statusUtil.info(
+                "processing",
+                "The table already has column(s) " + unsafe.map(_.name).mkString(", ") +
+                    "; their stored type is not a supported type and was not used. Change it to a supported type and save the pipeline."
+            )
         }
 
         fields.foreach { field =>
@@ -288,11 +311,15 @@ object SqlServerLoader {
      *  PostgresLoader.createTableIfUndefined: `_json` -> NVARCHAR(MAX) (with an
      *  ISJSON check, see [[columnDef]]) is the analog of Postgres' json, `_xml`
      *  -> XML. A string KEY column is NVARCHAR(450) because an index key over
-     *  NVARCHAR(MAX) is not allowed (900-byte clustered-key limit). Unknown
-     *  types pass through (e.g. decimal(p,s)). */
+     *  NVARCHAR(MAX) is not allowed (900-byte clustered-key limit). A null
+     *  type is `string`. Any other type is passed as written only when it
+     *  passes [[ColumnTypeText.safe]] (e.g. decimal(p,s), varchar(max)); every
+     *  other type text is a `DatrisException`. */
     def sqlServerType(field: SchemaField, isKey: Boolean = false): String = {
         if (field.name.equalsIgnoreCase("_json")) "NVARCHAR(MAX)"
         else if (field.name.equalsIgnoreCase("_xml")) "XML"
+        else if (field.`type` != null && !ColumnTypeText.safe(field.`type`))
+            throw new DatrisException(ColumnTypeText.problem(field, "destination").get)
         else Option(field.`type`).getOrElse("string").toLowerCase match {
             case "string" => if (isKey) "NVARCHAR(450)" else "NVARCHAR(MAX)"
             case "int" | "integer" | "smallint" | "tinyint" => "INT"
@@ -345,6 +372,10 @@ object SqlServerLoader {
         sb.append(s"WHEN NOT MATCHED BY TARGET THEN INSERT ($insertCols) VALUES ($insertVals);")
         sb.toString
     }
+
+    /** `fields` with a null type read as `string`, as [[sqlServerType]] reads it. */
+    private[util] def withNullAsString(fields: Seq[SchemaField]): Seq[SchemaField] =
+        fields.map(f => if (f != null && f.`type` == null) f.copy(`type` = "string") else f)
 
     def isDocumentColumn(f: SchemaField): Boolean =
         f.name.equalsIgnoreCase("_json") || f.name.equalsIgnoreCase("_xml")

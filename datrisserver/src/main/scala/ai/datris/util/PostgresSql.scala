@@ -5,6 +5,8 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.model.{DatrisException, SchemaField}
+
 import java.nio.charset.StandardCharsets
 import scala.collection.JavaConverters._
 
@@ -100,11 +102,67 @@ object PostgresSql {
     /** `a, b, c`, each quoted. */
     def columnList(columns: Seq[String]): String = columns.map(PgIdentifier.quote).mkString(", ")
 
-    /** The loader's additive schema evolution. `colType` is type text taken
-      * from the pipeline config (`string` mapped to `text`, anything else as
-      * written); this helper neither validates nor escapes it. */
-    def addColumn(database: String, schema: String, table: String, columnName: String, colType: String): String =
+    /** The Postgres type texts the loader and the destination-type migration
+      * produce by mapping ([[columnType]], [[addColumnType]],
+      * `DestSchemaApply.postgresType`); every other type text they send passes
+      * [[ColumnTypeText.safe]]. */
+    private val MappedTypes: Set[String] = Set("json", "xml", "int2", "float4", "float8", "text")
+
+    /** The column type the loader's create table writes for `field`: `_json`
+      * -> `json` and `_xml` -> `xml` by name (whatever the type holds);
+      * `tinyint` / `smallint` -> `int2`, `float` -> `float4`, `double` ->
+      * `float8`, `string` -> `text`; every other type as written when it
+      * passes [[ColumnTypeText.safe]]. `DatrisException` (naming the field)
+      * for any other type text, null included: it is never sent. */
+    def columnType(field: SchemaField): String = {
+        if (field.name != null && field.name.compareToIgnoreCase("_json") == 0) "json"
+        else if (field.name != null && field.name.compareToIgnoreCase("_xml") == 0) "xml"
+        else {
+            val t = field.`type`
+            if (t == null) refuse(field)
+            else if (t.compareToIgnoreCase("tinyint") == 0) "int2"
+            else if (t.compareToIgnoreCase("smallint") == 0) "int2"
+            else if (t.compareToIgnoreCase("float") == 0) "float4"
+            else if (t.compareToIgnoreCase("double") == 0) "float8"
+            else if (t.compareToIgnoreCase("string") == 0) "text"
+            else if (ColumnTypeText.safe(t)) t
+            else refuse(field)
+        }
+    }
+
+    /** The column type the loader's additive schema evolution writes for
+      * `field`, exactly the text earlier versions wrote for every safe type
+      * (`string` -> `text`, every other type as written). A document column
+      * whose type is not `string` gets its [[columnType]] by name; any other
+      * type that fails [[ColumnTypeText.safe]] is a `DatrisException`. */
+    def addColumnType(field: SchemaField): String = {
+        val t = field.`type`
+        if (t != null && t.equalsIgnoreCase("string")) "text"
+        else if (ColumnTypeText.isDocumentColumn(field)) columnType(field)
+        else if (ColumnTypeText.safe(t)) t
+        else refuse(field)
+    }
+
+    private def refuse(field: SchemaField): Nothing =
+        throw new DatrisException(ColumnTypeText.problem(field, "destination").getOrElse("Invalid field type passed for field '" + field.name + "'"))
+
+    /** Second line behind [[columnType]]: `IllegalArgumentException` unless
+      * `t` is one of `allowed` or passes [[ColumnTypeText.safe]]. */
+    private def requireTypeText(t: String, allowed: Set[String], what: String): Unit =
+        if (t == null || !(allowed.contains(t) || ColumnTypeText.safe(t)))
+            throw new IllegalArgumentException(
+                what + ": not a supported column type: " + (if (t == null) "null"
+                                                            else t.take(ColumnTypeText.MaxShown).map(c => if (Character.isISOControl(c)) ' ' else c))
+            )
+
+    /** The loader's additive schema evolution. `colType` is
+      * [[addColumnType]]'s text; `IllegalArgumentException` unless it is one
+      * of `json, xml, int2, float4, float8, text` or passes
+      * [[ColumnTypeText.safe]]. */
+    def addColumn(database: String, schema: String, table: String, columnName: String, colType: String): String = {
+        requireTypeText(colType, MappedTypes, "addColumn")
         "ALTER TABLE " + tableRef(database, schema, table) + " ADD COLUMN IF NOT EXISTS " + PgIdentifier.quote(columnName) + " " + colType
+    }
 
     /** The loader's keyFields unique index. */
     def uniqueIndex(indexName: String, database: String, schema: String, table: String, keyFields: Seq[String]): String =
@@ -126,8 +184,11 @@ object PostgresSql {
     def sampleSelect(schema: String, table: String): String = "SELECT * FROM " + PgIdentifier.qualified(schema, table)
 
     /** The destination-type migration of one column. `pgType` is a fixed
-      * Postgres type name, never a name from a config. */
+      * Postgres type name (`DestSchemaApply.postgresType`);
+      * `IllegalArgumentException` unless it is one of `json, xml, int2,
+      * float4, float8, text, numeric, int4` or passes [[ColumnTypeText.safe]]. */
     def alterColumnType(schema: String, table: String, columnName: String, pgType: String): String = {
+        requireTypeText(pgType, MappedTypes ++ Set("numeric", "int4"), "alterColumnType")
         val c = PgIdentifier.quote(columnName)
         "ALTER TABLE " + PgIdentifier.qualified(schema, table) + " ALTER COLUMN " + c + " TYPE " + pgType + " USING NULLIF(" + c + ", '')::" + pgType
     }

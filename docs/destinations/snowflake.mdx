@@ -161,7 +161,7 @@ When `manageTableManually` is `false` (the default), the pipeline auto-creates t
 
 \* Matched on the field **name**, not its declared type: a field named `_json` or `_xml` (declared `string`, as the JSON and XML ingestion modes produce) always lands as the document column shown, whatever type it declares.
 
-Other types (`decimal(p,s)`, `varchar(n)`, `char(n)`) pass through as-is. Semi-structured `_json` columns land as `VARIANT` (parsed with `PARSE_JSON` during the `COPY`), so JSON payloads are natively queryable in Snowflake rather than stored as text.
+Other types (`decimal(p,s)`, `varchar(n)`, `char(n)`) are passed as written. A stored type that is not one of the accepted forms (see [Schemas](/schemas)) is never sent: while the table and that column already exist the load continues and the run notes the field; when the table or the column would have to be created, the run fails before any statement with a message naming the field. Change the type to an accepted form and save the pipeline. Semi-structured `_json` columns land as `VARIANT` (parsed with `PARSE_JSON` during the `COPY`), so JSON payloads are natively queryable in Snowflake rather than stored as text.
 
 ## Truncate Before Write
 

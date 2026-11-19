@@ -33,7 +33,9 @@ object EntityVersionAPIController {
 
     /** Restoring a pipeline version is a save: a snapshot whose new or
       * changed `destination.database` block fails the save rule
-      * ([[PipelineAPIController.databaseNameRefusal]]), or whose new or
+      * ([[PipelineAPIController.databaseNameRefusal]]), whose new or changed
+      * field type is not one of the documented forms
+      * ([[PipelineAPIController.columnTypeRefusal]]), or whose new or
       * changed pgvector schema or table can never be right
       * ([[PipelineAPIController.vectorTableNameRefusal]]), is refused for
       * every caller, with the live config as the stored one; a snapshot naming a vector
@@ -49,11 +51,15 @@ object EntityVersionAPIController {
         live: PipelineConfig,
         others: Seq[PipelineConfig]
     ): Option[ResponseEntity[String]] =
-        PipelineAPIController.databaseNameRefusal(snap, live).orElse(PipelineAPIController.vectorTableNameRefusal(snap, live)).orElse(
-            if (PipelineAPIController.limitedVisibility(request))
-                pipelineRestoreRefusal(request, snap, live, others, PipelineAPIController.datasetEnv())
-            else PipelineAPIController.vectorContainerRefusal(request, snap, live, others)
-        )
+        PipelineAPIController
+            .databaseNameRefusal(snap, live)
+            .orElse(PipelineAPIController.columnTypeRefusal(snap, live))
+            .orElse(PipelineAPIController.vectorTableNameRefusal(snap, live))
+            .orElse(
+                if (PipelineAPIController.limitedVisibility(request))
+                    pipelineRestoreRefusal(request, snap, live, others, PipelineAPIController.datasetEnv())
+                else PipelineAPIController.vectorContainerRefusal(request, snap, live, others)
+            )
 
     /** Version restore, API keys: 403 when the key's scope does not grant
       * `pipeline:update` on the pipeline being restored over (the live
@@ -94,6 +100,7 @@ object EntityVersionAPIController {
 
     /** [[pipelineRestoreRefusal]] with the existence probe given: the
       * database name rule ([[PipelineAPIController.databaseNameRefusal]]),
+      * the field type rule ([[PipelineAPIController.columnTypeRefusal]]),
       * the pgvector name rule ([[PipelineAPIController.vectorTableNameRefusal]],
       * every caller; a restore does not run the save validator), the vector
       * container rule, then the hidden-writer rule, then (restricted
@@ -109,6 +116,7 @@ object EntityVersionAPIController {
     ): Option[ResponseEntity[String]] =
         PipelineAPIController
             .databaseNameRefusal(snap, live)
+            .orElse(PipelineAPIController.columnTypeRefusal(snap, live))
             .orElse(PipelineAPIController.vectorTableNameRefusal(snap, live))
             .orElse(PipelineAPIController.vectorContainerRefusal(request, snap, live, others))
             .orElse(PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, env))
@@ -128,6 +136,7 @@ object EntityVersionAPIController {
     ): Option[ResponseEntity[String]] =
         PipelineAPIController
             .databaseNameRefusal(snap, live)
+            .orElse(PipelineAPIController.columnTypeRefusal(snap, live))
             .orElse(PipelineAPIController.vectorTableNameRefusal(snap, live))
             .orElse(PipelineAPIController.vectorContainerRefusal(request, snap, live, others))
             .orElse(PipelineAPIController.hiddenWriterRefusal(request, snap, live, others, env))

@@ -57,6 +57,8 @@ These types are supported by the server but are never auto-generated. Use them w
 | `varchar(n)` | Variable-length text with maximum length `n` |
 | `char(n)` | Fixed-length text of exactly `n` characters |
 
+Each type is written exactly in one of these forms, in any letter case: a plain type name, `decimal(p)` or `decimal(p,s)` (each number 1 to 4 digits), `varchar(n)` or `char(n)` (1 to 9 digits), or `varchar(max)`. Spaces are allowed only inside the parentheses, as in `decimal(10, 2)`: none before the type name, between the name and `(`, or after `)`. Any other type text in the source or destination schema is refused with `400` (`Invalid field type passed`, naming the field) when the pipeline is saved or a version is restored, on every pipeline type. A field whose name and type the stored pipeline already has can be saved again unchanged.
+
 Refer to [data-types](/ingestion/data-types) for type mappings to PostgreSQL and Spark.
 
 ## Column Naming Rules

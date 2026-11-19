@@ -174,4 +174,27 @@ class LoaderColumnTypeSpec extends AnyFunSuite {
             assert(keyed.isFailure, "[" + t + "] as key built " + keyed)
         }
     }
+
+    // ------------------------------------------- implementer additions (lead ruling D)
+
+    test("a null type: SQL Server keeps reading it as string, Snowflake, Databricks and Postgres refuse it") {
+        assert(SqlServerLoader.sqlServerType(f(null)) == "NVARCHAR(MAX)")
+        assert(SqlServerLoader.sqlServerType(f(null), isKey = true) == "NVARCHAR(450)")
+        assert(ColumnTypeText.unsafeFields(SqlServerLoader.withNullAsString(Seq(f(null)))).isEmpty)
+        assert(Try(SnowflakeLoader.snowflakeType(f(null))).isFailure)
+        assert(Try(DatabricksLoader.databricksType(f(null))).isFailure)
+        assert(Try(PostgresSql.columnType(f(null))).isFailure)
+    }
+
+    test("PostgresSql.addColumnType writes the v1.60.0 ADD COLUMN text for every safe type and never an unsafe one") {
+        for (
+            (t, pg) <- Seq("string" -> "text", "STRING" -> "text", "int" -> "int", "float" -> "float", "double" -> "double", "decimal(10,2)" -> "decimal(10,2)")
+        )
+            assert(PostgresSql.addColumnType(f(t)) == pg, t)
+        // document columns: string -> text as before; any other type is mapped by name
+        assert(PostgresSql.addColumnType(f("string", "_json")) == "text")
+        assert(PostgresSql.addColumnType(f(evil, "_json")) == "json")
+        assert(PostgresSql.addColumnType(f(evil, "_xml")) == "xml")
+        for (t <- failing :+ null) assert(Try(PostgresSql.addColumnType(f(t))).isFailure, "[" + t + "]")
+    }
 }
