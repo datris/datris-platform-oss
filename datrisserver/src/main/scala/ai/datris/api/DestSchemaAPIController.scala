@@ -29,18 +29,29 @@ object DestSchemaAPIController {
       * config (null = missing), before anything is sampled or applied. A
       * restricted session outside its grants (or the config missing) gets
       * today's 400 "Pipeline not found: <name>"; an API key whose scope
-      * refuses `action` on it gets the capability-denied 403
-      * (plans/stories/scoped-key-read-routes.md). None for everyone else. */
+      * refuses `action` on it gets the capability-denied 403 (for `update`,
+      * also when it cannot read it: [[ai.datris.auth.CallerVisibility.storedWriteDenial]];
+      * plans/stories/scoped-key-read-routes.md). None for everyone else. */
     def scopeRefusal(request: HttpServletRequest, pipeline: String, config: PipelineConfig, action: String): Option[ResponseEntity[String]] =
         if (CapabilityCheck.isRestrictedSession(request)) {
             if (PipelineAPIController.hiddenConfig(request, config, action)) Some(notFound(pipeline)) else None
         } else if (config == null) None
-        else PipelineAPIController.keyRefusal(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+        else {
+            val ctx = CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
+            // A write (apply) follows the stored-item write rule: update in
+            // scope, then read in scope (a pipeline the key cannot read is
+            // never retyped).
+            if (action == "read") PipelineAPIController.keyRefusal(request, "pipeline", "read", ctx)
+            else PipelineAPIController.storedWriteRefusal(request, "pipeline", ctx, Seq(action), action)
+        }
 
     /** [[scopeRefusal]] with the stored config read only for a caller it can
       * refuse. */
     def refusalFor(request: HttpServletRequest, pipeline: String, action: String): Option[ResponseEntity[String]] =
-        if (!CapabilityCheck.isRestrictedSession(request) && !CapabilityCheck.keyScopeApplies(request, "pipeline", action)) None
+        if (
+            !CapabilityCheck.isRestrictedSession(request) && !CapabilityCheck.keyScopeApplies(request, "pipeline", action) &&
+            !CapabilityCheck.keyScopeApplies(request, "pipeline", "read")
+        ) None
         else scopeRefusal(request, pipeline, PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline), action)
 }
 

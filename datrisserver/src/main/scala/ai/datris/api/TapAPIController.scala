@@ -70,7 +70,7 @@ object TapAPIController {
                 case None => Some(tapNotFound(name))
                 case Some(t) => scopeRefusal(request, t, action)
             }
-        else if (!CapabilityCheck.keyScopeApplies(request, "tap", action)) None
+        else if (!keyCheckNeeded(request, action)) None
         else Option(read(name)).flatMap(t => keyRefusalOn(request, t, action))
 
     /** [[restrictedRefusal]] for routes that also serve a tap not saved yet
@@ -87,12 +87,40 @@ object TapAPIController {
     ): Option[ResponseEntity[String]] =
         if (name == null || name.isEmpty) None
         else if (CapabilityCheck.isRestrictedSession(request)) Option(read(name)).flatMap(t => scopeRefusal(request, t, action))
-        else if (!CapabilityCheck.keyScopeApplies(request, "tap", action)) None
+        else if (!keyCheckNeeded(request, action)) None
         else Option(read(name)).flatMap(t => keyRefusalOn(request, t, action))
 
-    /** An API key's scope refusal for `action` on a loaded tap (403), or None. */
+    /** Whether an API key's scope can refuse `action` on a stored tap, so
+      * the tap is read only then: `read` needs a scoped read; a write is
+      * decided by [[storedTapWriteRefusal]], which can refuse when the key's
+      * create, update or read is scoped. */
+    private def keyCheckNeeded(request: HttpServletRequest, action: String): Boolean =
+        if (action == "read") CapabilityCheck.keyScopeApplies(request, "tap", "read")
+        else (ai.datris.auth.CallerVisibility.TapWriteActions :+ "read").exists(a => CapabilityCheck.keyScopeApplies(request, "tap", a))
+
+    /** An API key's scope refusal for `action` on a loaded tap (403), or
+      * None. `read` checks tap read; any other action is a write and is
+      * decided by the one stored-tap write rule `POST /tap` uses
+      * ([[storedTapWriteRefusal]]). */
     private def keyRefusalOn(request: HttpServletRequest, t: TapConfig, action: String): Option[ResponseEntity[String]] =
-        PipelineAPIController.keyRefusal(request, "tap", action, CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel))
+        if (action == "read") PipelineAPIController.keyRefusal(request, "tap", "read", CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel))
+        else storedTapWriteRefusal(request, t.catalog, t.createdByKeyLabel)
+
+    /** The one rule for an API key writing a stored tap with scope
+      * (`catalog`, `owner`): [[ai.datris.auth.CallerVisibility.storedWriteDenial]]
+      * with `tap:create` or `tap:update` accepted, the refusal naming
+      * `update`, then `tap:read`. Used by `POST /tap` ([[saveGuardDecision]]),
+      * every tap write sub-route ([[restrictedRefusal]] /
+      * [[restrictedRefusalIfExists]] with a write action) and tap version
+      * restore, so they cannot drift apart. */
+    def storedTapWriteRefusal(request: HttpServletRequest, catalog: String, owner: String): Option[ResponseEntity[String]] =
+        PipelineAPIController.storedWriteRefusal(
+            request,
+            "tap",
+            CatalogOps.scopeContext(catalog, owner),
+            ai.datris.auth.CallerVisibility.TapWriteActions,
+            "update"
+        )
 
     /** Refusal when the tap's `targetPipeline` is outside the caller's
       * scope. A restricted session: missing or outside the grants (pipeline
@@ -133,11 +161,11 @@ object TapAPIController {
     /** POST /tap (`saveTapInternal`), every caller, decided on `stored` (the
       * tap of that name, or null). A restricted session: the catalog rules
       * ([[catalogForSave]]) as before. An API key
-      * (plans/stories/scoped-key-read-routes.md, Design 4): a stored tap the
-      * key cannot read is never overwritten (403 on `tap:read`, naming
-      * nothing of it), nor one it holds neither `tap:create` nor
-      * `tap:update` on (403 on `update`, the tap twin of
-      * `PipelineAPIController.overwriteRefusal`), and the tap as it would be
+      * (plans/stories/scoped-key-read-routes.md, Design 4): a stored tap is
+      * written only under [[storedTapWriteRefusal]] (the rule every tap
+      * write sub-route uses: 403 on `update` when the key holds neither
+      * `tap:create` nor `tap:update` on it, else 403 on `tap:read` when it
+      * cannot read it, naming nothing of it), and the tap as it would be
       * saved (the body's catalog, the stored owner or the caller's label)
       * must be in scope: `tap:create` for a new name (403 on `create`),
       * `tap:create` or `tap:update` over a stored one (403 on `update`).
@@ -156,13 +184,8 @@ object TapAPIController {
                         } catch {
                             case e: CapabilityDeniedException => Left(PipelineAPIController.capabilityDenied(e))
                         }
-                    val overwrite = Seq("create", "update")
-                    if (stored != null) {
-                        val storedCtx = CatalogOps.scopeContext(stored.catalog, stored.createdByKeyLabel)
-                        if (keyOutOfScope(rk, "tap", "read", storedCtx)) return denied("read", storedCtx)
-                        if (overwrite.exists(a => keyOutOfScope(rk, "tap", a, storedCtx)) && !overwrite.exists(a => rk.grants("tap", a, storedCtx)))
-                            return denied("update", storedCtx)
-                    }
+                    val overwrite = ai.datris.auth.CallerVisibility.TapWriteActions
+                    if (stored != null) storedTapWriteRefusal(request, stored.catalog, stored.createdByKeyLabel).foreach(r => return Left(r))
                     val owner = if (stored != null) stored.createdByKeyLabel else rk.label
                     val ctx = CatalogOps.scopeContext(config.catalog, owner)
                     val acceptable = if (stored != null) overwrite else Seq("create")
@@ -212,11 +235,13 @@ object TapAPIController {
 
     /** The owner tag of a secret of the current environment, for
       * [[testRefusal]]: None when it does not exist or its name is not a
-      * safe path (the run refuses it), else its `createdByKeyLabel`. */
+      * safe path (the run refuses it), else its `createdByKeyLabel`. A
+      * failed secret-store read throws, so the test is refused (500) rather
+      * than run as if the secret did not exist. */
     private[api] def liveSecretOwner(name: String): Option[Option[String]] = {
         val path = DatrisEnvironment.current.environment + "/" + name
         if (!SecretNames.isSafePath(path)) None
-        else SecretsUtil.getSecretMap(path).map(m => Option(m.get("createdByKeyLabel")).filter(_.nonEmpty))
+        else SecretsUtil.tryGetSecretMap(path).get.map(m => Option(m.get("createdByKeyLabel")).filter(_.nonEmpty))
     }
 
     /** Whether POST /tap must read the stored tap before deciding: a

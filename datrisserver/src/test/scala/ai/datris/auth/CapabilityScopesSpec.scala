@@ -281,4 +281,18 @@ class CapabilityScopesSpec extends AnyFunSuite {
         assert(used.endsWith(CapabilityScopes.InertScopesEnv + "=allow let it through the capability gate."), used)
         assert(!used.contains("allowed because"), used)
     }
+
+    test("inert messages: a capability carrying both a scope the route does not apply and one it applies with a rejected value describes each correctly") {
+        val mixed = Seq(Capability.parse("approval:read:owner=bob,catalog=x"))
+        val denial = CapabilityScopes.inertDenialMessage("agent", "approval:read", mixed)
+        assert(denial.contains("scope 'catalog' is not applied on approval:read and scope 'owner' on approval:read accepts only 'self'"), denial)
+        assert(!denial.contains("scopes 'catalog', 'owner' are not applied"), denial)
+        assert(denial.contains("Supported scopes for approval:read: owner (only 'self')."), denial)
+        assert(denial.contains("'approval:read:owner=self' or 'approval:read'"), denial)
+        val used = CapabilityScopes.inertUsedMessage("agent", "approval:read", mixed)
+        assert(used.contains("whose scope 'catalog' is not applied on approval:read and scope 'owner' on approval:read accepts only 'self'"), used)
+        // two keys the route does not apply keep the plural wording
+        val two = CapabilityScopes.inertDenialMessage("ik", "job:read", Seq(Capability.parse("job:read:owner=self,catalog=x")))
+        assert(two.contains("scopes 'catalog', 'owner' are not applied on job:read"), two)
+    }
 }

@@ -478,7 +478,7 @@ object KeysAPIController {
         ),
         (
             "rag-builder",
-            "Build and search a vector knowledge base. Creates pipelines and taps in any catalog, reads every pipeline and tap, uploads documents into any pipeline, runs vector search across all collections, runs the taps it created, and reads and writes only tap secrets.",
+            "Build and search a vector knowledge base. Creates pipelines and taps in any catalog, reads every pipeline and tap, uploads documents into the pipelines it created, runs vector search across all collections, runs the taps it created, and reads and writes only tap secrets.",
             Seq(
                 "pipeline:create",
                 "pipeline:read",

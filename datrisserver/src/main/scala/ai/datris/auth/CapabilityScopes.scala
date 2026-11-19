@@ -240,25 +240,43 @@ object CapabilityScopes {
       * `required` but with a value it does not accept (`approval:read`
       * takes `owner=self` only), in which case the text must say so rather
       * than call the key not applied. */
-    private case class InertText(keyText: String, applied: Seq[String], valueOnly: Boolean, keys: Seq[String])
+    private case class InertText(pair: (String, String), applied: Seq[String], notApplied: Seq[String], badValue: Seq[String]) {
+
+        /** Every offending key is applied on the route, only its value is not accepted. */
+        def valueOnly: Boolean = notApplied.isEmpty && badValue.nonEmpty
+    }
 
     private def inertScopeText(first: Capability, required: String): InertText = {
         val pair = required.takeWhile(_ != ':') -> required.dropWhile(_ != ':').drop(1)
         val applied = supportedSeq(pair._1, pair._2)
         val onRoute = first.scope.toSeq.sortBy(_._1).collect { case (k, v) if !applied.contains(k) || !valueAccepted(pair, k, v) => k }
-        val keys = if (onRoute.nonEmpty) onRoute else inertScopeKeys(first)
-        val keyText = if (keys.size == 1) "scope '" + keys.head + "' is" else "scopes " + keys.map("'" + _ + "'").mkString(", ") + " are"
-        InertText(keyText, applied, onRoute.nonEmpty && onRoute.forall(applied.contains), keys)
+        if (onRoute.isEmpty) InertText(pair, applied, inertScopeKeys(first), Nil)
+        else InertText(pair, applied, onRoute.filterNot(applied.contains), onRoute.filter(applied.contains))
     }
 
-    /** "scope 'owner' on approval:read accepts only 'self'" when the key is
-      * applied but its value is not; otherwise "scope 'k' is not applied on
-      * <required>". */
-    private def whyNot(t: InertText, required: String): String =
-        if (t.valueOnly)
-            (if (t.keys.size == 1) "scope '" + t.keys.head + "'" else "scopes " + t.keys.map("'" + _ + "'").mkString(", ")) +
-                " on " + required + " accepts only 'self'"
-        else t.keyText + " not applied on " + required
+    private def quoted(keys: Seq[String]): String = keys.map("'" + _ + "'").mkString(", ")
+
+    /** Each offending scope key described as it is: "scope 'k' is not
+      * applied on <required>" for a key the route does not apply, and
+      * "scope 'owner' on <required> accepts only 'self'" for a key it applies
+      * with a value it does not accept; both, joined, when the capability
+      * carries both kinds. */
+    private def whyNot(t: InertText, required: String): String = {
+        val notApplied =
+            if (t.notApplied.isEmpty) Nil
+            else if (t.notApplied.size == 1) Seq("scope '" + t.notApplied.head + "' is not applied on " + required)
+            else Seq("scopes " + quoted(t.notApplied) + " are not applied on " + required)
+        val badValue =
+            if (t.badValue.isEmpty) Nil
+            else Seq((if (t.badValue.size == 1) "scope '" + t.badValue.head + "'"
+                      else "scopes " + quoted(t.badValue)) + " on " + required + " accepts only 'self'")
+        (notApplied ++ badValue).mkString(" and ")
+    }
+
+    /** The scopes `required` applies, a value-restricted one marked. */
+    private def supportedText(t: InertText): String =
+        if (t.applied.isEmpty) "none"
+        else t.applied.map(k => if (!valueAccepted(t.pair, k, "")) k + " (only 'self')" else k).mkString(", ")
 
     /** The audit reason for a request that passed the route gate only
       * through an inert capability under `DATRIS_KEY_INERT_SCOPES=allow`. It
@@ -276,13 +294,13 @@ object CapabilityScopes {
         val t = inertScopeText(first, required)
         val others = inert.tail.map(_.raw).distinct
         val replacement =
-            if (t.valueOnly) "'" + required + ":" + t.keys.head + "=self' or '" + required + "'"
+            if (t.badValue.nonEmpty) "'" + required + ":" + t.badValue.head + "=self' or '" + required + "'"
             else if (t.applied.isEmpty) "'" + required + "' unscoped"
             else "'" + required + "' unscoped or with a supported scope"
         "API key '" + label + "' holds '" + first.raw + "', but " + whyNot(t, required) +
             ", so that capability grants nothing" +
             (if (others.isEmpty) "" else " (nor does " + others.mkString(", ") + ")") + ". " +
-            (if (t.valueOnly) "" else "Supported scopes for " + required + ": " + listOrNone(t.applied) + ". ") +
+            (if (t.valueOnly) "" else "Supported scopes for " + required + ": " + supportedText(t) + ". ") +
             "The key needs a replacement holding " + replacement + ", or the operator can set " + InertScopesEnv +
             "=allow to restore the earlier behaviour while keys are replaced."
     }

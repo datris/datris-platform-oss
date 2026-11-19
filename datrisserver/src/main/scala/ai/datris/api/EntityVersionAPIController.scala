@@ -63,11 +63,26 @@ object EntityVersionAPIController {
 
     /** Version restore, API keys: 403 when the key's scope does not grant
       * `pipeline:update` on the pipeline being restored over (the live
-      * config, or the snapshot itself when the pipeline was deleted). None
+      * config, or the snapshot itself when the pipeline was deleted), or,
+      * when it does, 403 on `pipeline:read` when the key cannot read it. None
       * for restricted sessions (`versionRefusal` answers them), no key, full
       * keys and unrestricted sessions. */
-    def pipelineRestoreScopeRefusal(request: HttpServletRequest, snap: PipelineConfig, live: PipelineConfig): Option[ResponseEntity[String]] =
-        PipelineAPIController.overwriteRefusal(request, Option(live).getOrElse(snap), PipelineAPIController.RestoreOverwriteActions)
+    def pipelineRestoreScopeRefusal(request: HttpServletRequest, snap: PipelineConfig, live: PipelineConfig): Option[ResponseEntity[String]] = {
+        val target = Option(live).getOrElse(snap)
+        PipelineAPIController.overwriteRefusal(request, target, PipelineAPIController.RestoreOverwriteActions).orElse {
+            // A key that may update but cannot read the pipeline does not
+            // restore over it (scoped-key-read-routes, the stored-item write rule).
+            if (target == null) None
+            else
+                CapabilityCheck.resolvedKey(request).flatMap { rk =>
+                    if (
+                        ai.datris.auth.CallerVisibility.keyOutOfScope(rk, "pipeline", "read", CatalogOps.scopeContext(target.catalog, target.createdByKeyLabel))
+                    )
+                        Some(PipelineAPIController.readScopeDenied(request, target))
+                    else None
+                }
+        }
+    }
 
     /** Version restore of a deleted pipeline (no live config),
       * limited-visibility callers: when a pipeline hidden from the caller
@@ -264,14 +279,73 @@ object EntityVersionAPIController {
             if (hiddenFromRestricted(request, resource, action, live)) Some(sessionAnswer) else None
         } else
             live.flatMap { case (catalog, owner) =>
-                PipelineAPIController.keyRefusal(request, resource, action, CatalogOps.scopeContext(catalog, owner))
+                // A restore is a write: the stored-item write rule (the action
+                // in scope, then read in scope), as on a save.
+                if (action == "read") PipelineAPIController.keyRefusal(request, resource, "read", CatalogOps.scopeContext(catalog, owner))
+                else if (resource == "tap") TapAPIController.storedTapWriteRefusal(request, catalog, owner)
+                else PipelineAPIController.storedWriteRefusal(request, resource, CatalogOps.scopeContext(catalog, owner), Seq(action), action)
             }
 
     /** Whether the version routes must read anything to decide: a
       * restricted session, or an API key whose scope can refuse
       * (resource, action). */
     def versionCheckNeeded(request: HttpServletRequest, resource: String, action: String): Boolean =
-        CapabilityCheck.isRestrictedSession(request) || CapabilityCheck.keyScopeApplies(request, resource, action)
+        CapabilityCheck.isRestrictedSession(request) || {
+            val actions =
+                if (action == "read") Seq("read")
+                else if (resource == "tap") ai.datris.auth.CallerVisibility.TapWriteActions :+ "read"
+                else Seq(action, "read")
+            actions.exists(a => CapabilityCheck.keyScopeApplies(request, resource, a))
+        }
+
+    /** The version routes' refusal for one item, reading only for a caller
+      * it can refuse ([[versionCheckNeeded]]): `readLive` gives the live
+      * item's (catalog, owner); for an API key whose item is gone, the latest
+      * stored version (`readVersions`) that parses decides (Decision: ruling
+      * 6), and a key with nothing that establishes scope gets
+      * `sessionAnswer` (the route's answer for a name that never existed).
+      * A restricted session never reads the versions. */
+    def versionScopeRefusalWith(
+        request: HttpServletRequest,
+        resource: String,
+        action: String,
+        readLive: () => Option[(String, String)],
+        readVersions: () => Seq[EntityVersion],
+        sessionAnswer: => ResponseEntity[String]
+    ): Option[ResponseEntity[String]] =
+        if (!versionCheckNeeded(request, resource, action)) None
+        else {
+            val session = CapabilityCheck.isRestrictedSession(request)
+            val live = readLive()
+            val scope =
+                if (live.isDefined || session) live
+                else latestScope(resource, readVersions())
+            scope match {
+                case None if !session => Some(sessionAnswer)
+                case _ => versionRefusal(request, resource, action, scope, sessionAnswer)
+            }
+        }
+
+    /** (catalog, owner) of the newest version among `versions` whose config
+      * parses; None when none does. */
+    private[api] def latestScope(resource: String, versions: Seq[EntityVersion]): Option[(String, String)] = {
+        val gson = new Gson
+        versions.filter(v => v != null && v.config != null).sortBy(-_.version).view.flatMap { v =>
+            try
+                if (resource == "tap") Option(gson.fromJson(v.config, classOf[TapConfig])).map(t => (t.catalog, t.createdByKeyLabel))
+                else Option(gson.fromJson(v.config, classOf[PipelineConfig])).map(p => (p.catalog, p.createdByKeyLabel))
+            catch { case _: Exception => None }
+        }.headOption
+    }
+
+    /** Tap version restore, API keys: the tap as it would be restored (the
+      * snapshot's catalog; the live owner, or the snapshot's when the tap was
+      * deleted) is written under the stored-tap write rule
+      * ([[TapAPIController.storedTapWriteRefusal]]), so a restore cannot move
+      * a tap out of the key's scope. None for sessions and no identity. */
+    def tapRestoreRefusal(request: HttpServletRequest, snap: TapConfig, live: TapConfig): Option[ResponseEntity[String]] =
+        if (snap == null) None
+        else TapAPIController.storedTapWriteRefusal(request, snap.catalog, if (live != null) live.createdByKeyLabel else snap.createdByKeyLabel)
 }
 
 @RestController
@@ -341,15 +415,7 @@ class EntityVersionAPIController {
                 // The tap as it would be restored (the snapshot's catalog, the
                 // live owner, or the snapshot's when deleted) must be in an API
                 // key's scope for tap:update, as on a save.
-                if (snap != null)
-                    PipelineAPIController
-                        .keyRefusal(
-                            request,
-                            "tap",
-                            "update",
-                            CatalogOps.scopeContext(snap.catalog, if (live != null) live.createdByKeyLabel else snap.createdByKeyLabel)
-                        )
-                        .foreach(return _)
+                EntityVersionAPIController.tapRestoreRefusal(request, snap, live).foreach(return _)
                 // A restricted user may not restore a snapshot into a catalog
                 // outside its grants (same rules as a save).
                 TapAPIController.catalogForSave(request, snap, live) match {
@@ -629,42 +695,26 @@ class EntityVersionAPIController {
         }
     }
 
-    /** The version routes' refusal for `name` ([[EntityVersionAPIController.versionRefusal]]),
-      * reading only for a caller it can refuse: the live item's (catalog,
-      * owner); for an API key whose item was deleted, the latest stored
-      * version's (none: answered as a name that never existed). */
+    /** [[EntityVersionAPIController.versionScopeRefusalWith]] with the live
+      * item and its stored versions read from Mongo. */
     private def versionScopeRefusal(
         request: HttpServletRequest,
         resource: String,
         name: String,
         action: String,
         sessionAnswer: => ResponseEntity[String]
-    ): Option[ResponseEntity[String]] =
-        if (!EntityVersionAPIController.versionCheckNeeded(request, resource, action)) None
-        else
-            scopeOf(request, resource, name) match {
-                // An API key with nothing that establishes scope (no live item,
-                // no readable version): answered as a name that never existed.
-                case None if !CapabilityCheck.isRestrictedSession(request) => Some(sessionAnswer)
-                case scope => EntityVersionAPIController.versionRefusal(request, resource, action, scope, sessionAnswer)
-            }
-
-    private def scopeOf(request: HttpServletRequest, resource: String, name: String): Option[(String, String)] = {
+    ): Option[ResponseEntity[String]] = {
         val env = DatrisEnvironment.current
-        val live =
-            if (resource == "tap") Option(TapConfigIO.read(env.tapTableName, name)).map(t => (t.catalog, t.createdByKeyLabel))
-            else Option(PipelineConfigIO.read(env.pipelineTableName, name)).map(p => (p.catalog, p.createdByKeyLabel))
-        if (live.isDefined || CapabilityCheck.isRestrictedSession(request)) live
-        else {
-            val table = if (resource == "tap") env.tapVersionTableName else env.pipelineVersionTableName
-            val latest = EntityVersionIO.listVersions(table, name).filter(_.config != null).sortBy(-_.version).headOption
-            latest.flatMap { v =>
-                try
-                    if (resource == "tap") Option(gson.fromJson(v.config, classOf[TapConfig])).map(t => (t.catalog, t.createdByKeyLabel))
-                    else Option(gson.fromJson(v.config, classOf[PipelineConfig])).map(p => (p.catalog, p.createdByKeyLabel))
-                catch { case _: Exception => None }
-            }
-        }
+        EntityVersionAPIController.versionScopeRefusalWith(
+            request,
+            resource,
+            action,
+            () =>
+                if (resource == "tap") Option(TapConfigIO.read(env.tapTableName, name)).map(t => (t.catalog, t.createdByKeyLabel))
+                else Option(PipelineConfigIO.read(env.pipelineTableName, name)).map(p => (p.catalog, p.createdByKeyLabel)),
+            () => EntityVersionIO.listVersions(if (resource == "tap") env.tapVersionTableName else env.pipelineVersionTableName, name),
+            sessionAnswer
+        )
     }
 
     private def ok(json: String): ResponseEntity[String] =

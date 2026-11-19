@@ -63,7 +63,7 @@ Open **Configuration → API-Keys → Issue new key**.
 1. Pick a label (`cli`, `claude-desktop`, `cursor`, `prod-loader`, etc.) — lowercase, hyphens/underscores ok.
 2. Pick a template or build a capability list manually:
    - **read-only** — observer access to pipelines/taps/jobs/metadata + query/search
-   - **rag-builder** — create pipelines and taps in any catalog, upload documents into any pipeline, run vector search across all collections, run the taps it created, and read and write only tap secrets
+   - **rag-builder** — create pipelines and taps in any catalog, upload documents into the pipelines it created, run vector search across all collections, run the taps it created, and read and write only tap secrets
    - **reporting** — analyst-shaped read access
    - **ops** — run any tap, monitor and kill jobs, read pipelines and taps; no uploads, no edits
    - **full-access** — legacy `*:*` shape; avoid for agents

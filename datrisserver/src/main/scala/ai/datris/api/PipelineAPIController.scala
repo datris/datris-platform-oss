@@ -1620,6 +1620,29 @@ object PipelineAPIController {
         capabilityDenied(new DatrisException(message))
     }
 
+    /** [[ai.datris.auth.CallerVisibility.storedWriteDenial]] for the
+      * request's API key as a response: the capability-denied 403 through
+      * [[CapabilityCheck.assertScope]] on the action it names (shared
+      * wording, denial noted for the audit log), or None. Always None for
+      * sessions and no identity. */
+    def storedWriteRefusal(
+        request: HttpServletRequest,
+        resource: String,
+        context: Map[String, String],
+        accepted: Seq[String],
+        named: String
+    ): Option[ResponseEntity[String]] =
+        CapabilityCheck.resolvedKey(request).filter(!_.restrictedSession).flatMap { rk =>
+            ai.datris.auth.CallerVisibility.storedWriteDenial(rk, resource, context, accepted, named).map { action =>
+                try {
+                    CapabilityCheck.assertScope(request, resource, action, context)
+                    capabilityDenied(new CapabilityDeniedException("capability denied"))
+                } catch {
+                    case e: CapabilityDeniedException => capabilityDenied(e)
+                }
+            }
+        }
+
     /** An API key's scope refusal on one item as a response: the
       * capability-denied 403 of [[CapabilityCheck.assertKeyScope]] (shared
       * wording, denial noted for the audit log), or None. Always None for
@@ -2404,7 +2427,7 @@ object PipelineAPIController {
     case class RestoreOf(live: PipelineConfig, version: Int, hidden: () => ResponseEntity[String])
 
     /** The capability-denied 403 for `pipeline:read` on `hidden`'s scope. */
-    private def readScopeDenied(request: HttpServletRequest, hidden: PipelineConfig): ResponseEntity[String] =
+    private[api] def readScopeDenied(request: HttpServletRequest, hidden: PipelineConfig): ResponseEntity[String] =
         try {
             CapabilityCheck.assertScope(request, "pipeline", "read", CatalogOps.scopeContext(hidden.catalog, hidden.createdByKeyLabel))
             capabilityDenied(new CapabilityDeniedException("capability denied"))

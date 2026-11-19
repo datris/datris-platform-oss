@@ -22,12 +22,12 @@ import ai.datris.model.ResolvedKey
   * limited, which is where this differs from the write-side
   * `PipelineAPIController.limitedVisibility` (kept).
   *
-  * Only the capabilities that grant are read ([[ResolvedKey.effectiveCapabilities]]):
-  * a stored capability whose scope the platform does not apply (inert) counts
-  * only under `DATRIS_KEY_INERT_SCOPES=allow`. So a key whose only scoped
-  * pipeline or tap capability is inert is not limited in the default refuse
-  * mode (that capability grants nothing, so the key reads nothing through
-  * it), and is limited in allow mode when it lacks unscoped read. */
+  * Whether the key carries a `catalog=` / `owner=` scope is read from every
+  * stored capability, inert ones included, in both modes (inert scopes fail
+  * closed); whether it holds unscoped read is read from the capabilities that
+  * grant ([[ResolvedKey.effectiveCapabilities]]). So a key whose only scoped
+  * pipeline or tap capability is inert is limited in both modes when it
+  * lacks unscoped read. */
 object CallerVisibility {
 
     private val ScopedResources = Set("pipeline", "tap")
@@ -50,10 +50,13 @@ object CallerVisibility {
         else if (!ScopedResources.contains(resource) || rk.isFullAccess) false
         else holdsScopedPipelineOrTap(rk) && !holdsUnscoped(rk, resource, "read")
 
-    /** True when some granting capability on `pipeline` or `tap` carries a
-      * `catalog=` or `owner=` scope. */
+    /** True when some stored capability on `pipeline` or `tap` carries a
+      * `catalog=` or `owner=` scope. Read from the applied AND the inert
+      * capabilities in both modes, so a scoped capability whose other scope
+      * key is not applied (`pipeline:read:catalog=Sales,collection=docs`)
+      * still marks the key as meant to be limited: inert scopes fail closed. */
     private def holdsScopedPipelineOrTap(rk: ResolvedKey): Boolean =
-        rk.effectiveCapabilities.exists(c => ScopedResources.contains(c.resource) && c.scope.keySet.exists(LimitingScopeKeys.contains))
+        (rk.capabilities ++ rk.inertCapabilities).exists(c => ScopedResources.contains(c.resource) && c.scope.keySet.exists(LimitingScopeKeys.contains))
 
     /** True when a granting capability covers (resource, action) with no scope. */
     def holdsUnscoped(rk: ResolvedKey, resource: String, action: String): Boolean =
@@ -82,6 +85,26 @@ object CallerVisibility {
       * capability covers it). Always false for sessions. */
     def keyOutOfScope(rk: ResolvedKey, resource: String, action: String, context: Map[String, String]): Boolean =
         keyScopeApplies(rk, resource, action) && !rk.grants(resource, action, context)
+
+    /** The one rule for an API key writing to a STORED pipeline or tap
+      * whose scope context is `context` (`POST /tap`, every tap write
+      * sub-route, tap and pipeline version restore, dest-types apply):
+      *   1. refused on `named` when some action of `accepted` is out of the
+      *      key's scope ([[keyOutOfScope]]) and no action of `accepted` is
+      *      granted on `context` (for taps `accepted` = create, update, the
+      *      tap twin of `PipelineAPIController.overwriteRefusal`);
+      *   2. else refused on `read` when the key's read is out of scope: a
+      *      stored item the key cannot read is never written, and a route
+      *      that returns the item's content never returns it.
+      * The write check runs first so the 403 names the action attempted, as
+      * `POST /pipeline` does. None: allowed. Pure. */
+    def storedWriteDenial(rk: ResolvedKey, resource: String, context: Map[String, String], accepted: Seq[String], named: String): Option[String] =
+        if (accepted.exists(a => keyOutOfScope(rk, resource, a, context)) && !accepted.exists(a => rk.grants(resource, a, context))) Some(named)
+        else if (keyOutOfScope(rk, resource, "read", context)) Some("read")
+        else None
+
+    /** Tap writes accept `tap:create` or `tap:update` on the stored tap. */
+    val TapWriteActions: Seq[String] = Seq("create", "update")
 
     /** The pipeline right a load into a pipeline needs (upload, `kill_job`,
       * a tap's target pipeline): `run` when the caller holds any
