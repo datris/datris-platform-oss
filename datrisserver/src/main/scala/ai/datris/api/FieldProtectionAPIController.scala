@@ -321,10 +321,15 @@ object FieldProtectionAPIController {
       *      context ([[CapabilityCheck.assertScope]]): a scoped
       *      `protect:reveal:catalog=X` / `:owner=self` holds only inside its
       *      scope; an unscoped one (and full access) everywhere.
+      *      When no unscoped capability grants reveal (every reveal capability
+      *      the key holds is scoped), `pipeline:read` on the same context is
+      *      required first, through the same shared refusal, so a scoped
+      *      reveal-only key reveals nothing until it may also read the
+      *      pipeline in scope (owner decision, review finding 1).
       * No-op for no identity, full access and callers neither check refuses.
-      * A reveal-only key with no pipeline capability is not limited for
-      * pipelines (`CallerVisibility.limitedPipelines`), so only step 2
-      * applies to it (D2). */
+      * An unscoped reveal-only key with no pipeline capability is not limited
+      * for pipelines (`CallerVisibility.limitedPipelines`), so only the
+      * (always granted) reveal check applies to it (D2). */
     private[api] def targetRefusal(
         request: HttpServletRequest,
         pipeline: String,
@@ -336,8 +341,25 @@ object FieldProtectionAPIController {
             if (!CapabilityCheck.grants(request, "pipeline", "read", ctx))
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
         } else CapabilityCheck.assertKeyScope(request, "pipeline", "read", ctx)
-        protectAction.foreach(a => CapabilityCheck.assertScope(request, "protect", a, ctx))
+        protectAction.foreach { a =>
+            // Owner decision on review finding 1: a reveal granted only by a
+            // scoped capability also needs pipeline read on the same pipeline
+            // ("may act and may read"). An unscoped reveal keeps D2.
+            if (a == "reveal" && !CapabilityCheck.isRestrictedSession(request) && !holdsUnscopedReveal(request))
+                CapabilityCheck.assertScope(request, "pipeline", "read", ctx)
+            CapabilityCheck.assertScope(request, "protect", a, ctx)
+        }
     }
+
+    /** True when reveal is granted by an unscoped capability (`protect:reveal`,
+      * `protect:*`, `*:reveal`, `*:*`) among the key's granting capabilities,
+      * a legacy key, or no resolved key. Only then is reveal not tied to
+      * pipeline read (D2); a key whose reveal capabilities are all scoped is. */
+    private def holdsUnscopedReveal(request: HttpServletRequest): Boolean =
+        CapabilityCheck.resolvedKey(request) match {
+            case None => true
+            case Some(rk) => rk.isLegacyFullAccess || rk.effectiveCapabilities.exists(c => c.scope.isEmpty && c.matchesResourceAction("protect", "reveal"))
+        }
 
     /** The field list a suggest or preset call works on, with the pipeline's
       * constraints: the stored source schema when `pipeline` is named, else

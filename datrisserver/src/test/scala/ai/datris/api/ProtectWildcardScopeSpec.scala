@@ -103,7 +103,7 @@ class ProtectWildcardScopeSpec extends AnyFunSuite with BeforeAndAfterEach {
             FieldProtectionAPIController.requireCapability(r, "reveal")
             FieldProtectionAPIController.targetRefusal(r, "orders", orders, Some("reveal"))
         }
-        val explicitKey = resolved("k", "protect:reveal:catalog=Sales")
+        val explicitKey = resolved("k", "pipeline:read:catalog=Sales", "protect:reveal:catalog=Sales")
         FieldProtectionAPIController.requireCapability(req(explicitKey), "reveal")
         FieldProtectionAPIController.targetRefusal(req(explicitKey), "orders", orders, Some("reveal"))
     }

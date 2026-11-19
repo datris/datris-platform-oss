@@ -172,11 +172,64 @@ class FieldProtectionKeyScopeSpec extends AnyFunSuite with BeforeAndAfterEach {
         assertScopeRefusal(both, refusedWith(both, payroll, Reveal), "sales-key", "pipeline", "read", caps)
     }
 
-    test("D2 reading: a scoped reveal key with no pipeline capability is held to its reveal scope only") {
+    test("a scoped reveal key with no pipeline capability reveals nothing until it also holds pipeline read in the same scope") {
+        // owner decision on review finding 1: refused even inside its reveal scope, naming pipeline:read
         val caps = Seq("protect:reveal:catalog=Sales")
-        FieldProtectionAPIController.targetRefusal(req(resolved("reveal-only-sales", caps: _*)), "orders", orders, Reveal)
         val r = req(resolved("reveal-only-sales", caps: _*))
-        assertScopeRefusal(r, refusedWith(r, payroll, Reveal), "reveal-only-sales", "protect", "reveal", caps)
+        assertScopeRefusal(r, refusedWith(r, orders, Reveal), "reveal-only-sales", "pipeline", "read", caps)
+        val rp = req(resolved("reveal-only-sales", caps: _*))
+        assertScopeRefusal(rp, refusedWith(rp, payroll, Reveal), "reveal-only-sales", "pipeline", "read", caps)
+        // with pipeline read in the same scope it reveals inside the scope
+        val withRead = Seq("pipeline:read:catalog=Sales", "protect:reveal:catalog=Sales")
+        FieldProtectionAPIController.targetRefusal(req(resolved("reveal-only-sales", withRead: _*)), "orders", orders, Reveal)
+        // the owner=self equivalent
+        val own = Seq("protect:reveal:owner=self")
+        val ro = req(resolved("sales-key", own: _*))
+        assertScopeRefusal(ro, refusedWith(ro, orders, Reveal), "sales-key", "pipeline", "read", own)
+        FieldProtectionAPIController.targetRefusal(
+            req(resolved("sales-key", "pipeline:read:owner=self", "protect:reveal:owner=self")),
+            "orders",
+            orders,
+            Reveal
+        )
+    }
+
+    test("owner decision: a scoped reveal capability needs pipeline read in the same scope on the target") {
+        def passes(label: String, caps: Seq[String], c: PipelineConfig): Unit =
+            FieldProtectionAPIController.targetRefusal(req(resolved(label, caps: _*)), c.name, c, Reveal)
+        def refusedOn(label: String, caps: Seq[String], c: PipelineConfig, resource: String, action: String): Unit = {
+            val r = req(resolved(label, caps: _*))
+            assertScopeRefusal(r, refusedWith(r, c, Reveal), label, resource, action, caps)
+        }
+        // catalog-scoped read and reveal: Sales only
+        val both = Seq("pipeline:read:catalog=Sales", "protect:reveal:catalog=Sales")
+        passes("k", both, orders)
+        refusedOn("k", both, payroll, "pipeline", "read")
+        // unscoped read, scoped reveal: Sales only (refused on the reveal scope)
+        val wideRead = Seq("pipeline:read", "protect:reveal:catalog=Sales")
+        passes("k", wideRead, orders)
+        refusedOn("k", wideRead, payroll, "protect", "reveal")
+        // read in HR, reveal in Sales: nothing (the key's own capability names
+        // HR, so only the wording is pinned here, not the hidden-name check)
+        val crossed = Seq("pipeline:read:catalog=HR", "protect:reveal:catalog=Sales")
+        Seq(orders -> ("pipeline", "read"), payroll -> ("protect", "reveal")).foreach { case (c, (res, act)) =>
+            val e = refusedWith(req(resolved("k", crossed: _*)), c, Reveal)
+            assert(e.getMessage == ScopeDenialWording.message("k", res, act, crossed), e.getMessage)
+        }
+        // owner=self read and reveal: its own only
+        val own = Seq("pipeline:read:owner=self", "protect:reveal:owner=self")
+        passes("sales-key", own, orders)
+        refusedOn("sales-key", own, payroll, "pipeline", "read")
+        // an unscoped reveal alongside a scoped one governs (D2): install-wide
+        passes("k", Seq("protect:reveal", "protect:reveal:catalog=Sales"), payroll)
+        // the gate still lets a scoped reveal key through to the config read
+        // (it must, to learn the pipeline's catalog), in both modes
+        Seq(false, true).foreach { allow =>
+            if (allow) sys.props.put(CapabilityScopes.InertScopesProperty, CapabilityScopes.InertScopesAllow)
+            Seq(Seq("protect:reveal:catalog=Sales"), Seq("protect:reveal:owner=self"), both).foreach { caps =>
+                FieldProtectionAPIController.requireCapability(req(resolved("k", caps: _*)), "reveal")
+            }
+        }
     }
 
     // ------------------------------------------------------ Acceptance bullet 5
