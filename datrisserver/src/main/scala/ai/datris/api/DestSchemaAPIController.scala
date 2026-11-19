@@ -7,15 +7,42 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
-import ai.datris.auth.VersionActor
-import ai.datris.model.{DatrisException, SchemaField}
-import ai.datris.util.{APIKeyValidator, DestSchemaApply}
+import ai.datris.auth.{CapabilityCheck, VersionActor}
+import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineConfig, SchemaField}
+import ai.datris.util.{APIKeyValidator, CatalogOps, DestSchemaApply, PipelineConfigIO}
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 
 import scala.collection.JavaConverters._
+
+object DestSchemaAPIController {
+
+    /** The answer the dest-types routes give for a missing pipeline (400). */
+    private def notFound(pipeline: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body[String]("{\"error\": " + new Gson().toJson("Pipeline not found: " + pipeline) + "}")
+
+    /** GET (`read`) and POST (`update`) /pipeline/dest-types on the stored
+      * config (null = missing), before anything is sampled or applied. A
+      * restricted session outside its grants (or the config missing) gets
+      * today's 400 "Pipeline not found: <name>"; an API key whose scope
+      * refuses `action` on it gets the capability-denied 403
+      * (plans/stories/scoped-key-read-routes.md). None for everyone else. */
+    def scopeRefusal(request: HttpServletRequest, pipeline: String, config: PipelineConfig, action: String): Option[ResponseEntity[String]] =
+        if (CapabilityCheck.isRestrictedSession(request)) {
+            if (PipelineAPIController.hiddenConfig(request, config, action)) Some(notFound(pipeline)) else None
+        } else if (config == null) None
+        else PipelineAPIController.keyRefusal(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+
+    /** [[scopeRefusal]] with the stored config read only for a caller it can
+      * refuse. */
+    def refusalFor(request: HttpServletRequest, pipeline: String, action: String): Option[ResponseEntity[String]] =
+        if (!CapabilityCheck.isRestrictedSession(request) && !CapabilityCheck.keyScopeApplies(request, "pipeline", action)) None
+        else scopeRefusal(request, pipeline, PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline), action)
+}
 
 /** Destination-side typing, pull-based (plans/destination-schema-after-load.md):
   * GET infers a typed proposal on demand from landed rows; POST applies the
@@ -42,9 +69,10 @@ class DestSchemaAPIController {
             APIKeyValidator.validate(apiKey)
             if (pipeline == null || pipeline.isEmpty)
                 throw new DatrisException("Pipeline name is required")
-            // Restricted users: a pipeline outside the grants reads exactly as a missing one.
-            if (PipelineAPIController.restrictedHidden(request, pipeline, "read"))
-                throw new DatrisException("Pipeline not found: " + pipeline)
+            // Restricted users: a pipeline outside the grants reads exactly as
+            // a missing one; a scoped key outside its scope: 403. Before any
+            // landed row is sampled.
+            DestSchemaAPIController.refusalFor(request, pipeline, "read").foreach(return _)
 
             val proposal = DestSchemaApply.propose(pipeline)
             new ResponseEntity[String](new Gson().toJson(proposal), HttpStatus.OK)
@@ -120,9 +148,10 @@ class DestSchemaAPIController {
             APIKeyValidator.validate(apiKey)
             if (body.pipeline == null || body.pipeline.isEmpty)
                 throw new DatrisException("Pipeline name is required")
-            // Restricted users: a pipeline outside the grants (or not editable) reads as missing.
-            if (PipelineAPIController.restrictedHidden(request, body.pipeline, "update"))
-                throw new DatrisException("Pipeline not found: " + body.pipeline)
+            // Restricted users: a pipeline outside the grants (or not editable)
+            // reads as missing; a scoped key outside its scope: 403. Before
+            // anything is migrated or written.
+            DestSchemaAPIController.refusalFor(request, body.pipeline, "update").foreach(return _)
 
             val applied = DestSchemaApply.apply(body.pipeline, body.fields, VersionActor.resolve(request))
             new ResponseEntity[String](new Gson().toJson(applied), HttpStatus.OK)

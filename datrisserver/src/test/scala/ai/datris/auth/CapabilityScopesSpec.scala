@@ -259,4 +259,26 @@ class CapabilityScopesSpec extends AnyFunSuite {
         assert(CapabilityScopes.collectionName("pgvector", "docs", Some("")) == "docs", "blank schema is public, as in VectorContainers.key")
         assert(CapabilityScopes.collectionName("pgvector", "docs", Some("other")) == "other.docs")
     }
+
+    test("inert messages: a scope applied on the route but with a value it rejects says the route accepts only 'self'") {
+        val bob = Seq(Capability.parse("approval:read:owner=bob"))
+        val denial = CapabilityScopes.inertDenialMessage("agent", "approval:read", bob)
+        assert(denial.contains("approval:read:owner=bob"), denial)
+        assert(denial.contains("scope 'owner' on approval:read accepts only 'self'"), denial)
+        assert(!denial.contains("not applied"), "owner IS applied on approval:read: " + denial)
+        assert(!denial.contains("Supported scopes for approval:read: owner"), denial)
+        assert(denial.contains("'approval:read:owner=self' or 'approval:read'"), denial)
+        val used = CapabilityScopes.inertUsedMessage("agent", "approval:read", bob)
+        assert(used.contains("accepts only 'self'") && !used.contains("not applied"), used)
+        // a scope key the route does not apply keeps its wording
+        val job = Seq(Capability.parse("job:read:owner=self"))
+        val jobDenial = CapabilityScopes.inertDenialMessage("ik", "job:read", job)
+        assert(jobDenial.contains("scope 'owner' is not applied on job:read") && jobDenial.contains("Supported scopes for job:read: none"), jobDenial)
+    }
+
+    test("inert-scope-used reason claims only that the capability gate let the request through") {
+        val used = CapabilityScopes.inertUsedMessage("ik", "job:read", Seq(Capability.parse("job:read:owner=self")))
+        assert(used.endsWith(CapabilityScopes.InertScopesEnv + "=allow let it through the capability gate."), used)
+        assert(!used.contains("allowed because"), used)
+    }
 }

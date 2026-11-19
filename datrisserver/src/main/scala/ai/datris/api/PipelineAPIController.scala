@@ -1585,20 +1585,52 @@ object PipelineAPIController {
         CapabilityCheck.isRestrictedSession(request) &&
             (config == null || !CapabilityCheck.grants(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)))
 
-    /** For a restricted user's session only: 404 ([[pipelineNotFound]]) when
-      * `name` is missing or outside the grants, 403 when visible but `action`
-      * is not granted. None for everyone else. */
+    /** The refusal for a pipeline named in a request: a restricted user's
+      * session gets 404 ([[pipelineNotFound]]) when `name` is missing or
+      * outside the grants, 403 when visible but `action` is not granted; an
+      * API key whose scope refuses `action` on the stored pipeline gets the
+      * capability-denied 403 (plans/stories/scoped-key-read-routes.md). The
+      * stored config is read only for those callers; None for everyone else
+      * and for a key naming a missing pipeline (the route answers as today). */
     def restrictedRefusal(request: HttpServletRequest, name: String, action: String): Option[ResponseEntity[String]] =
-        if (!CapabilityCheck.isRestrictedSession(request)) None
+        if (!CapabilityCheck.isRestrictedSession(request) && !CapabilityCheck.keyScopeApplies(request, "pipeline", action)) None
         else refusalFor(request, name, PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name), action)
 
     /** Pure core of [[restrictedRefusal]] on the loaded config (null = missing). */
     def refusalFor(request: HttpServletRequest, name: String, config: PipelineConfig, action: String): Option[ResponseEntity[String]] =
-        if (!CapabilityCheck.isRestrictedSession(request)) None
+        if (!CapabilityCheck.isRestrictedSession(request))
+            if (config == null) None
+            else keyRefusal(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
         else if (hiddenConfig(request, config, "read")) Some(pipelineNotFound(name))
         else if (hiddenConfig(request, config, action))
             Some(capabilityDenied(new DatrisException("capability denied: your catalog grant does not allow pipeline:" + action + " on " + name)))
         else None
+
+    /** The 403 (capability-denied body: `error`, `errorKind`, `message`)
+      * for a route that covers the whole installation and has nothing to
+      * filter (plans/stories/scoped-key-read-routes.md, rows 7 and 10), for a
+      * caller limited to a catalog or owner ([[CapabilityCheck.isLimited]]).
+      * `what` says what the route does; the message names nothing else. A
+      * key's refusal is noted for the audit log under `required`. */
+    def installWideRefusal(request: HttpServletRequest, what: String, required: String): ResponseEntity[String] = {
+        val message = "capability denied: " + what + " covers the whole installation and is not available to an API key or user " +
+            "limited to a catalog or to what it created"
+        if (!CapabilityCheck.isRestrictedSession(request))
+            ai.datris.audit.AuditLog.noteScopeDenial(request, required, message + " (key '" + CapabilityCheck.resolvedKey(request).map(_.label).orNull + "')")
+        capabilityDenied(new DatrisException(message))
+    }
+
+    /** An API key's scope refusal on one item as a response: the
+      * capability-denied 403 of [[CapabilityCheck.assertKeyScope]] (shared
+      * wording, denial noted for the audit log), or None. Always None for
+      * sessions and no identity. */
+    def keyRefusal(request: HttpServletRequest, resource: String, action: String, context: Map[String, String]): Option[ResponseEntity[String]] =
+        try {
+            CapabilityCheck.assertKeyScope(request, resource, action, context)
+            None
+        } catch {
+            case e: CapabilityDeniedException => Some(capabilityDenied(e))
+        }
 
     /** The names of `colliding` for the caller, only when every one is
       * visible to it ([[visiblePipelines]]); None otherwise, so a message
@@ -1859,7 +1891,8 @@ object PipelineAPIController {
     /** Whether [[overwriteRefusal]] can refuse this caller at all, so the
       * stored config is read only then: an API key (or session) that holds
       * none of `actions` unscoped, and not a restricted user's session
-      * (those get their 404/403 from `catalogForSave` / `pipelineHidden`).
+      * (those get their 404/403 from `catalogForSave` /
+      * `EntityVersionAPIController.versionRefusal`).
       * False for no key, full keys and unrestricted sessions. */
     def overwriteCheckNeeded(request: HttpServletRequest, actions: Seq[String]): Boolean =
         CapabilityCheck.resolvedKey(request).isDefined && !CapabilityCheck.isRestrictedSession(request) &&
@@ -2251,11 +2284,44 @@ object PipelineAPIController {
       * unrestricted sessions and auth-off installs: they read nothing before
       * the write and take no lock. */
     def saveGuardNeeded(request: HttpServletRequest): Boolean =
-        overwriteCheckNeeded(request, SaveOverwriteActions) || limitedVisibility(request) || CapabilityCheck.isRestrictedSession(request)
+        overwriteCheckNeeded(request, SaveOverwriteActions) || limitedVisibility(request) || CapabilityCheck.isRestrictedSession(request) ||
+            CapabilityCheck.keyScopeApplies(request, "pipeline", "create")
+
+    /** POST /pipeline, API keys (plans/stories/scoped-key-read-routes.md,
+      * Design 4): the pipeline as it would be saved must be in the key's
+      * scope, `pipeline:create` for a new name and `pipeline:create` or
+      * `pipeline:update` over a stored one, on its target catalog (the body's,
+      * so a blank catalog is no catalog: keys get no defaulting) and the
+      * stored owner (the caller's label for a new name). The 403 names the
+      * action attempted (`create` for a new name, `update` over a stored
+      * one). None for sessions, no identity, full keys and keys whose create
+      * is unscoped. */
+    def keyTargetRefusal(request: HttpServletRequest, config: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] =
+        CapabilityCheck.resolvedKey(request) match {
+            case Some(rk) if config != null && !rk.restrictedSession =>
+                val owner = if (stored != null) stored.createdByKeyLabel else rk.label
+                val ctx = CatalogOps.scopeContext(config.catalog, owner)
+                val acceptable = if (stored != null) SaveOverwriteActions else Seq("create")
+                val attempted = if (stored != null) "update" else "create"
+                if (!acceptable.exists(a => ai.datris.auth.CallerVisibility.keyOutOfScope(rk, "pipeline", a, ctx))) None
+                else if (acceptable.exists(a => rk.grants("pipeline", a, ctx))) None
+                else
+                    try {
+                        CapabilityCheck.assertScope(request, "pipeline", attempted, ctx)
+                        None
+                    } catch {
+                        case e: CapabilityDeniedException => Some(capabilityDenied(e))
+                    }
+            case _ => None
+        }
 
     /** POST /pipeline for a [[saveGuardNeeded]] caller, decided from ONE
       * stored-config read (`stored`, the config named `config.name` or null):
-      * the scope check on `stored` ([[overwriteRefusal]], 403), then for a
+      * the scope check on `stored` ([[overwriteRefusal]], 403), for an API
+      * key a stored config it cannot read (403 on `pipeline:read`, naming
+      * nothing of it) and the pipeline as it would be saved outside its
+      * scope ([[keyTargetRefusal]], 403; plans/stories/scoped-key-read-routes.md),
+      * then for a
       * null `stored` the previous-name check ([[hiddenAliasSaveRefusal]];
       * `readAll` is called only then, and a failure is
       * [[aliasCheckUnavailable]], 500), then the restricted-session catalog
@@ -2268,6 +2334,16 @@ object PipelineAPIController {
         readAll: () => Seq[PipelineConfig]
     ): Either[ResponseEntity[String], PipelineConfig] = {
         overwriteRefusal(request, stored, SaveOverwriteActions).foreach(refused => return Left(refused))
+        // API keys (scoped-key-read-routes, Design 4): a stored pipeline the
+        // key cannot read is never overwritten (the read refusal, naming
+        // nothing of it), and the pipeline as it would be saved must be in
+        // the key's scope (no move or create outside it).
+        if (stored != null && !CapabilityCheck.isRestrictedSession(request))
+            CapabilityCheck.resolvedKey(request).foreach { rk =>
+                if (ai.datris.auth.CallerVisibility.keyOutOfScope(rk, "pipeline", "read", CatalogOps.scopeContext(stored.catalog, stored.createdByKeyLabel)))
+                    return Left(readScopeDenied(request, stored))
+            }
+        keyTargetRefusal(request, config, stored).foreach(refused => return Left(refused))
         if (stored == null && config.name != null && limitedVisibility(request)) {
             val all =
                 try readAll()

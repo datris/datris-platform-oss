@@ -7,15 +7,17 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder}
-import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, PipelineConfig}
 import ai.datris.util.{
     AIUtil,
     APIKeyValidator,
+    CatalogOps,
     DatabricksErrorText,
     DatabricksQueryUtil,
     ObjectStoreQueryUtil,
     PostgresQueryUtil,
     PostgresSql,
+    PipelineConfigIO,
     MongoDBQueryUtil,
     SecretsRetrieverUtil,
     SnowflakeQueryUtil,
@@ -343,13 +345,26 @@ class QueryAPIController {
     }
 
     @PostMapping(path = Array("/job/kill"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def killJob(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def killJob(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any],
+        request: jakarta.servlet.http.HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /job/kill called")
             APIKeyValidator.validate(apiKey)
 
             val pipelineToken = Option(body.get("pipelineToken")).map(_.toString)
                 .getOrElse(throw new ai.datris.model.DatrisException("'pipelineToken' parameter is required"))
+
+            // A run of a pipeline outside the caller's scope answers exactly
+            // as an unknown token; nothing is cancelled.
+            QueryAPIController
+                .killRefusal(request, pipelineToken, n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n))
+                .foreach { refused =>
+                    logger.error("Error: Job not found for pipeline token: " + pipelineToken)
+                    return refused
+                }
 
             GlobalJobContext.killJob(pipelineToken)
 
@@ -402,6 +417,39 @@ class QueryAPIController {
 }
 
 object QueryAPIController {
+
+    /** POST /job/kill, before `GlobalJobContext.killJob`
+      * (plans/stories/scoped-key-read-routes.md): the token is resolved to
+      * its run's pipeline (`readPipeline` gives the stored config; the run's
+      * own config when it is gone). A restricted session, or an API key that
+      * holds a `pipeline:run` capability or is limited for pipelines, must
+      * hold in scope `pipeline:run` (when it holds any `pipeline:run`
+      * capability) or else `pipeline:read`. Outside it the answer is exactly
+      * the unknown-token one (same status and body for a key and a session,
+      * so the route is no oracle). None: kill as today (an unknown token
+      * included, and every other caller, for whom nothing is looked up). */
+    def killRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        pipelineToken: String,
+        readPipeline: String => PipelineConfig
+    ): Option[ResponseEntity[String]] =
+        ai.datris.auth.CapabilityCheck.resolvedKey(request).filter(ai.datris.auth.CallerVisibility.loadChecked).flatMap { rk =>
+            val job = if (pipelineToken == null) null else GlobalJobContext.findJobContext(pipelineToken)
+            if (job == null) None
+            else {
+                val runConfig = Option(job.config)
+                val config = runConfig.flatMap(c => Option(c.name)).flatMap(n => Option(readPipeline(n))).orElse(runConfig).orNull
+                val action = ai.datris.auth.CallerVisibility.loadAction(rk)
+                val inScope = config != null && rk.grants("pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+                if (inScope) None
+                else
+                    Some(
+                        ResponseEntity
+                            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                            .body[String](errorBody(new DatrisException("Job not found for pipeline token: " + pipelineToken)))
+                    )
+            }
+        }
 
     /** Pipeline-bound queries (objectstore, snowflake, sqlserver,
       * databricks) for a restricted user's session: the named pipeline must

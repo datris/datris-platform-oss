@@ -1,0 +1,97 @@
+package ai.datris.auth
+
+/*
+Datris
+Copyright (C) 2026 Datris (https://datris.ai)
+ */
+
+import ai.datris.model.ResolvedKey
+
+/** Who sees only part of the install (plans/stories/scoped-key-read-routes.md,
+  * Design 1, Decision D1). Pure on [[ResolvedKey]].
+  *
+  * A restricted user's session is always limited. An API key is limited for
+  * a resource (`pipeline` or `tap`) when it is not full access, holds at
+  * least one `pipeline:*` or `tap:*` capability carrying a `catalog=` or
+  * `owner=` scope, and holds no unscoped read on that resource. The scoped
+  * capability may be on either resource: a key holding only
+  * `pipeline:read:catalog=Sales` is limited for taps too (it reads no tap),
+  * and one holding unscoped `pipeline:read` and `tap:run:owner=self` is
+  * limited for taps only. A key with no scoped pipeline or tap capability (a
+  * `job:read` monitor key, the read-only, reporting and ops templates) is not
+  * limited, which is where this differs from the write-side
+  * `PipelineAPIController.limitedVisibility` (kept).
+  *
+  * Only the capabilities that grant are read ([[ResolvedKey.effectiveCapabilities]]):
+  * a stored capability whose scope the platform does not apply (inert) counts
+  * only under `DATRIS_KEY_INERT_SCOPES=allow`. So a key whose only scoped
+  * pipeline or tap capability is inert is not limited in the default refuse
+  * mode (that capability grants nothing, so the key reads nothing through
+  * it), and is limited in allow mode when it lacks unscoped read. */
+object CallerVisibility {
+
+    private val ScopedResources = Set("pipeline", "tap")
+    private val LimitingScopeKeys = Set("catalog", "owner")
+
+    /** Limited for pipelines (pipeline reads and writes are held to the scope). */
+    def limitedPipelines(rk: ResolvedKey): Boolean = limitedFor(rk, "pipeline")
+
+    /** Limited for taps. */
+    def limitedTaps(rk: ResolvedKey): Boolean = limitedFor(rk, "tap")
+
+    /** Limited for pipelines or taps. */
+    def limited(rk: ResolvedKey): Boolean = limitedPipelines(rk) || limitedTaps(rk)
+
+    /** [[limitedPipelines]] / [[limitedTaps]] by resource name; false for any
+      * other resource. */
+    def limitedFor(rk: ResolvedKey, resource: String): Boolean =
+        if (rk == null) false
+        else if (rk.restrictedSession) true
+        else if (!ScopedResources.contains(resource) || rk.isFullAccess) false
+        else holdsScopedPipelineOrTap(rk) && !holdsUnscoped(rk, resource, "read")
+
+    /** True when some granting capability on `pipeline` or `tap` carries a
+      * `catalog=` or `owner=` scope. */
+    private def holdsScopedPipelineOrTap(rk: ResolvedKey): Boolean =
+        rk.effectiveCapabilities.exists(c => ScopedResources.contains(c.resource) && c.scope.keySet.exists(LimitingScopeKeys.contains))
+
+    /** True when a granting capability covers (resource, action) with no scope. */
+    def holdsUnscoped(rk: ResolvedKey, resource: String, action: String): Boolean =
+        rk.isLegacyFullAccess || rk.effectiveCapabilities.exists(c => c.scope.isEmpty && c.matchesResourceAction(resource, action))
+
+    /** True when some granting capability matches (resource, action), scoped or not. */
+    def holdsAny(rk: ResolvedKey, resource: String, action: String): Boolean =
+        rk.isLegacyFullAccess || rk.effectiveCapabilities.exists(_.matchesResourceAction(resource, action))
+
+    /** Whether a key's scope can refuse it (resource, action) on a named item
+      * at all, so the item is read only then. True when the caller is an API
+      * key (not a session), not full access, holds no unscoped capability for
+      * (resource, action), and either holds a scoped one or is limited for
+      * the resource. A key that holds the action nowhere and is not limited
+      * keeps today's answer (the route gate decided): this is what keeps, for
+      * example, the rag-builder template (unscoped `tap:create`, no
+      * `tap:update`) generating scripts for any tap. False for sessions:
+      * restricted ones have their own not-found rules, unrestricted ones hold
+      * unscoped role bundles. */
+    def keyScopeApplies(rk: ResolvedKey, resource: String, action: String): Boolean =
+        rk != null && !rk.restrictedSession && !rk.isFullAccess && !holdsUnscoped(rk, resource, action) &&
+            (holdsAny(rk, resource, action) || limitedFor(rk, resource))
+
+    /** True when an API key is refused (resource, action) on an item whose
+      * scope context is `context` ([[keyScopeApplies]] and no granting
+      * capability covers it). Always false for sessions. */
+    def keyOutOfScope(rk: ResolvedKey, resource: String, action: String, context: Map[String, String]): Boolean =
+        keyScopeApplies(rk, resource, action) && !rk.grants(resource, action, context)
+
+    /** The pipeline right a load into a pipeline needs (upload, `kill_job`,
+      * a tap's target pipeline): `run` when the caller holds any
+      * `pipeline:run` capability, otherwise `read`. */
+    def loadAction(rk: ResolvedKey): String = if (rk != null && holdsAny(rk, "pipeline", "run")) "run" else "read"
+
+    /** Whether a load into a pipeline is checked against the caller's scope:
+      * a restricted session, or a key that is not full access and holds a
+      * `pipeline:run` capability or is limited for pipelines. Others keep
+      * today's answer (a `document:upload`-only key, the ops template). */
+    def loadChecked(rk: ResolvedKey): Boolean =
+        rk != null && (rk.restrictedSession || !rk.isFullAccess && (holdsAny(rk, "pipeline", "run") || limitedPipelines(rk)))
+}

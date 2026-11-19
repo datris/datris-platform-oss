@@ -56,6 +56,41 @@ object FileUploadAPIController {
         } catch {
             case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
         }
+
+    /** POST /pipeline/upload, after the config load (`config` null = no such
+      * pipeline), before any status row or staging. First the pipeline scope
+      * (plans/stories/scoped-key-read-routes.md): a restricted session gets
+      * [[PipelineAPIController.refusalFor]] on `run` (404 when hidden or
+      * missing, 403 when view-only); an API key that holds a `pipeline:run`
+      * capability or is limited for pipelines must hold, in scope on the
+      * stored pipeline, `pipeline:run` (when it holds any `pipeline:run`
+      * capability) or else `pipeline:read`, or gets the capability-denied
+      * 403. Then, for an existing pipeline, the `collection=` check
+      * ([[uploadScopeRefusal]]). Both must pass; when both would refuse the
+      * pipeline refusal is the answer. None for everyone else (a key holding
+      * no pipeline capability, unscoped keys, unrestricted sessions, no
+      * identity). */
+    def uploadRefusal(request: HttpServletRequest, name: String, config: PipelineConfig): Option[ResponseEntity[String]] =
+        if (CapabilityCheck.isRestrictedSession(request))
+            PipelineAPIController.refusalFor(request, name, config, "run").orElse(if (config == null) None else uploadScopeRefusal(request, config))
+        else if (config == null) None
+        else
+            CapabilityCheck
+                .resolvedKey(request)
+                .filter(ai.datris.auth.CallerVisibility.loadChecked)
+                .flatMap { rk =>
+                    val action = ai.datris.auth.CallerVisibility.loadAction(rk)
+                    val ctx = ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
+                    if (rk.grants("pipeline", action, ctx)) None
+                    else
+                        try {
+                            CapabilityCheck.assertScope(request, "pipeline", action, ctx)
+                            None
+                        } catch {
+                            case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
+                        }
+                }
+                .orElse(uploadScopeRefusal(request, config))
 }
 
 @RestController
@@ -75,18 +110,18 @@ class FileUploadAPIController {
             logger.info("API endpoint POST /pipeline/upload called for pipeline: " + pipeline + ", filename: " + multipartFile
                 .getOriginalFilename + ", publishertoken: " + publishertoken)
             APIKeyValidator.validate(apiKey)
-            // A restricted user uploads only into a pipeline it may run; a
-            // hidden or missing one answers the pipeline 404 (and no error
-            // status row is written for it).
-            PipelineAPIController.restrictedRefusal(request, pipeline, "run").foreach(r => return r)
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
+            // A restricted user uploads only into a pipeline it may run (a
+            // hidden or missing one answers the pipeline 404, and no error
+            // status row is written for it); a scoped key only into a
+            // pipeline in its scope; a key scoped to collections only into
+            // pipelines whose vector destinations it names. Before any status
+            // row or staging.
+            FileUploadAPIController.uploadRefusal(request, pipeline, config).foreach(r => return r)
 
             // Validate pipeline is registered before processing
-            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if (config == null)
                 throw new IllegalArgumentException("Pipeline '" + pipeline + "' is not registered. Use POST /api/v1/pipeline to register it first.")
-            // A key scoped to collections uploads only into pipelines whose
-            // vector destinations it names (before any status row or staging).
-            FileUploadAPIController.uploadScopeRefusal(request, config).foreach(r => return r)
 
             val filename = multipartFile.getOriginalFilename
             val isCsv = config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null

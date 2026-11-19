@@ -77,6 +77,11 @@ class FieldProtectionAPIController {
             audit("success", 200, null)
             new ResponseEntity[String](FieldProtectionAdvisor.toJson(suggestion), HttpStatus.OK)
         } catch {
+            // A scoped key outside its scope: 403 before the field list is read.
+            case e: CapabilityDeniedException =>
+                logger.warn("Field protection suggest refused: capability denied")
+                audit("failure", 403, e.getMessage)
+                PipelineAPIController.capabilityDenied(e)
             case e: DatrisException =>
                 logger.warn("Field protection suggest refused: " + e.getMessage)
                 audit("failure", 400, e.getMessage)
@@ -134,6 +139,9 @@ class FieldProtectionAPIController {
             val current: Map[String, ProtectionPolicy] = input.map(f => f.name -> f.protect).toMap
             new ResponseEntity[String](ProtectionPreset.toJson(proposal, current), HttpStatus.OK)
         } catch {
+            case e: CapabilityDeniedException =>
+                logger.warn("Field protection preset refused: capability denied")
+                PipelineAPIController.capabilityDenied(e)
             case e: DatrisException =>
                 logger.warn("Field protection preset refused: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
@@ -186,6 +194,9 @@ class FieldProtectionAPIController {
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
+            // A scoped key reveals only in a pipeline it may read
+            // (scoped-key-read-routes), before its schema is looked at.
+            CapabilityCheck.assertKeyScope(request, "pipeline", "read", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
             val sp = if (config.source != null) config.source.schemaProperties else null
             val sourceField: SchemaField =
                 Option(sp).flatMap(s => Option(s.fields)).map(_.asScala.toList).getOrElse(Nil)
@@ -288,19 +299,17 @@ object FieldProtectionAPIController {
     /** `checkStored` for a named pipeline: a restricted user's session gets
       * the same error as a missing pipeline when the stored config is outside
       * its catalog grants, so the field list and protection policy never
-      * leak. No-op for everyone else. */
+      * leak; an API key whose scope refuses `pipeline:read` on it gets a
+      * [[CapabilityDeniedException]] (the routes' 403;
+      * plans/stories/scoped-key-read-routes.md). No-op for everyone else. */
     private[api] def hideFromRestricted(request: HttpServletRequest, pipeline: String): ai.datris.model.PipelineConfig => Unit =
-        config =>
-            if (
-                ai.datris.auth.CapabilityCheck.isRestrictedSession(request) &&
-                !ai.datris.auth.CapabilityCheck.grants(
-                    request,
-                    "pipeline",
-                    "read",
-                    ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
-                )
-            )
-                throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
+        config => {
+            val ctx = ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
+            if (CapabilityCheck.isRestrictedSession(request)) {
+                if (!CapabilityCheck.grants(request, "pipeline", "read", ctx))
+                    throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
+            } else CapabilityCheck.assertKeyScope(request, "pipeline", "read", ctx)
+        }
 
     /** The field list a suggest or preset call works on, with the pipeline's
       * constraints: the stored source schema when `pipeline` is named, else

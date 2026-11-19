@@ -51,35 +51,182 @@ object TapAPIController {
             case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
         }
 
-    /** For a restricted user's session only: the refusal for a tap named in
-      * a request (404 when missing or outside the grants, 403 when visible
-      * but `action` is not granted). None for everyone else, so API keys keep
-      * today's behaviour on these routes. */
+    private def readTap(name: String): TapConfig = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
+
+    /** The refusal for a tap named in a request: a restricted user's session
+      * gets 404 when it is missing or outside the grants and 403 when visible
+      * but `action` is not granted; an API key whose scope refuses `action`
+      * on the stored tap gets the capability-denied 403
+      * (plans/stories/scoped-key-read-routes.md). The tap is read only for
+      * those callers. None for everyone else and for a key naming a missing
+      * tap (the route answers as today). */
     def restrictedRefusal(request: HttpServletRequest, name: String, action: String): Option[ResponseEntity[String]] =
-        if (!CapabilityCheck.isRestrictedSession(request)) None
-        else
-            Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)) match {
+        restrictedRefusal(request, name, action, readTap)
+
+    /** [[restrictedRefusal]] with the tap read given. */
+    def restrictedRefusal(request: HttpServletRequest, name: String, action: String, read: String => TapConfig): Option[ResponseEntity[String]] =
+        if (CapabilityCheck.isRestrictedSession(request))
+            Option(read(name)) match {
                 case None => Some(tapNotFound(name))
                 case Some(t) => scopeRefusal(request, t, action)
             }
+        else if (!CapabilityCheck.keyScopeApplies(request, "tap", action)) None
+        else Option(read(name)).flatMap(t => keyRefusalOn(request, t, action))
 
     /** [[restrictedRefusal]] for routes that also serve a tap not saved yet
       * (generate / fix from the wizard): only an EXISTING tap is checked. */
     def restrictedRefusalIfExists(request: HttpServletRequest, name: String, action: String): Option[ResponseEntity[String]] =
-        if (!CapabilityCheck.isRestrictedSession(request) || name == null || name.isEmpty) None
-        else Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)).flatMap(t => scopeRefusal(request, t, action))
+        restrictedRefusalIfExists(request, name, action, readTap)
 
-    /** For a restricted user's session only: refusal when the tap's
-      * `targetPipeline` is missing or outside the grants (pipeline 404) or
-      * visible but not runnable (403). None when no target or not restricted. */
+    /** [[restrictedRefusalIfExists]] with the tap read given. */
+    def restrictedRefusalIfExists(
+        request: HttpServletRequest,
+        name: String,
+        action: String,
+        read: String => TapConfig
+    ): Option[ResponseEntity[String]] =
+        if (name == null || name.isEmpty) None
+        else if (CapabilityCheck.isRestrictedSession(request)) Option(read(name)).flatMap(t => scopeRefusal(request, t, action))
+        else if (!CapabilityCheck.keyScopeApplies(request, "tap", action)) None
+        else Option(read(name)).flatMap(t => keyRefusalOn(request, t, action))
+
+    /** An API key's scope refusal for `action` on a loaded tap (403), or None. */
+    private def keyRefusalOn(request: HttpServletRequest, t: TapConfig, action: String): Option[ResponseEntity[String]] =
+        PipelineAPIController.keyRefusal(request, "tap", action, CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel))
+
+    /** Refusal when the tap's `targetPipeline` is outside the caller's
+      * scope. A restricted session: missing or outside the grants (pipeline
+      * 404), visible but not runnable (403). An API key limited for
+      * pipelines ([[ai.datris.auth.CallerVisibility.limitedPipelines]]) that
+      * holds some pipeline capability: 403 when its scope does not grant
+      * `pipeline:run` on the stored target (`pipeline:read` when it holds no
+      * `pipeline:run`); a missing target is left to the save. None when no
+      * target and for everyone else (a key holding only tap capabilities,
+      * keys not limited for pipelines such as rag-builder), who read nothing
+      * here. */
     def targetPipelineRefusal(
         request: HttpServletRequest,
         tap: TapConfig,
         readPipeline: String => PipelineConfig = n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
     ): Option[ResponseEntity[String]] =
         if (tap == null || tap.targetPipeline == null || tap.targetPipeline.trim.isEmpty) None
-        else if (!CapabilityCheck.isRestrictedSession(request)) None
-        else PipelineAPIController.refusalFor(request, tap.targetPipeline, readPipeline(tap.targetPipeline), "run")
+        else if (CapabilityCheck.isRestrictedSession(request))
+            PipelineAPIController.refusalFor(request, tap.targetPipeline, readPipeline(tap.targetPipeline), "run")
+        else
+            CapabilityCheck.resolvedKey(request) match {
+                case Some(rk) if ai.datris.auth.CallerVisibility.limitedPipelines(rk) && rk.effectiveCapabilities.exists(_.resource == "pipeline") =>
+                    Option(readPipeline(tap.targetPipeline)).flatMap { p =>
+                        val action = ai.datris.auth.CallerVisibility.loadAction(rk)
+                        val ctx = CatalogOps.scopeContext(p.catalog, p.createdByKeyLabel)
+                        if (rk.grants("pipeline", action, ctx)) None
+                        else
+                            try {
+                                CapabilityCheck.assertScope(request, "pipeline", action, ctx)
+                                None
+                            } catch {
+                                case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
+                            }
+                    }
+                case _ => None
+            }
+
+    /** POST /tap (`saveTapInternal`), every caller, decided on `stored` (the
+      * tap of that name, or null). A restricted session: the catalog rules
+      * ([[catalogForSave]]) as before. An API key
+      * (plans/stories/scoped-key-read-routes.md, Design 4): a stored tap the
+      * key cannot read is never overwritten (403 on `tap:read`, naming
+      * nothing of it), nor one it holds neither `tap:create` nor
+      * `tap:update` on (403 on `update`, the tap twin of
+      * `PipelineAPIController.overwriteRefusal`), and the tap as it would be
+      * saved (the body's catalog, the stored owner or the caller's label)
+      * must be in scope: `tap:create` for a new name (403 on `create`),
+      * `tap:create` or `tap:update` over a stored one (403 on `update`).
+      * Right is the config to save; keys get no catalog defaulting. Reads
+      * nothing. */
+    def saveGuardDecision(request: HttpServletRequest, config: TapConfig, stored: TapConfig): Either[ResponseEntity[String], TapConfig] =
+        if (CapabilityCheck.isRestrictedSession(request)) catalogForSave(request, config, stored)
+        else
+            CapabilityCheck.resolvedKey(request) match {
+                case Some(rk) if config != null =>
+                    import ai.datris.auth.CallerVisibility.keyOutOfScope
+                    def denied(action: String, ctx: Map[String, String]): Left[ResponseEntity[String], TapConfig] =
+                        try {
+                            CapabilityCheck.assertScope(request, "tap", action, ctx)
+                            Left(PipelineAPIController.capabilityDenied(new CapabilityDeniedException("capability denied")))
+                        } catch {
+                            case e: CapabilityDeniedException => Left(PipelineAPIController.capabilityDenied(e))
+                        }
+                    val overwrite = Seq("create", "update")
+                    if (stored != null) {
+                        val storedCtx = CatalogOps.scopeContext(stored.catalog, stored.createdByKeyLabel)
+                        if (keyOutOfScope(rk, "tap", "read", storedCtx)) return denied("read", storedCtx)
+                        if (overwrite.exists(a => keyOutOfScope(rk, "tap", a, storedCtx)) && !overwrite.exists(a => rk.grants("tap", a, storedCtx)))
+                            return denied("update", storedCtx)
+                    }
+                    val owner = if (stored != null) stored.createdByKeyLabel else rk.label
+                    val ctx = CatalogOps.scopeContext(config.catalog, owner)
+                    val acceptable = if (stored != null) overwrite else Seq("create")
+                    if (acceptable.exists(a => keyOutOfScope(rk, "tap", a, ctx)) && !acceptable.exists(a => rk.grants("tap", a, ctx)))
+                        denied(if (stored != null) "update" else "create", ctx)
+                    else Right(config)
+                case _ => Right(config)
+            }
+
+    /** POST /tap/test (plans/stories/scoped-key-read-routes.md, rows 10 and
+      * D4), before anything runs. A test runs the body's script with the
+      * body's secret under the body's name, so for a restricted session and
+      * for an API key whose tap read is scoped: (1) a stored tap of that name
+      * must be one the caller may read; (2) the body's `secretName`, when it
+      * names an existing secret, is checked as the tap as tested would be:
+      * `tap:read` on the body's catalog (else the stored tap's) with the
+      * secret's owner (`createdByKeyLabel`) as owner, so an `owner=self` key
+      * tests only with secrets it created and a catalog-scoped key only a tap
+      * of its catalog. A restricted session gets the tap's 404, a key the
+      * capability-denied 403 on `tap:read`. `secretOwner`: outer None = no
+      * such secret (left to the run's missing-secret error), inner = its
+      * owner. Nothing is read for anyone else. */
+    def testRefusal(
+        request: HttpServletRequest,
+        body: TapConfig,
+        read: String => TapConfig,
+        secretOwner: String => Option[Option[String]]
+    ): Option[ResponseEntity[String]] = {
+        val session = CapabilityCheck.isRestrictedSession(request)
+        if (body == null || !session && !CapabilityCheck.keyScopeApplies(request, "tap", "read")) return None
+        val name = Option(body.name).filter(_.nonEmpty).orNull
+        val stored = if (name == null) null else read(name)
+        if (stored != null) {
+            val r = if (session) scopeRefusal(request, stored, "read") else keyRefusalOn(request, stored, "read")
+            if (r.isDefined) return r
+        }
+        val secret = Option(body.secretName).map(_.trim).filter(_.nonEmpty)
+        secret.flatMap(secretOwner).flatMap { owner =>
+            val catalog = Option(body.catalog).filter(_.nonEmpty).orElse(Option(stored).flatMap(s => Option(s.catalog))).orNull
+            val ctx = CatalogOps.scopeContext(catalog, owner.orNull)
+            if (session) {
+                if (CapabilityCheck.grants(request, "tap", "read", ctx)) None
+                else Some(tapNotFound(Option(name).getOrElse("")))
+            } else PipelineAPIController.keyRefusal(request, "tap", "read", ctx)
+        }
+    }
+
+    /** The owner tag of a secret of the current environment, for
+      * [[testRefusal]]: None when it does not exist or its name is not a
+      * safe path (the run refuses it), else its `createdByKeyLabel`. */
+    private[api] def liveSecretOwner(name: String): Option[Option[String]] = {
+        val path = DatrisEnvironment.current.environment + "/" + name
+        if (!SecretNames.isSafePath(path)) None
+        else SecretsUtil.getSecretMap(path).map(m => Option(m.get("createdByKeyLabel")).filter(_.nonEmpty))
+    }
+
+    /** Whether POST /tap must read the stored tap before deciding: a
+      * restricted session, or an API key whose scope can refuse a tap read
+      * or create ([[saveGuardDecision]]). */
+    def saveGuardNeeded(request: HttpServletRequest): Boolean =
+        CapabilityCheck.isRestrictedSession(request) ||
+            CapabilityCheck.keyScopeApplies(request, "tap", "read") ||
+            CapabilityCheck.keyScopeApplies(request, "tap", "create") ||
+            CapabilityCheck.keyScopeApplies(request, "tap", "update")
 
     /** POST /tap catalog rules for a restricted user's session (no-op for
       * everyone else); see [[RestrictedCatalogRules.catalogForSave]]. */
@@ -695,19 +842,21 @@ class TapAPIController {
             throw new DatrisException("Tap name is required")
 
         // Restricted users: default a blank catalog and refuse targets
-        // outside their grants before anything is validated or written.
-        if (CapabilityCheck.isRestrictedSession(request)) {
-            val stored = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
-            TapAPIController.catalogForSave(request, tapConfig, stored) match {
-                case Left(refused) => return Left(refused)
-                case Right(c) =>
-                    // The tap feeds its target pipeline: that pipeline must be
-                    // one the user may run (hidden/missing -> pipeline 404).
-                    TapAPIController.targetPipelineRefusal(request, c).foreach(r => return Left(r))
-                    return saveTapScoped(c, changeNote, request, restored)
-            }
-        }
-        saveTapScoped(tapConfig, changeNote, request, restored)
+        // outside their grants; scoped API keys: no overwrite of a tap outside
+        // the scope and no save outside it (TapAPIController.saveGuardDecision).
+        // Both before anything is validated or written.
+        val scoped =
+            if (!TapAPIController.saveGuardNeeded(request)) tapConfig
+            else
+                TapAPIController.saveGuardDecision(request, tapConfig, TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)) match {
+                    case Left(refused) => return Left(refused)
+                    case Right(c) => c
+                }
+        // The tap feeds its target pipeline: that pipeline must be one the
+        // caller may load into (restricted session: hidden/missing -> pipeline
+        // 404; pipeline-limited key: 403).
+        TapAPIController.targetPipelineRefusal(request, scoped).foreach(r => return Left(r))
+        saveTapScoped(scoped, changeNote, request, restored)
     }
 
     private def saveTapScoped(
@@ -1535,11 +1684,16 @@ class TapAPIController {
     def testTap(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
         @RequestParam(required = false) testLimit: Integer,
-        @RequestBody tapConfig: TapConfig
+        @RequestBody tapConfig: TapConfig,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /tap/test called for tap: " + tapConfig.name + (if (testLimit != null) s" (testLimit=$testLimit)" else ""))
             APIKeyValidator.validate(apiKey)
+            // A tap outside the caller's scope, or a secret it may not use,
+            // is refused before anything runs.
+            TapAPIController.testRefusal(request, tapConfig, n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n), TapAPIController.liveSecretOwner)
+                .foreach(return _)
 
             // HTTP taps have no script — a test run is just a call with testLimit set.
             val hasTestScriptRef =

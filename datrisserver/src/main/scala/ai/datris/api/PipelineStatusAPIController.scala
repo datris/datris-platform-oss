@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
-import ai.datris.model.{DatrisEnvironment, PipelineJobRollup, PipelineStatus, PipelineStatusResponse, PipelineStatusSummary}
+import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineJobRollup, PipelineStatus, PipelineStatusResponse, PipelineStatusSummary}
 import ai.datris.util.{
     APIKeyValidator,
     NoSQLDbUtil,
@@ -24,6 +24,22 @@ import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 
 object PipelineStatusAPIController {
+
+    /** DELETE /pipeline/status wipes every catalog's history, so a limited
+      * caller is refused before anything is deleted: a restricted user's
+      * session with today's 403 text, a scope-limited API key
+      * (plans/stories/scoped-key-read-routes.md) with the install-wide 403.
+      * None for everyone else (and with no identity). */
+    def clearAllRefusal(request: jakarta.servlet.http.HttpServletRequest): Option[ResponseEntity[String]] =
+        if (ai.datris.auth.CapabilityCheck.isRestrictedSession(request))
+            Some(
+                PipelineAPIController.capabilityDenied(
+                    new DatrisException("capability denied: only an unrestricted user can clear all ingestion history")
+                )
+            )
+        else if (ai.datris.auth.CapabilityCheck.isLimited(request))
+            Some(PipelineAPIController.installWideRefusal(request, "clearing all ingestion history", "job:kill"))
+        else None
 
     /** The 404 [[ScratchReader.resolve]] answers for a token with no run. */
     def unknownToken(pipelinetoken: String, publishertoken: String): ScratchResultException =
@@ -386,11 +402,9 @@ class PipelineStatusAPIController {
         try {
             logger.info("API endpoint DELETE /pipeline/status called — clearing all ingestion history")
             APIKeyValidator.validate(apiKey)
-            // Clearing wipes every catalog's history: never for a restricted user.
-            if (ai.datris.auth.CapabilityCheck.isRestrictedSession(request))
-                return PipelineAPIController.capabilityDenied(
-                    new ai.datris.model.DatrisException("capability denied: only an unrestricted user can clear all ingestion history")
-                )
+            // Clearing wipes every catalog's history: never for a restricted
+            // user or a scope-limited key. Before anything is deleted.
+            PipelineStatusAPIController.clearAllRefusal(request).foreach(return _)
 
             val tableName = DatrisEnvironment.current.pipelineStatusTableName
             val detailCount = NoSQLDbUtil.deleteAll(tableName)

@@ -138,7 +138,9 @@ object CapabilityCheck {
     /** Same as [[assertScope]], but a restricted user's session
       * (`ResolvedKey.restrictedSession`) gets a [[ResourceHiddenException]]
       * instead, so the controller answers 404 as if the resource did not
-      * exist. API keys keep the 403 (`CapabilityDeniedException`). */
+      * exist. API keys keep the 403 (`CapabilityDeniedException`). Routes
+      * that must not refuse a key holding the action nowhere (the route gate
+      * decided) use [[assertKeyScope]] for the key side instead. */
     def assertVisible(
         request: HttpServletRequest,
         resource: String,
@@ -155,6 +157,29 @@ object CapabilityCheck {
     /** True when the request runs as a restricted user's session. */
     def isRestrictedSession(request: HttpServletRequest): Boolean =
         readResolvedKey(request).exists(_.restrictedSession)
+
+    /** True when the request's identity sees only part of the install
+      * ([[CallerVisibility.limited]]): a restricted user's session, or an API
+      * key limited by a `catalog=` / `owner=` scope on a pipeline or tap
+      * capability (plans/stories/scoped-key-read-routes.md, D1). False with no
+      * identity (auth off) and for a null request. */
+    def isLimited(request: HttpServletRequest): Boolean =
+        readResolvedKey(request).exists(CallerVisibility.limited)
+
+    /** For an API key only: throws [[CapabilityDeniedException]] (through
+      * [[assertScope]], so the wording and the audit note are the shared ones)
+      * when the key's scope refuses (resource, action) on an item with scope
+      * `context` ([[CallerVisibility.keyOutOfScope]]). No-op for sessions, no
+      * identity, full keys and keys whose scope cannot refuse the action. */
+    def assertKeyScope(request: HttpServletRequest, resource: String, action: String, context: Map[String, String]): Unit =
+        if (readResolvedKey(request).exists(rk => CallerVisibility.keyOutOfScope(rk, resource, action, context)))
+            assertScope(request, resource, action, context)
+
+    /** True when the request is an API key whose scope can refuse (resource,
+      * action) on a named item ([[CallerVisibility.keyScopeApplies]]), so the
+      * item must be read to decide. */
+    def keyScopeApplies(request: HttpServletRequest, resource: String, action: String): Boolean =
+        readResolvedKey(request).exists(rk => CallerVisibility.keyScopeApplies(rk, resource, action))
 
     /** The request's resolved identity, if any. */
     def resolvedKey(request: HttpServletRequest): Option[ResolvedKey] = readResolvedKey(request)
