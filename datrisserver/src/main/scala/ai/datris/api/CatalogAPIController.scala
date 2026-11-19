@@ -1227,7 +1227,6 @@ class CatalogAPIController {
                         None
                     } catch {
                         case e: CapabilityDeniedException =>
-                            logger.info("capability scope denial: " + e.getMessage)
                             Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](CatalogOps.capabilityDeniedBody(e.getMessage)))
                     }
                 }.headOption

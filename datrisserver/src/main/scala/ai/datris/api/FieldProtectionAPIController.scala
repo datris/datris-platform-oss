@@ -384,8 +384,11 @@ object FieldProtectionAPIController {
     /** 403 in the CapabilityInterceptor's shape, recorded once as a
       * `security` denied entry (no `protect` entry for a denied call). */
     private[api] def denied(request: HttpServletRequest, e: CapabilityDeniedException, action: String): ResponseEntity[String] = {
-        LoggerFactory.getLogger(classOf[FieldProtectionAPIController]).warn("Field protection " + action + " denied: " + e.getMessage)
-        try AuditLog.denied(request, e.getMessage, 403, Some("protect:" + action))
+        // The detail (target scope) goes to the log and audit row only; the
+        // body carries the message.
+        val detail = Option(e.detail).getOrElse(e.getMessage)
+        LoggerFactory.getLogger(classOf[FieldProtectionAPIController]).warn("Field protection " + action + " denied: " + detail)
+        try AuditLog.denied(request, detail, 403, Some("protect:" + action))
         catch { case _: Exception => () }
         ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON).body[String](CatalogOps.capabilityDeniedBody(e.getMessage))
     }

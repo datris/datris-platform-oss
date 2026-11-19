@@ -142,6 +142,8 @@ Each capability is `resource:action[:scope]`. Scope segments restrict by contain
 
 A scoped key cannot overwrite or restore a pipeline outside its scope: saving (`POST /api/v1/pipeline`) under the name of an existing pipeline needs `pipeline:create` or `pipeline:update` in scope for that pipeline's catalog and owner, and restoring one of its versions needs `pipeline:update` in scope (for a deleted pipeline, the restored version's catalog and owner); otherwise the request is refused with `403` before anything is checked or written.
 
+When a key is refused for an item outside its scope, the `403` message names the key, the capability it lacks, and the key's own capabilities for that kind of item. It never names the item's catalog or owner (or a secret's type). Admins find those in the [audit log](/audit-log#what-is-recorded), which records each refusal with the item's catalog and owner.
+
 Tap secrets (`_type=tap`) are the only secrets a tap can read: a tap that names a platform secret is refused on save and at run time, so a key holding `tap:create` and `tap:run` cannot use a tap to read a platform secret that its `secret:read:_type=tap` scope keeps it from reading directly (unless an operator sets `DATRIS_TAP_SECRET_SCOPE=any`; see [Taps](/taps#taps-can-only-use-tap-secrets)).
 
 `protect:reveal` (read back the original of an [`encrypt`-protected field](/transformation/field-protection#revealing-a-value)) and `protect:admin` (rotate its key, and edits to the field-protection secret) are never in a scoped template or in the editor and viewer role bundles: grant them explicitly to the key that needs them. Admins, the `full-access` template, and legacy unscoped keys hold them through `*:*`.

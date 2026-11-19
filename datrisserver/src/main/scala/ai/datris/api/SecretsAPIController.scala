@@ -90,7 +90,6 @@ class SecretsAPIController {
                 // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
                 // deny — a stack-trace 500 reads to agents as a server fault,
                 // not a permission boundary.
-                logger.info("capability scope denial: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
                         e.getMessage.replace("\"", "\\\"") + "\"}")
@@ -142,7 +141,6 @@ class SecretsAPIController {
                 // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
                 // deny — a stack-trace 500 reads to agents as a server fault,
                 // not a permission boundary.
-                logger.info("capability scope denial: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
                         e.getMessage.replace("\"", "\\\"") + "\"}")
@@ -319,7 +317,6 @@ class SecretsAPIController {
                 // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
                 // deny — a stack-trace 500 reads to agents as a server fault,
                 // not a permission boundary.
-                logger.info("capability scope denial: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
                         e.getMessage.replace("\"", "\\\"") + "\"}")
@@ -371,7 +368,6 @@ class SecretsAPIController {
                 // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
                 // deny — a stack-trace 500 reads to agents as a server fault,
                 // not a permission boundary.
-                logger.info("capability scope denial: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
                         e.getMessage.replace("\"", "\\\"") + "\"}")

@@ -66,6 +66,35 @@ object AuditLog {
       * request by a denial path, so the interceptor doesn't double-log. */
     val RecordedAttr = "ai.datris.audit.recorded"
 
+    /** Request attribute holding the scope denials
+      * [[ai.datris.auth.CapabilityCheck.assertScope]] noted on this request,
+      * as a `Vector[(required, detail)]` (`required` = `resource:action`,
+      * `detail` = the refusal text with the target's scope). Read by
+      * [[ai.datris.config.AuditInterceptor]]; never sent to a client. */
+    val ScopeDenialsAttr = "ai.datris.audit.scopeDenials"
+
+    /** How many scope denials one request keeps (the first ones). */
+    val MaxScopeDenials = 20
+
+    /** Note a scope denial on the request for the audit entry the interceptor
+      * writes at completion. Appends; keeps the first [[MaxScopeDenials]].
+      * A null request is a no-op. Not gated on [[enabled]]: noting is a
+      * request attribute only, and the interceptor decides what is written. */
+    def noteScopeDenial(request: HttpServletRequest, required: String, detail: String): Unit = {
+        if (request == null) return
+        val current = scopeDenials(request)
+        if (current.size < MaxScopeDenials) request.setAttribute(ScopeDenialsAttr, current :+ (required -> detail))
+    }
+
+    /** The scope denials noted on the request, in order (empty when none). */
+    def scopeDenials(request: HttpServletRequest): Vector[(String, String)] = {
+        if (request == null) return Vector.empty
+        request.getAttribute(ScopeDenialsAttr) match {
+            case v: Vector[_] => v.collect { case (r: String, d: String) => r -> d }
+            case _ => Vector.empty
+        }
+    }
+
     /** `category:action` pairs whose bursts are folded into one record per
       * actor+resource per [[CollapseWindowMs]]. */
     val Collapsible: Set[String] = Set("document:upload", "pipeline:ingest", "pipeline:ingest-trigger")
