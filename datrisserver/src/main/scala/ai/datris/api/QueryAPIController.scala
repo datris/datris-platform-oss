@@ -565,7 +565,7 @@ object QueryAPIController {
         if (!callerSqlPresent(sql) || ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || !ai.datris.auth.CapabilityCheck.isLimited(request))
             None
         else {
-            val required = (Option(request.getMethod), Option(request.getRequestURI)) match {
+            val required = (Option(ai.datris.auth.RequestPaths.method(request)), Option(ai.datris.auth.RequestPaths.path(request))) match {
                 case (Some(m), Some(p)) =>
                     ai.datris.auth.CapabilityRoutes.lookup(m, p) match {
                         case ai.datris.auth.RouteCheck.Require(r, a) => r + ":" + a

@@ -127,6 +127,8 @@ The fields:
 
 Enforcement is **on by default**: a scoped key calling a route it lacks the capability for gets `outcome=deny` and an HTTP 403. To trial a new scope policy without rejecting traffic — for example, you've issued a new scoped key and want to see what it would have been denied under real workload before pointing a production agent at it — set `CAPABILITY_ENFORCEMENT=log-only` in `.env`. The same calls then succeed and emit `outcome=would-deny` log lines instead of 403s. Flip back to `enforce` (or remove the line) once you've validated the policy.
 
+Every access check (capabilities, the agent policy, user roles and audit logging) reads the route of a request exactly as the server matches it to a handler, and a `HEAD` request is checked as the `GET` it runs. A route the capability table does not classify is refused (`403`, naming `*:*`) to every caller except full-access keys and admins; the platform's own routes are all classified.
+
 ## The capability model
 
 Every API key carries a list of capability strings:
@@ -182,7 +184,9 @@ You can find these keys three ways: the server logs a `DOCTOR keys.inert_scopes`
 To keep the earlier behaviour while you replace keys, set `DATRIS_KEY_INERT_SCOPES=allow` in `.env` and recreate the `datris` container. Each request that then passes only through such a capability writes a `security` / `inert-scope-used` row to the [audit log](/audit-log), and doctor reports a warning instead of an error. The opt-out restores the earlier behaviour for capabilities whose scope is not applied, with two exceptions: a wildcard key carrying a scope (such as `*:*:catalog=Sales` or `*:read:owner=self`) is never treated as an administrator key, with or without the opt-out; and a key whose pipeline or tap capability carries `catalog=` or `owner=` together with a scope that is not applied is treated as limited to that catalog or owner, with or without the opt-out (that capability itself grants nothing on pipelines and taps). Remove the line once the keys are replaced.
 
 <Note>
-**Upgrade note.** On an install with user accounts on (`USE_USER_AUTH=true`), a stored key such as `*:*:catalog=Sales` that was used on administrative routes stops working there after the upgrade, and the opt-out does not change that. Those routes are issuing, listing, rotating and revoking API keys (`/api/v1/keys`), listing, creating, editing and deleting users (`/api/v1/auth/users`), the Configuration chat, and, when the key has no other capability for them, reading the audit log, changing the agent policy, reading or writing secrets, deciding approvals, and abandoning or proceeding incidents. Use an unscoped administrator key (`*:*`) for those.
+**Upgrade note.** Live model discovery for a provider (`GET /api/v1/ai/models`, used by the Configuration tab) now needs `config:read`, like the model catalog; admins and full-access keys are unaffected.
+
+On an install with user accounts on (`USE_USER_AUTH=true`), a stored key such as `*:*:catalog=Sales` that was used on administrative routes stops working there after the upgrade, and the opt-out does not change that. Those routes are issuing, listing, rotating and revoking API keys (`/api/v1/keys`), listing, creating, editing and deleting users (`/api/v1/auth/users`), the Configuration chat, and, when the key has no other capability for them, reading the audit log, changing the agent policy, reading or writing secrets, deciding approvals, and abandoning or proceeding incidents. Use an unscoped administrator key (`*:*`) for those.
 
 A key whose pipeline or tap capability carries `catalog=` or `owner=` together with a scope that is not applied (for example `pipeline:read:catalog=Sales,collection=docs`) is treated as limited to that catalog or owner, with or without the opt-out, and that capability grants nothing on pipelines and taps (Sales included). Replace it with a capability that carries only `catalog=` or `owner=`.
 

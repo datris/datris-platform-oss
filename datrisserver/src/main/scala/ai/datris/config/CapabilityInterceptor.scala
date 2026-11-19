@@ -6,12 +6,13 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.AuditLog
-import ai.datris.auth.{CallerVisibility, CapabilityRoutes, CapabilityScopes, RouteCheck}
+import ai.datris.auth.{CallerVisibility, CapabilityRoutes, CapabilityScopes, RequestPaths, RouteCheck}
 import ai.datris.model.{Capability, ResolvedKey, UserContext}
 import ai.datris.util.APIKeyValidator
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
+import org.springframework.web.method.HandlerMethod
 import org.springframework.web.servlet.HandlerInterceptor
 
 /** See [[CapabilityInterceptor.inertOutcome]]. */
@@ -191,8 +192,11 @@ class CapabilityInterceptor extends HandlerInterceptor {
         }
 
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
-        val method = request.getMethod
-        val path = request.getRequestURI
+        // The route as the dispatcher matched it (decoded, path parameters
+        // removed; HEAD decided as GET): the same string every access
+        // decision reads (RequestPaths).
+        val method = RequestPaths.method(request)
+        val path = RequestPaths.path(request)
         narrowForRestrictedSession(request)
 
         CapabilityRoutes.lookup(method, path) match {
@@ -206,14 +210,38 @@ class CapabilityInterceptor extends HandlerInterceptor {
                 // caller got a 500 with a stack trace instead of a 401.
                 rejectPresentedKey(request, response, method, path, required = None)
 
+            case RouteCheck.Unmapped if handler.isInstanceOf[HandlerMethod] =>
+                // A controller method with no row and no skip pattern. Every
+                // handler mapping has a decision (HandlerMappingDecisionSpec),
+                // so this is a route added without one: only full access
+                // passes (as for `*:*`), and no identity is left to the
+                // controller's own key check, as on mapped routes. Anyone
+                // else is refused in enforce mode and logged as would-deny
+                // in log-only.
+                readResolvedKey(request) match {
+                    case Some(rk) if !rk.isFullAccess =>
+                        if (enforce) {
+                            logger.warn(
+                                "capability check: route={} {} key={} outcome=deny (no capability mapping for this handler)",
+                                Array[AnyRef](method, path, rk.label): _*
+                            )
+                            denyCapability(request, response, rk, "*", "*", method, path)
+                            false
+                        } else {
+                            logger.warn(
+                                "capability check: route={} {} key={} outcome=would-deny (log-only; no capability mapping for this handler)",
+                                Array[AnyRef](method, path, rk.label): _*
+                            )
+                            true
+                        }
+                    case _ =>
+                        logger.info("capability check: route={} {} outcome=unmapped", method.asInstanceOf[Any], path.asInstanceOf[Any])
+                        true
+                }
+
             case RouteCheck.Unmapped =>
-                // No mapping for this route. In log-only mode this is just
-                // an informational log line — it tells us which routes still
-                // need classification. In enforce mode we still let it
-                // through; fail-closed for unmapped routes is a Phase 2+
-                // tightening once the mapping is comprehensive.
-                // INFO during Phase 1 so gaps in the route table are visible
-                // under default Spring log levels; dial to DEBUG once stable.
+                // Not a controller method (static resources, the not-found
+                // answer): nothing to protect, the request answers as today.
                 logger.info("capability check: route={} {} outcome=unmapped", method.asInstanceOf[Any], path.asInstanceOf[Any])
                 true
 

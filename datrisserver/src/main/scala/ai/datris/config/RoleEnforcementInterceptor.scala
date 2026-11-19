@@ -58,7 +58,7 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
         // ones with no role annotation. A role-gated method here falls through.
         if (ann.isEmpty && classFqn == "ai.datris.api.AuthAPIController") return true
 
-        val uri = request.getRequestURI
+        val uri = ai.datris.auth.RequestPaths.path(request)
         if (ann.isEmpty && uri != null && uri.startsWith("/api/v1/version")) return true
 
         val userOpt = UserContext.get()
@@ -101,8 +101,8 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                         resolvedKey(request).exists(rk =>
                             RoleEnforcementInterceptor.programmaticKeySatisfiesRoleGate(
                                 rk,
-                                request.getMethod,
-                                request.getRequestURI
+                                ai.datris.auth.RequestPaths.method(request),
+                                ai.datris.auth.RequestPaths.path(request)
                             )
                         )
                     )
@@ -133,8 +133,8 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                 else reject(request, response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
             case None =>
                 // Default rule: viewers can GET; writes need admin or editor.
-                val httpMethod = request.getMethod
-                if (httpMethod == "GET" || httpMethod == "HEAD" || httpMethod == "OPTIONS") true
+                val httpMethod = ai.datris.auth.RequestPaths.method(request)
+                if (httpMethod == "GET" || httpMethod == "OPTIONS") true
                 else if (WriteRoles.contains(user.role)) true
                 else reject(request, response, HttpStatus.FORBIDDEN, """{"error":"Read-only role"}""")
         }

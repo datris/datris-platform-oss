@@ -31,7 +31,8 @@ class PolicyBodyCacheFilter extends OncePerRequestFilter {
         if (!PolicyIO.enabled) return true
         val method = request.getMethod
         val isWrite = method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
-        val uri = request.getRequestURI
+        // The path the dispatcher will match (RequestPaths), not the raw URI.
+        val uri = ai.datris.auth.RequestPaths.path(request)
         val ct = Option(request.getContentType).getOrElse("").toLowerCase
         val len = request.getContentLengthLong
         !(isWrite && uri != null && uri.startsWith("/api/") && ct.contains("application/json") && len != 0 && len <= PolicyGate.MaxBodyBytes)

@@ -6,6 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.{AuditActor, AuditClassifier, AuditEntry, AuditLog}
+import ai.datris.auth.RequestPaths
 import ai.datris.model.DatrisEnvironment
 import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
@@ -52,7 +53,7 @@ class AuditInterceptor extends HandlerInterceptor {
                     return true
                 }
                 val logReads = Option(DatrisEnvironment.values).exists(_.auditLogLogReads)
-                if (AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads).isDefined) {
+                if (AuditClassifier.classify(RequestPaths.method(request), RequestPaths.path(request), logReads).isDefined) {
                     logger.warn("Refusing " + request.getMethod + " " + request.getRequestURI + ": audit log not accepting entries (AUDIT_LOG_STRICT)")
                     val body = new JsonObject()
                     body.addProperty("error", "audit_log_unavailable")
@@ -78,7 +79,7 @@ class AuditInterceptor extends HandlerInterceptor {
         if (request.getAttribute(AuditLog.RecordedAttr) != null) return
         try {
             val logReads = Option(DatrisEnvironment.values).exists(_.auditLogLogReads)
-            val route0 = AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads)
+            val route0 = AuditClassifier.classify(RequestPaths.method(request), RequestPaths.path(request), logReads)
             val plan = AuditInterceptor.scopeDenialPlan(response.getStatus, route0.isDefined, AuditLog.scopeDenials(request))
             // A scoped key refused on a route the audit log does not otherwise
             // record (a read): the same security/denied row a route-level
@@ -224,7 +225,7 @@ object AuditInterceptor {
 
     /** `GET /api/v1/audit-log/status`, exempt from the strict gate. */
     def isStatusRead(request: HttpServletRequest): Boolean = {
-        val uri = request.getRequestURI
-        "GET".equalsIgnoreCase(request.getMethod) && uri != null && (uri == StatusPath || uri == StatusPath + "/")
+        val uri = RequestPaths.path(request)
+        "GET" == RequestPaths.method(request) && uri != null && (uri == StatusPath || uri == StatusPath + "/")
     }
 }

@@ -304,7 +304,7 @@ object AuditLog {
         md.addProperty("reason", reason)
         required.foreach(md.addProperty("required", _))
         names.foreach { case (k, v) => if (v != null) md.addProperty(k, v) }
-        val route = AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads = true)
+        val route = AuditClassifier.classify(ai.datris.auth.RequestPaths.method(request), ai.datris.auth.RequestPaths.path(request), logReads = true)
         route.foreach { r =>
             md.addProperty("category", r.category)
             md.addProperty("action", r.action)
@@ -346,7 +346,7 @@ object AuditLog {
         capabilities.foreach(arr.add)
         md.add("capabilities", arr)
         md.addProperty("reason", reason)
-        val route = AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads = true)
+        val route = AuditClassifier.classify(ai.datris.auth.RequestPaths.method(request), ai.datris.auth.RequestPaths.path(request), logReads = true)
         route.foreach { r =>
             md.addProperty("category", r.category)
             md.addProperty("action", r.action)

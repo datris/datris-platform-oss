@@ -46,8 +46,12 @@ class PolicyInterceptor extends HandlerInterceptor {
 
         if (!PolicyActor.isAgent(request)) return true
 
-        val method = request.getMethod
-        val path = request.getRequestURI
+        // The route as the dispatcher matched it (RequestPaths), so the
+        // policy decides on the same route the capability gate did. The
+        // stored approval keeps the raw request URI: that is what a replay
+        // sends again.
+        val method = ai.datris.auth.RequestPaths.method(request)
+        val path = ai.datris.auth.RequestPaths.path(request)
         val actionKey = PolicyRoutes.actionKey(method, path).getOrElse(return true)
 
         // Hard rules, independent of the policy document.

@@ -7737,7 +7737,7 @@ paths:
       tags: [AI]
       summary: Discover invokable models for a provider
       description: >-
-        Live per-provider model discovery, reflecting what the configured
+        Requires `config:read`. Live per-provider model discovery, reflecting what the configured
         account can actually invoke (unlike the static catalog). Currently
         supports provider=bedrock: the server calls the AWS Bedrock discovery
         APIs (ListFoundationModels + ListInferenceProfiles) with the configured

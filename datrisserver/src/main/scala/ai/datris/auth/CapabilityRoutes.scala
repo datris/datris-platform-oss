@@ -50,6 +50,13 @@ object CapabilityRoutes {
         "/api/v1/keys/**",
         "/api/v1/health/**",
         "/api/v1/version",
+        // Which structured destination kinds are usable here (names of kinds
+        // only, like /health/services); the MCP server and the create wizard
+        // ask it with whatever key or session they hold.
+        "/api/v1/destinations/available",
+        // Callback from the REST-endpoint destination runner, matched by the
+        // run's pipeline token in the body; it presents no key.
+        "/api/v1/restendpoint/callback",
         "/api/v1/mcp/activity",
         // Any valid key or logged-in session may ask which MCP tools it can
         // see; the controller itself rejects requests with neither.
@@ -207,6 +214,8 @@ object CapabilityRoutes {
         // Config
         Route("POST", "/api/v1/config/upload", "config", "write"),
         Route("GET", "/api/v1/ai/model-catalog", "config", "read"),
+        // Live model discovery for a provider (Configuration tab).
+        Route("GET", "/api/v1/ai/models", "config", "read"),
         // Doctor — operational self-check. Not public: the report names env
         // keys, Vault secret paths and model ids, so it rides config:read.
         Route("GET", "/api/v1/doctor", "config", "read"),
@@ -271,7 +280,7 @@ object CapabilityRoutes {
     /** True when `method path` is one of [[UnfilterableForRestricted]]. */
     def refusedForRestrictedSession(method: String, path: String): Boolean =
         method != null && path != null &&
-            UnfilterableForRestricted.exists { case (m, p) => m.equalsIgnoreCase(method) && matcher.`match`(p, path) }
+            UnfilterableForRestricted.exists { case (m, p) => m.equalsIgnoreCase(RequestPaths.method(method)) && matcher.`match`(p, path) }
 
     /** Install-wide routes with nothing to filter, refused to every caller
       * limited to a catalog or to what it created ([[CallerVisibility.limited]]:
@@ -290,7 +299,7 @@ object CapabilityRoutes {
     /** True when `method path` is one of [[InstallWideForLimited]]. */
     def refusedForLimited(method: String, path: String): Boolean =
         method != null && path != null &&
-            InstallWideForLimited.exists { case (m, p) => m.equalsIgnoreCase(method) && matcher.`match`(p, path) }
+            InstallWideForLimited.exists { case (m, p) => m.equalsIgnoreCase(RequestPaths.method(method)) && matcher.`match`(p, path) }
 
     /** Why a caller is refused a route whose capability it may hold. */
     sealed trait ScopeRefusal
@@ -321,10 +330,17 @@ object CapabilityRoutes {
       * agent policy is allowed to use. */
     lazy val allActionKeys: Set[String] = routes.map(r => r.resource + ":" + r.action).toSet
 
+    /** The capability `method path` requires. `path` is the matched path
+      * ([[RequestPaths.path]]); `method` is decided as [[RequestPaths.method]]
+      * (HEAD as GET). OPTIONS is [[RouteCheck.Skip]]: the dispatcher answers
+      * it (CORS preflight, or the `Allow` header) without running a
+      * controller method, and no controller maps it (HandlerMappingDecisionSpec). */
     def lookup(method: String, path: String): RouteCheck = {
         if (skipPatterns.exists(p => matcher.`match`(p, path))) return RouteCheck.Skip
+        val m = RequestPaths.method(method)
+        if (m == "OPTIONS") return RouteCheck.Skip
 
-        routes.find(r => r.method.equalsIgnoreCase(method) && matcher.`match`(r.pattern, path)) match {
+        routes.find(r => r.method.equalsIgnoreCase(m) && matcher.`match`(r.pattern, path)) match {
             case Some(r) => RouteCheck.Require(r.resource, r.action)
             case None => RouteCheck.Unmapped
         }
