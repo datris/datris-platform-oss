@@ -400,7 +400,7 @@ class SecretsAPIController {
                         FieldProtectionAPIController.requireCapability(request, "admin")
                         new CapabilityDeniedException("capability denied: protect:admin is required to change field-protection key material")
                     } catch { case denied: CapabilityDeniedException => denied }
-                Left(FieldProtectionAPIController.denied(request, e, "admin"))
+                Left(FieldProtectionAPIController.denied(request, e, "admin", null, null))
             case Invalid400(message) =>
                 logger.warn("PUT /secrets/" + FieldProtectionSecret + " refused: " + message)
                 Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)

@@ -61,6 +61,7 @@ class CapabilityScopesSpec extends AnyFunSuite {
         case ("secret", _) => Set("_type")
         case ("search", "vector") | ("document", "upload") => Set("collection")
         case ("approval", "read") => Set("owner")
+        case ("protect", "reveal") => Set("catalog", "owner")
         case _ => Set.empty
     }
 
@@ -74,7 +75,7 @@ class CapabilityScopesSpec extends AnyFunSuite {
         CapabilityScopes.issueProblem(raw).getOrElse(fail("'" + raw + "' must be refused at issue"))
 
     test(
-        "supported scopes: catalog and owner on every pipeline and tap action, _type on secret, collection on search:vector and document:upload, owner on approval:read, none elsewhere"
+        "supported scopes: catalog and owner on every pipeline and tap action and on protect:reveal, _type on secret, collection on search:vector and document:upload, owner on approval:read, none elsewhere"
     ) {
         assert(vocabulary == ExpectedVocabulary, CapabilityScopes.Vocabulary)
         assert(vocabulary.values.map(_.size).sum == 39)
@@ -107,7 +108,7 @@ class CapabilityScopesSpec extends AnyFunSuite {
     }
 
     test(
-        "issueProblem refuses owner on job, database on every query action, destination_kind on document:upload, owner on secret and approval:decide, catalog on metadata, config, audit, incident and protect, and names the supported scopes"
+        "issueProblem refuses owner on job, database on every query action, destination_kind on document:upload, owner on secret and approval:decide, catalog on metadata, config, audit, incident and protect:admin, accepts catalog on protect:reveal, and names the supported scopes"
     ) {
         // The story's example, verbatim.
         assert(
@@ -134,13 +135,13 @@ class CapabilityScopesSpec extends AnyFunSuite {
         check("config:write:catalog=Sales", "catalog", "config:write", "none")
         check("audit:read:catalog=Sales", "catalog", "audit:read", "none")
         check("incident:read:catalog=Sales", "catalog", "incident:read", "none")
-        check("protect:reveal:catalog=Sales", "catalog", "protect:reveal", "none")
+        assert(CapabilityScopes.issueProblem("protect:reveal:catalog=Sales").isEmpty, CapabilityScopes.issueProblem("protect:reveal:catalog=Sales"))
         check("protect:admin:catalog=Sales", "catalog", "protect:admin", "none")
         // a foreign scope key on pipeline / tap names the two that apply
         check("pipeline:read:database=x", "database", "pipeline:read", "catalog, owner")
         check("tap:run:collection=x", "collection", "tap:run", "catalog, owner")
         // every scope key on a resource that applies none
-        Seq("metadata:read", "config:read", "mcp:tool", "audit:read", "policy:read", "incident:read", "code-repo:read", "protect:reveal").foreach { pair =>
+        Seq("metadata:read", "config:read", "mcp:tool", "audit:read", "policy:read", "incident:read", "code-repo:read", "protect:admin").foreach { pair =>
             AllScopeKeys.foreach(k => refused(pair + ":" + k + "=" + valueFor(k)))
         }
     }

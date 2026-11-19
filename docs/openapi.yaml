@@ -3335,6 +3335,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'A key limited by `catalog=` or `owner=` named a pipeline it may not read in that scope. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`; the message never names the pipeline''s catalog or owner. A restricted user gets the 400 for an unknown pipeline instead'
         '500':
           description: Error
 
@@ -3441,6 +3443,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'A key limited by `catalog=` or `owner=` named a pipeline it may not read in that scope. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`; the message never names the pipeline''s catalog or owner. A restricted user gets the 400 for an unknown pipeline instead'
         '500':
           description: Error
 
@@ -3458,6 +3462,9 @@ paths:
         pipeline or column fails. Needs the `protect:reveal` capability, which
         no key template or editor/viewer role carries; admins, the
         `full-access` template and legacy unscoped keys hold it through `*:*`.
+        `protect:reveal:catalog=<name>` or `protect:reveal:owner=self` reveals
+        only in pipelines in that scope, and a key limited by `catalog=` or
+        `owner=` on a pipeline capability reveals only in pipelines it may read.
         Not available as an MCP tool. Every call is recorded in the audit log
         as `protect / reveal` (field name and counts only, never a value), with
         outcome `warning` when any value failed; denied calls are recorded as
@@ -3519,7 +3526,7 @@ paths:
         '400':
           description: Missing `pipeline`, `field` or `values`, more than 1000 values, unknown pipeline, or a field not protected with `encrypt`
         '403':
-          description: The caller lacks `protect:reveal`
+          description: 'The caller lacks `protect:reveal`, or the named pipeline is outside the key''s scope (its pipeline read or its reveal capability''s `catalog=` / `owner=`). Checked before the field. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`; the message never names the pipeline''s catalog or owner'
         '500':
           description: 'The field-protection key could not be read from the secret store (`{"error": "Field protection: could not read ..."}`), or another server error (`{"error": "Reveal failed"}`). No value is revealed'
   /api/v1/protect/keys/rotate:

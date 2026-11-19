@@ -17,7 +17,8 @@ object ScopeDenialBodies {
       * script versions and version restore all answer with it. */
     def pipeline(e: Exception): ResponseEntity[String] = PipelineAPIController.capabilityDenied(e)
 
-    /** `FieldProtectionAPIController.denied(request, e, action)`. */
+    /** `FieldProtectionAPIController.denied(request, e, action, null, null)`
+      * (no pipeline or field named). */
     def fieldProtection(request: HttpServletRequest, e: CapabilityDeniedException, action: String): ResponseEntity[String] =
-        FieldProtectionAPIController.denied(request, e, action)
+        FieldProtectionAPIController.denied(request, e, action, null, null)
 }

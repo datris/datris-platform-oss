@@ -37,7 +37,7 @@ import scala.collection.JavaConverters._
   * PipelineAPIController.saveGuardDecision(request, config, stored, readAll)   // + keyTargetRefusal, unreadable stored 403 (read)
   * PipelineAPIController.refusalFor(request, name, config, action)             // key outside scope: 403
   * EntityVersionAPIController.hiddenFromRestricted(request, resource, action, live) // true for a key outside scope
-  * FieldProtectionAPIController.hideFromRestricted(request, pipeline)(config)  // key outside scope: throws CapabilityDeniedException
+  * FieldProtectionAPIController.targetRefusal(request, pipeline, config, None) // key outside scope: throws CapabilityDeniedException
   * }}}
   * Pinned seams (do not exist at 68c7316d; the implementation adds them):
   * {{{
@@ -328,12 +328,12 @@ class ScopedKeyWriteScopeSpec extends AnyFunSuite {
 
         // POST /pipeline/protect/suggest (and preset): pipeline read in scope
         val fr = req(sales, uri = "/api/v1/pipeline/protect/suggest")
-        val e = intercept[CapabilityDeniedException](FieldProtectionAPIController.hideFromRestricted(fr, "payroll")(hr))
+        val e = intercept[CapabilityDeniedException](FieldProtectionAPIController.targetRefusal(fr, "payroll", hr, None))
         assert(e.getMessage == ScopeDenialWording.message("sales", "pipeline", "read", salesCaps), e.getMessage)
         ScopeDenialWording.assertHides(e.getMessage, hidden)
         assert(AuditLog.scopeDenials(fr).nonEmpty)
-        FieldProtectionAPIController.hideFromRestricted(req(sales), "orders")(orders)
-        FieldProtectionAPIController.hideFromRestricted(req(full), "payroll")(hr)
+        FieldProtectionAPIController.targetRefusal(req(sales), "orders", orders, None)
+        FieldProtectionAPIController.targetRefusal(req(full), "payroll", hr, None)
         // and the route answers it as a 403, not the DatrisException 400
         val suggest = methodBody(source("src/main/scala/ai/datris/api/FieldProtectionAPIController.scala"), "def suggest(")
         val denied = "case \\w+: CapabilityDeniedException".r.findFirstMatchIn(suggest).map(_.start)

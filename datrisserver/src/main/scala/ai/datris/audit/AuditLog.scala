@@ -286,13 +286,24 @@ object AuditLog {
 
     /** A request refused by an auth interceptor. Called at the point of
       * denial because a `false` from an earlier interceptor's preHandle means
-      * the audit interceptor (registered last) never sees the request. */
-    def denied(request: HttpServletRequest, reason: String, httpStatus: Int, required: Option[String] = None): Unit = {
+      * the audit interceptor (registered last) never sees the request.
+      * `resourceName` and `names` (metadata name/value pairs) let a controller
+      * that refuses after reading the request body record which item the
+      * caller named (field protection: pipeline and field). Names only. */
+    def denied(
+        request: HttpServletRequest,
+        reason: String,
+        httpStatus: Int,
+        required: Option[String] = None,
+        resourceName: Option[String] = None,
+        names: Seq[(String, String)] = Nil
+    ): Unit = {
         if (!enabled) return
         request.setAttribute(RecordedAttr, java.lang.Boolean.TRUE)
         val md = new JsonObject()
         md.addProperty("reason", reason)
         required.foreach(md.addProperty("required", _))
+        names.foreach { case (k, v) => if (v != null) md.addProperty(k, v) }
         val route = AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads = true)
         route.foreach { r =>
             md.addProperty("category", r.category)
@@ -304,7 +315,7 @@ object AuditLog {
             category = "security",
             action = "denied",
             resourceType = route.map(_.resourceType),
-            resourceName = None,
+            resourceName = resourceName,
             outcome = "denied",
             httpStatus = Some(httpStatus),
             errorMessage = Some(reason),

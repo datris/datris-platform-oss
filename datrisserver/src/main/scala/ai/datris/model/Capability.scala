@@ -47,6 +47,12 @@ case class Capability(
         callerKeyLabel: String
     ): Boolean = {
         if (!matchesResourceAction(requiredResource, requiredAction)) return false
+        // A scoped capability grants a `protect` action only when it names
+        // that resource and action explicitly (`protect:reveal:catalog=Sales`):
+        // a scoped wildcard (`*:*:catalog=Sales`, `protect:*:catalog=Sales`,
+        // `*:reveal:catalog=Sales`) never grants reveal, in either
+        // DATRIS_KEY_INERT_SCOPES mode (plans/stories/field-protection-key-scope.md).
+        if (requiredResource == "protect" && scope.nonEmpty && (resource != requiredResource || action != requiredAction)) return false
 
         scope.forall { case (k, v) =>
             if (k == "owner" && v == "self")

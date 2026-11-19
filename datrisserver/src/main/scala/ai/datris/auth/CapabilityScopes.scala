@@ -44,14 +44,33 @@ object CapabilityScopes {
 
     /** The scope keys each resource applies, in display order. Every action
       * of a resource applies the same keys except `approval`, where only
-      * `approval:read` applies `owner` (and only `owner=self`). */
+      * `approval:read` applies `owner` (and only `owner=self`), and
+      * `protect`, where only `protect:reveal` applies `catalog` and `owner`
+      * (evaluated against the pipeline the reveal names;
+      * plans/stories/field-protection-key-scope.md, D1) and `protect:admin`
+      * applies none. */
     private def supportedSeq(resource: String, action: String): Seq[String] = (resource, action) match {
         case ("pipeline" | "tap", _) => Seq("catalog", "owner")
         case ("secret", _) => Seq("_type")
         case ("search", "vector") | ("document", "upload") => Seq("collection")
         case ("approval", "read") => Seq("owner")
+        case ("protect", "reveal") => Seq("catalog", "owner")
         case _ => Nil
     }
+
+    /** The scope keys `pair` applies for a capability that names it through
+      * a wildcard (`wildcard`: its resource or action is `*`). As
+      * [[supportedSeq]], except that a wildcard applies no scope on a
+      * `protect` pair: only an explicit `protect:reveal:<scope>` carries an
+      * applied scope on reveal, so a stored scoped wildcard
+      * (`*:*:catalog=Sales`, `protect:*:catalog=Sales`,
+      * `*:reveal:catalog=Sales`) narrows to nothing on `protect` and grants no
+      * reveal, as before scoped reveal existed. `Capability.grants` holds the
+      * same rule for `DATRIS_KEY_INERT_SCOPES=allow`. */
+    private def appliedFor(wildcard: Boolean, pair: (String, String)): Seq[String] =
+        if (wildcard && pair._1 == "protect") Nil else supportedSeq(pair._1, pair._2)
+
+    private def isWildcard(c: Capability): Boolean = c.resource == "*" || c.action == "*"
 
     /** Scope keys the platform applies on `resource:action` (empty: none). */
     def supported(resource: String, action: String): Seq[String] = supportedSeq(resource, action)
@@ -71,9 +90,10 @@ object CapabilityScopes {
             if action == "*" || action == a
         } yield r -> a
 
-    /** True when `pair` applies every scope entry of `scope`. */
-    private def appliesAll(pair: (String, String), scope: Map[String, String]): Boolean = {
-        val keys = supportedSeq(pair._1, pair._2)
+    /** True when `pair` applies every scope entry of `scope` for a
+      * capability that is (`wildcard`) or is not a wildcard. */
+    private def appliesAll(pair: (String, String), scope: Map[String, String], wildcard: Boolean): Boolean = {
+        val keys = appliedFor(wildcard, pair)
         scope.forall { case (k, v) => keys.contains(k) && valueAccepted(pair, k, v) }
     }
 
@@ -131,13 +151,20 @@ object CapabilityScopes {
 
         val pairs = covered(cap.resource, cap.action)
         val wildcard = cap.resource == "*" || cap.action == "*"
-        pairs.find(p => !appliesAll(p, cap.scope)) match {
+        pairs.find(p => !appliesAll(p, cap.scope, wildcard)) match {
             case None => None
             case Some((r, a)) =>
                 val pair = r + ":" + a
                 val keys = supportedSeq(r, a)
                 val badKey = scopeKeys.distinct.find(k => !keys.contains(k)).orElse(cap.scope.keys.headOption).get
-                if (keys.contains(badKey))
+                if (wildcard && r == "protect" && appliesAll(r -> a, cap.scope, wildcard = false))
+                    // the scope is one protect:reveal applies, but only when named explicitly
+                    Some(
+                        "Invalid capability '" + raw + "': a scoped wildcard does not grant " + pair + ", which this wildcard covers. " +
+                            "The scope on " + pair + " is applied only on an explicit capability: grant '" + explicitScoped(cap, r, a) +
+                            "' for reveal, and leave protect out of the scoped wildcard. " + suggestWildcard(cap, pairs)
+                    )
+                else if (keys.contains(badKey))
                     Some(
                         "Invalid capability '" + raw + "': scope '" + badKey + "' on " + pair + " accepts only 'self' " +
                             "(an agent key reads its own approvals). Grant '" + pair + ":owner=self' or '" + pair + "'."
@@ -148,7 +175,7 @@ object CapabilityScopes {
                             ", which this wildcard covers. Supported scopes for " + pair + ": " + listOrNone(keys) + ". " +
                             "A scoped wildcard must cover only actions that apply its scope: " +
                             "'pipeline:*' and 'tap:*' take catalog and owner, 'secret:*' takes _type. " +
-                            suggestWildcard(cap, pairs)
+                            suggestWildcard(cap, pairs) + revealAdvice(cap, pairs)
                     )
                 else
                     Some(
@@ -159,10 +186,21 @@ object CapabilityScopes {
         }
     }
 
+    /** `<resource>:<action>:<the capability's scope as written>`. */
+    private def explicitScoped(cap: Capability, r: String, a: String): String =
+        r + ":" + a + ":" + cap.raw.split(":", 3).lift(2).getOrElse("").trim
+
+    /** For a refused scoped wildcard that covers `protect:reveal` with a
+      * scope reveal applies when named: how to grant reveal in that scope. */
+    private def revealAdvice(cap: Capability, pairs: Seq[(String, String)]): String =
+        if (pairs.contains("protect" -> "reveal") && appliesAll("protect" -> "reveal", cap.scope, wildcard = false))
+            " A scoped wildcard grants no protect:reveal; grant '" + explicitScoped(cap, "protect", "reveal") + "' explicitly if the key needs it."
+        else ""
+
     /** The narrowed capabilities a refused scoped wildcard could be
       * replaced by, as advice; or the unscoped form when none applies. */
     private def suggestWildcard(cap: Capability, pairs: Seq[(String, String)]): String = {
-        val narrowed = narrow(cap, pairs.filter(appliesAll(_, cap.scope))).map("'" + _.raw + "'")
+        val narrowed = narrow(cap, pairs.filter(appliesAll(_, cap.scope, isWildcard(cap)))).map("'" + _.raw + "'")
         if (narrowed.isEmpty) "Grant '" + cap.resource + ":" + cap.action + "' unscoped or leave it out."
         else "Grant " + narrowed.mkString(" and ") + " instead."
     }
@@ -182,7 +220,8 @@ object CapabilityScopes {
       * with no scope, or whose every scope entry is applied on every pair it
       * covers, is kept as the same instance. A scoped wildcard that covers
       * some pairs without that scope is narrowed to the pairs that apply it
-      * (`*:*:catalog=Sales` keeps `pipeline:*` and `tap:*` under that scope)
+      * (`*:*:catalog=Sales` keeps `pipeline:*` and `tap:*` under that scope;
+      * a wildcard never narrows to `protect:reveal`, see [[appliedFor]])
       * and the original moves to inert, as does any other capability with a
       * scope the platform does not apply. A scoped capability on an unknown
       * resource or action grants nothing either way and is kept. */
@@ -193,10 +232,11 @@ object CapabilityScopes {
             if (c.scope.isEmpty) kept += c
             else {
                 val pairs = covered(c.resource, c.action)
-                if (pairs.isEmpty || pairs.forall(appliesAll(_, c.scope))) kept += c
+                val wildcard = isWildcard(c)
+                if (pairs.isEmpty || pairs.forall(appliesAll(_, c.scope, wildcard))) kept += c
                 else {
                     inert += c
-                    kept ++= narrow(c, pairs.filter(appliesAll(_, c.scope)))
+                    kept ++= narrow(c, pairs.filter(appliesAll(_, c.scope, wildcard)))
                 }
             }
         }
@@ -230,7 +270,7 @@ object CapabilityScopes {
     /** The scope keys of `c` that are not applied on some pair it covers. */
     def inertScopeKeys(c: Capability): Seq[String] = {
         val pairs = covered(c.resource, c.action)
-        c.scope.keys.toSeq.sorted.filter(k => pairs.exists(p => !appliesAll(p, Map(k -> c.scope(k)))))
+        c.scope.keys.toSeq.sorted.filter(k => pairs.exists(p => !appliesAll(p, Map(k -> c.scope(k)), isWildcard(c))))
     }
 
     /** Why `first` does not grant `required`, for the route gate's 403
@@ -240,7 +280,13 @@ object CapabilityScopes {
       * `required` but with a value it does not accept (`approval:read`
       * takes `owner=self` only), in which case the text must say so rather
       * than call the key not applied. */
-    private case class InertText(pair: (String, String), applied: Seq[String], notApplied: Seq[String], badValue: Seq[String]) {
+    private case class InertText(
+        pair: (String, String),
+        applied: Seq[String],
+        notApplied: Seq[String],
+        badValue: Seq[String],
+        viaWildcard: Boolean = false
+    ) {
 
         /** Every offending key is applied on the route, only its value is not accepted. */
         def valueOnly: Boolean = notApplied.isEmpty && badValue.nonEmpty
@@ -249,9 +295,12 @@ object CapabilityScopes {
     private def inertScopeText(first: Capability, required: String): InertText = {
         val pair = required.takeWhile(_ != ':') -> required.dropWhile(_ != ':').drop(1)
         val applied = supportedSeq(pair._1, pair._2)
-        val onRoute = first.scope.toSeq.sortBy(_._1).collect { case (k, v) if !applied.contains(k) || !valueAccepted(pair, k, v) => k }
+        // what the route applies for this capability (a wildcard applies none on protect)
+        val appliedHere = appliedFor(isWildcard(first), pair)
+        val onRoute = first.scope.toSeq.sortBy(_._1).collect { case (k, v) if !appliedHere.contains(k) || !valueAccepted(pair, k, v) => k }
+        val viaWildcard = appliedHere.isEmpty && applied.nonEmpty
         if (onRoute.isEmpty) InertText(pair, applied, inertScopeKeys(first), Nil)
-        else InertText(pair, applied, onRoute.filterNot(applied.contains), onRoute.filter(applied.contains))
+        else InertText(pair, applied, onRoute.filterNot(appliedHere.contains), onRoute.filter(appliedHere.contains), viaWildcard)
     }
 
     private def quoted(keys: Seq[String]): String = keys.map("'" + _ + "'").mkString(", ")
@@ -262,10 +311,11 @@ object CapabilityScopes {
       * with a value it does not accept; both, joined, when the capability
       * carries both kinds. */
     private def whyNot(t: InertText, required: String): String = {
+        val through = if (t.viaWildcard) " through a wildcard" else ""
         val notApplied =
             if (t.notApplied.isEmpty) Nil
-            else if (t.notApplied.size == 1) Seq("scope '" + t.notApplied.head + "' is not applied on " + required)
-            else Seq("scopes " + quoted(t.notApplied) + " are not applied on " + required)
+            else if (t.notApplied.size == 1) Seq("scope '" + t.notApplied.head + "' is not applied on " + required + through)
+            else Seq("scopes " + quoted(t.notApplied) + " are not applied on " + required + through)
         val badValue =
             if (t.badValue.isEmpty) Nil
             else Seq((if (t.badValue.size == 1) "scope '" + t.badValue.head + "'"
