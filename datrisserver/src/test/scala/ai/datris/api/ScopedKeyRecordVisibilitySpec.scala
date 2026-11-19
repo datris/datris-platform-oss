@@ -548,8 +548,10 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
                     ScopeDenialWording.assertHides(w.left.get.getBody, Seq("payroll", "mix_b", "HR"))
                 }
             }
-            // the container no config names at all: 404 for every limited caller
-            assert(SearchAPIController.searchWriters(r, "qdrant", "orphan_docs", None, () => searchConfigs).isLeft, s.name)
+            // the container no config names at all: 404 for every caller limited for pipelines; a key that
+            // reads every pipeline (tap-limited only) searches it, as on main (lead ruling on review finding 5)
+            if (s.name != "tap-limited only") assert(SearchAPIController.searchWriters(r, "qdrant", "orphan_docs", None, () => searchConfigs).isLeft, s.name)
+            else assert(SearchAPIController.searchWriters(r, "qdrant", "orphan_docs", None, () => fail("configs read")) == Right(None), s.name)
         }
         // other writers' chunks are dropped from an in-scope container
         val sales = shapes("search:vector").head

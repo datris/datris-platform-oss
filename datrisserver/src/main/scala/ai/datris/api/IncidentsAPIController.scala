@@ -281,8 +281,9 @@ object IncidentsAPIController {
       * pipeline is hidden; `agentsThatQueriedLast7d` (other callers' labels)
       * and `secretName` are removed; `lastDownstreamRunAt` stays. For a tap
       * incident whose stored target pipeline it may not read (or that is no
-      * longer stored), the `baseline`, `candidate` and `real` profiles are
-      * removed. A copy; the stored incident is never altered. `i` itself
+      * longer stored), the `baseline`, `candidate` and `real` profiles and
+      * the `diff` and `checks` computed from them are removed (`verdict`
+      * stays). A copy; the stored incident is never altered. `i` itself
       * when nothing changes. Free text stays as it is. */
     private def shownFor(rk: ResolvedKey, i: Incident, readPipeline: String => PipelineConfig, readTap: String => TapConfig): Incident =
         if (i == null || i.evidence.isEmpty || i.evidence.get == null) i
@@ -341,7 +342,11 @@ object IncidentsAPIController {
             if (i.resourceType == "tap" && i.resourceName != null) {
                 val target = Option(readTap(i.resourceName)).flatMap(t => Option(t.targetPipeline)).map(_.trim).filter(_.nonEmpty)
                 if (target.exists(n => !pipelineReadable(rk, readPipeline(n))))
-                    Seq("baseline", "candidate", "real").foreach { k =>
+                    // the target's row profiles and everything computed from them: the
+                    // diff (column names, null-rate and quantile shifts) and the threshold
+                    // checks (record delta, removed and retyped column counts, null-rate
+                    // increase, DQ pass rate of its landed rows)
+                    Seq("baseline", "candidate", "real", "diff", "checks").foreach { k =>
                         if (copy.has(k)) { copy.remove(k); changed = true }
                     }
             }

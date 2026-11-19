@@ -628,15 +628,42 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
         for ((name, rr) <- unchanged) assert(IncidentsAPIController.shownIncident(rr, inc, failReadPipeline, failReadTap) eq inc, name)
     }
 
-    test("finding 7: a tap incident whose target pipeline the caller cannot read loses the baseline, candidate and real profiles") {
+    test("finding 7: a tap incident whose target pipeline the caller cannot read loses the profiles, diff and checks computed from that pipeline's rows") {
+        def withDiffAndChecks(e: JsonObject): Unit = {
+            val d = new JsonObject()
+            val rm = new JsonArray(); rm.add("salary"); d.add("columnsRemoved", rm)
+            e.add("diff", d)
+            val cs = new JsonArray()
+            val c = new JsonObject(); c.addProperty("name", "maxRecordDeltaPct"); c.addProperty("passed", false); c.addProperty("observed", "-42.00");
+            c.addProperty("limit", "25")
+            cs.add(c); e.add("checks", cs)
+        }
         val r = req(pipelineOnly("incident:read"))
-        val hrTap = incident("inc-5", "tap", "t_hr", evidenceWith(Nil, Nil))
+        val hrTap = incident("inc-5", "tap", "t_hr", evidenceWith(Nil, Nil, withDiffAndChecks))
+        val stored = hrTap.evidence.get.toString
         val shown = IncidentsAPIController.shownIncident(r, hrTap, readPipeline, readTap)
-        Seq("baseline", "candidate", "real").foreach(k => assert(!shown.evidence.get.has(k), k))
-        assert(!gson.toJson(shown.toPublicJson).contains("salary=90000") && shown.evidence.get.get("verdict").getAsString == "fail")
-        // its own tap's target is readable: profiles stay
-        val ownTap = IncidentsAPIController.shownIncident(r, incident("inc-6", "tap", "t_own", evidenceWith(Nil, Nil)), readPipeline, readTap)
-        Seq("baseline", "candidate", "real").foreach(k => assert(ownTap.evidence.get.has(k), k))
+        Seq("baseline", "candidate", "real", "diff", "checks").foreach(k => assert(!shown.evidence.get.has(k), k))
+        val body = gson.toJson(shown.toPublicJson)
+        Seq("salary", "-42.00", "maxRecordDeltaPct").foreach(x => assert(!body.contains(x), x + ": " + body))
+        assert(shown.evidence.get.get("verdict").getAsString == "fail")
+        assert(hrTap.evidence.get.toString == stored, "nothing stored is altered")
+        // a target no longer stored: the same
+        val gone = TapConfig(name = "t_gone_target", description = "d", targetPipeline = "deleted_p", catalog = "HR", createdByKeyLabel = "someone")
+        val goneShown = IncidentsAPIController.shownIncident(
+            r,
+            incident("inc-7", "tap", "t_gone_target", evidenceWith(Nil, Nil, withDiffAndChecks)),
+            readPipeline,
+            n => if (n == "t_gone_target") gone else readTap(n)
+        )
+        Seq("baseline", "candidate", "real", "diff", "checks").foreach(k => assert(!goneShown.evidence.get.has(k), k))
+        // its own tap's target is readable: everything stays
+        val ownTap =
+            IncidentsAPIController.shownIncident(r, incident("inc-6", "tap", "t_own", evidenceWith(Nil, Nil, withDiffAndChecks)), readPipeline, readTap)
+        Seq("baseline", "candidate", "real", "diff", "checks").foreach(k => assert(ownTap.evidence.get.has(k), k))
+        // a pipeline incident on a visible pipeline keeps them too
+        val ownPipe =
+            IncidentsAPIController.shownIncident(r, incident("inc-8", "pipeline", "own_p", evidenceWith(Nil, Nil, withDiffAndChecks)), readPipeline, readTap)
+        Seq("baseline", "diff", "checks").foreach(k => assert(ownPipe.evidence.get.has(k), k))
     }
 
     // ================================================================== finding 5: search per resource
