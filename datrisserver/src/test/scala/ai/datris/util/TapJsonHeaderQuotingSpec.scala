@@ -117,4 +117,14 @@ class TapJsonHeaderQuotingSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(pipeText.startsWith("id|\"a|b\"|\"q\"\"x\"\n"), pipeText)
         assert(DataUtil.validatedCsvHeader(pipeRecords.head, "|", "tap_pipe") == pipeKeys)
     }
+
+    test("a key wrapped in double quotes keeps its quotes as part of the column name") {
+        // The key is the five characters "abc" (quotes included).
+        val (text, records) = project("""[{"id": 1, "\"abc\"": 2}]""", ",")
+        assert(text.startsWith("id,\"\"\"abc\"\"\"\n"), text)
+        assert(DataUtil.validatedCsvHeader(records.head, ",", "tap_pipe") == List("id", "\"abc\""))
+        // v1.60.0 wrote the key raw (`id,"abc"`), which the header parse read
+        // as the quoted cell abc: the quotes were dropped.
+        assert(DataUtil.validatedCsvHeader("id,\"abc\"", ",", "tap_pipe") == List("id", "abc"))
+    }
 }

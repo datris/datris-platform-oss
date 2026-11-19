@@ -6,6 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import java.nio.charset.StandardCharsets
+import scala.collection.JavaConverters._
 
 /** Every statement the Postgres loader, the destination-type migration and
   * sample, and the pipeline delete run against a Postgres destination table,
@@ -86,6 +87,12 @@ object PostgresSql {
       * it (so it folds to lower case as before); any other key is quoted. */
     def primaryKey(keyFields: Seq[String]): String =
         "primary key (" + keyFields.map(k => if (k != null && k.matches("[A-Za-z0-9_]+")) k else PgIdentifier.quote(k)).mkString(", ") + ")"
+
+    /** What the loader's create table appends after the column definitions:
+      * `", " + primaryKey(keys)`, or nothing when `keyFields` is null or
+      * empty (an empty list names no key, so the table has none). */
+    def primaryKeyClause(keyFields: java.util.List[String]): String =
+        if (keyFields == null || keyFields.isEmpty) "" else ", " + primaryKey(keyFields.asScala.toList)
 
     /** One column name. */
     def column(name: String): String = PgIdentifier.quote(name)

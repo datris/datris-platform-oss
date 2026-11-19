@@ -108,4 +108,16 @@ class MongoKeyFilterSpec extends AnyFunSuite {
         val e2 = intercept[DatrisException](MongoDBUtil.keyFilter(doc, Seq("id", "region")))
         assert(e2.getMessage == "Key field 'region' not found in document", e2.getMessage)
     }
+
+    test("a key value holding $regex, as Document.parse builds it from an uploaded record, is an $eq operand, not an operator") {
+        // {"$regex": p} alone parses to a sub-document
+        val bare = render(Document.parse("""{"id": {"$regex": "^a"}, "v": "x"}"""), Seq("id"))
+        val bv = eqValue(bare, "id")
+        assert(bv.isDocument && bv.asDocument().keySet().asScala == Set("$regex"), bare.toJson)
+        // {"$regex": p, "$options": o} parses to a BSON regular expression value
+        val typed = render(Document.parse("""{"id": {"$regex": "^a", "$options": "i"}, "v": "x"}"""), Seq("id"))
+        val tv = eqValue(typed, "id")
+        assert(tv.isRegularExpression && tv.asRegularExpression().getPattern == "^a", typed.toJson)
+        assert(!typed.containsKey("$regex") && !typed.get("id").asDocument().containsKey("$regex"), typed.toJson)
+    }
 }

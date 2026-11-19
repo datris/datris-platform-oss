@@ -162,7 +162,7 @@ If the destination schema already declares the new column (for example `admit_da
 
 ### What a new column name may hold
 
-A new column keeps the header cell exactly as written (lower-cased), and every destination quotes it, so names with spaces, hyphens, dots, quotes or non-ASCII letters are added and load like any other. Tap records written as JSON objects work the same way: each key becomes one header cell, quoted when it holds the delimiter or a quote.
+A new column keeps the header cell exactly as written (lower-cased), and every destination quotes it, so names with spaces, hyphens, dots, quotes or non-ASCII letters are added and load like any other. Tap records written as JSON objects work the same way: each key becomes one header cell, quoted when it holds the delimiter or a quote. A key that itself begins and ends with a double quote (for example `"abc"`, quotes included) now keeps those quotes in its column name; earlier versions dropped them and stored the column as `abc`. If a tap pipeline already has such a column, rename the key in the tap script to the stored name (`abc`), or expect the next run to add a new column under the quoted name.
 
 A new column is refused when its name:
 

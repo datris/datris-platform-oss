@@ -263,4 +263,11 @@ class PostgresSqlSpec extends AnyFunSuite {
         assertOneStatement(PostgresSql.primaryKey(Seq("id", evil)), Seq(evil), "primaryKey")
         assert(PostgresSql.primaryKey(Seq("id", evil)) == "primary key (id, " + PgIdentifier.quote(evil) + ")")
     }
+
+    test("an empty or missing key list adds no primary key clause; a non-empty one appends the key list") {
+        assert(PostgresSql.primaryKeyClause(null) == "")
+        assert(PostgresSql.primaryKeyClause(new java.util.ArrayList[String]()) == "", "an empty list names no key (v1.60.0 built `, primary ke)`)")
+        assert(PostgresSql.primaryKeyClause(java.util.Arrays.asList("id")) == ", primary key (id)")
+        assert(PostgresSql.primaryKeyClause(java.util.Arrays.asList("id", "a\"b")) == ", primary key (id, \"a\"\"b\")")
+    }
 }

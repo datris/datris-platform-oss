@@ -347,8 +347,7 @@ class PostgresLoader(jobContext: JobContext) {
         sql.setLength(sql.length - 2)
 
         // Keys?
-        if (config.destination.database.keyFields != null && !config.destination.database.keyFields.isEmpty)
-            sql.append(", " + PostgresSql.primaryKey(config.destination.database.keyFields.asScala.toList))
+        sql.append(PostgresSql.primaryKeyClause(config.destination.database.keyFields))
 
         // End
         sql.append(");")
