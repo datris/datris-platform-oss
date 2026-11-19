@@ -165,7 +165,7 @@ class SearchChatAPIController {
         // An API key limited to a catalog or to what it created has no raw
         // query or listing tools (CapabilityRoutes.InstallWideForLimited) and
         // its warehouse queries refuse `sql`: give it the limited access paths.
-        val keyLimited = identity.user.isEmpty && identity.key.exists(ai.datris.auth.CallerVisibility.limited)
+        val keyLimited = SearchChatAPIController.keyLimited(identity)
         val systemPrompt = buildSearchSystemPrompt(env.environment, accessBlock, keyLimited)
 
         // Prepend the catalog scope (if any) as a leading user message, mirroring
@@ -279,7 +279,7 @@ class SearchChatAPIController {
         sb.toString
     }
 
-    private def buildSearchSystemPrompt(tenantEnv: String, accessBlock: Option[String] = None, keyLimited: Boolean = false): String = {
+    private[api] def buildSearchSystemPrompt(tenantEnv: String, accessBlock: Option[String] = None, keyLimited: Boolean = false): String = {
         // The uncataloged wording and the raw-query paths apply only to
         // unrestricted callers; a restricted user sees only granted catalogs,
         // and the server refuses free-form SQL, MongoDB and metadata to them
@@ -366,4 +366,15 @@ class SearchChatAPIController {
         )
         sb.toString
     }
+}
+
+object SearchChatAPIController {
+
+    /** An own-key caller whose key is limited to a catalog or to what it
+      * created ([[ai.datris.auth.CallerVisibility.limited]]): it has no raw
+      * query or listing tools and its warehouse queries refuse `sql`, so its
+      * prompt gives the limited access paths. False for every user (a
+      * restricted user gets them through the catalog-access block). */
+    private[api] def keyLimited(identity: ai.datris.auth.ChatIdentity): Boolean =
+        identity != null && identity.user.isEmpty && identity.key.exists(ai.datris.auth.CallerVisibility.limited)
 }

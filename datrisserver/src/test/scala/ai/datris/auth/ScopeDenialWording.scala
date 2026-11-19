@@ -177,3 +177,33 @@ object InertScopeDenial {
         assertNames(o.get("message").getAsString, inertRaw, scopeKey)
     }
 }
+
+/** The refusal of a route or request that covers the whole installation, for
+  * a caller limited to a catalog or to what it created
+  * (plans/stories/scoped-key-read-routes.md, Part C, lead rulings 5 and 6).
+  * One text for every such refusal; it names nothing from the request. */
+object InstallWideDenial {
+
+    import scala.collection.JavaConverters._
+
+    /** The exact message, pinned here once. */
+    val Message: String =
+        "capability denied: this request covers the whole installation and is not available to an API key or user " +
+            "limited to a catalog or to what it created"
+
+    /** The interceptor's six-key body for `label` on `required` at `route`. */
+    def assertGateBody(body: String, label: String, required: String, route: String): Unit = {
+        assert(body != null && body.nonEmpty, "no body")
+        val o = JsonParser.parseString(body).getAsJsonObject
+        assert(o.keySet().asScala.toSet == InertScopeDenial.BodyKeys, body)
+        assert(o.get("error").getAsString == ScopeDenialWording.Error, body)
+        assert(o.get("errorKind").getAsString == ScopeDenialWording.ErrorKind, body)
+        assert(o.get("key").getAsString == label, body)
+        assert(o.get("required").getAsString == required, body)
+        assert(o.get("route").getAsString == route, body)
+        assert(o.get("message").getAsString == Message, body)
+    }
+
+    /** A controller's three-key capability-denied body. */
+    def assertControllerBody(body: String, hidden: Seq[String]): Unit = ScopeDenialWording.assertBody(body, Message, hidden)
+}

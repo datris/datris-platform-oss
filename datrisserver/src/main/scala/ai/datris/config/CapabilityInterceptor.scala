@@ -361,6 +361,20 @@ class CapabilityInterceptor extends HandlerInterceptor {
                                     denyCapability(request, response, rk, resource, action, method, path)
                             }
                             false
+                        } else if (CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.InstallWide)) {
+                            // Log-only never opens an install-wide route to a
+                            // caller limited to a catalog or to what it
+                            // created (a restricted session included): the
+                            // refusal above holds whether or not the caller
+                            // holds the capability. Enforce mode keeps the
+                            // does-not-hold / inert-scope answers above.
+                            val message = CallerVisibility.InstallWideRequestMessage
+                            logger.info(
+                                "capability check: route={} {} required={}:{} key={} outcome=deny (log-only; scope-limited caller, install-wide route)",
+                                Array[AnyRef](method, path, resource, action, rk.label): _*
+                            )
+                            denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
+                            false
                         } else {
                             logger.warn(
                                 "capability check: route={} {} required={}:{} key={} outcome=would-deny (log-only)",
