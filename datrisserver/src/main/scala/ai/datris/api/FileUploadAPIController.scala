@@ -24,36 +24,34 @@ import java.util.UUID
 
 object FileUploadAPIController {
 
-    /** The vector containers a pipeline's destination names, as a
-      * `collection=` scope names them
-      * ([[ai.datris.auth.CapabilityScopes.collectionName]]; blank names dropped). */
-    private[api] def collectionsOf(config: PipelineConfig): Seq[String] = {
+    /** The vector containers a pipeline's destination names, each as a
+      * `collection=` scope must name it
+      * ([[ai.datris.auth.CapabilityScopes.collectionNameOpt]] over the names
+      * the loaders use, untrimmed; pgvector's schema as
+      * `PGVectorSql.schemaOf` reads it). None for a present destination whose
+      * name is null or blank, or otherwise unnameable: no scope covers it. */
+    private[api] def collectionsOf(config: PipelineConfig): Seq[Option[String]] = {
         val d = Option(config).flatMap(c => Option(c.destination)).orNull
         if (d == null) Nil
-        else {
-            def nonBlank(s: String) = Option(s).map(_.trim).filter(_.nonEmpty)
+        else
             Seq(
-                Option(d.qdrant).flatMap(q => nonBlank(q.collectionName)).map(n => CapabilityScopes.collectionName("qdrant", n, None)),
-                Option(d.weaviate).flatMap(w => nonBlank(w.className)).map(n => CapabilityScopes.collectionName("weaviate", n, None)),
-                Option(d.milvus).flatMap(m => nonBlank(m.collectionName)).map(n => CapabilityScopes.collectionName("milvus", n, None)),
-                Option(d.chroma).flatMap(c => nonBlank(c.collectionName)).map(n => CapabilityScopes.collectionName("chroma", n, None)),
-                Option(d.pgvector).flatMap(p => nonBlank(p.tableName).map(n => CapabilityScopes.collectionName("pgvector", n, Option(p.schemaName))))
+                Option(d.qdrant).map(q => CapabilityScopes.collectionNameOpt("qdrant", q.collectionName, None)),
+                Option(d.weaviate).map(w => CapabilityScopes.collectionNameOpt("weaviate", w.className, None)),
+                Option(d.milvus).map(m => CapabilityScopes.collectionNameOpt("milvus", m.collectionName, None)),
+                Option(d.chroma).map(c => CapabilityScopes.collectionNameOpt("chroma", c.collectionName, None)),
+                Option(d.pgvector).map(p => CapabilityScopes.collectionNameOpt("pgvector", p.tableName, Option(p.schemaName)))
             ).flatten
-        }
     }
 
     /** The `document:upload:collection=` check (plans/stories/api-key-inert-scopes.md,
       * Fix 2): in scope when the pipeline has at least one vector container
       * and the key grants every one. Some(403) otherwise, for a key whose
-      * `document:upload` is held only under `collection=` scopes. Unscoped
-      * keys, sessions, legacy keys and a request with no identity: None. */
+      * applied `document:upload` is held only under `collection=` scopes.
+      * Unscoped keys, sessions, legacy keys, a request with no identity and
+      * a key with no applied `document:upload` (the gate decided): None. */
     def uploadScopeRefusal(request: HttpServletRequest, config: PipelineConfig): Option[ResponseEntity[String]] =
         try {
-            val collections = collectionsOf(config)
-            // No vector destination: an empty context, which only an
-            // unscoped document:upload grants.
-            if (collections.isEmpty) CapabilityCheck.assertScope(request, "document", "upload", Map.empty)
-            else collections.foreach(c => CapabilityCheck.assertScope(request, "document", "upload", Map("collection" -> c)))
+            CapabilityCheck.assertCollectionScope(request, "document", "upload", collectionsOf(config))
             None
         } catch {
             case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))

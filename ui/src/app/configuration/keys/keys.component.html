@@ -15,7 +15,7 @@
 
   <div class="inert-banner" *ngIf="hasInertKeys()">
     <span class="legacy-icon">⚠</span>
-    <span>One or more keys hold a capability with a scope the platform does not apply (marked below). Those capabilities grant nothing. Issue a replacement key with the capability unscoped or with a supported scope, then revoke the old one.</span>
+    <span>One or more keys hold a capability with a scope the platform does not apply (marked below), so the key is not limited the way it reads. Issue a replacement key with the capability unscoped or with a supported scope, then revoke the old one.</span>
   </div>
 
   <div class="error-banner" *ngIf="error">{{ error }}</div>

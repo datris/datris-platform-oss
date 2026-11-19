@@ -289,7 +289,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                                     // DATRIS_KEY_INERT_SCOPES=allow: passed only
                                     // through a capability whose scope is not applied.
                                     val required = resource + ":" + action
-                                    val reason = CapabilityScopes.inertDenialMessage(rk.label, required, caps)
+                                    val reason = CapabilityScopes.inertUsedMessage(rk.label, required, caps)
                                     logger.warn(
                                         "capability check: route={} {} required={} key={} outcome=inert-scope-used ({}=allow): {}",
                                         Array[AnyRef](method, path, required, rk.label, CapabilityScopes.InertScopesEnv, caps.map(_.raw).mkString(", ")): _*

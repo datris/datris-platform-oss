@@ -139,8 +139,9 @@ object SearchAPIController {
       * ([[ai.datris.auth.CapabilityScopes.collectionName]]: pgvector outside
       * `public` is `<schema>.<table>`). Runs before any config, store or
       * secret lookup, so the answer is the same whether or not the container
-      * exists. None for unscoped keys, sessions, legacy keys and a request
-      * with no identity. */
+      * exists. None for unscoped keys, sessions, legacy keys, a request
+      * with no identity, and a key with no applied `search:vector` (the gate
+      * decided: inert-only under `DATRIS_KEY_INERT_SCOPES=allow`, or log-only). */
     def collectionScopeRefusal(
         request: jakarta.servlet.http.HttpServletRequest,
         store: String,
@@ -148,11 +149,11 @@ object SearchAPIController {
         schema: Option[String]
     ): Option[ResponseEntity[String]] =
         try {
-            ai.datris.auth.CapabilityCheck.assertScope(
+            ai.datris.auth.CapabilityCheck.assertCollectionScope(
                 request,
                 "search",
                 "vector",
-                Map("collection" -> ai.datris.auth.CapabilityScopes.collectionName(store, container, schema))
+                Seq(ai.datris.auth.CapabilityScopes.collectionNameOpt(store, container, schema))
             )
             None
         } catch {

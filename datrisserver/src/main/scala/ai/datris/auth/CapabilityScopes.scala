@@ -235,13 +235,31 @@ object CapabilityScopes {
 
     /** Why an inert capability no longer grants `required` (the route gate's
       * 403 message and audit reason). */
-    def inertDenialMessage(label: String, required: String, inert: Seq[Capability]): String = {
-        val first = inert.head
+    /** "scope 'k' is" / "scopes 'a', 'b' are": the scope keys of `first`
+      * not applied on `required`, and the scopes `required` applies. */
+    private def inertScopeText(first: Capability, required: String): (String, Seq[String]) = {
         val pair = required.takeWhile(_ != ':') -> required.dropWhile(_ != ':').drop(1)
         val applied = supportedSeq(pair._1, pair._2)
         val onRoute = first.scope.toSeq.sortBy(_._1).collect { case (k, v) if !applied.contains(k) || !valueAccepted(pair, k, v) => k }
         val keys = if (onRoute.nonEmpty) onRoute else inertScopeKeys(first)
         val keyText = if (keys.size == 1) "scope '" + keys.head + "' is" else "scopes " + keys.map("'" + _ + "'").mkString(", ") + " are"
+        (keyText, applied)
+    }
+
+    /** The audit reason for a request that passed the route gate only
+      * through an inert capability under `DATRIS_KEY_INERT_SCOPES=allow`. It
+      * records the gate decision; the request's own outcome is in its own
+      * audit entry. */
+    def inertUsedMessage(label: String, required: String, inert: Seq[Capability]): String = {
+        val (keyText, _) = inertScopeText(inert.head, required)
+        "API key '" + label + "' passed the capability gate for " + required + " only through '" +
+            inert.map(_.raw).distinct.mkString("', '") + "', whose " + keyText + " not applied on " + required +
+            "; allowed because " + InertScopesEnv + "=allow."
+    }
+
+    def inertDenialMessage(label: String, required: String, inert: Seq[Capability]): String = {
+        val first = inert.head
+        val (keyText, applied) = inertScopeText(first, required)
         val others = inert.tail.map(_.raw).distinct
         val replacement =
             if (applied.isEmpty) "'" + required + "' unscoped"
@@ -255,17 +273,42 @@ object CapabilityScopes {
     }
 
     /** The plain-name container a `collection=` scope names: the store's
-      * container name, and for pgvector `<schema>.<table>` outside the
-      * `public` schema (blank = public). */
+      * container name as written, and for pgvector `<schema>.<table>`
+      * outside the `public` schema (an absent or empty schema, or exactly
+      * `public`, is public; any other schema is used untrimmed). For the
+      * refusal checks use [[collectionNameOpt]], which also says when no
+      * scope value may name the container. */
     def collectionName(store: String, name: String, schema: Option[String]): String =
         store match {
             case "pgvector" =>
-                schema.map(_.trim).filter(s => s.nonEmpty && s != "public") match {
+                schema.filter(s => s.nonEmpty && s != "public") match {
                     case Some(s) => s + "." + name
                     case None => name
                 }
             case _ => name
         }
+
+    /** The name a `collection=` scope must hold to cover this container, or
+      * None when no scope value may name it, so only an unscoped capability
+      * covers it:
+      *   - a null or blank name (or a pgvector schema that is present but
+      *     blank): the check would not see the container the store uses;
+      *   - pgvector with a `.` in the table name, or in a non-public schema:
+      *     `<schema>.<table>` could then name two different tables (schema
+      *     `a` table `b` and public table `a.b`), so neither is named.
+      * Names are compared exactly as written (no trimming, no case folding). */
+    def collectionNameOpt(store: String, name: String, schema: Option[String]): Option[String] =
+        if (name == null || name.trim.isEmpty) None
+        else
+            store match {
+                case "pgvector" =>
+                    schema match {
+                        case None | Some("public") => if (name.contains('.')) None else Some(name)
+                        case Some(s) if s.trim.isEmpty => None
+                        case Some(s) => if (name.contains('.') || s.contains('.')) None else Some(s + "." + name)
+                    }
+                case _ => Some(name)
+            }
 
     // ---- The stored-key switch (Decision D1)
 

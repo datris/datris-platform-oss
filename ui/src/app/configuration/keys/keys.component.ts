@@ -93,7 +93,9 @@ export class KeysComponent implements OnInit, OnDestroy {
   }
 
   /** True when an active key holds a capability whose scope the platform
-   *  does not apply (it grants nothing). */
+   *  does not apply. Worded without the mode: by default such a capability
+   *  grants nothing, under DATRIS_KEY_INERT_SCOPES=allow it grants the
+   *  whole route. */
   hasInertKeys(): boolean {
     return this.keys.some(k => !k.revoked && (k.inertCapabilities?.length ?? 0) > 0);
   }
@@ -103,7 +105,7 @@ export class KeysComponent implements OnInit, OnDestroy {
   }
 
   readonly inertChipTitle =
-    'The platform does not apply this scope on this capability, so it grants nothing. ' +
+    'The platform does not apply this scope on this capability, so the key is not limited the way it reads. ' +
     'Issue a replacement key with the capability unscoped or with a supported scope, then revoke this one.';
 
   // ------- issue wizard -------

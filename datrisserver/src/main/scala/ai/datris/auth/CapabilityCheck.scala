@@ -84,6 +84,36 @@ object CapabilityCheck {
         }
     }
 
+    /** The `collection=` check on `search:vector` and `document:upload`
+      * (plans/stories/api-key-inert-scopes.md, Fix 2). Each entry of
+      * `collections` is a container the request reaches, as
+      * [[CapabilityScopes.collectionNameOpt]] names it (None: no scope value
+      * names it, so only an unscoped capability covers it); an empty list
+      * (no vector container) is likewise covered only unscoped.
+      *
+      * Applied only when one of the key's applied capabilities matches
+      * (resource, action). Otherwise the route gate already decided: the key
+      * passed only through an inert capability under
+      * `DATRIS_KEY_INERT_SCOPES=allow`, or under
+      * `CAPABILITY_ENFORCEMENT=log-only` as would-deny, and both keep their
+      * v1.60.0 answer. No-op for no identity and legacy keys. */
+    def assertCollectionScope(
+        request: HttpServletRequest,
+        resource: String,
+        action: String,
+        collections: Seq[Option[String]]
+    ): Unit =
+        readResolvedKey(request).foreach { rk =>
+            if (!rk.isLegacyFullAccess && rk.capabilities.exists(_.matchesResourceAction(resource, action))) {
+                if (collections.isEmpty) assertScope(request, resource, action, Map.empty)
+                else
+                    collections.foreach {
+                        case Some(c) => assertScope(request, resource, action, Map("collection" -> c))
+                        case None => assertScope(request, resource, action, Map.empty)
+                    }
+            }
+        }
+
     /** The refusal text a caller sees: the key, the capability it lacks and
       * the key's own capabilities for `resource` (or `*`), distinct, sorted,
       * at most [[MaxListedCapabilities]]. Nothing about the target. */
