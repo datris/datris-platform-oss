@@ -340,10 +340,10 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
 
     test("field-protection suggest/preset hide a pipeline outside the grants with the missing-pipeline error") {
         val session = req(restrictedSession(grants("Sales" -> "view")))
-        val e = intercept[DatrisException](FieldProtectionAPIController.hideFromRestricted(session, "payroll")(pipeline("payroll", "HR")))
+        val e = intercept[DatrisException](FieldProtectionAPIController.targetRefusal(session, "payroll", pipeline("payroll", "HR"), None))
         assert(e.getMessage == "Pipeline: payroll is not configured in the NoSQL database")
-        FieldProtectionAPIController.hideFromRestricted(session, "orders")(pipeline("orders", "Sales"))
-        intercept[CapabilityDeniedException](FieldProtectionAPIController.hideFromRestricted(req(salesKey), "payroll")(pipeline("payroll", "HR")))
+        FieldProtectionAPIController.targetRefusal(session, "orders", pipeline("orders", "Sales"), None)
+        intercept[CapabilityDeniedException](FieldProtectionAPIController.targetRefusal(req(salesKey), "payroll", pipeline("payroll", "HR"), None))
     }
 
     test("DELETE /pipeline/status is refused for a restricted session") {
