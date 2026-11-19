@@ -357,7 +357,6 @@ class ColumnTypeTextSpec extends AnyFunSuite {
                 "int\n",
                 "\tint",
                 "decimal\t(10,2)",
-                "decimal(10,2)\u00a0",
                 null
             )
         ) assert(ColumnTypeText.loadText(t).isEmpty, "[" + t + "]")
@@ -392,5 +391,39 @@ class ColumnTypeTextSpec extends AnyFunSuite {
         assert(kept.isRight && kept.right.get.addColumns == Seq("ADD note") && kept.right.get.statusLine.exists(_.contains("b")), kept.toString)
         val refused = ColumnTypeText.evolve(odd, Set("id"), f => throw new AssertionError("statement built for " + f.name))
         assert(refused.isLeft && refused.left.get.contains("'b'"), refused.toString)
+    }
+
+    // ------------------------------------------- Unicode spaces and message escaping
+
+    test("a stored type with a Unicode space normalises at load and is refused on a new save") {
+        for ((t, sent) <- Seq("decimal(10,\u00a02)" -> "decimal(10,2)", "varchar(\u200350)" -> "varchar(50)", "decimal(10,2)\u00a0" -> "decimal(10,2)")) {
+            assert(ColumnTypeText.loadText(t).contains(sent), "[" + t + "]")
+            assert(!ColumnTypeText.safe(t), "save stays U+0020 only: [" + t + "]")
+            assert(ColumnTypeText.changedProblem(cfg(Seq(SchemaField("a", t)), null), null).isDefined, "[" + t + "]")
+        }
+        for (t <- Seq("decimal(10\u00a02)", "var\u00a0char(10)", "decimal(10 2)", "var char(10)", "de\u2003cimal(10,2)"))
+            assert(ColumnTypeText.loadText(t).isEmpty, "[" + t + "]")
+    }
+
+    test("a refused type or name with non-ASCII text is shown escaped") {
+        val p = ColumnTypeText.problem(SchemaField("n\u00e9", "decimal(10,\u00a02) x"), "source").get
+        assert(p.contains("decimal(10,\\u00a02) x"), p)
+        assert(p.contains("n\\u00e9"), p)
+        assert(p.forall(c => c >= ' ' && c <= '~'), p)
+    }
+
+    test("exhaustive: no character inserted anywhere into an accepted type makes loadText return anything but plain accepted ASCII") {
+        // loadText reads each load blank as U+0020, checks safe (ASCII letters,
+        // digits, parentheses, comma and U+0020 only), then removes the blanks;
+        // so the result is the safe text with optional spaces removed.
+        val bases = Seq("decimal(10,2)", "varchar(50)", "char(1)", "varchar(max)", "int")
+        val expected = bases.toSet
+        for (b <- bases; c <- 0 to 0xffff; i <- 0 to b.length) {
+            val t = b.substring(0, i) + c.toChar + b.substring(i)
+            ColumnTypeText.loadText(t).foreach { out =>
+                assert(ColumnTypeText.safe(out) && out.forall(ch => ch >= ' ' && ch <= '~'), "[" + t + "] -> [" + out + "]")
+                assert(expected.contains(out) || out == t, "[" + t + "] -> [" + out + "]")
+            }
+        }
     }
 }

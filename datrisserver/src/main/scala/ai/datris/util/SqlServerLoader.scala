@@ -306,7 +306,7 @@ object SqlServerLoader {
         else if (field.name.equalsIgnoreCase("_xml")) "XML"
         else {
             val t = if (field.`type` == null) "string" else ColumnTypeText.loadTextOrThrow(field)
-            t.toLowerCase match {
+            t.toLowerCase(java.util.Locale.ROOT) match {
                 case "string" => if (isKey) "NVARCHAR(450)" else "NVARCHAR(MAX)"
                 case "int" | "integer" | "smallint" | "tinyint" => "INT"
                 case "bigint" => "BIGINT"

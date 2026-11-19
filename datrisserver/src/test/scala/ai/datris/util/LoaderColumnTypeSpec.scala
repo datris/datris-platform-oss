@@ -331,4 +331,25 @@ class LoaderColumnTypeSpec extends AnyFunSuite {
             assert(DatabricksLoader.loadProblem(cfg(ok :+ f("decimal(10,\t2)", "t") :+ f(evil, "_json"), manual)).isEmpty, "manual=" + manual)
         }
     }
+
+    test("the type functions map plain names under a Turkish default locale") {
+        val saved = java.util.Locale.getDefault
+        try {
+            java.util.Locale.setDefault(new java.util.Locale("tr", "TR"))
+            for (
+                (t, sf, dbx, ms) <- Seq(
+                    ("INT", "NUMBER(38,0)", "INT", "INT"),
+                    ("BIGINT", "NUMBER(38,0)", "BIGINT", "BIGINT"),
+                    ("STRING", "VARCHAR", "STRING", "NVARCHAR(MAX)"),
+                    ("TINYINT", "NUMBER(38,0)", "INT", "INT")
+                )
+            ) {
+                assert(SnowflakeLoader.snowflakeType(f(t)) == sf, "snowflake " + t)
+                assert(DatabricksLoader.databricksType(f(t)) == dbx, "databricks " + t)
+                assert(SqlServerLoader.sqlServerType(f(t)) == ms, "sqlserver " + t)
+            }
+            assert(PostgresSql.columnType(f("STRING")) == "text" && PostgresSql.columnType(f("TINYINT")) == "int2")
+            assert(PostgresSql.addColumnType(f("TINYINT")) == "int2")
+        } finally java.util.Locale.setDefault(saved)
+    }
 }

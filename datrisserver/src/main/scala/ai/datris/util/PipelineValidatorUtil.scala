@@ -796,10 +796,11 @@ object PipelineValidatorUtil {
         }
     }
 
-    /** A field type lower-cased; a null type stays null, so the save's type
+    /** A field type lower-cased (Locale.ROOT, so `INT` stays `int` under
+      * any default locale); a null type stays null, so the save's type
       * rule (`PipelineAPIController.columnTypeRefusal`) answers it with a 400
       * on a pipeline type the validator does not check. */
-    private def lowerOrNull(t: String): String = if (t == null) null else t.toLowerCase
+    private def lowerOrNull(t: String): String = if (t == null) null else t.toLowerCase(java.util.Locale.ROOT)
 
     def modify(config: PipelineConfig): PipelineConfig = {
         val sourceSchemaProperties = {

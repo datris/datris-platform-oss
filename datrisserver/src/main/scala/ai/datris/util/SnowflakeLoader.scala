@@ -365,7 +365,7 @@ object SnowflakeLoader {
         else if (field.name.equalsIgnoreCase("_xml")) "VARCHAR"
         else {
             val t = ColumnTypeText.loadTextOrThrow(field)
-            t.toLowerCase match {
+            t.toLowerCase(java.util.Locale.ROOT) match {
                 case "string" => "VARCHAR"
                 case "int" | "integer" | "tinyint" |
                     "smallint" | "bigint" => "NUMBER(38,0)"

@@ -433,7 +433,7 @@ object DatabricksLoader {
         else if (field.name.equalsIgnoreCase("_xml")) "STRING"
         else {
             val t = ColumnTypeText.loadTextOrThrow(field)
-            t.toLowerCase match {
+            t.toLowerCase(java.util.Locale.ROOT) match {
                 case "string" => "STRING"
                 case "int" | "integer" | "tinyint" |
                     "smallint" => "INT"

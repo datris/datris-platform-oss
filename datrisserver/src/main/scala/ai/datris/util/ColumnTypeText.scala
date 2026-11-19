@@ -54,16 +54,20 @@ object ColumnTypeText {
       * blank: space, tab, LF, VT, FF, CR. */
     private def asciiBlank(c: Char): Boolean = c == ' ' || c == '\t' || c == '\n' || c == '\u000b' || c == '\f' || c == '\r'
 
+    /** Load only: an ASCII blank or a Unicode space separator
+      * (`Character.isSpaceChar`: U+00A0, U+2000-U+200A, U+2028, U+3000, ...). */
+    private[util] def loadBlank(c: Char): Boolean = asciiBlank(c) || Character.isSpaceChar(c)
+
     /** The type text a loader may map and send for stored text `t`: `t`
       * itself when it is [[safe]]; otherwise, when `t` with every ASCII
-      * blank (tab, line break, VT, FF) read as a space is [[safe]], `t` with
-      * every ASCII blank removed (a stored type such as `decimal(10,\t2)`
+      * blank (tab, line break, VT, FF) or Unicode space separator read as a
+      * space is [[safe]], `t` with every such character removed (a stored type such as `decimal(10,\t2)`
       * loads as `decimal(10,2)`). None for anything else, null included.
       * Load only: the save rule is [[safe]]. */
     def loadText(t: String): Option[String] =
         if (t == null) None
         else if (safe(t)) Some(t)
-        else if (safe(t.map(c => if (asciiBlank(c)) ' ' else c))) Some(t.filterNot(asciiBlank))
+        else if (safe(t.map(c => if (loadBlank(c)) ' ' else c))) Some(t.filterNot(loadBlank))
         else None
 
     /** [[loadText]], or a `DatrisException` with [[problem]]'s message for
@@ -172,11 +176,13 @@ object ColumnTypeText {
     private def destinationFields(c: PipelineConfig): Seq[SchemaField] =
         if (c == null || c.destination == null) Nil else fieldsOf(c.destination.schemaProperties)
 
-    private def lineBreaking(c: Char): Boolean =
-        Character.isISOControl(c) || Character.getType(c) == Character.LINE_SEPARATOR || Character.getType(c) == Character.PARAGRAPH_SEPARATOR
-
+    /** Printable ASCII as is; every other character (control characters,
+      * line and paragraph separators, non-ASCII spaces and letters) as
+      * `\\uXXXX`, so a message is one line and cannot show text that looks
+      * like an accepted type when it is not. */
     private def oneLine(s: String): String =
-        if (s == null) "null" else s.map(c => if (lineBreaking(c)) ' ' else c)
+        if (s == null) "null"
+        else s.flatMap(c => if (c >= ' ' && c <= '~') c.toString else "\\u%04x".format(c.toInt))
 
     private def shown(t: String): String = if (t == null) "null" else oneLine(t.take(MaxShown))
 
