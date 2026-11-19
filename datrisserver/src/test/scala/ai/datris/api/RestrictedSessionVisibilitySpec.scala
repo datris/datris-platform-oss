@@ -282,8 +282,8 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
             assert(EntityVersionAPIController.hiddenFromRestricted(session, r, "update", Some(("Sales", "someone"))))
             assert(!EntityVersionAPIController.hiddenFromRestricted(session, r, "update", Some(("Ops", "someone"))))
         }
-        // API keys and unrestricted sessions are unchanged.
-        assert(!EntityVersionAPIController.hiddenFromRestricted(req(salesKey), "pipeline", "read", Some(("HR", "x"))))
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, D0); unrestricted sessions are unchanged.
+        assert(EntityVersionAPIController.hiddenFromRestricted(req(salesKey), "pipeline", "read", Some(("HR", "x"))))
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(!EntityVersionAPIController.hiddenFromRestricted(req(editor), "pipeline", "update", None))
     }
@@ -328,8 +328,8 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(PipelineAPIController.hiddenConfig(session, hr, "read"))
         assert(!PipelineAPIController.hiddenConfig(session, pipeline("orders", "Sales"), "read"))
         assert(PipelineAPIController.hiddenConfig(session, pipeline("orders", "Sales"), "update"))
-        // API keys and unrestricted sessions: unchanged (no refusal).
-        assert(PipelineAPIController.refusalFor(req(salesKey), "payroll", hr, "run").isEmpty)
+        // A catalog-scoped API key is refused outside its scope (scoped-key-read-routes, D0); unrestricted sessions: no refusal.
+        assert(PipelineAPIController.refusalFor(req(salesKey), "payroll", hr, "run").isDefined)
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(!PipelineAPIController.restrictedHidden(req(editor), "payroll", "read"), "no stored read for unrestricted")
         // GET /pipeline/result: a hidden job reads exactly as an unknown token.
@@ -343,7 +343,7 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         val e = intercept[DatrisException](FieldProtectionAPIController.hideFromRestricted(session, "payroll")(pipeline("payroll", "HR")))
         assert(e.getMessage == "Pipeline: payroll is not configured in the NoSQL database")
         FieldProtectionAPIController.hideFromRestricted(session, "orders")(pipeline("orders", "Sales"))
-        FieldProtectionAPIController.hideFromRestricted(req(salesKey), "payroll")(pipeline("payroll", "HR"))
+        intercept[CapabilityDeniedException](FieldProtectionAPIController.hideFromRestricted(req(salesKey), "payroll")(pipeline("payroll", "HR")))
     }
 
     test("DELETE /pipeline/status is refused for a restricted session") {
