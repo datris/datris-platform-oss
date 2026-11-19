@@ -796,11 +796,16 @@ object PipelineValidatorUtil {
         }
     }
 
+    /** A field type lower-cased; a null type stays null, so the save's type
+      * rule (`PipelineAPIController.columnTypeRefusal`) answers it with a 400
+      * on a pipeline type the validator does not check. */
+    private def lowerOrNull(t: String): String = if (t == null) null else t.toLowerCase
+
     def modify(config: PipelineConfig): PipelineConfig = {
         val sourceSchemaProperties = {
             if (config.source.schemaProperties != null) {
                 val fields =
-                    config.source.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, field.`type`.toLowerCase, field.protect))
+                    config.source.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, lowerOrNull(field.`type`), field.protect))
                         .toList.asJava
                 SchemaProperties(config.source.schemaProperties.dbName, fields)
             } else
@@ -818,7 +823,7 @@ object PipelineValidatorUtil {
                     SchemaProperties(config.destination.schemaProperties.dbName, fields)
                 } else {
                     val fields =
-                        config.destination.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, field.`type`.toLowerCase)).toList.asJava
+                        config.destination.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, lowerOrNull(field.`type`))).toList.asJava
                     SchemaProperties(config.destination.schemaProperties.dbName, fields)
                 }
             } else {

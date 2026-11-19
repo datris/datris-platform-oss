@@ -215,7 +215,7 @@ class SqlServerLoader(jobContext: JobContext) {
 
     /** Create the schema and table when missing, then add any configured
       * column the table lacks. When every non-document field's type passes
-      * [[ColumnTypeText.safe]] (a null type is `string` here, as in
+      * [[ColumnTypeText.loadText]] (a null type is `string` here, as in
       * [[SqlServerLoader.sqlServerType]]) the statements are those earlier
       * versions ran, in the same order. Otherwise the existing columns are
       * read first and the run fails before any statement when a stored type
@@ -225,16 +225,10 @@ class SqlServerLoader(jobContext: JobContext) {
     private def createTableIfUndefined(statement: Statement): Unit = {
         val schema = SqlServerConnectionUtil.schemaName(db)
         val fields = config.destination.schemaProperties.fields.asScala.toSeq
-        val typed = SqlServerLoader.withNullAsString(fields)
-        val unsafe = ColumnTypeText.unsafeFields(typed)
 
-        if (unsafe.isEmpty) {
-            // CREATE SCHEMA must be the only statement in its batch, hence EXEC.
-            statement.execute(
-                s"IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ${nLiteral(schema)}) EXEC(${nLiteral("CREATE SCHEMA " + ident(schema))})"
-            )
-
-            val ddl = SqlServerLoader.createTableSql(db, fields)
+        val create = SqlServerLoader.createPlan(db, fields)
+        create.schemaSql.foreach(sql => statement.execute(sql))
+        create.tableSql.foreach { ddl =>
             statusUtil.info("processing", "SQL Server create table statement: " + ddl)
             statement.execute(ddl)
         }
@@ -250,22 +244,14 @@ class SqlServerLoader(jobContext: JobContext) {
             rs.close()
         }
 
-        if (unsafe.nonEmpty) {
-            ColumnTypeText.loadProblem(typed, existing.toSet).foreach(p => throw new DatrisException(p))
-            statusUtil.info(
-                "processing",
-                "The table already has column(s) " + unsafe.map(_.name).mkString(", ") +
-                    "; their stored type is not a supported type and was not used. Change it to a supported type and save the pipeline."
-            )
-        }
-
-        fields.foreach { field =>
-            if (!existing.contains(field.name.toLowerCase)) {
-                // Added columns are nullable and never part of the key.
-                val alter = s"ALTER TABLE ${qualifiedTable()} ADD ${SqlServerLoader.columnDef(field, isKey = false)}"
-                statusUtil.info("processing", "Schema evolution: " + alter)
-                statement.execute(alter)
-            }
+        SqlServerLoader.evolvePlan(db, fields, existing.toSet) match {
+            case Left(problem) => throw new DatrisException(problem)
+            case Right(plan) =>
+                plan.statusLine.foreach(line => statusUtil.info("processing", line))
+                plan.addColumns.foreach { alter =>
+                    statusUtil.info("processing", "Schema evolution: " + alter)
+                    statement.execute(alter)
+                }
         }
     }
 
@@ -313,24 +299,48 @@ object SqlServerLoader {
      *  -> XML. A string KEY column is NVARCHAR(450) because an index key over
      *  NVARCHAR(MAX) is not allowed (900-byte clustered-key limit). A null
      *  type is `string`. Any other type is passed as written only when it
-     *  passes [[ColumnTypeText.safe]] (e.g. decimal(p,s), varchar(max)); every
+     *  has a [[ColumnTypeText.loadText]] (sent as that text) (e.g. decimal(p,s), varchar(max)); every
      *  other type text is a `DatrisException`. */
     def sqlServerType(field: SchemaField, isKey: Boolean = false): String = {
         if (field.name.equalsIgnoreCase("_json")) "NVARCHAR(MAX)"
         else if (field.name.equalsIgnoreCase("_xml")) "XML"
-        else if (field.`type` != null && !ColumnTypeText.safe(field.`type`))
-            throw new DatrisException(ColumnTypeText.problem(field, "destination").get)
-        else Option(field.`type`).getOrElse("string").toLowerCase match {
-            case "string" => if (isKey) "NVARCHAR(450)" else "NVARCHAR(MAX)"
-            case "int" | "integer" | "smallint" | "tinyint" => "INT"
-            case "bigint" => "BIGINT"
-            case "float" | "double" => "FLOAT"
-            case "boolean" => "BIT"
-            case "date" => "DATE"
-            case "timestamp" => "DATETIME2"
-            case _ => field.`type`
+        else {
+            val t = if (field.`type` == null) "string" else ColumnTypeText.loadTextOrThrow(field)
+            t.toLowerCase match {
+                case "string" => if (isKey) "NVARCHAR(450)" else "NVARCHAR(MAX)"
+                case "int" | "integer" | "smallint" | "tinyint" => "INT"
+                case "bigint" => "BIGINT"
+                case "float" | "double" => "FLOAT"
+                case "boolean" => "BIT"
+                case "date" => "DATE"
+                case "timestamp" => "DATETIME2"
+                case _ => t
+            }
         }
     }
+
+    /** The loader's create step: the `CREATE SCHEMA` batch and
+      * [[createTableSql]], or nothing when a field's stored type has no
+      * [[ColumnTypeText.loadText]] (a null type is `string` here). */
+    def createPlan(db: Database, fields: Seq[SchemaField]): ColumnTypeText.CreatePlan = {
+        val schema = SqlServerConnectionUtil.schemaName(db)
+        ColumnTypeText.create(
+            withNullAsString(fields),
+            // CREATE SCHEMA must be the only statement in its batch, hence EXEC.
+            Some(s"IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ${nLiteral(schema)}) EXEC(${nLiteral("CREATE SCHEMA " + ident(schema))})"),
+            createTableSql(db, fields)
+        )
+    }
+
+    /** The loader's evolve step over the table's existing (lower-cased)
+      * columns ([[ColumnTypeText.evolve]]; a null type is `string`). Added
+      * columns are nullable and never part of the key. */
+    def evolvePlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Either[String, ColumnTypeText.EvolvePlan] =
+        ColumnTypeText.evolve(
+            withNullAsString(fields),
+            existing,
+            f => s"ALTER TABLE ${SqlServerConnectionUtil.qualifiedTable(db)} ADD ${columnDef(f, isKey = false)}"
+        )
 
     /** `name TYPE [NOT NULL] [CHECK (ISJSON(name) = 1)]`. */
     def columnDef(field: SchemaField, isKey: Boolean): String = {

@@ -1797,7 +1797,9 @@ paths:
         `tinyint`, `smallint`, `bigint`, `float`, `double`, `string`, `date`,
         `timestamp`, `decimal(p)` or `decimal(p,s)` (1 to 4 digits each),
         `varchar(n)` or `char(n)` (1 to 9 digits) or `varchar(max)`, in any
-        letter case, with spaces only inside the parentheses. Otherwise 400
+        letter case, with spaces only inside the parentheses and after the
+        closing parenthesis (`integer` is also accepted on unstructured
+        pipelines, as before; the validator refuses it elsewhere). Otherwise 400
         with `Invalid field type passed: ...` naming the field and the schema.
         A field whose name and type the stored pipeline already has in the
         same schema is not refused by this rule. Version restore and catalog

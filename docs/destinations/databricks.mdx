@@ -214,7 +214,7 @@ When `manageTableManually` is `false` (the default), the pipeline auto-creates t
 
 \* Matched on the field **name**, not its declared type: a field named `_json` or `_xml` (declared `string`, as the JSON and XML ingestion modes produce) always lands as the document column shown, whatever type it declares.
 
-Other types (`decimal(p,s)`) are passed as written. Every load casts each column to its type, so a stored type that is not one of the accepted forms (see [Schemas](/schemas)) fails the run before anything is staged, with a message naming the field; change the type to an accepted form and save the pipeline. Semi-structured `_json` columns land as `VARIANT` (parsed with `PARSE_JSON` during the load), so JSON payloads are natively queryable with Databricks' `:` path syntax rather than stored as text.
+Other types (`decimal(p,s)`) are passed as written. Every load casts each column to its type, so a stored type that is not one of the accepted forms (see [Schemas](/schemas)) fails the run before anything is staged, with a message naming the field; change the type to an accepted form and save the pipeline. A stored type with tabs or line breaks around the numbers or after the closing parenthesis (from an earlier version) is sent with them removed. A stored type with other text after it, such as a comment, fails the run the same way: edit the field's type to the accepted form, for example `decimal(10,2)`, save the pipeline and run it again. Semi-structured `_json` columns land as `VARIANT` (parsed with `PARSE_JSON` during the load), so JSON payloads are natively queryable with Databricks' `:` path syntax rather than stored as text.
 
 ## Truncate Before Write
 

@@ -321,13 +321,76 @@ class ColumnTypeTextSpec extends AnyFunSuite {
 
     // ------------------------------------------- implementer additions (lead ruling C)
 
-    test("a space between the type name and the parenthesis, or before or after the whole type, is not safe") {
-        // v1.60.0's validateColumns refuses each of these (it neither trims nor
-        // allows a space before the parenthesis), so no structured config saved
-        // through the API carries one.
-        for (t <- Seq("decimal (10,2)", "varchar (255)", "char (1)", "varchar (max)", " int", "int ", " decimal(10,2)", "decimal(10,2) ", "decimal(10,  2)x"))
+    test("a space before the type name, between the name and the parenthesis, or after a plain type name is not safe") {
+        // v1.60.0's validateColumns refuses each of these on save: plain names
+        // are compared whole (no trim), and the parenthesised forms must start
+        // with "decimal(", "varchar(" or "char(".
+        for (t <- Seq("decimal (10,2)", "varchar (255)", "char (1)", "varchar (max)", " int", "int ", " decimal(10,2)", "decimal(10,  2)x"))
             assert(!ColumnTypeText.safe(t), "[" + t + "]")
         // more than one space beside a parenthesis or the comma is still a space beside it
         assert(ColumnTypeText.safe("decimal(  10  ,  2  )"))
+    }
+
+    test("spaces after the closing parenthesis are safe (v1.60.0 saved and sent them)") {
+        for (t <- Seq("decimal(10,2) ", "varchar(50) ", "char(1)  ", "varchar(max) ", "decimal( 10 , 2 )   ", "DECIMAL(10) "))
+            assert(ColumnTypeText.safe(t), "[" + t + "]")
+        // still not: other text after it, or a tab or line break
+        for (t <- Seq("decimal(10,2) x", "decimal(10,2)\t", "decimal(10,2) \n", "varchar(50) ;"))
+            assert(!ColumnTypeText.safe(t), "[" + t + "]")
+    }
+
+    test("loadText: safe text as stored; other ASCII blanks in the accepted places removed; anything else None") {
+        assert(ColumnTypeText.loadText("decimal(10,2)").contains("decimal(10,2)"))
+        assert(ColumnTypeText.loadText("decimal(10, 2) ").contains("decimal(10, 2) "), "safe text is sent exactly as stored")
+        assert(ColumnTypeText.loadText("decimal(10,\t2)").contains("decimal(10,2)"))
+        assert(ColumnTypeText.loadText("decimal(10,2)\n").contains("decimal(10,2)"))
+        assert(ColumnTypeText.loadText("varchar( 50 )\r\n").contains("varchar(50)"))
+        assert(ColumnTypeText.loadText("varchar(\u000b50\f)").contains("varchar(50)"))
+        for (
+            t <- Seq(
+                "decimal(10,2) /* x */",
+                "varchar(10) not null",
+                evil,
+                "varchar(10)\n; DROP TABLE public.canary",
+                "decimal(10\t2)",
+                "varchar(1\n0)",
+                "int\n",
+                "\tint",
+                "decimal\t(10,2)",
+                "decimal(10,2)\u00a0",
+                null
+            )
+        ) assert(ColumnTypeText.loadText(t).isEmpty, "[" + t + "]")
+        // a normalisable stored type is not unsafe at load, and the save rule stays strict
+        assert(ColumnTypeText.unsafeFields(Seq(SchemaField("a", "decimal(10,\t2)"))).isEmpty)
+        assert(ColumnTypeText.loadProblem(Seq(SchemaField("a", "varchar( 50 )\r\n")), Set.empty).isEmpty)
+        assert(ColumnTypeText.problem(SchemaField("a", "decimal(10,\t2)"), "destination").isDefined)
+    }
+
+    test("problem shows at most 80 characters of the field name and no line or paragraph separator") {
+        val longName = "n" * 200
+        val p = ColumnTypeText.problem(SchemaField(longName, evil), "source").get
+        assert(p.contains("n" * 80) && !p.contains("n" * 81), p)
+        val sepName = "a\u2028b\u2029c\nd"
+        val q = ColumnTypeText.problem(SchemaField(sepName, "varchar(1)\u2028x"), "source").get
+        assert(!q.exists(c => c == '\u2028' || c == '\u2029' || Character.isISOControl(c)), q)
+        assert(!ColumnTypeText.notUsedStatus(Seq(SchemaField(sepName, evil))).exists(c => c == '\u2028' || c == '\u2029' || Character.isISOControl(c)))
+    }
+
+    test("create and evolve: plain statements when every type loads; no create, only missing columns and a status line otherwise") {
+        val ok = Seq(SchemaField("id", "int"), SchemaField("note", "string"))
+        val c1 = ColumnTypeText.create(ok, Some("S"), "T")
+        assert(c1 == ColumnTypeText.CreatePlan(Some("S"), Some("T")))
+        assert(ColumnTypeText.evolve(ok, Set("id"), f => "ADD " + f.name) == Right(ColumnTypeText.EvolvePlan(Seq("ADD note"), None)))
+        val odd = ok :+ SchemaField("b", "varchar(10) not null")
+        // the create statements are never even built
+        assert(ColumnTypeText.create(odd, throw new AssertionError("schema built"), throw new AssertionError("table built")) == ColumnTypeText.CreatePlan(
+            None,
+            None
+        ))
+        val kept = ColumnTypeText.evolve(odd, Set("id", "b"), f => "ADD " + f.name)
+        assert(kept.isRight && kept.right.get.addColumns == Seq("ADD note") && kept.right.get.statusLine.exists(_.contains("b")), kept.toString)
+        val refused = ColumnTypeText.evolve(odd, Set("id"), f => throw new AssertionError("statement built for " + f.name))
+        assert(refused.isLeft && refused.left.get.contains("'b'"), refused.toString)
     }
 }

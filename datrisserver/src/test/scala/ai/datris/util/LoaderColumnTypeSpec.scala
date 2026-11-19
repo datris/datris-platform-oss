@@ -186,9 +186,21 @@ class LoaderColumnTypeSpec extends AnyFunSuite {
         assert(Try(PostgresSql.columnType(f(null))).isFailure)
     }
 
-    test("PostgresSql.addColumnType writes the v1.60.0 ADD COLUMN text for every safe type and never an unsafe one") {
+    test("PostgresSql.addColumnType writes the v1.60.0 ADD COLUMN text for every safe type that worked, int2/float8 for the two that never did") {
         for (
-            (t, pg) <- Seq("string" -> "text", "STRING" -> "text", "int" -> "int", "float" -> "float", "double" -> "double", "decimal(10,2)" -> "decimal(10,2)")
+            (t, pg) <- Seq(
+                "string" -> "text",
+                "STRING" -> "text",
+                "int" -> "int",
+                "smallint" -> "smallint",
+                "float" -> "float",
+                "decimal(10,2)" -> "decimal(10,2)",
+                // v1.60.0 sent these as written and PostgreSQL has no such type
+                "tinyint" -> "int2",
+                "TINYINT" -> "int2",
+                "double" -> "float8",
+                "Double" -> "float8"
+            )
         )
             assert(PostgresSql.addColumnType(f(t)) == pg, t)
         // document columns: string -> text as before; any other type is mapped by name
@@ -196,5 +208,127 @@ class LoaderColumnTypeSpec extends AnyFunSuite {
         assert(PostgresSql.addColumnType(f(evil, "_json")) == "json")
         assert(PostgresSql.addColumnType(f(evil, "_xml")) == "xml")
         for (t <- failing :+ null) assert(Try(PostgresSql.addColumnType(f(t))).isFailure, "[" + t + "]")
+    }
+
+    test("each engine's type function sends a stored type with tabs or line breaks in the accepted places with them removed") {
+        for ((t, sent) <- Seq("decimal(10,\t2)" -> "decimal(10,2)", "decimal(10,2)\n" -> "decimal(10,2)", "varchar( 50 )\r\n" -> "varchar(50)")) {
+            assert(PostgresSql.columnType(f(t)) == sent, "postgres " + t)
+            assert(PostgresSql.addColumnType(f(t)) == sent, "postgres add " + t)
+            assert(SnowflakeLoader.snowflakeType(f(t)) == sent, "snowflake " + t)
+            assert(DatabricksLoader.databricksType(f(t)) == sent, "databricks " + t)
+            assert(SqlServerLoader.sqlServerType(f(t)) == sent, "sqlserver " + t)
+        }
+        for (t <- Seq("decimal(10,2) /* x */", "varchar(10) not null", evil)) {
+            assert(Try(PostgresSql.columnType(f(t))).isFailure, t)
+            assert(Try(SnowflakeLoader.snowflakeType(f(t))).isFailure, t)
+            assert(Try(DatabricksLoader.databricksType(f(t))).isFailure, t)
+            assert(Try(SqlServerLoader.sqlServerType(f(t))).isFailure, t)
+        }
+    }
+
+    // ---------------------------------------- load plans (create, then evolve)
+
+    private val ok = Seq(f("int", "id"), f("decimal(10,2)", "amount"), f("string", "note"))
+    private val odd = Seq(f("int", "id"), f("varchar(10) not null", "b"), f("string", "note"))
+
+    test("Postgres: no unsafe field gives the v1.60.0 statements in the v1.60.0 order") {
+        val keys = java.util.Arrays.asList("id")
+        val c = PostgresSql.createPlan("datris", "public", "orders", ok, keys)
+        assert(c.schemaSql.contains("CREATE SCHEMA IF NOT EXISTS \"public\";"))
+        assert(
+            c.tableSql.contains(
+                "create table if not exists \"datris\".\"public\".\"orders\" (\"id\" int, \"amount\" decimal(10,2), \"note\" text, primary key (id));"
+            ),
+            c.toString
+        )
+        // table absent: every column is added (IF NOT EXISTS), in field order
+        assert(
+            PostgresSql.evolvePlan("datris", "public", "orders", ok, Set.empty) == Right(
+                ColumnTypeText.EvolvePlan(
+                    Seq(
+                        "ALTER TABLE \"datris\".\"public\".\"orders\" ADD COLUMN IF NOT EXISTS \"id\" int",
+                        "ALTER TABLE \"datris\".\"public\".\"orders\" ADD COLUMN IF NOT EXISTS \"amount\" decimal(10,2)",
+                        "ALTER TABLE \"datris\".\"public\".\"orders\" ADD COLUMN IF NOT EXISTS \"note\" text"
+                    ),
+                    None
+                )
+            )
+        )
+        assert(PostgresSql.evolvePlan("datris", "public", "orders", ok, Set("id", "amount", "note")) == Right(ColumnTypeText.EvolvePlan(Nil, None)))
+    }
+
+    test("Postgres: an unsafe field whose column exists gives no create, only the missing columns and the status line; otherwise the problem") {
+        assert(PostgresSql.createPlan("datris", "public", "orders", odd, null) == ColumnTypeText.CreatePlan(None, None))
+        val kept = PostgresSql.evolvePlan("datris", "public", "orders", odd, Set("id", "b"))
+        assert(kept.isRight, kept.toString)
+        assert(kept.right.get.addColumns == Seq("ALTER TABLE \"datris\".\"public\".\"orders\" ADD COLUMN IF NOT EXISTS \"note\" text"))
+        assert(kept.right.get.statusLine.exists(l => l.contains("b") && l.contains("was not used")), kept.toString)
+        for (existing <- Seq(Set.empty[String], Set("id", "note"))) {
+            val refused = PostgresSql.evolvePlan("datris", "public", "orders", odd, existing)
+            assert(refused.isLeft && refused.left.get.contains("Invalid field type passed") && refused.left.get.contains("'b'"), refused.toString)
+        }
+    }
+
+    test("Snowflake: same statements as v1.60.0 without an unsafe field; no create and only missing columns with one; the problem otherwise") {
+        val c = SnowflakeLoader.createPlan(sfDb, ok)
+        assert(c.schemaSql.contains("CREATE SCHEMA IF NOT EXISTS datris.public"), c.toString)
+        assert(c.tableSql.contains("CREATE TABLE IF NOT EXISTS datris.public.orders (id NUMBER(38,0), amount decimal(10,2), note VARCHAR, PRIMARY KEY (id))"))
+        assert(
+            SnowflakeLoader.evolvePlan(sfDb, ok, Set("id")) ==
+                Right(
+                    ColumnTypeText.EvolvePlan(
+                        Seq(
+                            "ALTER TABLE datris.public.orders ADD COLUMN IF NOT EXISTS amount decimal(10,2)",
+                            "ALTER TABLE datris.public.orders ADD COLUMN IF NOT EXISTS note VARCHAR"
+                        ),
+                        None
+                    )
+                )
+        )
+        assert(SnowflakeLoader.createPlan(sfDb, odd) == ColumnTypeText.CreatePlan(None, None))
+        val kept = SnowflakeLoader.evolvePlan(sfDb, odd, Set("id", "b"))
+        assert(kept.isRight && kept.right.get.addColumns == Seq("ALTER TABLE datris.public.orders ADD COLUMN IF NOT EXISTS note VARCHAR"), kept.toString)
+        assert(kept.right.get.statusLine.isDefined)
+        assert(SnowflakeLoader.evolvePlan(sfDb, odd, Set.empty).left.exists(_.contains("'b'")))
+    }
+
+    test(
+        "SQL Server: same statements as v1.60.0 without an unsafe field (a null type is string); no create and only missing columns with one; the problem otherwise"
+    ) {
+        val withNull = ok :+ f(null, "extra")
+        val c = SqlServerLoader.createPlan(msDb, withNull)
+        assert(c.schemaSql.contains("IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'dbo') EXEC(N'CREATE SCHEMA dbo')"), c.toString)
+        assert(
+            c.tableSql.contains(
+                "IF NOT EXISTS (SELECT 1 FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id WHERE s.name = N'dbo' AND t.name = N'orders')" +
+                    " CREATE TABLE dbo.orders (id INT, amount decimal(10,2), note NVARCHAR(MAX), extra NVARCHAR(MAX))"
+            ),
+            c.toString
+        )
+        assert(
+            SqlServerLoader.evolvePlan(msDb, withNull, Set("id", "amount")) ==
+                Right(ColumnTypeText.EvolvePlan(Seq("ALTER TABLE dbo.orders ADD note NVARCHAR(MAX)", "ALTER TABLE dbo.orders ADD extra NVARCHAR(MAX)"), None))
+        )
+        assert(SqlServerLoader.createPlan(msDb, odd) == ColumnTypeText.CreatePlan(None, None))
+        val kept = SqlServerLoader.evolvePlan(msDb, odd, Set("id", "b"))
+        assert(kept.isRight && kept.right.get.addColumns == Seq("ALTER TABLE dbo.orders ADD note NVARCHAR(MAX)"), kept.toString)
+        assert(kept.right.get.statusLine.isDefined)
+        assert(SqlServerLoader.evolvePlan(msDb, odd, Set("id")).left.exists(_.contains("'b'")))
+    }
+
+    test("Databricks: the up-front decision refuses an unsafe type whatever manageTableManually says, and passes loadable ones") {
+        import ai.datris.model.{Destination, PipelineConfig, SchemaProperties}
+        def cfg(fs: Seq[SchemaField], manual: Boolean): PipelineConfig =
+            PipelineConfig(
+                name = "dbx",
+                destination = Destination(
+                    schemaProperties = SchemaProperties(null, java.util.Arrays.asList(fs: _*)),
+                    database = dbxDb.copy(manageTableManually = manual)
+                )
+            )
+        for (manual <- Seq(false, true)) {
+            assert(DatabricksLoader.loadProblem(cfg(odd, manual)).exists(_.contains("'b'")), "manual=" + manual)
+            assert(DatabricksLoader.loadProblem(cfg(ok :+ f("decimal(10,\t2)", "t") :+ f(evil, "_json"), manual)).isEmpty, "manual=" + manual)
+        }
     }
 }

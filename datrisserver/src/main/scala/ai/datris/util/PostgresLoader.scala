@@ -318,7 +318,7 @@ class PostgresLoader(jobContext: JobContext) {
 
     /** Create the table when it is missing, then add any configured column
       * the table lacks. When every non-document field's type passes
-      * [[ColumnTypeText.safe]], the statements are those earlier versions ran,
+      * [[ColumnTypeText.loadText]], the statements are those earlier versions ran,
       * in the same order. Otherwise (a stored type the save rule no longer
       * accepts) the existing columns are read first: the run fails before any
       * statement when such a type would be needed to create the table or a
@@ -328,52 +328,27 @@ class PostgresLoader(jobContext: JobContext) {
     private def createTableIfUndefined(statement: Statement, tableName: String): Unit = {
         val schema = config.destination.database.schema
         val fields = config.destination.schemaProperties.fields.asScala.toList
-        val unsafe = ColumnTypeText.unsafeFields(fields)
 
-        if (unsafe.isEmpty) {
-            val sql = new StringBuilder()
-
-            // Begin
-            sql.append(PostgresSql.createTableHead(dbName, schema, tableName))
-
-            // Fields (_json -> json, _xml -> xml by name; see PostgresSql.columnType)
-            fields.foreach(field => sql.append(PostgresSql.column(field.name) + " " + PostgresSql.columnType(field) + ", "))
-            sql.setLength(sql.length - 2)
-
-            // Keys?
-            sql.append(PostgresSql.primaryKeyClause(config.destination.database.keyFields))
-
-            // End
-            sql.append(");")
-
-            // Create schema if it doesn't exist
-            if (schema != null && schema.nonEmpty) {
-                statement.execute(PostgresSql.createSchema(schema))
-            }
-
-            statusUtil.info("processing", "Postgres create table statement: " + sql.mkString)
-            statement.execute(sql.mkString)
+        // Create schema and table (PostgresSql.createPlan: nothing when a
+        // stored type would not be sent).
+        val create = PostgresSql.createPlan(dbName, schema, tableName, fields, config.destination.database.keyFields)
+        create.schemaSql.foreach(sql => statement.execute(sql))
+        create.tableSql.foreach { sql =>
+            statusUtil.info("processing", "Postgres create table statement: " + sql)
+            statement.execute(sql)
         }
 
         // Additive schema evolution: add any new columns that don't exist in the table yet
         val existingColumns = readExistingColumns(statement, tableName)
-
-        if (unsafe.nonEmpty) {
-            ColumnTypeText.loadProblem(fields, existingColumns).foreach(p => throw new DatrisException(p))
-            statusUtil.info(
-                "processing",
-                "The table already has column(s) " + unsafe.map(_.name).mkString(", ") +
-                    "; their stored type is not a supported type and was not used. Change it to a supported type and save the pipeline."
-            )
+        PostgresSql.evolvePlan(dbName, schema, tableName, fields, existingColumns) match {
+            case Left(problem) => throw new DatrisException(problem)
+            case Right(plan) =>
+                plan.statusLine.foreach(line => statusUtil.info("processing", line))
+                plan.addColumns.foreach { alterSql =>
+                    statusUtil.info("processing", "Schema evolution: " + alterSql)
+                    statement.execute(alterSql)
+                }
         }
-
-        fields.foreach(field => {
-            if (!existingColumns.contains(field.name.toLowerCase)) {
-                val alterSql = PostgresSql.addColumn(dbName, schema, tableName, field.name, PostgresSql.addColumnType(field))
-                statusUtil.info("processing", "Schema evolution: " + alterSql)
-                statement.execute(alterSql)
-            }
-        })
     }
 
     /** The table's column names, lower-cased (empty when it does not exist). */

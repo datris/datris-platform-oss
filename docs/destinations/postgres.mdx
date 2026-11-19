@@ -40,7 +40,7 @@ When auto-creating tables, source schema types are mapped to PostgreSQL types as
 
 \* Matched on the field **name**, not its declared type: a field named `_json` or `_xml` (declared `string`, as the JSON and XML ingestion modes produce) always lands as the document column shown, whatever type it declares.
 
-All other types (`int`, `bigint`, `boolean`, `date`, `timestamp`, `decimal(p,s)`, `varchar(n)`, `char(n)`) are passed to PostgreSQL as written. A stored type that is not one of the accepted forms (see [Schemas](/schemas)) is never sent: while the table and that column already exist the load continues and the run notes the field; when the table or the column would have to be created, the run fails before any statement with a message naming the field. Change the type to an accepted form and save the pipeline.
+All other types (`int`, `bigint`, `boolean`, `date`, `timestamp`, `decimal(p,s)`, `varchar(n)`, `char(n)`) are passed to PostgreSQL as written. A stored type that is not one of the accepted forms (see [Schemas](/schemas)) is never sent: while the table and that column already exist the load continues and the run notes the field; when the table or the column would have to be created, the run fails before any statement with a message naming the field. A stored type with tabs or line breaks around the numbers or after the closing parenthesis is sent with them removed. Change the type to an accepted form and save the pipeline.
 
 ## Truncate Before Write
 

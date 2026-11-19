@@ -1356,4 +1356,21 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val pgJson = sqlServerConfig(""""usePostgres":true""", fileAttributes = """"jsonAttributes":{}""", fields = """[{"name":"_json","type":"string"}]""")
         assert(validationError(pgJson).isEmpty, s"postgres JSON config must still validate, got: ${validationError(pgJson)}")
     }
+
+    // --- column-type-text-escaping: a null field type on an unstructured save
+
+    test("an unstructured pipeline with a null field type validates and modifies without failing, keeping the null for the type rule") {
+        val cfg = parse(
+            """{"name":"u","source":{"schemaProperties":{"fields":[{"name":"A"},{"name":"B","type":"STRING"}]},""" +
+                """"fileAttributes":{"unstructuredAttributes":{"fileExtension":"pdf"}}},""" +
+                """"destination":{"schemaProperties":{"fields":[{"name":"C"}]},"objectStore":{"prefixKey":"docs"}}}"""
+        )
+        PipelineValidatorUtil.validate(cfg)
+        val out = PipelineValidatorUtil.modify(cfg)
+        assert(out.source.schemaProperties.fields.asScala.map(f => (f.name, f.`type`)).toList == List(("a", null), ("b", "string")))
+        assert(out.destination.schemaProperties.fields.asScala.map(f => (f.name, f.`type`)).toList == List(("c", null)))
+        // the save's type rule answers it (400 in PipelineAPIController.columnTypeRefusal)
+        val p = ColumnTypeText.changedProblem(out, null)
+        assert(p.exists(t => t.contains("Invalid field type passed") && t.contains("'a'")), p.toString)
+    }
 }

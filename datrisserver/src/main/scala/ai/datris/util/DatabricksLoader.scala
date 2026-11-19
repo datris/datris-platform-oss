@@ -44,7 +44,7 @@ class DatabricksLoader(jobContext: JobContext) {
         // Every load CASTs each column to its type (COPY INTO, MERGE and
         // INSERT OVERWRITE alike), so a stored type that is not a supported
         // type fails the run here, before anything is staged or sent.
-        ColumnTypeText.loadProblem(config.destination.schemaProperties.fields.asScala.toList, Set.empty).foreach(p => throw new DatrisException(p))
+        DatabricksLoader.loadProblem(config).foreach(p => throw new DatrisException(p))
 
         if (db.useTransaction)
             statusUtil.info(
@@ -416,26 +416,35 @@ object DatabricksLoader {
             s"SELECT ${selectList(fields)} FROM ${readFiles(stagedPath, delimiter)}"
     }
 
+    /** The up-front load decision: [[ColumnTypeText.loadProblem]] over every
+      * destination field with no existing columns, whatever
+      * `manageTableManually` says, because every load statement CASTs each
+      * column to its type. */
+    def loadProblem(config: PipelineConfig): Option[String] =
+        ColumnTypeText.loadProblem(config.destination.schemaProperties.fields.asScala.toList, Set.empty)
+
     /** Platform type -> Delta SQL DDL type. Mirrors SnowflakeLoader.snowflakeType;
      *  `_json` -> VARIANT is the analog of Snowflake's VARIANT. Any other type
-     *  is passed as written only when it passes [[ColumnTypeText.safe]] (e.g.
+     *  is passed as written only when it has a [[ColumnTypeText.loadText]] (sent as that text) (e.g.
      *  decimal(p,s), which Delta accepts); every other type text, null
      *  included, is a `DatrisException`. */
     private[util] def databricksType(field: SchemaField): String = {
         if (field.name.equalsIgnoreCase("_json")) "VARIANT"
         else if (field.name.equalsIgnoreCase("_xml")) "STRING"
-        else if (!ColumnTypeText.safe(field.`type`)) throw new DatrisException(ColumnTypeText.problem(field, "destination").get)
-        else field.`type`.toLowerCase match {
-            case "string" => "STRING"
-            case "int" | "integer" | "tinyint" |
-                "smallint" => "INT"
-            case "bigint" => "BIGINT"
-            case "float" => "FLOAT"
-            case "double" => "DOUBLE"
-            case "boolean" => "BOOLEAN"
-            case "date" => "DATE"
-            case "timestamp" => "TIMESTAMP"
-            case _ => field.`type`
+        else {
+            val t = ColumnTypeText.loadTextOrThrow(field)
+            t.toLowerCase match {
+                case "string" => "STRING"
+                case "int" | "integer" | "tinyint" |
+                    "smallint" => "INT"
+                case "bigint" => "BIGINT"
+                case "float" => "FLOAT"
+                case "double" => "DOUBLE"
+                case "boolean" => "BOOLEAN"
+                case "date" => "DATE"
+                case "timestamp" => "TIMESTAMP"
+                case _ => t
+            }
         }
     }
 

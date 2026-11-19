@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{PipelineConfig, SchemaField, SchemaProperties}
+import ai.datris.model.{DatrisException, PipelineConfig, SchemaField, SchemaProperties}
 
 import java.util.regex.Pattern
 import scala.collection.JavaConverters._
@@ -17,10 +17,12 @@ import scala.collection.JavaConverters._
   * string, date, timestamp`, plus `integer`, which the loaders map and which
   * is tolerated at load only: the save validator still refuses it), or
   * `decimal(P)` / `decimal(P,S)` (1-4 digits each), `varchar(N)` / `char(N)`
-  * (1-9 digits) or `varchar(max)`. Spaces (U+0020 only) may stand only
-  * inside the parentheses, beside a number, `max` or the comma; nothing may
-  * come before the type name, between the name and `(`, or after the
-  * closing `)`.
+  * (1-9 digits) or `varchar(max)`. Spaces (U+0020 only) may stand inside
+  * the parentheses, beside a number, `max` or the comma, and after the
+  * closing `)`; nothing may come before the type name, between the name and
+  * `(`, or after a plain type name. At load, [[loadText]] also reads other
+  * ASCII blanks in those places (tab, line break) as stored by earlier
+  * versions.
   *
   * The save path ([[changedProblem]]) refuses a new or changed type that is
   * not safe, on either schema; a field whose name and type the stored config
@@ -36,9 +38,9 @@ object ColumnTypeText {
 
     private val Rule: Pattern = Pattern.compile(
         "(?:boolean|int|integer|tinyint|smallint|bigint|float|double|string|date|timestamp" +
-            "|decimal\\( *[0-9]{1,4} *(?:, *[0-9]{1,4} *)?\\)" +
-            "|(?:var)?char\\( *[0-9]{1,9} *\\)" +
-            "|varchar\\( *max *\\))",
+            "|decimal\\( *[0-9]{1,4} *(?:, *[0-9]{1,4} *)?\\) *" +
+            "|(?:var)?char\\( *[0-9]{1,9} *\\) *" +
+            "|varchar\\( *max *\\) *)",
         Pattern.CASE_INSENSITIVE
     )
 
@@ -48,14 +50,73 @@ object ColumnTypeText {
     /** True when `t` is exactly one of the accepted forms; false for null. */
     def safe(t: String): Boolean = t != null && Rule.matcher(t).matches()
 
+    /** The ASCII whitespace characters an engine's SQL lexer reads as a
+      * blank: space, tab, LF, VT, FF, CR. */
+    private def asciiBlank(c: Char): Boolean = c == ' ' || c == '\t' || c == '\n' || c == '\u000b' || c == '\f' || c == '\r'
+
+    /** The type text a loader may map and send for stored text `t`: `t`
+      * itself when it is [[safe]]; otherwise, when `t` with every ASCII
+      * blank (tab, line break, VT, FF) read as a space is [[safe]], `t` with
+      * every ASCII blank removed (a stored type such as `decimal(10,\t2)`
+      * loads as `decimal(10,2)`). None for anything else, null included.
+      * Load only: the save rule is [[safe]]. */
+    def loadText(t: String): Option[String] =
+        if (t == null) None
+        else if (safe(t)) Some(t)
+        else if (safe(t.map(c => if (asciiBlank(c)) ' ' else c))) Some(t.filterNot(asciiBlank))
+        else None
+
+    /** [[loadText]], or a `DatrisException` with [[problem]]'s message for
+      * the destination schema. */
+    def loadTextOrThrow(field: SchemaField): String =
+        loadText(field.`type`).getOrElse(throw new DatrisException(problem(field, "destination").get))
+
     /** `_json` / `_xml` (any letter case): typed by name on every engine. */
     def isDocumentColumn(f: SchemaField): Boolean =
         f != null && f.name != null && (f.name.equalsIgnoreCase("_json") || f.name.equalsIgnoreCase("_xml"))
 
     /** The fields among `fields` that are not document columns and whose
-      * type is not [[safe]]. */
+      * type has no [[loadText]]. */
     def unsafeFields(fields: Seq[SchemaField]): Seq[SchemaField] =
-        Option(fields).getOrElse(Nil).filter(f => f != null && !isDocumentColumn(f) && !safe(f.`type`))
+        Option(fields).getOrElse(Nil).filter(f => f != null && !isDocumentColumn(f) && loadText(f.`type`).isEmpty)
+
+    /** The one status line a load writes when the table already has every
+      * column whose stored type has no [[loadText]]. */
+    def notUsedStatus(unsafe: Seq[SchemaField]): String =
+        "The table already has column(s) " + unsafe.map(f => shownName(f.name)).mkString(", ") +
+            "; their stored type is not a supported type and was not used. Change it to a supported type and save the pipeline."
+
+    /** What a load runs against a table it may create, in order: `schemaSql`
+      * then `tableSql` (both None when a stored type has no [[loadText]]),
+      * then, once the existing columns are read, [[evolve]]'s statements. */
+    case class CreatePlan(schemaSql: Option[String], tableSql: Option[String])
+
+    /** The ADD COLUMN statements, in field order, and the status line
+      * ([[notUsedStatus]]) when a stored type was not used. */
+    case class EvolvePlan(addColumns: Seq[String], statusLine: Option[String])
+
+    /** The create step for `fields`: nothing when a field has no
+      * [[loadText]] (the existing columns are read first), else the given
+      * statements. */
+    def create(fields: Seq[SchemaField], schemaSql: => Option[String], tableSql: => String): CreatePlan =
+        if (unsafeFields(fields).nonEmpty) CreatePlan(None, None) else CreatePlan(schemaSql, Some(tableSql))
+
+    /** The evolve step: Left([[loadProblem]]) when a stored type that has no
+      * [[loadText]] would be needed; else `addSql` for each field whose
+      * lower-cased name is not in `existing`, and [[notUsedStatus]] when any
+      * field's stored type was not used. */
+    def evolve(fields: Seq[SchemaField], existing: Set[String], addSql: SchemaField => String): Either[String, EvolvePlan] = {
+        val unsafe = unsafeFields(fields)
+        val p = if (unsafe.isEmpty) None else loadProblem(fields, existing)
+        if (p.isDefined) Left(p.get)
+        else
+            Right(
+                EvolvePlan(
+                    fields.filter(f => !existing.contains(f.name.toLowerCase)).map(addSql),
+                    if (unsafe.isEmpty) None else Some(notUsedStatus(unsafe))
+                )
+            )
+    }
 
     /** The refusal for `field` in the `schema` ("source" or "destination")
       * schema, worded like the save validator; None when its type is safe.
@@ -65,7 +126,7 @@ object ColumnTypeText {
         if (field == null || safe(field.`type`)) None
         else
             Some(
-                "Invalid field type passed: " + shown(field.`type`) + " for field '" + oneLine(field.name) + "' in the " + schema +
+                "Invalid field type passed: " + shown(field.`type`) + " for field '" + shownName(field.name) + "' in the " + schema +
                     " schema, " + Supported
             )
 
@@ -111,8 +172,15 @@ object ColumnTypeText {
     private def destinationFields(c: PipelineConfig): Seq[SchemaField] =
         if (c == null || c.destination == null) Nil else fieldsOf(c.destination.schemaProperties)
 
+    private def lineBreaking(c: Char): Boolean =
+        Character.isISOControl(c) || Character.getType(c) == Character.LINE_SEPARATOR || Character.getType(c) == Character.PARAGRAPH_SEPARATOR
+
     private def oneLine(s: String): String =
-        if (s == null) "null" else s.map(c => if (Character.isISOControl(c)) ' ' else c)
+        if (s == null) "null" else s.map(c => if (lineBreaking(c)) ' ' else c)
 
     private def shown(t: String): String = if (t == null) "null" else oneLine(t.take(MaxShown))
+
+    /** A field name as a message shows it: at most [[MaxShown]] characters,
+      * one line. */
+    private[util] def shownName(n: String): String = shown(n)
 }

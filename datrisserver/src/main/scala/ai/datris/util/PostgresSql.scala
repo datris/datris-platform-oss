@@ -111,37 +111,71 @@ object PostgresSql {
     /** The column type the loader's create table writes for `field`: `_json`
       * -> `json` and `_xml` -> `xml` by name (whatever the type holds);
       * `tinyint` / `smallint` -> `int2`, `float` -> `float4`, `double` ->
-      * `float8`, `string` -> `text`; every other type as written when it
-      * passes [[ColumnTypeText.safe]]. `DatrisException` (naming the field)
-      * for any other type text, null included: it is never sent. */
+      * `float8`, `string` -> `text`; every other type as
+      * [[ColumnTypeText.loadText]] gives it (the stored text when it passes
+      * [[ColumnTypeText.safe]]). `DatrisException` (naming the field) for any
+      * other type text, null included: it is never sent. */
     def columnType(field: SchemaField): String = {
         if (field.name != null && field.name.compareToIgnoreCase("_json") == 0) "json"
         else if (field.name != null && field.name.compareToIgnoreCase("_xml") == 0) "xml"
         else {
-            val t = field.`type`
-            if (t == null) refuse(field)
-            else if (t.compareToIgnoreCase("tinyint") == 0) "int2"
+            val t = ColumnTypeText.loadText(field.`type`).getOrElse(refuse(field))
+            if (t.compareToIgnoreCase("tinyint") == 0) "int2"
             else if (t.compareToIgnoreCase("smallint") == 0) "int2"
             else if (t.compareToIgnoreCase("float") == 0) "float4"
             else if (t.compareToIgnoreCase("double") == 0) "float8"
             else if (t.compareToIgnoreCase("string") == 0) "text"
-            else if (ColumnTypeText.safe(t)) t
-            else refuse(field)
+            else t
         }
     }
 
     /** The column type the loader's additive schema evolution writes for
-      * `field`, exactly the text earlier versions wrote for every safe type
-      * (`string` -> `text`, every other type as written). A document column
-      * whose type is not `string` gets its [[columnType]] by name; any other
-      * type that fails [[ColumnTypeText.safe]] is a `DatrisException`. */
+      * `field`: the text earlier versions wrote (`string` -> `text`, every
+      * other type as written, via [[ColumnTypeText.loadText]]), except
+      * `tinyint` -> `int2` and `double` -> `float8`, which earlier versions
+      * sent as written and PostgreSQL refused (`smallint` and `float` stay as
+      * written). A document column whose type is not `string` gets its
+      * [[columnType]] by name; type text with no
+      * [[ColumnTypeText.loadText]] is a `DatrisException`. */
     def addColumnType(field: SchemaField): String = {
-        val t = field.`type`
-        if (t != null && t.equalsIgnoreCase("string")) "text"
+        val raw = field.`type`
+        if (raw != null && raw.equalsIgnoreCase("string")) "text"
         else if (ColumnTypeText.isDocumentColumn(field)) columnType(field)
-        else if (ColumnTypeText.safe(t)) t
-        else refuse(field)
+        else {
+            val t = ColumnTypeText.loadText(raw).getOrElse(refuse(field))
+            if (t.equalsIgnoreCase("tinyint")) "int2"
+            else if (t.equalsIgnoreCase("double")) "float8"
+            else t
+        }
     }
+
+    /** The loader's create step: `CREATE SCHEMA` (when `schema` is set) and
+      * the create table, or nothing when a field's stored type has no
+      * [[ColumnTypeText.loadText]] (see [[ColumnTypeText.create]]). */
+    def createPlan(
+        database: String,
+        schema: String,
+        table: String,
+        fields: Seq[SchemaField],
+        keyFields: java.util.List[String]
+    ): ColumnTypeText.CreatePlan =
+        ColumnTypeText.create(
+            fields,
+            if (schema != null && schema.nonEmpty) Some(createSchema(schema)) else None,
+            createTableHead(database, schema, table) + fields.map(f => column(f.name) + " " + columnType(f)).mkString(", ") +
+                primaryKeyClause(keyFields) + ");"
+        )
+
+    /** The loader's evolve step over the table's existing (lower-cased)
+      * columns ([[ColumnTypeText.evolve]]). */
+    def evolvePlan(
+        database: String,
+        schema: String,
+        table: String,
+        fields: Seq[SchemaField],
+        existing: Set[String]
+    ): Either[String, ColumnTypeText.EvolvePlan] =
+        ColumnTypeText.evolve(fields, existing, f => addColumn(database, schema, table, f.name, addColumnType(f)))
 
     private def refuse(field: SchemaField): Nothing =
         throw new DatrisException(ColumnTypeText.problem(field, "destination").getOrElse("Invalid field type passed for field '" + field.name + "'"))

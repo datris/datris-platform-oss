@@ -194,21 +194,17 @@ class SnowflakeLoader(jobContext: JobContext) {
 
     /** Create the table when it is missing, then add any configured column
       * it lacks. When every non-document field's type passes
-      * [[ColumnTypeText.safe]] the statements are those earlier versions ran,
+      * [[ColumnTypeText.loadText]] the statements are those earlier versions ran,
       * in the same order. Otherwise the existing columns are read first and
       * the run fails before any statement when a stored type that is not safe
       * would be needed ([[ColumnTypeText.loadProblem]]); else the table is not
       * created again and only missing columns are added. */
     private def createTableIfUndefined(statement: Statement): Unit = {
         val fields = config.destination.schemaProperties.fields.asScala.toList
-        val unsafe = ColumnTypeText.unsafeFields(fields)
 
-        if (unsafe.isEmpty) {
-            val sql = SnowflakeLoader.createTableSql(db, fields)
-
-            if (db.schema != null && db.schema.nonEmpty)
-                statement.execute("CREATE SCHEMA IF NOT EXISTS " + schemaRef())
-
+        val create = SnowflakeLoader.createPlan(db, fields)
+        create.schemaSql.foreach(sql => statement.execute(sql))
+        create.tableSql.foreach { sql =>
             statusUtil.info("processing", "Snowflake create table statement: " + sql)
             statement.execute(sql)
         }
@@ -229,22 +225,15 @@ class SnowflakeLoader(jobContext: JobContext) {
             rs.close()
         }
 
-        if (unsafe.nonEmpty) {
-            ColumnTypeText.loadProblem(fields, existing.toSet).foreach(p => throw new DatrisException(p))
-            statusUtil.info(
-                "processing",
-                "The table already has column(s) " + unsafe.map(_.name).mkString(", ") +
-                    "; their stored type is not a supported type and was not used. Change it to a supported type and save the pipeline."
-            )
+        SnowflakeLoader.evolvePlan(db, fields, existing.toSet) match {
+            case Left(problem) => throw new DatrisException(problem)
+            case Right(plan) =>
+                plan.statusLine.foreach(line => statusUtil.info("processing", line))
+                plan.addColumns.foreach { alter =>
+                    statusUtil.info("processing", "Schema evolution: " + alter)
+                    statement.execute(alter)
+                }
         }
-
-        fields.foreach(field => {
-            if (!existing.contains(field.name.toLowerCase)) {
-                val alter = SnowflakeLoader.addColumnSql(db, field)
-                statusUtil.info("processing", "Schema evolution: " + alter)
-                statement.execute(alter)
-            }
-        })
     }
 
     private def csvDelimiter(): String = CsvAttributes.delimiterOf(config)
@@ -254,7 +243,6 @@ class SnowflakeLoader(jobContext: JobContext) {
     private def ident(identifier: String): String = SnowflakeConnectionUtil.ident(identifier)
     private def effectiveName(s: String): String = SnowflakeConnectionUtil.effectiveName(s)
     private def sqlLiteral(value: String): String = value.replace("'", "''")
-    private def schemaRef(): String = ident(db.dbName) + "." + ident(db.schema)
     private def qualifiedTable(): String = SnowflakeConnectionUtil.qualifiedTable(db)
 
     private def sendNotification(): Unit = {
@@ -306,6 +294,21 @@ object SnowflakeLoader {
         sql.toString()
     }
 
+    /** The loader's create step: `CREATE SCHEMA IF NOT EXISTS` (when the
+      * schema is set) and [[createTableSql]], or nothing when a field's stored
+      * type has no [[ColumnTypeText.loadText]] ([[ColumnTypeText.create]]). */
+    def createPlan(db: Database, fields: Seq[SchemaField]): ColumnTypeText.CreatePlan =
+        ColumnTypeText.create(
+            fields,
+            if (db.schema != null && db.schema.nonEmpty) Some("CREATE SCHEMA IF NOT EXISTS " + ident(db.dbName) + "." + ident(db.schema)) else None,
+            createTableSql(db, fields)
+        )
+
+    /** The loader's evolve step over the table's existing (lower-cased)
+      * columns ([[ColumnTypeText.evolve]]). */
+    def evolvePlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Either[String, ColumnTypeText.EvolvePlan] =
+        ColumnTypeText.evolve(fields, existing, f => addColumnSql(db, f))
+
     /** `ALTER TABLE <db.schema.table> ADD COLUMN IF NOT EXISTS <col> <type>` */
     def addColumnSql(db: Database, field: SchemaField): String =
         s"ALTER TABLE ${SnowflakeConnectionUtil.qualifiedTable(db)} ADD COLUMN IF NOT EXISTS ${ident(field.name)} ${snowflakeType(field)}"
@@ -354,22 +357,24 @@ object SnowflakeLoader {
 
     /** Platform type -> Snowflake DDL type. Mirrors [[PostgresSql.columnType]];
      *  `_json` -> VARIANT is the analog of Postgres' `_json` -> json. Any other
-     *  type is passed as written only when it passes [[ColumnTypeText.safe]]
+     *  type is passed as written only when it has a [[ColumnTypeText.loadText]] (sent as that text)
      *  (e.g. decimal(p,s), which Snowflake accepts as a NUMBER synonym);
      *  every other type text, null included, is a `DatrisException`. */
     private[util] def snowflakeType(field: SchemaField): String = {
         if (field.name.equalsIgnoreCase("_json")) "VARIANT"
         else if (field.name.equalsIgnoreCase("_xml")) "VARCHAR"
-        else if (!ColumnTypeText.safe(field.`type`)) throw new DatrisException(ColumnTypeText.problem(field, "destination").get)
-        else field.`type`.toLowerCase match {
-            case "string" => "VARCHAR"
-            case "int" | "integer" | "tinyint" |
-                "smallint" | "bigint" => "NUMBER(38,0)"
-            case "float" | "double" => "FLOAT"
-            case "boolean" => "BOOLEAN"
-            case "date" => "DATE"
-            case "timestamp" => "TIMESTAMP_NTZ"
-            case _ => field.`type`
+        else {
+            val t = ColumnTypeText.loadTextOrThrow(field)
+            t.toLowerCase match {
+                case "string" => "VARCHAR"
+                case "int" | "integer" | "tinyint" |
+                    "smallint" | "bigint" => "NUMBER(38,0)"
+                case "float" | "double" => "FLOAT"
+                case "boolean" => "BOOLEAN"
+                case "date" => "DATE"
+                case "timestamp" => "TIMESTAMP_NTZ"
+                case _ => t
+            }
         }
     }
 }
