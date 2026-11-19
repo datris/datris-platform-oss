@@ -592,7 +592,7 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
-            CapabilityCheck.assertVisible(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+            CapabilityCheck.assertVisibleToWrite(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
             if (PipelineScripts.instructionOf(config, kind).isEmpty)
                 return ResponseEntity
                     .status(HttpStatus.BAD_REQUEST)
@@ -663,7 +663,7 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
-            CapabilityCheck.assertVisible(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+            CapabilityCheck.assertVisibleToWrite(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
             val response = PipelineAPIController.pullCodegenScriptWith(PipelineScripts, name, kind, ResolvedKeyAccess.keyLabel(request).orNull, config)
             if (response.getStatusCode.is2xxSuccessful) PipelineAPIController.auditCodegenScript(request, "pull", name, kind, "success", None)
             else PipelineAPIController.auditCodegenScript(request, "pull", name, kind, "failure", Some(String.valueOf(response.getBody)))
@@ -948,7 +948,7 @@ class PipelineAPIController {
         // delete pipelines it created. Loaded resource provides the
         // `createdByKeyLabel` we compare against the caller's label.
         if (checkScope)
-            CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+            CapabilityCheck.assertVisibleToWrite(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
 
         // By default the data is deleted with the config, so no table,
         // collection or files are left with no pipeline to own them. Only an
@@ -1844,7 +1844,7 @@ object PipelineAPIController {
       * `404`, a scope miss `403`, exactly as before), then [[keepDataRefusal]].
       * None = go ahead. */
     def deleteRefusal(request: HttpServletRequest, config: PipelineConfig, plan: PipelineDeletePlan.Plan): Option[ResponseEntity[String]] = {
-        try CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+        try CapabilityCheck.assertVisibleToWrite(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
         catch {
             case _: ResourceHiddenException => return Some(pipelineNotFound(config.name))
             case e: CapabilityDeniedException => return Some(capabilityDenied(e))
@@ -2511,7 +2511,7 @@ object PipelineAPIController {
     ): Option[ResponseEntity[String]] = {
         if (old == null) return Some(pipelineNotFound(name))
         refusalFor(request, name, old, "delete").foreach(r => return Some(r))
-        try CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(old.catalog, old.createdByKeyLabel))
+        try CapabilityCheck.assertVisibleToWrite(request, "pipeline", "delete", CatalogOps.scopeContext(old.catalog, old.createdByKeyLabel))
         catch {
             case _: ResourceHiddenException => return Some(pipelineNotFound(name))
             case e: CapabilityDeniedException => return Some(capabilityDenied(e))

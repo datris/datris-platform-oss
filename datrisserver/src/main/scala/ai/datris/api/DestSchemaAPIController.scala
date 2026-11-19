@@ -48,11 +48,15 @@ object DestSchemaAPIController {
     /** [[scopeRefusal]] with the stored config read only for a caller it can
       * refuse. */
     def refusalFor(request: HttpServletRequest, pipeline: String, action: String): Option[ResponseEntity[String]] =
+        refusalFor(request, pipeline, action, n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n))
+
+    /** [[refusalFor]] with the stored-config read given. */
+    def refusalFor(request: HttpServletRequest, pipeline: String, action: String, read: String => PipelineConfig): Option[ResponseEntity[String]] =
         if (
             !CapabilityCheck.isRestrictedSession(request) && !CapabilityCheck.keyScopeApplies(request, "pipeline", action) &&
             !CapabilityCheck.keyScopeApplies(request, "pipeline", "read")
         ) None
-        else scopeRefusal(request, pipeline, PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline), action)
+        else scopeRefusal(request, pipeline, read(pipeline), action)
 }
 
 /** Destination-side typing, pull-based (plans/destination-schema-after-load.md):

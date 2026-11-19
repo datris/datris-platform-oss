@@ -44,7 +44,7 @@ object TapAPIController {
       * key's scope miss. */
     def scopeRefusal(request: HttpServletRequest, config: TapConfig, action: String): Option[ResponseEntity[String]] =
         try {
-            CapabilityCheck.assertVisible(request, "tap", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+            CapabilityCheck.assertVisibleToWrite(request, "tap", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
             None
         } catch {
             case _: ResourceHiddenException => Some(tapNotFound(config.name))
@@ -125,13 +125,14 @@ object TapAPIController {
     /** Refusal when the tap's `targetPipeline` is outside the caller's
       * scope. A restricted session: missing or outside the grants (pipeline
       * 404), visible but not runnable (403). An API key limited for
-      * pipelines ([[ai.datris.auth.CallerVisibility.limitedPipelines]]) that
-      * holds some pipeline capability: 403 when its scope does not grant
-      * `pipeline:run` on the stored target (`pipeline:read` when it holds no
-      * `pipeline:run`); a missing target is left to the save. None when no
-      * target and for everyone else (a key holding only tap capabilities,
-      * keys not limited for pipelines such as rag-builder), who read nothing
-      * here. */
+      * pipelines ([[ai.datris.auth.CallerVisibility.limitedPipelines]]),
+      * whether or not it holds a pipeline capability (owner decision): 403
+      * when its scope does not grant `pipeline:run` on the stored target
+      * (`pipeline:read` when it holds no `pipeline:run`), so a key holding
+      * only tap capabilities feeds no stored pipeline; a target not stored
+      * yet is left to the save. None when no target and for everyone else
+      * (keys not limited for pipelines, such as rag-builder; no request),
+      * who read nothing here. */
     def targetPipelineRefusal(
         request: HttpServletRequest,
         tap: TapConfig,
@@ -142,7 +143,7 @@ object TapAPIController {
             PipelineAPIController.refusalFor(request, tap.targetPipeline, readPipeline(tap.targetPipeline), "run")
         else
             CapabilityCheck.resolvedKey(request) match {
-                case Some(rk) if ai.datris.auth.CallerVisibility.limitedPipelines(rk) && rk.effectiveCapabilities.exists(_.resource == "pipeline") =>
+                case Some(rk) if ai.datris.auth.CallerVisibility.limitedPipelines(rk) =>
                     Option(readPipeline(tap.targetPipeline)).flatMap { p =>
                         val action = ai.datris.auth.CallerVisibility.loadAction(rk)
                         val ctx = CatalogOps.scopeContext(p.catalog, p.createdByKeyLabel)
@@ -1200,7 +1201,7 @@ class TapAPIController {
             // Scope check: `tap:delete:owner=self` keys may only delete
             // taps they created. Loaded resource carries createdByKeyLabel.
             if (checkScope)
-                CapabilityCheck.assertVisible(request, "tap", "delete", CatalogOps.scopeContext(existing.catalog, existing.createdByKeyLabel))
+                CapabilityCheck.assertVisibleToWrite(request, "tap", "delete", CatalogOps.scopeContext(existing.catalog, existing.createdByKeyLabel))
             // For repo-backed taps this commits a file removal (history is
             // preserved — that's the point of the repo), unless the file was
             // hand-edited at branch head since the recorded commit: then it is

@@ -175,6 +175,29 @@ object CapabilityCheck {
         if (readResolvedKey(request).exists(rk => CallerVisibility.keyOutOfScope(rk, resource, action, context)))
             assertScope(request, resource, action, context)
 
+    /** For an API key whose `action` (not `read`) on an item is already
+      * granted: the read half of the stored-item write rule
+      * ([[CallerVisibility.storedWriteDenial]] with `action` accepted), so a
+      * key may write, delete, rename or run only an item it may also read.
+      * Throws [[CapabilityDeniedException]] through [[assertScope]] (shared
+      * wording, audit note). No-op for `read`, sessions, no identity and
+      * keys the rule does not refuse. */
+    def assertWriteReadable(request: HttpServletRequest, resource: String, action: String, context: Map[String, String]): Unit =
+        if (action != "read")
+            readResolvedKey(request).filter(!_.restrictedSession).foreach { rk =>
+                CallerVisibility.storedWriteDenial(rk, resource, context, Seq(action), action).foreach(a => assertScope(request, resource, a, context))
+            }
+
+    /** [[assertVisible]] for `action`, then for an API key
+      * [[assertWriteReadable]]: the older one-item seam held to the same
+      * "may act and may read" rule as the shared write rule. Restricted
+      * sessions keep [[assertVisible]]'s 404/403 exactly (their grants imply
+      * read for every write). */
+    def assertVisibleToWrite(request: HttpServletRequest, resource: String, action: String, context: Map[String, String]): Unit = {
+        assertVisible(request, resource, action, context)
+        assertWriteReadable(request, resource, action, context)
+    }
+
     /** True when the request is an API key whose scope can refuse (resource,
       * action) on a named item ([[CallerVisibility.keyScopeApplies]]), so the
       * item must be read to decide. */

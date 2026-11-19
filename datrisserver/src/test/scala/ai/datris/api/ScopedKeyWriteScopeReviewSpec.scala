@@ -6,7 +6,16 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.AuditLog
-import ai.datris.auth.{CallerVisibility, CapabilityScopes, ScopeDenialFixtures, ScopeDenialWording}
+import ai.datris.auth.{
+    CallerVisibility,
+    CapabilityCheck,
+    CapabilityDeniedException,
+    CapabilityScopes,
+    ResourceHiddenException,
+    ScopeDenialFixtures,
+    ScopeDenialWording,
+    TapRunTokens
+}
 import ai.datris.incident.RecoveryKey
 import ai.datris.model._
 import ai.datris.util.APIKeyValidator
@@ -262,10 +271,11 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         // no target, a target not stored yet: as today
         assert(TapAPIController.targetPipelineRefusal(req(reader), tap("t", "Sales"), failPipeline).isEmpty)
         assert(TapAPIController.targetPipelineRefusal(req(reader), tap("t", "Sales", target = "not_yet"), pipelines).isEmpty)
-        // exempt today (finding 3 is with the owner): a key holding only tap capabilities, and keys not limited for pipelines
-        val tapOnly = key("own", "tap:read:owner=self", "tap:create:owner=self", "tap:update:owner=self", "tap:run:owner=self", "document:upload")
+        // keys not limited for pipelines: unchanged, nothing read (a key holding
+        // only tap capabilities is checked since the owner closed finding 3:
+        // see "tap target, owner decision" below)
         val rag = key("rb", KeyTemplatesForSpecs.capabilities("rag-builder"): _*)
-        for (rk <- Seq(tapOnly, rag, full, editor, key("ops", KeyTemplatesForSpecs.capabilities("ops"): _*)))
+        for (rk <- Seq(rag, full, editor, key("ops", KeyTemplatesForSpecs.capabilities("ops"): _*)))
             assert(TapAPIController.targetPipelineRefusal(req(rk), tap("t", "Sales", target = "hr_payroll"), failPipeline).isEmpty, rk.label)
         // no request (scheduler, enable job, tap runs): never refused
         assert(TapAPIController.targetPipelineRefusal(null, tap("t", "Sales", target = "hr_payroll"), failPipeline).isEmpty)
@@ -332,5 +342,181 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         assert(EntityVersionAPIController.tapRestoreRefusal(req(own), tap("o", "HR", owner = "x"), tap("o", "Sales", owner = "own")).isEmpty)
         for (rk <- Seq(full, editor, restricted("Sales" -> "edit")))
             assert(EntityVersionAPIController.tapRestoreRefusal(req(rk), tap("s_feed", "HR"), live).isEmpty, rk.label)
+    }
+
+    // ------------------------------------------------------------ round 3: tap target, owner decision
+
+    test("tap target, owner decision: a key holding only scoped tap capabilities feeds no stored pipeline; with pipeline:run:owner=self only its own") {
+        val pipelines: String => PipelineConfig =
+            Map("theirs" -> pg("theirs", "Sales", owner = "other-key"), "nobody" -> pg("nobody", null, owner = null), "mine" -> pg("mine", "HR", owner = "own"))
+                .getOrElse(_, null)
+        val tapCaps = Seq("tap:read:owner=self", "tap:create:owner=self", "tap:update:owner=self", "tap:run:owner=self", "document:upload")
+        val tapOnly = key("own", tapCaps: _*)
+        // stored targets: refused on pipeline:read (it holds no pipeline:run), shared wording,
+        // including a pipeline it could not have created and one it did create
+        for (target <- Seq("theirs", "nobody", "mine")) {
+            val r = req(tapOnly, uri = "/api/v1/tap")
+            assertDenied(
+                TapAPIController.targetPipelineRefusal(r, tap("t", "HR", owner = "own", target = target), pipelines),
+                "own",
+                "pipeline",
+                "read",
+                tapCaps,
+                Seq("other-key")
+            )
+            assert(AuditLog.scopeDenials(r).nonEmpty)
+        }
+        // enable-in-order reaches the same refusal for a member feeding a stored pipeline
+        val members = Seq(TapConfig(name = "a", description = "d", targetPipeline = "theirs", catalog = "HR", createdByKeyLabel = "own"))
+        assert(CatalogAPIController.enableOrderedRefusal(req(tapOnly), members, pipelines).exists(_.getStatusCode.value == 403))
+        // with pipeline:run:owner=self: its own pipeline passes, another key's is refused on run
+        val withRunCaps = tapCaps :+ "pipeline:run:owner=self"
+        val withRun = key("own", withRunCaps: _*)
+        assert(TapAPIController.targetPipelineRefusal(req(withRun), tap("t", "HR", owner = "own", target = "mine"), pipelines).isEmpty)
+        assertDenied(
+            TapAPIController.targetPipelineRefusal(req(withRun), tap("t", "HR", owner = "own", target = "theirs"), pipelines),
+            "own",
+            "pipeline",
+            "run",
+            withRunCaps,
+            Seq("other-key")
+        )
+        assert(CatalogAPIController.enableOrderedRefusal(req(withRun), members.map(_.copy(targetPipeline = "mine")), pipelines).isEmpty)
+        // as today: no target, a target not stored yet, keys not limited, rag-builder, no request
+        assert(TapAPIController.targetPipelineRefusal(req(tapOnly), tap("t", "HR"), failPipeline).isEmpty)
+        assert(TapAPIController.targetPipelineRefusal(req(tapOnly), tap("t", "HR", target = "not_yet"), pipelines).isEmpty)
+        val rag = key("rb", KeyTemplatesForSpecs.capabilities("rag-builder"): _*)
+        for (rk <- Seq(rag, full, editor, key("monitor", "job:read", "tap:run"), key(RecoveryKey.Label, RecoveryKey.Capabilities: _*)))
+            assert(TapAPIController.targetPipelineRefusal(req(rk), tap("t", "HR", target = "theirs"), failPipeline).isEmpty, rk.label)
+        assert(TapAPIController.targetPipelineRefusal(null, tap("t", "HR", target = "theirs"), failPipeline).isEmpty)
+        assert(CatalogAPIController.enableOrderedRefusal(null, members, failPipeline).isEmpty, "the enable job and schedulers run with no request")
+        // tap save, /tap/run mode=run and tap version restore all call this seam
+        val tapSrc = source("src/main/scala/ai/datris/api/TapAPIController.scala")
+        assert(methodBody(tapSrc, "def saveTapInternal(").contains("TapAPIController.targetPipelineRefusal(request, scoped)"))
+        assert(methodBody(tapSrc, "def runTap(").contains("if (mode == \"run\") TapAPIController.targetPipelineRefusal(request, tapConfig)"))
+        assert(methodBody(source("src/main/scala/ai/datris/api/EntityVersionAPIController.scala"), "def restoreTapVersion(").contains(
+            "TapAPIController.targetPipelineRefusal(request, snap)"
+        ))
+    }
+
+    // ------------------------------------------------------------ round 3, B1: the older one-item seam
+
+    test("older one-item seam: a key that may act on an item but cannot read it is refused on read (codegen scripts, delete, rename, tap delete, tap run)") {
+        val hrCtx = Map("catalog" -> "HR", "owner" -> "someone")
+        val cases = Seq(
+            ("pipeline", "update"), // codegen-script regenerate, pull, version restore
+            ("pipeline", "delete"), // DELETE /pipeline, rename
+            ("tap", "delete"), // DELETE /tap
+            ("tap", "run") // /tap/run mode=test and mode=run
+        )
+        for ((res, action) <- cases) {
+            val caps = Seq(res + ":" + action, res + ":read:catalog=Sales")
+            val k = key("k", caps: _*)
+            val r = req(k)
+            val e = intercept[CapabilityDeniedException](CapabilityCheck.assertVisibleToWrite(r, res, action, hrCtx))
+            assert(e.getMessage == ScopeDenialWording.message("k", res, "read", caps), e.getMessage)
+            ScopeDenialWording.assertHides(e.getMessage, Seq("HR", "someone"))
+            assert(AuditLog.scopeDenials(r).nonEmpty)
+            // in scope: passes
+            CapabilityCheck.assertVisibleToWrite(req(k), res, action, Map("catalog" -> "Sales"))
+        }
+        // the pure seams of the routes answer the 403 on read
+        val pCaps = Seq("pipeline:delete", "pipeline:read:catalog=Sales")
+        val pk = key("k", pCaps: _*)
+        val hr = pg("hr_payroll", "HR")
+        assertDenied(PipelineAPIController.deleteRefusal(req(pk), hr, null), "k", "pipeline", "read", pCaps, Seq("HR", "someone"))
+        assertDenied(
+            PipelineAPIController.renameRefusal(req(pk), "hr_payroll", "hr_new", hr, null, Nil, ucStateExists = false),
+            "k",
+            "pipeline",
+            "read",
+            pCaps,
+            Seq("HR", "someone")
+        )
+        val tCaps = Seq("tap:run", "tap:read:catalog=Sales")
+        assertDenied(TapAPIController.scopeRefusal(req(key("k", tCaps: _*)), tap("hr_feed", "HR"), "run"), "k", "tap", "read", tCaps, Seq("HR", "someone"))
+        // the handlers use the seam before any content read, write, delete or run
+        val pSrc = source("src/main/scala/ai/datris/api/PipelineAPIController.scala")
+        assert(methodBody(pSrc, "def regenerateCodegenScript(").contains("assertVisibleToWrite(request, \"pipeline\", \"update\""))
+        // deletePipelineInternal, deleteRefusal (DELETE /pipeline) and renameRefusal
+        assert(pSrc.split("assertVisibleToWrite\\(request, \"pipeline\", \"delete\"").length - 1 == 3)
+        assert(pSrc.split("assertVisibleToWrite\\(request, \"pipeline\", \"update\"").length - 1 == 2, "codegen regenerate and pull")
+        assert(methodBody(source("src/main/scala/ai/datris/api/CodeGenScriptVersionAPIController.scala"), "private def withPipeline(").contains(
+            "assertVisibleToWrite("
+        ))
+        assert(methodBody(source("src/main/scala/ai/datris/api/TapAPIController.scala"), "def deleteTapInternal(").contains(
+            "assertVisibleToWrite(request, \"tap\", \"delete\""
+        ))
+        assert(
+            source("src/main/scala/ai/datris/api/CatalogAPIController.scala").split("assertWriteReadable").length - 1 == 7,
+            "rename x2, detach x2, delete x2, restore overwrite"
+        )
+        assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"update\""))
+        assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"delete\""))
+    }
+
+    test("older one-item seam: unchanged callers get exactly what assertVisible gives them") {
+        val tapRun = ResolvedKey(None, TapRunTokens.LabelPrefix + "feed", TapRunTokens.Capabilities, isLegacyFullAccess = false)
+        val callers = Seq("read-only", "reporting", "ops", "rag-builder", "full-access").map(t => key(t, KeyTemplatesForSpecs.capabilities(t): _*)) ++
+            Seq(key(RecoveryKey.Label, RecoveryKey.Capabilities: _*), tapRun, full, editor, restricted("Sales" -> "edit"), key("monitor", "job:read"))
+        def outcome(f: => Unit): String =
+            try { f; "ok" }
+            catch {
+                case _: ResourceHiddenException => "hidden"
+                case _: CapabilityDeniedException => "denied"
+            }
+        for (rk <- callers; res <- Seq("pipeline", "tap"); action <- Seq("update", "delete", "run"); cat <- Seq("HR", "Sales")) {
+            val ctx = Map("catalog" -> cat, "owner" -> "someone")
+            assert(
+                outcome(CapabilityCheck.assertVisibleToWrite(req(rk), res, action, ctx)) == outcome(CapabilityCheck.assertVisible(req(rk), res, action, ctx)),
+                rk.label + " " + res + ":" + action + " " + cat
+            )
+        }
+        CapabilityCheck.assertVisibleToWrite(null, "pipeline", "delete", Map("catalog" -> "HR"))
+    }
+
+    // ------------------------------------------------------------ round 3, B2: the read-arm preconditions
+
+    test("preconditions: the version routes, dest-types and POST /tap read the stored item for write-only and create-only scoped keys") {
+        val updReadSales = key("upd", "tap:update", "tap:read:catalog=Sales")
+        val createOnly = key("creator", "tap:create:catalog=Sales", "tap:read")
+        val never = ResponseEntity.status(HttpStatus.NOT_FOUND).body[String]("{}")
+        for (k <- Seq(updReadSales, createOnly)) {
+            val r = EntityVersionAPIController.versionScopeRefusalWith(req(k), "tap", "update", () => Some(("HR", "someone")), () => Nil, never)
+            assert(r.exists(_.getStatusCode.value == 403), k.label + " " + r.map(_.getBody))
+            assert(TapAPIController.saveGuardNeeded(req(k)), k.label)
+        }
+        val pUpd = key("pupd", "pipeline:update", "pipeline:read:catalog=Sales")
+        val pr = EntityVersionAPIController.versionScopeRefusalWith(req(pUpd), "pipeline", "update", () => Some(("HR", "someone")), () => Nil, never)
+        assert(pr.exists(r => r.getStatusCode.value == 403 && message(r).contains("'pipeline:read'")), pr.map(_.getBody))
+        val read: String => PipelineConfig = Map("payroll" -> pg("payroll", "HR")).getOrElse(_, null)
+        val dr = DestSchemaAPIController.refusalFor(req(pUpd), "payroll", "update", read)
+        assert(dr.exists(r => r.getStatusCode.value == 403 && message(r).contains("'pipeline:read'")), dr.map(_.getBody))
+        assert(DestSchemaAPIController.refusalFor(req(full), "payroll", "update", failPipeline).isEmpty)
+        assert(DestSchemaAPIController.refusalFor(req(editor), "payroll", "update", failPipeline).isEmpty)
+    }
+
+    // ------------------------------------------------------------ round 3, B5
+
+    test("/tap/test: an owner=self key is refused a secret with no owner tag (deliberate: the secret's owner must be the key)") {
+        val caps = Seq("tap:read:owner=self", "tap:run:owner=self")
+        val own = key("own", caps: _*)
+        val body = TapConfig(name = "new_feed", description = "d", targetPipeline = null, secretName = "ui_made")
+        assertDenied(TapAPIController.testRefusal(req(own), body, _ => null, _ => Some(None)), "own", "tap", "read", caps, Nil)
+    }
+
+    private def source(rel: String): String = {
+        val file = Seq(java.nio.file.Paths.get(rel), java.nio.file.Paths.get("datrisserver", rel))
+            .find(java.nio.file.Files.isRegularFile(_)).getOrElse(fail(rel + " not found"))
+        new String(java.nio.file.Files.readAllBytes(file), java.nio.charset.StandardCharsets.UTF_8)
+    }
+
+    private def methodBody(src: String, signature: String): String = {
+        val i = src.indexOf(signature)
+        assert(i >= 0, signature)
+        val j = src.indexOf("\n    def ", i + signature.length)
+        val k = src.indexOf("\n    private def ", i + signature.length)
+        val end = Seq(j, k).filter(_ >= 0).sorted.headOption.getOrElse(src.length)
+        src.substring(i, end)
     }
 }
