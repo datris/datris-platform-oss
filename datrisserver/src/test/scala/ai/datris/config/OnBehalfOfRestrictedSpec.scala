@@ -81,13 +81,16 @@ class OnBehalfOfRestrictedSpec extends AnyFunSuite with BeforeAndAfterEach {
         verify(r).setAttribute(eqTo(AuditActor.CarrierKeyLabelAttr), eqTo("anonymous"))
     }
 
-    test("on behalf of an unrestricted user keeps the key's bundle") {
-        val carrier = APIKeyValidator.resolveKey(null)
+    // Story: In-platform chats act with the signed-in user's role, not the
+    // platform key's (plans/stories/chat-session-role-authority.md), Step 2 /
+    // "Pinned tests that change": was "on behalf of an unrestricted user keeps
+    // the key's bundle".
+    test("on behalf of an unrestricted editor narrows to the editor role bundle") {
         val (rk, r) = resolvedFor("alice")
         assert(rk.label == "session:alice")
+        assert(!rk.isLegacyFullAccess)
+        assert(rk.capabilities == APIKeyValidator.roleToCapabilities(User.RoleEditor))
         assert(!rk.restrictedSession)
-        assert(rk.isLegacyFullAccess == carrier.isLegacyFullAccess)
-        assert(rk.capabilities == carrier.capabilities)
         verify(r).setAttribute(eqTo(AuditActor.CarrierKeyLabelAttr), eqTo("anonymous"))
     }
 

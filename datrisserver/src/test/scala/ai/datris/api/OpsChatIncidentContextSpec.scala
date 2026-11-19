@@ -115,11 +115,15 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
         assert(OpsChatAPIController.incidentsFor(sess(noGrants), failingLoad) == Nil)
     }
 
-    test("an unrestricted admin, editor and viewer get the loaded list as the same instance") {
-        Seq(User.RoleAdmin, User.RoleEditor, User.RoleViewer).foreach { role =>
-            val loaded = List(incHr, incSales)
-            val got = OpsChatAPIController.incidentsFor(sess(user(role, restricted = false)), () => loaded)
-            assert(got eq loaded, s"$role must get the loaded list itself")
+    // plans/stories/chat-session-role-authority.md (pinned edit, Step 5): was
+    // "an unrestricted admin, editor and viewer get the loaded list as the
+    // same instance"; the block follows incident:read for sessions (Decision 4).
+    test("an unrestricted admin gets the loaded list as the same instance; an unrestricted editor and viewer get none and the store is not read") {
+        val loaded = List(incHr, incSales)
+        val got = OpsChatAPIController.incidentsFor(sess(user(User.RoleAdmin, restricted = false)), () => loaded)
+        assert(got eq loaded, "admin must get the loaded list itself")
+        Seq(User.RoleEditor, User.RoleViewer).foreach { role =>
+            assert(OpsChatAPIController.incidentsFor(sess(user(role, restricted = false)), failingLoad) == Nil, s"$role must get no incidents")
         }
     }
 
@@ -146,11 +150,13 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
         }
     }
 
-    test("the context message for an unrestricted user is unchanged") {
-        val ed = user(User.RoleEditor, restricted = false)
+    // plans/stories/chat-session-role-authority.md (pinned edit): was "the
+    // context message for an unrestricted user is unchanged" with an editor.
+    test("the context message for an admin is unchanged") {
+        val admin = user(User.RoleAdmin, restricted = false)
         val msg = OpsAgentPrompt.renderContextMessage(
             ctx,
-            OpsChatAPIController.incidentsFor(sess(ed), () => List(incHr, incSales))
+            OpsChatAPIController.incidentsFor(sess(admin), () => List(incHr, incSales))
         )
         val lines = msg.split("\n").toSeq
         assert(lines.exists(_.startsWith("Open incidents (")), msg)
@@ -187,8 +193,12 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
         }
     }
 
-    test("contextMessage for a restricted user equals the no-incidents message and the incident store is not read") {
-        Seq(bob, user(User.RoleViewer, restricted = true)).foreach { u =>
+    // plans/stories/chat-session-role-authority.md (pinned edit): the
+    // unrestricted editor and viewer join the restricted users here.
+    test(
+        "contextMessage for a restricted user, an unrestricted editor or an unrestricted viewer equals the no-incidents message and the incident store is not read"
+    ) {
+        Seq(bob, user(User.RoleViewer, restricted = true), user(User.RoleEditor, restricted = false), user(User.RoleViewer, restricted = false)).foreach { u =>
             val msg = OpsChatAPIController.contextMessage(sess(u), ctx, failingLoad)
             assert(msg == OpsAgentPrompt.renderContextMessage(ctx))
             Seq("Open incidents", "inc-hr", "hr_payroll", "hr_feed").foreach { s =>
@@ -197,10 +207,13 @@ class OpsChatIncidentContextSpec extends AnyFunSuite {
         }
     }
 
-    test("contextMessage for an unrestricted user or no session user is the message with the loaded incidents") {
+    // plans/stories/chat-session-role-authority.md (pinned edit): was "for an
+    // unrestricted user or no session user"; editor and viewer dropped from
+    // `callers` (they are in the no-incidents test above).
+    test("contextMessage for an admin or no session user is the message with the loaded incidents") {
         val expected = OpsAgentPrompt.renderContextMessage(ctx, List(incHr, incSales))
         val callers: Seq[ChatIdentity] =
-            Seq(noSession) ++ Seq(User.RoleAdmin, User.RoleEditor, User.RoleViewer).map(r => sess(user(r, restricted = false))) ++
+            Seq(noSession) ++ Seq(sess(user(User.RoleAdmin, restricted = false))) ++
                 Seq(sess(user(User.RoleAdmin, restricted = true, "Sales" -> "own")))
         callers.foreach { u =>
             var reads = 0

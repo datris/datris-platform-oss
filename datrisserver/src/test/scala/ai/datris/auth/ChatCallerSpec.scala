@@ -188,12 +188,14 @@ class ChatCallerSpec extends AnyFunSuite {
         }
     }
 
-    // Acceptance 9
+    // Acceptance 9. plans/stories/chat-session-role-authority.md (pinned edit,
+    // Step 5): was "incidents: unrestricted session yes, ..."; an editor
+    // session's role bundle holds no incident:read (Decision 4).
     test(
-        "incidents: unrestricted session yes, restricted session no, full-access key yes, incident:read key yes, incident:read:catalog=Sales key no, key without it no"
+        "incidents: admin session yes, editor session no, restricted session no, full-access key yes, incident:read key yes, incident:read:catalog=Sales key no, key without it no"
     ) {
         assert(ChatCaller.mayReadIncidents(sessionCaller(root)))
-        assert(ChatCaller.mayReadIncidents(sessionCaller(alice)))
+        assert(!ChatCaller.mayReadIncidents(sessionCaller(alice)))
         assert(!ChatCaller.mayReadIncidents(sessionCaller(bob)))
         assert(!ChatCaller.mayReadIncidents(allowed(ChatCaller.decide(None, Some(bob), Some(onBehalfOf(bob)), None))))
         Seq(legacyKey, anonymous, starMetaKey).foreach(rk => assert(ChatCaller.mayReadIncidents(keyCaller(rk)), rk.label))

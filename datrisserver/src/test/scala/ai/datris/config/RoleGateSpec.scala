@@ -133,4 +133,58 @@ class RoleGateSpec extends AnyFunSuite {
             }
         }
     }
+
+    // Story: In-platform chats act with the signed-in user's role, not the
+    // platform key's (plans/stories/chat-session-role-authority.md), Steps 4.
+    // `viewerMayPost(path)` takes the dispatcher's matched path
+    // (RequestPaths.path); `unauthenticated(resolved, rejection)` is the
+    // role gate's answer for a role-gated route reached with no session.
+
+    test("a viewer may POST the four chat routes and nothing else") {
+        Seq("/api/v1/assistant/chat", "/api/v1/ops-chat/chat", "/api/v1/catalog-chat/chat", "/api/v1/search-chat/chat").foreach { p =>
+            assert(RoleEnforcementInterceptor.viewerMayPost(p), p)
+        }
+        Seq(
+            "/api/v1/assistant/attachment",
+            "/api/v1/pipeline",
+            "/api/v1/config-chat/chat",
+            "/api/v1/assistant/init",
+            "/api/v1/tap/run",
+            "/api/v1/query/postgres",
+            // near misses: the matched path is compared exactly
+            "/api/v1/assistant/chat/",
+            "/api/v1/assistant/chatx",
+            "/api/v1/assistant/chat/extra",
+            "/api/v1/Assistant/chat",
+            "/api/v2/assistant/chat",
+            "/assistant/chat",
+            "api/v1/assistant/chat",
+            "",
+            null
+        ).foreach(p => assert(!RoleEnforcementInterceptor.viewerMayPost(p), String.valueOf(p)))
+    }
+
+    test("role-gated route, no session: no resolved key is 401, a rejected key is 401, a key-store outage is 503, a resolved key without the role stays 403") {
+        assert(RoleEnforcementInterceptor.unauthenticated(None, None) == Some((401, ai.datris.api.ApiErrors.AuthenticationRequiredBody)))
+
+        Seq(ai.datris.util.APIKeyValidator.InvalidKeyMessage, "API key 'old' is revoked", ai.datris.util.APIKeyValidator.MissingKeyMessage).foreach {
+            reason =>
+                val got = RoleEnforcementInterceptor.unauthenticated(None, Some(reason))
+                assert(got == Some((401, CapabilityInterceptor.RejectedKeyBody)), reason)
+                assert(got == Some(CapabilityInterceptor.rejectionResponse(reason)), reason)
+        }
+
+        Seq(ai.datris.util.APIKeyValidator.MetadataUnavailableMessage, ai.datris.util.APIKeyValidator.KeyStoreUnavailableMessage).foreach { reason =>
+            val got = RoleEnforcementInterceptor.unauthenticated(None, Some(reason))
+            assert(got.map(_._1) == Some(503), reason)
+            assert(got == Some(CapabilityInterceptor.rejectionResponse(reason)), reason)
+        }
+
+        // A resolved key (any shape) is not unauthenticated: the gate keeps its 403.
+        val anonymous = ResolvedKey(None, "anonymous", Seq(Capability.FullAccess), isLegacyFullAccess = true)
+        val tap = ResolvedKey(None, "tap:t1", ai.datris.auth.TapRunTokens.Capabilities, isLegacyFullAccess = false)
+        Seq(key("pipeline:read"), key("job:read"), stored("sales_all", "*:*:catalog=Sales"), tap, anonymous, full).foreach { rk =>
+            assert(RoleEnforcementInterceptor.unauthenticated(Some(rk), None).isEmpty, rk.label)
+        }
+    }
 }
