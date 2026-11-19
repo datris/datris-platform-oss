@@ -553,7 +553,7 @@ Executes a saved tap. Optionally sends data to the configured pipeline.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | (required) | Tap name |
-| `mode` | string | `"test"` | `"run"` feeds records into `targetPipeline`; `"test"` executes the script and returns sample results without persisting. A successful `mode=test` also records `lastTestRunStatus: "success"` and `lastTestRunScriptId` (the identity of the tested script or endpoint) on the tap, which is what allows a `cronExpression` to be saved — see the test-before-cron rule under Create or Update Tap |
+| `mode` | string | `"test"` | `"run"` feeds records into `targetPipeline`; `"test"` executes the script and returns sample results without persisting. A successful `mode=test` also records `lastTestRunStatus: "success"` and `lastTestRunScriptId` (the identity of the tested script or endpoint) on the tap, which is what allows a `cronExpression` to be saved — see the test-before-cron rule under Create or Update Tap. Case-insensitive; missing or empty means `"test"`. Any other value is refused with **HTTP 400** `{"error": "Unknown mode '<mode>'. Valid values: run, test (default)."}` before the tap is read or run |
 | `testLimit` | integer (optional) | `20` when `mode=test` | Max records a test pulls before the runner stops the script. Applies to `mode=test` only: the runner injects `DATRIS_TAP_TEST_LIMIT=<N>` and stops pulling from a generator `fetch()` after `N` records. `0` (or a negative value) disables the cap and streams the whole source. Ignored for `mode=run`, which always reads every row |
 | `params` | object | `{}` | Optional per-run parameters exposed to the script as environment variables (nested values JSON-encoded) |
 

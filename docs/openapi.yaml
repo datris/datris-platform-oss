@@ -5716,7 +5716,7 @@ paths:
                   type: string
                   enum: [run, test]
                   default: test
-                  description: "'run' feeds records into the configured target pipeline; 'test' executes the script and returns results without persisting"
+                  description: "'run' feeds records into the configured target pipeline; 'test' executes the script and returns results without persisting. Case-insensitive; missing or empty means test. Any other value is refused with 400 before the tap is read."
                 testLimit:
                   type: integer
                   default: 20
@@ -5764,6 +5764,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TapRunResult'
+        '400':
+          description: "A `mode` other than run or test: `{\"error\":\"Unknown mode '<mode>'. Valid values: run, test (default).\"}`"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '404':
           description: 'No such tap: `{"error":"Tap: <name> not found"}`'
           content:

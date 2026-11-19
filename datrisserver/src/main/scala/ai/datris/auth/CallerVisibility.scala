@@ -107,9 +107,16 @@ object CallerVisibility {
     val TapWriteActions: Seq[String] = Seq("create", "update")
 
     /** The pipeline right a load into a pipeline needs (upload, `kill_job`,
-      * a tap's target pipeline): `run` when the caller holds any
-      * `pipeline:run` capability, otherwise `read`. */
-    def loadAction(rk: ResolvedKey): String = if (rk != null && holdsAny(rk, "pipeline", "run")) "run" else "read"
+      * a tap's target pipeline): `run` when the caller holds an APPLIED
+      * `pipeline:run` capability ([[holdsAppliedRun]]), otherwise `read`. An
+      * inert `pipeline:run` (one whose scope the platform does not apply)
+      * never decides the load action, in either `DATRIS_KEY_INERT_SCOPES`
+      * mode. */
+    def loadAction(rk: ResolvedKey): String = if (rk != null && holdsAppliedRun(rk)) "run" else "read"
+
+    /** True when an applied (non-inert) capability matches `pipeline:run`. */
+    def holdsAppliedRun(rk: ResolvedKey): Boolean =
+        rk.isLegacyFullAccess || rk.capabilities.exists(_.matchesResourceAction("pipeline", "run"))
 
     /** The decision for a load into a stored pipeline with scope `context`
       * (upload, `kill_job`, a tap's target pipeline on save, run, restore and
@@ -125,14 +132,20 @@ object CallerVisibility {
         else storedWriteDenial(rk, "pipeline", context, Seq(action), action)
     }
 
-    /** Whether a load into a pipeline is checked against the caller's scope:
-      * a restricted session, or a key that is not full access and holds a
-      * `pipeline:run` capability or is limited for pipelines. Others keep
-      * today's answer (a `document:upload`-only key), and so does a caller
-      * holding unscoped `pipeline:run` and `pipeline:read` (the ops template,
-      * editor sessions), which every load grants. */
+    /** Whether a load into a pipeline is checked against the caller's scope
+      * ([[loadDenial]]): a restricted session, or a key that is not full
+      * access and holds an applied `pipeline:run`, is limited for pipelines,
+      * or whose pipeline read can be refused ([[keyScopeApplies]] on read,
+      * which in allow mode includes a key holding only an inert-scoped
+      * `pipeline:read`). Skipped, reading nothing: no identity, full access,
+      * a key with no applied `pipeline:run` whose pipeline read cannot be
+      * refused (unscoped read, or no pipeline read and not limited, such as a
+      * `document:upload`-only key), and a caller holding unscoped
+      * `pipeline:run` and `pipeline:read` (the ops template, editor
+      * sessions), which every load grants. */
     def loadChecked(rk: ResolvedKey): Boolean =
-        rk != null && (rk.restrictedSession || !rk.isFullAccess && (holdsAny(rk, "pipeline", "run") || limitedPipelines(rk)) &&
+        rk != null && (rk.restrictedSession || !rk.isFullAccess &&
+            (holdsAppliedRun(rk) || limitedPipelines(rk) || keyScopeApplies(rk, "pipeline", "read")) &&
             // unscoped pipeline:run and read (the ops template, editor sessions)
             // pass every load: nothing is read to decide
             !(holdsUnscoped(rk, "pipeline", "run") && holdsUnscoped(rk, "pipeline", "read")))

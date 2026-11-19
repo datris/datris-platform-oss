@@ -749,6 +749,88 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         assert(CallerVisibility.loadChecked(restricted("Sales" -> "edit")))
     }
 
+    // ------------------------------------------------------------ round 6: inert scopes on the load gate
+
+    private def storedKey(label: String, raw: String*): ResolvedKey = {
+        val (applied, inert) = CapabilityScopes.partition(Capability.parseList(raw))
+        ResolvedKey(None, label, applied, isLegacyFullAccess = false, inertCapabilities = inert)
+    }
+
+    private def inMode[T](allow: Boolean)(f: => T): T = {
+        val prior = sys.props.get(CapabilityScopes.InertScopesProperty)
+        if (allow) sys.props(CapabilityScopes.InertScopesProperty) = CapabilityScopes.InertScopesAllow
+        else sys.props -= CapabilityScopes.InertScopesProperty
+        try f
+        finally prior match {
+                case Some(v) => sys.props(CapabilityScopes.InertScopesProperty) = v
+                case None => sys.props -= CapabilityScopes.InertScopesProperty
+            }
+    }
+
+    test(
+        "load gate, shape A: an inert-scoped pipeline:read is refused on loads in allow mode exactly where a read of that pipeline is; default mode as on main"
+    ) {
+        val a = storedKey("ka", "document:upload", "job:kill", "pipeline:read:collection=docs")
+        assert(a.inertCapabilities.map(_.raw) == Seq("pipeline:read:collection=docs"))
+        val pipes = Seq(pg("hr_payroll", "HR"), pg("orders", "Sales", owner = "ka"), pg("loose", null, owner = null))
+        val jobs = pipes.zipWithIndex.map { case (p, i) => JobContext("tok-r6-a-" + i, null, null, p, null, PROCESSING, new Thread(), null) }
+        jobs.foreach(GlobalJobContext.addJobContext)
+        try {
+            for (p <- pipes; (job, _) <- jobs.zip(pipes).filter(_._2 eq p)) {
+                val ctx = CatalogOps.scopeContext(p.catalog, p.createdByKeyLabel)
+                inMode(allow = true) {
+                    val readRefused = PipelineAPIController.keyRefusal(req(a, "GET"), "pipeline", "read", ctx).isDefined
+                    assert(readRefused, "allow mode: the inert collection= scope never matches, so a read is refused: " + p.name)
+                    assert(CallerVisibility.loadChecked(a))
+                    assert(FileUploadAPIController.uploadRefusal(req(a), p.name, p).isDefined == readRefused, p.name)
+                    assert(TapAPIController.targetPipelineRefusal(req(a), tap("t", "Sales", target = p.name), _ => p).isDefined == readRefused, p.name)
+                    assert(QueryAPIController.killRefusal(req(a), job.pipelineToken, _ => p).isDefined == readRefused, p.name)
+                }
+                // default mode: the inert capability grants nothing and is not a pipeline capability of
+                // the key at all, so it is a document:upload-only key (unchanged, as on main): no check
+                inMode(allow = false) {
+                    assert(!CallerVisibility.loadChecked(a))
+                    assert(FileUploadAPIController.uploadRefusal(req(a), p.name, p).isEmpty, p.name)
+                    assert(TapAPIController.targetPipelineRefusal(req(a), tap("t", "Sales", target = p.name), failPipeline).isEmpty, p.name)
+                    assert(QueryAPIController.killRefusal(req(a), job.pipelineToken, failPipeline).isEmpty, p.name)
+                }
+            }
+        } finally GlobalJobContext.synchronized { jobs.foreach(j => GlobalJobContext.getAll -= j) }
+    }
+
+    test("load gate, shape B: an inert-scoped pipeline:run never decides the load action; the key loads as on main in both modes") {
+        val b = storedKey("kb", "pipeline:run:collection=docs", "pipeline:read", "document:upload", "job:kill")
+        assert(b.inertCapabilities.map(_.raw) == Seq("pipeline:run:collection=docs"))
+        val hr = pg("hr_payroll", "HR")
+        val job = JobContext("tok-r6-b", null, null, hr, null, PROCESSING, new Thread(), null)
+        GlobalJobContext.addJobContext(job)
+        try
+            for (allow <- Seq(false, true)) inMode(allow) {
+                assert(!CallerVisibility.holdsAppliedRun(b) && CallerVisibility.loadAction(b) == "read", "allow=" + allow)
+                assert(!CallerVisibility.loadChecked(b), "allow=" + allow)
+                assert(FileUploadAPIController.uploadRefusal(req(b), "hr_payroll", hr).isEmpty, "allow=" + allow)
+                assert(TapAPIController.targetPipelineRefusal(req(b), tap("t", "HR", target = "hr_payroll"), failPipeline).isEmpty, "allow=" + allow)
+                assert(QueryAPIController.killRefusal(req(b), "tok-r6-b", failPipeline).isEmpty, "allow=" + allow)
+            }
+        finally GlobalJobContext.synchronized { GlobalJobContext.getAll -= job }
+        // an applied scoped pipeline:run still decides it
+        assert(CallerVisibility.loadAction(key("r", "pipeline:run:owner=self")) == "run")
+    }
+
+    test("/tap/run mode: missing, null or empty means test; case-insensitive; not trimmed") {
+        assert(TapAPIController.requestedRunMode(null) == "test")
+        assert(TapAPIController.requestedRunMode("") == "test")
+        assert(TapAPIController.requestedRunMode("RUN") == "run")
+        assert(TapAPIController.requestedRunMode("Test") == "test")
+        assert(TapAPIController.requestedRunMode("run ") == "run ")
+        assert(TapAPIController.runModeRefusal(TapAPIController.requestedRunMode("")).isEmpty)
+        assert(TapAPIController.runModeRefusal(TapAPIController.requestedRunMode(null)).isEmpty)
+        assert(TapAPIController.runModeRefusal(TapAPIController.requestedRunMode("run ")).isDefined)
+        assert(methodBody(source("src/main/scala/ai/datris/api/TapAPIController.scala"), "def runTap(").contains(
+            "TapAPIController.requestedRunMode(body.get(\"mode\"))"
+        ))
+    }
+
     private def source(rel: String): String = {
         val file = Seq(java.nio.file.Paths.get(rel), java.nio.file.Paths.get("datrisserver", rel))
             .find(java.nio.file.Files.isRegularFile(_)).getOrElse(fail(rel + " not found"))

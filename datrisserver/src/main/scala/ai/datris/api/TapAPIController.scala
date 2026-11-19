@@ -32,6 +32,11 @@ object TapAPIController {
       * is internal to the recovery agent's rehearsal and is not one of them. */
     val RunModes: Seq[String] = Seq("run", "test")
 
+    /** The `mode` of a `POST /tap/run` body: lower-cased; missing, null or
+      * empty means `test`, as before. Not trimmed, so `"run "` is not a run. */
+    def requestedRunMode(raw: Any): String =
+        Option(raw).map(_.toString.toLowerCase).filter(_.nonEmpty).getOrElse("test")
+
     /** `POST /tap/run`: 400 for a `mode` (already lower-cased) other than
       * [[RunModes]]; None otherwise. */
     def runModeRefusal(mode: String): Option[ResponseEntity[String]] =
@@ -1828,7 +1833,7 @@ class TapAPIController {
     ): ResponseEntity[String] = {
         try {
             val name = Option(body.get("name")).map(_.toString).orNull
-            val requestedMode = Option(body.get("mode")).map(_.toString.toLowerCase).getOrElse("test")
+            val requestedMode = TapAPIController.requestedRunMode(body.get("mode"))
             logger.info("API endpoint POST /tap/run called for tap: " + name + s" (mode=$requestedMode)")
             APIKeyValidator.validate(apiKey)
 
