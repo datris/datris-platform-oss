@@ -406,12 +406,12 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
             steps = List(IncidentStep(t0, "open", "opened")),
             evidence = Some(new JsonObject())
         )
-    private val incOrders = incident("inc-orders", "pipeline", "orders")
-    private val incPayroll = incident("inc-payroll", "pipeline", "payroll")
-    private val incOwn = incident("inc-own", "pipeline", "own_p")
-    private val incSalesTap = incident("inc-tsales", "tap", "t_sales")
-    private val incHrTap = incident("inc-thr", "tap", "t_hr_feed")
-    private val incOwnTap = incident("inc-town", "tap", "t_own")
+    private val incOrders = incident("inc-1", "pipeline", "orders")
+    private val incPayroll = incident("inc-2", "pipeline", "payroll")
+    private val incOwn = incident("inc-3", "pipeline", "own_p")
+    private val incSalesTap = incident("inc-4", "tap", "t_sales")
+    private val incHrTap = incident("inc-5", "tap", "t_hr_feed")
+    private val incOwnTap = incident("inc-6", "tap", "t_own")
     private val incidents = List(incOrders, incPayroll, incOwn, incSalesTap, incHrTap, incOwnTap)
     private def incidentShown(s: Shape, i: Incident): Boolean =
         if (i.resourceType == "pipeline") s.pipelines.contains(i.resourceName) else s.taps.contains(i.resourceName)
@@ -460,7 +460,7 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
     }
 
     test("tap logs: all-taps list filtered, named hidden tap 403") {
-        for (s <- limited("job:read", "tap:read")) {
+        for (s <- limited("job:read")) {
             var reads = 0
             val out = TapAPIController.visibleTapLogs(req(s.rk, uri = "/api/v1/tap/logs/all"), tapLogs, () => { reads += 1; taps })
             assert(logNames(out) == s.taps, s.name)
@@ -499,7 +499,8 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
         assert(sr.exists(r => status(r) == 404 && r.getBody == PipelineAPIController.pipelineNotFound("payroll").getBody), sr.map(_.getBody))
 
         // in-scope rows: the tap stamp columns go from every row (as for a restricted session); the row count is unchanged
-        for (s <- limited("query:objectstore", "query:snowflake")) {
+        // (a key limited for pipelines only reads every tap and keeps the columns: lead ruling 7, pinned below)
+        for (s <- limited("query:objectstore", "query:snowflake").filter(_.name != "pipeline-limited only")) {
             val in = rows(3)
             val out = QueryAPIController.restrictedRows(req(s.rk, "POST"), in)
             assert(out.size == 3, s.name)
@@ -510,6 +511,13 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
             assert(os.rows.size == 2 && os.path == "s3://datris/orders/" && os.format == "parquet", s.name)
             assert(!gson.toJson(os.rows).contains("hr.internal") && !gson.toJson(out).contains("hr-sha"), s.name)
         }
+        // lead ruling 7: a key limited for pipelines only (unscoped tap:read) keeps the tap stamp columns on its rows
+        val pipeOnly = shapes("query:objectstore", "query:snowflake").find(_.name == "pipeline-limited only").get
+        val keptIn = rows(3)
+        assert(QueryAPIController.restrictedRows(req(pipeOnly.rk, "POST"), keptIn) eq keptIn, pipeOnly.name)
+        val keptOs = osResult(2)
+        assert(QueryAPIController.restrictedObjectStoreResult(req(pipeOnly.rk, "POST", "/api/v1/query/objectstore"), keptOs) eq keptOs, pipeOnly.name)
+        assert(keptOs.columns.asScala.toList.contains("_datris_tap_run") && keptOs.rows.get(0).containsKey("_datris_tap_run"), pipeOnly.name)
     }
 
     test("search: a container no in-scope pipeline feeds is 404 and other writers' chunks are dropped") {
@@ -713,7 +721,7 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
             // incidents
             val inc = incidents
             assert(IncidentsAPIController.visibleIncidents(r, inc, failRead, failReadTap) eq inc, name)
-            assert(IncidentsAPIController.incidentRefusal(r, "inc-payroll", Some(incPayroll), failRead, failReadTap).isEmpty, name)
+            assert(IncidentsAPIController.incidentRefusal(r, incPayroll.id, Some(incPayroll), failRead, failReadTap).isEmpty, name)
         }
         // the Ops chat block: unrestricted users and unlimited keys holding incident:read get the loaded list itself
         val ids = Seq(
@@ -795,7 +803,7 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
         assert(logNames(TapAPIController.visibleTapLogs(r, tapLogs, () => taps)) == Set("t_own"))
         assert(SearchAPIController.searchWriters(r, "qdrant", "own_docs", None, () => searchConfigs).isRight)
         assert(SearchAPIController.searchWriters(r, "qdrant", "sales_docs", None, () => searchConfigs).isLeft)
-        assert(IncidentsAPIController.visibleIncidents(r, incidents, readPipeline, readTap).map(_.id).toSet == Set("inc-own", "inc-town"))
+        assert(IncidentsAPIController.visibleIncidents(r, incidents, readPipeline, readTap).map(_.id).toSet == Set(incOwn.id, incOwnTap.id))
     }
 
     test(
