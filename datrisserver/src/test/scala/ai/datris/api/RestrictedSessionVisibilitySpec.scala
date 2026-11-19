@@ -459,7 +459,7 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         ResolvedKey(None, "sales-meta", Capability.parseList(Seq("pipeline:read:catalog=Sales", "metadata:read")), isLegacyFullAccess = false)
 
     test(
-        "GET /api/v1/metadata/postgres/tables is 403 with the capability-denied body for a restricted session and passes for a catalog-scoped API key holding metadata:read"
+        "GET /api/v1/metadata/postgres/tables is 403 with the capability-denied body for a restricted session and for a catalog-scoped API key holding metadata:read"
     ) {
         val path = "/api/v1/metadata/postgres/tables"
         val bob = restrictedSession(grants("Sales" -> "edit"))
@@ -479,9 +479,14 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(captured.exists(e => e.category == "security" && e.action == "denied"), captured.map(e => e.category + "/" + e.action))
 
         captured.clear()
+        // A catalog-scoped API key holding metadata:read is refused too (scoped-key-read-routes, Part C, D3).
         val (keyCont, keyStatus, keyBody) = intercept(req(catalogScopedMetadataKey, path = path))
-        assert(keyCont && keyStatus == 200 && keyBody.isEmpty, s"API key with metadata:read passes: $keyStatus $keyBody")
-        assert(!captured.exists(_.category == "security"), "no denial row for the key")
+        assert(!keyCont && keyStatus == 403, s"catalog-scoped API key with metadata:read is refused: $keyStatus $keyBody")
+        val ko = JsonParser.parseString(keyBody).getAsJsonObject
+        assert(ko.get("errorKind").getAsString == "capability_denied", keyBody)
+        assert(ko.get("required").getAsString == "metadata:read", keyBody)
+        assert(ko.get("route").getAsString == "GET " + path, keyBody)
+        assert(captured.exists(e => e.category == "security" && e.action == "denied"), "a denial row for the key")
         // An unrestricted session is unchanged too.
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(intercept(req(editor, path = path))._1)
@@ -495,7 +500,7 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         val (cont, status, body) = intercept(req(bob, path = path))
         assert(!cont && status == 403, s"$status $body")
         assert(JsonParser.parseString(body).getAsJsonObject.get("errorKind").getAsString == "capability_denied", body)
-        assert(intercept(req(catalogScopedMetadataKey, path = path))._1, "API keys with metadata:read are unchanged")
+        assert(!intercept(req(catalogScopedMetadataKey, path = path))._1, "a catalog-scoped API key with metadata:read is refused too (Part C)")
     }
 
     private val pgOrders = Destination(schemaProperties = null, database = Database(dbName = "datris", schema = "public", table = "orders", usePostgres = true))

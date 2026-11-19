@@ -162,7 +162,7 @@ class RestrictedQueryStampsSpec extends AnyFunSuite with BeforeAndAfterEach {
     }
 
     test(
-        "restrictedSqlRefusal is None for a restricted session without sql, with blank sql, and for an unrestricted editor and a catalog-scoped API key with any sql"
+        "restrictedSqlRefusal is None for a restricted session without sql, with blank sql, and for an unrestricted editor and a full key with any sql; a catalog-scoped API key is refused any non-blank sql"
     ) {
         assert(QueryAPIController.restrictedSqlRefusal(req(bob), None).isEmpty)
         Seq("", " ", "   \n\t ").foreach(s => assert(QueryAPIController.restrictedSqlRefusal(req(bob), Some(s)).isEmpty, s"blank sql '$s' is absent"))
@@ -174,8 +174,14 @@ class RestrictedQueryStampsSpec extends AnyFunSuite with BeforeAndAfterEach {
             Some("SHOW TABLES"),
             Some("SELECT * FROM INFORMATION_SCHEMA.COLUMNS")
         )
-        for (rk <- Seq(editor, salesKey, fullKey); sql <- anySql)
+        for (rk <- Seq(editor, fullKey); sql <- anySql)
             assert(QueryAPIController.restrictedSqlRefusal(req(rk), sql).isEmpty, s"${rk.label} / $sql must not be refused")
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part C): no caller SQL; blank is the preview.
+        for (sql <- anySql) {
+            val r = QueryAPIController.restrictedSqlRefusal(req(salesKey), sql)
+            if (sql.forall(_.trim.isEmpty)) assert(r.isEmpty, s"${salesKey.label} / $sql is the preview")
+            else assert(r.exists(_.getStatusCode.value == 403), s"${salesKey.label} / $sql must be refused 403")
+        }
     }
 
     // ------------------------------------------------------------ dropTapStampColumns
