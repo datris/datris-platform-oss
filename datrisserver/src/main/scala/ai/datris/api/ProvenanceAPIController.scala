@@ -35,40 +35,18 @@ class ProvenanceAPIController {
         try {
             if (runId == null || runId.trim.isEmpty)
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"runId is required\"}")
-            // A limited caller's hints are ignored (a restricted session, or a
-            // catalog- / owner-scoped key): the run's own records name its
-            // pipeline and tap run, so a visible pipeline name cannot vouch
-            // for a hidden run.
-            val limited = CapabilityCheck.isLimited(request)
-            val resolved = ProvenanceResolver.resolve(
-                if (pipeline != null && !limited) pipeline.trim else null,
-                runId.trim,
-                if (tapRun != null && !limited) tapRun.trim else null,
-                configVersion
-            )
-            // Read only for a limited caller (provenanceRefusal and the
-            // scrub below never call it otherwise).
-            lazy val configs = PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName).filter(_ != null)
-            val refused = ProvenanceAPIController.provenanceRefusal(
+            val env = DatrisEnvironment.current
+            ProvenanceAPIController.provenanceResponse(
                 request,
                 runId.trim,
-                resolved,
-                // A run filed under a renamed pipeline's earlier name is
-                // judged on that pipeline; a reused name only when every
-                // pipeline it may belong to is visible (PipelineAliases).
-                n => ProvenanceAPIController.recordOwner(request, n, configs)
+                pipeline,
+                tapRun,
+                configVersion,
+                (p, r, t, v) => ProvenanceResolver.resolve(p, r, t, v),
+                () => PipelineConfigIO.readAll(env.pipelineTableName),
+                () => TapConfigIO.readAll(env.tapTableName),
+                n => TapConfigIO.read(env.tapTableName, n)
             )
-            if (refused.isDefined) return refused.get
-            val shown =
-                if (!limited) resolved
-                else {
-                    val env = DatrisEnvironment.current
-                    val pipelineName = resolved.get("pipeline").getAsString // present: provenanceRefusal passed
-                    val owner = Option(PipelineAliases.ownerOf(pipelineName, configs)).map(_.name).toSet
-                    val feeding = HiddenTapScrub.hiddenFeedingTaps(request, TapConfigIO.readAll(env.tapTableName), Set(pipelineName) ++ owner)
-                    ProvenanceAPIController.scrubProvenance(request, resolved, n => TapConfigIO.read(env.tapTableName, n), feeding)
-                }
-            new ResponseEntity[String](gson.toJson(shown), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error resolving provenance: " + Throwables.getStackTraceAsString(e))
@@ -79,6 +57,48 @@ class ProvenanceAPIController {
 }
 
 object ProvenanceAPIController {
+
+    /** GET /provenance after the runId check. A limited caller
+      * ([[CapabilityCheck.isLimited]]: a restricted session, or a catalog- /
+      * owner-scoped key) has its `pipeline` and `tapRun` hints ignored (the
+      * run's own records name its pipeline and tap run, so a visible name
+      * cannot vouch for a hidden run), then [[provenanceRefusal]] and
+      * [[scrubProvenance]] apply; `pipelines`, `taps` and `readTap` are read
+      * only for it. Everyone else: `resolve` with the trimmed hints, the
+      * result as is, no reader called. */
+    def provenanceResponse(
+        request: HttpServletRequest,
+        runId: String,
+        pipeline: String,
+        tapRun: String,
+        configVersion: java.lang.Integer,
+        resolve: (String, String, String, java.lang.Integer) => JsonObject,
+        pipelines: () => Seq[PipelineConfig],
+        taps: () => Seq[TapConfig],
+        readTap: String => TapConfig
+    ): ResponseEntity[String] = {
+        val limited = CapabilityCheck.isLimited(request)
+        val resolved = resolve(
+            if (pipeline != null && !limited) pipeline.trim else null,
+            runId,
+            if (tapRun != null && !limited) tapRun.trim else null,
+            configVersion
+        )
+        lazy val configs = Option(pipelines()).getOrElse(Nil).filter(_ != null)
+        // A run filed under a renamed pipeline's earlier name is judged on
+        // that pipeline; a reused name only when every pipeline it may belong
+        // to is visible (PipelineAliases).
+        provenanceRefusal(request, runId, resolved, n => recordOwner(request, n, configs)).foreach(return _)
+        val shown =
+            if (!limited) resolved
+            else {
+                val pipelineName = resolved.get("pipeline").getAsString // present: provenanceRefusal passed
+                val owner = Option(PipelineAliases.ownerOf(pipelineName, configs)).map(_.name).toSet
+                val feeding = HiddenTapScrub.hiddenFeedingTaps(request, Option(taps()).getOrElse(Nil), Set(pipelineName) ++ owner)
+                scrubProvenance(request, resolved, readTap, feeding)
+            }
+        new ResponseEntity[String](new Gson().toJson(shown), HttpStatus.OK)
+    }
 
     /** The `read` for [[provenanceRefusal]] on loaded configs: the owner of a
       * run filed under `name` ([[PipelineAliases.ownerOf]]), or null (read as

@@ -481,12 +481,18 @@ object LineageService {
       * failing `keep` are dropped; then source and dataset nodes left with no
       * edge to a kept pipeline, tap or catalog node; then every edge with a
       * dropped endpoint. A source or dataset shared with hidden items survives
-      * with only its visible edges. `keep` = everything is the identity. */
-    def visibleTo(g: Graph, keep: Node => Boolean): Graph = {
+      * with only its visible edges. `keep` = everything is the identity.
+      * `anchors` are the node types whose kept nodes hold a source or dataset
+      * in the graph: by default pipeline, tap and catalog (a restricted
+      * session, whose granted catalog means every pipeline in it is
+      * readable); an API key passes pipeline and tap only, since a catalog
+      * node it keeps can also link datasets of pipelines it cannot read. */
+    def visibleTo(g: Graph, keep: Node => Boolean, anchors: Set[String] = Set("pipeline", "tap", "catalog")): Graph = {
         val gated = Set("pipeline", "tap", "catalog")
         val keptGated = g.nodes.filter(n => gated.contains(n.nodeType) && keep(n)).map(_.id).toSet
+        val keptAnchors = g.nodes.filter(n => anchors.contains(n.nodeType) && keptGated.contains(n.id)).map(_.id).toSet
         def linkedToKept(id: String): Boolean =
-            g.edges.exists(e => (e.from == id && keptGated.contains(e.to)) || (e.to == id && keptGated.contains(e.from)))
+            g.edges.exists(e => (e.from == id && keptAnchors.contains(e.to)) || (e.to == id && keptAnchors.contains(e.from)))
         val nodes = g.nodes.filter(n => if (gated.contains(n.nodeType)) keptGated.contains(n.id) else linkedToKept(n.id))
         val ids = nodes.map(_.id).toSet
         Graph(nodes, g.edges.filter(e => ids.contains(e.from) && ids.contains(e.to)))

@@ -27,22 +27,13 @@ class ActivityAPIController {
     @GetMapping(path = Array("/signals"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def signals(@RequestParam(name = "window", required = false) window: String, request: HttpServletRequest): ResponseEntity[String] = {
         try {
-            val windowMs = Option(window).map(_.trim.toLowerCase).getOrElse("24h") match {
-                case "24h" | "" => 24L * 3600000L
-                case "7d" => 7L * 86400000L
-                case "30d" => 30L * 86400000L
-                case other =>
-                    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                        .body[String]("{\"error\":\"window must be 24h, 7d or 30d (got " + other.replace("\"", "") + ")\"}")
-            }
-            val computed = ActivitySignals.compute(windowMs)
-            val visible = ActivityAPIController.callerView(
+            ActivityAPIController.signalsResponse(
                 request,
-                computed,
+                window,
+                ms => ActivitySignals.compute(ms),
                 () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName),
                 () => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)
             )
-            new ResponseEntity[String](gson.toJson(visible.toJson), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error computing activity signals: " + Throwables.getStackTraceAsString(e))
@@ -55,6 +46,27 @@ class ActivityAPIController {
 }
 
 object ActivityAPIController {
+
+    /** GET /activity/signals: 400 for a window other than 24h, 7d or 30d;
+      * otherwise `compute(windowMs)` as the caller sees it ([[callerView]]:
+      * `pipelines` and `taps` read only for a limited caller). */
+    def signalsResponse(
+        request: HttpServletRequest,
+        window: String,
+        compute: Long => ActivitySignals.Signals,
+        pipelines: () => Seq[ai.datris.model.PipelineConfig],
+        taps: () => Seq[ai.datris.model.TapConfig]
+    ): ResponseEntity[String] = {
+        val windowMs = Option(window).map(_.trim.toLowerCase).getOrElse("24h") match {
+            case "24h" | "" => 24L * 3600000L
+            case "7d" => 7L * 86400000L
+            case "30d" => 30L * 86400000L
+            case other =>
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body[String]("{\"error\":\"window must be 24h, 7d or 30d (got " + other.replace("\"", "") + ")\"}")
+        }
+        new ResponseEntity[String](new Gson().toJson(callerView(request, compute(windowMs), pipelines, taps).toJson), HttpStatus.OK)
+    }
 
     /** GET /activity/signals: what the caller sees. A limited caller
       * ([[CapabilityCheck.isLimited]]: a restricted user's session, or an API

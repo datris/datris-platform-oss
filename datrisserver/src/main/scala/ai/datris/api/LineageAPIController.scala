@@ -63,24 +63,18 @@ class LineageAPIController {
             if (!Set("up", "down", "both").contains(d))
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body[String]("{\"error\":\"direction must be one of up, down, both\"}")
-            val result = LineageService.neighborhood(
+            val dep = if (depth == null) 0 else math.max(0, depth.intValue())
+            val rn = if (runs == null) 0 else math.max(0, runs.intValue())
+            val withColumns = columns != null && columns.booleanValue()
+            LineageAPIController.neighborhoodResponse(
+                request,
                 t,
                 name,
-                d,
-                if (depth == null) 0 else math.max(0, depth.intValue()),
-                if (runs == null) 0 else math.max(0, runs.intValue()),
-                columns != null && columns.booleanValue(),
                 // A limited caller walks only its visible graph; null = the whole cached graph.
-                if (CapabilityCheck.isLimited(request)) LineageAPIController.callerGraph(request)
-                else null
+                g => LineageService.neighborhood(t, name, d, dep, rn, withColumns, g),
+                () => LineageAPIController.callerGraph(request),
+                n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n)
             )
-            if (result == null)
-                ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body[String]("{\"error\":\"no such node: " + t + ":" + Option(name).getOrElse("").replace("\"", "'") + "\"}")
-            else {
-                val shown = LineageAPIController.scrubNeighborhood(request, result, n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n))
-                new ResponseEntity[String](gson.toJson(shown), HttpStatus.OK)
-            }
         } catch {
             case e: Exception =>
                 logger.error("Error building lineage neighborhood: " + Throwables.getStackTraceAsString(e))
@@ -101,35 +95,19 @@ class LineageAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
-            val refused = LineageAPIController.columnsRefusal(
+            LineageAPIController.columnsResponse(
                 request,
                 pipeline,
-                n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
+                Option(version).map(_.intValue()),
+                infer != null && infer.booleanValue(),
+                n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n),
+                () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName),
+                (p, v, inferOn, stored) =>
+                    stored match {
+                        case None => ai.datris.util.ColumnLineageService.forPipeline(p, v, inferOn)
+                        case Some(b) => ai.datris.util.ColumnLineageService.forPipeline(p, v, inferOn, storedInference = b)
+                    }
             )
-            if (refused.isDefined) return refused.get
-            val v = Option(version).map(_.intValue()).filter(_ > 0)
-            val inferOn = infer != null && infer.booleanValue()
-            val result =
-                if (!CapabilityCheck.isLimited(request)) ai.datris.util.ColumnLineageService.forPipeline(pipeline, v, inferOn)
-                else
-                    ai.datris.util.ColumnLineageService.forPipeline(
-                        pipeline,
-                        v,
-                        inferOn,
-                        storedInference = LineageAPIController.recordsShown(
-                            request,
-                            pipeline,
-                            PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
-                        )
-                    )
-            if (result == null)
-                ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body[String]("{\"error\":\"no such pipeline" + (if (version != null) " version" else "") + ": " + Option(pipeline).getOrElse("").replace(
-                        "\"",
-                        "'"
-                    ) + "\"}")
-            else
-                new ResponseEntity[String](gson.toJson(result.toJson), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error building column lineage: " + Throwables.getStackTraceAsString(e))
@@ -152,8 +130,9 @@ object LineageAPIController {
       * when the graph was built), and catalog nodes it may see: a session's
       * granted catalogs ([[CatalogGrants.visibleCatalogs]]), for a key the
       * catalogs of the pipeline and tap nodes it keeps. Sources and datasets
-      * still linked to them stay ([[LineageService.visibleTo]]). Everyone
-      * else: `g` itself. */
+      * stay only while linked to a kept pipeline or tap (for a session, also
+      * a granted catalog), with only their visible edges
+      * ([[LineageService.visibleTo]]). Everyone else: `g` itself. */
     def visibleGraph(request: HttpServletRequest, g: LineageService.Graph): LineageService.Graph =
         CapabilityCheck.resolvedKey(request).filter(ai.datris.auth.CallerVisibility.limited) match {
             case None => g
@@ -170,7 +149,11 @@ object LineageAPIController {
                             case "pipeline" | "tap" => itemKept(n)
                             case "catalog" => catalogs.contains(n.name)
                             case _ => true
-                        }
+                        },
+                    // A key's catalog node (the catalog of an item it keeps) also links
+                    // datasets of pipelines it cannot read: only its pipelines and taps
+                    // hold a dataset or source in its graph.
+                    if (rk.restrictedSession) Set("pipeline", "tap", "catalog") else Set("pipeline", "tap")
                 )
         }
 
@@ -178,8 +161,64 @@ object LineageAPIController {
       * [[visibleGraph]], and for a limited caller without the runs it may
       * not see ([[LineageService.withoutHiddenRuns]]). */
     def callerGraph(request: HttpServletRequest): LineageService.Graph =
-        if (!CapabilityCheck.isLimited(request)) visibleGraph(request, LineageService.graph())
-        else LineageService.withoutHiddenRuns(visibleGraph(request, LineageService.graph()), LineageService.pipelines())
+        callerGraphOf(request, LineageService.graph(), () => LineageService.pipelines())
+
+    /** [[callerGraph]] on a given graph and stored pipelines (`pipelines`
+      * called only for a limited caller). */
+    def callerGraphOf(request: HttpServletRequest, g: LineageService.Graph, pipelines: () => Seq[PipelineConfig]): LineageService.Graph =
+        if (!CapabilityCheck.isLimited(request)) visibleGraph(request, g)
+        else LineageService.withoutHiddenRuns(visibleGraph(request, g), pipelines())
+
+    /** GET /lineage/{type}/{name} (type already validated): `walk` builds the
+      * neighbourhood on a graph (null = the whole cached graph). A limited
+      * caller walks [[callerGraph]] (`graphOf`), so a node outside it is the
+      * unknown-node 404, and its runs are scrubbed ([[scrubNeighborhood]]).
+      * Everyone else walks null and `graphOf` / `readTap` are not called. */
+    def neighborhoodResponse(
+        request: HttpServletRequest,
+        nodeType: String,
+        name: String,
+        walk: LineageService.Graph => JsonObject,
+        graphOf: () => LineageService.Graph,
+        readTap: String => TapConfig
+    ): ResponseEntity[String] = {
+        val result = walk(if (CapabilityCheck.isLimited(request)) graphOf() else null)
+        if (result == null)
+            ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body[String]("{\"error\":\"no such node: " + nodeType + ":" + Option(name).getOrElse("").replace("\"", "'") + "\"}")
+        else new ResponseEntity[String](new Gson().toJson(scrubNeighborhood(request, result, readTap)), HttpStatus.OK)
+    }
+
+    /** The 404 GET /lineage/columns answers for a pipeline (or version) it
+      * cannot build. */
+    private def noSuchPipeline(pipeline: String, versioned: Boolean): ResponseEntity[String] =
+        ResponseEntity.status(HttpStatus.NOT_FOUND)
+            .body[String]("{\"error\":\"no such pipeline" + (if (versioned) " version" else "") + ": " + Option(pipeline).getOrElse("").replace(
+                "\"",
+                "'"
+            ) + "\"}")
+
+    /** GET /lineage/columns/{pipeline}: [[columnsRefusal]] first, then
+      * `forPipeline(pipeline, version, infer, storedInference)`, where
+      * `storedInference` is None for a caller that is not limited (`readAll`
+      * not called) and Some([[recordsShown]]) for a limited one. A null
+      * result is the `no such pipeline[ version]` 404. */
+    def columnsResponse(
+        request: HttpServletRequest,
+        pipeline: String,
+        version: Option[Int],
+        infer: Boolean,
+        read: String => PipelineConfig,
+        readAll: () => Seq[PipelineConfig],
+        forPipeline: (String, Option[Int], Boolean, Option[Boolean]) => ai.datris.util.ColumnLineageService.Result
+    ): ResponseEntity[String] = {
+        columnsRefusal(request, pipeline, read, versioned = version.isDefined).foreach(return _)
+        val v = version.filter(_ > 0)
+        val stored = if (!CapabilityCheck.isLimited(request)) None else Some(recordsShown(request, pipeline, readAll()))
+        val result = forPipeline(pipeline, v, infer, stored)
+        if (result == null) noSuchPipeline(pipeline, version.isDefined)
+        else new ResponseEntity[String](new Gson().toJson(result.toJson), HttpStatus.OK)
+    }
 
     /** Limited callers: whether records filed under `name` are shown
       * ([[ai.datris.util.PipelineAliases.recordShown]] with the pipelines the
@@ -214,9 +253,17 @@ object LineageAPIController {
       * pipeline; null = missing): a restricted session gets the `no such
       * pipeline` 404 when it is missing or outside the grants; an API key
       * gets the capability-denied 403 on `pipeline:read` (shared wording)
-      * when the stored pipeline is outside its scope, and a missing one the
-      * route's own 404. None for everyone else, `read` not called. */
-    def columnsRefusal(request: HttpServletRequest, pipeline: String, read: String => PipelineConfig): Option[ResponseEntity[String]] =
+      * when the stored pipeline is outside its scope, and for a pipeline that
+      * is not stored the route's `no such pipeline[ version]` 404 (`versioned`:
+      * a `version` was asked for) before any version snapshot is read, exactly
+      * as for a name that never existed. None for everyone else, `read` not
+      * called. */
+    def columnsRefusal(
+        request: HttpServletRequest,
+        pipeline: String,
+        read: String => PipelineConfig,
+        versioned: Boolean = false
+    ): Option[ResponseEntity[String]] =
         if (!CapabilityCheck.isLimited(request)) None
         else if (CapabilityCheck.isRestrictedSession(request)) {
             if (PipelineAPIController.hiddenConfig(request, read(pipeline), "read"))
@@ -226,7 +273,8 @@ object LineageAPIController {
                 )
             else None
         } else
-            Option(read(pipeline)).flatMap(c =>
-                PipelineAPIController.keyRefusal(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel))
-            )
+            Option(read(pipeline)) match {
+                case None => Some(noSuchPipeline(pipeline, versioned))
+                case Some(c) => PipelineAPIController.keyRefusal(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel))
+            }
 }

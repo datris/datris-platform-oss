@@ -65,6 +65,32 @@ object TapAPIController {
     def mayRead(request: HttpServletRequest, t: TapConfig): Boolean =
         t != null && ai.datris.auth.CallerVisibility.mayReadStored(CapabilityCheck.resolvedKey(request), "tap", t.catalog, t.createdByKeyLabel)
 
+    /** GET /tap/logs: the pipeline rollup embedded in one run log (`response`
+      * is the run's publisher-token status with rollup). None (the route
+      * embeds JSON null) when there is no rollup or it has no jobs. A caller
+      * that is not limited ([[CapabilityCheck.isLimited]]) gets
+      * `response.rollup` itself and no reader is called. A limited caller
+      * (restricted session, catalog- or owner-scoped key) gets what
+      * `GET /pipeline/status` with that token shows it
+      * ([[PipelineStatusAPIController.restrictedViewWith]]): None when the
+      * run touches a pipeline it may not read, else the scrubbed rollup
+      * (hidden tap names `[hidden]`, preview rows stripped). */
+    def shownRollup(
+        request: HttpServletRequest,
+        response: ai.datris.model.PipelineStatusResponse,
+        pipelines: () => Seq[PipelineConfig],
+        taps: () => Seq[TapConfig],
+        run: String => Option[ai.datris.model.RunLineage]
+    ): Option[ai.datris.model.PipelineStatusRollup] =
+        if (response == null || response.rollup == null || response.rollup.jobs == null || response.rollup.jobs.isEmpty) None
+        else if (!CapabilityCheck.isLimited(request)) Some(response.rollup)
+        else
+            PipelineStatusAPIController.restrictedViewWith(request, response, pipelines(), taps(), run) match {
+                case Right(r: ai.datris.model.PipelineStatusResponse) =>
+                    Option(r.rollup).filter(ro => ro.jobs != null && !ro.jobs.isEmpty)
+                case _ => None
+            }
+
     /** GET /tap/logs/all: the run-log values (each `{tapName, ...}`) the
       * caller sees. A limited caller ([[CapabilityCheck.isLimited]]: a
       * restricted session, or an API key limited by a `catalog=` / `owner=`
@@ -827,14 +853,21 @@ class TapAPIController {
             // 1 chunking/embedding failure shows up as "SUCCESS 28 records" with
             // no hint of the failure. Only runs that actually fed a pipeline
             // (mode=run with a publisherToken) get a rollup.
+            // A limited caller gets each rollup exactly as GET /pipeline/status
+            // would show it (filtered, hidden tap names [hidden], previews
+            // stripped; null when it may not read the run): the stores are read
+            // once per request, and only for a limited caller.
+            lazy val pipelines = PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+            lazy val taps = TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)
             val enriched = logs.map { log =>
                 val rollupJson: JsonElement =
                     if (log.publisherToken != null && log.publisherToken.nonEmpty) {
                         try {
                             val response = PipelineStatusUtil.getPipelineStatusByPublisherWithRollup(log.publisherToken)
-                            if (response != null && response.rollup != null && !response.rollup.jobs.isEmpty)
-                                gson.toJsonTree(response.rollup)
-                            else JsonNull.INSTANCE
+                            TapAPIController
+                                .shownRollup(request, response, () => pipelines, () => taps, ai.datris.util.RunLineageIO.read)
+                                .map(r => gson.toJsonTree(r))
+                                .getOrElse(JsonNull.INSTANCE)
                         } catch {
                             case e: Exception =>
                                 logger.warn("Could not load rollup for publisher token " + log.publisherToken + ": " + e.getMessage)
