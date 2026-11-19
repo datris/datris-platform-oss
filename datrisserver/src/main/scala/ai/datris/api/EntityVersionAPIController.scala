@@ -573,7 +573,7 @@ class EntityVersionAPIController {
         val candidate = EntityVersionAPIController.tapRestoreCandidate(name, snap, live)
         new TapAPIController().restoreTapInternal(candidate, live, version, notFound("tap", name, version), request) match {
             case Left(refused) =>
-                logger.warn("Restore of tap " + name + " version " + version + " rejected: HTTP " + refused.getStatusCode.value)
+                logger.warn("Restore of tap " + LogSafe.text(name) + " version " + version + " rejected: HTTP " + refused.getStatusCode.value)
                 refused
             case Right(saved) => ok(gson.toJson(saved))
         }

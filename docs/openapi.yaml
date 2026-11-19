@@ -6101,7 +6101,9 @@ paths:
         creation time, enabled state, and run, retry and test state; a restore
         never moves a tap to another catalog or turns its schedule on or off.
         A deleted tap is re-created as `POST /api/v1/tap` creates a tap: in the
-        version's catalog, owned by the caller, with no test result.
+        version's catalog, owned by the caller, with its test status cleared (so
+        a schedule must pass a test run again before it can be set); its other
+        recorded run details are as they are in the version.
       parameters:
         - name: name
           in: query

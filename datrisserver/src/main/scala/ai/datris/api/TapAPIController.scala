@@ -333,6 +333,34 @@ object TapAPIController {
       * by default; tap version restore passes it to its guard explicitly. */
     private[api] val readPipelineForSave: String => PipelineConfig = n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
 
+    /** The store reads and the versioned write the tap save path
+      * (`saveTapCore`) makes, so specs can drive every save check on a save
+      * and on a version restore without Mongo, Vault or a script store.
+      * [[ProductionSaveIO]] is what `POST /tap`, the catalog restore and the
+      * version restore use. `scriptExists` and `readScript` may throw; the
+      * core handles that as before. */
+    private[api] case class TapSaveIO(
+        readTap: String => TapConfig,
+        readPipeline: String => PipelineConfig,
+        secretType: String => Option[Option[String]],
+        scriptExists: TapConfig => Boolean,
+        readScript: TapConfig => Option[String],
+        loadAll: () => (Seq[TapConfig], Seq[PipelineConfig]),
+        writeVersioned: (TapConfig, String, String) => TapConfig
+    )
+
+    /** The production store wiring of [[TapSaveIO]]: the same calls the save
+      * path made inline. */
+    private[api] lazy val ProductionSaveIO: TapSaveIO = TapSaveIO(
+        readTap = n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n),
+        readPipeline = readPipelineForSave,
+        secretType = n => liveSecretType(n),
+        scriptExists = t => TapCodeStore.forTap(t).scriptExists(t),
+        readScript = t => TapCodeStore.forTap(t).readScript(t),
+        loadAll = () => loadAllForDependencies(),
+        writeVersioned = (t, note, actor) => TapConfigIO.writeVersioned(t, note, actor)
+    )
+
     /** A tap version restore through the save path: the live tap the
       * restore decided on (null when deleted) and the version restored. */
     case class RestoreOf(live: TapConfig, version: Int)
@@ -952,7 +980,17 @@ class TapAPIController {
         request: HttpServletRequest,
         restored: Boolean = false
     ): Either[ResponseEntity[String], TapConfig] =
-        saveTapCore(tapConfig, changeNote, request, restored, None, () => null)
+        saveTapCore(tapConfig, changeNote, request, restored, None, () => null, TapAPIController.ProductionSaveIO)
+
+    /** [[saveTapInternal]] with the store reads and the write given (specs). */
+    private[api] def saveTapInternalWith(
+        tapConfig: TapConfig,
+        changeNote: String,
+        request: HttpServletRequest,
+        restored: Boolean,
+        io: TapAPIController.TapSaveIO
+    ): Either[ResponseEntity[String], TapConfig] =
+        saveTapCore(tapConfig, changeNote, request, restored, None, () => null, io)
 
     /** `POST /api/v1/tap/version/restore` after the version lookup:
       * `candidate` ([[EntityVersionAPIController.tapRestoreCandidate]]) is
@@ -967,9 +1005,10 @@ class TapAPIController {
         live: TapConfig,
         version: Int,
         hidden: => ResponseEntity[String],
-        request: HttpServletRequest
+        request: HttpServletRequest,
+        io: TapAPIController.TapSaveIO = TapAPIController.ProductionSaveIO
     ): Either[ResponseEntity[String], TapConfig] =
-        saveTapCore(candidate, null, request, restored = false, Some(TapAPIController.RestoreOf(live, version)), () => hidden)
+        saveTapCore(candidate, null, request, restored = false, Some(TapAPIController.RestoreOf(live, version)), () => hidden, io)
 
     /** The save path. `versionRestore` None is `POST /tap` and the catalog
       * restore (`restored`), unchanged. Some is a tap version restore, which
@@ -982,14 +1021,16 @@ class TapAPIController {
       * version N`; (d) the re-read, the re-check
       * ([[EntityVersionAPIController.tapRestoreRecheck]]) and the write run
       * under `CatalogOps.withCatalogLock`. `hidden` is used only when
-      * `versionRestore` is Some. */
+      * `versionRestore` is Some. Every store read and the write go through
+      * `io` ([[TapAPIController.ProductionSaveIO]] outside specs). */
     private def saveTapCore(
         tapConfig: TapConfig,
         changeNote: String,
         request: HttpServletRequest,
         restored: Boolean,
         versionRestore: Option[TapAPIController.RestoreOf],
-        hidden: () => ResponseEntity[String]
+        hidden: () => ResponseEntity[String],
+        io: TapAPIController.TapSaveIO
     ): Either[ResponseEntity[String], TapConfig] = {
         if (tapConfig.name == null || tapConfig.name.isEmpty)
             throw new DatrisException("Tap name is required")
@@ -1007,7 +1048,7 @@ class TapAPIController {
                     request,
                     tapConfig,
                     versionRestore.get.live,
-                    TapAPIController.readPipelineForSave,
+                    io.readPipeline,
                     hidden()
                 ) match {
                     case Left(refused) => return Left(refused)
@@ -1015,7 +1056,7 @@ class TapAPIController {
                 }
             else if (!TapAPIController.saveGuardNeeded(request)) tapConfig
             else
-                TapAPIController.saveGuardDecision(request, tapConfig, TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)) match {
+                TapAPIController.saveGuardDecision(request, tapConfig, io.readTap(tapConfig.name)) match {
                     case Left(refused) => return Left(refused)
                     case Right(c) => c
                 }
@@ -1023,7 +1064,7 @@ class TapAPIController {
         // caller may load into (restricted session: hidden/missing -> pipeline
         // 404; pipeline-limited key: 403).
         if (versionRestore.isEmpty) TapAPIController.targetPipelineRefusal(request, scoped).foreach(r => return Left(r))
-        saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden)
+        saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden, io)
     }
 
     private def saveTapScoped(
@@ -1032,13 +1073,14 @@ class TapAPIController {
         request: HttpServletRequest,
         restored: Boolean,
         versionRestore: Option[TapAPIController.RestoreOf],
-        hidden: () => ResponseEntity[String]
+        hidden: () => ResponseEntity[String],
+        io: TapAPIController.TapSaveIO
     ): Either[ResponseEntity[String], TapConfig] = {
         // A tap may never reference a server-managed secret (field-protection
         // keys, API-key stores): its fields would be injected into the script.
         // Field protection 8: and only a tap-typed secret unless
         // DATRIS_TAP_SECRET_SCOPE=any.
-        TapAPIController.tapSecretSaveProblem(tapConfig, TapAPIController.liveSecretType, SecretNames.tapScopeEnforced) match {
+        TapAPIController.tapSecretSaveProblem(tapConfig, io.secretType, SecretNames.tapScopeEnforced) match {
             case Some(msg) =>
                 return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
                     .body[String]("{\"error\": " + new Gson().toJson(msg) + "}"))
@@ -1111,7 +1153,7 @@ class TapAPIController {
         // so the target pipeline must be unstructured + vector-store or the bytes
         // will crash the destination loader (e.g. PDF into MongoDBLoader).
         if (tapConfig.tapType == "document" && tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty) {
-            val pipeline = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tapConfig.targetPipeline)
+            val pipeline = io.readPipeline(tapConfig.targetPipeline)
             DocumentTapValidator.incompatibilityReason(pipeline) match {
                 case Some(reason) =>
                     return Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
@@ -1133,7 +1175,7 @@ class TapAPIController {
         if (hasScriptRef) {
             val exists =
                 try {
-                    TapCodeStore.forTap(tapConfig).scriptExists(tapConfig)
+                    io.scriptExists(tapConfig)
                 } catch {
                     case e: Exception =>
                         logger.warn("Tap script existence check failed for tap '" + tapConfig.name + "'", e)
@@ -1156,7 +1198,7 @@ class TapAPIController {
         // omitted field is carried over (the candidate is complete).
         val existing =
             if (versionRestore.isDefined) versionRestore.get.live
-            else TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
+            else io.readTap(tapConfig.name)
         val bodyHasScriptRef =
             (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
                 (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
@@ -1235,7 +1277,7 @@ class TapAPIController {
         // restore skips this (its producers may not be written yet) and
         // re-stamps after every tap is in. `inferredDependsOn` is always
         // re-derived from the stored script, whatever the body said.
-        val (allTaps, allPipelines) = TapAPIController.loadAllForDependencies()
+        val (allTaps, allPipelines) = io.loadAll()
         val dependsOnChanged = existing == null || existing.dependsOn != configToSave.dependsOn
         if (!restored && dependsOnChanged) {
             val catalogTaps = allTaps.filter(t => t.catalog == configToSave.catalog && !CatalogOps.Placeholder.is(t.name))
@@ -1252,7 +1294,7 @@ class TapAPIController {
                 (configToSave.scriptRepoPath == null || configToSave.scriptRepoPath.isEmpty)
             ) None
             else
-                try TapCodeStore.forTap(configToSave).readScript(configToSave)
+                try io.readScript(configToSave)
                 catch {
                     case e: Exception =>
                         logger.warn("Tap '" + configToSave.name + "': script unreadable for dependency inference: " + e.getMessage)
@@ -1307,17 +1349,17 @@ class TapAPIController {
         // live run, retry and test state written are the tap's under the
         // lock. Only the re-read, re-check and write are held.
         val saved =
-            if (versionRestore.isEmpty) TapConfigIO.writeVersioned(stamped, note, VersionActor.resolve(request))
+            if (versionRestore.isEmpty) io.writeVersioned(stamped, note, VersionActor.resolve(request))
             else
                 CatalogOps.withCatalogLock {
-                    val fresh = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
+                    val fresh = io.readTap(tapConfig.name)
                     EntityVersionAPIController
-                        .tapRestoreRecheck(request, tapConfig, existing, fresh, TapAPIController.readPipelineForSave, hidden())
+                        .tapRestoreRecheck(request, tapConfig, existing, fresh, io.readPipeline, hidden())
                         .foreach { refused =>
-                            logger.warn("Restore of tap " + tapConfig.name + " rejected at write: HTTP " + refused.getStatusCode.value)
+                            logger.warn("Restore of tap " + LogSafe.text(tapConfig.name) + " rejected at write: HTTP " + refused.getStatusCode.value)
                             return Left(refused)
                         }
-                    TapConfigIO.writeVersioned(EntityVersionAPIController.tapRestoreWriteConfig(stamped, fresh), note, VersionActor.resolve(request))
+                    io.writeVersioned(EntityVersionAPIController.tapRestoreWriteConfig(stamped, fresh), note, VersionActor.resolve(request))
                 }
         Right(saved)
     }

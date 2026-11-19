@@ -113,9 +113,9 @@ class TapVersionRestoreWriteSpec extends AnyFunSuite {
             .find(java.nio.file.Files.isRegularFile(_)).getOrElse(fail(rel + " not found"))
         val src = new String(java.nio.file.Files.readAllBytes(file), java.nio.charset.StandardCharsets.UTF_8)
         val lock = src.indexOf("CatalogOps.withCatalogLock {", src.indexOf("def saveTapCore("))
-        val fresh = src.indexOf("val fresh = TapConfigIO.read(", lock)
+        val fresh = src.indexOf("val fresh = io.readTap(", lock)
         val recheck = src.indexOf(".tapRestoreRecheck(", fresh)
-        val write = src.indexOf("TapConfigIO.writeVersioned(EntityVersionAPIController.tapRestoreWriteConfig(stamped, fresh)", recheck)
+        val write = src.indexOf("io.writeVersioned(EntityVersionAPIController.tapRestoreWriteConfig(stamped, fresh)", recheck)
         assert(lock > 0 && fresh > lock && recheck > fresh && write > recheck, s"$lock $fresh $recheck $write")
     }
 }
