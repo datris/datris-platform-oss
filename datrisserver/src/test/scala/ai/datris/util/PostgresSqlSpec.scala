@@ -270,4 +270,103 @@ class PostgresSqlSpec extends AnyFunSuite {
         assert(PostgresSql.primaryKeyClause(java.util.Arrays.asList("id")) == ", primary key (id)")
         assert(PostgresSql.primaryKeyClause(java.util.Arrays.asList("id", "a\"b")) == ", primary key (id, \"a\"\"b\")")
     }
+
+    // ------------------------------------- column types (column-type-text-escaping, Decision 4)
+    //  object PostgresSql { def columnType(field: ai.datris.model.SchemaField): String }
+    //  The mapping v1.60.0 had inline in PostgresLoader.createTableIfUndefined
+    //  (_json -> json, _xml -> xml by name; tinyint/smallint -> int2,
+    //  float -> float4, double -> float8, string -> text; every other type as
+    //  written), with a DatrisException for type text that fails
+    //  ColumnTypeText.safe. addColumn and alterColumnType throw
+    //  IllegalArgumentException unless the type is json, xml, int2, float4,
+    //  float8, text or passes ColumnTypeText.safe.
+
+    private val evilType = "varchar(10)); DROP TABLE public.canary; --"
+
+    test("columnType returns the v1.60.0 text for every plain type, decimal(10,2), varchar(255) and char(1)") {
+        import ai.datris.model.SchemaField
+        val expected = Seq(
+            "string" -> "text",
+            "STRING" -> "text",
+            "tinyint" -> "int2",
+            "smallint" -> "int2",
+            "float" -> "float4",
+            "double" -> "float8",
+            "Double" -> "float8",
+            // as written
+            "int" -> "int",
+            "INT" -> "INT",
+            "integer" -> "integer",
+            "bigint" -> "bigint",
+            "boolean" -> "boolean",
+            "date" -> "date",
+            "timestamp" -> "timestamp",
+            "decimal(10,2)" -> "decimal(10,2)",
+            "varchar(255)" -> "varchar(255)",
+            "char(1)" -> "char(1)",
+            "DECIMAL(10,2)" -> "DECIMAL(10,2)",
+            "decimal(10, 2)" -> "decimal(10, 2)",
+            "decimal(10)" -> "decimal(10)",
+            "varchar(max)" -> "varchar(max)"
+        )
+        for ((t, pg) <- expected) assert(PostgresSql.columnType(SchemaField("c", t)) == pg, t)
+        // document columns by name, whatever the type holds (Decision 5)
+        for (t <- Seq("string", evilType, "varchar(10) not null", null)) {
+            assert(PostgresSql.columnType(SchemaField("_json", t)) == "json", "_json [" + t + "]")
+            assert(PostgresSql.columnType(SchemaField("_JSON", t)) == "json", "_JSON [" + t + "]")
+            assert(PostgresSql.columnType(SchemaField("_xml", t)) == "xml", "_xml [" + t + "]")
+            assert(PostgresSql.columnType(SchemaField("_Xml", t)) == "xml", "_Xml [" + t + "]")
+        }
+    }
+
+    test("columnType throws for a type that fails the rule") {
+        import ai.datris.model.{DatrisException, SchemaField}
+        for (
+            t <- Seq(
+                evilType,
+                "varchar(10) not null",
+                "decimal(10,2) default 0",
+                "numeric(10,2)",
+                "timestamp with time zone",
+                "varchar(10)\n; DROP TABLE public.canary",
+                "decimal(12,2), extra int",
+                "text",
+                null
+            )
+        ) intercept[DatrisException](PostgresSql.columnType(SchemaField("c", t)))
+    }
+
+    test("addColumn and alterColumnType throw for a type that is neither a mapped Postgres type nor safe") {
+        val bad = Seq(
+            evilType,
+            "varchar(10) not null",
+            "decimal(10,2) default 0",
+            "int; DROP TABLE public.canary",
+            "text, extra int",
+            "timestamp with time zone",
+            null
+        )
+        for (t <- bad) {
+            intercept[IllegalArgumentException](PostgresSql.addColumn("datris", "public", "orders", "note", t))
+            intercept[IllegalArgumentException](PostgresSql.alterColumnType("public", "orders", "note", t))
+        }
+        // the mapped Postgres types and safe types still build, unchanged
+        for (t <- Seq("json", "xml", "int2", "float4", "float8", "text", "int", "bigint", "boolean", "date", "timestamp", "decimal(10,2)", "varchar(255)")) {
+            assert(
+                PostgresSql.addColumn(
+                    "datris",
+                    "public",
+                    "orders",
+                    "note",
+                    t
+                ) == "ALTER TABLE \"datris\".\"public\".\"orders\" ADD COLUMN IF NOT EXISTS \"note\" " + t,
+                t
+            )
+            assert(
+                PostgresSql.alterColumnType("public", "orders", "note", t) ==
+                    "ALTER TABLE \"public\".\"orders\" ALTER COLUMN \"note\" TYPE " + t + " USING NULLIF(\"note\", '')::" + t,
+                t
+            )
+        }
+    }
 }
