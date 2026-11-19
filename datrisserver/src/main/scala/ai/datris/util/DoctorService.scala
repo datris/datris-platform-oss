@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.auth.CapabilityScopes
 import ai.datris.model.{AIConfig, DatrisEnvironment, TapRunLog}
 import com.google.gson.{Gson, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
@@ -151,6 +152,11 @@ object DoctorService {
           * Throws when the taps themselves cannot be listed. The default has
           * no failed reads; LiveProbes overrides it with one real scan. */
         def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.Result(tapSecretRefs(), Nil)
+
+        /** (label, raw capability strings) of every non-revoked API key with
+          * metadata ([[nonRevokedKeyCapabilities]] over `{env}/api-key-metadata`).
+          * Throws when the metadata cannot be read. */
+        def apiKeyCapabilities(): List[(String, Seq[String])] = Nil
 
         /** True when any source field in any pipeline carries `protect`.
           * Throws when the pipeline configs cannot be read. */
@@ -513,6 +519,65 @@ object DoctorService {
                 warn(
                     n + ", allowed by " + SecretNames.TapScopeEnv + "=any; these taps can read platform secrets: " + list + also,
                     fix + " Then remove " + SecretNames.TapScopeEnv + "=any." + alsoFix
+                )
+        }
+    }
+
+    /** (label, raw capability strings) for each entry of an
+      * `{env}/api-key-metadata` map (label -> metadata JSON) that is not
+      * revoked, sorted by label. A malformed entry is skipped (that key does
+      * not resolve at all). */
+    def nonRevokedKeyCapabilities(metadata: Map[String, String]): List[(String, Seq[String])] =
+        metadata.toList.sortBy(_._1).flatMap { case (label, json) =>
+            try {
+                val o = JsonParser.parseString(json).getAsJsonObject
+                val revoked = o.has("revoked") && !o.get("revoked").isJsonNull && o.get("revoked").getAsBoolean
+                if (revoked) None
+                else {
+                    val caps =
+                        if (o.has("capabilities") && o.get("capabilities").isJsonArray)
+                            o.getAsJsonArray("capabilities").asScala.filter(_.isJsonPrimitive).map(_.getAsString).toList
+                        else Nil
+                    Some(label -> caps)
+                }
+            } catch { case _: Exception => None }
+        }
+
+    /** API keys holding a capability whose scope the platform does not apply
+      * (plans/stories/api-key-inert-scopes.md): error when such capabilities
+      * grant nothing (the default), warn under DATRIS_KEY_INERT_SCOPES=allow
+      * (they still grant as before). Revoked keys are not listed. */
+    class KeyInertScopesCheck(probes: Probes) extends Check {
+        val id = "keys.inert_scopes"
+        val startupSafe = true
+        def run(): CheckResult = {
+            val keys =
+                try probes.apiKeyCapabilities()
+                catch {
+                    case e: Exception =>
+                        return error(
+                            "could not read the API key metadata: " + e.getMessage,
+                            "Check that Vault is reachable and the server token can read the key metadata, then rerun doctor."
+                        )
+                }
+            val offenders = keys.flatMap { case (label, caps) =>
+                val inert = CapabilityScopes.inertOf(caps)
+                if (inert.isEmpty) None else Some(label -> inert)
+            }
+            if (offenders.isEmpty) return ok("no API key carries a scope the platform does not apply")
+            val list = offenders.map { case (l, caps) => l + " (" + caps.mkString(", ") + ")" }.mkString("; ")
+            val n = offenders.size + " API key(s) hold a capability with a scope the platform does not apply"
+            val fix = "Issue a replacement key under Configuration → API Keys with those capabilities unscoped or with a supported scope, " +
+                "switch the caller to it, and revoke the old key (keys cannot be edited)."
+            if (CapabilityScopes.refuseInert)
+                error(
+                    n + "; those capabilities grant nothing and their requests are refused: " + list,
+                    fix + " To restore the earlier behaviour while you do, set " + CapabilityScopes.InertScopesEnv + "=allow."
+                )
+            else
+                warn(
+                    n + ", still granting under " + CapabilityScopes.InertScopesEnv + "=allow (wider than the scope reads): " + list,
+                    fix + " Then remove " + CapabilityScopes.InertScopesEnv + "=allow."
                 )
         }
     }
@@ -915,6 +980,7 @@ object DoctorService {
             new StagingAreaCheck(probes, StagingArea.payloadBudgetMB),
             new StagingOrphansCheck(probes),
             new TapSecretScopeCheck(probes),
+            new KeyInertScopesCheck(probes),
             new CodeGenIsolationCheck(probes, startup),
             new RunnerConcurrencyCheck(probes),
             new AiSampleValuesCheck(probes),
@@ -1090,6 +1156,15 @@ object DoctorService {
         def tapSecretRefs(): List[(String, String, Option[String])] = tapSecretScan().refs
 
         override def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.liveScan()
+
+        override def apiKeyCapabilities(): List[(String, Seq[String])] = {
+            val name = DatrisEnvironment.values.environment + "/api-key-metadata"
+            SecretsUtil.tryGetSecretMap(name) match {
+                case scala.util.Success(Some(m)) => nonRevokedKeyCapabilities(m.asScala.toMap)
+                case scala.util.Success(None) => Nil
+                case scala.util.Failure(e) => throw new RuntimeException("could not read " + name + ": " + e.getMessage, e)
+            }
+        }
 
         // A read failure propagates: the check reports "could not read pipeline configs".
         def anyPipelineProtects(): Boolean =

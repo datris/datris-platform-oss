@@ -138,7 +138,10 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
                             label = bundle.label,
                             capabilities = narrowed,
                             isLegacyFullAccess = false,
-                            restrictedSession = true
+                            restrictedSession = true,
+                            // The session bundle holds only applied scopes;
+                            // the carrier key's inert ones are not its own.
+                            inertCapabilities = Nil
                         )
                     } else resolved.copy(label = "session:" + user.username)
                 case None =>

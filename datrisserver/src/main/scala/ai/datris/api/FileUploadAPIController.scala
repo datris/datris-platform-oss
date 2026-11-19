@@ -6,7 +6,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.common.base.Throwables
-import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, JobContext}
+import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, CapabilityScopes}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, JobContext, PipelineConfig}
+import jakarta.servlet.http.HttpServletRequest
 import ai.datris.util.{AIProfileUtil, AISchemaUtil, AiSampleValues, PipelineConfigIO, StagingArea, StatusUtil}
 import com.google.gson.{GsonBuilder, JsonParser}
 import ai.datris.controller.StreamNotifier
@@ -19,6 +21,44 @@ import org.springframework.web.multipart.MultipartFile
 import java.io.BufferedInputStream
 import java.nio.file.Files
 import java.util.UUID
+
+object FileUploadAPIController {
+
+    /** The vector containers a pipeline's destination names, as a
+      * `collection=` scope names them
+      * ([[ai.datris.auth.CapabilityScopes.collectionName]]; blank names dropped). */
+    private[api] def collectionsOf(config: PipelineConfig): Seq[String] = {
+        val d = Option(config).flatMap(c => Option(c.destination)).orNull
+        if (d == null) Nil
+        else {
+            def nonBlank(s: String) = Option(s).map(_.trim).filter(_.nonEmpty)
+            Seq(
+                Option(d.qdrant).flatMap(q => nonBlank(q.collectionName)).map(n => CapabilityScopes.collectionName("qdrant", n, None)),
+                Option(d.weaviate).flatMap(w => nonBlank(w.className)).map(n => CapabilityScopes.collectionName("weaviate", n, None)),
+                Option(d.milvus).flatMap(m => nonBlank(m.collectionName)).map(n => CapabilityScopes.collectionName("milvus", n, None)),
+                Option(d.chroma).flatMap(c => nonBlank(c.collectionName)).map(n => CapabilityScopes.collectionName("chroma", n, None)),
+                Option(d.pgvector).flatMap(p => nonBlank(p.tableName).map(n => CapabilityScopes.collectionName("pgvector", n, Option(p.schemaName))))
+            ).flatten
+        }
+    }
+
+    /** The `document:upload:collection=` check (plans/stories/api-key-inert-scopes.md,
+      * Fix 2): in scope when the pipeline has at least one vector container
+      * and the key grants every one. Some(403) otherwise, for a key whose
+      * `document:upload` is held only under `collection=` scopes. Unscoped
+      * keys, sessions, legacy keys and a request with no identity: None. */
+    def uploadScopeRefusal(request: HttpServletRequest, config: PipelineConfig): Option[ResponseEntity[String]] =
+        try {
+            val collections = collectionsOf(config)
+            // No vector destination: an empty context, which only an
+            // unscoped document:upload grants.
+            if (collections.isEmpty) CapabilityCheck.assertScope(request, "document", "upload", Map.empty)
+            else collections.foreach(c => CapabilityCheck.assertScope(request, "document", "upload", Map("collection" -> c)))
+            None
+        } catch {
+            case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
+        }
+}
 
 @RestController
 @RequestMapping(Array("/api/v1"))
@@ -46,6 +86,9 @@ class FileUploadAPIController {
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if (config == null)
                 throw new IllegalArgumentException("Pipeline '" + pipeline + "' is not registered. Use POST /api/v1/pipeline to register it first.")
+            // A key scoped to collections uploads only into pipelines whose
+            // vector destinations it names (before any status row or staging).
+            FileUploadAPIController.uploadScopeRefusal(request, config).foreach(r => return r)
 
             val filename = multipartFile.getOriginalFilename
             val isCsv = config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null

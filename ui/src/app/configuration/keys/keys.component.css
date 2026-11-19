@@ -38,6 +38,19 @@
   font-size: 0.85rem;
 }
 
+.inert-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 6px;
+  color: #f87171;
+  font-size: 0.85rem;
+}
+
 .legacy-icon {
   font-size: 1.1rem;
 }
@@ -138,6 +151,14 @@
   background: rgba(251, 191, 36, 0.1);
   border-color: rgba(251, 191, 36, 0.25);
   color: #fbbf24;
+}
+
+.cap-chip.cap-inert {
+  background: rgba(248, 113, 113, 0.08);
+  border-color: rgba(248, 113, 113, 0.35);
+  color: #f87171;
+  text-decoration: line-through;
+  cursor: help;
 }
 
 .cap-chip.cap-empty {

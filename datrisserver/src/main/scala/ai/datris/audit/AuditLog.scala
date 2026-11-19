@@ -321,6 +321,40 @@ object AuditLog {
         else submit(entry)
     }
 
+    /** A request that passed the route gate only through a stored capability
+      * whose scope the platform does not apply, under the operator's
+      * `DATRIS_KEY_INERT_SCOPES=allow` opt-out
+      * (plans/stories/api-key-inert-scopes.md). One `security/inert-scope-used`
+      * row naming the capabilities. Does not mark the request recorded: the
+      * request's own entry is still written by the audit interceptor. */
+    def inertScopeUsed(request: HttpServletRequest, required: String, capabilities: Seq[String], reason: String): Unit = {
+        if (!enabled) return
+        val md = new JsonObject()
+        md.addProperty("required", required)
+        val arr = new com.google.gson.JsonArray()
+        capabilities.foreach(arr.add)
+        md.add("capabilities", arr)
+        md.addProperty("reason", reason)
+        val route = AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads = true)
+        route.foreach { r =>
+            md.addProperty("category", r.category)
+            md.addProperty("action", r.action)
+        }
+        submit(AuditEntry(
+            ts = Instant.now(),
+            actor = AuditActor.resolve(request),
+            category = "security",
+            action = "inert-scope-used",
+            resourceType = route.map(_.resourceType),
+            resourceName = None,
+            outcome = "warning",
+            httpStatus = None,
+            errorMessage = None,
+            request = Some(requestInfo(request)),
+            metadata = Some(redact(md))
+        ))
+    }
+
     def requestInfo(request: HttpServletRequest): AuditRequestInfo = {
         AuditRequestInfo(
             method = request.getMethod,

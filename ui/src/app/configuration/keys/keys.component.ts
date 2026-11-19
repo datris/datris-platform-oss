@@ -92,6 +92,20 @@ export class KeysComponent implements OnInit, OnDestroy {
     return this.keys.some(k => k.isLegacyFullAccess && !k.revoked);
   }
 
+  /** True when an active key holds a capability whose scope the platform
+   *  does not apply (it grants nothing). */
+  hasInertKeys(): boolean {
+    return this.keys.some(k => !k.revoked && (k.inertCapabilities?.length ?? 0) > 0);
+  }
+
+  isInert(row: KeyRow, cap: string): boolean {
+    return (row.inertCapabilities ?? []).includes(cap);
+  }
+
+  readonly inertChipTitle =
+    'The platform does not apply this scope on this capability, so it grants nothing. ' +
+    'Issue a replacement key with the capability unscoped or with a supported scope, then revoke this one.';
+
   // ------- issue wizard -------
 
   openWizard(): void {

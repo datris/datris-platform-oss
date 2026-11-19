@@ -17,7 +17,13 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * Scope keys are restricted to things knowable at key-issuance time —
   * containers (catalog, database, collection), types (_type, destination_kind),
   * and ownership (owner). Leaf resource names (a tap name, a pipeline name
-  * the agent picks at runtime) cannot appear in scope. */
+  * the agent picks at runtime) cannot appear in scope.
+  *
+  * That six-word list is only the parse vocabulary. Which scope keys the
+  * platform applies on each `resource:action` is
+  * [[ai.datris.auth.CapabilityScopes]]: `POST /keys` refuses any other, and a
+  * stored capability carrying one grants nothing (see
+  * [[ResolvedKey.inertCapabilities]]). */
 case class Capability(
     resource: String,
     action: String,
@@ -67,10 +73,14 @@ case class Capability(
 
 object Capability {
 
-    /** Scope keys permitted in capability strings. The list is intentionally
-      * small: only things a human can know at key-issuance time. Leaf
-      * resource names (tap, pipeline) are deliberately absent — agents pick
-      * those at runtime, so pre-scoping by them produces unenforceable rules. */
+    /** Scope keys `parse` accepts. The list is intentionally small: only
+      * things a human can know at key-issuance time. Leaf resource names
+      * (tap, pipeline) are deliberately absent — agents pick those at
+      * runtime, so pre-scoping by them produces unenforceable rules.
+      *
+      * This is the parse vocabulary, not the supported set: `parse` stays
+      * lenient so a stored key never stops resolving, and
+      * [[ai.datris.auth.CapabilityScopes]] decides where each key applies. */
     private val AllowedScopeKeys: Set[String] = Set(
         "catalog",
         "database",
@@ -155,8 +165,29 @@ case class ResolvedKey(
     /** True for a restricted user's session (directly or via on-behalf-of):
       * resources outside the user's catalog grants are hidden (404), not
       * forbidden (403), so their names never leak. */
-    restrictedSession: Boolean = false
+    restrictedSession: Boolean = false,
+    /** Stored capabilities carrying a scope the platform does not apply on
+      * them ([[ai.datris.auth.CapabilityScopes.partition]]), set by key
+      * resolution. They grant nothing (fail closed) unless
+      * `DATRIS_KEY_INERT_SCOPES=allow`, which restores the earlier
+      * behaviour; the route gate names them in its 403. Empty for sessions,
+      * legacy keys and tap-run tokens. */
+    inertCapabilities: Seq[Capability] = Nil
 ) {
+
+    /** The capabilities that grant: [[capabilities]], plus
+      * [[inertCapabilities]] when the operator opted out with
+      * `DATRIS_KEY_INERT_SCOPES=allow` (read per call). */
+    def effectiveCapabilities: Seq[Capability] =
+        if (inertCapabilities.isEmpty || ai.datris.auth.CapabilityScopes.refuseInert) capabilities
+        else capabilities ++ inertCapabilities
+
+    /** The inert capabilities that match (resource, action) when no applied
+      * capability does: the request would pass only through them (allow
+      * mode) or is refused because of them (the default). Empty otherwise. */
+    def inertMatching(resource: String, action: String): Seq[Capability] =
+        if (isLegacyFullAccess || inertCapabilities.isEmpty || capabilities.exists(_.matchesResourceAction(resource, action))) Nil
+        else inertCapabilities.filter(_.matchesResourceAction(resource, action))
 
     /** Does this key grant (resource, action) given a runtime context?
       * Legacy keys always grant. */
@@ -166,7 +197,7 @@ case class ResolvedKey(
         context: Map[String, String] = Map.empty
     ): Boolean = {
         if (isLegacyFullAccess) return true
-        capabilities.exists(_.grants(resource, action, context, label))
+        effectiveCapabilities.exists(_.grants(resource, action, context, label))
     }
 
     /** Scope-agnostic version of `grants` — true if any capability matches
@@ -178,6 +209,6 @@ case class ResolvedKey(
       * check may later refuse based on the loaded pipeline's owner. */
     def matchesResourceAction(resource: String, action: String): Boolean = {
         if (isLegacyFullAccess) return true
-        capabilities.exists(_.matchesResourceAction(resource, action))
+        effectiveCapabilities.exists(_.matchesResourceAction(resource, action))
     }
 }

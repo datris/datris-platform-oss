@@ -13,6 +13,11 @@
     <span>One or more keys carry legacy full access (<code>*:*</code>). Consider issuing scoped replacements and revoking the legacy ones.</span>
   </div>
 
+  <div class="inert-banner" *ngIf="hasInertKeys()">
+    <span class="legacy-icon">⚠</span>
+    <span>One or more keys hold a capability with a scope the platform does not apply (marked below). Those capabilities grant nothing. Issue a replacement key with the capability unscoped or with a supported scope, then revoke the old one.</span>
+  </div>
+
   <div class="error-banner" *ngIf="error">{{ error }}</div>
 
   <div class="loading" *ngIf="loading">Loading keys…</div>
@@ -38,7 +43,9 @@
               <span class="cap-chip cap-legacy">*:*  (full access)</span>
             </ng-container>
             <ng-container *ngIf="!row.isLegacyFullAccess">
-              <span class="cap-chip" *ngFor="let c of row.capabilities; trackBy: trackByIndex">{{ c }}</span>
+              <span class="cap-chip" *ngFor="let c of row.capabilities; trackBy: trackByIndex"
+                    [class.cap-inert]="isInert(row, c)"
+                    [attr.title]="isInert(row, c) ? inertChipTitle : null">{{ c }}</span>
               <span class="cap-chip cap-empty" *ngIf="row.capabilities.length === 0">no capabilities</span>
             </ng-container>
           </td>

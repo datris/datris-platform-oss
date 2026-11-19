@@ -29,8 +29,8 @@ import scala.collection.mutable
   * `failed[].error`) and field protection (`reveal`). Each body has exactly
   * error, errorKind and message, the new wording, and names neither the
   * target's catalog nor its owner. Secrets build their body inside handlers
-  * that read Vault; their message is pinned in CapabilityScopeDenialSpec and
-  * the body is covered by the live E2E pass. */
+  * that read Vault; those handlers share `SecretsAPIController.capabilityDenied`,
+  * driven here with the exception `assertScope` throws. */
 class ScopeDenialRouteFamiliesSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     import ScopeDenialFixtures.key
@@ -155,5 +155,28 @@ class ScopeDenialRouteFamiliesSpec extends AnyFunSuite with BeforeAndAfterEach {
             rows.head.errorMessage
         )
         assert(rows.head.metadata.exists(_.get("required").getAsString == "protect:reveal"), rows.head.metadata)
+    }
+
+    test("secrets: the 403 body for a tap-scoped key refused a platform secret, valid JSON for a backslash in the key's capability") {
+        def refusal(rk: ResolvedKey): String = {
+            val e = intercept[CapabilityDeniedException] {
+                CapabilityCheck.assertScope(req(rk, "GET", "/api/v1/secrets/ai-primary"), "secret", "read", Map("_type" -> "platform"))
+            }
+            val r = SecretsAPIController.capabilityDenied(e)
+            assert(r.getStatusCode.value == 403, r)
+            r.getBody
+        }
+        val caps = Seq("secret:read:_type=tap", "pipeline:read")
+        ScopeDenialWording.assertBody(
+            refusal(key("ci_tap_secrets", caps: _*)),
+            ScopeDenialWording.message("ci_tap_secrets", "secret", "read", caps),
+            Seq("platform")
+        )
+
+        // A capability string with a backslash (and a quote) is escaped, not
+        // spliced: the body parses and its message is the exact text.
+        val odd = Seq("secret:read:_type=ta\\p\"x")
+        val body = refusal(key("ci_odd", odd: _*))
+        ScopeDenialWording.assertBody(body, ScopeDenialWording.message("ci_odd", "secret", "read", odd), Seq("platform"))
     }
 }

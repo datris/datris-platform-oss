@@ -6,13 +6,20 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.AuditLog
-import ai.datris.auth.{CapabilityRoutes, RouteCheck}
-import ai.datris.model.{ResolvedKey, UserContext}
+import ai.datris.auth.{CapabilityRoutes, CapabilityScopes, RouteCheck}
+import ai.datris.model.{Capability, ResolvedKey, UserContext}
 import ai.datris.util.APIKeyValidator
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import org.springframework.web.servlet.HandlerInterceptor
+
+/** See [[CapabilityInterceptor.inertOutcome]]. */
+sealed trait InertOutcome
+object InertOutcome {
+    final case class Refused(capabilities: Seq[Capability]) extends InertOutcome
+    final case class UsedUnderOptOut(capabilities: Seq[Capability]) extends InertOutcome
+}
 
 object CapabilityInterceptor {
 
@@ -37,6 +44,42 @@ object CapabilityInterceptor {
       * (legacy full access or scoped) → normal capability check. */
     def denyPresentedButUnresolved(presentedKey: Boolean, resolved: Boolean, rejection: Option[String]): Boolean =
         presentedKey && !resolved && rejection.isDefined
+
+    /** The capability-denied 403 body (keys `error`, `errorKind`, `key`,
+      * `required`, `route`, `message`), JSON-escaped throughout: a label or
+      * capability string with a quote, backslash or control character still
+      * yields valid JSON. `message` None = the generic "does not hold" text. */
+    def deniedBody(label: String, resource: String, action: String, method: String, path: String, message: Option[String]): String = {
+        val o = new com.google.gson.JsonObject
+        o.addProperty("error", "capability denied")
+        o.addProperty("errorKind", "capability_denied")
+        o.addProperty("key", label)
+        o.addProperty("required", resource + ":" + action)
+        o.addProperty("route", method + " " + path)
+        o.addProperty(
+            "message",
+            message.getOrElse(
+                "API key '" + label + "' does not hold capability '" + resource + ":" + action + "'. " +
+                    "This is a permission boundary on the API key, not a problem with the upstream service. " +
+                    "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
+                    "or the operator must use a different key with the required capability."
+            )
+        )
+        o.toString
+    }
+
+    /** What a key's inert capabilities ([[ResolvedKey.inertCapabilities]])
+      * mean for a route requiring (resource, action): None when they play no
+      * part (no inert capability matches, or an applied one does);
+      * `Refused` when only an inert capability matches and the platform fails
+      * closed (the default); `UsedUnderOptOut` when it matches under
+      * `DATRIS_KEY_INERT_SCOPES=allow`. */
+    def inertOutcome(rk: ResolvedKey, resource: String, action: String): Option[InertOutcome] = {
+        val caps = rk.inertMatching(resource, action)
+        if (caps.isEmpty) None
+        else if (CapabilityScopes.refuseInert) Some(InertOutcome.Refused(caps))
+        else Some(InertOutcome.UsedUnderOptOut(caps))
+    }
 
     /** `message` of the 403 a restricted user's session gets on a table or
       * collection listing ([[CapabilityRoutes.UnfilterableForRestricted]]).
@@ -232,6 +275,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         // scope.forall on a non-empty scope with an empty
                         // context always fails.
                         val granted = rk.matchesResourceAction(resource, action)
+                        val inert = CapabilityInterceptor.inertOutcome(rk, resource, action)
                         if (granted) {
                             // INFO during Phase 1 so the rollout is visible.
                             // After enforce mode is on and the route map is
@@ -240,13 +284,37 @@ class CapabilityInterceptor extends HandlerInterceptor {
                                 "capability check: route={} {} required={}:{} key={} legacy={} outcome=grant",
                                 Array[AnyRef](method, path, resource, action, rk.label, java.lang.Boolean.valueOf(rk.isLegacyFullAccess)): _*
                             )
+                            inert match {
+                                case Some(InertOutcome.UsedUnderOptOut(caps)) =>
+                                    // DATRIS_KEY_INERT_SCOPES=allow: passed only
+                                    // through a capability whose scope is not applied.
+                                    val required = resource + ":" + action
+                                    val reason = CapabilityScopes.inertDenialMessage(rk.label, required, caps)
+                                    logger.warn(
+                                        "capability check: route={} {} required={} key={} outcome=inert-scope-used ({}=allow): {}",
+                                        Array[AnyRef](method, path, required, rk.label, CapabilityScopes.InertScopesEnv, caps.map(_.raw).mkString(", ")): _*
+                                    )
+                                    AuditLog.inertScopeUsed(request, required, caps.map(_.raw), reason)
+                                case _ =>
+                            }
                             true
                         } else if (enforce) {
-                            logger.info(
-                                "capability check: route={} {} required={}:{} key={} outcome=deny",
-                                Array[AnyRef](method, path, resource, action, rk.label): _*
-                            )
-                            denyCapability(request, response, rk, resource, action, method, path)
+                            inert match {
+                                case Some(InertOutcome.Refused(caps)) =>
+                                    val required = resource + ":" + action
+                                    val message = CapabilityScopes.inertDenialMessage(rk.label, required, caps)
+                                    logger.info(
+                                        "capability check: route={} {} required={} key={} outcome=deny (inert scope: {})",
+                                        Array[AnyRef](method, path, required, rk.label, caps.map(_.raw).mkString(", ")): _*
+                                    )
+                                    denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message))
+                                case _ =>
+                                    logger.info(
+                                        "capability check: route={} {} required={}:{} key={} outcome=deny",
+                                        Array[AnyRef](method, path, resource, action, rk.label): _*
+                                    )
+                                    denyCapability(request, response, rk, resource, action, method, path)
+                            }
                             false
                         } else {
                             logger.warn(
@@ -271,29 +339,16 @@ class CapabilityInterceptor extends HandlerInterceptor {
         action: String,
         method: String,
         path: String,
-        message: Option[String] = None
+        message: Option[String] = None,
+        auditReason: Option[String] = None
     ): Unit = {
         response.setStatus(HttpServletResponse.SC_FORBIDDEN)
         response.setContentType("application/json")
-        val safeLabel = rk.label.replace("\"", "\\\"")
-        val text = message.map(_.replace("\"", "\\\"")).getOrElse(
-            "API key '" + safeLabel + "' does not hold capability '" + resource + ":" + action + "'. " +
-                "This is a permission boundary on the API key, not a problem with the upstream service. " +
-                "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
-                "or the operator must use a different key with the required capability."
-        )
-        val body =
-            "{\"error\":\"capability denied\"," +
-                "\"errorKind\":\"capability_denied\"," +
-                "\"key\":\"" + safeLabel + "\"," +
-                "\"required\":\"" + resource + ":" + action + "\"," +
-                "\"route\":\"" + method + " " + path + "\"," +
-                "\"message\":\"" + text + "\"}"
-        response.getWriter.write(body)
+        response.getWriter.write(CapabilityInterceptor.deniedBody(rk.label, resource, action, method, path, message))
         response.getWriter.flush()
         AuditLog.denied(
             request,
-            "capability denied for key '" + rk.label + "'",
+            auditReason.getOrElse("capability denied for key '" + rk.label + "'"),
             HttpServletResponse.SC_FORBIDDEN,
             required = Some(resource + ":" + action)
         )

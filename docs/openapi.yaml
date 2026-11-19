@@ -3569,6 +3569,13 @@ paths:
               schema:
                 type: string
                 description: Bare token or message text, not JSON-encoded
+        '403':
+          description: >-
+            Capability denied: the key holds `document:upload` only under `collection=`
+            scopes, and the pipeline has no vector destination or one of its vector
+            containers is not named by them. Nothing is staged and no status row is
+            written. Body:
+            `{"error": "capability denied", "errorKind": "capability_denied", "message": "..."}`.
         '500':
           description: >-
             Error, including an unregistered pipeline, or a CSV header with a
@@ -4304,6 +4311,14 @@ paths:
             a pgvector table with no queryable columns (including one that
             does not exist). The pgvector `table` and `schema` are looked up
             exactly as written.
+        '403':
+          description: >-
+            Capability denied: the key holds `search:vector` only under `collection=`
+            scopes and none names this container (pgvector: `<table>` in `public`,
+            `<schema>.<table>` elsewhere). Checked before any lookup, so the answer is
+            the same whether or not the container exists. Body:
+            `{"error": "capability denied", "errorKind": "capability_denied", "message": "..."}`;
+            the message lists the key's own `search` capabilities.
         '404':
           description: 'Restricted users only: no pipeline writes to the requested collection / class / table, or one of the pipelines writing to it is outside the user''s catalog grants (a container is searchable only when every pipeline writing to it is visible). Body: `{"error": "<Collection|ClassName|Table>: <name> not found"}`.'
         '500':
@@ -7119,6 +7134,14 @@ paths:
                           type: string
                         isLegacyFullAccess:
                           type: boolean
+                        inertCapabilities:
+                          type: array
+                          items:
+                            type: string
+                          description: >-
+                            The stored capabilities that carry a scope the platform does not
+                            apply on them (e.g. `job:read:owner=self`). They grant nothing
+                            unless `DATRIS_KEY_INERT_SCOPES=allow`. Empty when none
         '500':
           description: Error
     post:
@@ -7166,7 +7189,16 @@ paths:
                   createdBy:
                     type: string
         '400':
-          description: Missing/invalid label or invalid capability string
+          description: >-
+            Missing/invalid label, or a capability that may not be issued: an invalid
+            string, an unknown resource or action, a repeated scope key, or a scope the
+            platform does not apply on that capability (only `catalog`/`owner` on
+            `pipeline:*` and `tap:*`, `_type` on `secret:*`, `collection` on
+            `search:vector` and `document:upload`, and `owner=self` on `approval:read`
+            are applied). `{"error": "..."}` names the capability and the supported scopes,
+            e.g. "Invalid capability 'job:read:owner=self': scope 'owner' is not applied on
+            job:read. Supported scopes for job:read: none. Grant 'job:read' unscoped or
+            leave it out."
         '409':
           description: A key with this label already exists
         '500':
@@ -7238,7 +7270,11 @@ paths:
     get:
       tags: [API Keys]
       summary: Capability catalog (admin)
-      description: Admin-only. Every capability resource, its actions, and the scope keys it accepts — drives the Keys UI capability editor.
+      description: >-
+        Admin-only. Every capability resource, its actions, and the scope keys the
+        platform applies on it (`pipeline`, `tap`: catalog, owner; `secret`: _type;
+        `search`, `document`: collection; `approval`: owner, on `approval:read` only;
+        every other resource: none) — drives the Keys UI capability editor.
       responses:
         '200':
           description: Capability catalog

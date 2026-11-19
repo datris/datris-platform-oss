@@ -88,7 +88,7 @@ object CapabilityCheck {
       * the key's own capabilities for `resource` (or `*`), distinct, sorted,
       * at most [[MaxListedCapabilities]]. Nothing about the target. */
     def scopeDenialMessage(rk: ResolvedKey, resource: String, action: String): String = {
-        val own = rk.capabilities.filter(c => c.resource == resource || c.resource == "*").map(_.raw).distinct.sorted
+        val own = rk.effectiveCapabilities.filter(c => c.resource == resource || c.resource == "*").map(_.raw).distinct.sorted
         val prefix = deniedPrefix(rk, resource, action)
         if (own.isEmpty) prefix + ". The key holds no " + resource + " capability."
         else {
@@ -168,7 +168,7 @@ object CapabilityCheck {
     ): Boolean = {
         readResolvedKey(request) match {
             case Some(rk) if !rk.isLegacyFullAccess =>
-                val matching = rk.capabilities.filter(_.matchesResourceAction(resource, action))
+                val matching = rk.effectiveCapabilities.filter(_.matchesResourceAction(resource, action))
                 if (matching.isEmpty) return false
                 // True iff EVERY matching capability has owner=self scope.
                 matching.forall(c => c.scope.get("owner").contains("self"))

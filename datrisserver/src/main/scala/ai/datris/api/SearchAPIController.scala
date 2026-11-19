@@ -133,6 +133,32 @@ object SearchAPIController {
                 )
         }
 
+    /** The `search:vector:collection=` check (plans/stories/api-key-inert-scopes.md,
+      * Fix 2): Some(403) when the request's key holds `search:vector` only
+      * under `collection=` scopes and none names this container
+      * ([[ai.datris.auth.CapabilityScopes.collectionName]]: pgvector outside
+      * `public` is `<schema>.<table>`). Runs before any config, store or
+      * secret lookup, so the answer is the same whether or not the container
+      * exists. None for unscoped keys, sessions, legacy keys and a request
+      * with no identity. */
+    def collectionScopeRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        store: String,
+        container: String,
+        schema: Option[String]
+    ): Option[ResponseEntity[String]] =
+        try {
+            ai.datris.auth.CapabilityCheck.assertScope(
+                request,
+                "search",
+                "vector",
+                Map("collection" -> ai.datris.auth.CapabilityScopes.collectionName(store, container, schema))
+            )
+            None
+        } catch {
+            case e: ai.datris.auth.CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
+        }
+
     def containerNotFound(param: String, container: String): ResponseEntity[String] =
         ResponseEntity
             .status(HttpStatus.NOT_FOUND)
@@ -169,6 +195,9 @@ class SearchAPIController {
             // A restricted user searches only containers fed by a pipeline in
             // its catalog grants; any other container is as if it did not exist.
             val schema = if (store == "pgvector") Option(body.get("schema")).map(_.toString) else None
+            // A key scoped to collections searches only those (checked before
+            // any lookup, so a refusal says nothing about what exists).
+            SearchAPIController.collectionScopeRefusal(request, store, container, schema).foreach(r => return r)
             // A restricted user also gets only chunks written by pipelines it
             // can read (a container no config names can hold other catalogs' chunks).
             val writers = SearchAPIController.searchWriters(

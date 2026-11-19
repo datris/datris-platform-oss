@@ -491,6 +491,7 @@ class DoctorServiceSpec extends AnyFunSuite {
             "staging.area",
             "staging.orphans",
             "tap.secret_scope",
+            "keys.inert_scopes",
             "ai.sample_values",
             "codegen.isolation",
             "runner.concurrency",

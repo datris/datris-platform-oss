@@ -7,6 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
+import ai.datris.auth.CapabilityScopes
 import ai.datris.config.RequiresRole
 import ai.datris.model.{Capability, DatrisEnvironment, DatrisException, UserContext}
 import ai.datris.util.{APIKeyValidator, SecretsUtil}
@@ -66,7 +67,7 @@ class KeysAPIController {
 
             val rows = new JsonArray()
             apiKeys.keys.toSeq.sorted.foreach { label =>
-                rows.add(buildListRow(label, metadata.get(label)))
+                rows.add(KeysAPIController.buildListRow(label, metadata.get(label)))
             }
 
             val response = new JsonObject()
@@ -99,6 +100,10 @@ class KeysAPIController {
                 return badRequest("label must be 1-64 chars of [a-z0-9_-] (lowercase, no whitespace)")
 
             // Parse + validate capabilities up front; reject before any write.
+            // Beyond parsing, every scope must be one the platform applies on
+            // that capability (CapabilityScopes): a key never looks limited
+            // without being limited.
+            KeysAPIController.capabilitiesProblem(capStrings).foreach(m => return badRequest(m))
             val capabilities: Seq[Capability] =
                 try Capability.parseList(capStrings)
                 catch { case e: DatrisException => return badRequest(e.getMessage) }
@@ -271,37 +276,6 @@ class KeysAPIController {
     // Helpers
     // ------------------------------------------------------------------
 
-    private def buildListRow(label: String, metaJsonOpt: Option[String]): JsonObject = {
-        val row = new JsonObject()
-        row.addProperty("label", label)
-        metaJsonOpt match {
-            case Some(json) =>
-                try {
-                    val obj = JsonParser.parseString(json).getAsJsonObject
-                    row.add("capabilities", if (obj.has("capabilities")) obj.getAsJsonArray("capabilities") else new JsonArray())
-                    row.addProperty("revoked", obj.has("revoked") && !obj.get("revoked").isJsonNull && obj.get("revoked").getAsBoolean)
-                    if (obj.has("createdAt") && !obj.get("createdAt").isJsonNull) row.addProperty("createdAt", obj.get("createdAt").getAsString)
-                    if (obj.has("createdBy") && !obj.get("createdBy").isJsonNull) row.addProperty("createdBy", obj.get("createdBy").getAsString)
-                    if (obj.has("revokedAt") && !obj.get("revokedAt").isJsonNull) row.addProperty("revokedAt", obj.get("revokedAt").getAsString)
-                    if (obj.has("revokedBy") && !obj.get("revokedBy").isJsonNull) row.addProperty("revokedBy", obj.get("revokedBy").getAsString)
-                    if (obj.has("keyId") && !obj.get("keyId").isJsonNull) row.addProperty("keyId", obj.get("keyId").getAsString)
-                    row.addProperty("isLegacyFullAccess", false)
-                } catch {
-                    case e: Exception =>
-                        logger.warn("Malformed API key metadata for label '" + label + "'; listing as legacy full-access key", e)
-                        row.add("capabilities", new JsonArray())
-                        row.addProperty("isLegacyFullAccess", true)
-                        row.addProperty("revoked", false)
-                }
-            case None =>
-                // No metadata entry — legacy key, full access via the backstop.
-                row.add("capabilities", new JsonArray())
-                row.addProperty("isLegacyFullAccess", true)
-                row.addProperty("revoked", false)
-        }
-        row
-    }
-
     private def readMetadata(label: String): Option[JsonObject] = {
         val map = SecretsUtil.getSecretMap(metadataSecretName).map(_.asScala.toMap).getOrElse(Map.empty[String, String])
         map.get(label).flatMap { json =>
@@ -449,38 +423,31 @@ class KeysAPIController {
 
 object KeysAPIController {
 
+    private val logger: Logger = LoggerFactory.getLogger(classOf[KeysAPIController])
+
     /** Capability autocomplete catalog the Keys UI uses. Each entry is
-      * (resource, [actions], [scope keys]). The scope-key list is the
-      * intersection of what makes sense for that resource and what
-      * `Capability.parse` allows. Resources whose scope list is empty
-      * accept no scope qualifiers. */
-    private val CapabilitiesCatalog: Seq[(String, Seq[String], Seq[String])] = Seq(
-        ("pipeline", Seq("read", "create", "update", "delete", "run"), Seq("catalog", "owner")),
-        ("tap", Seq("read", "create", "update", "delete", "run"), Seq("catalog", "owner")),
-        ("secret", Seq("read", "write"), Seq("_type", "owner")),
-        ("document", Seq("upload"), Seq("collection", "destination_kind")),
-        ("search", Seq("vector"), Seq("collection")),
-        ("query", Seq("postgres", "mongodb", "objectstore", "snowflake", "databricks", "sqlserver", "natural"), Seq("database")),
-        ("job", Seq("read", "kill"), Seq("owner")),
-        ("metadata", Seq("read"), Seq.empty),
-        ("config", Seq("read", "write"), Seq.empty),
-        ("mcp", Seq("tool"), Seq.empty),
-        ("audit", Seq("read"), Seq.empty),
-        // Agent policy: any key may read it; `policy:update` exists for the UI's
-        // own key — PolicyInterceptor refuses it from agents regardless.
-        ("policy", Seq("read", "update"), Seq.empty),
-        // Approvals: agents read/poll what they queued (owner=self); deciding
-        // is a person's job — the interceptor refuses agents even with the cap.
-        ("approval", Seq("read", "decide"), Seq("owner")),
-        // Recovery-agent incidents: read for dashboards/agents; abandon and
-        // proceed (past a needs-human scratch verdict) are a person's call
-        // (role-gated; the controller refuses agents).
-        ("incident", Seq("read", "abandon", "proceed"), Seq.empty),
-        // Field protection: reveal decrypts `encrypt` ciphertext, admin rotates
-        // the encryption key. Never in a template or role bundle; granted
-        // explicitly, or held through `*:*` (admins, full-access, legacy keys).
-        ("protect", Seq("reveal", "admin"), Seq.empty)
-    )
+      * (resource, [actions], [scope keys]), derived from
+      * [[CapabilityScopes]]: the scope keys are the ones the platform applies
+      * on at least one of the resource's actions, so the catalogue never
+      * offers a scope `POST /keys` refuses. Notes per resource:
+      *   - `policy:update` exists for the UI's own key; PolicyInterceptor
+      *     refuses it from agents regardless.
+      *   - `approval`: agents read/poll what they queued (`owner=self`, on
+      *     `approval:read` only); deciding is a person's job.
+      *   - `incident`: abandon and proceed are a person's call (role-gated).
+      *   - `protect`: reveal decrypts `encrypt` ciphertext, admin rotates the
+      *     encryption key. Never in a template or role bundle.
+      *   - `search:vector` and `document:upload` take `collection=<name>`
+      *     (pgvector: `<table>` in `public`, `<schema>.<table>` elsewhere). */
+    private val CapabilitiesCatalog: Seq[(String, Seq[String], Seq[String])] =
+        CapabilityScopes.Vocabulary.map { case (resource, actions) =>
+            (resource, actions, CapabilityScopes.supportedOnResource(resource))
+        }
+
+    /** The first capability of a `POST /keys` body that may not be issued,
+      * with why (CapabilityScopes.issueProblem), or None. */
+    private[api] def capabilitiesProblem(caps: Seq[String]): Option[String] =
+        caps.iterator.map(CapabilityScopes.issueProblem).collectFirst { case Some(m) => m }
 
     /** Capability templates the Keys-UI wizard offers as starting points.
       * Each is (name, description, capability list). Operators pick a
@@ -511,7 +478,7 @@ object KeysAPIController {
         ),
         (
             "rag-builder",
-            "Build and search a vector knowledge base. Creates pipelines and taps in one catalog, uploads documents, and runs vector search.",
+            "Build and search a vector knowledge base. Creates pipelines and taps in any catalog, reads every pipeline and tap, uploads documents into any pipeline, runs vector search across all collections, runs the taps it created, and reads and writes only tap secrets.",
             Seq(
                 "pipeline:create",
                 "pipeline:read",
@@ -549,7 +516,7 @@ object KeysAPIController {
         ),
         (
             "ops",
-            "Operations agent: run any tap or pipeline, monitor jobs, kill stuck runs. Does not edit configurations.",
+            "Operations agent: run any tap, monitor jobs, kill stuck runs, and read pipelines and taps. Does not upload files or edit configurations.",
             Seq(
                 "pipeline:read",
                 "pipeline:run",
@@ -565,4 +532,46 @@ object KeysAPIController {
             Seq("*:*")
         )
     )
+
+    /** One `GET /keys` row: label, capabilities as stored, revoked, audit
+      * fields, `isLegacyFullAccess`, and `inertCapabilities` (the stored
+      * capabilities carrying a scope the platform does not apply; an empty
+      * array when none). No secret-store access. */
+    private[api] def buildListRow(label: String, metaJsonOpt: Option[String]): JsonObject = {
+        val row = new JsonObject()
+        row.addProperty("label", label)
+        metaJsonOpt match {
+            case Some(json) =>
+                try {
+                    val obj = JsonParser.parseString(json).getAsJsonObject
+                    val caps = if (obj.has("capabilities") && obj.get("capabilities").isJsonArray) obj.getAsJsonArray("capabilities") else new JsonArray()
+                    row.add("capabilities", caps)
+                    val raw = caps.asScala.filter(e => e.isJsonPrimitive).map(_.getAsString).toList
+                    val inert = new JsonArray()
+                    CapabilityScopes.inertOf(raw).foreach(inert.add)
+                    row.add("inertCapabilities", inert)
+                    row.addProperty("revoked", obj.has("revoked") && !obj.get("revoked").isJsonNull && obj.get("revoked").getAsBoolean)
+                    if (obj.has("createdAt") && !obj.get("createdAt").isJsonNull) row.addProperty("createdAt", obj.get("createdAt").getAsString)
+                    if (obj.has("createdBy") && !obj.get("createdBy").isJsonNull) row.addProperty("createdBy", obj.get("createdBy").getAsString)
+                    if (obj.has("revokedAt") && !obj.get("revokedAt").isJsonNull) row.addProperty("revokedAt", obj.get("revokedAt").getAsString)
+                    if (obj.has("revokedBy") && !obj.get("revokedBy").isJsonNull) row.addProperty("revokedBy", obj.get("revokedBy").getAsString)
+                    if (obj.has("keyId") && !obj.get("keyId").isJsonNull) row.addProperty("keyId", obj.get("keyId").getAsString)
+                    row.addProperty("isLegacyFullAccess", false)
+                } catch {
+                    case e: Exception =>
+                        logger.warn("Malformed API key metadata for label '" + label + "'; listing as legacy full-access key", e)
+                        row.add("capabilities", new JsonArray())
+                        row.add("inertCapabilities", new JsonArray())
+                        row.addProperty("isLegacyFullAccess", true)
+                        row.addProperty("revoked", false)
+                }
+            case None =>
+                // No metadata entry — legacy key, full access via the backstop.
+                row.add("capabilities", new JsonArray())
+                row.add("inertCapabilities", new JsonArray())
+                row.addProperty("isLegacyFullAccess", true)
+                row.addProperty("revoked", false)
+        }
+        row
+    }
 }
