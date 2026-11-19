@@ -336,6 +336,7 @@ object CapabilityRoutes {
       * it (CORS preflight, or the `Allow` header) without running a
       * controller method, and no controller maps it (HandlerMappingDecisionSpec). */
     def lookup(method: String, path: String): RouteCheck = {
+        if (path == null) return RouteCheck.Unmapped
         if (skipPatterns.exists(p => matcher.`match`(p, path))) return RouteCheck.Skip
         val m = RequestPaths.method(method)
         if (m == "OPTIONS") return RouteCheck.Skip

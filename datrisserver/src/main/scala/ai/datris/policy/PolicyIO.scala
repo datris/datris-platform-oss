@@ -29,7 +29,12 @@ object PolicyIO {
         v != null && v.useAgentPolicy
     }
 
+    /** Test seam: when set, [[current]] answers it and nothing is read. */
+    @volatile private[datris] var currentOverride: AgentPolicy = null
+
     def current: AgentPolicy = {
+        val o = currentOverride
+        if (o != null) return o
         val table = DatrisEnvironment.current.agentPolicyTableName
         val now = System.currentTimeMillis()
         val c = cache.get()

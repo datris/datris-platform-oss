@@ -160,7 +160,13 @@ object AuditLog {
     /** False only under strict while the queue is at its high-water mark
       * (capacity minus headroom): audited requests are then refused. Always
       * true in default mode. */
-    def acceptingWrites: Boolean = !strict || queue.hasRoom(Headroom)
+    def acceptingWrites: Boolean = {
+        val o = acceptingWritesOverride
+        if (o != null) o.booleanValue() else !strict || queue.hasRoom(Headroom)
+    }
+
+    /** Test seam: when set, [[acceptingWrites]] answers it. */
+    @volatile private[datris] var acceptingWritesOverride: java.lang.Boolean = null
 
     // ------------------------------------------------------------------
     // Producers

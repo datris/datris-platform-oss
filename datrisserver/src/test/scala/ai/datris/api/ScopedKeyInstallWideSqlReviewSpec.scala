@@ -177,6 +177,31 @@ class ScopedKeyInstallWideSqlReviewSpec extends AnyFunSuite with BeforeAndAfterE
         assert(!SearchChatAPIController.keyLimited(null))
     }
 
-    /** SHA-256 of the unrestricted Search chat prompt for tenant `test`. */
+    test("the unrestricted Search chat prompt keeps its unrestricted guidance and differs from the limited one") {
+        val c = new SearchChatAPIController()
+        val unrestricted = c.buildSearchSystemPrompt("test", None, keyLimited = false)
+        assert(unrestricted == c.buildSearchSystemPrompt("test", None), "keyLimited = false must be the call every other caller gets")
+        Seq(
+            "list_postgres_schemas",
+            "list_postgres_tables",
+            "list_postgres_columns",
+            "list_mongodb_collections",
+            "query_natural",
+            "query_postgres",
+            "query_mongodb"
+        )
+            .foreach(t => assert(unrestricted.contains(t), s"unrestricted prompt lost $t"))
+        assert(unrestricted.contains("Treat cataloged and uncataloged sources equally"))
+        assert(!unrestricted.contains("do not pass `sql`"))
+        assert(unrestricted != c.buildSearchSystemPrompt("test", None, keyLimited = true))
+    }
+
+    /** SHA-256 of the unrestricted Search chat prompt for tenant `test`.
+      * Why: Part C added a limited branch to the Search chat prompt and the
+      * prompt every other caller gets had to stay byte-identical; this pin
+      * catches any change to it. If you change the unrestricted prompt on
+      * purpose, re-pin: run this spec, copy the hash it reports (the left
+      * side of the failed comparison) into this value, and check that the
+      * test above still passes. */
     private val SearchChatPromptSha = "e4da013393eea082afb8c85df397437063179d14107567349e4292301b58c909"
 }

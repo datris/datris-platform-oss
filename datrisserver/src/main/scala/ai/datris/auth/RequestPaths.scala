@@ -35,20 +35,35 @@ object RequestPaths {
 
     /** The decoded, parameter-free path within the application that the
       * dispatcher matches handlers against. Null for a null request or one
-      * with no request URI. */
+      * with no request URI, and for a path that cannot be decoded. */
     def path(request: HttpServletRequest): String = {
         if (request == null) return null
-        val parsed: RequestPath =
-            if (ServletRequestPathUtils.hasParsedRequestPath(request)) ServletRequestPathUtils.getParsedRequestPath(request)
-            else {
-                val uri = request.getRequestURI
-                if (uri == null) return null
-                val ctx = Option(request.getContextPath).getOrElse("")
-                try RequestPath.parse(uri, if (uri.startsWith(ctx)) ctx else "")
-                catch { case _: IllegalArgumentException => RequestPath.parse(uri, "") }
-            }
-        canonical(parsed.pathWithinApplication())
+        try {
+            val parsed: RequestPath =
+                if (ServletRequestPathUtils.hasParsedRequestPath(request)) ServletRequestPathUtils.getParsedRequestPath(request)
+                else {
+                    val uri = request.getRequestURI
+                    if (uri == null) return null
+                    val ctx = Option(request.getContextPath).getOrElse("")
+                    RequestPath.parse(uri, if (uri.startsWith(ctx)) ctx else "")
+                }
+            canonical(parsed.pathWithinApplication())
+        } catch {
+            // A path that cannot be decoded (a malformed percent escape): no
+            // route. Filters then leave the request alone and the dispatcher
+            // gives its own answer; a decision on a null path matches no row.
+            case _: IllegalArgumentException | _: IllegalStateException => null
+        }
     }
+
+    /** [[path]] for a raw request URI with no context path (an approved
+      * action's stored path, which the replay re-sends as is). Null when it
+      * cannot be decoded. */
+    def canonicalOf(rawUri: String): String =
+        if (rawUri == null) null
+        else
+            try canonical(RequestPath.parse(rawUri, "").pathWithinApplication())
+            catch { case _: IllegalArgumentException | _: IllegalStateException => null }
 
     /** `container` as the matched string: each segment's `valueToMatch`
       * (decoded, path parameters removed), separators kept. */

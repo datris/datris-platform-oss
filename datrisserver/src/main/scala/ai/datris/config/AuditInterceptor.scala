@@ -54,7 +54,9 @@ class AuditInterceptor extends HandlerInterceptor {
                 }
                 val logReads = Option(DatrisEnvironment.values).exists(_.auditLogLogReads)
                 if (AuditClassifier.classify(RequestPaths.method(request), RequestPaths.path(request), logReads).isDefined) {
-                    logger.warn("Refusing " + request.getMethod + " " + request.getRequestURI + ": audit log not accepting entries (AUDIT_LOG_STRICT)")
+                    logger.warn("Refusing " + ai.datris.util.LogSafe.text(request.getMethod) + " " + ai.datris.util.LogSafe.text(
+                        request.getRequestURI
+                    ) + ": audit log not accepting entries (AUDIT_LOG_STRICT)")
                     val body = new JsonObject()
                     body.addProperty("error", "audit_log_unavailable")
                     body.addProperty(

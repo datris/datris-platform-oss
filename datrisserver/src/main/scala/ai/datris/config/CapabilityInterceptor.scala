@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.audit.AuditLog
 import ai.datris.auth.{CallerVisibility, CapabilityRoutes, CapabilityScopes, RequestPaths, RouteCheck}
 import ai.datris.model.{Capability, ResolvedKey, UserContext}
-import ai.datris.util.APIKeyValidator
+import ai.datris.util.{APIKeyValidator, LogSafe}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -139,13 +139,13 @@ class CapabilityInterceptor extends HandlerInterceptor {
     private def rejectPresentedKey(
         request: HttpServletRequest,
         response: HttpServletResponse,
-        method: String,
-        path: String,
+        logMethod: String,
+        logPath: String,
         required: Option[String]
     ): Boolean = {
         logger.info(
             "capability check: route={} {} required={} outcome=rejected-key",
-            Array[AnyRef](method, path, required.getOrElse("-")): _*
+            Array[AnyRef](logMethod, logPath, required.getOrElse("-")): _*
         )
         val (status, body) = CapabilityInterceptor.rejectionResponse(
             String.valueOf(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr))
@@ -197,6 +197,10 @@ class CapabilityInterceptor extends HandlerInterceptor {
         // decision reads (RequestPaths).
         val method = RequestPaths.method(request)
         val path = RequestPaths.path(request)
+        // Log lines show the request as the caller sent it (raw method and
+        // still-encoded URI), with control characters neutralised.
+        val logMethod = LogSafe.text(request.getMethod)
+        val logPath = LogSafe.text(request.getRequestURI)
         narrowForRestrictedSession(request)
 
         CapabilityRoutes.lookup(method, path) match {
@@ -208,7 +212,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                 // classify yet. Authentication failure regardless of mapping:
                 // without this the controller's own validate() threw and the
                 // caller got a 500 with a stack trace instead of a 401.
-                rejectPresentedKey(request, response, method, path, required = None)
+                rejectPresentedKey(request, response, logMethod, logPath, required = None)
 
             case RouteCheck.Unmapped if handler.isInstanceOf[HandlerMethod] =>
                 // A controller method with no row and no skip pattern. Every
@@ -223,26 +227,26 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         if (enforce) {
                             logger.warn(
                                 "capability check: route={} {} key={} outcome=deny (no capability mapping for this handler)",
-                                Array[AnyRef](method, path, rk.label): _*
+                                Array[AnyRef](logMethod, logPath, LogSafe.text(rk.label)): _*
                             )
                             denyCapability(request, response, rk, "*", "*", method, path)
                             false
                         } else {
                             logger.warn(
                                 "capability check: route={} {} key={} outcome=would-deny (log-only; no capability mapping for this handler)",
-                                Array[AnyRef](method, path, rk.label): _*
+                                Array[AnyRef](logMethod, logPath, LogSafe.text(rk.label)): _*
                             )
                             true
                         }
                     case _ =>
-                        logger.info("capability check: route={} {} outcome=unmapped", method.asInstanceOf[Any], path.asInstanceOf[Any])
+                        logger.info("capability check: route={} {} outcome=unmapped", logMethod.asInstanceOf[Any], logPath.asInstanceOf[Any])
                         true
                 }
 
             case RouteCheck.Unmapped =>
                 // Not a controller method (static resources, the not-found
                 // answer): nothing to protect, the request answers as today.
-                logger.info("capability check: route={} {} outcome=unmapped", method.asInstanceOf[Any], path.asInstanceOf[Any])
+                logger.info("capability check: route={} {} outcome=unmapped", logMethod.asInstanceOf[Any], logPath.asInstanceOf[Any])
                 true
 
             case RouteCheck.Require(resource, action) =>
@@ -255,7 +259,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         // enforce and log-only modes. Without this the request
                         // fell into the no-key branch below and skipped the
                         // capability check entirely.
-                        rejectPresentedKey(request, response, method, path, required = Some(resource + ":" + action))
+                        rejectPresentedKey(request, response, logMethod, logPath, required = Some(resource + ":" + action))
 
                     case None =>
                         // No ResolvedKey on the request. This happens for
@@ -266,7 +270,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         // unauthenticated probes are high-volume noise.
                         logger.debug(
                             "capability check: route={} {} required={}:{} outcome=no-key",
-                            Array[AnyRef](method, path, resource, action): _*
+                            Array[AnyRef](logMethod, logPath, resource, action): _*
                         )
                         true
 
@@ -277,7 +281,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         // in both modes (the grants are a hard boundary).
                         logger.info(
                             "capability check: route={} {} required={}:{} key={} outcome=deny (restricted session, unfilterable listing)",
-                            Array[AnyRef](method, path, resource, action, rk.label): _*
+                            Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
                         )
                         denyCapability(
                             request,
@@ -317,7 +321,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                             val message = CallerVisibility.InstallWideRequestMessage
                             logger.info(
                                 "capability check: route={} {} required={}:{} key={} outcome=deny (scope-limited caller, install-wide route)",
-                                Array[AnyRef](method, path, resource, action, rk.label): _*
+                                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
                             )
                             denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
                             false
@@ -327,7 +331,14 @@ class CapabilityInterceptor extends HandlerInterceptor {
                             // stable, dial this back to DEBUG to cut volume.
                             logger.info(
                                 "capability check: route={} {} required={}:{} key={} legacy={} outcome=grant",
-                                Array[AnyRef](method, path, resource, action, rk.label, java.lang.Boolean.valueOf(rk.isLegacyFullAccess)): _*
+                                Array[AnyRef](
+                                    logMethod,
+                                    logPath,
+                                    resource,
+                                    action,
+                                    LogSafe.text(rk.label),
+                                    java.lang.Boolean.valueOf(rk.isLegacyFullAccess)
+                                ): _*
                             )
                             inert match {
                                 case Some(InertOutcome.UsedUnderOptOut(caps)) =>
@@ -337,7 +348,14 @@ class CapabilityInterceptor extends HandlerInterceptor {
                                     val reason = CapabilityScopes.inertUsedMessage(rk.label, required, caps)
                                     logger.warn(
                                         "capability check: route={} {} required={} key={} outcome=inert-scope-used ({}=allow): {}",
-                                        Array[AnyRef](method, path, required, rk.label, CapabilityScopes.InertScopesEnv, caps.map(_.raw).mkString(", ")): _*
+                                        Array[AnyRef](
+                                            logMethod,
+                                            logPath,
+                                            required,
+                                            LogSafe.text(rk.label),
+                                            CapabilityScopes.InertScopesEnv,
+                                            caps.map(_.raw).mkString(", ")
+                                        ): _*
                                     )
                                     AuditLog.inertScopeUsed(request, required, caps.map(_.raw), reason)
                                 case _ =>
@@ -350,13 +368,13 @@ class CapabilityInterceptor extends HandlerInterceptor {
                                     val message = CapabilityScopes.inertDenialMessage(rk.label, required, caps)
                                     logger.info(
                                         "capability check: route={} {} required={} key={} outcome=deny (inert scope: {})",
-                                        Array[AnyRef](method, path, required, rk.label, caps.map(_.raw).mkString(", ")): _*
+                                        Array[AnyRef](logMethod, logPath, required, LogSafe.text(rk.label), caps.map(_.raw).mkString(", ")): _*
                                     )
                                     denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message))
                                 case _ =>
                                     logger.info(
                                         "capability check: route={} {} required={}:{} key={} outcome=deny",
-                                        Array[AnyRef](method, path, resource, action, rk.label): _*
+                                        Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
                                     )
                                     denyCapability(request, response, rk, resource, action, method, path)
                             }
@@ -371,14 +389,14 @@ class CapabilityInterceptor extends HandlerInterceptor {
                             val message = CallerVisibility.InstallWideRequestMessage
                             logger.info(
                                 "capability check: route={} {} required={}:{} key={} outcome=deny (log-only; scope-limited caller, install-wide route)",
-                                Array[AnyRef](method, path, resource, action, rk.label): _*
+                                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
                             )
                             denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
                             false
                         } else {
                             logger.warn(
                                 "capability check: route={} {} required={}:{} key={} outcome=would-deny (log-only)",
-                                Array[AnyRef](method, path, resource, action, rk.label): _*
+                                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
                             )
                             true
                         }
