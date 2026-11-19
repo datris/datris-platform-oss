@@ -424,7 +424,8 @@ object QueryAPIController {
       * own config when it is gone). A restricted session, or an API key that
       * holds a `pipeline:run` capability or is limited for pipelines, must
       * hold in scope `pipeline:run` (when it holds any `pipeline:run`
-      * capability) or else `pipeline:read`. Outside it the answer is exactly
+      * capability) and `pipeline:read` ([[ai.datris.auth.CallerVisibility.loadDenial]]).
+      * Outside it the answer is exactly
       * the unknown-token one (same status and body for a key and a session,
       * so the route is no oracle). None: kill as today (an unknown token
       * included, and every other caller, for whom nothing is looked up). */
@@ -439,8 +440,8 @@ object QueryAPIController {
             else {
                 val runConfig = Option(job.config)
                 val config = runConfig.flatMap(c => Option(c.name)).flatMap(n => Option(readPipeline(n))).orElse(runConfig).orNull
-                val action = ai.datris.auth.CallerVisibility.loadAction(rk)
-                val inScope = config != null && rk.grants("pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+                val inScope = config != null &&
+                    ai.datris.auth.CallerVisibility.loadDenial(rk, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)).isEmpty
                 if (inScope) None
                 else
                     Some(

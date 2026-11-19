@@ -93,7 +93,7 @@ class CatalogEnableOrderedApiSpec extends AnyFunSuite with BeforeAndAfterAll {
         val taps = Seq(tap("a", cat), tap("b", cat, dependsOn = jl("a")))
         assert(
             CatalogAPIController.enableOrderedRefusal(
-                req(Some(key("tap:update", "tap:run:owner=self", "pipeline:run:owner=self", "tap:read:owner=self"))),
+                req(Some(key("tap:update", "tap:run:owner=self", "pipeline:run:owner=self", "tap:read:owner=self", "pipeline:read:owner=self"))),
                 taps,
                 _ => ai.datris.model.PipelineConfig(name = "p", createdByKeyLabel = "k")
             ).isEmpty

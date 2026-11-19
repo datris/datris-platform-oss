@@ -111,6 +111,20 @@ object CallerVisibility {
       * `pipeline:run` capability, otherwise `read`. */
     def loadAction(rk: ResolvedKey): String = if (rk != null && holdsAny(rk, "pipeline", "run")) "run" else "read"
 
+    /** The decision for a load into a stored pipeline with scope `context`
+      * (upload, `kill_job`, a tap's target pipeline on save, run, restore and
+      * enable-in-order): the [[loadAction]] right, then read, through the one
+      * stored-item rule ([[storedWriteDenial]] with the load action), so a
+      * key may load only into a pipeline it may also read. A restricted
+      * session is decided on its grants for the load action (they imply
+      * read). Some(action refused) or None. Callers apply [[loadChecked]]
+      * first. */
+    def loadDenial(rk: ResolvedKey, context: Map[String, String]): Option[String] = {
+        val action = loadAction(rk)
+        if (rk.restrictedSession) { if (rk.grants("pipeline", action, context)) None else Some(action) }
+        else storedWriteDenial(rk, "pipeline", context, Seq(action), action)
+    }
+
     /** Whether a load into a pipeline is checked against the caller's scope:
       * a restricted session, or a key that is not full access and holds a
       * `pipeline:run` capability or is limited for pipelines. Others keep

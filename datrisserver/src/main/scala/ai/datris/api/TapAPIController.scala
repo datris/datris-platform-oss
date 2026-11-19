@@ -145,8 +145,9 @@ object TapAPIController {
       * `pipeline:run` capability or is limited for pipelines, the same keys
       * as upload and kill_job; owner decisions), whether or not it holds a
       * pipeline capability: 403
-      * when its scope does not grant `pipeline:run` on the stored target
-      * (`pipeline:read` when it holds no `pipeline:run`), so a key holding
+      * when its scope does not grant, on the stored target, `pipeline:run`
+      * (when it holds any `pipeline:run`) and `pipeline:read`
+      * ([[ai.datris.auth.CallerVisibility.loadDenial]]), so a key holding
       * only tap capabilities feeds no stored pipeline; a target not stored
       * yet is left to the save. None when no target and for everyone else
       * (keys with no `pipeline:run` that are not limited for pipelines; no
@@ -164,16 +165,15 @@ object TapAPIController {
             CapabilityCheck.resolvedKey(request) match {
                 case Some(rk) if ai.datris.auth.CallerVisibility.loadChecked(rk) =>
                     Option(readPipeline(tap.targetPipeline)).flatMap { p =>
-                        val action = ai.datris.auth.CallerVisibility.loadAction(rk)
                         val ctx = CatalogOps.scopeContext(p.catalog, p.createdByKeyLabel)
-                        if (rk.grants("pipeline", action, ctx)) None
-                        else
+                        ai.datris.auth.CallerVisibility.loadDenial(rk, ctx).map { action =>
                             try {
                                 CapabilityCheck.assertScope(request, "pipeline", action, ctx)
-                                None
+                                PipelineAPIController.capabilityDenied(new CapabilityDeniedException("capability denied"))
                             } catch {
-                                case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
+                                case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
                             }
+                        }
                     }
                 case _ => None
             }

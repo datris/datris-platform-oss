@@ -64,8 +64,9 @@ object FileUploadAPIController {
       * missing, 403 when view-only); an API key that holds a `pipeline:run`
       * capability or is limited for pipelines must hold, in scope on the
       * stored pipeline, `pipeline:run` (when it holds any `pipeline:run`
-      * capability) or else `pipeline:read`, or gets the capability-denied
-      * 403. Then, for an existing pipeline, the `collection=` check
+      * capability) and `pipeline:read`
+      * ([[ai.datris.auth.CallerVisibility.loadDenial]]), or gets the
+      * capability-denied 403 naming the one it lacks. Then, for an existing pipeline, the `collection=` check
       * ([[uploadScopeRefusal]]). Both must pass; when both would refuse the
       * pipeline refusal is the answer. None for everyone else (a key holding
       * no pipeline capability, unscoped keys, unrestricted sessions, no
@@ -79,16 +80,15 @@ object FileUploadAPIController {
                 .resolvedKey(request)
                 .filter(ai.datris.auth.CallerVisibility.loadChecked)
                 .flatMap { rk =>
-                    val action = ai.datris.auth.CallerVisibility.loadAction(rk)
                     val ctx = ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
-                    if (rk.grants("pipeline", action, ctx)) None
-                    else
+                    ai.datris.auth.CallerVisibility.loadDenial(rk, ctx).map { action =>
                         try {
                             CapabilityCheck.assertScope(request, "pipeline", action, ctx)
-                            None
+                            PipelineAPIController.capabilityDenied(new CapabilityDeniedException("capability denied"))
                         } catch {
-                            case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
+                            case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
                         }
+                    }
                 }
                 .orElse(uploadScopeRefusal(request, config))
 }

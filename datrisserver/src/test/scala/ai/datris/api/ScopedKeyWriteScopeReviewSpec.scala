@@ -386,10 +386,18 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         // enable-in-order reaches the same refusal for a member feeding a stored pipeline
         val members = Seq(TapConfig(name = "a", description = "d", targetPipeline = "theirs", catalog = "HR", createdByKeyLabel = "own"))
         assert(CatalogAPIController.enableOrderedRefusal(req(tapOnly), members, pipelines).exists(_.getStatusCode.value == 403))
-        // with pipeline:run:owner=self: its own pipeline passes, another key's is refused on run
+        // with pipeline:run:owner=self but no pipeline read: refused on read even on its own pipeline
+        // (owner decision, round 4); another key's is refused on run
         val withRunCaps = tapCaps :+ "pipeline:run:owner=self"
         val withRun = key("own", withRunCaps: _*)
-        assert(TapAPIController.targetPipelineRefusal(req(withRun), tap("t", "HR", owner = "own", target = "mine"), pipelines).isEmpty)
+        assertDenied(
+            TapAPIController.targetPipelineRefusal(req(withRun), tap("t", "HR", owner = "own", target = "mine"), pipelines),
+            "own",
+            "pipeline",
+            "read",
+            withRunCaps,
+            Nil
+        )
         assertDenied(
             TapAPIController.targetPipelineRefusal(req(withRun), tap("t", "HR", owner = "own", target = "theirs"), pipelines),
             "own",
@@ -398,7 +406,13 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
             withRunCaps,
             Seq("other-key")
         )
-        assert(CatalogAPIController.enableOrderedRefusal(req(withRun), members.map(_.copy(targetPipeline = "mine")), pipelines).isEmpty)
+        assert(CatalogAPIController.enableOrderedRefusal(req(withRun), members.map(_.copy(targetPipeline = "mine")), pipelines).exists(
+            _.getStatusCode.value == 403
+        ))
+        // with pipeline:read:owner=self as well: its own pipeline passes
+        val withRunRead = key("own", (withRunCaps :+ "pipeline:read:owner=self"): _*)
+        assert(TapAPIController.targetPipelineRefusal(req(withRunRead), tap("t", "HR", owner = "own", target = "mine"), pipelines).isEmpty)
+        assert(CatalogAPIController.enableOrderedRefusal(req(withRunRead), members.map(_.copy(targetPipeline = "mine")), pipelines).isEmpty)
         // as today: no target, a target not stored yet, keys not limited, rag-builder, no request
         assert(TapAPIController.targetPipelineRefusal(req(tapOnly), tap("t", "HR"), failPipeline).isEmpty)
         assert(TapAPIController.targetPipelineRefusal(req(tapOnly), tap("t", "HR", target = "not_yet"), pipelines).isEmpty)
@@ -623,6 +637,116 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         assert(CatalogAPIController.enableOrderedRefusal(req(withRead), members, failPipeline).isEmpty)
         val src = source("src/main/scala/ai/datris/api/CatalogAPIController.scala")
         assert(src.contains("try CatalogAPIController.assertMemberWrite(request, \"tap\", action, t.catalog, t.createdByKeyLabel)"))
+    }
+
+    // ------------------------------------------------------------ round 5: the read half on the load seams (owner decision)
+
+    test("load seams: unscoped pipeline:run with scoped read is refused on read on upload, tap target and kill_job; own-scoped keys need read too") {
+        val caps = Seq("pipeline:run", "pipeline:read:catalog=Sales", "document:upload", "job:kill", "tap:*:catalog=Sales")
+        val k = key("loader", caps: _*)
+        val hr = pg("hr_payroll", "HR")
+        val sales = pg("orders", "Sales")
+        val pipelines: String => PipelineConfig = Map("hr_payroll" -> hr, "orders" -> sales).getOrElse(_, null)
+        assert(CallerVisibility.loadChecked(k), "unscoped run with scoped read is checked")
+        // upload
+        val ur = req(k, uri = "/api/v1/pipeline/upload")
+        assertDenied(FileUploadAPIController.uploadRefusal(ur, "hr_payroll", hr), "loader", "pipeline", "read", caps, Seq("HR", "someone"))
+        assert(AuditLog.scopeDenials(ur).nonEmpty)
+        assert(FileUploadAPIController.uploadRefusal(req(k), "orders", sales).isEmpty)
+        // tap target: save, run (every mode but test), version restore and enable-in-order share the seam
+        assertDenied(
+            TapAPIController.targetPipelineRefusal(req(k), tap("feed", "Sales", target = "hr_payroll"), pipelines),
+            "loader",
+            "pipeline",
+            "read",
+            caps,
+            Seq("HR")
+        )
+        assert(TapAPIController.targetPipelineRefusal(req(k), tap("feed", "Sales", target = "orders"), pipelines).isEmpty)
+        val member = Seq(TapConfig(name = "feed", description = "d", targetPipeline = "hr_payroll", catalog = "Sales", createdByKeyLabel = "loader"))
+        val er = CatalogAPIController.enableOrderedRefusal(req(k), member, pipelines)
+        assert(er.exists(r => r.getStatusCode.value == 403 && message(r) == ScopeDenialWording.message("loader", "pipeline", "read", caps)), er.map(_.getBody))
+        // kill_job: exactly the unknown-token answer
+        val jobs = Seq(
+            JobContext("tok-r5-hr", null, null, hr, null, PROCESSING, new Thread(), null),
+            JobContext("tok-r5-sales", null, null, sales, null, PROCESSING, new Thread(), null)
+        )
+        jobs.foreach(GlobalJobContext.addJobContext)
+        try {
+            val unknown = QueryAPIController.errorBody(new DatrisException("Job not found for pipeline token: tok-r5-hr"))
+            val kr = QueryAPIController.killRefusal(req(k), "tok-r5-hr", pipelines)
+            assert(kr.exists(r => r.getStatusCode.value == 500 && r.getBody == unknown), kr.map(_.getBody))
+            assert(QueryAPIController.killRefusal(req(k), "tok-r5-sales", pipelines).isEmpty)
+
+            // pipeline:run:owner=self with no pipeline read: refused even on its own pipeline
+            val own = pg("mine", "HR", owner = "self-run")
+            val theirs = pg("theirs", "HR", owner = "other-key")
+            val byName: String => PipelineConfig = Map("mine" -> own, "theirs" -> theirs).getOrElse(_, null)
+            val runCaps = Seq("pipeline:run:owner=self", "document:upload", "job:kill", "tap:read:owner=self", "tap:create:owner=self")
+            val runOnly = key("self-run", runCaps: _*)
+            assertDenied(FileUploadAPIController.uploadRefusal(req(runOnly), "mine", own), "self-run", "pipeline", "read", runCaps, Nil)
+            assertDenied(
+                TapAPIController.targetPipelineRefusal(req(runOnly), tap("t", "HR", target = "mine"), byName),
+                "self-run",
+                "pipeline",
+                "read",
+                runCaps,
+                Nil
+            )
+            val ownJob = JobContext("tok-r5-mine", null, null, own, null, PROCESSING, new Thread(), null)
+            val theirJob = JobContext("tok-r5-theirs", null, null, theirs, null, PROCESSING, new Thread(), null)
+            Seq(ownJob, theirJob).foreach(GlobalJobContext.addJobContext)
+            try {
+                assert(QueryAPIController.killRefusal(req(runOnly), "tok-r5-mine", byName).isDefined)
+                // with pipeline:read:owner=self: its own passes everywhere, another key's is refused on run
+                val readCaps = runCaps :+ "pipeline:read:owner=self"
+                val withRead = key("self-run", readCaps: _*)
+                assert(FileUploadAPIController.uploadRefusal(req(withRead), "mine", own).isEmpty)
+                assert(TapAPIController.targetPipelineRefusal(req(withRead), tap("t", "HR", target = "mine"), byName).isEmpty)
+                assert(QueryAPIController.killRefusal(req(withRead), "tok-r5-mine", byName).isEmpty)
+                assertDenied(FileUploadAPIController.uploadRefusal(req(withRead), "theirs", theirs), "self-run", "pipeline", "run", readCaps, Seq("other-key"))
+                assertDenied(
+                    TapAPIController.targetPipelineRefusal(req(withRead), tap("t", "HR", target = "theirs"), byName),
+                    "self-run",
+                    "pipeline",
+                    "run",
+                    readCaps,
+                    Seq("other-key")
+                )
+                assert(QueryAPIController.killRefusal(req(withRead), "tok-r5-theirs", byName).exists(_.getStatusCode.value == 500))
+            } finally GlobalJobContext.synchronized { Seq(ownJob, theirJob).foreach(j => GlobalJobContext.getAll -= j) }
+
+            // unchanged callers: legacy, *:*, the templates, recovery key, job:read-only, a tap-run token, no request
+            val tapRun = ResolvedKey(None, TapRunTokens.LabelPrefix + "feed", TapRunTokens.Capabilities, isLegacyFullAccess = false)
+            val unchanged = Seq("read-only", "reporting", "ops", "full-access").map(t => key(t, KeyTemplatesForSpecs.capabilities(t): _*)) ++
+                Seq(full, key("full", "*:*"), key(RecoveryKey.Label, RecoveryKey.Capabilities: _*), key("monitor", "job:read", "job:kill"), tapRun, editor)
+            for (rk <- unchanged) {
+                assert(FileUploadAPIController.uploadRefusal(req(rk), "hr_payroll", hr).isEmpty, rk.label)
+                assert(TapAPIController.targetPipelineRefusal(req(rk), tap("feed", "HR", target = "hr_payroll"), failPipeline).isEmpty, rk.label)
+                assert(QueryAPIController.killRefusal(req(rk), "tok-r5-hr", _ => fail("no read for " + rk.label)).isEmpty, rk.label)
+            }
+            // rag-builder: unscoped pipeline:read, so the read half passes; it feeds only pipelines it created
+            val rag = key("rb", KeyTemplatesForSpecs.capabilities("rag-builder"): _*)
+            val ragOwn = pg("rb_docs", "HR", owner = "rb")
+            assert(FileUploadAPIController.uploadRefusal(req(rag), "rb_docs", ragOwn).isEmpty)
+            assert(TapAPIController.targetPipelineRefusal(req(rag), tap("feed", "HR", target = "rb_docs"), _ => ragOwn).isEmpty)
+            assert(FileUploadAPIController.uploadRefusal(req(rag), "hr_payroll", hr).isDefined)
+            // no request
+            assert(FileUploadAPIController.uploadRefusal(null, "hr_payroll", hr).isEmpty)
+            assert(TapAPIController.targetPipelineRefusal(null, tap("feed", "HR", target = "hr_payroll"), failPipeline).isEmpty)
+            assert(QueryAPIController.killRefusal(null, "tok-r5-hr", failPipeline).isEmpty)
+        } finally GlobalJobContext.synchronized { jobs.foreach(j => GlobalJobContext.getAll -= j) }
+    }
+
+    test("loadChecked: skips only callers holding unscoped pipeline:run and read; checks unscoped run with scoped read") {
+        assert(CallerVisibility.loadChecked(key("loader", "pipeline:run", "pipeline:read:catalog=Sales")))
+        assert(CallerVisibility.loadChecked(key("self-run", "pipeline:run:owner=self")))
+        assert(CallerVisibility.loadChecked(key("rb", KeyTemplatesForSpecs.capabilities("rag-builder"): _*)))
+        assert(!CallerVisibility.loadChecked(key("ops", KeyTemplatesForSpecs.capabilities("ops"): _*)))
+        assert(!CallerVisibility.loadChecked(editor))
+        assert(!CallerVisibility.loadChecked(full))
+        assert(!CallerVisibility.loadChecked(key("upl", "document:upload")))
+        assert(CallerVisibility.loadChecked(restricted("Sales" -> "edit")))
     }
 
     private def source(rel: String): String = {
