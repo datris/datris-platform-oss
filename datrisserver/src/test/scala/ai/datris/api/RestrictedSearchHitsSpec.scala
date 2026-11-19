@@ -132,10 +132,14 @@ class RestrictedSearchHitsSpec extends AnyFunSuite {
         }
 
     test("searchWriters is None for an unrestricted session, a full key and a catalog-scoped key without reading configs") {
-        for (rk <- Seq(editorSession, fullKey, salesKey)) {
+        for (rk <- Seq(editorSession, fullKey)) {
             assert(SearchAPIController.searchWriters(req(rk), "qdrant", "docs", None, boom) == Right(None), rk.label)
             assert(SearchAPIController.searchWriters(req(rk, "pgvector"), "pgvector", "orphan_x", Some("other"), boom) == Right(None), rk.label)
         }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): configs are read, as for the session.
+        val (keyRead, keyCalls) = counting(Seq(qd("sales_a", "Sales", "docs")))
+        assert(SearchAPIController.searchWriters(req(salesKey), "qdrant", "docs", None, keyRead) == Right(Some(Set("sales_a"))))
+        assert(keyCalls() == 1)
     }
 
     test("searchWriters is the existing 404 for a restricted session when no pipeline names the container or a namer is hidden") {
@@ -188,12 +192,22 @@ class RestrictedSearchHitsSpec extends AnyFunSuite {
             hit(2, "text" -> "no writer"),
             hit(3, "source_pipeline" -> "bob_probe")
         )
-        for (rk <- Seq(editorSession, fullKey, salesKey)) {
+        for (rk <- Seq(editorSession, fullKey)) {
             val r = req(rk)
             val writers = SearchAPIController.searchWriters(r, "qdrant", "orphan_x", None, boom).toOption.get
             assert(SearchAPIController.hitsFor(r, storeHits, writers) eq storeHits, rk.label)
             assert(SearchAPIController.hitsFor(r, storeHits, None) eq storeHits, rk.label)
         }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): only its pipelines' chunks.
+        val kr = req(salesKey)
+        val keyWriters = SearchAPIController.searchWriters(
+            kr,
+            "qdrant",
+            "orphan_x",
+            None,
+            () => Seq(qd("bob_probe", "Sales", "orphan_x"), qd("mkt_docs", "Marketing", "mkt_x"))
+        )
+        assert(ids(SearchAPIController.hitsFor(kr, storeHits, keyWriters.toOption.get)) == Seq(3), keyWriters.toString)
         assert(storeHits.size == 3)
     }
 

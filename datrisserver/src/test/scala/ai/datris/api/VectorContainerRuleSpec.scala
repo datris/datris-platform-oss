@@ -251,10 +251,27 @@ class VectorContainerRuleSpec extends AnyFunSuite {
     test("containerVisible stays true for unrestricted sessions and API keys without reading configs") {
         val boom: (String, String, Option[String]) => Seq[PipelineConfig] =
             (_, _, _) => throw new AssertionError("configs must not be read for an unrestricted caller")
-        for (rk <- Seq(editorSession, fullKey, salesKey)) {
+        for (rk <- Seq(editorSession, fullKey)) {
             val r = req(rk, path = "/api/v1/search/qdrant")
             assert(SearchAPIController.containerVisible(request = r, store = "qdrant", container = "docs", schema = None, find = boom), rk.label)
             assert(SearchAPIController.containerVisible(request = r, store = "pgvector", container = "vc_x", schema = Some("other"), find = boom), rk.label)
         }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): the session's rule.
+        val kr = req(salesKey, path = "/api/v1/search/qdrant")
+        assert(!SearchAPIController.containerVisible(request = kr, store = "qdrant", container = "docs", schema = None, find = (_, _, _) => Nil))
+        assert(!SearchAPIController.containerVisible(
+            request = kr,
+            store = "pgvector",
+            container = "vc_x",
+            schema = Some("other"),
+            find = (_, _, _) => Seq(pg("vc_h", "HR", "vc_x", schema = "other"))
+        ))
+        assert(SearchAPIController.containerVisible(
+            request = kr,
+            store = "pgvector",
+            container = "vc_x",
+            schema = Some("other"),
+            find = (_, _, _) => Seq(pg("vc_s", "Sales", "vc_x", schema = "other"))
+        ))
     }
 }

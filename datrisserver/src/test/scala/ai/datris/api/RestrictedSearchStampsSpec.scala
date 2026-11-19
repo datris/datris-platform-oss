@@ -468,7 +468,15 @@ class RestrictedSearchStampsSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
         val p3 = page
         assert(PipelineStatusAPIController.scrubResultPage(r, p3, readTap) eq p3, "3-argument call")
-        for (rk <- Seq(editor, salesKey); f <- Seq("tap-t_hr_feed.json", "tap-gone.csv", "tap-t_sales.csv", "orders.csv")) {
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): as the session.
+        val kr = req(salesKey, method = "GET", path = "/api/v1/pipeline/result")
+        assertSubsetScrubbed(PipelineStatusAPIController.scrubResultPage(kr, page, readTap, "tap-t_hr_feed.json").records, "catalog-scoped key, hidden tap")
+        assertSubsetScrubbed(PipelineStatusAPIController.scrubResultPage(kr, page, readTap, "tap-gone.csv").records, "catalog-scoped key, deleted tap")
+        Seq("tap-t_sales.csv", "orders.csv").foreach { f =>
+            val p = page
+            assert(PipelineStatusAPIController.scrubResultPage(kr, p, readTap, f) eq p, "catalog-scoped key " + f)
+        }
+        for (rk <- Seq(editor); f <- Seq("tap-t_hr_feed.json", "tap-gone.csv", "tap-t_sales.csv", "orders.csv")) {
             val p = page
             assert(
                 PipelineStatusAPIController.scrubResultPage(req(rk, method = "GET", path = "/api/v1/pipeline/result"), p, readTap, f) eq p,

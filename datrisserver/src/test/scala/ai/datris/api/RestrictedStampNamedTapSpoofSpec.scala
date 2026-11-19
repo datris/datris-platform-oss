@@ -264,7 +264,7 @@ class RestrictedStampNamedTapSpoofSpec extends AnyFunSuite with BeforeAndAfterEa
             sourceSpoof(7, "_datris_run_id" -> "run-hr"),
             hit(8, "_datris_tap_run" -> ("t_sales|" + Time), "_datris_source" -> "tap:t_sales", "_datris_script_sha" -> "sha-hr")
         )
-        for (rk <- Seq(editor, fullKey, salesKey)) {
+        for (rk <- Seq(editor, fullKey)) {
             val hs = allHits
             assert(SearchAPIController.hitsFor(req(rk), hs, None, failReadTap, failRun) eq hs, rk.label)
             for (rows <- Seq(spoofRows, pipeRows)) {
@@ -272,6 +272,17 @@ class RestrictedStampNamedTapSpoofSpec extends AnyFunSuite with BeforeAndAfterEa
                 val r = req(rk, "GET", "/api/v1/pipeline/result")
                 assert(PipelineStatusAPIController.scrubResultPage(r, p, failReadTap, StreamFile, "orders", "tok", failRun, failDescriptions) eq p, rk.label)
             }
+        }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): its result rows get the
+        // session's answer (writers None is honoured for any caller, as for the session above).
+        val hs = allHits
+        assert(SearchAPIController.hitsFor(req(salesKey), hs, None, failReadTap, failRun) eq hs, salesKey.label)
+        for (rows <- Seq(spoofRows, pipeRows)) {
+            val r = req(salesKey, "GET", "/api/v1/pipeline/result")
+            val keyPage =
+                PipelineStatusAPIController.scrubResultPage(r, page(rows), readTap, StreamFile, "orders", "tok", record("orders", "t_hr_feed"), () => Nil)
+            assert(keyPage.records.toString == bobPage(page(rows), record("orders", "t_hr_feed"), () => Nil).records.toString, salesKey.label)
+            assert(keyPage.records.toString != rows.toString, salesKey.label)
         }
     }
 }

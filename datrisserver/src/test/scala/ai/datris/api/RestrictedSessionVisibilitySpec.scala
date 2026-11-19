@@ -533,10 +533,15 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(v.edges.forall(e => ids.contains(e.from) && ids.contains(e.to)), v.edges)
         assert(!v.edges.exists(e => e.from == "pipeline:payroll" || e.to == "pipeline:payroll"))
 
-        // Unrestricted session and API keys: the graph is untouched.
+        // Unrestricted session: the graph is untouched.
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(LineageAPIController.visibleGraph(req(editor), g) == g)
-        assert(LineageAPIController.visibleGraph(req(catalogScopedMetadataKey), g) == g)
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B).
+        val keyIds = LineageAPIController.visibleGraph(req(catalogScopedMetadataKey), g).nodes.map(_.id).toSet
+        assert(keyIds.contains("pipeline:orders"), keyIds)
+        Seq("pipeline:payroll", "tap:t_hr_feed", "tap:t_payroll", "catalog:HR").foreach(i =>
+            assert(!keyIds.contains(i), s"$i must be dropped for the key: $keyIds")
+        )
     }
 
     test("lineage columns for a hidden pipeline is the no-such-pipeline 404") {
