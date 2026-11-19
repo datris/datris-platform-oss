@@ -146,3 +146,34 @@ object ScopeDenialFixtures {
         if (e == null) TenantContext.clear() else TenantContext.set(e)
     }
 }
+
+/** The route-gate refusal for a stored capability whose scope the platform
+  * does not apply (plans/stories/api-key-inert-scopes.md, Fix 3). It is the
+  * CapabilityInterceptor's capability-denied body (key set unchanged), with a
+  * `message` that names the inert capability and why. The exact wording is
+  * left to the implementation; these helpers pin what it must carry. */
+object InertScopeDenial {
+
+    import scala.collection.JavaConverters._
+
+    /** The interceptor's capability-denied body keys, as today. */
+    val BodyKeys: Set[String] = Set("error", "errorKind", "key", "required", "route", "message")
+
+    /** `text` names `inertRaw` and, outside that string, its scope key. */
+    def assertNames(text: String, inertRaw: String, scopeKey: String): Unit = {
+        assert(text != null && text.contains(inertRaw), "does not name '" + inertRaw + "': " + text)
+        assert(text.replace(inertRaw, "").contains(scopeKey), "does not name the scope '" + scopeKey + "': " + text)
+    }
+
+    def assertBody(body: String, label: String, required: String, route: String, inertRaw: String, scopeKey: String): Unit = {
+        assert(body != null && body.nonEmpty, "no body")
+        val o = JsonParser.parseString(body).getAsJsonObject
+        assert(o.keySet().asScala.toSet == BodyKeys, body)
+        assert(o.get("error").getAsString == ScopeDenialWording.Error, body)
+        assert(o.get("errorKind").getAsString == ScopeDenialWording.ErrorKind, body)
+        assert(o.get("key").getAsString == label, body)
+        assert(o.get("required").getAsString == required, body)
+        assert(o.get("route").getAsString == route, body)
+        assertNames(o.get("message").getAsString, inertRaw, scopeKey)
+    }
+}

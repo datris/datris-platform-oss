@@ -177,4 +177,32 @@ class APIKeyValidatorSpec extends AnyFunSuite {
         assert(rk.isLegacyFullAccess && !rk.restrictedSession)
         assert(rk.capabilities == Seq(Capability.FullAccess))
     }
+
+    // Story: API keys, a scope the server does not apply can no longer be put
+    // on a key, and stored ones stop granting (plans/stories/api-key-inert-scopes.md),
+    // Acceptance, InertScopeGateSpec and APIKeyValidatorSpec. Pins the new
+    // ResolvedKey.inertCapabilities field and that resolveAgainst splits a
+    // stored key with CapabilityScopes.partition (Capability.parse stays lenient,
+    // so the key still resolves).
+    test("a stored key with job:read:owner=self resolves without it and with it under inertCapabilities") {
+        val ks = Map("ik_old" -> "val-ik-old", "ik_ok" -> "val-ik-ok")
+        val md = Map(
+            "ik_old" -> """{"capabilities":["job:read:owner=self","pipeline:read"],"revoked":false,"keyId":"k9"}""",
+            "ik_ok" -> """{"capabilities":["pipeline:read:catalog=Sales","search:vector:collection=docs"],"revoked":false}"""
+        )
+        val rk = APIKeyValidator.resolveAgainst("val-ik-old", ks, md)
+        assert(rk.label == "ik_old" && !rk.isLegacyFullAccess && rk.keyId.contains("k9"))
+        assert(rk.capabilities.map(_.raw) == Seq("pipeline:read"), rk.capabilities.map(_.raw))
+        assert(rk.inertCapabilities.map(_.raw) == Seq("job:read:owner=self"), rk.inertCapabilities.map(_.raw))
+        assert(!rk.matchesResourceAction("job", "read"), "the inert capability grants nothing")
+        assert(!rk.grants("job", "read", Map("owner" -> "ik_old")))
+        assert(rk.grants("pipeline", "read", Map.empty))
+
+        val ok = APIKeyValidator.resolveAgainst("val-ik-ok", ks, md)
+        assert(ok.inertCapabilities.isEmpty, ok.inertCapabilities.map(_.raw))
+        assert(ok.capabilities.map(_.raw) == Seq("pipeline:read:catalog=Sales", "search:vector:collection=docs"))
+        // legacy keys and sessions carry none
+        assert(APIKeyValidator.resolveAgainst("val-legacy", keys, metadata).inertCapabilities.isEmpty)
+        assert(APIKeyValidator.resolveFromSession(ai.datris.model.User("ed", "h", ai.datris.model.User.RoleEditor, null, null, null)).inertCapabilities.isEmpty)
+    }
 }

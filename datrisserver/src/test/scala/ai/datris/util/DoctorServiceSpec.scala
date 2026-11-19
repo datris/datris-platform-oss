@@ -1062,4 +1062,101 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(math.abs(ids.indexOf("env.label") - ids.indexOf("env.seen")) == 1, "registered next to env.seen: " + ids)
         assert(DoctorService.runStartup(p, slots, "1.50.0").map(_.id).contains("env.label"))
     }
+
+    // keys.inert_scopes: plans/stories/api-key-inert-scopes.md, Acceptance,
+    // DoctorServiceSpec. Pinned: check id "keys.inert_scopes", startupSafe =
+    // true, registered in DoctorService.checks (found by id), reading
+    // Probes.apiKeyCapabilities() (label -> raw capability strings of the
+    // non-revoked keys; Nil by default), CapabilityScopes.inertOf and
+    // CapabilityScopes.refuseInert (system property
+    // CapabilityScopes.InertScopesProperty, set and restored here). The
+    // LiveProbes filter is the pure
+    //   DoctorService.nonRevokedKeyCapabilities(metadata: Map[String, String]): List[(String, Seq[String])]
+    // over the {env}/api-key-metadata map (label -> metadata JSON).
+
+    private def withInertScopes[A](value: Option[String])(body: => A): A = {
+        val key = ai.datris.auth.CapabilityScopes.InertScopesProperty
+        val previous = sys.props.get(key)
+        value match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    private def keyProbes(keys: List[(String, Seq[String])]): FakeProbes =
+        new FakeProbes() {
+            override def apiKeyCapabilities(): List[(String, Seq[String])] = keys
+        }
+
+    private def inertCheck(p: FakeProbes): Check =
+        DoctorService.checks(p, slots, "1.60.0", Map.empty).find(_.id == "keys.inert_scopes")
+            .getOrElse(fail("no keys.inert_scopes check in " + DoctorService.checks(p, slots, "1.60.0", Map.empty).map(_.id)))
+
+    private val inertKeys = List(
+        "ik_old" -> Seq("job:read:owner=self", "pipeline:read"),
+        "rag" -> Seq("pipeline:read", "pipeline:run:owner=self", "search:vector:collection=docs", "secret:read:_type=tap")
+    )
+
+    test("keys.inert_scopes: ok with none; error naming label and capability in refuse mode; warn in allow mode; revoked keys ignored; startup-safe") {
+        withInertScopes(None) {
+            assume(sys.env.get("DATRIS_KEY_INERT_SCOPES").isEmpty, "DATRIS_KEY_INERT_SCOPES is set in this environment")
+            // ok with none: no keys at all (the default probe), and only supported scopes
+            val none = inertCheck(new FakeProbes())
+            assert(none.startupSafe)
+            assert(none.run().status == "ok", none.run())
+            assert(inertCheck(keyProbes(inertKeys.filter(_._1 == "rag"))).run().status == "ok")
+
+            // refuse mode (default): error naming the label and the capability
+            val r = inertCheck(keyProbes(inertKeys)).run()
+            assert(r.status == "error", r)
+            assert(r.detail.contains("ik_old") && r.detail.contains("job:read:owner=self"), r.detail)
+            assert(!r.detail.contains("rag"), "a key with only supported scopes is not listed: " + r.detail)
+            assert((r.detail + " " + r.remediation).contains("DATRIS_KEY_INERT_SCOPES"), r.detail + " | " + r.remediation)
+
+            // startup-safe: in the quick report and the startup run
+            val quickIds = DoctorService.run("quick", Set.empty, Map.empty, keyProbes(inertKeys), slots, "1.60.0").checks.map(_.id)
+            assert(quickIds.contains("keys.inert_scopes"), quickIds)
+            assert(DoctorService.runStartup(keyProbes(inertKeys), slots, "1.60.0").map(_.id).contains("keys.inert_scopes"))
+        }
+        withInertScopes(Some("allow")) {
+            val w = inertCheck(keyProbes(inertKeys)).run()
+            assert(w.status == "warn", w)
+            assert(w.detail.contains("ik_old") && w.detail.contains("job:read:owner=self"), w.detail)
+            assert(inertCheck(new FakeProbes()).run().status == "ok", "no inert scopes with the opt-out is still ok")
+        }
+        withInertScopes(Some("yes")) {
+            assert(inertCheck(keyProbes(inertKeys)).run().status == "error", "an unknown value refuses")
+        }
+
+        // revoked keys ignored (the LiveProbes filter)
+        val md = Map(
+            "ik_old" -> """{"capabilities":["job:read:owner=self","pipeline:read"],"revoked":false}""",
+            "ik_gone" -> """{"capabilities":["query:postgres:database=x"],"revoked":true}""",
+            "ik_nometa_flag" -> """{"capabilities":["pipeline:read"]}"""
+        )
+        val active = DoctorService.nonRevokedKeyCapabilities(md).toMap
+        assert(active.keySet == Set("ik_old", "ik_nometa_flag"), active)
+        assert(active("ik_old") == Seq("job:read:owner=self", "pipeline:read"))
+        withInertScopes(None) {
+            val r = inertCheck(keyProbes(DoctorService.nonRevokedKeyCapabilities(md))).run()
+            assert(!r.detail.contains("ik_gone") && !r.detail.contains("query:postgres:database=x"), r.detail)
+            val onlyRevoked = DoctorService.nonRevokedKeyCapabilities(md.filter(_._1 == "ik_gone"))
+            assert(onlyRevoked.isEmpty)
+            assert(inertCheck(keyProbes(onlyRevoked)).run().status == "ok")
+        }
+    }
+
+    test("keys.inert_scopes is an error row when the key metadata cannot be read") {
+        val p = new FakeProbes() {
+            override def apiKeyCapabilities(): List[(String, Seq[String])] = throw new RuntimeException("vault down")
+        }
+        val r = DoctorService.runOne(inertCheck(p))
+        assert(r.id == "keys.inert_scopes" && r.status == "error", r.toString)
+        assert(r.detail.contains("vault down"), r.detail)
+    }
 }
