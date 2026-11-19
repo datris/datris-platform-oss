@@ -432,6 +432,75 @@ class DecisionSitesDispatchSpec extends AnyFunSuite with BeforeAndAfterAll with 
         assert(store.pendingCount == 1)
     }
 
+    test("queue: a new pending action is stored with the current hash version and its delimited hash") {
+        PolicyIO.currentOverride = AgentPolicy(actions = Map("tap:run" -> PolicyMode.Approve))
+        val body = "{\"name\":\"t1\"}"
+        val o = json(send(Some(agent), "POST", "/api/v1/tap/run", Some(body)).body)
+        val pa = store.get(o.get("approvalId").getAsString).get
+        assert(pa.hashVersion.contains(PendingAction.CurrentHashVersion))
+        assert(pa.bodyHash == PendingAction.delimitedHashOf(agent, "POST", "/api/v1/tap/run", None, Some(body)))
+    }
+
+    test("queue: an expired pending action is not handed back as a duplicate; a fresh approval is queued") {
+        PolicyIO.currentOverride = AgentPolicy(actions = Map("tap:run" -> PolicyMode.Approve))
+        val body = "{\"name\":\"t1\"}"
+        val past = Instant.now().minus(2, ChronoUnit.HOURS)
+        def stale(id: String, hashVersion: Option[Int]) = PendingAction(
+            id = id,
+            action = "tap:run",
+            resourceType = Some("tap"),
+            resourceName = Some("t1"),
+            resourceVersion = None,
+            actor = AuditActorInfo("api-key", agent),
+            reason = None,
+            agentSession = None,
+            method = "POST",
+            path = "/api/v1/tap/run",
+            query = None,
+            contentType = Some("application/json"),
+            body = Some(body),
+            bodyHash =
+                if (hashVersion.isDefined) PendingAction.delimitedHashOf(agent, "POST", "/api/v1/tap/run", None, Some(body))
+                else PendingAction.hashOf(agent, "POST", "/api/v1/tap/run", None, Some(body)),
+            createdAt = past,
+            // past its expiry, not yet removed by the store's TTL monitor
+            expiresAt = past.plus(1, ChronoUnit.HOURS),
+            state = PendingAction.Pending,
+            hashVersion = hashVersion
+        )
+        for (hv <- Seq(Some(PendingAction.CurrentHashVersion), None)) {
+            store.clear()
+            store.put(stale("pa_stale", hv))
+            val o = json(send(Some(agent), "POST", "/api/v1/tap/run", Some(body)).body)
+            assert(o.get("status").getAsString == "pending_approval" && !o.get("duplicate").getAsBoolean, s"$hv: $o")
+            assert(o.get("approvalId").getAsString != "pa_stale", s"$hv: $o")
+            assert(Instant.parse(o.get("expiresAt").getAsString).isAfter(Instant.now()), s"$hv: $o")
+        }
+    }
+
+    test("replay: the replay client replays a path-named approval once, with encoded characters in the name") {
+        install(baseEnv.copy(useApiKeys = false))
+        PolicyReplay.port = port
+        val pa = approved("POST", "/api/v1/pipelines/a%20b%2Bc/rename", "{}", Some("a b+c"), token = "tokpath")
+        val res = PolicyReplay.execute(pa, pa.replayToken.get, None)
+        assert(res.status == 200 && res.body == "handled", s"${res.status} ${res.body}")
+        assert(store.consumed.contains(pa.id))
+        val again = PolicyReplay.execute(pa, pa.replayToken.get, None)
+        assert(again.status == 403 && json(again.body).get("errorKind").getAsString == "policy_replay_rejected", again.body)
+    }
+
+    test("replay: the replay client replays a query-named approval once") {
+        install(baseEnv.copy(useApiKeys = false))
+        PolicyReplay.port = port
+        val pa = approved("DELETE", "/api/v1/tap", "{}", Some("t1"), token = "tokquery").copy(query = Some("name=t1"), contentType = None, body = None)
+        store.put(pa)
+        val res = PolicyReplay.execute(pa, pa.replayToken.get, None)
+        assert(res.status == 200 && res.body == "handled", s"${res.status} ${res.body}")
+        assert(store.consumed.contains(pa.id))
+        val again = PolicyReplay.execute(pa, pa.replayToken.get, None)
+        assert(again.status == 403 && json(again.body).get("errorKind").getAsString == "policy_replay_rejected", again.body)
+    }
+
     test("queue: a request the dispatcher does not route to a handler is not an action: it is not queued and gets the not-found answer") {
         PolicyIO.currentOverride = AgentPolicy(actions = Map("tap:run" -> PolicyMode.Approve))
         val r = send(Some(agent), "POST", "/api/v1/tap/run/", Some("{\"name\":\"t1\"}"))

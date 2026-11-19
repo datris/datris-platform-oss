@@ -157,7 +157,8 @@ class PolicyInterceptor extends HandlerInterceptor {
         val store = PolicyInterceptor.store
 
         try {
-            val existing = PolicyInterceptor.pendingDuplicate(store, hash, actor.label)
+            val existing =
+                PolicyInterceptor.pendingDuplicate(store, hash, PolicyInterceptor.legacyDedupHash(actor.label, request, query, bodyStr), actor.label)
             val pa = existing.getOrElse {
                 if (store.countPending(actor.label) >= policy.limits.maxPendingPerActor) {
                     val body = new JsonObject()
@@ -188,7 +189,8 @@ class PolicyInterceptor extends HandlerInterceptor {
                     bodyHash = hash,
                     createdAt = now,
                     expiresAt = now.plus(policy.limits.pendingTtlHours.toLong, ChronoUnit.HOURS),
-                    state = PendingAction.Pending
+                    state = PendingAction.Pending,
+                    hashVersion = Some(PendingAction.CurrentHashVersion)
                 )
                 store.insert(created)
                 logger.info(
@@ -309,6 +311,13 @@ object PolicyInterceptor {
         def listPending(actorLabel: String): List[PendingAction]
         def insert(pa: PendingAction): Unit
         def currentVersion(resourceType: String, name: String): Option[Int]
+
+        /** The actor's pending actions that may be this request: the one
+          * stored with `hash`, and every one stored without a `hashVersion`
+          * (hashed the earlier way). Expiry is decided by the caller.
+          * [[MongoStore]] answers it with one query. */
+        def pendingCandidates(hash: String, actorLabel: String): List[PendingAction] =
+            findPendingDuplicate(hash, actorLabel).toList ++ listPending(actorLabel).filter(_.hashVersion.isEmpty)
     }
 
     object MongoStore extends Store {
@@ -319,6 +328,7 @@ object PolicyInterceptor {
         def listPending(actorLabel: String): List[PendingAction] = PendingActionIO.list(Some(PendingAction.Pending), Some(actorLabel), Int.MaxValue)
         def insert(pa: PendingAction): Unit = PendingActionIO.insert(pa)
         def currentVersion(resourceType: String, name: String): Option[Int] = PolicyGate.currentVersion(resourceType, name)
+        override def pendingCandidates(hash: String, actorLabel: String): List[PendingAction] = PendingActionIO.pendingCandidates(hash, actorLabel)
     }
 
     @volatile private[datris] var store: Store = MongoStore
@@ -340,21 +350,35 @@ object PolicyInterceptor {
         PolicyGate.resourceName(request) == pa.resourceName
     }
 
-    /** The dedup hash of a request: over its canonical method and path
-      * ([[ai.datris.auth.RequestPaths]]), so two spellings of one route are
-      * one action. */
+    /** The dedup hash of a request, stored on new actions: over its
+      * canonical method and path ([[ai.datris.auth.RequestPaths]]), so two
+      * spellings of one route are one action, with every field delimited
+      * ([[PendingAction.delimitedHashOf]], [[PendingAction.CurrentHashVersion]]). */
     def dedupHash(actorLabel: String, request: HttpServletRequest, query: Option[String], body: Option[String]): String =
+        PendingAction.delimitedHashOf(actorLabel, ai.datris.auth.RequestPaths.method(request), ai.datris.auth.RequestPaths.path(request), query, body)
+
+    /** The request's hash in the earlier form ([[PendingAction.hashOf]]) over
+      * the canonical method and path, to match actions stored without a
+      * `hashVersion`. */
+    def legacyDedupHash(actorLabel: String, request: HttpServletRequest, query: Option[String], body: Option[String]): String =
         PendingAction.hashOf(actorLabel, ai.datris.auth.RequestPaths.method(request), ai.datris.auth.RequestPaths.path(request), query, body)
 
-    /** [[dedupHash]] of a stored pending action, from its stored method and
-      * raw path read the same way. */
-    def dedupHashOf(pa: PendingAction): String =
+    /** [[legacyDedupHash]] of a stored pending action, from its stored method
+      * and raw path read the same way. */
+    def legacyDedupHashOf(pa: PendingAction): String =
         PendingAction.hashOf(pa.actor.label, ai.datris.auth.RequestPaths.method(pa.method), ai.datris.auth.RequestPaths.canonicalOf(pa.path), pa.query, pa.body)
 
-    /** The pending action that is this request: by its stored hash, else (an
-      * action queued before the hash was canonical, whose stored hash is over
-      * the raw method and URI) by recomputing the canonical hash of each of
-      * the actor's pending actions. Stored documents are never rewritten. */
-    def pendingDuplicate(store: Store, hash: String, actorLabel: String): Option[PendingAction] =
-        store.findPendingDuplicate(hash, actorLabel).orElse(store.listPending(actorLabel).find(pa => dedupHashOf(pa) == hash))
+    /** The still-pending, unexpired action of `actorLabel` that is this
+      * request, from one [[Store.pendingCandidates]] read: one stored with
+      * the current hash version and `hash`, else one stored without a hash
+      * version (queued before this version) whose earlier-form hash,
+      * recomputed over its canonical method and path, is `legacyHash`. Only
+      * the actor's unmarked documents are rehashed. Stored documents are
+      * never rewritten. */
+    def pendingDuplicate(store: Store, hash: String, legacyHash: String, actorLabel: String): Option[PendingAction] = {
+        val now = Instant.now()
+        val live = store.pendingCandidates(hash, actorLabel).filter(pa => pa.isPending && !pa.isExpired(now) && pa.actor.label == actorLabel)
+        live.find(pa => pa.hashVersion.isDefined && pa.bodyHash == hash)
+            .orElse(live.find(pa => pa.hashVersion.isEmpty && legacyDedupHashOf(pa) == legacyHash))
+    }
 }
