@@ -158,8 +158,11 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
-            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
+            // A scope-limited key's caller SQL is refused first: no pipeline
+            // is read and nothing reaches the warehouse.
+            QueryAPIController.keySqlRefusal(request, sql).foreach(r => return r)
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             QueryAPIController.restrictedSqlRefusal(request, sql).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
@@ -204,8 +207,11 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
-            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
+            // A scope-limited key's caller SQL is refused first: no pipeline
+            // is read and nothing reaches the warehouse.
+            QueryAPIController.keySqlRefusal(request, sql).foreach(r => return r)
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             QueryAPIController.restrictedSqlRefusal(request, sql).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
@@ -248,8 +254,11 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
-            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
+            // A scope-limited key's caller SQL is refused first: no pipeline
+            // is read and nothing reaches the warehouse.
+            QueryAPIController.keySqlRefusal(request, sql).foreach(r => return r)
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             QueryAPIController.restrictedSqlRefusal(request, sql).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
@@ -512,17 +521,60 @@ object QueryAPIController {
     val RestrictedSqlRefusal: String =
         "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline's table."
 
-    /** Warehouse queries (snowflake, sqlserver, databricks) for a restricted
-      * user's session: any non-blank caller `sql` is refused with 403, since
-      * caller SQL can read any table the connection reaches and any column
-      * under any alias. Blank or whitespace `sql` counts as absent (the
-      * server-built preview). None for everyone else, API keys included. */
+    /** Whether the warehouse would run `sql` as caller SQL: exactly the test
+      * the warehouse utils apply (`sql.map(_.trim).filter(_.nonEmpty)`), so
+      * a value is treated as absent only when it would yield the server-built
+      * preview. `String.trim` strips only characters up to U+0020, so a
+      * non-breaking space is caller SQL, as is the `toString` of any
+      * non-string JSON value (the handlers pass `body.get("sql").toString`). */
+    private[api] def callerSqlPresent(sql: Option[String]): Boolean = sql.exists(_.trim.nonEmpty)
+
+    /** Warehouse queries (snowflake, sqlserver, databricks): any caller
+      * `sql` ([[callerSqlPresent]]) is refused with 403, since caller SQL can
+      * read any table the connection reaches and any column under any alias.
+      *   - A restricted user's session: today's `{"error": ...}` body
+      *     ([[RestrictedSqlRefusal]]).
+      *   - An API key limited to a catalog or to what it created
+      *     ([[keySqlRefusal]]): the capability-denied body with the
+      *     install-wide message.
+      * Blank `sql` counts as absent (the server-built preview). None for
+      * everyone else (nothing computed beyond the identity checks). */
     private[api] def restrictedSqlRefusal(
         request: jakarta.servlet.http.HttpServletRequest,
         sql: Option[String]
     ): Option[ResponseEntity[String]] =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || sql.forall(_.trim.isEmpty)) None
-        else Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](jsonError(RestrictedSqlRefusal)))
+        if (ai.datris.auth.CapabilityCheck.isRestrictedSession(request))
+            if (!callerSqlPresent(sql)) None
+            else Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](jsonError(RestrictedSqlRefusal)))
+        else keySqlRefusal(request, sql)
+
+    /** A caller `sql` from an API key limited to a catalog or to what it
+      * created ([[ai.datris.auth.CallerVisibility.limited]]; plans/stories/scoped-key-read-routes.md,
+      * Part C, lead ruling 6), even when the named pipeline is in scope: the
+      * capability-denied 403 (`error`, `errorKind`, `message`) with
+      * [[ai.datris.auth.CallerVisibility.InstallWideRequestMessage]], naming
+      * nothing from the SQL; the refusal is noted for the audit log under the
+      * route's capability. The handlers call it before anything is read, so
+      * no pipeline is looked up and nothing reaches the warehouse. None for
+      * sessions (see [[restrictedSqlRefusal]]), no identity, every key that is
+      * not limited, and a blank `sql`. */
+    private[api] def keySqlRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        sql: Option[String]
+    ): Option[ResponseEntity[String]] =
+        if (!callerSqlPresent(sql) || ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || !ai.datris.auth.CapabilityCheck.isLimited(request))
+            None
+        else {
+            val required = (Option(request.getMethod), Option(request.getRequestURI)) match {
+                case (Some(m), Some(p)) =>
+                    ai.datris.auth.CapabilityRoutes.lookup(m, p) match {
+                        case ai.datris.auth.RouteCheck.Require(r, a) => r + ":" + a
+                        case _ => "query"
+                    }
+                case _ => "query"
+            }
+            Some(PipelineAPIController.installWideRefusal(request, "this request", required))
+        }
 
     /** Whether a pipeline-bound query result loses its tap stamp columns:
       * the caller is limited for taps

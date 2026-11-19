@@ -50,9 +50,11 @@ class CatalogFindAPIController {
             // could read that pipeline (catalog/owner scopes included).
             val visible = pipelines.filter(p => p != null && CapabilityCheck.grants(request, "pipeline", "read", scopeContext(p)))
 
-            val unityCatalog =
-                if (includeUnityCatalog != null && includeUnityCatalog.booleanValue()) Some(searchUnityCatalog(query.trim, pipelines, request))
-                else None
+            val unityCatalog = CatalogFindAPIController.unityCatalogSearch(
+                request,
+                includeUnityCatalog != null && includeUnityCatalog.booleanValue(),
+                () => searchUnityCatalog(query.trim, pipelines, request)
+            )
 
             val result = CatalogFind.find(
                 query.trim,
@@ -131,6 +133,20 @@ class CatalogFindAPIController {
 }
 
 object CatalogFindAPIController {
+
+    /** What `includeUnityCatalog` yields for this caller. Not requested: None
+      * (the Datris-only shape). Requested by a caller limited to a catalog or
+      * to what it created ([[CapabilityCheck.isLimited]]): the metastore-wide
+      * search is skipped (Unity Catalog tables carry no Datris catalog, and
+      * browse is refused to the same callers; plans/stories/scoped-key-read-routes.md,
+      * Part C) and the answer is the one a caller with no readable Databricks
+      * secret gets (nothing searched, nothing skipped, no hits), so it
+      * reveals nothing; `search` is never called, so no secret is read and no
+      * warehouse is contacted. Everyone else: `search()` as today. */
+    def unityCatalogSearch(request: HttpServletRequest, requested: Boolean, search: () => UnityCatalogResults): Option[UnityCatalogResults] =
+        if (!requested) None
+        else if (CapabilityCheck.isLimited(request)) Some(UnityCatalogResults(Nil, Nil, Nil))
+        else Some(search())
 
     /** GET /catalog/find for a limited caller ([[CapabilityCheck.isLimited]]:
       * a restricted session, or a catalog- / owner-scoped API key): whether a

@@ -185,7 +185,7 @@ class InertScopeGateSpec extends AnyFunSuite with BeforeAndAfterEach {
             // v1.60.0 behaviour for a narrowed scoped wildcard too
             captured.clear()
             val wide = stored("sales_all", "*:*:catalog=Sales")
-            assert(gate(wide, "POST", "/api/v1/query/postgres")._1, "allow mode restores v1.60.0")
+            assert(gate(wide, "GET", "/api/v1/audit-log")._1, "allow mode restores v1.60.0")
             assert(inertUses.size == 1, entries.map(e => e.category + "/" + e.action))
             captured.clear()
             assert(gate(wide, "GET", "/api/v1/pipelines")._1)

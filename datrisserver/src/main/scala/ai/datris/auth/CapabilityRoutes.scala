@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.model.ResolvedKey
 import org.springframework.util.AntPathMatcher
 
 /** The result of looking up the capability required by an incoming request. */
@@ -197,7 +198,8 @@ object CapabilityRoutes {
 
         // Metadata. The raw table/collection listings under /metadata/** cannot
         // be narrowed to a catalog, so restricted sessions are refused them
-        // even though their bundle holds metadata:read (UnfilterableForRestricted).
+        // even though their bundle holds metadata:read (UnfilterableForRestricted),
+        // and so are scope-limited API keys (InstallWideForLimited).
         Route("GET", "/api/v1/metadata/**", "metadata", "read"),
         Route("GET", "/api/v1/vector-stores/available", "metadata", "read"),
         Route("POST", "/api/v1/config/generate-schema", "metadata", "read"),
@@ -258,8 +260,9 @@ object CapabilityRoutes {
 
     /** Routes a restricted user's session is refused even though its bundle
       * holds the capability the route requires: raw table/collection and
-      * warehouse listings cannot be narrowed to the granted catalogs. API
-      * keys and unrestricted sessions are unaffected. */
+      * warehouse listings cannot be narrowed to the granted catalogs.
+      * Unrestricted sessions are unaffected; a limited API key is refused
+      * them (and the raw queries) through [[InstallWideForLimited]]. */
     val UnfilterableForRestricted: Seq[(String, String)] = Seq(
         ("GET", "/api/v1/metadata/**"),
         ("GET", "/api/v1/unity-catalog/browse")
@@ -269,6 +272,50 @@ object CapabilityRoutes {
     def refusedForRestrictedSession(method: String, path: String): Boolean =
         method != null && path != null &&
             UnfilterableForRestricted.exists { case (m, p) => m.equalsIgnoreCase(method) && matcher.`match`(p, path) }
+
+    /** Install-wide routes with nothing to filter, refused to every caller
+      * limited to a catalog or to what it created ([[CallerVisibility.limited]]:
+      * a restricted session, or an API key carrying `catalog=` / `owner=` on a
+      * pipeline or tap capability without unscoped read), even when the
+      * capability was granted explicitly (plans/stories/scoped-key-read-routes.md,
+      * Part C, Decision D3): the listings in [[UnfilterableForRestricted]] and
+      * the raw Postgres, MongoDB and natural-language queries, which can read
+      * any table or collection the connection reaches. */
+    val InstallWideForLimited: Seq[(String, String)] = UnfilterableForRestricted ++ Seq(
+        ("POST", "/api/v1/query/postgres"),
+        ("POST", "/api/v1/query/mongodb"),
+        ("POST", "/api/v1/query/natural")
+    )
+
+    /** True when `method path` is one of [[InstallWideForLimited]]. */
+    def refusedForLimited(method: String, path: String): Boolean =
+        method != null && path != null &&
+            InstallWideForLimited.exists { case (m, p) => m.equalsIgnoreCase(method) && matcher.`match`(p, path) }
+
+    /** Why a caller is refused a route whose capability it may hold. */
+    sealed trait ScopeRefusal
+
+    /** A restricted session on a table or collection listing
+      * ([[refusedForRestrictedSession]]): refused whether or not it holds
+      * the capability, with the listing message. */
+    case object RestrictedListing extends ScopeRefusal
+
+    /** A limited caller ([[CallerVisibility.limited]]) on an
+      * [[InstallWideForLimited]] route: refused when it holds the route
+      * capability (a caller that does not hold it keeps the does-not-hold
+      * or inert-scope answer). */
+    case object InstallWide extends ScopeRefusal
+
+    /** The one decision the capability gate (`CapabilityInterceptor`) and the
+      * MCP tool list ([[MCPToolRoutes.allowedTools]]) both apply, so a tool is
+      * hidden exactly when the gate refuses its route. None for a null
+      * identity, a route outside both lists, and every caller that is not
+      * limited (nothing is computed for them beyond the route match). */
+    def scopeRefusal(rk: ResolvedKey, method: String, path: String): Option[ScopeRefusal] =
+        if (rk == null) None
+        else if (rk.restrictedSession && refusedForRestrictedSession(method, path)) Some(RestrictedListing)
+        else if (refusedForLimited(method, path) && CallerVisibility.limited(rk)) Some(InstallWide)
+        else None
 
     /** Every `resource:action` pair the table grants — the vocabulary the
       * agent policy is allowed to use. */

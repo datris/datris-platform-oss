@@ -184,10 +184,13 @@ object MCPToolRoutes {
 
     private def mappedAllowed(name: String, method: String, path: String, key: ResolvedKey): Boolean =
         CapabilityRoutes.lookup(method, path) match {
-            case RouteCheck.Require(_, _) if key.restrictedSession && CapabilityRoutes.refusedForRestrictedSession(method, path) =>
-                // The server refuses this listing to a restricted session.
-                false
-            case RouteCheck.Require(resource, action) => key.matchesResourceAction(resource, action)
+            case RouteCheck.Require(resource, action) =>
+                // Hidden when the key lacks the capability, or when the gate
+                // refuses the route to this caller anyway: a restricted
+                // session on a listing, or a caller limited to a catalog or
+                // to what it created on an install-wide route. The same
+                // decision CapabilityInterceptor applies (scopeRefusal).
+                key.matchesResourceAction(resource, action) && CapabilityRoutes.scopeRefusal(key, method, path).isEmpty
             case RouteCheck.Skip => true
             case RouteCheck.Unmapped =>
                 // A Mapped row pointing at a route CapabilityRoutes doesn't

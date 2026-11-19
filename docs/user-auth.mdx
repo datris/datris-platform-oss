@@ -88,7 +88,7 @@ What a user with scoped access sees:
 
 Only admins assign grants, and admins are never scoped. Turning **Scoped access** off keeps the stored grants (the row shows *Scoped access off*) but the user gets their role's full access again until it is turned back on. Each change is recorded in the [audit log](/audit-log). Through the API, `PATCH /api/v1/auth/users/{username}` takes `restricted` and a full-replacement `catalogGrants` map, and `/api/v1/auth/me` returns both fields.
 
-API keys are separate: a key's `catalog=` scopes keep working as described in [API keys](/api-keys).
+API keys are separate: a key's `catalog=` scopes are set on the key, not through grants. A key limited by `catalog=` or `owner=` is held to its scope the same way on lists, records, previews, search, lineage and incidents, and is refused the same install-wide listings and raw queries (a pipeline or tap it names outside its scope answers `403` rather than `404`); see [API keys](/api-keys#keys-limited-to-a-catalog-or-to-what-they-created).
 
 ## Adding users
 

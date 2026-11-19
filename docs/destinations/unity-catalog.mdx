@@ -252,7 +252,7 @@ If none applies, the call returns `400` listing these three options. Existing Da
 
 ## Search warehouse tables from find_data
 
-`find_data` ranks Datris pipelines by default. With `include_unity_catalog: true` (REST: `includeUnityCatalog=true`) it also searches the Unity Catalog tables visible to every Databricks Platform secret your key can read. It matches table names, table comments and column names.
+`find_data` ranks Datris pipelines by default. With `include_unity_catalog: true` (REST: `includeUnityCatalog=true`) it also searches the Unity Catalog tables visible to every Databricks Platform secret your key can read. It matches table names, table comments and column names. For a user limited to catalogs or an API key limited by `catalog=` or `owner=` no Unity Catalog search runs (the result adds no Unity Catalog tables), and browsing is refused (`403`): Unity Catalog tables carry no Datris catalog.
 
 - Datris hits come first and carry `source: "datris"`. Unity Catalog hits follow with `source: "unity-catalog"`, `name` as `catalog.schema.table`, the `secret` that found it, `matchedColumns`, `tags` and a `location` of kind `databricks`.
 - A table is **owned** when a Databricks pipeline you can see loads into those exact coordinates, or when its `datris_pipeline` tag names a pipeline you can see. Owned tables have `ownedByPipeline`, and their `howToQuery` points at `query_databricks` with that pipeline. Owned tables come before unowned ones. If the owning pipeline is already a Datris hit, the table is left out because the pipeline hit already covers it.

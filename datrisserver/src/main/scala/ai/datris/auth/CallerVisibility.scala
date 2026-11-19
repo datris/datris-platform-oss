@@ -113,6 +113,20 @@ object CallerVisibility {
         else if (keyOutOfScope(rk, resource, "read", context)) Some("read")
         else None
 
+    /** The refusal text for a route or request that covers the whole
+      * installation and has nothing to filter, for a limited caller
+      * ([[limited]]). `what` says what is refused; nothing else is named. */
+    def installWideMessage(what: String): String =
+        "capability denied: " + what + " covers the whole installation and is not available to an API key or user " +
+            "limited to a catalog or to what it created"
+
+    /** [[installWideMessage]] for every Part C refusal of a scope-limited
+      * key (plans/stories/scoped-key-read-routes.md): table and collection
+      * listings, Unity Catalog browse, the raw Postgres, MongoDB and
+      * natural-language queries, and a caller `sql` on a warehouse query.
+      * One text for all, naming nothing from the request. */
+    val InstallWideRequestMessage: String = installWideMessage("this request")
+
     /** Tap writes accept `tap:create` or `tap:update` on the stored tap. */
     val TapWriteActions: Seq[String] = Seq("create", "update")
 

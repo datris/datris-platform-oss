@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.AuditLog
-import ai.datris.auth.{CapabilityRoutes, CapabilityScopes, RouteCheck}
+import ai.datris.auth.{CallerVisibility, CapabilityRoutes, CapabilityScopes, RouteCheck}
 import ai.datris.model.{Capability, ResolvedKey, UserContext}
 import ai.datris.util.APIKeyValidator
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
@@ -242,7 +242,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         )
                         true
 
-                    case Some(rk) if rk.restrictedSession && CapabilityRoutes.refusedForRestrictedSession(method, path) =>
+                    case Some(rk) if CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.RestrictedListing) =>
                         // A restricted user's session holds metadata:read, but
                         // raw table/collection listings cannot be narrowed to
                         // its catalogs: refused with the capability-denied body
@@ -276,7 +276,24 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         // context always fails.
                         val granted = rk.matchesResourceAction(resource, action)
                         val inert = CapabilityInterceptor.inertOutcome(rk, resource, action)
-                        if (granted) {
+                        if (granted && CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.InstallWide)) {
+                            // A caller limited to a catalog or to what it
+                            // created holds the capability, but the route
+                            // covers the whole installation and has nothing
+                            // to filter (InstallWideForLimited, Decision D3):
+                            // refused in both modes, before the handler runs,
+                            // as the restricted-session listing refusal is.
+                            // Only a caller that holds the capability reaches
+                            // here: one that does not keeps the does-not-hold
+                            // or inert-scope 403 below.
+                            val message = CallerVisibility.InstallWideRequestMessage
+                            logger.info(
+                                "capability check: route={} {} required={}:{} key={} outcome=deny (scope-limited caller, install-wide route)",
+                                Array[AnyRef](method, path, resource, action, rk.label): _*
+                            )
+                            denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
+                            false
+                        } else if (granted) {
                             // INFO during Phase 1 so the rollout is visible.
                             // After enforce mode is on and the route map is
                             // stable, dial this back to DEBUG to cut volume.

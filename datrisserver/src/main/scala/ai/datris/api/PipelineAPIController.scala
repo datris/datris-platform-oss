@@ -1613,8 +1613,7 @@ object PipelineAPIController {
       * `what` says what the route does; the message names nothing else. A
       * key's refusal is noted for the audit log under `required`. */
     def installWideRefusal(request: HttpServletRequest, what: String, required: String): ResponseEntity[String] = {
-        val message = "capability denied: " + what + " covers the whole installation and is not available to an API key or user " +
-            "limited to a catalog or to what it created"
+        val message = ai.datris.auth.CallerVisibility.installWideMessage(what)
         if (!CapabilityCheck.isRestrictedSession(request))
             ai.datris.audit.AuditLog.noteScopeDenial(request, required, message + " (key '" + CapabilityCheck.resolvedKey(request).map(_.label).orNull + "')")
         capabilityDenied(new DatrisException(message))

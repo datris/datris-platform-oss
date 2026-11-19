@@ -3705,6 +3705,7 @@ paths:
       description: >-
         Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
         A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) of a run fed by such a tap, or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        An API key limited by `catalog=` or `owner=` on a pipeline or tap capability gets the same filtering and the same 404 for pipelines outside its scope, and the same `[hidden]` tap names and omitted columns when it does not read every tap.
       parameters:
         - name: publishertoken
           in: query
@@ -3772,7 +3773,7 @@ paths:
     delete:
       tags: [Status]
       summary: Clear all ingestion history
-      description: Deletes every job status entry — detail rows and per-pipeline summaries — for the environment. Refused (403) for restricted users.
+      description: Deletes every job status entry — detail rows and per-pipeline summaries — for the environment. Refused (403) for restricted users and for API keys limited by `catalog=` or `owner=` (it covers the whole installation).
       responses:
         '200':
           description: Number of entries deleted
@@ -3791,13 +3792,13 @@ paths:
       tags: [Status]
       summary: Get a Live Read (scratch) pipeline's result
       description: >-
-        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants.
+        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants, and so do API keys limited by `catalog=` or `owner=` for a pipeline outside their scope.
         Page through the rows a Live Read (scratch destination) pipeline run
         produced. Paging reads the stored result and never re-runs the source.
         Only Live Read pipelines have a result. `limit` is clamped server-side to the
         inline cap, so the next page starts at `offset + returnedCount`, never
         `offset + limit`. Results expire after the retention window.
-        For a restricted user, rows of a run fed by a tap they cannot read (or one no longer stored), or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        For a restricted user, rows of a run fed by a tap they cannot read (or one no longer stored), or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns; likewise for an API key limited by `catalog=` or `owner=` that does not read every tap.
       parameters:
         - name: pipelinetoken
           in: query
@@ -3864,7 +3865,7 @@ paths:
     post:
       tags: [Query]
       summary: Query PostgreSQL
-      description: Execute a read-only SQL SELECT query against PostgreSQL. Enforces SELECT-only, blocks dangerous keywords, and auto-appends LIMIT. Not available to restricted users (403 from the capability check); free-form SQL cannot be limited to a catalog.
+      description: Execute a read-only SQL SELECT query against PostgreSQL. Enforces SELECT-only, blocks dangerous keywords, and auto-appends LIMIT. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); free-form SQL cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3901,7 +3902,7 @@ paths:
     post:
       tags: [Query]
       summary: Query MongoDB
-      description: Query a MongoDB collection with optional filter and projection. Blocks $where and $function operators. Not available to restricted users (403 from the capability check); it cannot be limited to a catalog.
+      description: Query a MongoDB collection with optional filter and projection. Blocks $where and $function operators. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -4003,7 +4004,7 @@ paths:
     post:
       tags: [Query]
       summary: Query Snowflake
-      description: 'Execute a read-only SQL query against the Snowflake destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
+      description: 'Execute a read-only SQL query against the Snowflake destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`. For an API key limited by `catalog=` or `owner=`: a pipeline outside its scope is 403, a non-blank `sql` is 403 even for a pipeline in scope (omit `sql` for the preview), and the response omits the same columns when the key does not read every tap.'
       requestBody:
         required: true
         content:
@@ -4050,7 +4051,7 @@ paths:
                   error:
                     type: string
         '403':
-          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table.'
+          description: 'Restricted users: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. For an API key limited by `catalog=` or `owner=`: a non-blank `sql` is refused, before the pipeline is looked up, with `{"error": "capability denied", "errorKind": "capability_denied", "message": "capability denied: this request covers the whole installation and is not available to an API key or user limited to a catalog or to what it created"}`; a pipeline outside the key''s scope is refused with the capability-denied body naming `pipeline:read`.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -4060,7 +4061,7 @@ paths:
     post:
       tags: [Query]
       summary: Query SQL Server
-      description: 'Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY and no TOP, left as written when it already has OFFSET, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q` (for a WITH statement only the final SELECT is wrapped). When SQL Server rejects the wrapper (an unnamed or duplicate column name, FOR JSON / FOR XML) the query runs unwrapped with the same row cap. Write, exec and session keywords (INSERT, UPDATE, DELETE, INTO, EXEC, USE, OPENROWSET and others) are rejected anywhere in the statement, string literals included. Requires the `query:sqlserver` capability. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
+      description: 'Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY and no TOP, left as written when it already has OFFSET, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q` (for a WITH statement only the final SELECT is wrapped). When SQL Server rejects the wrapper (an unnamed or duplicate column name, FOR JSON / FOR XML) the query runs unwrapped with the same row cap. Write, exec and session keywords (INSERT, UPDATE, DELETE, INTO, EXEC, USE, OPENROWSET and others) are rejected anywhere in the statement, string literals included. Requires the `query:sqlserver` capability. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`. For an API key limited by `catalog=` or `owner=`: a pipeline outside its scope is 403, a non-blank `sql` is 403 even for a pipeline in scope (omit `sql` for the preview), and the response omits the same columns when the key does not read every tap.'
       requestBody:
         required: true
         content:
@@ -4107,7 +4108,7 @@ paths:
                   error:
                     type: string
         '403':
-          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table.'
+          description: 'Restricted users: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. For an API key limited by `catalog=` or `owner=`: a non-blank `sql` is refused, before the pipeline is looked up, with `{"error": "capability denied", "errorKind": "capability_denied", "message": "capability denied: this request covers the whole installation and is not available to an API key or user limited to a catalog or to what it created"}`; a pipeline outside the key''s scope is refused with the capability-denied body naming `pipeline:read`.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -4119,7 +4120,7 @@ paths:
     post:
       tags: [Query]
       summary: Query Databricks
-      description: 'Execute a read-only SQL query against the Databricks destination of a pipeline (a Unity Catalog managed Delta table). Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
+      description: 'Execute a read-only SQL query against the Databricks destination of a pipeline (a Unity Catalog managed Delta table). Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`. For an API key limited by `catalog=` or `owner=`: a pipeline outside its scope is 403, a non-blank `sql` is 403 even for a pipeline in scope (omit `sql` for the preview), and the response omits the same columns when the key does not read every tap.'
       requestBody:
         required: true
         content:
@@ -4166,7 +4167,7 @@ paths:
                   error:
                     type: string
         '403':
-          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. Also returned when Databricks denies the query a permission.'
+          description: 'Restricted users: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. For an API key limited by `catalog=` or `owner=`: a non-blank `sql` is refused, before the pipeline is looked up, with `{"error": "capability denied", "errorKind": "capability_denied", "message": "capability denied: this request covers the whole installation and is not available to an API key or user limited to a catalog or to what it created"}`; a pipeline outside the key''s scope is refused with the capability-denied body naming `pipeline:read`. Also returned when Databricks denies the query a permission.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -4176,7 +4177,7 @@ paths:
     post:
       tags: [Query]
       summary: Natural-language query (AI)
-      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. Not available to restricted users (403 from the capability check); it cannot be limited to a catalog.
+      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -4468,7 +4469,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL databases
-      description: List all PostgreSQL databases available in the platform. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all PostgreSQL databases available in the platform. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of database names
@@ -4485,7 +4486,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL schemas
-      description: List all schemas in a PostgreSQL database. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all schemas in a PostgreSQL database. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4509,7 +4510,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL tables
-      description: List all tables in a PostgreSQL schema. Set vectorOnly to true to filter to tables with an embedding column (pgvector tables). Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all tables in a PostgreSQL schema. Set vectorOnly to true to filter to tables with an embedding column (pgvector tables). Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4545,7 +4546,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List table columns
-      description: List all columns and their data types for a specific PostgreSQL table. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all columns and their data types for a specific PostgreSQL table. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4581,7 +4582,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List MongoDB databases
-      description: List all MongoDB databases available in the platform. Excludes system databases (admin, config, local). Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all MongoDB databases available in the platform. Excludes system databases (admin, config, local). Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of database names
@@ -4598,7 +4599,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List MongoDB collections
-      description: List MongoDB collections. If database is specified, lists collections in that database. Otherwise lists all collections across all databases in "db.collection" format. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List MongoDB collections. If database is specified, lists collections in that database. Otherwise lists all collections across all databases in "db.collection" format. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4623,7 +4624,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Qdrant collections
-      description: List all collections in the Qdrant vector database. Returns an empty array if Qdrant is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all collections in the Qdrant vector database. Returns an empty array if Qdrant is not configured. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4640,7 +4641,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Weaviate classes
-      description: List all classes in the Weaviate vector database. Returns an empty array if Weaviate is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all classes in the Weaviate vector database. Returns an empty array if Weaviate is not configured. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of class names
@@ -4657,7 +4658,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Milvus collections
-      description: List all collections in the Milvus vector database. Returns an empty array if Milvus is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all collections in the Milvus vector database. Returns an empty array if Milvus is not configured. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4674,7 +4675,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Chroma collections
-      description: List all collections in the Chroma vector database. Returns an empty array if Chroma is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all collections in the Chroma vector database. Returns an empty array if Chroma is not configured. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -7684,7 +7685,12 @@ paths:
         and an admin session see the whole catalog with `filtered: false`;
         editor and viewer sessions get their role's tools with
         `filtered: true`. A presented API key takes precedence over the
-        session.
+        session. A restricted user, and an API key limited by `catalog=` or
+        `owner=` on a pipeline or tap capability, never get the table and
+        collection listing tools, `browse_unity_catalog`, `query_postgres`,
+        `query_mongodb` or `query_natural`, even when the key holds their
+        capability: those routes cover the whole installation and answer
+        403.
       responses:
         '200':
           description: Tool names
@@ -8344,7 +8350,12 @@ paths:
             (`DATRIS_UNITY_CATALOG_SEARCH_TIMEOUT_SECONDS`, default 45; reason
             "timed out after Ns"). `limit` applies separately: up to `limit`
             Datris hits plus up to `limit` additional Unity Catalog hits.
-            Without this flag the response is unchanged.
+            Without this flag the response is unchanged. For a caller limited
+            to a catalog or to what it created (a restricted user, or an API
+            key limited by `catalog=` or `owner=`), no Unity Catalog search
+            runs: the `unityCatalog` block lists nothing searched or skipped
+            and no Unity Catalog hits are added, as for a key that can read no
+            Databricks secret.
       responses:
         '200':
           description: Ranked hits
@@ -8397,7 +8408,7 @@ paths:
         `warehouse` field (aliases `httpPath`, `http_path`,
         `DATABRICKS_WAREHOUSE`), else the warehouse of the first Databricks
         pipeline using the secret.
-        Not available to restricted users (403 from the capability check); warehouse listings cannot be limited to a catalog.
+        Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); warehouse listings cannot be limited to a catalog.
       parameters:
         - in: query
           name: secret

@@ -34,7 +34,7 @@ All stores share these request-body parameters:
 
 Plus the store's container field from the table above (e.g. `collection` for Qdrant, `className` for Weaviate, `table`/`schema` for pgvector).
 
-For a user with scoped catalog access, a vector collection, class or table is searchable only when every pipeline writing to it is in their catalogs; any other container returns `404` as if it did not exist. Results hold only chunks written by pipelines in their catalogs; a chunk from any other pipeline, or with no recorded pipeline, is left out and not counted, so fewer than `topK` results can come back. API keys and users with install-wide access are not affected.
+For a user with scoped catalog access, a vector collection, class or table is searchable only when every pipeline writing to it is in their catalogs; any other container returns `404` as if it did not exist. Results hold only chunks written by pipelines in their catalogs; a chunk from any other pipeline, or with no recorded pipeline, is left out and not counted, so fewer than `topK` results can come back. An API key limited by `catalog=` or `owner=` on a pipeline capability (see [API Keys](/api-keys#keys-limited-to-a-catalog-or-to-what-they-created)) gets the same rule for the pipelines in its scope. Users with install-wide access and keys without such a scope are not affected.
 
 ### Common Response Format
 
