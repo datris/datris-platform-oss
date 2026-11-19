@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.auth.{CapabilityDeniedException, CapabilityScopes, ScopeDenialFixtures}
+import ai.datris.auth.{CapabilityDeniedException, CapabilityScopes, ScopeDenialFixtures, ScopeDenialWording}
 import ai.datris.model._
 import ai.datris.util.CatalogOps
 import jakarta.servlet.http.HttpServletRequest
@@ -106,5 +106,81 @@ class ProtectWildcardScopeSpec extends AnyFunSuite with BeforeAndAfterEach {
         val explicitKey = resolved("k", "protect:reveal:catalog=Sales")
         FieldProtectionAPIController.requireCapability(req(explicitKey), "reveal")
         FieldProtectionAPIController.targetRefusal(req(explicitKey), "orders", orders, Some("reveal"))
+    }
+
+    // ------------------------------------------------------ review round 1, findings 3 and 4
+
+    test("an inert explicit reveal capability is refused at the gate before any config read, in both modes") {
+        val saved = DatrisEnvironment.values
+        ScopeDenialFixtures.install(ScopeDenialFixtures.auditEnv())
+        try {
+            def check(mode: String): Unit = {
+                Seq("protect:reveal:catalog=Sales,collection=docs", "protect:reveal:database=x", "protect:reveal:collection=docs").foreach { raw =>
+                    val rk = resolved("rk", raw)
+                    val e = intercept[CapabilityDeniedException](FieldProtectionAPIController.requireCapability(req(rk), "reveal"))
+                    val expected = ScopeDenialWording.message("rk", "protect", "reveal", rk.effectiveCapabilities.map(_.raw))
+                    assert(e.getMessage == expected, mode + ": " + e.getMessage)
+                    // the route answers 403 before the config is read (no Mongo is reachable here)
+                    val res = new FieldProtectionAPIController().reveal(
+                        "any",
+                        RevealRequest("orders", "email", java.util.Arrays.asList("enc:v1:AAAA")),
+                        req(rk)
+                    )
+                    assert(res.getStatusCode.value == 403, mode + " " + raw + ": " + res.getBody)
+                    ScopeDenialWording.assertBody(res.getBody, expected, Nil)
+                }
+                // the same answer as a key with no reveal capability
+                val none = resolved("rk", "pipeline:read")
+                val res = new FieldProtectionAPIController().reveal(
+                    "any",
+                    RevealRequest("orders", "email", java.util.Arrays.asList("enc:v1:AAAA")),
+                    req(none)
+                )
+                assert(res.getStatusCode.value == 403, res.getBody)
+                ScopeDenialWording.assertBody(res.getBody, ScopeDenialWording.message("rk", "protect", "reveal", Nil), Nil)
+                // an applied explicit scoped reveal still passes
+                FieldProtectionAPIController.requireCapability(req(resolved("rk", "protect:reveal:catalog=Sales")), "reveal")
+                FieldProtectionAPIController.requireCapability(req(resolved("rk", "protect:reveal:owner=self")), "reveal")
+            }
+            check("refuse")
+            sys.props.put(CapabilityScopes.InertScopesProperty, CapabilityScopes.InertScopesAllow)
+            check("allow")
+        } finally ScopeDenialFixtures.install(saved)
+    }
+
+    test("Capability.grants: a scoped capability grants on protect only as explicit protect:reveal asked for reveal") {
+        def g(raw: String, action: String, ctx: Map[String, String]): Boolean = Capability.parse(raw).grants("protect", action, ctx, "sales-key")
+        val hrCtx = CatalogOps.scopeContext("HR", "hr-key")
+        // the reviewer's probes
+        assert(!g("protect:admin:catalog=Sales", "admin", Map("catalog" -> "Sales")))
+        assert(!g("protect:*:catalog=Sales", "*", salesCtx))
+        assert(!g("protect:*:catalog=Sales", "reveal", salesCtx))
+        assert(!g("protect:admin:owner=self", "admin", salesCtx))
+        // explicit scoped reveal
+        assert(g("protect:reveal:catalog=Sales", "reveal", salesCtx))
+        assert(!g("protect:reveal:catalog=Sales", "reveal", hrCtx))
+        assert(g("protect:reveal:owner=self", "reveal", salesCtx))
+        assert(!g("protect:reveal:owner=self", "reveal", hrCtx))
+        assert(!g("protect:reveal:catalog=Sales", "admin", salesCtx))
+        // unscoped capabilities: as before, any context
+        for (ctx <- Seq(Map.empty[String, String], salesCtx, hrCtx)) {
+            Seq("protect:reveal", "protect:*", "*:reveal", "*:*").foreach(raw => assert(g(raw, "reveal", ctx), raw + " " + ctx))
+            Seq("protect:admin", "protect:*", "*:*").foreach(raw => assert(g(raw, "admin", ctx), raw + " " + ctx))
+            assert(!g("protect:admin", "reveal", ctx))
+            assert(!g("protect:reveal", "admin", ctx))
+            assert(!g("*:reveal", "admin", ctx))
+        }
+        // any scoped protect capability against an empty context: false, as before
+        Seq(
+            "protect:reveal:catalog=Sales",
+            "protect:reveal:owner=self",
+            "protect:reveal:catalog=*",
+            "protect:admin:catalog=Sales",
+            "protect:*:catalog=Sales",
+            "*:reveal:catalog=Sales",
+            "*:*:catalog=Sales"
+        ).foreach { raw =>
+            Seq("reveal", "admin").foreach(a => assert(!g(raw, a, Map.empty), raw + " " + a))
+        }
     }
 }

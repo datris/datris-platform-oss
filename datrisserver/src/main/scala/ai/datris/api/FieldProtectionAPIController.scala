@@ -425,16 +425,18 @@ object FieldProtectionAPIController {
             CapabilityCheck.assertScope(request, "protect", action, Map.empty)
 
     /** True when the request's key holds `protect:reveal` in some scope:
-      * an unscoped capability covering it, or an explicit scoped
-      * `protect:reveal:...`. True with no resolved key. */
+      * an unscoped capability covering it, or an APPLIED explicit scoped
+      * `protect:reveal:...` (`rk.capabilities`, never the inert ones, so a
+      * stored `protect:reveal:catalog=X,collection=y` is refused here before
+      * any read in both DATRIS_KEY_INERT_SCOPES modes). True with no resolved
+      * key. */
     private def holdsRevealAnywhere(request: HttpServletRequest): Boolean =
         CapabilityCheck.resolvedKey(request) match {
             case None => true
             case Some(rk) =>
-                rk.isLegacyFullAccess || rk.effectiveCapabilities.exists(c =>
-                    c.matchesResourceAction("protect", "reveal") &&
-                        (c.scope.isEmpty || c.resource == "protect" && c.action == "reveal")
-                )
+                rk.isLegacyFullAccess ||
+                rk.effectiveCapabilities.exists(c => c.scope.isEmpty && c.matchesResourceAction("protect", "reveal")) ||
+                rk.capabilities.exists(c => c.resource == "protect" && c.action == "reveal")
         }
 
     /** Boolean form of [[requireCapability]]: true when the request's resolved
