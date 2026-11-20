@@ -4804,6 +4804,12 @@ paths:
                 items:
                   type: string
               example: ["postgres", "mongodb", "embedding", "qdrant"]
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '500':
           description: Error
 
@@ -4832,6 +4838,12 @@ paths:
                     type: object
                     additionalProperties:
                       type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: Secret not found
         '500':
@@ -4859,6 +4871,12 @@ paths:
           description: Success
         '400':
           description: 'Unsafe secret name (could address a different secret path), or an invalid change to the field-protection key secret. Body: `{"error": ...}`'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'The key''s `secret:write` scope does not cover this secret (for example a `secret:write:_type=tap` key writing a non-tap secret), the field-protection key material needs `protect:admin`, or AI secrets are locked on a trial. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}` for scope denials'
         '409':
@@ -4879,6 +4897,12 @@ paths:
           description: Success
         '400':
           description: 'Unsafe secret name (could address a different secret path). Body: `{"error": ...}`'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'The key''s `secret:write` scope does not cover this secret (`{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`), or AI secrets are locked on a trial'
         '409':
@@ -6476,6 +6500,12 @@ paths:
                       description: Always false for an admin.
                     catalogGrants:
                       $ref: '#/components/schemas/CatalogGrants'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
     post:
       tags: [Auth]
       summary: Create a user (admin)
@@ -6502,6 +6532,12 @@ paths:
           description: User created
         '400':
           description: Missing/invalid username or invalid role
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '409':
           description: User already exists
         '500':
@@ -6551,6 +6587,12 @@ paths:
           description: User updated
         '400':
           description: Invalid role, `restricted` on an admin, or an invalid catalog name or grant level
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: User not found
         '409':
@@ -6570,6 +6612,12 @@ paths:
       responses:
         '200':
           description: User deleted
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: User not found
         '409':
@@ -6638,6 +6686,12 @@ paths:
           description: The saved policy (version incremented)
         '400':
           description: Validation error
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: Not an admin, or an agent-initiated request
         '404':
@@ -6721,6 +6775,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PendingAction'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'Agent-initiated request. Body: `{"error": "agents may not decide approvals"}`'
         '404':
@@ -6758,6 +6818,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PendingAction'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'Agent-initiated request. Body: `{"error": "agents may not decide approvals"}`'
         '404':
@@ -6856,6 +6922,12 @@ paths:
       responses:
         '200':
           description: The abandoned incident
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'Agent-initiated request. Body: `{"error": "agents may not abandon incidents"}`'
         '404':
@@ -6880,6 +6952,12 @@ paths:
       responses:
         '200':
           description: The incident, now executing
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: Agent-initiated request
         '404':
@@ -6995,6 +7073,12 @@ paths:
                     description: Present when more entries match
         '400':
           description: '`since` or `until` is not an ISO-8601 instant or epoch millis. Body: `{"error": ...}`'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: 'The audit log is not enabled. Body: `{"enabled": false, "error": ...}`'
         '500':
@@ -7031,6 +7115,12 @@ paths:
                       type: string
                   windowDays:
                     type: integer
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: The audit log is not enabled
         '500':
@@ -7073,6 +7163,12 @@ paths:
                   acceptingWrites:
                     type: boolean
                     description: '`false` while audited requests are being refused'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
 
   /api/v1/audit-log/export:
     get:
@@ -7131,6 +7227,12 @@ paths:
             text/csv:
               schema:
                 type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: 'The audit log is not enabled. Body: `{"enabled": false, "error": ...}`'
 
@@ -7185,6 +7287,12 @@ paths:
                             The stored capabilities that carry a scope the platform does not
                             apply on them (e.g. `job:read:owner=self`). They grant nothing
                             unless `DATRIS_KEY_INERT_SCOPES=allow`. Empty when none
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '500':
           description: Error
     post:
@@ -7242,6 +7350,12 @@ paths:
             e.g. "Invalid capability 'job:read:owner=self': scope 'owner' is not applied on
             job:read. Supported scopes for job:read: none. Grant 'job:read' unscoped or
             leave it out."
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '409':
           description: A key with this label already exists
         '500':
@@ -7271,6 +7385,12 @@ paths:
                     example: revoked
                   label:
                     type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: Key not found
         '500':
@@ -7304,6 +7424,12 @@ paths:
                     type: string
                   rotatedAt:
                     type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: Key not found
         '500':
@@ -7341,6 +7467,12 @@ paths:
                           type: array
                           items:
                             type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '500':
           description: Error
 
@@ -7370,6 +7502,12 @@ paths:
                           type: array
                           items:
                             type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '500':
           description: Error
 
@@ -7379,7 +7517,7 @@ paths:
     get:
       tags: [Assistant]
       summary: Initialize the Assistant
-      description: UI mount call — warms the MCP client caches and returns the tool catalog, the workflow reference resource, and the active chat model. The tool catalog is the one the caller's own access allows.
+      description: UI mount call — warms the MCP client caches and returns the tool catalog, the workflow reference resource, and the active chat model. The tool catalog is the one the caller's own access allows. For a signed-in user it follows the user's role (see `/assistant/chat`).
       responses:
         '200':
           description: Assistant bootstrap payload
@@ -7407,7 +7545,10 @@ paths:
         '400':
           description: User-actionable error
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
         '500':
@@ -7421,7 +7562,7 @@ paths:
         Runs the build-mode Assistant agent loop and streams agent-loop events
         (text deltas, tool calls, tool results, errors) as Server-Sent Events.
         The client cancels by disconnecting. Attachments reference files
-        previously staged via `/assistant/attachment`. Tools run with the caller's own access.
+        previously staged via `/assistant/attachment`. Tools run with the caller's own access. For a signed-in user (or the platform acting for one) every tool call is held to the user's role: an admin has every tool; an editor has no secret, raw-configuration, agent-policy, approval or incident tools; a viewer has read-only tools. Every role may call this route.
       requestBody:
         required: true
         content:
@@ -7447,7 +7588,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
 
@@ -7461,7 +7605,7 @@ paths:
         small content sample travel through the chat; the platform substitutes
         the real bytes when the agent calls a file tool with the
         `attachmentId`. Limit 25 MB per file. Accepts the same callers as
-        `/assistant/chat`.
+        `/assistant/chat`, except a viewer session (`403` `Read-only role`).
       requestBody:
         required: true
         content:
@@ -7496,7 +7640,10 @@ paths:
         '400':
           description: Empty file
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
         '413':
@@ -7517,7 +7664,8 @@ paths:
         that grounds answers in the failures and volumes currently on screen.
         With the recovery agent on, open incidents are added to the context,
         only for a caller allowed to read incidents (not a user with scoped
-        catalog access, nor an API key without unscoped `incident:read`). Tools run with the caller's own access.
+        catalog access, nor an API key without unscoped `incident:read`). Among signed-in users only
+        admins hold `incident:read`, so an editor's or viewer's chat is given no incidents. Tools run with the caller's own access. For a signed-in user (or the platform acting for one) every tool call is held to the user's role: an admin has every tool; an editor has no secret, raw-configuration, agent-policy, approval or incident tools; a viewer has read-only tools. Every role may call this route.
         Streams the same SSE event format as `/assistant/chat`.
       requestBody:
         required: true
@@ -7533,7 +7681,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
 
@@ -7548,7 +7699,7 @@ paths:
         discovery/query/search tools; the agent never sees mutating tools. The
         optional `context` object may carry a catalog scope, e.g.
         `{"catalog": "finance"}` (or "Uncataloged"; "All"/empty means
-        unscoped). Tools run with the caller's own access. Streams the same SSE event format as
+        unscoped). Tools run with the caller's own access. For a signed-in user (or the platform acting for one) every tool call is held to the user's role: an admin has every tool; an editor has no secret, raw-configuration, agent-policy, approval or incident tools; a viewer has read-only tools. Every role may call this route. Streams the same SSE event format as
         `/assistant/chat`.
       requestBody:
         required: true
@@ -7564,7 +7715,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
 
@@ -7576,7 +7730,7 @@ paths:
         Agent chat for organizing the inventory — group, move, rename, and
         describe taps and pipelines. Full tool catalog with catalog tools
         prioritized. The optional `context` object is a catalog inventory
-        snapshot that grounds answers in what the user is looking at. Tools run with the caller's own access.
+        snapshot that grounds answers in what the user is looking at. Tools run with the caller's own access. For a signed-in user (or the platform acting for one) every tool call is held to the user's role: an admin has every tool; an editor has no secret, raw-configuration, agent-policy, approval or incident tools; a viewer has read-only tools. Every role may call this route.
         Streams the same SSE event format as `/assistant/chat`.
       requestBody:
         required: true
@@ -7592,7 +7746,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
 
@@ -7626,7 +7783,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: >-
             Refused for this credential: a tap run's platform token; with user

@@ -52,13 +52,32 @@ The default `admin` row is seeded on **every startup** (idempotent — only when
 
 ## Roles
 
-| Role | Can read pipelines / data | Can edit pipelines / taps / secrets | Can manage users + Configuration |
+| Role | Can read pipelines / data | Can edit pipelines / taps | Can manage secrets, users + Configuration |
 |---|:-:|:-:|:-:|
 | **admin** | ✓ | ✓ | ✓ |
 | **editor** | ✓ | ✓ |   |
 | **viewer** | ✓ |   |   |
 
 All roles see the **Configuration** tab in the top nav, but the sub-tabs differ: admins see Secrets, API-Keys, Audit Log, and Agent Policy; editors and viewers see only AI Providers, Data Sources, Code Repository, and Users. Everything outside Configuration (Pipelines, Taps, Search, etc.) is accessible to all roles per the read/write rules above.
+
+### Roles in the chats
+
+The in-platform chats (the Assistant, the Operations chat, the catalog chat and the Search chat) act with the signed-in user's role and no more. Each tool call the chat makes is checked against that role, the same way the user's own requests are:
+
+- **Admins** have every tool, and the Operations chat is given the open incidents.
+- **Editors** can create, update, run and delete taps and pipelines, upload documents and stop jobs through a chat. They cannot list, read, create, update or delete secrets, upload a raw configuration, read the agent policy or pending approvals, or list or explain incidents through a chat, and the Operations chat is not given incidents. Those tools are not offered to an editor's chat; one called anyway is refused.
+- **Viewers** can use every chat read-only: list and read taps, pipelines and jobs, query and search data. Nothing a viewer's chat calls can write, run, delete or upload, and file attachments in the Assistant need an editor.
+- **Scoped access** narrows a chat further, to the user's granted catalogs (see below).
+
+The Configuration chat stays admin-only. With API keys off (`USE_API_KEYS=false`) and user sign-in on, the chats are still held to the role, although an editor's own requests in the UI are not narrowed that way in that mode.
+
+A request that carries a sign-in session always acts as that session's user. If the user a chat acts for is deleted while the chat runs, its next tool calls are refused (`401`), and while the user list cannot be read they answer `503`; a chat never falls back to the platform's own access.
+
+With API keys on, a request to an admin-only route with no credential answers `401 Authentication required` (a revoked or unknown key `401`, an unreachable key store `503`); a signed-in user without the role still gets `403 Insufficient role`.
+
+<Note>
+**Upgrade note.** After upgrading, editors' chats lose the secret, raw-configuration, agent-policy, approval and incident tools, and the Operations chat stops showing incidents to editors and viewers. Viewers can now use the chats, which spends AI tokens on their behalf. An editor who needs those tools in a chat must be made an admin on **Configuration → Users**. Nothing needs to be migrated or configured. With API keys on, a script that called an admin-only route with no credential or a rejected key and checked for `403` now gets `401`.
+</Note>
 
 ### Catalog access
 

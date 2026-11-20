@@ -74,7 +74,7 @@ Open **Configuration → API-Keys → Issue new key**.
 Each label is a distinct identity in the [audit log](/audit-log) and can be revoked independently of the others. Every issued key also gets a stable id (shown in the audit log) so a label that is revoked and later re-issued is not confused with its predecessor.
 
 <Note>
-The Vault label `ui` is reserved for the seeded fallback UI key (used in legacy `USE_USER_AUTH=false` mode, and for the in-platform chats' internal MCP-to-REST hop on behalf of logged-in users and full-access keys; any other key's chat tool calls use that key itself). You don't issue this one from the UI — it's seeded by `vault-init.sh` on first boot and rotated from the API-Keys tab like any other key.
+The Vault label `ui` is reserved for the seeded fallback UI key (used in legacy `USE_USER_AUTH=false` mode, and for the in-platform chats' internal MCP-to-REST hop on behalf of logged-in users, where each call is narrowed to that user's role (see [User Authentication](/user-auth#roles-in-the-chats)), and full-access keys; any other key's chat tool calls use that key itself). You don't issue this one from the UI — it's seeded by `vault-init.sh` on first boot and rotated from the API-Keys tab like any other key.
 </Note>
 
 ## Supported configurations

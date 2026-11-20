@@ -38,8 +38,10 @@ import scala.collection.JavaConverters._
   *    sort to the front of the catalog so the agent reaches for them first.
   *  - With the recovery agent on, open incidents are appended to the context
   *    message only for a caller allowed to read incidents
-  *    (`ChatCaller.mayReadIncidents`); for anyone else the incident store is
-  *    not read (see `OpsChatAPIController.incidentsFor`).
+  *    (`ChatCaller.mayReadIncidents`: a user whose role bundle holds
+  *    `incident:read`, today an admin; a key with full access or unscoped
+  *    `incident:read`); for anyone else the incident store is not read (see
+  *    `OpsChatAPIController.incidentsFor`).
   *
   * The caller is decided on the servlet thread by `ChatCaller.from` and the
   * resulting `ChatIdentity` is handed to the worker as a value.
@@ -136,9 +138,8 @@ class OpsChatAPIController {
                 Some(req.getAsJsonObject("context"))
             else None
 
-        val maxIterations: Int =
-            if (req.has("maxIterations") && !req.get("maxIterations").isJsonNull) req.get("maxIterations").getAsInt
-            else 50
+        // A request may lower the iteration budget, never raise it past the default.
+        val maxIterations: Int = ChatCaller.maxIterations(req)
         val maxTokensPerCall: Int = 32000
 
         val env = DatrisEnvironment.current
@@ -235,15 +236,16 @@ object OpsChatAPIController {
     }
 
     /** [[incidentsFor]] with the readers given. A caller
-      * `ChatCaller.mayReadIncidents` refuses (a restricted session, or a key
-      * without unscoped `incident:read`) gets `Nil` and `load` is not called:
+      * `ChatCaller.mayReadIncidents` refuses (a session whose role bundle has
+      * no `incident:read` — every editor and viewer, restricted or not — or a
+      * key without unscoped `incident:read`) gets `Nil` and `load` is not called:
       * step summaries can name resources outside its reach. A key holding
       * `incident:read` that is limited by a `catalog=` / `owner=` scope
       * ([[ai.datris.auth.CallerVisibility.limited]];
       * plans/stories/scoped-key-read-routes.md, Part B) gets exactly what
       * `GET /incidents` shows it ([[IncidentsAPIController.visibleIncidents]]).
-      * Everyone else (unrestricted users, full-access and unlimited keys,
-      * user auth off) gets `load()` itself, neither reader called. */
+      * Everyone else (admins, full-access and unlimited keys, user auth off)
+      * gets `load()` itself, neither reader called. */
     def incidentsFor(
         identity: ChatIdentity,
         load: () => List[Incident],

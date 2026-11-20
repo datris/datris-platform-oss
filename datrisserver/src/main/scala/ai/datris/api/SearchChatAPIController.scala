@@ -139,9 +139,8 @@ class SearchChatAPIController {
                 } else None
             } else None
 
-        val maxIterations: Int =
-            if (req.has("maxIterations") && !req.get("maxIterations").isJsonNull) req.get("maxIterations").getAsInt
-            else 50
+        // A request may lower the iteration budget, never raise it past the default.
+        val maxIterations: Int = ChatCaller.maxIterations(req)
         val maxTokensPerCall: Int = 32000
 
         val env = DatrisEnvironment.current

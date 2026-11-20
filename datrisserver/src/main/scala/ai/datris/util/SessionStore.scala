@@ -23,6 +23,12 @@ object SessionStore {
 
     private def tableName: String = DatrisEnvironment.current.userSessionTableName
 
+    /** Test override for session lookups (null = the package NoSQLDbUtil),
+      * the same pattern as UserStore.dbOverride. */
+    @volatile private[datris] var dbOverride: NoSQLDbUtility = null
+
+    private def lookupDb: NoSQLDbUtility = Option(dbOverride).getOrElse(NoSQLDbUtil)
+
     /** Idempotent — runs at startup. The TTL index makes Mongo auto-purge expired
       * sessions; without it, expired tokens would accumulate forever. The index is
       * on the BSON Date field `expiresAtDate` (added by insertWithDateField). */
@@ -54,7 +60,7 @@ object SessionStore {
 
     def find(token: String): Option[UserSession] = {
         if (token == null || token.isEmpty) return None
-        Option(NoSQLDbUtil.getItemJSON(tableName, "token", token, null).orNull)
+        Option(lookupDb.getItemJSON(tableName, "token", token, null).orNull)
             .map(json => gson.fromJson(json, classOf[UserSession]))
             .filter(s => Instant.parse(s.expiresAt).isAfter(Instant.now()))
     }

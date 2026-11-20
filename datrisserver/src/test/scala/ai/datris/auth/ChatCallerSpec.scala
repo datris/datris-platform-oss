@@ -66,10 +66,12 @@ class ChatCallerSpec extends AnyFunSuite {
 
     private def session(u: User): ResolvedKey = APIKeyValidator.resolveFromSession(u)
 
-    /** The ui key relabelled for `u`, as TenantInterceptor.applyOnBehalfOf leaves it. */
+    /** The ui key on behalf of `u`, as TenantInterceptor.applyOnBehalfOf leaves
+      * it: an admin relabelled, anyone else narrowed to their session bundle
+      * (plans/stories/chat-session-role-authority.md; was a relabel for every
+      * unrestricted user). */
     private def onBehalfOf(u: User): ResolvedKey =
-        if (u.isRestricted) session(u)
-        else uiKey.copy(label = "session:" + u.username)
+        ai.datris.config.TenantInterceptor.onBehalfOfIdentity(uiKey, u, approvalReplay = false)
 
     private def allowed(d: ChatDecision): ChatIdentity = d match {
         case Allow(id) => id

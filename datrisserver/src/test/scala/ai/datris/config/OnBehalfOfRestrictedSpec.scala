@@ -12,7 +12,7 @@ import ai.datris.util.InMemoryUserDb.grants
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.{any, eq => eqTo}
-import org.mockito.Mockito.{atLeastOnce, mock, verify, when}
+import org.mockito.Mockito.{atLeastOnce, mock, never, verify, when}
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 
@@ -94,9 +94,23 @@ class OnBehalfOfRestrictedSpec extends AnyFunSuite with BeforeAndAfterEach {
         verify(r).setAttribute(eqTo(AuditActor.CarrierKeyLabelAttr), eqTo("anonymous"))
     }
 
-    test("an unknown on-behalf-of user keeps the key's identity and bundle") {
-        val carrier = APIKeyValidator.resolveKey(null)
-        val (rk, _) = resolvedFor("nobody")
-        assert(rk.label == carrier.label && rk.capabilities == carrier.capabilities && !rk.restrictedSession)
+    // plans/stories/chat-session-role-authority.md, owner Decision 7 (approved
+    // edit): was "an unknown on-behalf-of user keeps the key's identity and
+    // bundle". An unknown user now refuses the request (401) before any handler
+    // runs, and the carrier's identity is never attached.
+    test("an unknown on-behalf-of user is refused and never acts with the key's identity") {
+        val r = mock(classOf[HttpServletRequest])
+        when(r.getCookies).thenReturn(null)
+        when(r.getHeader("x-api-key")).thenReturn(null)
+        when(r.getHeader(AuditActor.HeaderOnBehalfOf)).thenReturn("nobody")
+        val resp = mock(classOf[HttpServletResponse])
+        val out = new java.io.StringWriter()
+        when(resp.getWriter).thenReturn(new java.io.PrintWriter(out, true))
+        assert(!new TenantInterceptor().preHandle(r, resp, null), "the request must not proceed")
+        verify(resp).setStatus(401)
+        assert(out.toString == TenantInterceptor.UnverifiedUserBody)
+        assert(!out.toString.contains("nobody") && !out.toString.contains("anonymous"))
+        verify(r, never()).setAttribute(eqTo(TenantInterceptor.ResolvedKeyAttr), any())
+        verify(r, never()).setAttribute(eqTo(AuditActor.OnBehalfOfAttr), any())
     }
 }

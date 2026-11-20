@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.audit.AuditLog
+import ai.datris.audit.{AuditActor, AuditLog}
 import ai.datris.auth.{CallerVisibility, CapabilityRoutes, CapabilityScopes, RequestPaths, RouteCheck}
 import ai.datris.model.{Capability, ResolvedKey, UserContext}
 import ai.datris.util.{APIKeyValidator, LogSafe}
@@ -170,8 +170,18 @@ class CapabilityInterceptor extends HandlerInterceptor {
       * never apply there. A restricted user's catalog grants must still hold:
       * when the request carries that anonymous identity and the logged-in
       * session user is restricted, the identity is replaced with the user's
-      * session bundle. Only ever narrows; unrestricted users are unchanged. */
-    private[config] def narrowForRestrictedSession(request: HttpServletRequest): Unit =
+      * session bundle. Only ever narrows; unrestricted users are unchanged.
+      *
+      * A request that carries its own sign-in session always acts as that
+      * session's user: `X-Datris-On-Behalf-Of` is honoured only on the
+      * platform's internal calls, which carry no session (Decision 8).
+      * TenantInterceptor already ignores the header when it finds a valid
+      * session; should it have applied the header anyway (the session lookup
+      * failed there and succeeded in SessionAuthenticator), the carrier's own
+      * identity is restored here first, so the session user is held to its
+      * own grants and is never another user. */
+    private[config] def narrowForRestrictedSession(request: HttpServletRequest): Unit = {
+        dropOnBehalfOfForSession(request)
         request.getAttribute(TenantInterceptor.ResolvedKeyAttr) match {
             case rk: ResolvedKey if rk.label == "anonymous" && rk.isLegacyFullAccess && rk.tenantEnvironment.isEmpty =>
                 attachRestrictedSession(request)
@@ -184,6 +194,19 @@ class CapabilityInterceptor extends HandlerInterceptor {
                 // Unrestricted users keep the lazy fallback in readResolvedKey.
                 // A presented-but-rejected key is never replaced by the session.
                 if (request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr) == null) attachRestrictedSession(request)
+        }
+    }
+
+    private def dropOnBehalfOfForSession(request: HttpServletRequest): Unit =
+        if (UserContext.get().isDefined && request.getAttribute(AuditActor.OnBehalfOfAttr) != null) {
+            request.getAttribute(TenantInterceptor.OnBehalfOfCarrierAttr) match {
+                case carrier: ResolvedKey => request.setAttribute(TenantInterceptor.ResolvedKeyAttr, carrier)
+                // Never keep another user's identity on a session request.
+                case _ => request.removeAttribute(TenantInterceptor.ResolvedKeyAttr)
+            }
+            request.removeAttribute(AuditActor.OnBehalfOfAttr)
+            request.removeAttribute(AuditActor.CarrierKeyLabelAttr)
+            request.removeAttribute(TenantInterceptor.OnBehalfOfCarrierAttr)
         }
 
     private def attachRestrictedSession(request: HttpServletRequest): Unit =

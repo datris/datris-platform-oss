@@ -725,9 +725,13 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
             assert(IncidentsAPIController.visibleIncidents(r, inc, failRead, failReadTap) eq inc, name)
             assert(IncidentsAPIController.incidentRefusal(r, incPayroll.id, Some(incPayroll), failRead, failReadTap).isEmpty, name)
         }
-        // the Ops chat block: unrestricted users and unlimited keys holding incident:read get the loaded list itself
+        // the Ops chat block: unlimited keys holding incident:read get the loaded list itself.
+        // plans/stories/chat-session-role-authority.md (approved edit, Decision 4): an
+        // unrestricted editor session's role bundle holds no incident:read, so it gets
+        // Nil and the incident store is not read (was: the loaded list itself).
+        val edSession = ChatIdentity(Some(User("ed", "h", User.RoleEditor, null, null, null)), Some(editor), ownKey = false)
+        assert(OpsChatAPIController.incidentsFor(edSession, () => fail("the incident store was read for an editor session"), failRead, failReadTap) == Nil)
         val ids = Seq(
-            ChatIdentity(Some(User("ed", "h", User.RoleEditor, null, null, null)), Some(editor), ownKey = false),
             ChatIdentity(None, Some(legacy), ownKey = false),
             ChatIdentity(None, Some(wildcard), ownKey = false),
             ChatIdentity(None, Some(key("ops-inc", "incident:read", "pipeline:read")), ownKey = true),

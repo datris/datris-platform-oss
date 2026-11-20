@@ -687,13 +687,13 @@ class EntityVersionAPIController {
         try
             new PipelineAPIController().restorePipelineInternal(candidate, live, version, notFound("pipeline", name, version), request) match {
                 case Left(refused) =>
-                    logger.warn("Restore of pipeline " + name + " version " + version + " rejected: HTTP " + refused.getStatusCode.value)
+                    logger.warn("Restore of pipeline " + LogSafe.text(name) + " version " + version + " rejected: HTTP " + refused.getStatusCode.value)
                     refused
                 case Right(saved) => ok(gson.toJson(saved))
             }
         catch {
             case v: ValidationException =>
-                logger.warn("Restore of pipeline " + name + " version " + version + " rejected: " + v.getMessage)
+                logger.warn("Restore of pipeline " + LogSafe.text(name) + " version " + version + " rejected: " + LogSafe.text(v.getMessage))
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.errorBody(v))
         }
     }

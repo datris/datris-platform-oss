@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, UserContext}
+import ai.datris.model.{DatrisEnvironment, User, UserContext}
 import ai.datris.util.{SessionStore, UserStore}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.springframework.stereotype.Component
@@ -42,19 +42,39 @@ object SessionAuthenticator {
       * (mixed content, a stray http link, or a TLS-stripping MITM). */
     def cookieSecure: Boolean =
         sys.env.get("SESSION_COOKIE_SECURE").exists(_.equalsIgnoreCase("true"))
+
+    val SessionCookieName = "datris-session"
+
+    /** The `datris-session` cookie's value, or null. */
+    def sessionToken(request: HttpServletRequest): String = {
+        val cookies = request.getCookies
+        if (cookies == null) return null
+        cookies.find(c => c != null && c.getName == SessionCookieName).map(_.getValue).orNull
+    }
+
+    /** The user of the sign-in session this request carries, by the same
+      * test preHandle applies: a live (unexpired) session whose user exists.
+      * Does not renew the session. None with no cookie, or a stale one.
+      * TenantInterceptor calls it (it runs before this interceptor) to ignore
+      * `X-Datris-On-Behalf-Of` on a request that carries its own session. */
+    def validatedSessionUser(request: HttpServletRequest): Option[User] = {
+        val token = sessionToken(request)
+        if (token == null || token.isEmpty) None
+        else SessionStore.find(token).flatMap(s => UserStore.find(s.username))
+    }
 }
 
 @Component
 class SessionAuthenticator extends AsyncHandlerInterceptor {
 
-    val SessionCookieName = "datris-session"
+    val SessionCookieName: String = SessionAuthenticator.SessionCookieName
 
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
         // Never inherit an identity from whatever this thread served last.
         UserContext.clear()
         if (!DatrisEnvironment.values.useUserAuth) return true
 
-        val token = readCookie(request, SessionCookieName)
+        val token = SessionAuthenticator.sessionToken(request)
         if (token == null || token.isEmpty) return true
 
         val session = SessionStore.renew(token)
@@ -75,11 +95,5 @@ class SessionAuthenticator extends AsyncHandlerInterceptor {
       * have already captured UserContext for their worker thread by now. */
     override def afterConcurrentHandlingStarted(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Unit = {
         UserContext.clear()
-    }
-
-    private def readCookie(request: HttpServletRequest, name: String): String = {
-        val cookies = request.getCookies
-        if (cookies == null) return null
-        cookies.find(_.getName == name).map(_.getValue).orNull
     }
 }
