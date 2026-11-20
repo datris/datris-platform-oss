@@ -1814,7 +1814,12 @@ paths:
         added by schema evolution from a file header) is not refused, so the
         pipeline can be saved again unchanged; a new or renamed field, or one
         moved to the other schema, still follows the rule. A `partitionBy`
-        field always follows it. Version restore (against the live pipeline)
+        field always follows it. A save that changes the destination
+        (another database engine, another object-store `fileFormat`, or an
+        added destination) keeps such a name only when it passes the check a
+        new header cell passes for that destination (no control character,
+        the destination's length limit, no backtick on ORC); otherwise 400
+        naming the field. Version restore (against the live pipeline)
         and catalog restore apply it too.
 
         One pipeline per vector container: a vector destination whose

@@ -746,7 +746,7 @@ object PipelineValidatorUtil {
                     throw new DatrisException("Column name cannot be null")
                 // A name that is not plain is kept only when the stored
                 // pipeline has exactly that name in this schema (ColumnNameRule).
-                ColumnNameRule.refusal(field.name, () => ColumnNameRule.storedNames(stored(), sourceSchema)).foreach(p => throw new DatrisException(p))
+                ColumnNameRule.saveProblem(field.name, config, stored, sourceSchema).foreach(p => throw new DatrisException(p))
                 if (
                     field.`type` == null ||
                     (

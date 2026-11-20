@@ -274,4 +274,33 @@ class StoredColumnNameRuleSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(refusal(archived, live).isEmpty, refusal(archived, live).toString)
         assert(refusal(archived, null) == Some("Column name: a.b is invalid.  Valid characters are a-z, 0-9 and _"))
     }
+
+    // ------------------------------------------- a kept name and a new destination
+
+    private def toPostgres(c: PipelineConfig): PipelineConfig =
+        c.copy(destination =
+            c.destination.copy(objectStore = null, database = Database(dbName = "datris", schema = "public", table = "col_os", usePostgres = true))
+        )
+    private def withFormat(c: PipelineConfig, fmt: String): PipelineConfig =
+        c.copy(destination = c.destination.copy(objectStore = c.destination.objectStore.copy(fileFormat = fmt)))
+
+    test("a kept name with a backtick cannot be carried from Parquet to ORC; a dotted one can") {
+        val stored = evolved(objectStore("parquet", base: _*), "id,amount,x`y")
+        assert(refusal(stored, stored).isEmpty, "unchanged destination")
+        val flipped = refusal(withFormat(stored, "orc"), stored)
+        assert(flipped.exists(m => m.contains("x`y") && m.contains("backtick") && m.contains("cannot be kept for the new destination")), flipped.toString)
+        val dotted = evolved(objectStore("parquet", base: _*), "id,amount,a.b")
+        assert(refusal(withFormat(dotted, "orc"), dotted).isEmpty)
+    }
+
+    test("a kept name longer than Postgres allows cannot be carried from an object store to Postgres; an unchanged destination keeps it") {
+        val long = "l" * 70 + ".x"
+        val stored = evolved(objectStore("parquet", base: _*), "id,amount," + long)
+        assert(refusal(stored, stored).isEmpty, "unchanged destination")
+        val moved = refusal(toPostgres(stored), stored)
+        assert(moved.exists(m => m.contains("bytes long") && m.contains("63")), moved.toString)
+        // a short kept name moves to Postgres
+        val short = evolved(objectStore("parquet", base: _*), "id,amount,a.b")
+        assert(refusal(toPostgres(short), short).isEmpty)
+    }
 }

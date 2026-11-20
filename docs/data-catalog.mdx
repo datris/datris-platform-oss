@@ -113,6 +113,7 @@ To promote a catalog from one install to another, for example from dev to QA to 
 Things to know when restoring:
 
 - A restore never merges. Tap and pipeline names are unique across the install, so restoring onto the same install under a new name is refused while the source catalog still exists. Delete or rename the source catalog first.
+- A pipeline whose schema holds a column name that is not plain (letters, digits and `_`), such as one [schema evolution](/schemas#what-a-new-column-name-may-hold) added from a file header, restores only over an existing pipeline that already has that column. Restoring it onto an install that lacks the pipeline lists it under the items that could not be restored, with the column-name message; the other items of the catalog are restored.
 - Inline REST bearer tokens and API keys on a pipeline are removed from the archive. Re-enter them after the restore; the result names each field that needs it.
 - An API key without unscoped secret read access gets a "not checked" warning for each required secret instead of a list of missing secrets.
 - To make a clone that starts from scratch, skip the incremental tap state (the checkbox in the import panel, or `--no-state` on the CLI).
