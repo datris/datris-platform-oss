@@ -429,6 +429,38 @@ class TapVersionRestoreSaveChecksSpec extends AnyFunSuite with BeforeAndAfterEac
         assert(restoreAs(req(rk), l, live.copy(description = "v1"), live).isRight)
     }
 
+    // Review note on c28ecd48: the tap is live at the first check and deleted
+    // before the catalog lock; the re-check under the lock decides on the
+    // missing tap (fresh = null).
+    test("deleted under the lock: an update-only key is refused 403 naming create, a key with create gets the 409; nothing written") {
+        val liveMine = live.copy(catalog = "mine", createdByKeyLabel = "someone")
+        val snap = liveMine.copy(description = "v1")
+        val candidate = EntityVersionAPIController.tapRestoreCandidate("t", snap, liveMine)
+        val noPipeline: String => PipelineConfig = n => fail("no pipeline read expected: " + n)
+
+        // the pure re-check
+        val upd = req(ScopeDenialFixtures.key("upd-scoped", scopedUpdCaps: _*))
+        val u = EntityVersionAPIController.tapRestoreRecheck(upd, candidate, liveMine, null, noPipeline, hidden)
+        assert(u.exists(_.getStatusCode.value == 403), s"$u")
+        ScopeDenialWording.assertBody(u.get.getBody, ScopeDenialWording.message("upd-scoped", "tap", "create", scopedUpdCaps), Seq("someone"))
+        val all = req(ScopeDenialFixtures.key("mine-all", scopedAllCaps: _*))
+        val a = EntityVersionAPIController.tapRestoreRecheck(all, candidate, liveMine, null, noPipeline, hidden)
+        assert(a.isDefined, "a key with create is told nothing was restored")
+        sameResponse(a.get, TapAPIController.restoreConflict("t"))
+
+        // through the restore: decided on the live tap, the store empty under the lock
+        val s1 = new Store(Nil, scripts = scripts)
+        val r1 = restoreAs(upd, s1, snap, liveMine)
+        assert(r1.isLeft && r1.left.get.getStatusCode.value == 403, s"$r1")
+        sameResponse(r1.left.get, u.get)
+        assert(s1.writes.isEmpty)
+        val s2 = new Store(Nil, scripts = scripts)
+        val r2 = restoreAs(all, s2, snap, liveMine)
+        assert(r2.isLeft && r2.left.get.getStatusCode.value == 409, s"$r2")
+        sameResponse(r2.left.get, TapAPIController.restoreConflict("t"))
+        assert(s2.writes.isEmpty)
+    }
+
     test("deleted tap: a restricted editor and a restricted viewer get the version 404, as before; nothing written") {
         def session(role: String, level: String) =
             req(APIKeyValidator.resolveFromSession(User("bob", "h", role, null, null, null, restricted = true, catalogGrants = grants("mine" -> level))))

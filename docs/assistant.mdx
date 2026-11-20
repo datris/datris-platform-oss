@@ -252,8 +252,9 @@ to permissions depends on which auth mode the platform is running in:
   admin gets every tool; editor can create, update, run and delete taps
   and pipelines but cannot manage secrets, upload a raw configuration,
   read the agent policy or approvals, or work with incidents through a
-  chat; viewer can use the chat read-only (list, read, query and search;
-  no file attachments). Tools your role does not allow are not offered,
+  chat; viewer can use the Assistant read-only (list, read, query and
+  search) but cannot attach files (the upload is refused with `403`).
+  Tools your role does not allow are not offered,
   and one called anyway is refused. This holds with API keys off too
   (`USE_API_KEYS=false`). See
   [User Authentication](/user-auth#roles-in-the-chats) for the details.

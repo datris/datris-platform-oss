@@ -1499,7 +1499,8 @@ components:
         maxIterations:
           type: integer
           default: 50
-          description: Maximum agent-loop iterations (LLM + tool-call rounds) before the loop stops
+          maximum: 50
+          description: Maximum agent-loop iterations (LLM + tool-call rounds) before the loop stops. A request may lower it; values above 50 are treated as 50.
         context:
           type: object
           description: Optional endpoint-specific context object (see each chat endpoint's description)

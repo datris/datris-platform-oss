@@ -168,6 +168,54 @@ class OnBehalfOfFailClosedSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
+    // ---------------------------------------------------------------- the tenant on a refusal
+
+    private val tenantA: DatrisEnvironment = InMemoryUserDb.env().copy(environment = "tenant-a")
+
+    private def throwingResponse(): jakarta.servlet.http.HttpServletResponse = {
+        val resp = org.mockito.Mockito.mock(classOf[jakarta.servlet.http.HttpServletResponse])
+        when(resp.getWriter).thenThrow(new java.io.IOException("client went away"))
+        resp
+    }
+
+    private val refusals = Seq(
+        TenantInterceptor.RefuseOnBehalf(401, TenantInterceptor.UnverifiedUserBody, "on-behalf-of user could not be verified", Nil),
+        TenantInterceptor.RefuseOnBehalf(503, TenantInterceptor.UserStoreUnavailableBody, "user store unavailable", Nil)
+    )
+
+    test("a refusal clears the tenant preHandle set, also when writing the response throws") {
+        // preHandle clears the tenant on entry and sets it again only for a
+        // multi-tenant key mapping (a secret-store read), so the refusal step
+        // is driven directly with a tenant on the thread, as preHandle leaves it.
+        for (r <- refusals) {
+            TenantContext.set(tenantA)
+            val c = new Captured
+            assert(!TenantInterceptor.answerRefusal(request("GET", "/api/v1/pipelines")._1, c.response, r))
+            assert(c.status.contains(r.status) && c.body == r.body)
+            assert(TenantContext.get().isEmpty, s"${r.status}: tenant left on the thread")
+
+            TenantContext.set(tenantA)
+            intercept[java.io.IOException](TenantInterceptor.answerRefusal(request("GET", "/api/v1/pipelines")._1, throwingResponse(), r))
+            assert(TenantContext.get().isEmpty, s"${r.status}: tenant left on the thread after a failed write")
+        }
+    }
+
+    test("through preHandle, an unknown user and a user-store failure whose response write throws leave no tenant and no identity") {
+        bothModes {
+            for ((claimed, store) <- Seq("nobody" -> (db: InMemoryUserDb), "ed" -> (new FailingUserDb: InMemoryUserDb))) {
+                UserStore.dbOverride = store
+                if (DatrisEnvironment.values.useApiKeys) seedKey(UiValue, uiLegacy)
+                val (r, attrs) = request("GET", "/api/v1/pipelines", carrierHeaders(claimed): _*)
+                TenantContext.set(tenantA) // a leftover from an earlier request on this thread
+                intercept[java.io.IOException](new TenantInterceptor().preHandle(r, throwingResponse(), null))
+                assert(TenantContext.get().isEmpty, claimed)
+                assert(resolved(attrs).isEmpty, claimed)
+                assert(!attrs.contains(AuditActor.OnBehalfOfAttr), claimed)
+                UserStore.dbOverride = db
+            }
+        }
+    }
+
     test("unchanged: no header, a blank header, an untrusted key and user auth off are not refused") {
         assert(preHandle()().identity.contains(anonymous))
         assert(preHandle(AuditActor.HeaderOnBehalfOf -> "  ")().identity.contains(anonymous))

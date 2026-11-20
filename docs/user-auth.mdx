@@ -66,7 +66,7 @@ The in-platform chats (the Assistant, the Operations chat, the catalog chat and 
 
 - **Admins** have every tool, and the Operations chat is given the open incidents.
 - **Editors** can create, update, run and delete taps and pipelines, upload documents and stop jobs through a chat. They cannot list, read, create, update or delete secrets, upload a raw configuration, read the agent policy or pending approvals, or list or explain incidents through a chat, and the Operations chat is not given incidents. Those tools are not offered to an editor's chat; one called anyway is refused.
-- **Viewers** can use every chat read-only: list and read taps, pipelines and jobs, query and search data. Nothing a viewer's chat calls can write, run, delete or upload, and file attachments in the Assistant need an editor.
+- **Viewers** can use the Assistant, the Operations chat and the Search chat read-only: list and read taps, pipelines and jobs, query and search data. Nothing a viewer's chat calls can write, run, delete or upload. The Data Catalog page does not show its chat panel to viewers, and attaching a file in the Assistant is not available to viewers (the attach button is shown, but the upload is refused with `403 Read-only role`).
 - **Scoped access** narrows a chat further, to the user's granted catalogs (see below).
 
 The Configuration chat stays admin-only. With API keys off (`USE_API_KEYS=false`) and user sign-in on, the chats are still held to the role, although an editor's own requests in the UI are not narrowed that way in that mode.
@@ -76,7 +76,7 @@ A request that carries a sign-in session always acts as that session's user. If 
 With API keys on, a request to an admin-only route with no credential answers `401 Authentication required` (a revoked or unknown key `401`, an unreachable key store `503`); a signed-in user without the role still gets `403 Insufficient role`.
 
 <Note>
-**Upgrade note.** After upgrading, editors' chats lose the secret, raw-configuration, agent-policy, approval and incident tools, and the Operations chat stops showing incidents to editors and viewers. Viewers can now use the chats, which spends AI tokens on their behalf. An editor who needs those tools in a chat must be made an admin on **Configuration → Users**. Nothing needs to be migrated or configured. With API keys on, a script that called an admin-only route with no credential or a rejected key and checked for `403` now gets `401`.
+**Upgrade note.** After upgrading, editors' chats lose the secret, raw-configuration, agent-policy, approval and incident tools, and the Operations chat stops showing incidents to editors and viewers. Viewers can now use the Assistant, Operations and Search chats, which spends AI tokens on their behalf. An editor who needs those tools in a chat must be made an admin on **Configuration → Users**. An editor building a tap that needs a credential now needs an admin to create the secret, or to tell them the name of an existing one, because an editor's chat can no longer list or create secrets. A chat request's `maxIterations` is now capped at the default of 50: a request can lower it, and higher values are treated as 50. Nothing needs to be migrated or configured. With API keys on, a script that called an admin-only route with no credential or a rejected key and checked for `403` now gets `401`.
 </Note>
 
 ### Catalog access

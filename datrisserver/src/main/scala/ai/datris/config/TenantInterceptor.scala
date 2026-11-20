@@ -89,6 +89,24 @@ object TenantInterceptor {
       * (status, body, audit reason) answered before any handler runs. */
     private[config] sealed trait OnBehalf
     private[config] final case class Act(identity: ResolvedKey) extends OnBehalf
+
+    /** Writes a Decision 7 refusal (no identity is attached and no handler
+      * runs) and records it, then answers false. The tenant preHandle may
+      * have set is cleared in a `finally`: afterCompletion is not called for
+      * an interceptor whose preHandle answered false or threw, and a write
+      * to a dropped connection (or the audit call) can throw. Without it the
+      * tenant would stay on the servlet thread for its next request, and
+      * `/minio-events` (outside this interceptor) would run under it. */
+    private[config] def answerRefusal(request: HttpServletRequest, response: HttpServletResponse, r: RefuseOnBehalf): Boolean =
+        try {
+            response.setStatus(r.status)
+            response.setContentType("application/json")
+            response.getWriter.write(r.body)
+            response.getWriter.flush()
+            AuditLog.denied(request, r.reason, r.status, names = r.auditNames)
+            false
+        } finally TenantContext.clear()
+
     private[config] final case class RefuseOnBehalf(status: Int, body: String, reason: String, auditNames: Seq[(String, String)]) extends OnBehalf
 }
 
@@ -147,18 +165,7 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
             }
 
         refusal match {
-            case Some(r) =>
-                // Decision 7 (fail closed): no identity is attached and no
-                // handler runs. The tenant set above is cleared here because
-                // afterCompletion is not called for an interceptor whose
-                // preHandle answered false.
-                response.setStatus(r.status)
-                response.setContentType("application/json")
-                response.getWriter.write(r.body)
-                response.getWriter.flush()
-                AuditLog.denied(request, r.reason, r.status, names = r.auditNames)
-                TenantContext.clear()
-                false
+            case Some(r) => TenantInterceptor.answerRefusal(request, response, r)
             case None => true
         }
     }
