@@ -6,6 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.SchemaField
+import ai.datris.model.{CsvAttributes, Destination, FileAttributes, ObjectStore, PipelineConfig, SchemaProperties, Source}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Row, SparkSession}
 import org.scalatest.BeforeAndAfterAll
@@ -327,5 +328,34 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
         for (fmt <- Seq("parquet", "iceberg", null))
             assert(IngestColumnNames.problem(List("x`y", "a.b"), List("id"), IngestColumnNames.limitsFor(orcConfig(fmt))) == None, String.valueOf(fmt))
         assert(IngestColumnNames.problem(List("a.b", "a. b c"), List("id"), IngestColumnNames.limitsFor(orcConfig("orc"))) == None)
+    }
+
+    test("the object-store query reads these names back the way the route does (readSchemaFor of the stored config)") {
+        import scala.collection.JavaConverters._
+        val names = Seq("a.b", "a. b c", "unit \"price\"; drop table canary")
+        val root = Files.createTempDirectory("spark-object-store-route-read-")
+        for (fmt <- Seq("parquet", "orc")) {
+            val fields = List(SchemaField("id", "int")) ++ names.map(n => SchemaField(n, "string"))
+            val out = root.resolve(fmt).toUri.toString
+            SparkObjectStoreLoader.stagedDataFrame(
+                spark,
+                stageRows(List("1,v0")),
+                fields.take(1) ++ fields.drop(1).take(1),
+                ","
+            )
+                .write.mode("append").format(fmt).save(out)
+            SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(List("2," + names.indices.map("w" + _).mkString(","))), fields, ",")
+                .write.mode("append").format(fmt).save(out)
+            val fs = new java.util.ArrayList[SchemaField](fields.asJava)
+            val cfg = PipelineConfig(
+                name = "route",
+                source = Source(schemaProperties = SchemaProperties("db", fs), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+                destination = Destination(schemaProperties = SchemaProperties("db", fs), objectStore = ObjectStore(prefixKey = "route", fileFormat = fmt))
+            )
+            val q = ObjectStoreQueryUtil.readPath(spark, out, fmt, 100, None, null, ObjectStoreQueryUtil.readSchemaFor(cfg))
+            assert(q.columns.asScala.toList == fields.map(_.name), fmt + ": " + q.columns)
+            val byId = q.rows.asScala.map(m => m.get("id") -> m).toMap
+            assert(byId(1).get("a.b") == "v0" && byId(1).get("a. b c") == null && byId(2).get(names(2)) == "w2", fmt + ": " + q.rows)
+        }
     }
 }
