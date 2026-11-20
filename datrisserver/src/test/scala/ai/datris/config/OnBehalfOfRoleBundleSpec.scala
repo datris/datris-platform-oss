@@ -310,10 +310,25 @@ class OnBehalfOfRoleBundleSpec extends AnyFunSuite with BeforeAndAfterEach {
         for (v <- Seq("VIC", " vic ")) assert(through(AuditActor.HeaderOnBehalfOf -> v)._1.contains(obo(anonymous, vic)), v)
     }
 
-    test("an empty, blank or malformed header vouches for nobody and changes nothing") {
-        for (v <- Seq("", "   ", "ed,root", "ed root", "ed;root", "root;ed", "*", "%72oot", "session:root", "x" * 300)) {
+    // Lead ruling (owner Decision 7): was one test, "an empty, blank or
+    // malformed header vouches for nobody and changes nothing"; split because
+    // a header naming no real user is now refused.
+    test("an empty or blank header vouches for nobody and changes nothing") {
+        for (v <- Seq("", "   ")) {
             val (got, attrs, _) = through(AuditActor.HeaderOnBehalfOf -> v)
-            assert(got.contains(anonymous), s"'${v.take(20)}': $got")
+            assert(got.contains(anonymous), s"'$v': $got")
+            assert(!attrs.contains(AuditActor.OnBehalfOfAttr), v)
+        }
+    }
+
+    test("a malformed header naming no real user is refused (401) and never acts with the carrier's identity") {
+        for (v <- Seq("ed,root", "ed root", "ed;root", "root;ed", "*", "%72oot", "session:root", "x" * 300)) {
+            val (r, attrs) = request("GET", "/api/v1/mcp/tools", AuditActor.HeaderOnBehalfOf -> v)
+            val c = new Captured
+            assert(!new TenantInterceptor().preHandle(r, c.response, null), v.take(20))
+            assert(c.status.contains(401), v.take(20))
+            assert(c.body == TenantInterceptor.UnverifiedUserBody, v.take(20))
+            assert(!attrs.contains(TenantInterceptor.ResolvedKeyAttr), v.take(20))
             assert(!attrs.contains(AuditActor.OnBehalfOfAttr), v.take(20))
         }
     }
