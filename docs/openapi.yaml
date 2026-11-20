@@ -3866,7 +3866,7 @@ paths:
     post:
       tags: [Query]
       summary: Query PostgreSQL
-      description: Execute a read-only SQL SELECT query against PostgreSQL. Enforces SELECT-only, blocks dangerous keywords, and auto-appends LIMIT. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); free-form SQL cannot be limited to a catalog.
+      description: Execute a read-only SQL SELECT query against PostgreSQL. The query runs inside a read-only transaction that is always rolled back, so it cannot change data, and is cancelled after 30 seconds (300 seconds with `limit` -1). Enforces SELECT-only, blocks dangerous keywords and server administration, server file and remote-connection functions, and auto-appends LIMIT. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); free-form SQL cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -4178,7 +4178,7 @@ paths:
     post:
       tags: [Query]
       summary: Natural-language query (AI)
-      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
+      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. The generated SQL runs like `/api/v1/query/postgres`, in a read-only transaction that is always rolled back and under the same time limit. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:

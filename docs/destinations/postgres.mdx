@@ -18,6 +18,8 @@ Connection credentials are retrieved from Vault using the secret name specified 
 | `username` | Database user                            |
 | `password` | Database password                        |
 
+The same credentials serve the read-back queries (`query_postgres`, `query_natural` and `POST /api/v1/query/postgres`). Those queries run in read-only transactions, but use a database role that is not a superuser: a superuser can still reach server functions a read-only transaction does not stop. The role needs only what loading needs (create and write in the destination schemas).
+
 ## Table Management
 
 When `manageTableManually` is set to `false` (the default), the pipeline auto-creates the target table if it does not exist. The table schema is derived from the pipeline's destination schema if one is defined, otherwise it falls back to the source schema. Types are mapped using the table below.
