@@ -3903,7 +3903,7 @@ paths:
     post:
       tags: [Query]
       summary: Query MongoDB
-      description: Query a MongoDB collection with optional filter and projection. Blocks $where and $function operators. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
+      description: Query a MongoDB collection with optional filter and projection. Reads the data databases only; the platform's internal database and MongoDB's `admin`, `local` and `config` databases (compared ignoring letter case) are refused with 400. Blocks $where, $function and $accumulator in the filter and in the projection, at any depth. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3917,14 +3917,14 @@ paths:
                   description: MongoDB collection name
                 database:
                   type: string
-                  description: MongoDB database name (defaults to the configured database)
+                  description: MongoDB database name (defaults to the configured database). Ignored in multi-tenant installs, where the tenant's own database is queried. The platform's internal database and MongoDB's system databases cannot be queried.
                 filter:
                   type: object
                   default: {}
                   description: MongoDB query filter
                 projection:
                   type: object
-                  description: Fields to include/exclude
+                  description: Fields to include/exclude. Inclusion and exclusion, $slice, $elemMatch, $meta and aggregation expressions are accepted; $where, $function and $accumulator are refused.
                 limit:
                   type: integer
                   default: 20
@@ -3937,7 +3937,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
         '400':
-          description: '`limit` is not an integer. Body: `{"error": ...}`'
+          description: '`limit` is not an integer, or the database is not available for queries (the platform''s internal database or a MongoDB system database; body `{"error": "This database is not available for queries."}`, the same whether or not the database exists). Body: `{"error": ...}`'
         '500':
           description: Error
 

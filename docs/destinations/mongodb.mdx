@@ -71,7 +71,7 @@ MongoDB connection credentials are configured globally in `application.yaml` via
 
 ## Querying from Datris
 
-The Assistant (and any MCP client) can read a MongoDB destination back without leaving Datris. Queries are find-style: a filter and an optional projection, never a write.
+The Assistant (and any MCP client) can read a MongoDB destination back without leaving Datris. Queries are find-style: a filter and an optional projection, never a write. They read the data databases only: the platform's internal database and MongoDB's `admin`, `local` and `config` databases are not available for queries.
 
 | Tool | Purpose |
 |------|---------|

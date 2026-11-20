@@ -85,8 +85,11 @@ class QueryAPIController {
                 .orNull
             val limit = QueryAPIController.parseLimit(body.get("limit"), 20)
 
-            val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
-            else Option(body.get("database")).map(_.toString).orNull
+            // The request's `database`; MongoDBQueryUtil resolves the database
+            // the query runs against (the tenant's own in a multi-tenant
+            // install, else this or the default) and refuses one the route
+            // does not read before any client is created.
+            val database = Option(body.get("database")).map(_.toString).orNull
             val results = MongoDBQueryUtil.query(collection, filter, projection, limit, database)
 
             // Parse each JSON string back into an object for proper nesting
@@ -103,6 +106,9 @@ class QueryAPIController {
             case e: QueryAPIController.InvalidLimitException =>
                 logger.warn("queryMongoDB: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
+            case _: MongoDBQueryUtil.DatabaseNotAvailableException =>
+                logger.warn("queryMongoDB: refused a database that is not available for queries")
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(MongoDBQueryUtil.DatabaseNotAvailableMessage))
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))

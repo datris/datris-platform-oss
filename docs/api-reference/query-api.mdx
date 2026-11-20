@@ -78,7 +78,7 @@ POST /api/v1/query/mongodb
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `collection` | string | Yes | | MongoDB collection name |
-| `database` | string | No | configured MongoDB database | MongoDB database name to query |
+| `database` | string | No | configured MongoDB database | MongoDB database name to query. Ignored on a multi-tenant install, where the tenant's own database is queried. |
 | `filter` | object | No | `{}` | MongoDB query filter |
 | `projection` | object | No | all fields | Fields to include/exclude |
 | `limit` | integer | No | 20 | Maximum documents to return. Pass `-1` for unlimited (tap scripts use this to read every document). Omit for the preview default of 20; any positive value is honored with no cap. |
@@ -111,7 +111,10 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 
 ### Safety
 
-- **Blocked operators** — filters containing `$where`, `$function`, or `$accumulator` are rejected, as these allow arbitrary JavaScript execution
+- **Data databases only** — the platform's internal database and MongoDB's own `admin`, `local` and `config` databases cannot be queried, by any caller. Names are compared ignoring letter case. Such a request returns `400` with `{"error": "This database is not available for queries."}` before anything is read.
+- **Blocked operators** — a filter or a projection containing `$where`, `$function`, or `$accumulator`, at any depth (nested documents and arrays included), is rejected, as these allow arbitrary JavaScript execution
+- **Projection** — plain inclusion and exclusion (`1`, `0`, `true`, `false`), `$slice`, `$elemMatch`, `$meta` and aggregation expressions other than the blocked operators are accepted
+- **Limit** — `limit` is applied as given; `-1` returns every matching document (tap scripts use this), so pass a positive `limit` for previews
 - **Standard MongoDB query operators** (`$eq`, `$gt`, `$in`, `$regex`, etc.) are safe and fully supported
 
 ---
