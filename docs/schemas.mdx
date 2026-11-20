@@ -63,7 +63,7 @@ Refer to [data-types](/ingestion/data-types) for type mappings to PostgreSQL and
 
 ## Column Naming Rules
 
-Column names in pipeline `schemaProperties.fields` must match `[A-Za-z0-9_]+` — letters, digits, and underscores only. Spaces, parentheses, percent signs, hyphens, and other punctuation are rejected by the pipeline validator at registration time. Names are also case-insensitive for duplicate detection: `Foo` and `foo` collide.
+Column names in pipeline `schemaProperties.fields` must match `[A-Za-z0-9_]+` — letters, digits, and underscores only. Spaces, parentheses, percent signs, hyphens, and other punctuation are rejected by the pipeline validator at registration time. The one exception is a column the saved pipeline already has under exactly that name, such as one [schema evolution](#what-a-new-column-name-may-hold) added from a file header: saving the pipeline again keeps it. Names are also case-insensitive for duplicate detection: `Foo` and `foo` collide.
 
 Recommended convention: lowercase snake_case (e.g. `customer_id`, `eps_estimate`).
 
@@ -175,6 +175,8 @@ A new column is refused when its name:
 - on an object store writing ORC files, holds a backtick (ORC files cannot keep it in a column name).
 
 A refused column fails the run before anything is written, with an error that names the pipeline and the header cell (control characters shown as `\uXXXX`) and its position among the new columns. The stored schema is left unchanged, so a corrected file loads normally. These rules apply only to new columns: a header made of columns already in the schema loads as before, whatever their names.
+
+A pipeline keeps such a column when it is saved again: a field name the saved pipeline already has, exactly as written and in the same schema, is accepted, so you can edit anything else (write mode, catalog, other fields) and save. A new or renamed field you write into a saved schema still follows the plain-name rule above (`[A-Za-z0-9_]+`), and a partition field always does. To move an evolved column to a plain name, change the header cell in the files you send to that name and save the field under it in both the source and the destination schema (or let the next file add it). The destination gets a new column under the plain name; on SQL destinations, Parquet and ORC the old column keeps the rows already loaded and you can remove its field from both schemas. An Iceberg table refuses a load whose schema leaves out one of its columns, so on Iceberg keep the old field in the schema.
 
 ### New columns and field protection
 

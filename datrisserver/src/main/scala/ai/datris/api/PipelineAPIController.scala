@@ -310,7 +310,14 @@ class PipelineAPIController {
                     case Right(c) => c
                 }
         val withDefaults = PipelineValidatorUtil.applyDefaults(scoped)
-        PipelineValidatorUtil.validate(withDefaults)
+        // The stored config of this name, read at most once: by the validator
+        // only when a rule needs it (an object store's existing-pipeline
+        // rules, a field name that is not plain), and again below as
+        // `existing`. A guarded save and a version restore use the config
+        // they have already read (a restore: the live one).
+        lazy val storedOfName: PipelineConfig =
+            if (guarded) guardStored else PipelineConfigIO.read(table, withDefaults.name)
+        PipelineValidatorUtil.validate(withDefaults, () => storedOfName)
 
         // Postgres is install-time optional (POSTGRES_ENABLED=0 skips the
         // bundled container), so a postgres destination can be selected in a
@@ -348,6 +355,7 @@ class PipelineAPIController {
         // Definition-edit write → mints a new immutable version snapshot.
         val existing =
             if (guarded && tagged.name == config.name) guardStored
+            else if (!guarded && tagged.name == withDefaults.name) storedOfName
             else PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tagged.name)
         // Tags/provenance preservation: clients rebuild the body from
         // scratch, so a body that omits these entirely must not wipe them

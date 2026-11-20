@@ -1806,6 +1806,17 @@ paths:
         same schema is not refused by this rule. Version restore and catalog
         restore apply it too.
 
+        Field names: on structured and semi-structured pipelines, each field
+        name in the source or destination schema uses only `a-z`, `A-Z`, `0-9`
+        and `_`, otherwise 400 with `Column name: <name> is invalid.  Valid
+        characters are a-z, 0-9 and _`. A name that the stored pipeline
+        already has, exactly as written, in the same schema (for example one
+        added by schema evolution from a file header) is not refused, so the
+        pipeline can be saved again unchanged; a new or renamed field, or one
+        moved to the other schema, still follows the rule. A `partitionBy`
+        field always follows it. Version restore (against the live pipeline)
+        and catalog restore apply it too.
+
         One pipeline per vector container: a vector destination whose
         collection, class or table (pgvector: schema plus table) another
         pipeline already names is refused with 400 `{"error": "..."}` naming
