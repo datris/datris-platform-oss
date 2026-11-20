@@ -116,4 +116,15 @@ class StoredColumnNameRestoreSpec extends AnyFunSuite with BeforeAndAfterEach {
             assert(restore(pipeline(withOddAndBadType, dest), null) == ((400, nameRefusal)))
         }
     }
+
+    test("a version whose destination differs from the live one checks the kept names against the version's destination") {
+        val withTick = """[{"name":"id","type":"string"},{"name":"x`y","type":"string"},{"name":"z","type":"blob"}]"""
+        val liveTick = """[{"name":"id","type":"string"},{"name":"x`y","type":"string"}]"""
+        val orc = """"objectStore":{"prefixKey":"col_r","fileFormat":"orc"}"""
+        val (status, error) = restore(pipeline(withTick, orc), pipeline(liveTick, parquet))
+        assert(status == 400 && error.contains("cannot be kept for the new destination") && error.contains("backtick"), error)
+        // the same destination as the live pipeline: the name rule passes and the next check refuses
+        val (s2, e2) = restore(pipeline(withTick, parquet), pipeline(liveTick, parquet))
+        assert(s2 == 400 && e2.startsWith("Invalid field type passed: blob"), e2)
+    }
 }

@@ -96,6 +96,22 @@ object IngestColumnNames {
         }.collectFirst { case Some(p) => p }
     }
 
+    /** Why a destination with `limits` cannot hold `name` as a column, as a
+      * reason a save can show (no header wording): a control character, a
+      * backtick on ORC, or the destination's length limit. None when it can.
+      * The checks [[problem]] applies to one name on its own. */
+    def holdProblem(name: String, limits: Limits): Option[String] =
+        if (name == null || name.trim.isEmpty) Some("it is blank")
+        else if (name.exists(Character.isISOControl)) Some("it holds a control character")
+        else if (limits.orcNoBacktick && name.contains("`")) Some("it holds a backtick, which ORC files cannot keep in a column name")
+        else {
+            val bytes = name.getBytes(StandardCharsets.UTF_8).length
+            limits.maxBytes.filter(bytes > _).map(max => "it is " + bytes + " bytes long; the new destination allows at most " + max + " bytes")
+                .orElse(limits.maxChars.filter(name.length > _).map(max =>
+                    "it is " + name.length + " characters long; the new destination allows at most " + max + " characters"
+                ))
+        }
+
     /** `name` for a message: control characters as `\\uXXXX`, cut at 80
       * characters. */
     def display(name: String): String = {

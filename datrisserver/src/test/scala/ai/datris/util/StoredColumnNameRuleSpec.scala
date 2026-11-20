@@ -303,4 +303,41 @@ class StoredColumnNameRuleSpec extends AnyFunSuite with BeforeAndAfterAll {
         val short = evolved(objectStore("parquet", base: _*), "id,amount,a.b")
         assert(refusal(toPostgres(short), short).isEmpty)
     }
+
+    // ------------------------------------------- round-two review notes
+
+    test("the destination-change refusal reads as a save message, not a header message") {
+        val stored = evolved(objectStore("parquet", base: _*), "id,amount,x`y")
+        val m = refusal(withFormat(stored, "orc"), stored).get
+        assert(
+            m == "Column name: x`y in the source schema cannot be kept for the new destination: it holds a backtick, which ORC files cannot keep in a column name. Rename or remove the field, or keep the destination",
+            m
+        )
+        assert(!m.contains("header"), m)
+    }
+
+    test("no fileFormat and an explicit parquet are the same destination") {
+        val stored = evolved(objectStore(null, base: _*), "id,amount,x`y")
+        assert(stored.destination.objectStore.fileFormat == null)
+        assert(refusal(withFormat(stored, "parquet"), stored).isEmpty)
+        val explicit = evolved(objectStore("parquet", base: _*), "id,amount,x`y")
+        assert(refusal(withFormat(explicit, null), explicit).isEmpty)
+    }
+
+    test("adding a second destination checks the kept names against it; removing one does not refuse") {
+        val long = "l" * 70 + ".x"
+        val stored = evolved(objectStore("parquet", base: _*), "id,amount," + long)
+        val added =
+            stored.copy(destination = stored.destination.copy(database = Database(dbName = "datris", schema = "public", table = "col_os", usePostgres = true)))
+        assert(refusal(added, stored).exists(_.contains("bytes long")), refusal(added, stored).toString)
+        val withKafka = stored.copy(destination = stored.destination.copy(kafka = Kafka("t", null, null)))
+        assert(refusal(withKafka, stored).isEmpty, "Kafka has no limit")
+        assert(refusal(stored, withKafka).isEmpty, "removing Kafka leaves the object store, which keeps the name")
+    }
+
+    test("catalog restore over a pipeline whose destination differs checks the kept names against the archived destination") {
+        val live = evolved(objectStore("parquet", base: _*), "id,amount,x`y")
+        val archived = withFormat(CatalogArchive.stripPipelineForExport(live).copy(catalog = "Sales"), "orc")
+        assert(refusal(archived, live).exists(_.contains("cannot be kept for the new destination")), refusal(archived, live).toString)
+    }
 }

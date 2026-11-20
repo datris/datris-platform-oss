@@ -76,10 +76,10 @@ object ColumnNameRule {
             else if (destinationKind(candidate) == destinationKind(s)) None
             else
                 IngestColumnNames
-                    .problem(List(name), Nil, IngestColumnNames.limitsFor(candidate))
+                    .holdProblem(name, IngestColumnNames.limitsFor(candidate))
                     .map(p =>
                         "Column name: " + IngestColumnNames.display(name) + " in the " + (if (sourceSchema) "source" else "destination") +
-                            " schema cannot be kept for the new destination: " + p
+                            " schema cannot be kept for the new destination: " + p + ". Rename or remove the field, or keep the destination"
                     )
         }
 
