@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, DatrisException}
-import ai.datris.util.{APIKeyValidator, PgIdentifier, PipelineConfigIO, PostgresSql, SecretsRetrieverUtil, SecretsUtil}
+import ai.datris.util.{APIKeyValidator, MongoDBQueryUtil, MongoReservedNames, PgIdentifier, PipelineConfigIO, PostgresSql, SecretsRetrieverUtil, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -203,21 +203,19 @@ class MetadataAPIController {
             logger.info("API endpoint GET /metadata/mongodb/databases called")
             APIKeyValidator.validate(apiKey)
 
-            val secrets = SecretsRetrieverUtil.mongoDbSecrets()
-            val connString = new com.mongodb.ConnectionString(secrets.connectionString)
-            val settings = com.mongodb.MongoClientSettings.builder()
-                .applyConnectionString(connString)
-                .build()
-            val client = com.mongodb.client.MongoClients.create(settings)
+            val client = MetadataAPIController.newMongoClient()
 
             try {
                 val env = DatrisEnvironment.current.environment
+                val internal = DatrisEnvironment.current.mongoDbConfig.internalDatabase
+                // The internal database (by its configured name) and the system
+                // databases are never listed.
                 val databases = if (DatrisEnvironment.current.multiTenant) {
                     // Multi-tenant: only show the tenant's database
-                    List(env)
+                    List(env).filterNot(MongoReservedNames.databaseReserved(_, internal))
                 } else {
                     client.listDatabaseNames().asScala
-                        .filter(db => !Set("admin", "config", "local").contains(db))
+                        .filterNot(db => MongoReservedNames.databaseReserved(db, internal))
                         .filter(db => db != env)
                         .toList.sorted
                 }
@@ -242,12 +240,18 @@ class MetadataAPIController {
             logger.info("API endpoint GET /metadata/mongodb/collections called, database: " + database)
             APIKeyValidator.validate(apiKey)
 
-            val secrets = SecretsRetrieverUtil.mongoDbSecrets()
-            val connString = new com.mongodb.ConnectionString(secrets.connectionString)
-            val settings = com.mongodb.MongoClientSettings.builder()
-                .applyConnectionString(connString)
-                .build()
-            val client = com.mongodb.client.MongoClients.create(settings)
+            // A named (or, multi-tenant, the tenant's) database that is reserved
+            // gets the query route's 400 before any client is created.
+            val internal = DatrisEnvironment.current.mongoDbConfig.internalDatabase
+            val target =
+                if (DatrisEnvironment.current.multiTenant) Some(DatrisEnvironment.current.environment)
+                else Option(database).filter(_.nonEmpty)
+            if (target.exists(MongoReservedNames.databaseReserved(_, internal)))
+                return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body[String](QueryAPIController.jsonError(MongoDBQueryUtil.DatabaseNotAvailableMessage))
+
+            val client = MetadataAPIController.newMongoClient()
 
             try {
                 val env = DatrisEnvironment.current.environment
@@ -273,7 +277,7 @@ class MetadataAPIController {
                 } else {
                     // List from all databases
                     val allDbs = client.listDatabaseNames().asScala
-                        .filter(db => !Set("admin", "config", "local").contains(db))
+                        .filterNot(db => MongoReservedNames.databaseReserved(db, internal))
                         .toList
                     allDbs.flatMap { db =>
                         client.getDatabase(db).listCollectionNames().asScala
@@ -536,6 +540,26 @@ class MetadataAPIController {
             results.asScala.toList
         } finally {
             if (conn != null) conn.close()
+        }
+    }
+}
+
+object MetadataAPIController {
+
+    /** Test seam: when set, it supplies the MongoDB client instead of one
+      * built from the MongoDB secret. */
+    @volatile private[api] var mongoClientOverride: () => com.mongodb.client.MongoClient = null
+
+    /** The MongoDB client a listing uses (closed by the caller). */
+    private[api] def newMongoClient(): com.mongodb.client.MongoClient = {
+        val factory = mongoClientOverride
+        if (factory != null) factory()
+        else {
+            val secrets = SecretsRetrieverUtil.mongoDbSecrets()
+            val settings = com.mongodb.MongoClientSettings.builder()
+                .applyConnectionString(new com.mongodb.ConnectionString(secrets.connectionString))
+                .build()
+            com.mongodb.client.MongoClients.create(settings)
         }
     }
 }

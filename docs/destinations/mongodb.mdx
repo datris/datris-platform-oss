@@ -62,8 +62,8 @@ MongoDB connection credentials are configured globally in `application.yaml` via
 
 | Field                 | Required | Default | Description                                          |
 |-----------------------|----------|---------|------------------------------------------------------|
-| `dbName`              | yes      |         | Target database name                                 |
-| `table`               | yes      |         | Target collection name                               |
+| `dbName`              | yes      |         | Target database name: a data database, not the platform's internal database or a MongoDB system database |
+| `table`               | yes      |         | Target collection name: an ordinary collection, not a `system.` collection |
 | `useMongoDB`          | yes      | `false` | Must be `true` to enable MongoDB destination         |
 | `keyFields`           | no       |         | Array of field names forming the compound upsert key (matched by equality; names must not start with `$`) |
 | `truncateBeforeWrite` | no       | `false` | Delete all documents before writing                  |

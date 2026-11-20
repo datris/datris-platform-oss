@@ -1008,6 +1008,7 @@ class PipelineAPIController {
             warnings ++= PipelineAPIController.vectorDeleteWarnings(request, config, otherConfigs)
             warnings ++= PipelineAPIController.blankVectorTableDeleteWarning(config)
             warnings ++= PipelineAPIController.postgresNameDeleteWarning(config, dsEnv)
+            warnings ++= PipelineAPIController.mongoReservedDeleteWarning(config)
             warnings ++= PipelineAPIController.structuredDeleteWarnings(request, config, otherConfigs, dsEnv)
             UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
                 warnings += advice
@@ -1202,19 +1203,11 @@ class PipelineAPIController {
 
         // MongoDB — drop collection
         if (dest.database != null && dest.database.useMongoDB && dropStructured("mongodb")) {
+            // Never in a reserved database or collection: no client, no drop;
+            // mongoReservedDeleteWarning reports it.
             try {
-                val secrets = SecretsRetrieverUtil.mongoDbSecrets()
-                val connString = new com.mongodb.ConnectionString(secrets.connectionString)
-                val settings = com.mongodb.MongoClientSettings.builder().applyConnectionString(connString).build()
-                val client = com.mongodb.client.MongoClients.create(settings)
-                try {
-                    val dbName = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
-                    else if (dest.database.dbName != null) dest.database.dbName else "datris"
-                    client.getDatabase(dbName).getCollection(dest.database.table).drop()
-                    logger.info("Dropped MongoDB collection: " + dbName + "." + dest.database.table)
-                } finally {
-                    client.close()
-                }
+                if (!PipelineAPIController.dropMongoDestination(dest.database))
+                    logger.warn("Skipped MongoDB collection drop for pipeline '" + config.name + "': not a pipeline destination")
             } catch {
                 case e: Exception => logger.warn("Failed to drop MongoDB collection: " + e.getMessage)
             }
@@ -1719,9 +1712,17 @@ object PipelineAPIController {
       * there is none) has the identical block
       * ([[DatabaseDestinationNames.same]]): such a pipeline keeps working
       * with it. None for a null candidate or one without a block. No
-      * request, no I/O. */
+      * request, no I/O.
+      *
+      * First, and never skipped for an unchanged block: a MongoDB
+      * destination in a reserved database or `system.` collection
+      * ([[MongoReservedNames.destinationProblem]]) is refused with
+      * [[MongoReservedNames.DestinationRefusal]]. */
     def databaseNameRefusal(candidate: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] = {
         if (candidate == null || candidate.destination == null || candidate.destination.database == null) return None
+        MongoReservedNames.destinationProblem(candidate.destination.database, DatrisEnvironment.current).foreach { t =>
+            return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
+        }
         if (DatabaseDestinationNames.same(candidate, stored)) return None
         DatabaseDestinationNames
             .problem(candidate.destination.database)
@@ -1740,6 +1741,47 @@ object PipelineAPIController {
         ColumnTypeText
             .changedProblem(candidate, stored)
             .map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
+
+    /** DELETE /pipeline with data (and reset): the one warning line for a
+      * MongoDB destination in a reserved database or `system.` collection
+      * ([[MongoReservedNames.destinationProblem]]): its collection is left
+      * alone (no client is created). None for every other config. */
+    def mongoReservedDeleteWarning(config: PipelineConfig): Option[String] = {
+        val db = Option(config).flatMap(c => Option(c.destination)).flatMap(d => Option(d.database)).orNull
+        MongoReservedNames
+            .destinationProblem(db, DatrisEnvironment.current)
+            .map(_ => "The MongoDB collection was not dropped because its database or collection is not a pipeline destination.")
+    }
+
+    /** Test seam for [[dropMongoDestination]]: when set, it supplies the
+      * client instead of one built from the MongoDB secret. */
+    @volatile private[api] var mongoDropClientOverride: () => com.mongodb.client.MongoClient = null
+
+    /** DELETE /pipeline with data (and reset): drops `db`'s collection from
+      * the delete database ([[MongoReservedNames.deleteDatabase]]). Never for a
+      * reserved database or collection ([[mongoReservedDeleteWarning]] reports
+      * it): no client is created. True when dropped. */
+    private[api] def dropMongoDestination(db: ai.datris.model.Database): Boolean = {
+        if (db == null || !db.useMongoDB) return false
+        val env = DatrisEnvironment.current
+        if (MongoReservedNames.destinationProblem(db, env).isDefined) return false
+        val factory = mongoDropClientOverride
+        val client =
+            if (factory != null) factory()
+            else {
+                val secrets = SecretsRetrieverUtil.mongoDbSecrets()
+                val settings = com.mongodb.MongoClientSettings.builder()
+                    .applyConnectionString(new com.mongodb.ConnectionString(secrets.connectionString))
+                    .build()
+                com.mongodb.client.MongoClients.create(settings)
+            }
+        try {
+            val dbName = MongoReservedNames.deleteDatabase(db, env)
+            client.getDatabase(dbName).getCollection(db.table).drop()
+            auditLogger.info("Dropped MongoDB collection: " + dbName + "." + db.table)
+            true
+        } finally client.close()
+    }
 
     /** DELETE /pipeline with data (and reset): the one warning line for a
       * Postgres destination whose effective database, schema or table fails

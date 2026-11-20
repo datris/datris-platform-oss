@@ -11,7 +11,6 @@ import org.bson.Document
 import org.bson.json.{JsonMode, JsonWriterSettings}
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.util.Locale
 import scala.collection.JavaConverters._
 
 object MongoDBQueryUtil {
@@ -24,8 +23,8 @@ object MongoDBQueryUtil {
     // Operators that allow arbitrary JavaScript execution
     private[datris] val BLOCKED_OPERATORS = Set("$where", "$function", "$accumulator")
 
-    /** MongoDB's own databases: never data a pipeline wrote. */
-    private[datris] val SystemDatabases: Seq[String] = Seq("admin", "local", "config")
+    /** MongoDB's own databases ([[MongoReservedNames.SystemDatabases]]). */
+    private[datris] val SystemDatabases: Seq[String] = MongoReservedNames.SystemDatabases
 
     /** Body text of the 400 for a database the query route does not read. */
     val DatabaseNotAvailableMessage: String = "This database is not available for queries."
@@ -47,23 +46,10 @@ object MongoDBQueryUtil {
         else env.mongoDbConfig.database
 
     /** Whether the query route refuses `dbName`: the platform's internal
-      * database (`internalDatabase`, the name the platform keeps its own state
-      * under) or a MongoDB system database. Names are compared ignoring case
-      * and surrounding whitespace, since some MongoDB platforms treat database
-      * names case-insensitively; a name that only differs in case is refused
-      * as well. */
-    def databaseRefused(dbName: String, internalDatabase: String): Boolean = {
-        if (dbName == null) false
-        else {
-            val reserved = SystemDatabases ++ Option(internalDatabase).map(_.trim).filter(_.nonEmpty).toSeq
-            val name = dbName.trim
-            reserved.exists(r =>
-                name.equalsIgnoreCase(r) ||
-                    name.toLowerCase(Locale.ROOT) == r.toLowerCase(Locale.ROOT) ||
-                    name.toUpperCase(Locale.ROOT) == r.toUpperCase(Locale.ROOT)
-            )
-        }
-    }
+      * database or a MongoDB system database
+      * ([[MongoReservedNames.databaseReserved]]). */
+    def databaseRefused(dbName: String, internalDatabase: String): Boolean =
+        MongoReservedNames.databaseReserved(dbName, internalDatabase)
 
     /** The limit a find applies: None for the "unlimited" sentinel (`limit < 0`,
       * used by tap scripts), the preview default for 0, else `limit`. */
