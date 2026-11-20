@@ -3903,7 +3903,7 @@ paths:
         '400':
           description: '`limit` is not an integer. Body: `{"error": ...}`'
         '500':
-          description: Error
+          description: 'A query refused by the read-only checks (empty, not starting with SELECT or WITH, a blocked word or function, a semicolon, a comment, `U&` quoting), with a message naming the rule (for example `Query contains blocked keyword: DROP`), or any other error. Body: `{"error": ...}`'
 
   /api/v1/query/mongodb:
     post:
@@ -3945,7 +3945,7 @@ paths:
         '400':
           description: '`limit` is not an integer, or the database or collection is not a data collection (body `{"error": "This database or collection is not available for queries."}`). Body: `{"error": ...}`'
         '500':
-          description: Error
+          description: 'A filter or projection holding $where, $function or $accumulator (message `MongoDB filter contains blocked operator: $where`, or `projection`), an empty collection name, or any other error. Body: `{"error": ...}`'
 
   /api/v1/query/objectstore:
     post:

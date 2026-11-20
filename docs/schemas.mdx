@@ -164,14 +164,15 @@ If the destination schema already declares the new column (for example `admit_da
 
 ### What a new column name may hold
 
-A new column keeps the header cell exactly as written (lower-cased), and every destination quotes it, so names with spaces, hyphens, dots, quotes or non-ASCII letters are added and load like any other. Tap records written as JSON objects work the same way: each key becomes one header cell, quoted when it holds the delimiter or a quote. A key that itself begins and ends with a double quote (for example `"abc"`, quotes included) now keeps those quotes in its column name; earlier versions dropped them and stored the column as `abc`. If a tap pipeline already has such a column, rename the key in the tap script to the stored name (`abc`), or expect the next run to add a new column under the quoted name.
+A new column keeps the header cell exactly as written (lower-cased), and every destination quotes it, so names with spaces, hyphens, dots, quotes or non-ASCII letters are added and load like any other on PostgreSQL, SQL Server, Snowflake and object store destinations (Parquet, ORC and Iceberg). Two exceptions: an object store writing ORC refuses a new name holding a backtick (see below), and on Databricks a Delta table without column mapping does not accept a space or any of `, ; { } ( ) =` in a column name, so the load fails and the column stays in the pipeline schema until you remove it. Tap records written as JSON objects work the same way: each key becomes one header cell, quoted when it holds the delimiter or a quote. A key that itself begins and ends with a double quote (for example `"abc"`, quotes included) now keeps those quotes in its column name; earlier versions dropped them and stored the column as `abc`. If a tap pipeline already has such a column, rename the key in the tap script to the stored name (`abc`), or expect the next run to add a new column under the quoted name.
 
 A new column is refused when its name:
 
 - holds NUL or another control character (tab, line break and so on);
 - equals an existing column, or another new column in the same header, once surrounding spaces and letter case are ignored;
 - is longer than the destination allows: PostgreSQL 63 bytes (UTF-8), SQL Server 128 characters, Snowflake and Databricks 255 characters. Object store, MongoDB, scratch, Kafka, ActiveMQ and REST destinations have no limit;
-- on PostgreSQL, equals the first 63 bytes of another column's name.
+- on PostgreSQL, equals the first 63 bytes of another column's name;
+- on an object store writing ORC files, holds a backtick (ORC files cannot keep it in a column name).
 
 A refused column fails the run before anything is written, with an error that names the pipeline and the header cell (control characters shown as `\uXXXX`) and its position among the new columns. The stored schema is left unchanged, so a corrected file loads normally. These rules apply only to new columns: a header made of columns already in the schema loads as before, whatever their names.
 

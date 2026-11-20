@@ -64,6 +64,8 @@ The endpoint enforces multiple layers of protection:
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
 - **LIMIT enforcement** — if no `LIMIT` is present in the SQL, one is appended automatically using the request's `limit` value (or the default 100). Pass `limit: -1` to bypass the automatic append entirely — the caller's SQL runs as-is.
 
+A query refused by one of these checks (an empty query, a query that does not start with `SELECT` or `WITH`, a blocked word or function, a semicolon, a comment, `U&` quoting) returns `500 Internal Server Error` with `{"error": "..."}`, the message naming the rule (for example `Only SELECT queries are allowed (WITH/CTE is also permitted)` or `Query contains blocked keyword: DROP`).
+
 Queries run with the platform's own PostgreSQL credentials (the PostgreSQL secret), which pipelines also use to load data. As for any service account, give that secret a role with only the privileges it needs (create and write in the destination schemas) rather than a superuser.
 
 ---
@@ -119,6 +121,8 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 - **Projection** — plain inclusion and exclusion (`1`, `0`, `true`, `false`), `$slice`, `$elemMatch`, `$meta` and aggregation expressions other than the blocked operators are accepted
 - **Limit** — `limit` is applied as given; `-1` returns every matching document (tap scripts use this), so pass a positive `limit` for previews
 - **Standard MongoDB query operators** (`$eq`, `$gt`, `$in`, `$regex`, etc.) are safe and fully supported
+
+A filter or projection holding a blocked operator returns `500 Internal Server Error` with `{"error": "..."}` naming it, for example `MongoDB filter contains blocked operator: $where`; an empty collection name returns `500` too. A system or platform collection returns `400`, as above.
 
 ---
 
