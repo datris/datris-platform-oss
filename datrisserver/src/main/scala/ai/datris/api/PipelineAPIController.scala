@@ -2059,7 +2059,7 @@ object PipelineAPIController {
         env: SharedDatasets.Env,
         exists: DestinationTargets.Target => Boolean
     ): Option[ResponseEntity[String]] =
-        existingDestinationRefusal(request, candidate, stored, others, env, exists, _ => false, DestinationProbe.DefaultDeadline, _ => false)
+        existingDestinationRefusal(request, candidate, stored, others, env, exists, _ => false, DestinationProbe.DefaultDeadline, _ => false, _ => false)
 
     /** [[existingDestinationRefusal]] with the Unity Catalog state check
       * given, under `DestinationProbe.DefaultDeadline`. */
@@ -2107,7 +2107,8 @@ object PipelineAPIController {
     /** [[existingDestinationRefusal]] with the pgvector table probe given
       * (`vectorTableExists`, for `DestinationTargets.vectorTablesToProbe`
       * targets); it runs after `exists`'s targets, under the same deadline
-      * and the same per-caller slots. */
+      * and the same per-caller slots. Qdrant, weaviate, milvus and chroma
+      * containers are probed with `DestinationProbe.vectorContainerExists`. */
     def existingDestinationRefusal(
         request: HttpServletRequest,
         candidate: PipelineConfig,
@@ -2118,6 +2119,44 @@ object PipelineAPIController {
         catalogCommitted: String => Boolean,
         deadline: scala.concurrent.duration.FiniteDuration,
         vectorTableExists: DestinationTargets.Target => Boolean
+    ): Option[ResponseEntity[String]] =
+        existingDestinationRefusal(
+            request,
+            candidate,
+            stored,
+            others,
+            env,
+            exists,
+            catalogCommitted,
+            deadline,
+            vectorTableExists,
+            (t: DestinationTargets.VectorContainerTarget) => DestinationProbe.vectorContainerExists(t)
+        )
+
+    /** [[existingDestinationRefusal]] with the qdrant / weaviate / milvus /
+      * chroma container probe given too (`vectorContainerExists`, for
+      * `DestinationTargets.vectorContainersToProbe` targets).
+      *
+      * Before any probe, a new or changed container name that is not plain
+      * (a character outside letters, digits, `.`, `_`, `-`, or `.` / `..`)
+      * is refused with 400 `UnsafeVectorContainerRefusal`, and a null or
+      * blank name the visible stored config does not carry with 400
+      * `BlankVectorContainerRefusal` (a blank name has no container). Then
+      * each fresh container no visible pipeline names is probed after the
+      * pgvector tables, under the same deadline and slots: exists -> 400
+      * `ExistsRefusal` naming the caller's own container as written, any
+      * failure -> 500 `ProbeUnavailable`. */
+    def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        catalogCommitted: String => Boolean,
+        deadline: scala.concurrent.duration.FiniteDuration,
+        vectorTableExists: DestinationTargets.Target => Boolean,
+        vectorContainerExists: DestinationTargets.VectorContainerTarget => Boolean
     ): Option[ResponseEntity[String]] = {
         if (!CapabilityCheck.isRestrictedSession(request) || candidate == null) return None
         val deadlineAt = System.nanoTime() + deadline.toNanos
@@ -2148,6 +2187,13 @@ object PipelineAPIController {
         // the visible stored config carries the identical schema and table.
         if (DestinationTargets.blankVectorTableName(candidate) && !DestinationTargets.sameVectorTableNames(candidate, keptFrom))
             return badRequest(DestinationTargets.BlankVectorTableRefusal)
+        // Qdrant, weaviate, milvus, chroma: a new or changed name must be
+        // plain, and a blank name has no container (refused unless the
+        // visible stored config carries the identical one).
+        if (DestinationTargets.unsafeFreshVectorContainerName(candidate, keptFrom))
+            return badRequest(DestinationTargets.UnsafeVectorContainerRefusal)
+        if (DestinationTargets.newBlankVectorContainerName(candidate, keptFrom))
+            return badRequest(DestinationTargets.BlankVectorContainerRefusal)
         val candidateTarget = DestinationTargets.targetsOf(candidate, env).find(_.key.family == "objectstore")
         def iceberg(c: PipelineConfig): Boolean =
             c != null && c.destination != null && c.destination.objectStore != null &&
@@ -2199,6 +2245,34 @@ object PipelineAPIController {
             found match {
                 case Left(_) => return unavailable
                 case Right(true) => return badRequest(DestinationTargets.ExistsRefusal(SharedDatasets.label(t.key)))
+                case Right(false) =>
+            }
+        }
+        // Qdrant, weaviate, milvus and chroma containers, after the pgvector
+        // tables: the store is asked with the platform's store secret.
+        val containers = DestinationTargets.vectorContainersToProbe(candidate, keptFrom, visible).iterator
+        while (containers.hasNext) {
+            val t = containers.next()
+            val found =
+                try Right(bounded("destination probe (" + t.key.store + ")")(vectorContainerExists(t)))
+                catch {
+                    case _: DestinationProbe.TooManyChecks =>
+                        auditLogger.warn(
+                            "Destination existence probe for pipeline " + candidate.name + " (" + t.key.store +
+                                ") not started: the caller's other checks are still running"
+                        )
+                        return Some(tooManyChecks)
+                    case scala.util.control.NonFatal(e) =>
+                        auditLogger.warn(
+                            "Destination existence probe failed for pipeline " + candidate.name + " (" + t.key.store + "): " +
+                                Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                        )
+                        Left(e)
+                }
+            found match {
+                case Left(_) => return unavailable
+                case Right(true) =>
+                    return badRequest(DestinationTargets.ExistsRefusal(VectorContainers.label(VectorContainers.displayKey(t.key, candidate))))
                 case Right(false) =>
             }
         }

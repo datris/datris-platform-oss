@@ -139,7 +139,8 @@ object EntityVersionAPIController {
 
     /** [[pipelineRestoreRefusal]] with the pgvector table probe given too
       * (the six-argument form probes the snapshot's pgvector table with
-      * `DestinationProbe.vectorTableExists`). */
+      * `DestinationProbe.vectorTableExists`); qdrant, weaviate, milvus and
+      * chroma containers with `DestinationProbe.vectorContainerExists`. */
     def pipelineRestoreRefusal(
         request: HttpServletRequest,
         snap: PipelineConfig,
@@ -148,6 +149,31 @@ object EntityVersionAPIController {
         env: SharedDatasets.Env,
         exists: DestinationTargets.Target => Boolean,
         vectorTableExists: DestinationTargets.Target => Boolean
+    ): Option[ResponseEntity[String]] =
+        pipelineRestoreRefusal(
+            request,
+            snap,
+            live,
+            others,
+            env,
+            exists,
+            vectorTableExists,
+            (t: DestinationTargets.VectorContainerTarget) => DestinationProbe.vectorContainerExists(t)
+        )
+
+    /** [[pipelineRestoreRefusal]] with the vector container probe given too
+      * (`vectorContainerExists`, restricted sessions: a snapshot's new or
+      * changed qdrant / weaviate / milvus / chroma container must not exist
+      * yet; one the live config keeps is not probed). */
+    def pipelineRestoreRefusal(
+        request: HttpServletRequest,
+        snap: PipelineConfig,
+        live: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        vectorTableExists: DestinationTargets.Target => Boolean,
+        vectorContainerExists: DestinationTargets.VectorContainerTarget => Boolean
     ): Option[ResponseEntity[String]] =
         PipelineAPIController
             .databaseNameRefusal(snap, live)
@@ -165,7 +191,8 @@ object EntityVersionAPIController {
                     exists,
                     DestinationProbe.catalogCommitted,
                     DestinationProbe.DefaultDeadline,
-                    vectorTableExists
+                    vectorTableExists,
+                    vectorContainerExists
                 )
             )
 

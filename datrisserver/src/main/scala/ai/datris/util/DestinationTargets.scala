@@ -206,6 +206,118 @@ object DestinationTargets {
     /** 400 refusal text for [[blankVectorTableName]]; names nothing. */
     val BlankVectorTableRefusal: String = "A pgvector destination needs a table name. Set destination.pgvector.tableName."
 
+    // ------------------------------------------------ qdrant, weaviate, milvus, chroma containers
+
+    /** The vector stores whose collection (weaviate: class) is checked for a
+      * restricted session's new or changed container, on a path of its own
+      * (not [[targetsOf]], [[ProbedFamilies]] or [[vectorTableTargets]]). The
+      * delete drops the container by name whatever it holds, and the loaders
+      * append to an existing one, so a restricted user's new container must
+      * not exist yet. */
+    val ProbedVectorStores: Seq[String] = Seq("qdrant", "weaviate", "milvus", "chroma")
+
+    /** One container: its `VectorContainers` identity key and `exact`, the
+      * name as the loader and the delete send it (weaviate: with its first
+      * letter upper-cased, as the store keeps the class). */
+    case class VectorContainerTarget(key: VectorContainers.Key, exact: String)
+
+    /** (store, raw name) for each of the four stores the destination has, in
+      * [[ProbedVectorStores]] order; the name may be null or blank. */
+    private def vectorContainerNames(c: PipelineConfig): Seq[(String, String)] = {
+        val d = Option(c).flatMap(x => Option(x.destination)).orNull
+        if (d == null) Nil
+        else
+            Seq(
+                Option(d.qdrant).map(q => "qdrant" -> q.collectionName),
+                Option(d.weaviate).map(w => "weaviate" -> w.className),
+                Option(d.milvus).map(m => "milvus" -> m.collectionName),
+                Option(d.chroma).map(ch => "chroma" -> ch.collectionName)
+            ).flatten
+    }
+
+    private def exactName(store: String, name: String): String =
+        if (store == "weaviate" && name.nonEmpty) Character.toUpperCase(name.charAt(0)).toString + name.substring(1) else name
+
+    /** The config's qdrant, weaviate, milvus and chroma containers (none for
+      * a null or blank name, which has no container key). */
+    def vectorContainerTargets(c: PipelineConfig): Seq[VectorContainerTarget] =
+        vectorContainerNames(c).flatMap { case (store, name) =>
+            VectorContainers.key(store, name, None).map(k => VectorContainerTarget(k, exactName(store, name)))
+        }
+
+    /** The candidate's containers its stored config (same name; null for a
+      * new pipeline) does not have with the same key and exact name. A
+      * weaviate first-letter case change is the same class; any other
+      * letter-case change is fresh (another class in the store). */
+    def freshVectorContainers(candidate: PipelineConfig, stored: PipelineConfig): Seq[VectorContainerTarget] = {
+        val kept = vectorContainerTargets(stored)
+        vectorContainerTargets(candidate).filterNot(kept.contains)
+    }
+
+    /** The fresh containers of `candidate` that no pipeline in
+      * `visibleOthers` (another name, one the caller can see) names with the
+      * same container key: the ones to probe. */
+    def vectorContainersToProbe(
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        visibleOthers: Seq[PipelineConfig]
+    ): Seq[VectorContainerTarget] = {
+        val fresh = freshVectorContainers(candidate, stored)
+        if (fresh.isEmpty) return Nil
+        val name = if (candidate == null) null else candidate.name
+        val visibleKeys = Option(visibleOthers).getOrElse(Nil).filter(o => o != null && o.name != name).flatMap(o => vectorContainerTargets(o).map(_.key)).toSet
+        fresh.filterNot(t => visibleKeys.contains(t.key))
+    }
+
+    private def plainContainerName(n: String): Boolean =
+        n != "." && n != ".." && n.forall(ch =>
+            (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-'
+        )
+
+    /** True when a qdrant, weaviate, milvus or chroma name (not null or
+      * blank: that is [[blankVectorContainerName]]) holds a character
+      * outside letters, digits, `.`, `_` and `-`, or is `.` or `..`. */
+    def unsafeVectorContainerName(c: PipelineConfig): Boolean =
+        vectorContainerNames(c).exists { case (_, n) => n != null && n.trim.nonEmpty && !plainContainerName(n) }
+
+    /** The stores of `candidate` whose new or changed container name is not
+      * plain: [[unsafeVectorContainerName]] for the containers in
+      * [[freshVectorContainers]] only (an unchanged name is grandfathered). */
+    def unsafeFreshVectorContainerName(candidate: PipelineConfig, stored: PipelineConfig): Boolean = {
+        val freshStores = freshVectorContainers(candidate, stored).map(_.key.store).toSet
+        vectorContainerNames(candidate).exists { case (store, n) =>
+            freshStores.contains(store) && n != null && n.trim.nonEmpty && !plainContainerName(n)
+        }
+    }
+
+    /** 400 refusal text for a new or changed name that is not plain; names nothing. */
+    val UnsafeVectorContainerRefusal: String =
+        "A Qdrant, Milvus or Chroma collection name or a Weaviate class name may use only letters, digits, '.', '_' and '-', " +
+            "and cannot be '.' or '..'. Choose a plain name."
+
+    /** True when the config has a qdrant, weaviate, milvus or chroma
+      * destination whose name is null or blank (no container key). */
+    def blankVectorContainerName(c: PipelineConfig): Boolean =
+        vectorContainerNames(c).exists { case (_, n) => n == null || n.trim.isEmpty }
+
+    /** True when `stored` has the same vector-store destinations with
+      * exactly the candidate's raw names (nulls included). */
+    def sameVectorContainerNames(candidate: PipelineConfig, stored: PipelineConfig): Boolean = {
+        val names = vectorContainerNames(candidate)
+        names.nonEmpty && names == vectorContainerNames(stored)
+    }
+
+    /** True when a null or blank name of `candidate` is not carried, with
+      * the identical raw name in the same store, by `stored`. */
+    def newBlankVectorContainerName(candidate: PipelineConfig, stored: PipelineConfig): Boolean = {
+        val kept = vectorContainerNames(stored).toSet
+        vectorContainerNames(candidate).exists { case (store, n) => (n == null || n.trim.isEmpty) && !kept.contains(store -> n) }
+    }
+
+    /** 400 refusal text for [[newBlankVectorContainerName]]; names nothing. */
+    val BlankVectorContainerRefusal: String =
+        "A Qdrant, Milvus or Chroma destination needs a collection name, and a Weaviate destination a class name. Set collectionName or className."
+
     /** Characters a Hadoop / Spark path read expands as a glob or escape. */
     val GlobCharacters: Set[Char] = Set('*', '?', '[', ']', '{', '}', '\\')
 

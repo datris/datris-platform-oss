@@ -1981,8 +1981,10 @@ paths:
             used by another pipeline, or (for a caller who cannot see every
             pipeline) its destination is written by a pipeline it cannot see,
             or (restricted users only) a new or changed Postgres, SQL Server,
-            Snowflake or Databricks table, pgvector table, MongoDB collection
-            or object-store prefix already exists: `The
+            Snowflake or Databricks table, pgvector table, MongoDB collection,
+            Qdrant, Milvus or Chroma collection, Weaviate class (for Qdrant
+            also an alias of that name; for Weaviate any letter case) or
+            object-store prefix already exists: `The
             destination <kind> <coordinates> already exists. Choose a table or
             prefix that does not exist yet, or ask a user with install-wide
             access to save this destination.` (only the coordinates in the
@@ -2003,7 +2005,16 @@ paths:
             names: ... Choose a plain prefix.`, or (restricted users only) a
             SQL Server temporary table (`#name`): `A SQL Server temporary table
             (a name starting with #) cannot be a pipeline destination. Choose
-            another table name.`, or a new or changed pgvector schema or
+            another table name.`, or (restricted users only) a new or changed
+            Qdrant, Milvus or Chroma collection or Weaviate class name with a
+            character other than letters, digits, `.`, `_` and `-`, or `.` /
+            `..`: `A Qdrant, Milvus or Chroma collection name or a Weaviate
+            class name may use only letters, digits, '.', '_' and '-', and
+            cannot be '.' or '..'. Choose a plain name.`, or (restricted users
+            only) one with a missing or blank name the saved pipeline does not
+            already have: `A Qdrant, Milvus or Chroma destination needs a
+            collection name, and a Weaviate destination a class name. Set
+            collectionName or className.`, or a new or changed pgvector schema or
             table name with a double quote, or an empty schema: `The pgvector
             schema and table names must not contain double quotes, and the
             schema must not be empty. Choose plain names.`, or a pgvector
@@ -2025,7 +2036,9 @@ paths:
           description: >-
             Server error (for example the configuration store is unreachable).
             For a restricted user, also when the check that a new destination
-            does not exist yet could not reach the database, warehouse or bucket (an
+            does not exist yet could not reach the database, warehouse, bucket
+            or vector store (a vector store not configured on the install, or
+            an answer the check does not recognise, counts too; an
             object-store endpoint that does not answer within a few seconds
             counts; the check does not retry), or did not finish within 30
             seconds: `Could not check whether the destination already
@@ -6301,11 +6314,11 @@ paths:
         '403':
           description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope. Restoring a version of a deleted pipeline re-creates it, so every key also needs `pipeline:create` in scope on the pipeline as re-created (the version's catalog and the version's owner, which the re-created pipeline keeps), as `POST /api/v1/pipeline` requires for a new pipeline; a key without it, including one holding `pipeline:update` and no `pipeline:create` at all, gets the 403 naming `pipeline:create`. Restoring over a live pipeline needs no `pipeline:create`.
         '400':
-          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`), or (every caller) a pgvector schema or table name the live pipeline does not have exactly and that holds a double quote, an empty schema or no table name (`The pgvector schema and table names must not contain double quotes, and the schema must not be empty. Choose plain names.` or `A pgvector destination needs a table name. Set destination.pgvector.tableName.`), or (every caller) a new or changed `destination.database` section that fails the save rule of `POST /api/v1/pipeline` (allowed characters, required fields, one engine, no `;` in options, 63 bytes for Postgres names), with the same message, or (every caller) a new or changed source or destination field type that is not one of the accepted forms of `POST /api/v1/pipeline` (`Invalid field type passed: ...` naming the field), or the version fails validation, with the same message as `POST /api/v1/pipeline` (for example a table name that is not a plain identifier, a server-managed secret, two destination engines, or Postgres not reachable). Nothing is restored. Body: `{"error": "..."}`.'
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection, Weaviate class or object-store prefix that already exists, or a new or changed vector-store collection or class name that is not plain or is missing, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`), or (every caller) a pgvector schema or table name the live pipeline does not have exactly and that holds a double quote, an empty schema or no table name (`The pgvector schema and table names must not contain double quotes, and the schema must not be empty. Choose plain names.` or `A pgvector destination needs a table name. Set destination.pgvector.tableName.`), or (every caller) a new or changed `destination.database` section that fails the save rule of `POST /api/v1/pipeline` (allowed characters, required fields, one engine, no `;` in options, 63 bytes for Postgres names), with the same message, or (every caller) a new or changed source or destination field type that is not one of the accepted forms of `POST /api/v1/pipeline` (`Invalid field type passed: ...` naming the field), or the version fails validation, with the same message as `POST /api/v1/pipeline` (for example a table name that is not a plain identifier, a server-managed secret, two destination engines, or Postgres not reachable). Nothing is restored. Body: `{"error": "..."}`.'
         '409':
           description: 'The pipeline was created, deleted, renamed or moved while the restore was being checked: `Pipeline ''<name>'' changed while it was being restored; nothing was restored. Try again.` Body: `{"error": "..."}`.'
         '500':
-          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket (an object-store endpoint that does not answer within a few seconds counts; the check does not retry) or did not finish within 30 seconds; nothing is restored.'
+          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse, bucket or vector store (a vector store not configured on the install, or an answer the check does not recognise, counts too; an object-store endpoint that does not answer within a few seconds counts; the check does not retry) or did not finish within 30 seconds; nothing is restored.'
         '429':
           description: 'Restricted users only: two destination checks of the same user are still running, so this restore''s check was not started and nothing was restored: `Another destination check of yours is still running; nothing was saved. Wait a moment and try again.` Body: `{"error": "..."}`.'
           headers:

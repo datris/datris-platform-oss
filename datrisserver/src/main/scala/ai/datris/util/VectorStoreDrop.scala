@@ -96,6 +96,54 @@ object VectorStoreDrop {
 
     private def apiKey(secret: java.util.Map[String, String]): Option[String] = Option(secret.get("apiKey")).filter(_.nonEmpty)
 
+    /** Where and how `store` is reached, from its secret: the base URL
+      * (scheme, host, port; qdrant's REST port is the secret's gRPC port
+      * minus one) and the auth headers (qdrant `api-key`, weaviate and milvus
+      * `Authorization: Bearer`, chroma none). Shared by the delete's drop and
+      * the save's existence probe (`DestinationProbe.vectorContainerRequest`),
+      * so both address the store exactly alike. Left `Failed` for a null
+      * secret, a blank host, an unusable port or scheme, or an unknown store. */
+    private[util] def endpoint(store: String, secret: java.util.Map[String, String]): Either[Failed, (String, Seq[(String, String)])] = {
+        if (secret == null) return Left(Failed(NotConfigured))
+        val host = secret.get("host")
+        if (blank(host)) return Left(Failed(NotConfigured))
+        def bearer: Seq[(String, String)] = apiKey(secret).map(k => "Authorization" -> ("Bearer " + k)).toSeq
+        store match {
+            case "qdrant" =>
+                port(secret, 6334).map(_ - 1).filter(_ > 0) match {
+                    case None => Left(Failed(NotConfigured))
+                    case Some(rest) => Right(("http://" + host + ":" + rest, apiKey(secret).map("api-key" -> _).toSeq))
+                }
+            case "weaviate" =>
+                val scheme = Option(secret.get("scheme")).filter(!blank(_)).getOrElse("http")
+                (port(secret, 8079), scheme.toLowerCase(Locale.ROOT)) match {
+                    case (Some(p), "http" | "https") => Right((scheme + "://" + host + ":" + p, bearer))
+                    case _ => Left(Failed(NotConfigured))
+                }
+            case "milvus" =>
+                port(secret, 19530) match {
+                    case None => Left(Failed(NotConfigured))
+                    case Some(p) => Right(("http://" + host + ":" + p, Seq("Content-Type" -> "application/json") ++ bearer))
+                }
+            case "chroma" =>
+                port(secret, 8000) match {
+                    case None => Left(Failed(NotConfigured))
+                    case Some(p) => Right(("http://" + host + ":" + p, Nil))
+                }
+            case _ => Left(Failed(NotConfigured))
+        }
+    }
+
+    /** The chroma collections path under the default tenant and database. */
+    private[util] val ChromaCollectionsPath: String = ChromaCollections.stripSuffix("/")
+
+    /** `{"collectionName": name}` as Gson builds it (escaped; UTF-8 when sent). */
+    private[util] def milvusNameBody(name: String): String = {
+        val body = new JsonObject
+        body.addProperty("collectionName", name)
+        body.toString
+    }
+
     /** The drop request for `name` in `store`, or the outcome without one:
       * NotSent for a null or blank name; Failed for `.` / `..` (no URL can
       * address them as a collection), a null secret, a blank host, an
@@ -103,57 +151,13 @@ object VectorStoreDrop {
     def request(store: String, secret: java.util.Map[String, String], name: String): Either[Outcome, Request] = {
         if (blank(name)) return Left(NotSent)
         if (name == "." || name == "..") return Left(Failed(ReportedError))
-        if (secret == null) return Left(Failed(NotConfigured))
-        val host = secret.get("host")
-        if (blank(host)) return Left(Failed(NotConfigured))
-        store match {
-            case "qdrant" =>
-                // The secret holds the gRPC port; REST is the port below it.
-                port(secret, 6334).map(_ - 1).filter(_ > 0) match {
-                    case None => Left(Failed(NotConfigured))
-                    case Some(rest) =>
-                        Right(Request(
-                            "DELETE",
-                            "http://" + host + ":" + rest + "/collections/" + segment(name),
-                            apiKey(secret).map("api-key" -> _).toSeq,
-                            None
-                        ))
-                }
-            case "weaviate" =>
-                val scheme = Option(secret.get("scheme")).filter(!blank(_)).getOrElse("http")
-                (port(secret, 8079), scheme.toLowerCase(Locale.ROOT)) match {
-                    case (Some(p), "http" | "https") =>
-                        Right(
-                            Request(
-                                "DELETE",
-                                scheme + "://" + host + ":" + p + "/v1/schema/" + segment(name),
-                                apiKey(secret).map(k => "Authorization" -> ("Bearer " + k)).toSeq,
-                                None
-                            )
-                        )
-                    case _ => Left(Failed(NotConfigured))
-                }
-            case "milvus" =>
-                port(secret, 19530) match {
-                    case None => Left(Failed(NotConfigured))
-                    case Some(p) =>
-                        val body = new JsonObject
-                        body.addProperty("collectionName", name)
-                        Right(
-                            Request(
-                                "POST",
-                                "http://" + host + ":" + p + "/v2/vectordb/collections/drop",
-                                Seq("Content-Type" -> "application/json") ++ apiKey(secret).map(k => "Authorization" -> ("Bearer " + k)),
-                                Some(body.toString)
-                            )
-                        )
-                }
-            case "chroma" =>
-                port(secret, 8000) match {
-                    case None => Left(Failed(NotConfigured))
-                    case Some(p) => Right(Request("DELETE", "http://" + host + ":" + p + ChromaCollections + segment(name), Nil, None))
-                }
-            case _ => Left(Failed(NotConfigured))
+        endpoint(store, secret).map { case (base, headers) =>
+            store match {
+                case "qdrant" => Request("DELETE", base + "/collections/" + segment(name), headers, None)
+                case "weaviate" => Request("DELETE", base + "/v1/schema/" + segment(name), headers, None)
+                case "milvus" => Request("POST", base + "/v2/vectordb/collections/drop", headers, Some(milvusNameBody(name)))
+                case _ => Request("DELETE", base + ChromaCollections + segment(name), headers, None)
+            }
         }
     }
 
