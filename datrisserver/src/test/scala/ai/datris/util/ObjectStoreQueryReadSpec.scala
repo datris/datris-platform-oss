@@ -21,7 +21,7 @@ import scala.collection.JavaConverters._
   * {{{
   * object ObjectStoreQueryUtil {
   *     private[util] def readSchemaFor(config: PipelineConfig): Option[ReadSchema]
-  *     private[util] def readPath(spark, path, format, limit, resolved, bucket, readSchema: Option[ReadSchema], orcMergeMaxFiles: Int = OrcMergeMaxFiles): QueryResult
+  *     private[util] def readPath(spark, path, format, limit, resolved, bucket, readSchema: Option[ReadSchema], schemaScanMaxFiles: Int = FileSchemaScanMaxFiles, stats: ReadStats = new ReadStats()): QueryResult
   * }
   * }}}
   * `query` (the route and the MCP `query_objectstore` tool) reads with
@@ -103,15 +103,15 @@ class ObjectStoreQueryReadSpec extends AnyFunSuite with BeforeAndAfterAll {
         }
     }
 
-    test("a column in the stored schema that no file holds yet reads as null; a column removed from the schema is not returned") {
+    test("a column in the stored schema that no file holds yet reads as null; a column removed from the schema is still returned, after the schema") {
         for (fmt <- Seq("parquet", "orc")) {
             val (_, out) = newDir(fmt + "-removed")
             val withOld = f1 :+ SchemaField("old", "string")
             load(out, fmt, withOld, Nil, "1,east,1.5,o1")
             val stored = f1 :+ SchemaField("later", "string")
             val r = read(out, fmt, config(fmt, stored))
-            assert(r.columns.asScala.toList == List("id", "region", "amount", "later"), fmt + ": " + r.columns)
-            assert(r.rows.asScala.head.get("later") == null && !r.rows.asScala.head.containsKey("old"), fmt + ": " + r.rows)
+            assert(r.columns.asScala.toList == List("id", "region", "amount", "later", "old"), fmt + ": " + r.columns)
+            assert(r.rows.asScala.head.get("later") == null && r.rows.asScala.head.get("old") == "o1", fmt + ": " + r.rows)
         }
     }
 
@@ -337,7 +337,7 @@ class ObjectStoreQueryReadSpec extends AnyFunSuite with BeforeAndAfterAll {
             None,
             null,
             ObjectStoreQueryUtil.readSchemaFor(config("orc", f1 :+ SchemaField("extra", "string"))),
-            orcMergeMaxFiles = 1
+            schemaScanMaxFiles = 1
         )
         assert(r.columns.asScala.toList == List("id", "region", "amount", "extra"), r.columns)
         assert(rowsBy(r, "id").map { case (k, m) => k -> m("extra") } == Map(1 -> null, 2 -> "e2"))
@@ -351,7 +351,7 @@ class ObjectStoreQueryReadSpec extends AnyFunSuite with BeforeAndAfterAll {
             None,
             null,
             ObjectStoreQueryUtil.readSchemaFor(config("orc", List(SchemaField("id", "int"), SchemaField("c", "int")))),
-            orcMergeMaxFiles = 0
+            schemaScanMaxFiles = 0
         )
         assert(t.rows.asScala.map(_.get("c")).toSet == Set("abc", "def"), "no silent null: " + t.rows)
     }
@@ -362,5 +362,152 @@ class ObjectStoreQueryReadSpec extends AnyFunSuite with BeforeAndAfterAll {
         load(out, "parquet", f1 :+ SchemaField("extra", "string"), Nil, "3,west,3.5,e3", "4,west,4.5,e4")
         val r = read(out, "parquet", config("parquet", f1 :+ SchemaField("extra", "string")), limit = 3)
         assert(r.rows.size == 3 && r.columns.asScala.toList == List("id", "region", "amount", "extra"), r.toString)
+    }
+
+    // ------------------------------------------------ round-two review
+
+    private def readStats(
+        out: String,
+        fmt: String,
+        cfg: PipelineConfig,
+        limit: Int = 100,
+        maxScan: Int = ObjectStoreQueryUtil.FileSchemaScanMaxFiles,
+        hook: () => Unit = () => ()
+    ): (ObjectStoreQueryUtil.QueryResult, ObjectStoreQueryUtil.ReadStats) = {
+        val stats = new ObjectStoreQueryUtil.ReadStats(hook)
+        (ObjectStoreQueryUtil.readPath(spark, out, fmt, limit, None, null, ObjectStoreQueryUtil.readSchemaFor(cfg), maxScan, stats), stats)
+    }
+
+    private def dataFiles(out: String): List[java.nio.file.Path] = {
+        val root = java.nio.file.Paths.get(java.net.URI.create(out))
+        val st = Files.walk(root)
+        try st.iterator().asScala.filter(p => Files.isRegularFile(p) && !p.getFileName.toString.startsWith(".") && !p.getFileName.toString.startsWith("_")).toList
+        finally st.close()
+    }
+
+    private val vInt = List(SchemaField("id", "int"), SchemaField("v", "int"), SchemaField("code", "string"))
+    private val vBig = List(SchemaField("id", "int"), SchemaField("v", "bigint"), SchemaField("code", "string"))
+
+    test("files holding a column under two types: partition values are those the plain read gives (numeric-looking, text and null directories)") {
+        for (fmt <- Seq("parquet", "orc"); dirs <- Seq(Seq("007", "A12", ""), Seq("007", "012", ""))) {
+            val (_, out) = newDir(fmt + "-fallback-parts")
+            load(out, fmt, vInt, Seq("code"), dirs.zipWithIndex.map { case (d, i) => s"${i + 1},${i + 1},$d" }: _*)
+            load(out, fmt, vBig, Seq("code"), s"9,9,${dirs.head}")
+            val r = read(out, fmt, config(fmt, vBig))
+            val plain = spark.read.format(fmt).load(out).select("id", "code").collect().map(row => row.getAs[Any]("id") -> row.getAs[Any]("code")).toMap
+            val mine = rowsBy(r, "id").map { case (k, m) => k -> m("code") }
+            assert(mine == plain, fmt + " " + dirs + ": " + mine + " vs the plain read " + plain)
+            assert(rowsBy(r, "id").keySet == Set(1, 2, 3, 9), fmt + ": " + r.rows)
+        }
+    }
+
+    test("two partition columns, numeric-looking and null values, match the plain read") {
+        val f = List(SchemaField("id", "int"), SchemaField("yr", "string"), SchemaField("code", "string"))
+        for (fmt <- Seq("parquet", "orc")) {
+            val (_, out) = newDir(fmt + "-two-parts")
+            load(out, fmt, f, Seq("yr", "code"), "1,2024,007", "2,,A1", "3,2025,")
+            val r = read(out, fmt, config(fmt, f))
+            assert(r.columns.asScala.toList == List("id", "yr", "code"), fmt + ": " + r.columns)
+            val plain = spark.read.format(fmt).load(out).collect().map(row => row.getAs[Any]("id") -> ((row.getAs[Any]("yr"), row.getAs[Any]("code")))).toMap
+            val mine = rowsBy(r, "id").map { case (k, m) => k -> ((m("yr"), m("code"))) }
+            assert(mine == plain, fmt + ": " + mine + " vs " + plain)
+        }
+    }
+
+    test("a partition column the stored schema does not name is still returned, last") {
+        val (_, out) = newDir("parquet-unnamed-part")
+        load(out, "parquet", f1, Seq("region"), "1,east,1.5")
+        val r = read(out, "parquet", config("parquet", List(SchemaField("id", "int"), SchemaField("amount", "double"))))
+        assert(r.columns.asScala.toList == List("id", "amount", "region"), r.columns)
+    }
+
+    test("zero-byte files are skipped, with and without a type difference") {
+        for (fmt <- Seq("parquet", "orc"); fields <- Seq(vInt, vBig)) {
+            val (_, out) = newDir(fmt + "-zero")
+            load(out, fmt, vInt, Nil, "1,1,a")
+            load(out, fmt, fields, Nil, "2,2,b")
+            Files.write(java.nio.file.Paths.get(java.net.URI.create(out)).resolve("zzz-0000." + fmt), Array[Byte]())
+            val r = read(out, fmt, config(fmt, vBig))
+            assert(rowsBy(r, "id").keySet == Set(1, 2), fmt + ": " + r.rows)
+            assert(read(out, fmt, config(fmt, vBig), limit = 2).rows.size == 2, fmt)
+        }
+    }
+
+    test("a file that cannot be read, or that disappears after the listing, fails the query naming it; never an empty or partial result") {
+        for (fmt <- Seq("parquet", "orc")) {
+            val (_, out) = newDir(fmt + "-corrupt")
+            load(out, fmt, vInt, Nil, "1,1,a")
+            load(out, fmt, vBig, Nil, "2,2,b")
+            val bad = java.nio.file.Paths.get(java.net.URI.create(out)).resolve("zzz-0001." + fmt)
+            Files.write(bad, "not a data file at all".getBytes(StandardCharsets.UTF_8))
+            val e = intercept[Exception](read(out, fmt, config(fmt, vBig)))
+            assert(String.valueOf(e.getMessage).contains("zzz-0001"), fmt + ": " + e.getMessage)
+
+            val (_, gone) = newDir(fmt + "-deleted")
+            load(gone, fmt, vInt, Nil, "1,1,a")
+            load(gone, fmt, vBig, Nil, "2,2,b")
+            val victim = dataFiles(gone).head
+            val e2 = intercept[Exception](readStats(gone, fmt, config(fmt, vBig), hook = () => Files.delete(victim)))
+            assert(String.valueOf(e2.getMessage).contains(victim.getFileName.toString), fmt + ": " + e2.getMessage)
+        }
+    }
+
+    test("cost is bounded: one footer per file and one Spark read per distinct schema; none above the scan cap") {
+        for (fmt <- Seq("parquet", "orc")) {
+            val (_, out) = newDir(fmt + "-cost")
+            (1 to 3).foreach(i => load(out, fmt, vInt, Nil, s"$i,$i,a"))
+            (4 to 6).foreach(i => load(out, fmt, vBig, Nil, s"$i,$i,b"))
+            val n = dataFiles(out).size
+            val (r, st) = readStats(out, fmt, config(fmt, vBig))
+            assert(r.rows.size == 6 && st.footersRead == n && st.dataReads == 2, fmt + s": footers ${st.footersRead} of $n, reads ${st.dataReads}")
+            val (same, st2) = readStats(newDirWith(fmt, vInt, 4), fmt, config(fmt, vInt))
+            assert(same.rows.size == 4 && st2.dataReads == 1, fmt + ": " + st2.dataReads)
+            // exactly at the cap the footers are read; one above, none are
+            val (_, at) = readStats(out, fmt, config(fmt, vBig), maxScan = n)
+            assert(at.footersRead == n, fmt)
+            val (_, above) = readStats(newDirWith(fmt, vInt, 4), fmt, config(fmt, vInt), maxScan = 3)
+            assert(above.footersRead == 0 && above.dataReads == 1, fmt)
+        }
+        assert(ObjectStoreQueryUtil.FileSchemaScanMaxFiles == 1000)
+    }
+
+    private def newDirWith(fmt: String, fields: List[SchemaField], files: Int): String = {
+        val (_, out) = newDir(fmt + "-n")
+        (1 to files).foreach(i => load(out, fmt, fields, Nil, s"$i,$i,a"))
+        out
+    }
+
+    test("above the scan cap, files that disagree on a type fail the query with a clear message, as the plain read failed") {
+        val (_, out) = newDir("parquet-above-cap")
+        load(out, "parquet", vInt, Nil, "1,1,a")
+        load(out, "parquet", vBig, Nil, "2,2,b")
+        val e = intercept[Exception](readStats(out, "parquet", config("parquet", vBig), maxScan = 1))
+        assert(String.valueOf(e.getMessage).contains("different types"), e.getMessage)
+    }
+
+    test("widening edits stay numbers, other differences are text, and the typing does not depend on the limit") {
+        val cases = Seq(
+            ("int", "bigint", "5", "6", true),
+            ("smallint", "int", "5", "6", true),
+            ("float", "double", "1.5", "2.5", true),
+            ("bigint", "int", "5", "6", true),
+            ("decimal(10,2)", "decimal(12,2)", "1.25", "2.50", false), // decimals are always strings in the JSON
+            ("int", "string", "5", "x", false),
+            ("decimal(10,2)", "decimal(10,3)", "1.25", "2.500", false),
+            ("boolean", "string", "true", "y", false)
+        )
+        for (fmt <- Seq("parquet", "orc"); (a, b, va, vb, numeric) <- cases) {
+            val label = fmt + " " + a + "/" + b
+            val (_, out) = newDir(fmt + "-widen")
+            load(out, fmt, List(SchemaField("id", "int"), SchemaField("c", a)), Nil, "1," + va)
+            load(out, fmt, List(SchemaField("id", "int"), SchemaField("c", b)), Nil, "2," + vb)
+            val stored = config(fmt, List(SchemaField("id", "int"), SchemaField("c", b)))
+            val kinds = Seq(1, 100).map { lim =>
+                val r = read(out, fmt, stored, limit = lim)
+                assert(r.rows.size == math.min(lim, 2), label)
+                r.rows.asScala.map(_.get("c")).map(v => v.isInstanceOf[Number]).toSet
+            }
+            assert(kinds.forall(_ == Set(numeric)), label + ": " + kinds)
+        }
     }
 }
