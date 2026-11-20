@@ -185,7 +185,9 @@ object EntityVersionAPIController {
       * `hidden` (the version 404) ([[hiddenFromRestricted]]); an API key
       * outside the scope of the live pipeline (or of the snapshot when
       * deleted) gets the [[pipelineRestoreScopeRefusal]] 403; for a deleted
-      * pipeline and a limited-visibility caller, the previous-name check
+      * pipeline, the right to create it as re-created
+      * ([[PipelineAPIController.recreateRefusal]], 403 on `create`); for a
+      * deleted pipeline and a limited-visibility caller, the previous-name check
       * ([[pipelineRestoreAliasRefusal]]; `readAll` is called only then, and a
       * failure is `aliasCheckUnavailable("restored")`, 500); then the
       * restricted-session catalog rules
@@ -205,6 +207,10 @@ object EntityVersionAPIController {
         )
             return Left(hidden)
         pipelineRestoreScopeRefusal(request, candidate, stored).foreach(refused => return Left(refused))
+        // A deleted pipeline is re-created: the caller must be allowed to
+        // create it, as POST /pipeline requires for a new pipeline (owner
+        // decision).
+        if (stored == null) PipelineAPIController.recreateRefusal(request, candidate).foreach(refused => return Left(refused))
         if (stored == null && PipelineAPIController.limitedVisibility(request)) {
             val all =
                 try readAll()

@@ -2317,11 +2317,19 @@ object PipelineAPIController {
       * stored owner (the caller's label for a new name). The 403 names the
       * action attempted (`create` for a new name, `update` over a stored
       * one). None for sessions, no identity, full keys and keys whose create
-      * is unscoped. */
-    def keyTargetRefusal(request: HttpServletRequest, config: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] =
+      * is unscoped. `newOwner`: the owner a new pipeline will have when it
+      * is not the caller (a deleted pipeline re-created by version restore
+      * keeps the version's owner); None = the caller's label, as on
+      * `POST /pipeline`. */
+    def keyTargetRefusal(
+        request: HttpServletRequest,
+        config: PipelineConfig,
+        stored: PipelineConfig,
+        newOwner: Option[String] = None
+    ): Option[ResponseEntity[String]] =
         CapabilityCheck.resolvedKey(request) match {
             case Some(rk) if config != null && !rk.restrictedSession =>
-                val owner = if (stored != null) stored.createdByKeyLabel else rk.label
+                val owner = if (stored != null) stored.createdByKeyLabel else newOwner.getOrElse(rk.label)
                 val ctx = CatalogOps.scopeContext(config.catalog, owner)
                 val acceptable = if (stored != null) SaveOverwriteActions else Seq("create")
                 val attempted = if (stored != null) "update" else "create"
@@ -2335,6 +2343,34 @@ object PipelineAPIController {
                         case e: CapabilityDeniedException => Some(capabilityDenied(e))
                     }
             case _ => None
+        }
+
+    /** Version restore of a DELETED pipeline (owner decision): the restore
+      * re-creates the pipeline, so the caller needs what `POST /pipeline`
+      * needs to create it: `pipeline:create` held at all (the capability
+      * `POST /pipeline`'s route gate requires; the restore route requires
+      * only `pipeline:update`), and in scope on the pipeline as re-created
+      * ([[keyTargetRefusal]], the save guard's new-pipeline rule). The context
+      * is the one the re-created pipeline will have: the version's catalog
+      * and the version's owner (a restore keeps it; `POST /pipeline` would
+      * stamp the caller). A key is refused 403 on `create` through
+      * `CapabilityCheck.assertScope` (shared wording). None for full access,
+      * unrestricted sessions (every role bundle holding `pipeline:update`
+      * holds `pipeline:create`), restricted sessions (the restore hides a
+      * deleted pipeline's history from them first), no identity and a null
+      * request. Reads nothing. Same shape as
+      * [[TapAPIController.recreateRefusal]]. */
+    def recreateRefusal(request: HttpServletRequest, config: PipelineConfig): Option[ResponseEntity[String]] =
+        CapabilityCheck.resolvedKey(request) match {
+            case Some(rk) if config != null && !rk.restrictedSession && !ai.datris.auth.CallerVisibility.holdsAny(rk, "pipeline", "create") =>
+                val ctx = CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
+                try {
+                    CapabilityCheck.assertScope(request, "pipeline", "create", ctx)
+                    Some(capabilityDenied(new CapabilityDeniedException("capability denied")))
+                } catch {
+                    case e: CapabilityDeniedException => Some(capabilityDenied(e))
+                }
+            case _ => keyTargetRefusal(request, config, null, Some(if (config == null) null else config.createdByKeyLabel))
         }
 
     /** POST /pipeline for a [[saveGuardNeeded]] caller, decided from ONE
