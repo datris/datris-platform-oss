@@ -85,8 +85,13 @@ class VectorDeleteFailureWarningSpec extends AnyFunSuite {
         val cleanup = method("cleanupDestinationData")
         val ownConnection = cleanup.contains("HttpURLConnection")
         assert(!ownConnection, "cleanupDestinationData still opens its own HttpURLConnection")
-        val drops = cleanup.split(java.util.regex.Pattern.quote("VectorStoreDrop.drop("), -1).length - 1
-        assert(drops >= 1, "cleanupDestinationData never calls VectorStoreDrop.drop")
+        // The store calls live in the extracted dropVectorContainers, which
+        // cleanupDestinationData calls (behaviour: VectorDropContainersSpec).
+        assert(cleanup.contains("PipelineAPIController.dropVectorContainers("), "cleanupDestinationData never calls dropVectorContainers")
+        val extracted = method("dropVectorContainers")
+        assert(!extracted.contains("HttpURLConnection"), "dropVectorContainers opens its own HttpURLConnection")
+        val drops = extracted.split(java.util.regex.Pattern.quote("VectorStoreDrop.drop("), -1).length - 1
+        assert(drops >= 1, "dropVectorContainers never calls VectorStoreDrop.drop")
         val addsWarning = method("deletePipelineOutcome").contains("VectorStoreDrop.warning(")
         assert(addsWarning, "deletePipelineOutcome never adds a drop-failure warning")
     }

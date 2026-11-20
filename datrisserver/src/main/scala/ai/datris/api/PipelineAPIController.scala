@@ -1336,35 +1336,20 @@ class PipelineAPIController {
             }
         }
 
-        // Qdrant, Weaviate, Milvus, Chroma — one bounded call each through
-        // VectorStoreDrop. Only a real removal is logged as one; a drop the
-        // store refused or could not serve, or a store with no secret or
-        // host, is returned for the delete's warnings.
-        def dropContainer(store: String, kind: String, name: String, secretName: => String): Unit = {
-            val secret =
-                try SecretsUtil.getSecretMap(secretName).orNull
-                catch {
-                    case e: Exception =>
-                        logger.warn("Could not read the " + kind + " secret on delete: " + e.getMessage)
-                        null
-                }
-            VectorStoreDrop.drop(store, secret, name) match {
-                case VectorStoreDrop.Removed => logger.info((if (store == "milvus") "Dropped " else "Deleted ") + kind + ": " + name)
-                case VectorStoreDrop.Absent => logger.info(kind + " " + name + " was already absent")
-                case VectorStoreDrop.NotSent => logger.debug("No " + kind + " drop for pipeline '" + config.name + "': no name")
-                case VectorStoreDrop.Failed(reason) =>
-                    logger.warn("Failed to delete " + kind + " " + name + " for pipeline '" + config.name + "': " + reason)
-                    VectorContainers.key(store, name, None).foreach(k => vectorFailures += (k -> reason))
-            }
-        }
-        if (dest.qdrant != null && dropVector("qdrant", dest.qdrant.collectionName))
-            dropContainer("qdrant", "Qdrant collection", dest.qdrant.collectionName, DatrisEnvironment.current.qdrantSecretName)
-        if (dest.weaviate != null && dropVector("weaviate", dest.weaviate.className))
-            dropContainer("weaviate", "Weaviate class", dest.weaviate.className, DatrisEnvironment.current.weaviateSecretName)
-        if (dest.milvus != null && dropVector("milvus", dest.milvus.collectionName))
-            dropContainer("milvus", "Milvus collection", dest.milvus.collectionName, DatrisEnvironment.current.milvusSecretName)
-        if (dest.chroma != null && dropVector("chroma", dest.chroma.collectionName))
-            dropContainer("chroma", "Chroma collection", dest.chroma.collectionName, DatrisEnvironment.current.chromaSecretName)
+        // Qdrant, Weaviate, Milvus, Chroma — one bounded call each
+        // (dropVectorContainers); the store secret is read here, a read
+        // failure kept apart from an absent secret.
+        vectorFailures ++= PipelineAPIController.dropVectorContainers(
+            config,
+            keepVector,
+            store =>
+                SecretsUtil.tryGetSecretMap(store match {
+                    case "qdrant" => DatrisEnvironment.current.qdrantSecretName
+                    case "weaviate" => DatrisEnvironment.current.weaviateSecretName
+                    case "milvus" => DatrisEnvironment.current.milvusSecretName
+                    case "chroma" => DatrisEnvironment.current.chromaSecretName
+                })
+        )
 
         // Object Store — recursively delete s3a://<bucket>/<prefixKey> through
         // the Hadoop FileSystem with per-bucket config applied (same route as
@@ -1787,14 +1772,70 @@ object PipelineAPIController {
     def clearTapLedgersOnDelete(deleteConfig: Boolean, keptSharedVector: Boolean): Boolean =
         deleteConfig || !keptSharedVector
 
-    /** [[clearTapLedgersOnDelete]] for a delete plan: never for a keep-data
-      * delete (the ledgers mirror the kept data; clearing them would
-      * re-ingest into it). */
+    /** Drops the config's qdrant, weaviate, milvus and chroma containers,
+      * in that order, through [[VectorStoreDrop.drop]], skipping a container
+      * in `keepVector` (shared with another pipeline). `secretOf(store)` is
+      * the store secret read: Success(None) is an absent secret ("not
+      * configured"), Failure a read that failed ("could not be reached"),
+      * so a secret-store outage is not reported as a missing store. Only a
+      * real removal is logged as one. Returns each container (identity key)
+      * that could not be removed, with its closed-set reason, in store
+      * order; Removed, Absent and NotSent are not failures. Never throws.
+      * `log(level, message)` receives every line (level info, warn or
+      * debug); `deadlineMs` bounds each drop. */
+    private[api] def dropVectorContainers(
+        config: PipelineConfig,
+        keepVector: Set[VectorContainers.Key],
+        secretOf: String => scala.util.Try[Option[java.util.Map[String, String]]],
+        log: (String, String) => Unit = defaultVectorDropLog,
+        deadlineMs: Long = VectorStoreDrop.TotalDeadlineMs
+    ): Seq[(VectorContainers.Key, String)] = {
+        val dest = if (config == null) null else config.destination
+        if (dest == null) return Nil
+        val failures = Seq.newBuilder[(VectorContainers.Key, String)]
+        def drop(store: String, kind: String, name: String): Unit =
+            if (!VectorContainers.key(store, name, None).exists(keepVector.contains)) {
+                val outcome =
+                    (try secretOf(store)
+                    catch { case scala.util.control.NonFatal(e) => scala.util.Failure(e) }) match {
+                        case scala.util.Failure(e) =>
+                            log("warn", "Could not read the " + kind + " secret on delete: " + e.getMessage)
+                            VectorStoreDrop.Failed(VectorStoreDrop.Unreachable)
+                        case scala.util.Success(secret) => VectorStoreDrop.drop(store, secret.orNull, name, deadlineMs)
+                    }
+                outcome match {
+                    case VectorStoreDrop.Removed => log("info", (if (store == "milvus") "Dropped " else "Deleted ") + kind + ": " + name)
+                    case VectorStoreDrop.Absent => log("info", kind + " " + name + " was already absent")
+                    case VectorStoreDrop.NotSent => log("debug", "No " + kind + " drop for pipeline '" + config.name + "': no name")
+                    case VectorStoreDrop.Failed(reason) =>
+                        log("warn", "Failed to delete " + kind + " " + name + " for pipeline '" + config.name + "': " + reason)
+                        VectorContainers.key(store, name, None).foreach(k => failures += (k -> reason))
+                }
+            }
+        if (dest.qdrant != null) drop("qdrant", "Qdrant collection", dest.qdrant.collectionName)
+        if (dest.weaviate != null) drop("weaviate", "Weaviate class", dest.weaviate.className)
+        if (dest.milvus != null) drop("milvus", "Milvus collection", dest.milvus.collectionName)
+        if (dest.chroma != null) drop("chroma", "Chroma collection", dest.chroma.collectionName)
+        failures.result()
+    }
+
+    private val vectorDropLogger: Logger = LoggerFactory.getLogger(classOf[PipelineAPIController])
+
+    private[api] val defaultVectorDropLog: (String, String) => Unit = (level, message) =>
+        level match {
+            case "warn" => vectorDropLogger.warn(message)
+            case "debug" => vectorDropLogger.debug(message)
+            case _ => vectorDropLogger.info(message)
+        }
+
     /** What [[PipelineAPIController.cleanupDestinationData]] did: whether the
       * object-store files were deleted, and the vector containers (identity
       * keys, store order) that could not be removed, with their reasons. */
     case class DestinationCleanup(objectStoreDataDeleted: Boolean, vectorFailures: Seq[(VectorContainers.Key, String)])
 
+    /** [[clearTapLedgersOnDelete]] for a delete plan: never for a keep-data
+      * delete (the ledgers mirror the kept data; clearing them would
+      * re-ingest into it). */
     def clearTapLedgersForPlan(plan: PipelineDeletePlan.Plan, keptSharedVector: Boolean): Boolean =
         !plan.keepData && clearTapLedgersOnDelete(plan.deleteConfig, keptSharedVector)
 

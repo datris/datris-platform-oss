@@ -63,6 +63,10 @@ object VectorStoreDrop {
     val ReadTimeoutMs = 5000
     val MaxBodyBytes: Int = 64 * 1024
 
+    /** Whole-call bound for one drop: the read timeout is per read, so a
+      * store trickling its answer is cut off here. */
+    val TotalDeadlineMs = 10000L
+
     private val ChromaCollections = "/api/v2/tenants/default_tenant/databases/default_database/collections/"
 
     private def blank(s: String): Boolean = s == null || s.trim.isEmpty
@@ -98,7 +102,7 @@ object VectorStoreDrop {
       * unparsable port or an unknown store. */
     def request(store: String, secret: java.util.Map[String, String], name: String): Either[Outcome, Request] = {
         if (blank(name)) return Left(NotSent)
-        if (name == "." || name == "..") return Left(Failed(Unreachable))
+        if (name == "." || name == "..") return Left(Failed(ReportedError))
         if (secret == null) return Left(Failed(NotConfigured))
         val host = secret.get("host")
         if (blank(host)) return Left(Failed(NotConfigured))
@@ -186,23 +190,32 @@ object VectorStoreDrop {
         }
     }
 
-    private def readCapped(in: InputStream): String =
+    /** Past the deadline (System.nanoTime), a SocketTimeoutException. */
+    private def checkDeadline(deadlineNanos: Long): Unit =
+        if (System.nanoTime() - deadlineNanos > 0) throw new SocketTimeoutException("drop did not finish within its deadline")
+
+    private def readCapped(in: InputStream, deadlineNanos: Long): String =
         if (in == null) ""
         else {
             val out = new ByteArrayOutputStream
             val buf = new Array[Byte](8192)
+            checkDeadline(deadlineNanos)
             var n = in.read(buf, 0, math.min(buf.length, MaxBodyBytes))
             while (n > 0 && out.size < MaxBodyBytes) {
                 out.write(buf, 0, n)
+                checkDeadline(deadlineNanos)
                 n = in.read(buf, 0, math.min(buf.length, MaxBodyBytes - out.size))
             }
             new String(out.toByteArray, StandardCharsets.UTF_8)
         }
 
-    /** One bounded HTTP call: 5 s connect, 5 s read, redirects not
-      * followed, at most 64 KB of the answer read. Streams are closed and
-      * the connection disconnected whatever happens. Throws the I/O error. */
-    def send(r: Request): (Int, String) = {
+    /** One bounded HTTP call: 5 s connect, 5 s per read, `deadlineMs` for
+      * the whole answer (checked between reads), redirects not followed, at
+      * most 64 KB of the answer read. Streams are closed and the connection
+      * disconnected whatever happens. Throws the I/O error (a
+      * SocketTimeoutException past the deadline). */
+    def send(r: Request, deadlineMs: Long = TotalDeadlineMs): (Int, String) = {
+        val deadlineNanos = System.nanoTime() + deadlineMs * 1000000L
         val conn = new URL(r.url).openConnection().asInstanceOf[HttpURLConnection]
         try {
             conn.setInstanceFollowRedirects(false)
@@ -218,9 +231,10 @@ object VectorStoreDrop {
                 finally os.close()
             }
             val status = conn.getResponseCode
+            checkDeadline(deadlineNanos)
             val in = if (status >= 400) conn.getErrorStream else scala.util.Try(conn.getInputStream).getOrElse(conn.getErrorStream)
             val body =
-                try readCapped(in)
+                try readCapped(in, deadlineNanos)
                 finally if (in != null) in.close()
             (status, body)
         } finally conn.disconnect()
@@ -229,13 +243,13 @@ object VectorStoreDrop {
     /** Request, send and classify; never throws. A timeout is "did not
       * answer in time", any other failure to talk to the store "could not
       * be reached". The detail is logged here, never returned. */
-    def drop(store: String, secret: java.util.Map[String, String], name: String): Outcome =
+    def drop(store: String, secret: java.util.Map[String, String], name: String, deadlineMs: Long = TotalDeadlineMs): Outcome =
         try {
             request(store, secret, name) match {
                 case Left(o) => o
                 case Right(r) =>
                     try {
-                        val (status, body) = send(r)
+                        val (status, body) = send(r, deadlineMs)
                         val o = classify(store, status, body)
                         o match {
                             case Failed(_) =>
