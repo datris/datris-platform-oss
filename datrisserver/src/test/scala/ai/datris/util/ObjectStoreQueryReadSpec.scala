@@ -15,7 +15,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 import scala.collection.JavaConverters._
 
-/** The object-store query of a Parquet or ORC pipeline returns every column
+/** The object-store query of a Parquet pipeline, and of an ORC one, returns every column
   * its data has, not the columns of one file.
   *
   * {{{

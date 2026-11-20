@@ -156,7 +156,7 @@ object ObjectStoreQueryUtil {
         bucket: String
     ): QueryResult = readPath(spark, path, format, limit, resolved, bucket, None)
 
-    /** The read schema of a Parquet or ORC pipeline: the stored destination
+    /** The read schema of a Parquet pipeline or an ORC one: the stored destination
       * schema (the source schema when there is none), in its order and with
       * its types, as the loader writes it (SparkObjectStoreLoader.buildSchema),
       * then the provenance stamp columns the pipeline's `provenance` block
@@ -182,7 +182,7 @@ object ObjectStoreQueryUtil {
         Some(StructType(base.fields ++ stamps.map(n => StructField(n, StringType, nullable = true))))
     }
 
-    /** Parquet or ORC at `path`, every column of every file.
+    /** The Parquet files, or the ORC files, at `path`: every column of every file.
       *
       * With `readSchema` (a known pipeline) the columns come back in its
       * order, a column a file lacks reads as null, and a column found in
