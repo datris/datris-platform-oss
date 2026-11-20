@@ -659,4 +659,38 @@ class ObjectStoreQueryReadSpec extends AnyFunSuite with BeforeAndAfterAll {
         Files.setLastModifiedTime(f, java.nio.file.attribute.FileTime.fromMillis(Files.getLastModifiedTime(f).toMillis + 60000))
         assert(readStats(out, "parquet", cfg)._2.footersRead == 1)
     }
+
+    // ------------------------------------------------ round-four review
+
+    test("above the cap, a stored type the files cannot be read as (ORC) returns what the plain read returns") {
+        for ((fileType, value, storedType) <- Seq(("bigint", "1700000000000000", "timestamp"), ("int", "7", "date"))) {
+            // Which file Spark samples follows the directory listing, so
+            // locations are made until one samples the run-1 file (no `c`).
+            var sampledLacksC = false
+            var tries = 0
+            while (!sampledLacksC && tries < 12) {
+                tries += 1
+                val (_, out) = newDir("orc-degrade-" + storedType)
+                load(out, "orc", List(SchemaField("id", "int")), Nil, "1")
+                dataFiles(out).foreach(f => Files.move(f, f.resolveSibling("zzzz-run1-" + tries + ".orc")))
+                load(out, "orc", List(SchemaField("id", "int"), SchemaField("c", fileType)), Nil, "2," + value)
+                val plain = spark.read.format("orc").load(out)
+                sampledLacksC = !plain.columns.contains("c")
+                val r = readStats(out, "orc", config("orc", List(SchemaField("id", "int"), SchemaField("c", storedType))), maxScan = 0)._1
+                assert(mineRows(r, plain.columns.toSeq) == plain.collect().map(_.toSeq).toSet, fileType + " as " + storedType + ": " + r.rows)
+                assert(rowsBy(r, "id").keySet == Set(1, 2), r.rows)
+            }
+            assert(sampledLacksC, "no location sampled the run-1 file in " + tries + " tries")
+        }
+    }
+
+    test("above the cap, a stored tinyint or smallint the sampled file lacks is read as int, never truncated (Parquet)") {
+        for ((storedType, value) <- Seq(("tinyint", "300"), ("smallint", "70000"))) {
+            val (_, out) = newDir("parquet-degrade-" + storedType)
+            load(out, "parquet", List(SchemaField("id", "int")), Nil, "1")
+            load(out, "parquet", List(SchemaField("id", "int"), SchemaField("c", "int")), Nil, "2," + value)
+            val r = readStats(out, "parquet", config("parquet", List(SchemaField("id", "int"), SchemaField("c", storedType))), maxScan = 0)._1
+            assert(rowsBy(r, "id")(2)("c") == value.toInt, storedType + ": " + r.rows)
+        }
+    }
 }

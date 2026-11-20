@@ -386,7 +386,14 @@ object ObjectStoreQueryUtil {
         def key(format: String, f: org.apache.hadoop.fs.FileStatus): (String, String, Long, Long) =
             (format, f.getPath.toString, f.getLen, f.getModificationTime)
         def get(k: (String, String, Long, Long)): Option[StructType] = entries.synchronized(Option(entries.get(k)))
-        def put(k: (String, String, Long, Long), v: StructType): Unit = entries.synchronized(entries.put(k, v))
+        // Files with one schema share one instance (bounded, least recently used out).
+        private val canonical = new java.util.LinkedHashMap[StructType, StructType](64, 0.75f, true) {
+            override def removeEldestEntry(e: java.util.Map.Entry[StructType, StructType]): Boolean = size() > 1000
+        }
+        def put(k: (String, String, Long, Long), v: StructType): Unit = entries.synchronized {
+            val shared = Option(canonical.get(v)).getOrElse { canonical.put(v, v); v }
+            entries.put(k, shared)
+        }
     }
 
     /** Every file's schema, read in parallel within `budgetMs`; None (with a
@@ -569,29 +576,44 @@ object ObjectStoreQueryUtil {
                 }
             case None =>
                 val assumed = readSchema.map(_.stamps).getOrElse(Nil)
-                val missing = dataOnly(stored).fields.filter(f => find(sampled, f.name).isEmpty) ++
+                // A stored tinyint or smallint the sampled file lacks is read as
+                // int: Parquet would otherwise truncate a wider value silently.
+                val missing = dataOnly(stored).fields.filter(f => find(sampled, f.name).isEmpty).map { f =>
+                    f.dataType match {
+                        case org.apache.spark.sql.types.ByteType | org.apache.spark.sql.types.ShortType =>
+                            f.copy(dataType = org.apache.spark.sql.types.IntegerType)
+                        case _ => f
+                    }
+                } ++
                     assumed.filter(n => find(sampled, n).isEmpty && find(stored, n).isEmpty).map(n => StructField(n, StringType, nullable = true))
                 val order = columnList(stored, sampled, partitions, assumed)
                 val nameOf = namer(Nil)
                 val wide = spark.baseRelationToDataFrame(relation.copy(dataSchema = StructType(sampled.fields ++ missing))(spark))
+                def differentTypes(e: Exception): Nothing =
+                    throw new IllegalStateException(
+                        "The files at " + path + " hold a column under different types, and the query could not read every file's schema " +
+                            "to reconcile them (more than " + maxScan + " data files, a file whose schema cannot be read, or the time to read " +
+                            "them ran out). Rewrite the data with one type per column (for example with deleteBeforeWrite on the next run). Cause: " +
+                            String.valueOf(e.getMessage).split("\n").head.take(300),
+                        e
+                    )
+                def narrow(): QueryResult = {
+                    val keepOrder = order.filter(n => plain.columns.exists(_.equalsIgnoreCase(n)))
+                    try collect(project(plain, keepOrder, stored, nameOf), limit, path, format, stats, cancelled)
+                    catch { case e2: Exception if typeConflict(e2) => differentTypes(e2) }
+                }
                 try collect(project(wide, order, stored, nameOf), limit, path, format, stats, cancelled)
                 catch {
-                    case e: Exception if typeConflict(e) =>
+                    // Any failure of the wider read (a type ORC or Parquet cannot
+                    // convert, whatever the error looks like): read exactly as the
+                    // query always did, which fails only where that read fails.
+                    case e: Exception if !e.isInstanceOf[QueryCancelled] && !cancelled.get && missing.nonEmpty =>
                         logger.warn(
-                            "ObjectStoreQuery: " + path + ": a file holds a stored column under another type than the schema; reading the sampled file's columns only"
+                            "ObjectStoreQuery: " + path + ": reading the stored columns the sampled file lacks failed (" +
+                                String.valueOf(e.getMessage).split("\n").head.take(200) + "); reading the sampled file's columns only"
                         )
-                        val keepOrder = order.filter(n => plain.columns.exists(_.equalsIgnoreCase(n)))
-                        try collect(project(plain, keepOrder, stored, nameOf), limit, path, format, stats, cancelled)
-                        catch {
-                            case e2: Exception if typeConflict(e2) =>
-                                throw new IllegalStateException(
-                                    "The files at " + path + " hold a column under different types, and the query could not read every file's schema " +
-                                        "to reconcile them (more than " + maxScan + " data files, a file whose schema cannot be read, or the time to read " +
-                                        "them ran out). Rewrite the data with one type per column (for example with deleteBeforeWrite on the next run). Cause: " +
-                                        String.valueOf(e2.getMessage).split("\n").head.take(300),
-                                    e2
-                                )
-                        }
+                        narrow()
+                    case e: Exception if !e.isInstanceOf[QueryCancelled] && typeConflict(e) => differentTypes(e)
                 }
         }
     }
