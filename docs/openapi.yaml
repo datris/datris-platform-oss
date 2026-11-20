@@ -3866,7 +3866,7 @@ paths:
     post:
       tags: [Query]
       summary: Query PostgreSQL
-      description: Execute a read-only SQL SELECT query against PostgreSQL. The query runs inside a read-only transaction that is always rolled back, so it cannot change data, and is cancelled after 30 seconds (300 seconds with `limit` -1). Enforces SELECT-only, blocks dangerous keywords and server administration, server file and remote-connection functions, and auto-appends LIMIT. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); free-form SQL cannot be limited to a catalog.
+      description: Execute a read-only SQL SELECT query against PostgreSQL. The query runs in a read-only transaction and is cancelled after 30 seconds (5 minutes with `limit` -1). Enforces SELECT-only, blocks dangerous keywords and server administration, server file, replication and remote-connection functions, and auto-appends LIMIT. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); free-form SQL cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3903,7 +3903,7 @@ paths:
     post:
       tags: [Query]
       summary: Query MongoDB
-      description: Query a MongoDB collection with optional filter and projection. Reads the data databases only; the platform's internal database and MongoDB's `admin`, `local` and `config` databases (compared ignoring letter case) are refused with 400. Blocks $where, $function and $accumulator in the filter and in the projection, at any depth. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
+      description: Query a MongoDB collection with optional filter and projection. Reads the data databases only; any other database is refused with 400. Blocks $where, $function and $accumulator in the filter and in the projection. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3917,7 +3917,7 @@ paths:
                   description: MongoDB collection name
                 database:
                   type: string
-                  description: MongoDB database name (defaults to the configured database). Ignored in multi-tenant installs, where the tenant's own database is queried. The platform's internal database and MongoDB's system databases cannot be queried.
+                  description: MongoDB database name (defaults to the configured database). Ignored in multi-tenant installs, where the tenant's own database is queried. Must be a data database.
                 filter:
                   type: object
                   default: {}
@@ -3937,7 +3937,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
         '400':
-          description: '`limit` is not an integer, or the database is not available for queries (the platform''s internal database or a MongoDB system database; body `{"error": "This database is not available for queries."}`, the same whether or not the database exists). Body: `{"error": ...}`'
+          description: '`limit` is not an integer, or the database is not a data database (body `{"error": "This database is not available for queries."}`). Body: `{"error": ...}`'
         '500':
           description: Error
 
@@ -4178,7 +4178,7 @@ paths:
     post:
       tags: [Query]
       summary: Natural-language query (AI)
-      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. The generated SQL runs like `/api/v1/query/postgres`, in a read-only transaction that is always rolled back and under the same time limit. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
+      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. The generated SQL runs like `/api/v1/query/postgres`, in a read-only transaction under the same time limit. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:

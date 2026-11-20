@@ -56,17 +56,15 @@ curl -X POST http://localhost:8080/api/v1/query/postgres \
 
 The endpoint enforces multiple layers of protection:
 
-- **Read-only transaction** — every query runs inside a transaction that PostgreSQL itself treats as read-only, and the transaction is always rolled back, so a query cannot change data whatever it contains. Session settings a query changes do not carry over to later queries.
-- **Time limit** — a query is cancelled after 30 seconds, or after 300 seconds when `limit` is `-1`; a cancelled query returns an error and no rows.
+- **Read-only transaction** — every query runs inside a transaction that PostgreSQL itself treats as read-only and that is never committed, so a query cannot change data. Each query starts from a clean session.
+- **Time limit** — a query is cancelled after 30 seconds, or after 5 minutes when `limit` is `-1`; a cancelled query returns an error and no rows. Page a large read.
 - **SELECT-only** — only queries starting with `SELECT` (or `WITH`) are allowed
-- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `CALL`, `EXECUTE`, or `EXEC` are rejected, as are server administration, server file and remote-connection functions (`pg_terminate_backend`, `pg_cancel_backend`, `pg_reload_conf`, `pg_rotate_logfile`, `pg_promote`, `pg_switch_wal`, `pg_read_file`, `pg_read_binary_file`, `pg_ls_*`, `pg_stat_file`, `lo_import`, `lo_export`, `dblink*`). Like the keywords, these are matched as whole words anywhere in the query, string literals included.
+- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `CALL`, `EXECUTE`, or `EXEC` are rejected, as are queries that call server administration, server file, replication or remote-connection functions. Words are matched anywhere in the query, string literals included.
 - **No stacked queries** — semicolons are not allowed
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
 - **LIMIT enforcement** — if no `LIMIT` is present in the SQL, one is appended automatically using the request's `limit` value (or the default 100). Pass `limit: -1` to bypass the automatic append entirely — the caller's SQL runs as-is.
 
-A query that writes, such as one that creates a table or a temporary table, or that calls a function that modifies data, is refused by the database and returns an error.
-
-Queries run with the platform's own PostgreSQL credentials (the PostgreSQL secret), which pipelines also use to load data. Give that secret a role that is not a superuser, with only the privileges loading needs (create and write in the destination schemas, read elsewhere): a superuser can still use server functions that a read-only transaction does not stop.
+Queries run with the platform's own PostgreSQL credentials (the PostgreSQL secret), which pipelines also use to load data. As for any service account, give that secret a role with only the privileges it needs (create and write in the destination schemas) rather than a superuser.
 
 ---
 
@@ -116,7 +114,7 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 
 ### Safety
 
-- **Data databases only** — the platform's internal database and MongoDB's own `admin`, `local` and `config` databases cannot be queried, by any caller. Names are compared ignoring letter case. Such a request returns `400` with `{"error": "This database is not available for queries."}` before anything is read.
+- **Data databases only** — queries read the data databases only, never the platform's internal database or MongoDB's own system databases. Any other database returns `400` with `{"error": "This database is not available for queries."}`.
 - **Blocked operators** — a filter or a projection containing `$where`, `$function`, or `$accumulator`, at any depth (nested documents and arrays included), is rejected, as these allow arbitrary JavaScript execution
 - **Projection** — plain inclusion and exclusion (`1`, `0`, `true`, `false`), `$slice`, `$elemMatch`, `$meta` and aggregation expressions other than the blocked operators are accepted
 - **Limit** — `limit` is applied as given; `-1` returns every matching document (tap scripts use this), so pass a positive `limit` for previews
