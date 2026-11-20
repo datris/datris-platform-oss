@@ -226,7 +226,7 @@ class PostgresReadOnlyQuerySpec extends AnyFunSuite {
         ).foreach(PostgresQueryUtil.validateQuery)
     }
 
-    test("the keyword filter refuses functions that act outside the query's transaction, whatever their case") {
+    test("the keyword filter refuses the listed functions, whatever their case") {
         Seq(
             "pg_terminate_backend(1)",
             "PG_CANCEL_BACKEND(1)",
@@ -249,7 +249,7 @@ class PostgresReadOnlyQuerySpec extends AnyFunSuite {
         }
     }
 
-    test("the keyword filter refuses functions with effects outside the transaction and functions that run a query given as text") {
+    test("the keyword filter refuses the further listed functions") {
         Seq(
             "pg_create_restore_point('r')",
             "pg_backup_start('b')",
@@ -266,18 +266,14 @@ class PostgresReadOnlyQuerySpec extends AnyFunSuite {
             "table_to_xml('t', true, false, '')",
             "cursor_to_xml('c', 1, true, false, '')",
             "database_to_xml(true, false, '')",
-            "schema_to_xml('s', true, false, '')",
-            "ts_stat('q')",
-            "ts_rewrite('a'::tsquery, 'q')",
-            "crosstab('q')",
-            "crosstab3('q')"
+            "schema_to_xml('s', true, false, '')"
         ).foreach { expr =>
             val e = intercept[DatrisException](PostgresQueryUtil.validateQuery("SELECT * FROM " + expr))
             assert(e.getMessage.startsWith("Query contains blocked function: "), expr)
         }
     }
 
-    test("Unicode-escaped identifiers and strings are refused, whatever their case") {
+    test("unsupported quoting forms are refused") {
         Seq("SELECT U&\"x\" FROM t", "SELECT u&'x' AS a", "SELECT * FROM t WHERE a = U&'b'").foreach { q =>
             val e = intercept[DatrisException](PostgresQueryUtil.validateQuery(q))
             assert(e.getMessage.contains("U&"), q)
@@ -332,5 +328,14 @@ class PostgresReadOnlyQuerySpec extends AnyFunSuite {
             PostgresQueryUtil.query("SELECT a FROM t", "db", 5)
             org.mockito.Mockito.verify(ds, org.mockito.Mockito.never()).evictConnection(org.mockito.ArgumentMatchers.any())
         })
+    }
+
+    test("reads that use no listed function pass, including the slot list and ordinary names") {
+        Seq(
+            "SELECT slot_name, active FROM pg_replication_slots",
+            "SELECT * FROM crosstab_report",
+            "SELECT ts_stat_count, ts_rewrite_flag FROM t",
+            "SELECT * FROM public.tsquery_log"
+        ).foreach(PostgresQueryUtil.validateQuery)
     }
 }

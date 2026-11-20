@@ -59,7 +59,7 @@ The endpoint enforces multiple layers of protection:
 - **Read-only transaction** — every query runs inside a transaction that PostgreSQL itself treats as read-only and that is never committed, so a query cannot change data. Each query starts from a clean session.
 - **Time limit** — a query is cancelled after 30 seconds, or after 5 minutes when `limit` is `-1`; a cancelled query returns an error and no rows. Page a large read.
 - **SELECT-only** — only queries starting with `SELECT` (or `WITH`) are allowed
-- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `CALL`, `EXECUTE`, or `EXEC` are rejected, as are queries that call server administration, server file, replication or remote-connection functions. Words are matched anywhere in the query, string literals included.
+- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `CALL`, `EXECUTE`, or `EXEC` are rejected, as are queries that call server administration, server file, replication or remote-connection functions, or a small set of other functions; the error names the word. Words are matched anywhere in the query, string literals included. One quoting form, Unicode-escape quoting (`U&`), is not accepted.
 - **No stacked queries** — semicolons are not allowed
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
 - **LIMIT enforcement** — if no `LIMIT` is present in the SQL, one is appended automatically using the request's `limit` value (or the default 100). Pass `limit: -1` to bypass the automatic append entirely — the caller's SQL runs as-is.

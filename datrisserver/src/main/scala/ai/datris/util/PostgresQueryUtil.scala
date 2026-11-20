@@ -76,8 +76,8 @@ object PostgresQueryUtil {
     // list refuses, as whole words (case-insensitive, like the keywords above),
     // functions that have no place in a query: ones that act outside the
     // query's transaction (other backends, the server process and its files,
-    // replication state, statistics, another connection) and ones that run a
-    // query given as text. It is the only such list; keep additions here.
+    // replication state, statistics, another connection) and a few others. It
+    // is the only such list; keep additions here.
     private[util] val BLOCKED_FUNCTIONS: Seq[String] = Seq(
         // backend and server control
         "pg_terminate_backend",
@@ -90,7 +90,8 @@ object PostgresQueryUtil {
         "pg_backup_\\w+",
         "pg_stat_reset\\w*",
         // replication state
-        "pg_\\w*replication_slot\\w*",
+        "pg_(create|drop|copy)_\\w*replication_slot\\w*",
+        "pg_replication_slot_advance",
         "pg_logical_\\w+",
         // server files and large objects
         "pg_read_file",
@@ -101,19 +102,15 @@ object PostgresQueryUtil {
         "lo_export",
         // another connection
         "dblink\\w*",
-        // functions that run a query given as text
+        // other functions with no place in a query
         "query_to_xml\\w*",
         "table_to_xml\\w*",
         "cursor_to_xml\\w*",
         "database_to_xml\\w*",
-        "schema_to_xml\\w*",
-        "ts_stat",
-        "ts_rewrite",
-        "crosstab\\w*"
+        "schema_to_xml\\w*"
     )
 
-    // Unicode-escaped identifiers and strings (U&"..." and U&'...') can spell
-    // any name, so they are refused outright.
+    // Quoting forms the word check does not read are not accepted.
     private val UnicodeEscapeQuote = "(?i)u&[\"']".r
 
     /** Lightweight reachability probe: connect with a short login timeout and

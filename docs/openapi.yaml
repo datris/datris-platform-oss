@@ -3871,7 +3871,7 @@ paths:
     post:
       tags: [Query]
       summary: Query PostgreSQL
-      description: Execute a read-only SQL SELECT query against PostgreSQL. The query runs in a read-only transaction and is cancelled after 30 seconds (5 minutes with `limit` -1). Enforces SELECT-only, blocks dangerous keywords and server administration, server file, replication and remote-connection functions, and auto-appends LIMIT. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); free-form SQL cannot be limited to a catalog.
+      description: Execute a read-only SQL SELECT query against PostgreSQL. The query runs in a read-only transaction and is cancelled after 30 seconds (5 minutes with `limit` -1). Enforces SELECT-only, blocks dangerous keywords, server administration, server file, replication and remote-connection functions and a small set of other functions (the error names the word), does not accept Unicode-escape quoting (`U&`), and auto-appends LIMIT. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); free-form SQL cannot be limited to a catalog.
       requestBody:
         required: true
         content:
