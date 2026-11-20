@@ -2294,6 +2294,9 @@ def _base_tools():
                 "A vector collection another pipeline also writes to is kept and reported in `warnings`; "
                 "a keep_config=true reset then leaves that shared collection and the document-tap ledgers as they are. "
                 "Likewise, a table or collection another pipeline also writes to is kept and reported in `warnings`. "
+                "A vector collection the store could not remove is reported in `warnings`; the configuration is deleted "
+                "regardless, so relay the warning (it names the collection to remove in the store; after a "
+                "keep_config=true reset, the reset can be run again once the store is available). "
                 "ALWAYS confirm with the user before calling this tool."
             ),
             inputSchema={

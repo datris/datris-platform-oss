@@ -134,6 +134,16 @@ class VectorDeleteFailureWarningSpec extends AnyFunSuite {
         assert(definition.contains("sharedVector.nonEmpty") && definition.contains("||"), s"ledger argument ignores drop failures: $arg / $definition")
     }
 
+    test("the failure warning names the weaviate class as configured: deletePipelineOutcome passes the display key") {
+        // The delete itself needs Vault (store secrets), so the wiring is pinned in source.
+        val outcome = method("deletePipelineOutcome")
+        val at = outcome.indexOf("VectorStoreDrop.warning(")
+        assert(at >= 0)
+        val arg = argument(outcome, at + "VectorStoreDrop.warning(".length)
+        assert(arg.startsWith("VectorContainers.displayKey("), s"warning key is not the display key: $arg")
+        assert(arg.contains(", config)"), arg)
+    }
+
     test("the cascade renders a failed drop as {pipeline, message}") {
         val w = VectorStoreDrop.warning(key("qdrant", "vd_q"), "the store could not be reached", configDeleted = true)
         val arr = CatalogAPIController.warningsArray(Seq("vd_q" -> w), Nil)

@@ -47,7 +47,7 @@ Ingest unstructured documents (PDFs, Word docs, text files, HTML) into [Weaviate
 
 ### One pipeline per class
 
-A Weaviate class belongs to one pipeline. Saving a pipeline whose `className` another pipeline already uses is refused with HTTP 400, whoever saves it (UI, REST, MCP, version restore or catalog restore). Class names are compared case-insensitively, so `Docs` and `DOCS` are the same class here. Deleting a pipeline keeps a class that another pipeline also writes to (installs that already had two pipelines on one class keep working) and says so in the delete response's `warnings`; the class is removed with the last pipeline that names it.
+A Weaviate class belongs to one pipeline. Saving a pipeline whose `className` another pipeline already uses is refused with HTTP 400, whoever saves it (UI, REST, MCP, version restore or catalog restore). Class names are compared case-insensitively, so `Docs` and `DOCS` are the same class here. Deleting a pipeline keeps a class that another pipeline also writes to (installs that already had two pipelines on one class keep working) and says so in the delete response's `warnings`; the class is removed with the last pipeline that names it. If Weaviate cannot remove the class when a pipeline is deleted or reset (Weaviate is down, refuses, does not answer in time or is not configured), the delete response's `warnings` names the class and the reason; a delete still deletes the pipeline configuration, so remove the class in Weaviate; after a reset, run the reset again once Weaviate is available (see [Delete a Pipeline](/api-reference/pipeline-api#delete-a-pipeline)).
 
 ## Supported File Types
 

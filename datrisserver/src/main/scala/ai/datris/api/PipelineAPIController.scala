@@ -999,8 +999,9 @@ class PipelineAPIController {
             // A table or collection another pipeline also writes (including a
             // pgvector / Postgres table the other kind names) is kept and reported.
             val sharedStructured = SharedDatasets.sharedOnDelete(config, otherConfigs, dsEnv)
-            val objectStoreDataDeleted =
+            val cleanup =
                 cleanupDestinationData(config, sharedVector.map(_._1).toSet, sharedStructured.map(_._1).toSet, dsEnv.tenantDatabase)
+            val objectStoreDataDeleted = cleanup.objectStoreDataDeleted
             sharedVector.foreach { case (k, sharers) =>
                 logger.warn(
                     "Skipped vector data delete for pipeline '" + pipeline + "': " + VectorContainers.label(VectorContainers.displayKey(k, config)) +
@@ -1024,6 +1025,11 @@ class PipelineAPIController {
                 logger.warn("Pipeline delete: " + pipeline + ": " + advice)
                 auditUnityCatalogDelete(request, pipeline, advice)
             }
+            // A vector container the store could not remove: after every
+            // existing warning, in store order, naming the class as configured.
+            cleanup.vectorFailures.foreach { case (k, reason) =>
+                warnings += VectorStoreDrop.warning(VectorContainers.displayKey(k, config), reason, deleteConfigBool)
+            }
             // Wipe document-tap ledgers/staged files for any tap targeting this
             // pipeline. The ledger records "already-processed URIs"; leaving it
             // intact after the destination is emptied would cause the next tap
@@ -1031,10 +1037,13 @@ class PipelineAPIController {
             // A data-only reset that kept a shared vector container keeps the
             // ledgers too: the chunks are still there, and a re-ingest would
             // duplicate them in a container that cannot be cleaned per pipeline.
-            if (PipelineAPIController.clearTapLedgersForPlan(plan, sharedVector.nonEmpty))
+            // So does a reset whose vector drop failed (the chunks are still there).
+            if (PipelineAPIController.clearTapLedgersForPlan(plan, sharedVector.nonEmpty || cleanup.vectorFailures.nonEmpty))
                 cleanupDocumentTapLedgers(pipeline)
             else
-                logger.warn("Pipeline reset: " + pipeline + ": document-tap ledgers kept because a shared vector container was kept")
+                logger.warn(
+                    "Pipeline reset: " + pipeline + ": document-tap ledgers kept because a vector container was kept or could not be removed"
+                )
         }
 
         // Keep-data delete: no destination data is touched and no other
@@ -1161,16 +1170,21 @@ class PipelineAPIController {
         }
     }
 
-    /** Returns true when the object-store destination's files were deleted
-      * (false when there is none, the prefix is shared, or the delete failed). */
+    /** Drops the destination data. `objectStoreDataDeleted` is true when the
+      * object-store destination's files were deleted (false when there is
+      * none, the prefix is shared, or the delete failed); `vectorFailures`
+      * holds each qdrant / weaviate / milvus / chroma container (identity
+      * key) that could not be removed, with its closed-set reason, in store
+      * order. */
     private[api] def cleanupDestinationData(
         config: PipelineConfig,
         keepVector: Set[VectorContainers.Key],
         keepStructured: Set[SharedDatasets.Key],
         tenantDatabase: Option[String]
-    ): Boolean = {
+    ): PipelineAPIController.DestinationCleanup = {
         val dest = config.destination
         var objectStoreDataDeleted = false
+        val vectorFailures = Seq.newBuilder[(VectorContainers.Key, String)]
         // A vector container another pipeline also names is kept.
         def dropVector(store: String, name: String, schema: Option[String] = None): Boolean =
             !VectorContainers.key(store, name, schema).exists(keepVector.contains)
@@ -1322,132 +1336,35 @@ class PipelineAPIController {
             }
         }
 
-        // Qdrant — delete collection
-        if (dest.qdrant != null && dropVector("qdrant", dest.qdrant.collectionName)) {
-            try {
-                val secretName = DatrisEnvironment.current.qdrantSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val host = Option(secretMap.get("host")).getOrElse("")
-                    if (host.nonEmpty) {
-                        val grpcPort = Option(secretMap.get("port")).map(_.toInt).getOrElse(6334)
-                        val restPort = grpcPort - 1
-                        val url = "http://" + host + ":" + restPort + "/collections/" + dest.qdrant.collectionName
-                        val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
-                        connection.setRequestMethod("DELETE")
-                        connection.setConnectTimeout(5000)
-                        connection.setReadTimeout(5000)
-                        val apiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
-                        apiKey.foreach(k => connection.setRequestProperty("api-key", k))
-                        try {
-                            connection.getResponseCode
-                            logger.info("Deleted Qdrant collection: " + dest.qdrant.collectionName)
-                        } finally {
-                            connection.disconnect()
-                        }
-                    }
+        // Qdrant, Weaviate, Milvus, Chroma — one bounded call each through
+        // VectorStoreDrop. Only a real removal is logged as one; a drop the
+        // store refused or could not serve, or a store with no secret or
+        // host, is returned for the delete's warnings.
+        def dropContainer(store: String, kind: String, name: String, secretName: => String): Unit = {
+            val secret =
+                try SecretsUtil.getSecretMap(secretName).orNull
+                catch {
+                    case e: Exception =>
+                        logger.warn("Could not read the " + kind + " secret on delete: " + e.getMessage)
+                        null
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to delete Qdrant collection: " + e.getMessage)
+            VectorStoreDrop.drop(store, secret, name) match {
+                case VectorStoreDrop.Removed => logger.info((if (store == "milvus") "Dropped " else "Deleted ") + kind + ": " + name)
+                case VectorStoreDrop.Absent => logger.info(kind + " " + name + " was already absent")
+                case VectorStoreDrop.NotSent => logger.debug("No " + kind + " drop for pipeline '" + config.name + "': no name")
+                case VectorStoreDrop.Failed(reason) =>
+                    logger.warn("Failed to delete " + kind + " " + name + " for pipeline '" + config.name + "': " + reason)
+                    VectorContainers.key(store, name, None).foreach(k => vectorFailures += (k -> reason))
             }
         }
-
-        // Weaviate — delete class
-        if (dest.weaviate != null && dropVector("weaviate", dest.weaviate.className)) {
-            try {
-                val secretName = DatrisEnvironment.current.weaviateSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val host = Option(secretMap.get("host")).getOrElse("")
-                    if (host.nonEmpty) {
-                        val port = Option(secretMap.get("port")).getOrElse("8079")
-                        val scheme = Option(secretMap.get("scheme")).getOrElse("http")
-                        val url = scheme + "://" + host + ":" + port + "/v1/schema/" + dest.weaviate.className
-                        val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
-                        connection.setRequestMethod("DELETE")
-                        connection.setConnectTimeout(5000)
-                        connection.setReadTimeout(5000)
-                        val apiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
-                        apiKey.foreach(k => connection.setRequestProperty("Authorization", "Bearer " + k))
-                        try {
-                            connection.getResponseCode
-                            logger.info("Deleted Weaviate class: " + dest.weaviate.className)
-                        } finally {
-                            connection.disconnect()
-                        }
-                    }
-                }
-            } catch {
-                case e: Exception => logger.warn("Failed to delete Weaviate class: " + e.getMessage)
-            }
-        }
-
-        // Milvus — drop collection
-        if (dest.milvus != null && dropVector("milvus", dest.milvus.collectionName)) {
-            try {
-                val secretName = DatrisEnvironment.current.milvusSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val host = Option(secretMap.get("host")).getOrElse("")
-                    if (host.nonEmpty) {
-                        val port = Option(secretMap.get("port")).getOrElse("19530")
-                        val url = "http://" + host + ":" + port + "/v2/vectordb/collections/drop"
-                        val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
-                        connection.setRequestMethod("POST")
-                        connection.setDoOutput(true)
-                        connection.setConnectTimeout(5000)
-                        connection.setReadTimeout(5000)
-                        connection.setRequestProperty("Content-Type", "application/json")
-                        val apiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
-                        apiKey.foreach(k => connection.setRequestProperty("Authorization", "Bearer " + k))
-                        try {
-                            val payload = "{\"collectionName\": \"" + dest.milvus.collectionName + "\"}"
-                            val os = connection.getOutputStream
-                            os.write(payload.getBytes)
-                            os.close()
-                            connection.getResponseCode
-                            logger.info("Dropped Milvus collection: " + dest.milvus.collectionName)
-                        } finally {
-                            connection.disconnect()
-                        }
-                    }
-                }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop Milvus collection: " + e.getMessage)
-            }
-        }
-
-        // Chroma — delete collection
-        if (dest.chroma != null && dropVector("chroma", dest.chroma.collectionName)) {
-            try {
-                val secretName = DatrisEnvironment.current.chromaSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val host = Option(secretMap.get("host")).getOrElse("")
-                    if (host.nonEmpty) {
-                        val port = Option(secretMap.get("port")).getOrElse("8000")
-                        val url =
-                            "http://" + host + ":" + port + "/api/v2/tenants/default_tenant/databases/default_database/collections/" + dest.chroma.collectionName
-                        val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
-                        connection.setRequestMethod("DELETE")
-                        connection.setConnectTimeout(5000)
-                        connection.setReadTimeout(5000)
-                        try {
-                            connection.getResponseCode
-                            logger.info("Deleted Chroma collection: " + dest.chroma.collectionName)
-                        } finally {
-                            connection.disconnect()
-                        }
-                    }
-                }
-            } catch {
-                case e: Exception => logger.warn("Failed to delete Chroma collection: " + e.getMessage)
-            }
-        }
+        if (dest.qdrant != null && dropVector("qdrant", dest.qdrant.collectionName))
+            dropContainer("qdrant", "Qdrant collection", dest.qdrant.collectionName, DatrisEnvironment.current.qdrantSecretName)
+        if (dest.weaviate != null && dropVector("weaviate", dest.weaviate.className))
+            dropContainer("weaviate", "Weaviate class", dest.weaviate.className, DatrisEnvironment.current.weaviateSecretName)
+        if (dest.milvus != null && dropVector("milvus", dest.milvus.collectionName))
+            dropContainer("milvus", "Milvus collection", dest.milvus.collectionName, DatrisEnvironment.current.milvusSecretName)
+        if (dest.chroma != null && dropVector("chroma", dest.chroma.collectionName))
+            dropContainer("chroma", "Chroma collection", dest.chroma.collectionName, DatrisEnvironment.current.chromaSecretName)
 
         // Object Store — recursively delete s3a://<bucket>/<prefixKey> through
         // the Hadoop FileSystem with per-bucket config applied (same route as
@@ -1478,7 +1395,7 @@ class PipelineAPIController {
         }
 
         cleanupScratchData(config)
-        objectStoreDataDeleted
+        PipelineAPIController.DestinationCleanup(objectStoreDataDeleted, vectorFailures.result())
     }
 
     /** Scratch — recursively delete `_scratch/<pipeline>/` from <env>-data and
@@ -1873,6 +1790,11 @@ object PipelineAPIController {
     /** [[clearTapLedgersOnDelete]] for a delete plan: never for a keep-data
       * delete (the ledgers mirror the kept data; clearing them would
       * re-ingest into it). */
+    /** What [[PipelineAPIController.cleanupDestinationData]] did: whether the
+      * object-store files were deleted, and the vector containers (identity
+      * keys, store order) that could not be removed, with their reasons. */
+    case class DestinationCleanup(objectStoreDataDeleted: Boolean, vectorFailures: Seq[(VectorContainers.Key, String)])
+
     def clearTapLedgersForPlan(plan: PipelineDeletePlan.Plan, keptSharedVector: Boolean): Boolean =
         !plan.keepData && clearTapLedgersOnDelete(plan.deleteConfig, keptSharedVector)
 

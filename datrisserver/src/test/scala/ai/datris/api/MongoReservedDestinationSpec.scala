@@ -392,7 +392,7 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     test("delete with data reaches the guarded drop: an ordinary collection is dropped through it, a protected one is not") {
         val ctl = new PipelineAPIController()
-        assert(!ctl.cleanupDestinationData(structured(mongoDb(dbName = "analytics")), Set.empty, Set.empty, None))
+        assert(!ctl.cleanupDestinationData(structured(mongoDb(dbName = "analytics")), Set.empty, Set.empty, None).objectStoreDataDeleted)
         assert(dropped == Seq("analytics.orders"), dropped)
         dropped.clear(); clients.clear()
         ctl.cleanupDestinationData(structured(mongoDb(dbName = Internal, table = "oss-user")), Set.empty, Set.empty, None)
