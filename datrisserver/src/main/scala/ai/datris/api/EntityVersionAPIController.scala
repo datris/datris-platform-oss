@@ -390,8 +390,10 @@ object EntityVersionAPIController {
       * gets `hidden` (the version 404) ([[hiddenFromRestricted]]); an API key
       * writes the stored tap only under the stored-tap write rule
       * ([[TapAPIController.storedTapWriteRefusal]]) and the tap as it would
-      * be restored only under the same rule ([[tapRestoreRefusal]]); the
-      * restricted-session catalog rules ([[TapAPIController.catalogForSave]]);
+      * be restored only under the same rule ([[tapRestoreRefusal]]); for a
+      * deleted tap, the right to create it as re-created
+      * ([[TapAPIController.recreateRefusal]]); the restricted-session catalog
+      * rules ([[TapAPIController.catalogForSave]]);
       * then the target pipeline must be one the caller may load into
       * ([[TapAPIController.targetPipelineRefusal]], `readPipeline` called only
       * for a restricted session or a load-checked key with a target). Right
@@ -410,6 +412,9 @@ object EntityVersionAPIController {
             return Left(hidden)
         if (stored != null) TapAPIController.storedTapWriteRefusal(request, stored.catalog, stored.createdByKeyLabel).foreach(r => return Left(r))
         tapRestoreRefusal(request, candidate, stored).foreach(r => return Left(r))
+        // A deleted tap is re-created: the caller must be allowed to create
+        // it, as POST /tap requires for a new tap (owner decision).
+        if (stored == null) TapAPIController.recreateRefusal(request, candidate).foreach(r => return Left(r))
         TapAPIController.catalogForSave(request, candidate, stored) match {
             case Left(refused) => Left(refused)
             case Right(c) => TapAPIController.targetPipelineRefusal(request, c, readPipeline).toLeft(c)

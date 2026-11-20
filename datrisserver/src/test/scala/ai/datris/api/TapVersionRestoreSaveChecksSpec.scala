@@ -5,9 +5,10 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.auth.ScopeDenialFixtures
+import ai.datris.auth.{CapabilityRoutes, RouteCheck, ScopeDenialFixtures, ScopeDenialWording}
 import ai.datris.model._
-import ai.datris.util.{DocumentTapValidator, SecretNames, TapCronGate, TapCronValidation}
+import ai.datris.util.{APIKeyValidator, DocumentTapValidator, SecretNames, TapCronGate, TapCronValidation}
+import ai.datris.util.InMemoryUserDb.grants
 import com.google.gson.JsonParser
 import jakarta.servlet.http.HttpServletRequest
 import org.scalatest.BeforeAndAfterEach
@@ -346,5 +347,131 @@ class TapVersionRestoreSaveChecksSpec extends AnyFunSuite with BeforeAndAfterEac
         assert(w._1.createdByKeyLabel == null, "auth off: no caller label, as POST /tap")
         assert(w._1.lastTestRunStatus == null && w._1.lastTestRunScriptId == null, s"${w._1}")
         assert(w._1.lastRunStatus == "success", "other recorded run details are as in the version")
+    }
+
+    // ------------------------------------- deleted tap: create required (owner decision)
+
+    private def req(rk: ResolvedKey): HttpServletRequest = ScopeDenialFixtures.request(rk, "POST", "/api/v1/tap/version/restore")._1
+
+    private val scopedUpdCaps =
+        Seq("tap:update:catalog=mine", "tap:read:catalog=mine", "pipeline:run:catalog=mine", "pipeline:read:catalog=mine")
+    private val scopedAllCaps = "tap:create:catalog=mine" +: scopedUpdCaps
+    private val unscopedUpdCaps = Seq("tap:update", "tap:read")
+
+    /** A version of a deleted tap, in catalog `mine`, created by someone else. */
+    private val deletedSnap = live.copy(catalog = "mine", createdByKeyLabel = "someone")
+
+    private def restoreAs(r: HttpServletRequest, store: Store, snap: TapConfig, liveTap: TapConfig) =
+        new TapAPIController().restoreTapInternal(EntityVersionAPIController.tapRestoreCandidate("t", snap, liveTap), liveTap, 3, hidden, r, store.io)
+
+    private def saveAs(r: HttpServletRequest, store: Store, body: TapConfig, restored: Boolean = false) =
+        new TapAPIController().saveTapInternalWith(body, null, r, restored, store.io)
+
+    test("deleted tap: a key with update and read in scope but no create is refused 403 naming create; nothing written") {
+        val k = req(ScopeDenialFixtures.key("upd-scoped", scopedUpdCaps: _*))
+        val store = new Store(Nil, scripts = scripts)
+        val r = restoreAs(k, store, deletedSnap, null)
+        assert(r.isLeft && r.left.get.getStatusCode.value == 403, s"$r")
+        ScopeDenialWording.assertBody(r.left.get.getBody, ScopeDenialWording.message("upd-scoped", "tap", "create", scopedUpdCaps), Seq("someone"))
+        assert(store.writes.isEmpty)
+        // POST /tap of the same config, through its save guard, gives the same answer.
+        val saveStore = new Store(Nil, scripts = scripts)
+        val s = saveAs(k, saveStore, EntityVersionAPIController.tapRestoreCandidate("t", deletedSnap, null))
+        sameResponse(r.left.get, s.left.get)
+        assert(saveStore.writes.isEmpty)
+    }
+
+    test("live tap: the same update-only key restores over it as before") {
+        val k = req(ScopeDenialFixtures.key("upd-scoped", scopedUpdCaps: _*))
+        val liveMine = live.copy(catalog = "mine", createdByKeyLabel = "someone")
+        val store = new Store(Seq(liveMine), scripts = scripts)
+        val r = restoreAs(k, store, liveMine.copy(description = "v1"), liveMine)
+        assert(r.isRight, s"$r")
+        assert(store.writes.size == 1 && store.writes.head._1.createdByKeyLabel == "someone")
+    }
+
+    test("deleted tap: a key with create, update and read in scope restores it and becomes its owner") {
+        val k = req(ScopeDenialFixtures.key("mine-all", scopedAllCaps: _*))
+        val store = new Store(Nil, scripts = scripts)
+        val r = restoreAs(k, store, deletedSnap, null)
+        assert(r.isRight, s"$r")
+        assert(store.writes.size == 1 && store.writes.head._1.createdByKeyLabel == "mine-all", s"${store.writes}")
+        assert(store.writes.head._1.catalog == "mine")
+        // Update and read anywhere, create only in `mine`: a version in another
+        // catalog is refused on create, as POST /tap refuses that new tap.
+        val wideCaps = Seq("tap:update", "tap:read") ++ scopedAllCaps
+        val wide = req(ScopeDenialFixtures.key("mine-all", wideCaps: _*))
+        val other = new Store(Nil, scripts = scripts)
+        val o = restoreAs(wide, other, deletedSnap.copy(catalog = "HR"), null)
+        assert(o.isLeft && o.left.get.getStatusCode.value == 403, s"$o")
+        ScopeDenialWording.assertBody(o.left.get.getBody, ScopeDenialWording.message("mine-all", "tap", "create", wideCaps), Seq("HR", "someone"))
+        sameResponse(
+            o.left.get,
+            saveAs(wide, new Store(Nil, scripts = scripts), EntityVersionAPIController.tapRestoreCandidate("t", deletedSnap.copy(catalog = "HR"), null)).left.get
+        )
+        assert(other.writes.isEmpty)
+    }
+
+    test("deleted tap: a key holding unscoped update and no create at all is refused 403 naming create, as POST /tap's route gate refuses it") {
+        val rk = ScopeDenialFixtures.key("upd-any", unscopedUpdCaps: _*)
+        val store = new Store(Nil, scripts = scripts)
+        val r = restoreAs(req(rk), store, deletedSnap, null)
+        assert(r.isLeft && r.left.get.getStatusCode.value == 403, s"$r")
+        ScopeDenialWording.assertBody(r.left.get.getBody, ScopeDenialWording.message("upd-any", "tap", "create", unscopedUpdCaps), Seq("mine", "someone"))
+        assert(store.writes.isEmpty)
+        // POST /tap: the route itself requires tap:create, which this key does not hold.
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/tap") == RouteCheck.Require("tap", "create"))
+        assert(!rk.grants("tap", "create", Map("catalog" -> "mine", "owner" -> "upd-any")))
+        // The restore route itself still requires tap:update only (a live-tap restore is unchanged).
+        assert(CapabilityRoutes.lookup("POST", "/api/v1/tap/version/restore") == RouteCheck.Require("tap", "update"))
+        // Over a live tap it restores as before.
+        val l = new Store(Seq(live), scripts = scripts)
+        assert(restoreAs(req(rk), l, live.copy(description = "v1"), live).isRight)
+    }
+
+    test("deleted tap: a restricted editor and a restricted viewer get the version 404, as before; nothing written") {
+        def session(role: String, level: String) =
+            req(APIKeyValidator.resolveFromSession(User("bob", "h", role, null, null, null, restricted = true, catalogGrants = grants("mine" -> level))))
+        for (r <- Seq(session(User.RoleEditor, "edit"), session(User.RoleViewer, "view"))) {
+            val store = new Store(Nil, scripts = scripts)
+            val out = restoreAs(r, store, deletedSnap, null)
+            assert(out.isLeft)
+            sameResponse(out.left.get, hidden)
+            assert(store.writes.isEmpty)
+        }
+        // POST /tap of the same config: the editor may create in `mine`; the viewer may not.
+        val editorSave = new Store(Nil, scripts = scripts)
+        assert(saveAs(session(User.RoleEditor, "edit"), editorSave, EntityVersionAPIController.tapRestoreCandidate("t", deletedSnap, null)).isRight)
+        val viewerSave = new Store(Nil, scripts = scripts)
+        assert(saveAs(session(User.RoleViewer, "view"), viewerSave, EntityVersionAPIController.tapRestoreCandidate("t", deletedSnap, null)).isLeft)
+        assert(viewerSave.writes.isEmpty)
+    }
+
+    test("deleted tap: full keys, unrestricted sessions, auth off and a null request are unchanged") {
+        val callers = Seq(
+            req(ResolvedKey(None, "full", Nil, isLegacyFullAccess = true)),
+            req(APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))),
+            authOff
+        )
+        for (r <- callers) {
+            val store = new Store(Nil, scripts = scripts)
+            assert(restoreAs(r, store, deletedSnap, null).isRight, s"$r")
+            assert(store.writes.size == 1)
+        }
+        val c = EntityVersionAPIController.tapRestoreCandidate("t", deletedSnap, null)
+        assert(EntityVersionAPIController.tapRestoreGuardDecision(null, c, null, _ => fail("no pipeline read"), hidden) == Right(c))
+        assert(TapAPIController.recreateRefusal(null, c).isEmpty)
+    }
+
+    test("the catalog restore (restored = true) and POST /tap are not given the restore's create requirement") {
+        // A full key re-creates through the catalog restore path as before.
+        val store = new Store(Nil, scripts = scripts)
+        assert(saveAs(req(ResolvedKey(None, "full", Nil, isLegacyFullAccess = true)), store, deletedSnap, restored = true).isRight)
+        assert(store.writes.size == 1)
+        // A key holding unscoped tap:create and nothing else: POST /tap's guard passes it as before (no update required).
+        val creator = req(ScopeDenialFixtures.key("creator", "tap:create"))
+        val c = new Store(Nil, scripts = scripts)
+        assert(saveAs(creator, c, deletedSnap).isRight)
+        assert(saveAs(creator, new Store(Nil, scripts = scripts), deletedSnap, restored = true).isRight)
     }
 }

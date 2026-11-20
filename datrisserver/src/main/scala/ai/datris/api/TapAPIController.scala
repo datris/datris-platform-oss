@@ -271,6 +271,31 @@ object TapAPIController {
                 case _ => Right(config)
             }
 
+    /** Tap version restore of a DELETED tap (owner decision): the restore
+      * re-creates the tap, so the caller needs what `POST /tap` needs to
+      * create that tap: `tap:create` held at all (the capability `POST /tap`'s
+      * route gate requires; the restore route requires only `tap:update`), and
+      * in scope on the tap as re-created, its catalog with the caller as owner
+      * ([[saveGuardDecision]] with no stored tap). A key is refused 403 on
+      * `create` through `CapabilityCheck.assertScope` (shared wording). None
+      * for full access, unrestricted sessions holding `tap:create` (every
+      * role bundle that holds `tap:update`), no identity and a null request;
+      * a restricted session is answered by [[saveGuardDecision]] (its catalog
+      * rules), though the restore hides a deleted tap's history from it
+      * first. Reads nothing. */
+    def recreateRefusal(request: HttpServletRequest, config: TapConfig): Option[ResponseEntity[String]] =
+        CapabilityCheck.resolvedKey(request) match {
+            case Some(rk) if config != null && !rk.restrictedSession && !ai.datris.auth.CallerVisibility.holdsAny(rk, "tap", "create") =>
+                val ctx = CatalogOps.scopeContext(config.catalog, rk.label)
+                try {
+                    CapabilityCheck.assertScope(request, "tap", "create", ctx)
+                    Some(PipelineAPIController.capabilityDenied(new CapabilityDeniedException("capability denied")))
+                } catch {
+                    case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
+                }
+            case _ => saveGuardDecision(request, config, null).left.toOption
+        }
+
     /** POST /tap/test (plans/stories/scoped-key-read-routes.md, rows 10 and
       * D4), before anything runs. A test runs the body's script with the
       * body's secret under the body's name, so for a restricted session and
