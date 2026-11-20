@@ -177,6 +177,8 @@ curl -X POST http://localhost:8080/api/v1/query/objectstore \
 
 `snapshotId` and `snapshotTimestamp` identify the Iceberg snapshot that was read; both are `null` for Parquet and ORC pipelines.
 
+`columns` lists the pipeline's destination schema in its order, followed by the provenance stamp columns its `provenance` block selects. Every file the pipeline has written contributes its rows, so a column added by a later file is returned with `null` for rows written before it existed; a column that is no longer in the schema is not returned. On a Parquet or ORC pipeline whose files hold a column under two different types (the field's type was changed after files were written), the query fails with the format's error instead of returning converted values. An Iceberg pipeline returns the table's current columns.
+
 If the pipeline exists but no runs have written data yet, the endpoint returns an empty result (`"count": 0`) rather than an error.
 
 ### Error Cases

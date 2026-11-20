@@ -5,10 +5,11 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException}
+import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineConfig, SchemaField}
 import org.apache.hadoop.fs.Path
 import org.apache.iceberg.hadoop.HadoopTables
-import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
+import org.apache.spark.sql.types.{StringType, StructField, StructType}
+import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SparkSession}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.concurrent.{Executors, ThreadFactory, TimeUnit}
@@ -105,7 +106,7 @@ object ObjectStoreQueryUtil {
         // Resolved inside the future so the catalog calls share the timeout.
         val readFuture: Future[QueryResult] = Future {
             val resolved = if (format == "iceberg") IcebergTableResolver.forPipeline(pipelineConfig, path) else None
-            readPath(spark, path, format, cappedLimit, resolved, bucket)
+            readPath(spark, path, format, cappedLimit, resolved, bucket, readSchemaFor(pipelineConfig))
         }(queryEC)
 
         try Await.result(readFuture, queryTimeoutSec.seconds)
@@ -153,6 +154,75 @@ object ObjectStoreQueryUtil {
         limit: Int,
         resolved: Option[IcebergTableResolver.Resolved],
         bucket: String
+    ): QueryResult = readPath(spark, path, format, limit, resolved, bucket, None)
+
+    /** The read schema of a Parquet or ORC pipeline: the stored destination
+      * schema (the source schema when there is none), in its order and with
+      * its types, as the loader writes it (SparkObjectStoreLoader.buildSchema),
+      * then the provenance stamp columns the pipeline's `provenance` block
+      * selects (string; the stamper adds them to the written data, never to
+      * the stored schema) that the schema does not already name. None when
+      * the config has no fields. */
+    private[util] def readSchemaFor(config: PipelineConfig): Option[StructType] = {
+        def fieldsOf(p: ai.datris.model.SchemaProperties): List[SchemaField] =
+            if (p == null || p.fields == null) Nil else p.fields.asScala.toList.filter(f => f != null && f.name != null)
+        val schemaFields =
+            Option(config).flatMap(c => Option(c.destination)).map(d => fieldsOf(d.schemaProperties)).filter(_.nonEmpty)
+                .orElse(Option(config).flatMap(c => Option(c.source)).map(s => fieldsOf(s.schemaProperties)))
+                .getOrElse(Nil)
+        if (schemaFields.isEmpty) return None
+        val named = schemaFields.map(_.name.toLowerCase).toSet
+        val stamps =
+            if (config.provenance == null) Nil
+            else {
+                val selected = Option(config.provenance.fields).map(_.asScala.toList).filter(_.nonEmpty).getOrElse(ProvenanceStamper.AllFields)
+                ProvenanceStamper.AllFields.filter(f => selected.exists(_.equalsIgnoreCase(f))).filterNot(f => named.contains(f.toLowerCase))
+            }
+        val base = SparkObjectStoreLoader.buildSchema(schemaFields)
+        Some(StructType(base.fields ++ stamps.map(n => StructField(n, StringType, nullable = true))))
+    }
+
+    /** Parquet or ORC at `path`, every column of every file.
+      *
+      * With `readSchema` (a known pipeline) the columns come back in its
+      * order, a column a file lacks reads as null, and a column found in
+      * files but not in the schema is not returned:
+      *  - Parquet is read with `readSchema` itself, so no file footer is
+      *    opened to plan the read; a column whose type differs between the
+      *    schema and a file fails the read with Parquet's own error.
+      *  - ORC is read with the merge of every file's schema (one footer read
+      *    per file), because ORC's reader converts a column whose type
+      *    differs from the requested one and turns values it cannot convert
+      *    into null; the merge fails instead when files disagree on a type.
+      *    Columns of `readSchema` no file holds are added as nulls.
+      * Without one: the format's schema merge over every file's footer.
+      * Each name is backtick-quoted before Spark resolves it. */
+    private def readFiles(spark: SparkSession, path: String, format: String, readSchema: Option[StructType]): DataFrame =
+        readSchema match {
+            case Some(schema) if format != "orc" =>
+                val df = spark.read.format(format).schema(schema).load(path)
+                df.select(schema.fieldNames.map(n => df.col(IcebergWriter.quote(n))): _*)
+            case Some(schema) =>
+                val df = spark.read.format(format).option("mergeSchema", "true").load(path)
+                val have = df.columns.map(c => c.toLowerCase -> c).toMap
+                df.select(schema.fields.map { f =>
+                    have.get(f.name.toLowerCase) match {
+                        case Some(c) => df.col(IcebergWriter.quote(c)).as(f.name)
+                        case None => org.apache.spark.sql.functions.lit(null).cast(f.dataType).as(f.name)
+                    }
+                }: _*)
+            case None => spark.read.format(format).option("mergeSchema", "true").load(path)
+        }
+
+    /** As above, reading Parquet and ORC with `readSchema` ([[readFiles]]). */
+    private[util] def readPath(
+        spark: SparkSession,
+        path: String,
+        format: String,
+        limit: Int,
+        resolved: Option[IcebergTableResolver.Resolved],
+        bucket: String,
+        readSchema: Option[StructType]
     ): QueryResult = {
         // Runs on the objectstore-query pool, which never created the session;
         // the Iceberg source resolves its catalog through the thread-active one.
@@ -160,7 +230,7 @@ object ObjectStoreQueryUtil {
         try {
             if (format == "iceberg") readIceberg(spark, path, limit, resolved, bucket)
             else {
-                val df = spark.read.format(format).load(path)
+                val df = readFiles(spark, path, format, readSchema)
                 val columns = df.columns.toList.asJava
                 val rows = df.limit(limit).collectAsList().asScala.map(row => rowToMap(row, df.columns)).asJava
                 QueryResult(columns, rows, path, format)
