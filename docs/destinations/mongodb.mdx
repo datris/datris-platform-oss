@@ -29,6 +29,10 @@ Specify one or more fields in `keyFields` to perform an upsert instead of a plai
 
 Each key value is matched by equality: a scalar value (string, number, boolean, date, ObjectId) matches the documents holding that value, and a sub-document value matches only a stored sub-document equal to it. A key field name must not start with `$`; a load with such a key field fails with an error naming it, as does a document missing a key field.
 
+## Allowed destinations
+
+A MongoDB destination is a data collection in a data database. Saving or restoring a pipeline whose destination is a MongoDB system database, a `system.` collection or one of the collections in which the platform keeps its own state, or a new or changed destination in the platform's internal database, is refused with `400` `A MongoDB destination must be a data collection, and a new destination must be in a data database. Choose another database or collection name.` A run of a pipeline with such a destination fails with the same message before anything is written, and deleting it with its data deletes the pipeline but leaves that collection in place, with a warning in the response. A pipeline saved earlier whose unchanged destination is a data collection in the internal database keeps working. When `mongodb.database` is the internal database, new pipelines may use its data collections.
+
 ## Truncate Before Write
 
 Set `truncateBeforeWrite` to `true` to delete all documents from the target collection before writing. This effectively replaces the entire collection on each run.
@@ -62,8 +66,8 @@ MongoDB connection credentials are configured globally in `application.yaml` via
 
 | Field                 | Required | Default | Description                                          |
 |-----------------------|----------|---------|------------------------------------------------------|
-| `dbName`              | yes      |         | Target database name: a data database, not the platform's internal database or a MongoDB system database |
-| `table`               | yes      |         | Target collection name: an ordinary collection, not a `system.` collection |
+| `dbName`              | yes      |         | Target database name: a data database, not a MongoDB system database or the platform's internal database |
+| `table`               | yes      |         | Target collection name: a data collection, not a `system.` collection |
 | `useMongoDB`          | yes      | `false` | Must be `true` to enable MongoDB destination         |
 | `keyFields`           | no       |         | Array of field names forming the compound upsert key (matched by equality; names must not start with `$`) |
 | `truncateBeforeWrite` | no       | `false` | Delete all documents before writing                  |

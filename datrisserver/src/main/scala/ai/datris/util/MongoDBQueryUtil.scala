@@ -26,11 +26,12 @@ object MongoDBQueryUtil {
     /** MongoDB's own databases ([[MongoReservedNames.SystemDatabases]]). */
     private[datris] val SystemDatabases: Seq[String] = MongoReservedNames.SystemDatabases
 
-    /** Body text of the 400 for a database the query route does not read. */
+    /** Body text of the 400 for a database or collection the query route does
+      * not read. */
     val DatabaseNotAvailableMessage: String = "This database is not available for queries."
 
-    /** A query naming a database the route does not read (the platform's
-      * internal database or a MongoDB system database). */
+    /** A query naming a database or collection the route does not read
+      * ([[queryRefused]]). */
     final class DatabaseNotAvailableException extends DatrisException(DatabaseNotAvailableMessage)
 
     /** Test seam: when set, it supplies the client instead of one built from
@@ -45,11 +46,12 @@ object MongoDBQueryUtil {
         else if (requested != null && requested.nonEmpty) requested
         else env.mongoDbConfig.database
 
-    /** Whether the query route refuses `dbName`: the platform's internal
-      * database or a MongoDB system database
-      * ([[MongoReservedNames.databaseReserved]]). */
-    def databaseRefused(dbName: String, internalDatabase: String): Boolean =
-        MongoReservedNames.databaseReserved(dbName, internalDatabase)
+    /** Whether the query route refuses `collection` in `dbName`: a MongoDB
+      * system database (whatever the collection), a `system.` collection, or
+      * a platform collection in the internal database
+      * ([[MongoReservedNames.protectedCollection]]). */
+    def queryRefused(dbName: String, collection: String, env: DatrisEnvironment): Boolean =
+        MongoReservedNames.systemDatabase(dbName) || (collection != null && MongoReservedNames.protectedCollection(dbName, collection, env))
 
     /** The limit a find applies: None for the "unlimited" sentinel (`limit < 0`,
       * used by tap scripts), the preview default for 0, else `limit`. */
@@ -68,7 +70,7 @@ object MongoDBQueryUtil {
         // created for a database the route does not serve.
         val env = DatrisEnvironment.current
         val dbName = resolveQueryDatabase(database, env)
-        if (databaseRefused(dbName, env.mongoDbConfig.internalDatabase))
+        if (queryRefused(dbName, collection, env))
             throw new DatabaseNotAvailableException
 
         if (collection == null || collection.trim.isEmpty)

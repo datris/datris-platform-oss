@@ -36,12 +36,14 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
     private var closed = 0
 
     private def env(multiTenant: Boolean, environment: String = "oss"): DatrisEnvironment =
-        ScopeDenialFixtures.auditEnv().copy(
-            environment = environment,
-            useApiKeys = false,
-            useAuditLog = false,
-            multiTenant = multiTenant,
-            mongoDbConfig = MongoDBConfig("mongodb://unused", UserDefault, Internal)
+        ai.datris.util.PlatformCollectionFixtures.named(
+            ScopeDenialFixtures.auditEnv().copy(
+                environment = environment,
+                useApiKeys = false,
+                useAuditLog = false,
+                multiTenant = multiTenant,
+                mongoDbConfig = MongoDBConfig("mongodb://unused", UserDefault, Internal)
+            )
         )
 
     /** A client whose find returns no documents; records the database used. */
@@ -80,11 +82,17 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
     private def caseVariants(name: String): Seq[String] =
         Seq(name, name.toUpperCase, name.capitalize, name.zipWithIndex.map { case (c, i) => if (i % 2 == 0) c.toUpper else c }.mkString, " " + name + " ")
 
-    private val ReservedNames: Seq[String] = Seq(Internal, "admin", "local", "config")
+    private val ReservedNames: Seq[String] = Seq("admin", "local", "config")
 
-    private def body(database: Any = null, filter: Any = null, projection: Any = null, limit: Any = null): java.util.Map[String, Any] = {
+    private def body(
+        database: Any = null,
+        filter: Any = null,
+        projection: Any = null,
+        limit: Any = null,
+        collection: String = "items"
+    ): java.util.Map[String, Any] = {
         val m = new java.util.LinkedHashMap[String, Any]()
-        m.put("collection", "items")
+        m.put("collection", collection)
         if (database != null) m.put("database", database)
         if (filter != null) m.put("filter", filter)
         if (projection != null) m.put("projection", projection)
@@ -129,7 +137,7 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
         callers.foreach { case (n, rk) => assert(rk.grants("query", "mongodb"), n) }
     }
 
-    test("the internal database and each system database are refused in every case variant, for every caller, before any client is created") {
+    test("each system database is refused in every case variant, for every caller, before any client is created") {
         val c = new QueryAPIController()
         for ((who, _) <- callers; name <- ReservedNames; variant <- caseVariants(name)) {
             val resp = c.queryMongoDB(null, body(database = variant))
@@ -142,7 +150,7 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
         val c = new QueryAPIController()
         val a = c.queryMongoDB(null, body(database = "admin"))
         val b = c.queryMongoDB(null, body(database = "ADMIN"))
-        val d = c.queryMongoDB(null, body(database = "Oss", filter = jmap("$where" -> "x"), projection = jmap("a" -> jmap("$function" -> jmap()))))
+        val d = c.queryMongoDB(null, body(database = "Config", filter = jmap("$where" -> "x"), projection = jmap("a" -> jmap("$function" -> jmap()))))
         assert(a.getBody == b.getBody && b.getBody == d.getBody)
         assertRefused(d, "with blocked operators")
         assert(created.get == 0)
@@ -151,8 +159,8 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
     test("the internal database name comes from the platform's configuration, not a fixed name") {
         ScopeDenialFixtures.install(env(multiTenant = false).copy(mongoDbConfig = MongoDBConfig("mongodb://unused", UserDefault, "platformstate")))
         val c = new QueryAPIController()
-        assertRefused(c.queryMongoDB(null, body(database = "PlatformState")), "configured internal name")
-        assert(c.queryMongoDB(null, body(database = "oss")).getStatusCode.value == 200)
+        assertRefused(c.queryMongoDB(null, body(database = "PlatformState", collection = "oss-user")), "configured internal name")
+        assert(c.queryMongoDB(null, body(database = "oss", collection = "oss-user")).getStatusCode.value == 200)
         assert(lastDatabase == "oss")
         assert(created.get == 1)
     }
@@ -181,7 +189,7 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
-    test("multi-tenant: a tenant whose own database name is the internal or a system database is refused, in every case variant") {
+    test("multi-tenant: a tenant whose own database name is a system database is refused, in every case variant") {
         val c = new QueryAPIController()
         for (name <- ReservedNames; variant <- caseVariants(name).map(_.trim)) {
             ScopeDenialFixtures.install(env(multiTenant = true, environment = variant))
@@ -193,17 +201,20 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(created.get == 0)
     }
 
-    test("resolveQueryDatabase and databaseRefused agree with the handler") {
+    test("resolveQueryDatabase and queryRefused agree with the handler") {
         val single = env(multiTenant = false)
         assert(MongoDBQueryUtil.resolveQueryDatabase(null, single) == UserDefault)
         assert(MongoDBQueryUtil.resolveQueryDatabase("", single) == UserDefault)
         assert(MongoDBQueryUtil.resolveQueryDatabase("x", single) == "x")
         val multi = env(multiTenant = true, environment = "acme")
         assert(MongoDBQueryUtil.resolveQueryDatabase("admin", multi) == "acme")
-        for (name <- ReservedNames; v <- caseVariants(name)) assert(MongoDBQueryUtil.databaseRefused(v, Internal), v)
-        for (ok <- Seq(UserDefault, "analytics", "localdata", "admins", "oss2")) assert(!MongoDBQueryUtil.databaseRefused(ok, Internal), ok)
-        assert(!MongoDBQueryUtil.databaseRefused("oss", null))
-        assert(MongoDBQueryUtil.databaseRefused("admin", null))
+        for (name <- ReservedNames; v <- caseVariants(name)) assert(MongoDBQueryUtil.queryRefused(v, "items", single), v)
+        for (ok <- Seq(UserDefault, "analytics", "localdata", "admins", "oss2", Internal))
+            assert(!MongoDBQueryUtil.queryRefused(ok, "items", single), ok)
+        assert(MongoDBQueryUtil.queryRefused(Internal, "oss-user", single))
+        assert(!MongoDBQueryUtil.queryRefused(UserDefault, "oss-user", single))
+        assert(!MongoDBQueryUtil.queryRefused("oss", "items", null))
+        assert(MongoDBQueryUtil.queryRefused("admin", "items", null))
     }
 
     // ---------------------------------------------------------- projection
@@ -268,5 +279,46 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
         MongoDBQueryUtil.query("items", null, null, 12, null)
         verify(find).limit(12)
         verify(client, org.mockito.Mockito.times(2)).close()
+    }
+
+    // ---------------------------------------------------------- internal database
+
+    private def platformNames(e: DatrisEnvironment): Seq[String] = e.platformCollectionNames
+
+    test("the internal database's data collections are read, in every case variant of its name, for every caller") {
+        val c = new QueryAPIController()
+        for ((who, _) <- callers; variant <- caseVariants(Internal); coll <- Seq("items", "orders", "OSS-USER", "oss-user-archive")) {
+            val r = c.queryMongoDB(null, body(database = variant, collection = coll))
+            assert(r.getStatusCode.value == 200, s"$who '$variant' $coll: ${r.getBody}")
+        }
+    }
+
+    test("a platform collection or system. collection of the internal database is refused with the same answer, before any client") {
+        val c = new QueryAPIController()
+        val single = env(multiTenant = false)
+        val other = ai.datris.util.PlatformCollectionFixtures.named(single.copy(environment = "tenant-b"))
+        val protectedOnes = platformNames(single) ++ platformNames(other) ++ Seq("anything-user-session", "system.js", "System.Views")
+        val answers = for ((who, _) <- callers; variant <- caseVariants(Internal); coll <- protectedOnes) yield {
+            val r = c.queryMongoDB(null, body(database = variant, collection = coll))
+            assertRefused(r, s"$who '$variant' $coll")
+            r.getBody
+        }
+        assert(answers.distinct.size == 1)
+        assert(answers.head == c.queryMongoDB(null, body(database = "admin")).getBody)
+        assert(created.get == 0)
+    }
+
+    test("system. collections are refused in every database; platform-named collections elsewhere are data") {
+        val c = new QueryAPIController()
+        assertRefused(c.queryMongoDB(null, body(database = "analytics", collection = "system.views")), "system. in a data db")
+        assert(c.queryMongoDB(null, body(database = "analytics", collection = "oss-user")).getStatusCode.value == 200)
+    }
+
+    test("multi-tenant: a tenant whose database is the internal one reads its data collections, never platform ones") {
+        ScopeDenialFixtures.install(env(multiTenant = true, environment = "oss"))
+        val c = new QueryAPIController()
+        assert(c.queryMongoDB(null, body()).getStatusCode.value == 200)
+        assertRefused(c.queryMongoDB(null, body(collection = "acme-tap-log")), "another tenant's platform collection")
+        assertRefused(c.queryMongoDB(null, body(collection = "oss-pipeline")), "own platform collection")
     }
 }

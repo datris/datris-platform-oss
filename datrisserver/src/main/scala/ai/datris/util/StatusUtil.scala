@@ -224,7 +224,7 @@ class StatusUtil {
         val pipelineName = getPipelineName(status.filename, status.pipelineToken)
 
         // Query for the pipeline token in the pipeline status summary table
-        val statusSummaryList = NoSQLDbUtil.queryJSONItemsByKey(tableName + "-summary", "pipeline_token", status.pipelineToken)
+        val statusSummaryList = NoSQLDbUtil.queryJSONItemsByKey(DatrisEnvironment.summaryTableName(tableName), "pipeline_token", status.pipelineToken)
 
         if (statusSummaryList != null && statusSummaryList.nonEmpty) {
             // If the summary record exists, update it
@@ -291,7 +291,7 @@ class StatusUtil {
             )
 
             NoSQLDbUtil.updateItemJSON(
-                tableName + "-summary",
+                DatrisEnvironment.summaryTableName(tableName),
                 "pipeline_token",
                 pipelineToken.orNull,
                 "json",
@@ -319,7 +319,7 @@ class StatusUtil {
             )
 
             NoSQLDbUtil.putItemJSON(
-                tableName + "-summary",
+                DatrisEnvironment.summaryTableName(tableName),
                 "pipeline_token",
                 pipelineToken.orNull,
                 "json",

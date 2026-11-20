@@ -1953,7 +1953,12 @@ paths:
           description: >-
             The configuration was refused and nothing was saved: it failed
             validation (including a new or changed `destination.database`
-            name that breaks the naming rule, on any pipeline type), it selects a Postgres destination when no Postgres is
+            name that breaks the naming rule, on any pipeline type, and a
+            MongoDB destination that is not a data collection or, when new or
+            changed, is in the platform's internal database: `A MongoDB
+            destination must be a data collection, and a new destination must
+            be in a data database. Choose another database or collection
+            name.`), it selects a Postgres destination when no Postgres is
             reachable, it conflicts with another pipeline's source-of-authority
             declaration, or its vector collection, class or table is already
             used by another pipeline, or (for a caller who cannot see every
@@ -3903,7 +3908,7 @@ paths:
     post:
       tags: [Query]
       summary: Query MongoDB
-      description: Query a MongoDB collection with optional filter and projection. Reads the data databases only; any other database is refused with 400. Blocks $where, $function and $accumulator in the filter and in the projection. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
+      description: Query a MongoDB collection with optional filter and projection. Reads data collections only; a system database, a `system.` collection or a collection holding the platform's own state is refused with 400. Blocks $where, $function and $accumulator in the filter and in the projection. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3917,7 +3922,7 @@ paths:
                   description: MongoDB collection name
                 database:
                   type: string
-                  description: MongoDB database name (defaults to the configured database). Ignored in multi-tenant installs, where the tenant's own database is queried. Must be a data database.
+                  description: MongoDB database name (defaults to the configured database). Ignored in multi-tenant installs, where the tenant's own database is queried. Must not be a MongoDB system database.
                 filter:
                   type: object
                   default: {}
@@ -3937,7 +3942,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
         '400':
-          description: '`limit` is not an integer, or the database is not a data database (body `{"error": "This database is not available for queries."}`). Body: `{"error": ...}`'
+          description: '`limit` is not an integer, or the database or collection is not a data collection (body `{"error": "This database is not available for queries."}`). Body: `{"error": ...}`'
         '500':
           description: Error
 
@@ -4600,7 +4605,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List MongoDB collections
-      description: List MongoDB collections. If database is specified, lists collections in that database. Otherwise lists all collections across all databases in "db.collection" format. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
+      description: List MongoDB data collections. If database is specified, lists the data collections in that database. Otherwise lists the data collections of every database in "db.collection" format. System databases, `system.` collections and the collections holding the platform's own state are never listed. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4616,6 +4621,8 @@ paths:
                 type: array
                 items:
                   type: string
+        '400':
+          description: 'The database is a MongoDB system database. Body: `{"error": "This database is not available for queries."}`'
         '500':
           description: Error
 

@@ -206,17 +206,21 @@ class MetadataAPIController {
             val client = MetadataAPIController.newMongoClient()
 
             try {
-                val env = DatrisEnvironment.current.environment
-                val internal = DatrisEnvironment.current.mongoDbConfig.internalDatabase
-                // The internal database (by its configured name) and the system
-                // databases are never listed.
-                val databases = if (DatrisEnvironment.current.multiTenant) {
+                val current = DatrisEnvironment.current
+                val env = current.environment
+                // System databases are never listed. The internal database is
+                // listed only when it holds a collection the listing would show
+                // (a data collection); its platform collections never count.
+                val databases = if (current.multiTenant) {
                     // Multi-tenant: only show the tenant's database
-                    List(env).filterNot(MongoReservedNames.databaseReserved(_, internal))
+                    List(env).filterNot(MongoReservedNames.systemDatabase)
                 } else {
                     client.listDatabaseNames().asScala
-                        .filterNot(db => MongoReservedNames.databaseReserved(db, internal))
-                        .filter(db => db != env)
+                        .filterNot(MongoReservedNames.systemDatabase)
+                        .filter(db =>
+                            !MongoReservedNames.internalDatabase(db, current) ||
+                                client.getDatabase(db).listCollectionNames().asScala.exists(c => MetadataAPIController.listed(db, c, current))
+                        )
                         .toList.sorted
                 }
                 val gson = new Gson
@@ -240,13 +244,13 @@ class MetadataAPIController {
             logger.info("API endpoint GET /metadata/mongodb/collections called, database: " + database)
             APIKeyValidator.validate(apiKey)
 
-            // A named (or, multi-tenant, the tenant's) database that is reserved
+            // A named (or, multi-tenant, the tenant's) MongoDB system database
             // gets the query route's 400 before any client is created.
-            val internal = DatrisEnvironment.current.mongoDbConfig.internalDatabase
+            val current = DatrisEnvironment.current
             val target =
-                if (DatrisEnvironment.current.multiTenant) Some(DatrisEnvironment.current.environment)
+                if (current.multiTenant) Some(current.environment)
                 else Option(database).filter(_.nonEmpty)
-            if (target.exists(MongoReservedNames.databaseReserved(_, internal)))
+            if (target.exists(MongoReservedNames.systemDatabase))
                 return ResponseEntity
                     .status(HttpStatus.BAD_REQUEST)
                     .body[String](QueryAPIController.jsonError(MongoDBQueryUtil.DatabaseNotAvailableMessage))
@@ -269,19 +273,22 @@ class MetadataAPIController {
                     val tenantCollections = getTenantMongoCollections()
                     client.getDatabase(dbName).listCollectionNames().asScala
                         .filter(tenantCollections.contains)
+                        .filter(MetadataAPIController.listed(dbName, _, current))
                         .toList.sorted
                 } else if (database != null && database.nonEmpty) {
                     client.getDatabase(database).listCollectionNames().asScala
                         .filter(name => !name.startsWith(env + "-"))
+                        .filter(MetadataAPIController.listed(database, _, current))
                         .toList.sorted
                 } else {
                     // List from all databases
                     val allDbs = client.listDatabaseNames().asScala
-                        .filterNot(db => MongoReservedNames.databaseReserved(db, internal))
+                        .filterNot(MongoReservedNames.systemDatabase)
                         .toList
                     allDbs.flatMap { db =>
                         client.getDatabase(db).listCollectionNames().asScala
                             .filter(name => !name.startsWith(env + "-"))
+                            .filter(MetadataAPIController.listed(db, _, current))
                             .map(col => db + "." + col)
                     }.sorted
                 }
@@ -545,6 +552,12 @@ class MetadataAPIController {
 }
 
 object MetadataAPIController {
+
+    /** Whether a listing shows `collection` of `db`: never a protected one
+      * ([[MongoReservedNames.protectedCollection]]: `system.` collections and,
+      * in the internal database, platform collections). */
+    private[api] def listed(db: String, collection: String, env: ai.datris.model.DatrisEnvironment): Boolean =
+        !MongoReservedNames.protectedCollection(db, collection, env)
 
     /** Test seam: when set, it supplies the MongoDB client instead of one
       * built from the MongoDB secret. */

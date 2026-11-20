@@ -19,6 +19,9 @@ object DatrisEnvironment {
     /** Returns the per-request tenant environment if set, otherwise the global singleton. */
     def current: DatrisEnvironment = TenantContext.get().getOrElse(values)
 
+    /** The summary collection kept beside a run-status collection. */
+    def summaryTableName(statusTableName: String): String = statusTableName + "-summary"
+
     /** Resolve which AIConfig to use for code-generation tasks (tap scripts, AI DQ,
       * AI transformations, schema generation, NL→SQL). Falls back to the main aiConfig
       * when no codegen config has been configured. Reads `.current` so multi-tenant
@@ -328,6 +331,46 @@ case class DatrisEnvironment(
     /** One doc per pipeline: last Unity Catalog metadata sync (hashes per
       * statement group, last run id, last error). See UnityCatalogSyncIO. */
     def ucSyncTableName: String = environment + "-uc-sync"
+
+    /** Per-run summaries beside [[pipelineStatusTableName]]. */
+    def pipelineStatusSummaryTableName: String = DatrisEnvironment.summaryTableName(pipelineStatusTableName)
+
+    /** Every collection the platform keeps its own state in, in the internal
+      * MongoDB database, for this environment: each `*TableName` above. A new
+      * platform collection is named here (MongoReservedNames protects exactly
+      * these; PlatformCollectionsSpec fails for one that is missing). Null
+      * entries (an environment built without them) are left out. */
+    def platformCollectionNames: Seq[String] = {
+        // Names derived from another name only when that one is set.
+        def derived(base: String, name: => String): String = if (base == null) null else name
+        Seq(
+            pipelineTableName,
+            archivedMetadataTableName,
+            pipelineStatusTableName,
+            derived(pipelineStatusTableName, pipelineStatusSummaryTableName),
+            fileNotifierMessageTableName,
+            dataPullTableName,
+            tapTableName,
+            tapLogTableName,
+            tapLedgerTableName,
+            tapPromptTableName,
+            userTableName,
+            userSessionTableName,
+            auditLogTableName,
+            agentPolicyTableName,
+            pendingActionTableName,
+            incidentTableName,
+            derived(tapTableName, tapVersionTableName),
+            derived(environment, codeRepoTableName),
+            derived(pipelineTableName, pipelineVersionTableName),
+            derived(tapTableName, tapStateTableName),
+            derived(environment, runLineageTableName),
+            derived(environment, columnLineageTableName),
+            derived(environment, codegenScriptTableName),
+            derived(environment, codegenScriptVersionTableName),
+            derived(environment, ucSyncTableName)
+        ).filter(_ != null)
+    }
 
     /** True for trial-droplet tenants. Trials have AI configuration locked at the
       * server level — see SecretsAPIController.rejectIfTrialAiSecret. The convention

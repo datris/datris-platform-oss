@@ -37,15 +37,19 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
     private val opened = ArrayBuffer[String]() // database names opened
     private val dropped = ArrayBuffer[String]() // db.collection dropped
     private var listed: Seq[String] = Seq.empty
+    // collections each database lists (default: one data collection)
+    private var collectionsOf: String => Seq[String] = (_: String) => Seq("orders")
 
     private def env(multiTenant: Boolean = false, environment: String = "oss"): DatrisEnvironment =
-        ScopeDenialFixtures.auditEnv().copy(
-            environment = environment,
-            useApiKeys = false,
-            useAuditLog = false,
-            multiTenant = multiTenant,
-            postgresDatabase = if (multiTenant) environment else "datris",
-            mongoDbConfig = MongoDBConfig("mongodb://unused", "datris", Internal)
+        ai.datris.util.PlatformCollectionFixtures.named(
+            ScopeDenialFixtures.auditEnv().copy(
+                environment = environment,
+                useApiKeys = false,
+                useAuditLog = false,
+                multiTenant = multiTenant,
+                postgresDatabase = if (multiTenant) environment else "datris",
+                mongoDbConfig = MongoDBConfig("mongodb://unused", "datris", Internal)
+            )
         )
 
     private def cursorOf[T](items: Seq[T]): MongoCursor[T] = {
@@ -76,7 +80,7 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
             }
             when(db.listCollectionNames()).thenAnswer { _ =>
                 val names = mock(classOf[MongoIterable[String]])
-                when(names.iterator()).thenAnswer(_ => cursorOf(Seq("orders")))
+                when(names.iterator()).thenAnswer(_ => cursorOf(collectionsOf(name)))
                 names
             }
             db
@@ -86,7 +90,7 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     override def beforeEach(): Unit = {
         saved = DatrisEnvironment.values
-        clients.clear(); opened.clear(); dropped.clear(); listed = Seq.empty
+        clients.clear(); opened.clear(); dropped.clear(); listed = Seq.empty; collectionsOf = (_: String) => Seq("orders")
         PipelineAPIController.mongoDropClientOverride = () => fakeClient()
         MetadataAPIController.mongoClientOverride = () => fakeClient()
         MongoDBQueryUtil.clientFactoryOverride = () => fakeClient()
@@ -105,8 +109,12 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
     private def variants(name: String): Seq[String] =
         Seq(name, name.toUpperCase, name.capitalize, name.zipWithIndex.map { case (c, i) => if (i % 2 == 0) c.toUpper else c }.mkString)
 
-    private val ReservedDbs: Seq[String] = Seq(Internal, "admin", "local", "config").flatMap(variants)
+    private val ReservedDbs: Seq[String] = Seq("admin", "local", "config").flatMap(variants)
     private val ReservedCollections: Seq[String] = Seq("system.js", "System.Views", "SYSTEM.profile", "system.buckets.x")
+
+    /** Platform collections: this environment's and another tenant's. */
+    private def platformCollections: Seq[String] =
+        env().platformCollectionNames ++ env(environment = "tenant-b").platformCollectionNames ++ Seq("anyprefix-user-session")
 
     private def mongoDb(dbName: String = "datris", table: String = "orders", truncate: Boolean = false, tx: Boolean = true): Database =
         Database(dbName = dbName, table = table, useMongoDB = true, truncateBeforeWrite = truncate, useTransaction = tx)
@@ -157,8 +165,11 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(errorOf(r.get) == MongoReservedNames.DestinationRefusal, clue + ": " + errorOf(r.get))
     }
 
+    /** Protected destinations: a system database, a system. collection, a
+      * platform collection in the internal database (any case of its name). */
     private def reservedBlocks: Seq[(String, Database)] =
-        ReservedDbs.map(d => ("db " + d, mongoDb(dbName = d))) ++ ReservedCollections.map(c => ("collection " + c, mongoDb(table = c)))
+        ReservedDbs.map(d => ("db " + d, mongoDb(dbName = d))) ++ ReservedCollections.map(c => ("collection " + c, mongoDb(table = c))) ++
+            (for (d <- variants(Internal); c <- platformCollections) yield ("platform " + d + "." + c, mongoDb(dbName = d, table = c)))
 
     // ------------------------------------------------------------ save and restore
 
@@ -196,9 +207,9 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
             assert(PipelineAPIController.databaseNameRefusal(structured(db), null).isEmpty, db)
         // a Postgres block named like a reserved MongoDB database is not a MongoDB destination
         val pg = Database(dbName = "admin", schema = "public", table = "system", usePostgres = true)
-        assert(MongoReservedNames.destinationProblem(pg, DatrisEnvironment.current).isEmpty)
+        assert(MongoReservedNames.destinationProblem(pg, DatrisEnvironment.current, unchanged = false).isEmpty)
         assert(PipelineAPIController.databaseNameRefusal(structured(pg), null).isEmpty)
-        assert(MongoReservedNames.destinationProblem(null, DatrisEnvironment.current).isEmpty)
+        assert(MongoReservedNames.destinationProblem(null, DatrisEnvironment.current, unchanged = false).isEmpty)
     }
 
     test("the internal database name comes from the platform's configuration") {
@@ -221,7 +232,7 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
         // a stored config with a blank database writes to the default one, checked too
         ScopeDenialFixtures.install(env().copy(postgresDatabase = "OSS"))
-        assert(load(structured(mongoDb(dbName = ""))).getMessage == MongoReservedNames.DestinationRefusal)
+        assert(load(structured(mongoDb(dbName = "", table = "oss-tap"))).getMessage == MongoReservedNames.DestinationRefusal)
     }
 
     test("the loader goes past the check for an ordinary destination") {
@@ -273,16 +284,145 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(clients.isEmpty)
     }
 
-    test("listings omit the internal database by its configured name and the system databases") {
-        ScopeDenialFixtures.install(env(environment = "dev").copy(mongoDbConfig = MongoDBConfig("mongodb://unused", "datris", "platformstate")))
-        listed = Seq("admin", "Config", "local", "platformstate", "PlatformState", "dev", "datris", "analytics")
+    test("listings omit the system databases, and the internal database (by its configured name) when it holds only platform collections") {
+        val e = env(environment = "dev").copy(mongoDbConfig = MongoDBConfig("mongodb://unused", "datris", "platformstate"))
+        ScopeDenialFixtures.install(e)
+        listed = Seq("admin", "Config", "local", "platformstate", "datris", "analytics")
+        collectionsOf = db => if (db == "platformstate") e.platformCollectionNames :+ "system.js" else Seq("orders")
         val c = new MetadataAPIController()
         val dbs = JsonParser.parseString(c.getMongoDatabases(null).getBody).getAsJsonArray.asScala.map(_.getAsString).toList
         assert(dbs == List("analytics", "datris"), dbs)
         val all = JsonParser.parseString(c.getMongoCollections(null, null).getBody).getAsJsonArray.asScala.map(_.getAsString).toList
-        assert(!opened.exists(MongoReservedNames.databaseReserved(_, "platformstate")), opened)
-        assert(all.contains("datris.orders") && all.contains("analytics.orders"), all)
+        assert(!opened.exists(MongoReservedNames.systemDatabase), opened)
+        assert(all.sorted == List("analytics.orders", "datris.orders"), all)
         val named = c.getMongoCollections(null, "analytics")
         assert(named.getStatusCode.value == 200 && named.getBody.contains("orders"), named)
+    }
+
+    // ------------------------------------------------------------ data collections in the internal database
+
+    private val internalData = mongoDb(dbName = Internal, table = "legacy_orders")
+
+    test(
+        "a stored pipeline with a data collection in the internal database saves unchanged, restores over the same live destination, loads and is dropped on delete"
+    ) {
+        for ((kind, mk) <- Seq[(String, Database => PipelineConfig)]("structured" -> (structured(_)), "unstructured" -> (unstructured(_)))) {
+            val stored = mk(internalData)
+            assert(PipelineAPIController.databaseNameRefusal(stored, stored).isEmpty, kind + " unchanged re-save")
+            assert(
+                PipelineAPIController.databaseNameRefusal(stored.copy(version = 9, tags = java.util.Arrays.asList("x")), stored).isEmpty,
+                kind + " other edits"
+            )
+            for ((who, r) <- callers)
+                assert(EntityVersionAPIController.pipelineRestoreRefusal(r, stored.copy(version = 2), stored, Nil).isEmpty, s"$kind $who restore")
+        }
+        for (truncate <- Seq(false, true); tx <- Seq(true, false))
+            assert(load(structured(internalData.copy(truncateBeforeWrite = truncate, useTransaction = tx))).isInstanceOf[NullPointerException])
+        assert(PipelineAPIController.mongoReservedDeleteWarning(structured(internalData)).isEmpty)
+        assert(PipelineAPIController.dropMongoDestination(internalData))
+        assert(dropped == Seq("oss.legacy_orders"))
+    }
+
+    test("a new pipeline, a changed destination, or a restore onto a different live destination may not use the internal database") {
+        for (d <- variants(Internal)) {
+            val cfg = structured(mongoDb(dbName = d, table = "legacy_orders"))
+            assertRefused(PipelineAPIController.databaseNameRefusal(cfg, null), d + " new")
+            assertRefused(PipelineAPIController.databaseNameRefusal(cfg, structured(mongoDb())), d + " moved in")
+            assertRefused(PipelineAPIController.databaseNameRefusal(structured(mongoDb(dbName = d, table = "other")), cfg), d + " other collection")
+            for ((who, r) <- callers) {
+                assertRefused(EntityVersionAPIController.pipelineRestoreRefusal(r, cfg.copy(version = 2), null, Nil), s"$d $who restore of deleted")
+                assertRefused(
+                    EntityVersionAPIController.pipelineRestoreRefusal(r, cfg.copy(version = 2), structured(mongoDb()), Nil),
+                    s"$d $who restore over other"
+                )
+            }
+        }
+    }
+
+    test("an install whose data database is the internal database keeps using it for data collections, never platform ones") {
+        ScopeDenialFixtures.install(env().copy(mongoDbConfig = MongoDBConfig("mongodb://unused", Internal, Internal)))
+        val cfg = structured(mongoDb(dbName = Internal, table = "orders"))
+        assert(PipelineAPIController.databaseNameRefusal(cfg, null).isEmpty)
+        assert(PipelineAPIController.databaseNameRefusal(structured(mongoDb(dbName = Internal, table = "other")), cfg).isEmpty)
+        for (c <- platformCollections) assertRefused(PipelineAPIController.databaseNameRefusal(structured(mongoDb(dbName = Internal, table = c)), null), c)
+        val q = new QueryAPIController()
+        assert(q.queryMongoDB(null, { val m = new java.util.HashMap[String, Any](); m.put("collection", "orders"); m }).getStatusCode.value != 400)
+        assert(opened.last == Internal)
+        assert(MongoReservedNames.sharedDatabaseWarning(MongoDBConfig("x", Internal, Internal)).isDefined)
+        assert(MongoReservedNames.sharedDatabaseWarning(MongoDBConfig("x", "OSS ", Internal)).isDefined)
+        assert(MongoReservedNames.sharedDatabaseWarning(MongoDBConfig("x", "datris", Internal)).isEmpty)
+    }
+
+    test("platform collections are refused for every caller in the current environment and another tenant's, also multi-tenant") {
+        ScopeDenialFixtures.install(env(multiTenant = true, environment = "acme"))
+        val mt = env(multiTenant = true, environment = "acme")
+        for (c <- mt.platformCollectionNames ++ env(environment = "tenant-b").platformCollectionNames; (who, r) <- callers) {
+            val cfg = structured(mongoDb(dbName = Internal, table = c))
+            assertRefused(PipelineAPIController.databaseNameRefusal(cfg, cfg), s"$c unchanged")
+            assertRefused(EntityVersionAPIController.pipelineRestoreRefusal(r, cfg.copy(version = 2), cfg, Nil), s"$c $who")
+            assert(load(cfg).getMessage == MongoReservedNames.DestinationRefusal, c)
+        }
+        assert(clients.isEmpty)
+    }
+
+    test("listings of the internal database show its data collections and never platform or system. ones") {
+        collectionsOf =
+            db => if (db.equalsIgnoreCase(Internal)) env().platformCollectionNames ++ Seq("system.views", "legacy_orders", "acme-tap-log") else Seq("orders")
+        listed = Seq(Internal, "datris")
+        val c = new MetadataAPIController()
+        val named = JsonParser.parseString(c.getMongoCollections(null, "OSS").getBody).getAsJsonArray.asScala.map(_.getAsString).toList
+        assert(named == List("legacy_orders"), named)
+        val dbs = JsonParser.parseString(c.getMongoDatabases(null).getBody).getAsJsonArray.asScala.map(_.getAsString).toList
+        assert(dbs == List("datris", Internal), dbs)
+        val all = JsonParser.parseString(c.getMongoCollections(null, null).getBody).getAsJsonArray.asScala.map(_.getAsString).toList
+        assert(all.sorted == List("datris.orders", "oss.legacy_orders"), all)
+    }
+
+    test("collection names are matched exactly: a differently-cased platform name is a data collection") {
+        val e = env()
+        assert(MongoReservedNames.platformCollection("oss-user", e))
+        assert(!MongoReservedNames.platformCollection("OSS-USER", e))
+        assert(!MongoReservedNames.platformCollection("oss-user ", e))
+        assert(MongoReservedNames.platformCollection("x-y-pipeline-status-summary", e))
+        assert(!MongoReservedNames.platformCollection("pipeline", e))
+    }
+
+    // ------------------------------------------------------------ wiring
+
+    test("delete with data reaches the guarded drop: an ordinary collection is dropped through it, a protected one is not") {
+        val ctl = new PipelineAPIController()
+        assert(!ctl.cleanupDestinationData(structured(mongoDb(dbName = "analytics")), Set.empty, Set.empty, None))
+        assert(dropped == Seq("analytics.orders"), dropped)
+        dropped.clear(); clients.clear()
+        ctl.cleanupDestinationData(structured(mongoDb(dbName = Internal, table = "oss-user")), Set.empty, Set.empty, None)
+        ctl.cleanupDestinationData(structured(mongoDb(dbName = "admin")), Set.empty, Set.empty, None)
+        assert(dropped.isEmpty && clients.isEmpty)
+    }
+
+    private def source(rel: String): String =
+        new String(
+            java.nio.file.Files.readAllBytes(
+                Seq(java.nio.file.Paths.get("src/main/scala/" + rel), java.nio.file.Paths.get("datrisserver/src/main/scala/" + rel))
+                    .find(java.nio.file.Files.exists(_))
+                    .get
+            ),
+            java.nio.charset.StandardCharsets.UTF_8
+        )
+
+    test("the delete adds the warning line inside the data-delete block (source pin: the delete needs a store)") {
+        val src = source("ai/datris/api/PipelineAPIController.scala")
+        val start = src.indexOf("if (deleteDataBool && config.destination != null) {")
+        val end = src.indexOf("cleanupDocumentTapLedgers(pipeline)", start)
+        val w = src.indexOf("warnings ++= PipelineAPIController.mongoReservedDeleteWarning(config)", start)
+        assert(start > 0 && w > start && w < end, s"start=$start warning=$w end=$end")
+    }
+
+    test("catalog restore and POST /pipeline save through savePipelineCore, which applies databaseNameRefusal (source pin)") {
+        val pc = source("ai/datris/api/PipelineAPIController.scala")
+        val core = pc.indexOf("private def savePipelineCore(")
+        assert(core > 0 && pc.indexOf("PipelineAPIController.databaseNameRefusal(preserved, existing)", core) > core)
+        assert(pc.indexOf("savePipelineCore(config, changeNote, request, None)") > 0)
+        val cat = source("ai/datris/api/CatalogAPIController.scala")
+        assert(cat.contains("pipelineController.savePipelineInternal(toSave, note, request)"))
     }
 }

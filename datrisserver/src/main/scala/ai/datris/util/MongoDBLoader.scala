@@ -27,10 +27,10 @@ class MongoDBLoader(jobContext: JobContext) {
     private val statusUtil = jobContext.statusUtil
 
     def process(): Unit = {
-        // First: a destination in a reserved database or collection fails the
-        // run before anything is connected, truncated or written.
+        // First: a protected destination collection fails the run before
+        // anything is connected, truncated or written.
         MongoReservedNames
-            .destinationProblem(config.destination.database, DatrisEnvironment.current)
+            .protectedProblem(config.destination.database, DatrisEnvironment.current)
             .foreach(p => throw new DatrisException(p))
 
         statusUtil.overrideProcessName(this.getClass.getSimpleName)

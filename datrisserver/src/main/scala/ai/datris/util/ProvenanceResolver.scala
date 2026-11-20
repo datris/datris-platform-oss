@@ -173,7 +173,7 @@ object ProvenanceResolver {
         try {
             val gson = new Gson
             NoSQLDbUtil
-                .queryJSONItemsByKey(DatrisEnvironment.current.pipelineStatusTableName + "-summary", "pipeline_token", runId)
+                .queryJSONItemsByKey(DatrisEnvironment.current.pipelineStatusSummaryTableName, "pipeline_token", runId)
                 .headOption
                 .map(gson.fromJson(_, classOf[PipelineStatusSummaryTable]).json)
         } catch {

@@ -122,7 +122,7 @@ object ActivitySignals {
 
         // Pipeline job summaries since 2× window (current + prior, for volumes).
         val summaries: List[PipelineStatusSummaryTable] =
-            try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusTableName + "-summary", "created_at", now - 2 * windowMs, MaxRows).flatMap { json =>
+            try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusSummaryTableName, "created_at", now - 2 * windowMs, MaxRows).flatMap { json =>
                     try Some(gson.fromJson(json, classOf[PipelineStatusSummaryTable]))
                     catch { case _: Exception => None }
                 }

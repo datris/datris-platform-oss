@@ -425,7 +425,7 @@ class PipelineStatusAPIController {
 
             val tableName = DatrisEnvironment.current.pipelineStatusTableName
             val detailCount = NoSQLDbUtil.deleteAll(tableName)
-            val summaryCount = NoSQLDbUtil.deleteAll(tableName + "-summary")
+            val summaryCount = NoSQLDbUtil.deleteAll(DatrisEnvironment.summaryTableName(tableName))
 
             logger.info("Cleared " + detailCount + " detail entries and " + summaryCount + " summary entries")
 

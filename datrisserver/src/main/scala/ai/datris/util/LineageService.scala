@@ -567,7 +567,7 @@ object LineageService {
             pipelineName,
             taps,
             () =>
-                try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusTableName + "-summary", "created_at", now - FreshnessWindowMs, MaxRows).flatMap {
+                try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusSummaryTableName, "created_at", now - FreshnessWindowMs, MaxRows).flatMap {
                         json =>
                             try Some(gson.fromJson(json, classOf[PipelineStatusSummaryTable]))
                             catch { case _: Exception => None }

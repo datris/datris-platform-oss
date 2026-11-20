@@ -1155,7 +1155,7 @@ class PipelineAPIController {
 
     /** Returns true when the object-store destination's files were deleted
       * (false when there is none, the prefix is shared, or the delete failed). */
-    private def cleanupDestinationData(
+    private[api] def cleanupDestinationData(
         config: PipelineConfig,
         keepVector: Set[VectorContainers.Key],
         keepStructured: Set[SharedDatasets.Key],
@@ -1714,16 +1714,18 @@ object PipelineAPIController {
       * with it. None for a null candidate or one without a block. No
       * request, no I/O.
       *
-      * First, and never skipped for an unchanged block: a MongoDB
-      * destination in a reserved database or `system.` collection
-      * ([[MongoReservedNames.destinationProblem]]) is refused with
-      * [[MongoReservedNames.DestinationRefusal]]. */
+      * First, the MongoDB destination rule
+      * ([[MongoReservedNames.destinationProblem]], refused with
+      * [[MongoReservedNames.DestinationRefusal]]): a protected collection is
+      * refused even for an unchanged block; a new or changed block may not
+      * name the internal database unless it is the install's data database. */
     def databaseNameRefusal(candidate: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] = {
         if (candidate == null || candidate.destination == null || candidate.destination.database == null) return None
-        MongoReservedNames.destinationProblem(candidate.destination.database, DatrisEnvironment.current).foreach { t =>
+        val unchanged = DatabaseDestinationNames.same(candidate, stored)
+        MongoReservedNames.destinationProblem(candidate.destination.database, DatrisEnvironment.current, unchanged).foreach { t =>
             return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
         }
-        if (DatabaseDestinationNames.same(candidate, stored)) return None
+        if (unchanged) return None
         DatabaseDestinationNames
             .problem(candidate.destination.database)
             .map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
@@ -1743,13 +1745,13 @@ object PipelineAPIController {
             .map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
 
     /** DELETE /pipeline with data (and reset): the one warning line for a
-      * MongoDB destination in a reserved database or `system.` collection
-      * ([[MongoReservedNames.destinationProblem]]): its collection is left
+      * MongoDB destination whose collection is protected
+      * ([[MongoReservedNames.protectedProblem]]): its collection is left
       * alone (no client is created). None for every other config. */
     def mongoReservedDeleteWarning(config: PipelineConfig): Option[String] = {
         val db = Option(config).flatMap(c => Option(c.destination)).flatMap(d => Option(d.database)).orNull
         MongoReservedNames
-            .destinationProblem(db, DatrisEnvironment.current)
+            .protectedProblem(db, DatrisEnvironment.current)
             .map(_ => "The MongoDB collection was not dropped because its database or collection is not a pipeline destination.")
     }
 
@@ -1764,7 +1766,7 @@ object PipelineAPIController {
     private[api] def dropMongoDestination(db: ai.datris.model.Database): Boolean = {
         if (db == null || !db.useMongoDB) return false
         val env = DatrisEnvironment.current
-        if (MongoReservedNames.destinationProblem(db, env).isDefined) return false
+        if (MongoReservedNames.protectedProblem(db, env).isDefined) return false
         val factory = mongoDropClientOverride
         val client =
             if (factory != null) factory()
