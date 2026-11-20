@@ -218,7 +218,7 @@ class MetadataAPIController {
                     client.listDatabaseNames().asScala
                         .filterNot(MongoReservedNames.systemDatabase)
                         .filter(db =>
-                            !MongoReservedNames.internalDatabase(db, current) ||
+                            !MongoReservedNames.isInternal(db, current) ||
                                 client.getDatabase(db).listCollectionNames().asScala.exists(c => MetadataAPIController.listed(db, c, current))
                         )
                         .toList.sorted
@@ -277,7 +277,6 @@ class MetadataAPIController {
                         .toList.sorted
                 } else if (database != null && database.nonEmpty) {
                     client.getDatabase(database).listCollectionNames().asScala
-                        .filter(name => !name.startsWith(env + "-"))
                         .filter(MetadataAPIController.listed(database, _, current))
                         .toList.sorted
                 } else {
@@ -287,7 +286,6 @@ class MetadataAPIController {
                         .toList
                     allDbs.flatMap { db =>
                         client.getDatabase(db).listCollectionNames().asScala
-                            .filter(name => !name.startsWith(env + "-"))
                             .filter(MetadataAPIController.listed(db, _, current))
                             .map(col => db + "." + col)
                     }.sorted

@@ -260,6 +260,7 @@ class PostgresReadOnlyQuerySpec extends AnyFunSuite {
             "pg_create_physical_replication_slot('s')",
             "pg_drop_replication_slot('s')",
             "pg_replication_slot_advance('s', '0/0')",
+            "pg_sync_replication_slots()",
             "pg_logical_emit_message(true, 'p', 'm')",
             "query_to_xml('q', true, false, '')",
             "query_to_xml_and_xmlschema('q', true, false, '')",

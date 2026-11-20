@@ -93,7 +93,7 @@ GET /api/v1/metadata/mongodb/collections
 |-----------|------|---------|-------------|
 | `database` | query | (all databases) | Filter to a specific database |
 
-When `database` is provided, returns the data collections of that database; a MongoDB system database answers `400` with `{"error": "This database is not available for queries."}`. When omitted, returns the data collections of every database with a `database.collection` namespace prefix. `system.` collections and the collections holding the platform's own state are never listed.
+When `database` is provided, returns the data collections of that database; a MongoDB system database answers `400` with `{"error": "This database or collection is not available for queries."}`. When omitted, returns the data collections of every database with a `database.collection` namespace prefix. `system.` collections and the collections holding the platform's own state are never listed.
 
 ---
 

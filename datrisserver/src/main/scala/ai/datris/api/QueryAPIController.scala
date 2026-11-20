@@ -107,7 +107,7 @@ class QueryAPIController {
                 logger.warn("queryMongoDB: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case _: MongoDBQueryUtil.DatabaseNotAvailableException =>
-                logger.warn("queryMongoDB: refused a database that is not available for queries")
+                logger.warn("queryMongoDB: refused a database or collection that is not available for queries")
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(MongoDBQueryUtil.DatabaseNotAvailableMessage))
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

@@ -52,7 +52,7 @@ object MongoReservedNames {
         Option(env).flatMap(e => Option(e.mongoDbConfig)).map(_.internalDatabase).orNull
 
     /** Whether `dbName` is the platform's internal database. */
-    def internalDatabase(dbName: String, env: DatrisEnvironment): Boolean = sameDatabase(dbName, internalName(env))
+    def isInternal(dbName: String, env: DatrisEnvironment): Boolean = sameDatabase(dbName, internalName(env))
 
     /** Whether `collection` is a `system.` collection (ignoring case and
       * surrounding whitespace). A dotted name such as `a.b` is an ordinary
@@ -60,30 +60,35 @@ object MongoReservedNames {
     def collectionReserved(collection: String): Boolean =
         collection != null && collection.trim.toLowerCase(Locale.ROOT).startsWith("system.")
 
-    /** The part after the environment prefix of each of the platform's
-      * collection names ([[DatrisEnvironment.platformCollectionNames]]). The
-      * same for every tenant: each tenant's collections are `<tenant>-<part>`. */
+    /** This environment's platform collection names, current and legacy. */
+    def platformNames(env: DatrisEnvironment): Seq[String] =
+        if (env == null) Nil else env.platformCollectionNames ++ env.legacyPlatformCollectionNames
+
+    /** The part after the environment prefix of each of [[platformNames]].
+      * The same for every tenant: each tenant's collections are
+      * `<tenant>-<part>`. */
     def platformSuffixes(env: DatrisEnvironment): Seq[String] =
         if (env == null) Nil
         else {
             val prefix = env.environment + "-"
-            env.platformCollectionNames.filter(_.startsWith(prefix)).map(_.stripPrefix(prefix)).filter(_.nonEmpty).distinct
+            platformNames(env).filter(_.startsWith(prefix)).map(_.stripPrefix(prefix)).filter(_.nonEmpty).distinct
         }
 
-    /** Whether `collection` is a platform collection, for this environment
-      * or any other tenant's: one of this environment's names, or any name
-      * ending in `-` and one of [[platformSuffixes]], whatever comes before
-      * (so another tenant's prefix, or one chosen to look different, is
-      * covered). Exact, case-sensitive. */
+    /** Whether `collection` is a platform collection. Single-tenant: exactly
+      * one of this environment's names ([[platformNames]]). Multi-tenant,
+      * where the internal database holds every tenant's collections: also any
+      * name ending in `-` and one of [[platformSuffixes]], whatever comes
+      * before. Exact, case-sensitive. */
     def platformCollection(collection: String, env: DatrisEnvironment): Boolean =
         collection != null && env != null &&
-            (env.platformCollectionNames.contains(collection) || platformSuffixes(env).exists(s => collection.endsWith("-" + s)))
+            (platformNames(env).contains(collection) ||
+                (env.multiTenant && platformSuffixes(env).exists(s => collection.endsWith("-" + s))))
 
     /** Whether `collection` in `dbName` is never read, listed or written: in a
       * system database, a `system.` collection, or a platform collection in
       * the internal database. */
     def protectedCollection(dbName: String, collection: String, env: DatrisEnvironment): Boolean =
-        systemDatabase(dbName) || collectionReserved(collection) || (internalDatabase(dbName, env) && platformCollection(collection, env))
+        systemDatabase(dbName) || collectionReserved(collection) || (isInternal(dbName, env) && platformCollection(collection, env))
 
     /** The install's data database: the tenant's own in a multi-tenant
       * install, else `mongodb.database`. */
@@ -91,7 +96,7 @@ object MongoReservedNames {
         if (env == null) null else if (env.multiTenant) env.environment else Option(env.mongoDbConfig).map(_.database).orNull
 
     /** Whether the install's data database is its internal database. */
-    def dataDatabaseIsInternal(env: DatrisEnvironment): Boolean = internalDatabase(dataDatabase(env), env)
+    def dataDatabaseIsInternal(env: DatrisEnvironment): Boolean = isInternal(dataDatabase(env), env)
 
     /** The database the MongoDB loader writes `db` to: its `dbName`, or the
       * save-time default when blank or the placeholder
@@ -114,13 +119,21 @@ object MongoReservedNames {
         else if (Seq(loadDatabase(db, env), deleteDatabase(db, env)).exists(protectedCollection(_, db.table, env))) Some(DestinationRefusal)
         else None
 
-    /** The save rule: [[protectedProblem]], and for a new or changed block
-      * (`unchanged` false) a destination in the internal database, unless the
-      * install's data database is the internal database. */
-    def destinationProblem(db: Database, env: DatrisEnvironment, unchanged: Boolean): Option[String] =
+    /** Whether `db` and `stored` name the same MongoDB destination: both
+      * MongoDB, the same collection, and databases that resolve to the same
+      * one ([[loadDatabase]], so a blank or placeholder name and the default
+      * name it resolves to are the same). */
+    def sameMongoDestination(db: Database, stored: Database, env: DatrisEnvironment): Boolean =
+        db != null && stored != null && db.useMongoDB && stored.useMongoDB && db.table == stored.table &&
+            sameDatabase(loadDatabase(db, env), loadDatabase(stored, env))
+
+    /** The save rule: [[protectedProblem]], and for a destination that is not
+      * `stored`'s ([[sameMongoDestination]]) one in the internal database,
+      * unless the install's data database is the internal database. */
+    def destinationProblem(db: Database, env: DatrisEnvironment, stored: Database): Option[String] =
         protectedProblem(db, env).orElse(
-            if (db == null || !db.useMongoDB || unchanged || dataDatabaseIsInternal(env)) None
-            else if (Seq(loadDatabase(db, env), deleteDatabase(db, env)).exists(internalDatabase(_, env))) Some(DestinationRefusal)
+            if (db == null || !db.useMongoDB || sameMongoDestination(db, stored, env) || dataDatabaseIsInternal(env)) None
+            else if (Seq(loadDatabase(db, env), deleteDatabase(db, env)).exists(isInternal(_, env))) Some(DestinationRefusal)
             else None
         )
 

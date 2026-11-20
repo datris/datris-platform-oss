@@ -28,7 +28,7 @@ object MongoDBQueryUtil {
 
     /** Body text of the 400 for a database or collection the query route does
       * not read. */
-    val DatabaseNotAvailableMessage: String = "This database is not available for queries."
+    val DatabaseNotAvailableMessage: String = "This database or collection is not available for queries."
 
     /** A query naming a database or collection the route does not read
       * ([[queryRefused]]). */

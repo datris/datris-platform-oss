@@ -114,7 +114,7 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 
 ### Safety
 
-- **Data collections only** — queries read data collections only: never MongoDB's own system databases, `system.` collections, or the collections in which the platform keeps its own state. Any of these returns `400` with `{"error": "This database is not available for queries."}`.
+- **Data collections only** — queries read data collections only: never MongoDB's own system databases, `system.` collections, or the collections in which the platform keeps its own state. Any of these returns `400` with `{"error": "This database or collection is not available for queries."}`.
 - **Blocked operators** — a filter or a projection containing `$where`, `$function`, or `$accumulator`, at any depth (nested documents and arrays included), is rejected, as these allow arbitrary JavaScript execution
 - **Projection** — plain inclusion and exclusion (`1`, `0`, `true`, `false`), `$slice`, `$elemMatch`, `$meta` and aggregation expressions other than the blocked operators are accepted
 - **Limit** — `limit` is applied as given; `-1` returns every matching document (tap scripts use this), so pass a positive `limit` for previews

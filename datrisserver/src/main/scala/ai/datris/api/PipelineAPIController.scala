@@ -1717,15 +1717,16 @@ object PipelineAPIController {
       * First, the MongoDB destination rule
       * ([[MongoReservedNames.destinationProblem]], refused with
       * [[MongoReservedNames.DestinationRefusal]]): a protected collection is
-      * refused even for an unchanged block; a new or changed block may not
-      * name the internal database unless it is the install's data database. */
+      * refused even for an unchanged block; a destination that is not the
+      * stored one may not be in the internal database unless it is the
+      * install's data database. */
     def databaseNameRefusal(candidate: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] = {
         if (candidate == null || candidate.destination == null || candidate.destination.database == null) return None
-        val unchanged = DatabaseDestinationNames.same(candidate, stored)
-        MongoReservedNames.destinationProblem(candidate.destination.database, DatrisEnvironment.current, unchanged).foreach { t =>
+        val storedBlock = Option(stored).flatMap(s => Option(s.destination)).map(_.database).orNull
+        MongoReservedNames.destinationProblem(candidate.destination.database, DatrisEnvironment.current, storedBlock).foreach { t =>
             return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
         }
-        if (unchanged) return None
+        if (DatabaseDestinationNames.same(candidate, stored)) return None
         DatabaseDestinationNames
             .problem(candidate.destination.database)
             .map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))

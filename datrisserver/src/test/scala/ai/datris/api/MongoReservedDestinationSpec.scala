@@ -112,9 +112,9 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
     private val ReservedDbs: Seq[String] = Seq("admin", "local", "config").flatMap(variants)
     private val ReservedCollections: Seq[String] = Seq("system.js", "System.Views", "SYSTEM.profile", "system.buckets.x")
 
-    /** Platform collections: this environment's and another tenant's. */
+    /** Platform collections of this (single-tenant) environment, current and legacy. */
     private def platformCollections: Seq[String] =
-        env().platformCollectionNames ++ env(environment = "tenant-b").platformCollectionNames ++ Seq("anyprefix-user-session")
+        env().platformCollectionNames ++ env().legacyPlatformCollectionNames
 
     private def mongoDb(dbName: String = "datris", table: String = "orders", truncate: Boolean = false, tx: Boolean = true): Database =
         Database(dbName = dbName, table = table, useMongoDB = true, truncateBeforeWrite = truncate, useTransaction = tx)
@@ -207,9 +207,9 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
             assert(PipelineAPIController.databaseNameRefusal(structured(db), null).isEmpty, db)
         // a Postgres block named like a reserved MongoDB database is not a MongoDB destination
         val pg = Database(dbName = "admin", schema = "public", table = "system", usePostgres = true)
-        assert(MongoReservedNames.destinationProblem(pg, DatrisEnvironment.current, unchanged = false).isEmpty)
+        assert(MongoReservedNames.destinationProblem(pg, DatrisEnvironment.current, null).isEmpty)
         assert(PipelineAPIController.databaseNameRefusal(structured(pg), null).isEmpty)
-        assert(MongoReservedNames.destinationProblem(null, DatrisEnvironment.current, unchanged = false).isEmpty)
+        assert(MongoReservedNames.destinationProblem(null, DatrisEnvironment.current, null).isEmpty)
     }
 
     test("the internal database name comes from the platform's configuration") {
@@ -371,11 +371,11 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
         listed = Seq(Internal, "datris")
         val c = new MetadataAPIController()
         val named = JsonParser.parseString(c.getMongoCollections(null, "OSS").getBody).getAsJsonArray.asScala.map(_.getAsString).toList
-        assert(named == List("legacy_orders"), named)
+        assert(named == List("acme-tap-log", "legacy_orders"), named)
         val dbs = JsonParser.parseString(c.getMongoDatabases(null).getBody).getAsJsonArray.asScala.map(_.getAsString).toList
         assert(dbs == List("datris", Internal), dbs)
         val all = JsonParser.parseString(c.getMongoCollections(null, null).getBody).getAsJsonArray.asScala.map(_.getAsString).toList
-        assert(all.sorted == List("datris.orders", "oss.legacy_orders"), all)
+        assert(all.sorted == List("datris.orders", "oss.acme-tap-log", "oss.legacy_orders"), all)
     }
 
     test("collection names are matched exactly: a differently-cased platform name is a data collection") {
@@ -383,7 +383,8 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(MongoReservedNames.platformCollection("oss-user", e))
         assert(!MongoReservedNames.platformCollection("OSS-USER", e))
         assert(!MongoReservedNames.platformCollection("oss-user ", e))
-        assert(MongoReservedNames.platformCollection("x-y-pipeline-status-summary", e))
+        assert(MongoReservedNames.platformCollection("x-y-pipeline-status-summary", e.copy(multiTenant = true)))
+        assert(!MongoReservedNames.platformCollection("x-y-pipeline-status-summary", e))
         assert(!MongoReservedNames.platformCollection("pipeline", e))
     }
 
@@ -424,5 +425,93 @@ class MongoReservedDestinationSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(pc.indexOf("savePipelineCore(config, changeNote, request, None)") > 0)
         val cat = source("ai/datris/api/CatalogAPIController.scala")
         assert(cat.contains("pipelineController.savePipelineInternal(toSave, note, request)"))
+    }
+
+    // ------------------------------------------------------------ single-tenant exact names
+
+    private val suffixLike = Seq("orders-pipeline", "daily-tap", "app-user", "web-incident")
+
+    test("single-tenant: internal-database data collections named like platform suffixes work on every path") {
+        val q = new QueryAPIController()
+        for (coll <- suffixLike) {
+            val db = mongoDb(dbName = Internal, table = coll)
+            val stored = structured(db)
+            assert(PipelineAPIController.databaseNameRefusal(stored, stored).isEmpty, coll + " unchanged save")
+            for ((who, r) <- callers)
+                assert(EntityVersionAPIController.pipelineRestoreRefusal(r, stored.copy(version = 2), stored, Nil).isEmpty, s"$coll $who restore")
+            for (truncate <- Seq(false, true))
+                assert(load(structured(db.copy(truncateBeforeWrite = truncate))).isInstanceOf[NullPointerException], coll + " load")
+            assert(PipelineAPIController.mongoReservedDeleteWarning(stored).isEmpty, coll)
+            assert(PipelineAPIController.dropMongoDestination(db), coll + " drop")
+            val m = new java.util.HashMap[String, Any](); m.put("collection", coll); m.put("database", Internal)
+            assert(q.queryMongoDB(null, m).getStatusCode.value != 400, coll + " query")
+        }
+        assert(dropped == suffixLike.map("oss." + _))
+        collectionsOf = db => if (db.equalsIgnoreCase(Internal)) suffixLike ++ env().platformCollectionNames else Seq("orders")
+        val c = new MetadataAPIController()
+        val named = JsonParser.parseString(c.getMongoCollections(null, Internal).getBody).getAsJsonArray.asScala.map(_.getAsString).toList
+        assert(named == suffixLike.sorted, named)
+        // each exact platform name is still refused
+        for (p <- platformCollections) assertRefused(PipelineAPIController.databaseNameRefusal(structured(mongoDb(dbName = Internal, table = p)), null), p)
+    }
+
+    test("multi-tenant: the suffix match still refuses another tenant's collections") {
+        ScopeDenialFixtures.install(env(multiTenant = true, environment = "acme"))
+        for (coll <- suffixLike :+ "tenant-b-user-session" :+ "x-dataset") {
+            val cfg = structured(mongoDb(dbName = Internal, table = coll))
+            assertRefused(PipelineAPIController.databaseNameRefusal(cfg, cfg), coll)
+            assert(load(cfg).getMessage == MongoReservedNames.DestinationRefusal, coll)
+            assert(!PipelineAPIController.dropMongoDestination(cfg.destination.database), coll)
+        }
+        assert(clients.isEmpty)
+    }
+
+    test("the listings agree: the internal database is listed exactly when its collection listing is non-empty") {
+        val c = new MetadataAPIController()
+        def dbs = JsonParser.parseString(c.getMongoDatabases(null).getBody).getAsJsonArray.asScala.map(_.getAsString).toList
+        def colls = JsonParser.parseString(c.getMongoCollections(null, Internal).getBody).getAsJsonArray.asScala.map(_.getAsString).toList
+        listed = Seq(Internal, "datris")
+        for (
+            inInternal <- Seq(Seq("oss-foo"), env().platformCollectionNames, env().platformCollectionNames :+ "oss-foo", Seq("system.js"), Seq.empty[String])
+        ) {
+            collectionsOf = db => if (db.equalsIgnoreCase(Internal)) inInternal else Seq("orders")
+            assert(dbs.contains(Internal) == colls.nonEmpty, inInternal)
+        }
+        // a data collection carrying the environment prefix is listed, as the query route reads it
+        collectionsOf = db => if (db.equalsIgnoreCase(Internal)) Seq("oss-foo") else Seq("orders")
+        assert(colls == List("oss-foo"))
+    }
+
+    // ------------------------------------------------------------ unchanged destination
+
+    test("an edit that keeps the engine, database and collection is unchanged for the internal-database rule") {
+        val stored = structured(mongoDb(dbName = Internal, table = "legacy_orders"))
+        val edits = Seq(
+            stored.destination.database.copy(options = new java.util.ArrayList[String]()),
+            stored.destination.database.copy(schema = "anything"),
+            stored.destination.database.copy(warehouse = "w"),
+            stored.destination.database.copy(keyFields = java.util.Arrays.asList("id"))
+        )
+        for (db <- edits) assert(PipelineAPIController.databaseNameRefusal(structured(db), stored).isEmpty, db)
+        // a blank or placeholder name resolving to the same database is the same destination
+        ScopeDenialFixtures.install(env().copy(postgresDatabase = Internal))
+        for (blank <- Seq("", "DATABASE_NAME", "OSS"))
+            assert(
+                MongoReservedNames.destinationProblem(mongoDb(dbName = blank, table = "legacy_orders"), DatrisEnvironment.current, stored.destination.database).isEmpty,
+                blank
+            )
+    }
+
+    test("a real change in the internal database is still refused: another collection or another database moving in") {
+        val stored = structured(mongoDb(dbName = Internal, table = "legacy_orders"))
+        assertRefused(PipelineAPIController.databaseNameRefusal(structured(mongoDb(dbName = Internal, table = "legacy_orders2")), stored), "other collection")
+        assertRefused(PipelineAPIController.databaseNameRefusal(stored, structured(mongoDb(dbName = "datris", table = "legacy_orders"))), "other database")
+        assertRefused(
+            PipelineAPIController.databaseNameRefusal(
+                stored,
+                structured(Database(dbName = Internal, schema = "public", table = "legacy_orders", usePostgres = true))
+            ),
+            "other engine"
+        )
     }
 }

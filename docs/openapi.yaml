@@ -1955,7 +1955,8 @@ paths:
             validation (including a new or changed `destination.database`
             name that breaks the naming rule, on any pipeline type, and a
             MongoDB destination that is not a data collection or, when new or
-            changed, is in the platform's internal database: `A MongoDB
+            changed, is in the platform's internal database (unless that is
+            also the install's data database): `A MongoDB
             destination must be a data collection, and a new destination must
             be in a data database. Choose another database or collection
             name.`), it selects a Postgres destination when no Postgres is
@@ -3942,7 +3943,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
         '400':
-          description: '`limit` is not an integer, or the database or collection is not a data collection (body `{"error": "This database is not available for queries."}`). Body: `{"error": ...}`'
+          description: '`limit` is not an integer, or the database or collection is not a data collection (body `{"error": "This database or collection is not available for queries."}`). Body: `{"error": ...}`'
         '500':
           description: Error
 
@@ -4622,7 +4623,7 @@ paths:
                 items:
                   type: string
         '400':
-          description: 'The database is a MongoDB system database. Body: `{"error": "This database is not available for queries."}`'
+          description: 'The database is a MongoDB system database. Body: `{"error": "This database or collection is not available for queries."}`'
         '500':
           description: Error
 

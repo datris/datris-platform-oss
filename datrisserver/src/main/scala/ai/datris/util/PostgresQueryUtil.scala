@@ -92,6 +92,7 @@ object PostgresQueryUtil {
         // replication state
         "pg_(create|drop|copy)_\\w*replication_slot\\w*",
         "pg_replication_slot_advance",
+        "pg_sync_replication_slots",
         "pg_logical_\\w+",
         // server files and large objects
         "pg_read_file",

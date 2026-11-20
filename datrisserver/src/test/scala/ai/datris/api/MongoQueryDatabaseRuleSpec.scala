@@ -296,8 +296,7 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
     test("a platform collection or system. collection of the internal database is refused with the same answer, before any client") {
         val c = new QueryAPIController()
         val single = env(multiTenant = false)
-        val other = ai.datris.util.PlatformCollectionFixtures.named(single.copy(environment = "tenant-b"))
-        val protectedOnes = platformNames(single) ++ platformNames(other) ++ Seq("anything-user-session", "system.js", "System.Views")
+        val protectedOnes = platformNames(single) ++ single.legacyPlatformCollectionNames ++ Seq("system.js", "System.Views")
         val answers = for ((who, _) <- callers; variant <- caseVariants(Internal); coll <- protectedOnes) yield {
             val r = c.queryMongoDB(null, body(database = variant, collection = coll))
             assertRefused(r, s"$who '$variant' $coll")
@@ -320,5 +319,22 @@ class MongoQueryDatabaseRuleSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(c.queryMongoDB(null, body()).getStatusCode.value == 200)
         assertRefused(c.queryMongoDB(null, body(collection = "acme-tap-log")), "another tenant's platform collection")
         assertRefused(c.queryMongoDB(null, body(collection = "oss-pipeline")), "own platform collection")
+    }
+
+    private val suffixLike = Seq("orders-pipeline", "daily-tap", "app-user", "web-incident")
+
+    test("single-tenant: internal-database collections named like another prefix's platform names are data collections") {
+        val c = new QueryAPIController()
+        val other = ai.datris.util.PlatformCollectionFixtures.named(env(multiTenant = false, environment = "tenant-b"))
+        for (coll <- suffixLike ++ platformNames(other) :+ "anything-user-session" :+ "oss-foo")
+            assert(c.queryMongoDB(null, body(database = Internal, collection = coll)).getStatusCode.value == 200, coll)
+    }
+
+    test("multi-tenant: the internal database's collections of any tenant are refused") {
+        ScopeDenialFixtures.install(env(multiTenant = true, environment = "oss"))
+        val c = new QueryAPIController()
+        for (coll <- suffixLike :+ "anything-user-session" :+ "x-dataset-status")
+            assertRefused(c.queryMongoDB(null, body(collection = coll)), coll)
+        assert(created.get == 0)
     }
 }

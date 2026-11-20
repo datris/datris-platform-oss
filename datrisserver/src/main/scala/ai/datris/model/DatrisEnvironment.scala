@@ -340,6 +340,12 @@ case class DatrisEnvironment(
       * platform collection is named here (MongoReservedNames protects exactly
       * these; PlatformCollectionsSpec fails for one that is missing). Null
       * entries (an environment built without them) are left out. */
+    /** Collections earlier releases kept platform state in, under this
+      * environment's prefix; still recognised as platform collections. */
+    def legacyPlatformCollectionNames: Seq[String] =
+        if (environment == null) Nil
+        else Seq("-dataset", "-dataset-status", "-dataset-status-summary").map(environment + _)
+
     def platformCollectionNames: Seq[String] = {
         // Names derived from another name only when that one is set.
         def derived(base: String, name: => String): String = if (base == null) null else name
