@@ -12,6 +12,7 @@ import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SparkSession}
 import org.slf4j.{Logger, LoggerFactory}
 
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{Executors, ThreadFactory, TimeUnit}
 import scala.collection.JavaConverters._
 import scala.concurrent.duration._
@@ -105,11 +106,12 @@ object ObjectStoreQueryUtil {
         // An Iceberg table committed through the Unity Catalog REST catalog is
         // read at the catalog's current metadata file, not the version hint.
         // Resolved inside the future so the catalog calls share the timeout.
+        val cancelled = new AtomicBoolean(false)
         val readFuture: Future[QueryResult] = Future {
             spark.sparkContext.setJobGroup(jobGroup, "objectstore query: " + pipelineName, interruptOnCancel = true)
             try {
                 val resolved = if (format == "iceberg") IcebergTableResolver.forPipeline(pipelineConfig, path) else None
-                readPath(spark, path, format, cappedLimit, resolved, bucket, readSchemaFor(pipelineConfig))
+                readPath(spark, path, format, cappedLimit, resolved, bucket, readSchemaFor(pipelineConfig), cancelled = cancelled)
             } finally spark.sparkContext.clearJobGroup()
         }(queryEC)
 
@@ -117,10 +119,11 @@ object ObjectStoreQueryUtil {
         catch {
             case _: TimeoutException =>
                 logger.warn(s"ObjectStoreQuery: timed out after ${queryTimeoutSec}s for pipeline=$pipelineName — cancelling job group $jobGroup")
+                cancelled.set(true)
                 try spark.sparkContext.cancelJobGroup(jobGroup)
                 catch { case _: Throwable => () }
                 throw new DatrisException(
-                    "Object store query timed out after " + queryTimeoutSec + "s. The Spark read did not complete — most often a classpath/version mismatch (e.g. hadoop-aws vs. hadoop-common). Check server logs for NoSuchMethodError, IllegalAccessError, or similar fatal Throwables. The wall-clock limit is tunable via DATRIS_OBJECTSTORE_QUERY_TIMEOUT_SEC."
+                    "Object store query timed out after " + queryTimeoutSec + "s: the read did not finish. Common causes are a slow or unreachable object store, a very large location, or a Spark classpath/version mismatch (e.g. hadoop-aws vs. hadoop-common; check server logs for NoSuchMethodError or IllegalAccessError). The limit is tunable via DATRIS_OBJECTSTORE_QUERY_TIMEOUT_SEC."
                 )
         }
     }
@@ -210,7 +213,7 @@ object ObjectStoreQueryUtil {
 
     /** What one read did, for specs: footers opened, Spark reads issued, and
       * a hook run after the listing (before any footer or data read). */
-    private[util] final class ReadStats(val afterListing: () => Unit = () => ()) {
+    private[util] final class ReadStats(val afterListing: () => Unit = () => (), val beforeFooter: () => Unit = () => ()) {
         @volatile var footersRead: Int = 0
         @volatile var dataReads: Int = 0
         @volatile var path: String = ""
@@ -256,7 +259,30 @@ object ObjectStoreQueryUtil {
 
     /** One data file's own schema, read from its footer; a failure names
       * the file. */
-    private def fileSchema(format: String, status: org.apache.hadoop.fs.FileStatus, conf: org.apache.hadoop.conf.Configuration): StructType =
+    private def fileSchema(
+        format: String,
+        status: org.apache.hadoop.fs.FileStatus,
+        conf: org.apache.hadoop.conf.Configuration,
+        sqlConf: org.apache.spark.sql.internal.SQLConf
+    ): StructType = nullable(fileSchemaAsWritten(format, status, conf, sqlConf)).asInstanceOf[StructType]
+
+    /** Every field nullable, as Spark's own file read reports a schema. */
+    private def nullable(t: org.apache.spark.sql.types.DataType): org.apache.spark.sql.types.DataType = {
+        import org.apache.spark.sql.types._
+        t match {
+            case s: StructType => StructType(s.fields.map(f => f.copy(dataType = nullable(f.dataType), nullable = true)))
+            case a: ArrayType => ArrayType(nullable(a.elementType), containsNull = true)
+            case m: MapType => MapType(nullable(m.keyType), nullable(m.valueType), valueContainsNull = true)
+            case other => other
+        }
+    }
+
+    private def fileSchemaAsWritten(
+        format: String,
+        status: org.apache.hadoop.fs.FileStatus,
+        conf: org.apache.hadoop.conf.Configuration,
+        sqlConf: org.apache.spark.sql.internal.SQLConf
+    ): StructType =
         try format match {
                 case "orc" =>
                     org.apache.spark.sql.execution.datasources.orc.OrcUtils
@@ -267,9 +293,12 @@ object ObjectStoreQueryUtil {
                     val reader = org.apache.parquet.hadoop.ParquetFileReader.open(org.apache.parquet.hadoop.util.HadoopInputFile.fromStatus(status, conf))
                     try {
                         val meta = reader.getFooter.getFileMetaData
+                        // As Spark's own footer read: the Spark schema the writer
+                        // stored when there is one that parses, else the
+                        // Parquet schema converted under the session's settings.
                         Option(meta.getKeyValueMetaData.get("org.apache.spark.sql.parquet.row.metadata"))
-                            .map(j => org.apache.spark.sql.types.DataType.fromJson(j).asInstanceOf[StructType])
-                            .getOrElse(new org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaConverter(conf).convert(meta.getSchema))
+                            .flatMap(j => scala.util.Try(org.apache.spark.sql.types.DataType.fromJson(j)).toOption.collect { case st: StructType => st })
+                            .getOrElse(new org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaConverter(sqlConf).convert(meta.getSchema))
                     } finally reader.close()
             }
         catch {
@@ -278,19 +307,26 @@ object ObjectStoreQueryUtil {
         }
 
     /** A column's types across the files that hold it, read as one type
-      * when they form a lossless chain (tinyint, smallint, int, bigint;
-      * float, double; decimals of one scale). None: the column is text. */
+      * when every type fits the widest exactly: tinyint, smallint, int,
+      * bigint; float, double; tinyint, smallint, int and float with double;
+      * decimals (the widest scale and integer part, up to 38 digits). None:
+      * the column is text. */
     private[util] def oneType(types: Seq[org.apache.spark.sql.types.DataType]): Option[org.apache.spark.sql.types.DataType] = {
         import org.apache.spark.sql.types._
         val ts = types.distinct
         val integral = Seq[DataType](ByteType, ShortType, IntegerType, LongType)
         val fractional = Seq[DataType](FloatType, DoubleType)
+        val toDouble = Seq[DataType](ByteType, ShortType, IntegerType, FloatType, DoubleType)
         if (ts.size == 1) Some(ts.head)
         else if (ts.forall(integral.contains)) Some(ts.maxBy(t => integral.indexOf(t)))
         else if (ts.forall(fractional.contains)) Some(DoubleType)
-        else if (ts.forall(_.isInstanceOf[DecimalType]) && ts.map(_.asInstanceOf[DecimalType].scale).distinct.size == 1)
-            Some(ts.maxBy(_.asInstanceOf[DecimalType].precision))
-        else None
+        else if (ts.forall(toDouble.contains)) Some(DoubleType) // tinyint, smallint, int and float all fit a double exactly
+        else if (ts.forall(_.isInstanceOf[DecimalType])) {
+            val ds = ts.map(_.asInstanceOf[DecimalType])
+            val scale = ds.map(_.scale).max
+            val precision = ds.map(d => d.precision - d.scale).max + scale
+            if (precision <= DecimalType.MAX_PRECISION) Some(DecimalType(precision, scale)) else None
+        } else None
     }
 
     /** The result's columns: the stored schema in its order, then the
@@ -305,20 +341,99 @@ object ObjectStoreQueryUtil {
         stored.fieldNames.toSeq ++ stamps ++ others ++ partitions.fieldNames.toSeq.filterNot(storedHas)
     }
 
-    /** `order` from `df` (names matched without regard to case); a name
-      * `df` lacks is a null of the stored type (string otherwise). */
-    private def project(df: DataFrame, order: Seq[String], stored: StructType): DataFrame =
+    /** `order` from `df` (names matched without regard to case), each
+      * named `nameOf(n)`; a name `df` lacks is a null of the stored type
+      * (string otherwise). */
+    private def project(df: DataFrame, order: Seq[String], stored: StructType, nameOf: String => String): DataFrame =
         df.select(order.map { n =>
             df.columns.find(_.equalsIgnoreCase(n)) match {
-                case Some(actual) => df.col(IcebergWriter.quote(actual)).as(n)
-                case None => org.apache.spark.sql.functions.lit(null).cast(find(stored, n).map(_.dataType).getOrElse(StringType)).as(n)
+                case Some(actual) => df.col(IcebergWriter.quote(actual)).as(nameOf(n))
+                case None => org.apache.spark.sql.functions.lit(null).cast(find(stored, n).map(_.dataType).getOrElse(StringType)).as(nameOf(n))
             }
         }: _*)
 
-    private def collect(df: DataFrame, limit: Int, path: String, format: String, stats: ReadStats): QueryResult = {
+    /** Thrown when a Spark read would start after the query was given up. */
+    private[util] final class QueryCancelled extends RuntimeException("The object store query was cancelled after its time limit")
+
+    private def collect(df: DataFrame, limit: Int, path: String, format: String, stats: ReadStats, cancelled: AtomicBoolean): QueryResult = {
+        if (cancelled.get) throw new QueryCancelled
         stats.dataReads += 1
         val rows = df.limit(limit).collectAsList().asScala.map(row => rowToMap(row, df.columns)).asJava
         QueryResult(df.columns.toList.asJava, rows, path, format)
+    }
+
+    /** One file's schema as the footer scan derives it (for specs). */
+    private[util] def fileSchemaOf(spark: SparkSession, format: String, file: String): StructType = {
+        val p = new org.apache.hadoop.fs.Path(file)
+        val conf = spark.sessionState.newHadoopConf()
+        fileSchema(format, p.getFileSystem(conf).getFileStatus(p), conf, spark.sessionState.conf)
+    }
+
+    /** How long the footer scan may take before the query reads the faster
+      * way instead (the sampled file's schema), well inside the query's own
+      * time limit. */
+    private[util] val FooterScanBudgetMs: Long = 10000L
+
+    /** File schemas already read, by format, path, length and modification
+      * time (a rewritten file has a new key), so repeated queries of a
+      * location do not read the same footers again. Least recently used
+      * entries go first. */
+    private object FileSchemaCache {
+        private val MaxEntries = 20000
+        private val entries = new java.util.LinkedHashMap[(String, String, Long, Long), StructType](1024, 0.75f, true) {
+            override def removeEldestEntry(e: java.util.Map.Entry[(String, String, Long, Long), StructType]): Boolean = size() > MaxEntries
+        }
+        def key(format: String, f: org.apache.hadoop.fs.FileStatus): (String, String, Long, Long) =
+            (format, f.getPath.toString, f.getLen, f.getModificationTime)
+        def get(k: (String, String, Long, Long)): Option[StructType] = entries.synchronized(Option(entries.get(k)))
+        def put(k: (String, String, Long, Long), v: StructType): Unit = entries.synchronized(entries.put(k, v))
+    }
+
+    /** Every file's schema, read in parallel within `budgetMs`; None (with a
+      * warning naming the reason) when any footer cannot be read, a file has
+      * vanished, or the budget runs out: the caller then reads the faster
+      * way, which fails only where Spark's own read reaches a bad file. */
+    private def scanSchemas(
+        spark: SparkSession,
+        path: String,
+        format: String,
+        files: Seq[org.apache.hadoop.fs.FileStatus],
+        budgetMs: Long,
+        stats: ReadStats
+    ): Option[Seq[StructType]] = {
+        val conf = spark.sessionState.newHadoopConf()
+        val sqlConf = spark.sessionState.conf
+        val stop = new AtomicBoolean(false)
+        val tasks = files.map { f =>
+            Future {
+                if (stop.get) None
+                else {
+                    val k = FileSchemaCache.key(format, f)
+                    FileSchemaCache.get(k).orElse {
+                        stats.beforeFooter()
+                        stats.synchronized(stats.footersRead += 1)
+                        val schema = fileSchema(format, f, conf, sqlConf)
+                        FileSchemaCache.put(k, schema)
+                        Some(schema)
+                    }
+                }
+            }(footerEC)
+        }
+        try {
+            val got = Await.result(Future.sequence(tasks)(implicitly, footerEC), budgetMs.millis)
+            if (got.forall(_.isDefined)) Some(got.flatten) else None
+        } catch {
+            case _: TimeoutException =>
+                stop.set(true)
+                logger.warn("ObjectStoreQuery: " + path + ": reading " + files.size + " file schemas took longer than " + budgetMs +
+                    " ms; reading with the sampled file's schema instead")
+                None
+            case e: Exception =>
+                stop.set(true)
+                logger.warn("ObjectStoreQuery: " + path + ": " + String.valueOf(e.getMessage).split("\n").head.take(300) +
+                    "; reading with the sampled file's schema instead")
+                None
+        }
     }
 
     /** The Parquet files, or the ORC files, at `path`.
@@ -326,22 +441,25 @@ object ObjectStoreQueryUtil {
       * The plain read of the location (one listing and one sampled file's
       * schema, as the query always did) gives the listing and the partition
       * columns with their values. Then:
-      *  - Up to [[FileSchemaScanMaxFiles]] data files: every file's footer is
-      *    read, so the result has every column the location holds, each under
-      *    the type the files hold it in. Files that agree are read in one
-      *    Spark read. When files hold a column under different types, each
-      *    group of files with one schema is read on its own (one read per
-      *    schema, never per file), and a column whose types are not a lossless
-      *    chain (see [[oneType]]) comes back as text; this is decided from
-      *    every file's schema, so it does not depend on the limit.
-      *  - Above it: the sampled file's columns and types, plus the stored
-      *    columns and the stamps being stamped now that it lacks (read as the
-      *    stored type, null where a file lacks them); if a file holds one of
-      *    those under another type, the read is the sampled file's columns
-      *    only.
+      *  - Up to [[FileSchemaScanMaxFiles]] non-empty data files, when every
+      *    footer can be read within [[FooterScanBudgetMs]]: the result has
+      *    every column the location holds, each under the type the files hold
+      *    it in. Files that agree are read in one Spark read. When files hold
+      *    a column under different types, each group of files with one schema
+      *    is read on its own (one read per schema, never per file), and a
+      *    column whose types do not fit one type exactly (see [[oneType]])
+      *    comes back as text; this is decided from every file's schema, so it
+      *    does not depend on the limit.
+      *  - Otherwise (more files, a footer that cannot be read, a vanished
+      *    file, the budget spent): the sampled file's columns and types, plus
+      *    the stored columns and the stamps being stamped now that it lacks
+      *    (null where a file lacks them); if a file holds one of those under
+      *    another type, the read is the sampled file's columns only. This
+      *    fails only where Spark's own read of the location fails.
       * The stored schema decides the order and adds a null column for a
-      * stored column no file holds. Zero-byte files are skipped. A file that
-      * cannot be read fails the query (never a partial or empty result). */
+      * stored column no file holds. A column the files hold keeps the files'
+      * letter case (the sampled file's when files differ). Zero-byte files
+      * are skipped. */
     private def readFiles(
         spark: SparkSession,
         path: String,
@@ -349,7 +467,9 @@ object ObjectStoreQueryUtil {
         limit: Int,
         readSchema: Option[ReadSchema],
         maxScan: Int,
-        stats: ReadStats
+        budgetMs: Long,
+        stats: ReadStats,
+        cancelled: AtomicBoolean
     ): QueryResult = {
         val plain =
             try spark.read.format(format).load(path)
@@ -363,7 +483,7 @@ object ObjectStoreQueryUtil {
                     logger.info(s"ObjectStoreQuery: no data at $path yet (${e.getMessage}) — returning empty result")
                     return emptyResult(path, format)
             }
-        val relation = relationOf(plain).getOrElse(return collect(plain, limit, path, format, stats))
+        val relation = relationOf(plain).getOrElse(return collect(plain, limit, path, format, stats, cancelled))
         stats.path = path
         stats.afterListing()
         val files: Seq[org.apache.hadoop.fs.FileStatus] = (relation.location match {
@@ -371,83 +491,108 @@ object ObjectStoreQueryUtil {
             case _ => Nil
         }).filter(_.getLen > 0)
         val partitions = relation.partitionSchema
+        val sampled = relation.dataSchema
         val stored = readSchema.map(_.stored).getOrElse(StructType(Nil))
         def dataOnly(s: StructType): StructType = StructType(s.fields.filterNot(f => find(partitions, f.name).isDefined))
+        // A column's name in the result: the files' letter case (the sampled
+        // file first), else the partition's, else the stored schema's.
+        def namer(fileSchemas: Seq[StructType]): String => String = {
+            val m = scala.collection.mutable.LinkedHashMap[String, String]()
+            (Seq(sampled) ++ fileSchemas ++ Seq(partitions)).foreach(_.fieldNames.foreach(n => m.getOrElseUpdate(n.toLowerCase, n)))
+            n => m.getOrElse(n.toLowerCase, n)
+        }
 
-        if (files.nonEmpty && files.size <= maxScan) {
-            val conf = spark.sessionState.newHadoopConf()
-            val schemas: Seq[StructType] = Await.result(
-                Future.sequence(files.map(f => Future { stats.synchronized(stats.footersRead += 1); dataOnly(fileSchema(format, f, conf)) }(footerEC)))(
-                    implicitly,
-                    footerEC
-                ),
-                Duration.Inf
-            )
-            // every column the files hold, first-seen order and name
-            val names = scala.collection.mutable.LinkedHashMap[String, String]()
-            val types = scala.collection.mutable.LinkedHashMap[String, Seq[org.apache.spark.sql.types.DataType]]().withDefaultValue(Nil)
-            schemas.foreach(_.fields.foreach { f =>
-                val k = f.name.toLowerCase
-                names.getOrElseUpdate(k, f.name)
-                if (!types(k).contains(f.dataType)) types(k) = types(k) :+ f.dataType
-            })
-            val all = StructType(names.toSeq.map { case (k, n) => StructField(n, types(k).head, nullable = true) })
-            val order = columnList(stored, all, partitions, Nil)
-            if (types.values.forall(_.size == 1)) {
-                val df = spark.baseRelationToDataFrame(relation.copy(dataSchema = all)(spark))
-                collect(project(df, order, stored), limit, path, format, stats)
-            } else {
-                val text = types.collect { case (k, ts) if oneType(ts).isEmpty => k }.toSet
-                types.collect { case (k, ts) if ts.size > 1 => k + " (" + ts.map(_.simpleString).mkString(", ") + ")" }.foreach(c =>
-                    logger.warn("ObjectStoreQuery: " + path + ": the files hold column " + c + " under different types; reading each schema on its own" +
-                        (if (text.nonEmpty) ", returning " + text.mkString(", ") + " as text" else ""))
-                )
-                // groups of files with one schema, in listing order
-                val groups = files.zip(schemas).groupBy(_._2).toSeq.sortBy { case (_, fs) => files.indexOf(fs.head._1) }
-                val out = new java.util.ArrayList[java.util.Map[String, Any]]()
-                val it = groups.iterator
-                while (out.size < limit && it.hasNext) {
-                    val (schema, fs) = it.next()
-                    val keep = fs.map(_._1.getPath.toString).toSet
-                    val df = spark.baseRelationToDataFrame(relation.copy(location = new SubsetIndex(relation.location, keep), dataSchema = schema)(spark))
-                    val part = project(df, order, stored)
-                    stats.dataReads += 1
-                    part.limit(limit - out.size).collectAsList().asScala.foreach { row =>
-                        val m = rowToMap(row, part.columns)
-                        text.foreach(k =>
-                            order.find(_.toLowerCase == k).foreach(n => Option(m.get(n)).foreach(v => m.put(n, String.valueOf(v))))
-                        )
-                        out.add(m)
-                    }
-                }
-                QueryResult(order.toList.asJava, out, path, format)
-            }
-        } else {
-            val sampled = relation.dataSchema
-            val assumed = readSchema.map(_.stamps).getOrElse(Nil)
-            val missing = dataOnly(stored).fields.filter(f => find(sampled, f.name).isEmpty) ++
-                assumed.filter(n => find(sampled, n).isEmpty && find(stored, n).isEmpty).map(n => StructField(n, StringType, nullable = true))
-            val order = columnList(stored, sampled, partitions, assumed)
-            val wide = spark.baseRelationToDataFrame(relation.copy(dataSchema = StructType(sampled.fields ++ missing))(spark))
-            try collect(project(wide, order, stored), limit, path, format, stats)
-            catch {
-                case e: Exception if typeConflict(e) =>
-                    logger.warn(
-                        "ObjectStoreQuery: " + path + ": a file holds a stored column under another type than the schema; reading the sampled file's columns only"
+        val scanned: Option[Seq[StructType]] =
+            if (files.nonEmpty && files.size <= maxScan) scanSchemas(spark, path, format, files, budgetMs, stats).map(_.map(dataOnly)) else None
+
+        scanned match {
+            case Some(schemas) =>
+                // every column the files hold, first-seen order and name
+                val names = scala.collection.mutable.LinkedHashMap[String, String]()
+                val types = scala.collection.mutable.LinkedHashMap[String, Seq[org.apache.spark.sql.types.DataType]]().withDefaultValue(Nil)
+                schemas.foreach(_.fields.foreach { f =>
+                    val k = f.name.toLowerCase
+                    names.getOrElseUpdate(k, f.name)
+                    if (!types(k).contains(f.dataType)) types(k) = types(k) :+ f.dataType
+                })
+                val all = StructType(names.toSeq.map { case (k, n) => StructField(n, types(k).head, nullable = true) })
+                val order = columnList(stored, all, partitions, Nil)
+                val nameOf = namer(schemas)
+                if (types.values.forall(_.size == 1)) {
+                    val df = spark.baseRelationToDataFrame(relation.copy(dataSchema = all)(spark))
+                    collect(project(df, order, stored, nameOf), limit, path, format, stats, cancelled)
+                } else {
+                    val target = types.map { case (k, ts) => k -> (if (ts.size > 1) oneType(ts) else Some(ts.head)) }
+                    val text = target.collect { case (k, None) => k }.toSet
+                    types.collect { case (k, ts) if ts.size > 1 => k + " (" + ts.map(_.simpleString).mkString(", ") + ")" }.foreach(c =>
+                        logger.warn("ObjectStoreQuery: " + path + ": the files hold column " + c + " under different types; reading each schema on its own" +
+                            (if (text.nonEmpty) ", returning " + text.mkString(", ") + " as text" else ""))
                     )
-                    val keepOrder = order.filter(n => plain.columns.exists(_.equalsIgnoreCase(n)))
-                    try collect(project(plain, keepOrder, stored), limit, path, format, stats)
-                    catch {
-                        case e2: Exception if typeConflict(e2) =>
-                            throw new IllegalStateException(
-                                "The files at " + path + " hold a column under different types, and the location has more than " + maxScan +
-                                    " data files, so the query does not read every file's schema to reconcile them. Rewrite the data with one type " +
-                                    "per column (for example with deleteBeforeWrite on the next run). Cause: " +
-                                    String.valueOf(e2.getMessage).split("\n").head.take(300),
-                                e2
-                            )
+                    // groups of files with one schema, in listing order
+                    val groups = files.zip(schemas).groupBy(_._2).toSeq.sortBy { case (_, fs) => files.indexOf(fs.head._1) }
+                    val out = new java.util.ArrayList[java.util.Map[String, Any]]()
+                    val it = groups.iterator
+                    while (out.size < limit && it.hasNext) {
+                        val (schema, fs) = it.next()
+                        val keep = fs.map(_._1.getPath.toString).toSet
+                        val df = spark.baseRelationToDataFrame(relation.copy(location = new SubsetIndex(relation.location, keep), dataSchema = schema)(spark))
+                        val part = project(df, order, stored, nameOf)
+                        if (cancelled.get) throw new QueryCancelled
+                        stats.dataReads += 1
+                        part.limit(limit - out.size).collectAsList().asScala.foreach { row =>
+                            val m = rowToMap(row, part.columns)
+                            order.foreach { n =>
+                                val k = n.toLowerCase
+                                val key = nameOf(n)
+                                Option(m.get(key)).foreach { v =>
+                                    if (text.contains(k)) m.put(key, String.valueOf(v))
+                                    else target.get(k).flatten match {
+                                        // one double column: whole numbers from integer files as doubles
+                                        case Some(org.apache.spark.sql.types.DoubleType) if types(k).size > 1 =>
+                                            v match {
+                                                case n: java.lang.Integer => m.put(key, java.lang.Double.valueOf(n.doubleValue))
+                                                case n: java.lang.Short => m.put(key, java.lang.Double.valueOf(n.doubleValue))
+                                                case n: java.lang.Byte => m.put(key, java.lang.Double.valueOf(n.doubleValue))
+                                                case _ => ()
+                                            }
+                                        // one decimal column: every value at the widest scale
+                                        case Some(d: org.apache.spark.sql.types.DecimalType) if types(k).size > 1 =>
+                                            m.put(key, new java.math.BigDecimal(String.valueOf(v)).setScale(d.scale).toPlainString)
+                                        case _ => ()
+                                    }
+                                }
+                            }
+                            out.add(m)
+                        }
                     }
-            }
+                    QueryResult(order.map(nameOf).toList.asJava, out, path, format)
+                }
+            case None =>
+                val assumed = readSchema.map(_.stamps).getOrElse(Nil)
+                val missing = dataOnly(stored).fields.filter(f => find(sampled, f.name).isEmpty) ++
+                    assumed.filter(n => find(sampled, n).isEmpty && find(stored, n).isEmpty).map(n => StructField(n, StringType, nullable = true))
+                val order = columnList(stored, sampled, partitions, assumed)
+                val nameOf = namer(Nil)
+                val wide = spark.baseRelationToDataFrame(relation.copy(dataSchema = StructType(sampled.fields ++ missing))(spark))
+                try collect(project(wide, order, stored, nameOf), limit, path, format, stats, cancelled)
+                catch {
+                    case e: Exception if typeConflict(e) =>
+                        logger.warn(
+                            "ObjectStoreQuery: " + path + ": a file holds a stored column under another type than the schema; reading the sampled file's columns only"
+                        )
+                        val keepOrder = order.filter(n => plain.columns.exists(_.equalsIgnoreCase(n)))
+                        try collect(project(plain, keepOrder, stored, nameOf), limit, path, format, stats, cancelled)
+                        catch {
+                            case e2: Exception if typeConflict(e2) =>
+                                throw new IllegalStateException(
+                                    "The files at " + path + " hold a column under different types, and the query could not read every file's schema " +
+                                        "to reconcile them (more than " + maxScan + " data files, a file whose schema cannot be read, or the time to read " +
+                                        "them ran out). Rewrite the data with one type per column (for example with deleteBeforeWrite on the next run). Cause: " +
+                                        String.valueOf(e2.getMessage).split("\n").head.take(300),
+                                    e2
+                                )
+                        }
+                }
         }
     }
 
@@ -461,13 +606,15 @@ object ObjectStoreQueryUtil {
         bucket: String,
         readSchema: Option[ReadSchema],
         schemaScanMaxFiles: Int = FileSchemaScanMaxFiles,
-        stats: ReadStats = new ReadStats()
+        stats: ReadStats = new ReadStats(),
+        scanBudgetMs: Long = FooterScanBudgetMs,
+        cancelled: AtomicBoolean = new AtomicBoolean(false)
     ): QueryResult = {
         // Runs on the objectstore-query pool, which never created the session;
         // the Iceberg source resolves its catalog through the thread-active one.
         SparkSession.setActiveSession(spark)
         if (format != "iceberg")
-            try readFiles(spark, path, format, limit, readSchema, schemaScanMaxFiles, stats)
+            try readFiles(spark, path, format, limit, readSchema, schemaScanMaxFiles, scanBudgetMs, stats, cancelled)
             catch {
                 case e: org.apache.hadoop.fs.UnsupportedFileSystemException =>
                     throw new DatrisException("Object store read failed (unsupported scheme on " + path + "): " + e.getMessage)

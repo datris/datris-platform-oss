@@ -433,22 +433,21 @@ class ObjectStoreQueryReadSpec extends AnyFunSuite with BeforeAndAfterAll {
         }
     }
 
-    test("a file that cannot be read, or that disappears after the listing, fails the query naming it; never an empty or partial result") {
+    test("a file that cannot be read, or that disappears after the listing, fails the query where the plain read fails; never an empty or partial result") {
         for (fmt <- Seq("parquet", "orc")) {
             val (_, out) = newDir(fmt + "-corrupt")
             load(out, fmt, vInt, Nil, "1,1,a")
             load(out, fmt, vBig, Nil, "2,2,b")
             val bad = java.nio.file.Paths.get(java.net.URI.create(out)).resolve("zzz-0001." + fmt)
             Files.write(bad, "not a data file at all".getBytes(StandardCharsets.UTF_8))
-            val e = intercept[Exception](read(out, fmt, config(fmt, vBig)))
-            assert(String.valueOf(e.getMessage).contains("zzz-0001"), fmt + ": " + e.getMessage)
+            intercept[Exception](read(out, fmt, config(fmt, vBig)))
+            assert(scala.util.Try(spark.read.format(fmt).load(out).collect()).isFailure, fmt + ": the plain read fails here too")
 
             val (_, gone) = newDir(fmt + "-deleted")
             load(gone, fmt, vInt, Nil, "1,1,a")
             load(gone, fmt, vBig, Nil, "2,2,b")
             val victim = dataFiles(gone).head
-            val e2 = intercept[Exception](readStats(gone, fmt, config(fmt, vBig), hook = () => Files.delete(victim)))
-            assert(String.valueOf(e2.getMessage).contains(victim.getFileName.toString), fmt + ": " + e2.getMessage)
+            intercept[Exception](readStats(gone, fmt, config(fmt, vBig), hook = () => Files.delete(victim)))
         }
     }
 
@@ -463,8 +462,9 @@ class ObjectStoreQueryReadSpec extends AnyFunSuite with BeforeAndAfterAll {
             val (same, st2) = readStats(newDirWith(fmt, vInt, 4), fmt, config(fmt, vInt))
             assert(same.rows.size == 4 && st2.dataReads == 1, fmt + ": " + st2.dataReads)
             // exactly at the cap the footers are read; one above, none are
-            val (_, at) = readStats(out, fmt, config(fmt, vBig), maxScan = n)
-            assert(at.footersRead == n, fmt)
+            val atCap = newDirWith(fmt, vInt, 3)
+            val (_, at) = readStats(atCap, fmt, config(fmt, vInt), maxScan = 3)
+            assert(at.footersRead == 3, fmt)
             val (_, above) = readStats(newDirWith(fmt, vInt, 4), fmt, config(fmt, vInt), maxScan = 3)
             assert(above.footersRead == 0 && above.dataReads == 1, fmt)
         }
@@ -509,5 +509,154 @@ class ObjectStoreQueryReadSpec extends AnyFunSuite with BeforeAndAfterAll {
             }
             assert(kinds.forall(_ == Set(numeric)), label + ": " + kinds)
         }
+    }
+
+    // ------------------------------------------------ round-three review
+
+    /** A Parquet file written by parquet-hadoop itself (no Spark schema in
+      * its metadata): int32 id, binary name (UTF8), int64 n. */
+    private def foreignParquet(file: java.nio.file.Path, rows: Seq[(Int, String, Long)]): Unit = {
+        import org.apache.parquet.example.data.simple.SimpleGroupFactory
+        import org.apache.parquet.hadoop.example.ExampleParquetWriter
+        val schema = org.apache.parquet.schema.MessageTypeParser.parseMessageType(
+            "message m { required int32 id; required binary name (UTF8); required int64 n; }"
+        )
+        val w =
+            ExampleParquetWriter.builder(new org.apache.hadoop.fs.Path(file.toUri)).withType(schema).withConf(new org.apache.hadoop.conf.Configuration()).build()
+        try {
+            val g = new SimpleGroupFactory(schema)
+            rows.foreach { case (i, n, l) => w.write(g.newGroup().append("id", i).append("name", n).append("n", l)) }
+        } finally w.close()
+    }
+
+    private def plainRows(out: String, fmt: String, limit: Int): scala.util.Try[Set[Seq[Any]]] =
+        scala.util.Try(spark.read.format(fmt).load(out).limit(limit).collect().map(_.toSeq).toSet)
+
+    private def mineRows(r: ObjectStoreQueryUtil.QueryResult, cols: Seq[String]): Set[Seq[Any]] =
+        r.rows.asScala.map(m => cols.map(c => m.get(c))).toSet
+
+    test("a Parquet file written without Spark's schema metadata: the scan derives Spark's own schema for it and the query returns its rows") {
+        val (root, out) = newDir("parquet-foreign")
+        val dir = root.resolve("data")
+        Files.createDirectories(dir)
+        val foreign = dir.resolve("part-foreign.parquet")
+        foreignParquet(foreign, Seq((1, "a", 10L), (2, "b", 20L)))
+        assert(ObjectStoreQueryUtil.fileSchemaOf(spark, "parquet", foreign.toUri.toString) == spark.read.parquet(foreign.toUri.toString).schema)
+        val stored = List(SchemaField("id", "int"), SchemaField("name", "string"), SchemaField("n", "bigint"))
+        val (r, st) = readStats(out, "parquet", config("parquet", stored))
+        assert(st.footersRead == 1 && rowsBy(r, "id").map { case (k, m) => k -> m("name") } == Map(1 -> "a", 2 -> "b"), r.rows)
+        // beside a Spark-written file
+        load(out, "parquet", stored, Nil, "3,c,30")
+        val r2 = read(out, "parquet", config("parquet", stored))
+        assert(rowsBy(r2, "id").keySet == Set(1, 2, 3), r2.rows)
+    }
+
+    test("a stray non-data file or a truncated file: the result is what the plain read gives, at small and large limits") {
+        val cases: Seq[(String, Seq[(String, String)])] = Seq(
+            ("parquet", Seq("zzz.txt" -> "x" * 700)),
+            ("parquet", Seq("part-99999-trunc.parquet" -> ("PAR1" + "y" * 46))),
+            ("orc", Seq("README.md" -> "read me", "zzz.txt" -> "z" * 700))
+        )
+        for ((fmt, extras) <- cases; lim <- Seq(1, 2, 100)) {
+            val (root, out) = newDir(fmt + "-stray")
+            load(out, fmt, f1, Nil, "1,east,1.5", "2,west,2.5")
+            extras.foreach { case (n, body) => Files.write(root.resolve("data").resolve(n), body.getBytes(StandardCharsets.UTF_8)) }
+            val main = plainRows(out, fmt, lim)
+            val mine = scala.util.Try(read(out, fmt, config(fmt, f1), limit = lim))
+            assert(main.isSuccess == mine.isSuccess, fmt + " " + extras.map(_._1) + " limit " + lim + ": plain " + main + " vs " + mine)
+            mine.foreach(r => assert(mineRows(r, Seq("id", "region", "amount")) == main.get, fmt + " limit " + lim))
+        }
+    }
+
+    test("when the footer scan runs out of time the query reads the faster way and returns what the plain read returns") {
+        for (fmt <- Seq("parquet", "orc")) {
+            val (_, out) = newDir(fmt + "-budget")
+            (1 to 3).foreach(i => load(out, fmt, f1, Nil, s"$i,east,$i.5"))
+            val stats = new ObjectStoreQueryUtil.ReadStats(beforeFooter = () => Thread.sleep(300))
+            val r = ObjectStoreQueryUtil.readPath(
+                spark,
+                out,
+                fmt,
+                100,
+                None,
+                null,
+                ObjectStoreQueryUtil.readSchemaFor(config(fmt, f1)),
+                stats = stats,
+                scanBudgetMs = 50
+            )
+            assert(mineRows(r, Seq("id", "region", "amount")) == plainRows(out, fmt, 100).get, fmt)
+            assert(r.columns.asScala.toList == List("id", "region", "amount"), fmt)
+        }
+    }
+
+    test("above the cap, a Parquet location whose stored type was edited returns what the plain read returns") {
+        val (_, out) = newDir("parquet-above-edited")
+        load(out, "parquet", vInt, Nil, "1,1,a", "2,2,b")
+        load(out, "parquet", vInt, Nil, "3,3,c")
+        val (r, st) = readStats(out, "parquet", config("parquet", vBig), maxScan = 0)
+        assert(st.footersRead == 0)
+        assert(mineRows(r, Seq("id", "v", "code")) == plainRows(out, "parquet", 100).get, r.rows)
+    }
+
+    test("above the cap, ORC: a column only an unsampled file holds is read as the stored type (documented: a value that does not convert is null)") {
+        val (_, out) = newDir("orc-above-mismatch")
+        load(out, "orc", List(SchemaField("id", "int"), SchemaField("v", "string")), Nil, "1,a")
+        load(out, "orc", List(SchemaField("id", "int"), SchemaField("v", "string"), SchemaField("extra", "string")), Nil, "2,b,abc")
+        val r = readStats(out, "orc", config("orc", List(SchemaField("id", "int"), SchemaField("v", "string"), SchemaField("extra", "int"))), maxScan = 0)._1
+        val sampledHasExtra = spark.read.format("orc").load(out).columns.contains("extra")
+        val extra = rowsBy(r, "id").map { case (k, m) => k -> m("extra") }
+        if (sampledHasExtra) assert(extra == Map(1 -> null, 2 -> "abc"), extra)
+        else assert(extra == Map(1 -> null, 2 -> null), extra)
+    }
+
+    test("boundary values keep their exact value when files differ in type: bigint max, 0.1f, decimal precision growth; int with double is numeric") {
+        def two(fmt: String, a: String, b: String, va: String, vb: String): Map[Any, Any] = {
+            val (_, out) = newDir(fmt + "-boundary")
+            load(out, fmt, List(SchemaField("id", "int"), SchemaField("c", a)), Nil, "1," + va)
+            load(out, fmt, List(SchemaField("id", "int"), SchemaField("c", b)), Nil, "2," + vb)
+            rowsBy(read(out, fmt, config(fmt, List(SchemaField("id", "int"), SchemaField("c", b)))), "id").map { case (k, m) => k -> m("c") }
+        }
+        for (fmt <- Seq("parquet", "orc")) {
+            assert(two(fmt, "int", "bigint", "5", "9223372036854775807") == Map(1 -> 5, 2 -> 9223372036854775807L), fmt)
+            val fd = two(fmt, "float", "double", "0.1", "0.2")
+            assert(fd(1) == 0.1f && fd(2) == 0.2, fmt + ": " + fd)
+            assert(two(fmt, "decimal(10,2)", "decimal(12,4)", "12345678.12", "1.2345") == Map(1 -> "12345678.1200", 2 -> "1.2345"), fmt)
+            val id = two(fmt, "int", "double", "5", "6.5")
+            assert(id == Map(1 -> 5.0, 2 -> 6.5) && id.values.forall(_.isInstanceOf[java.lang.Double]), fmt + ": " + id)
+        }
+    }
+
+    test("text form of a date, a timestamp and a boolean when the files also hold the column as a string") {
+        def two(fmt: String, a: String, va: String): Map[Any, Any] = {
+            val (_, out) = newDir(fmt + "-text")
+            load(out, fmt, List(SchemaField("id", "int"), SchemaField("c", a)), Nil, "1," + va)
+            load(out, fmt, List(SchemaField("id", "int"), SchemaField("c", "string")), Nil, "2,s")
+            rowsBy(read(out, fmt, config(fmt, List(SchemaField("id", "int"), SchemaField("c", "string")))), "id").map { case (k, m) => k -> m("c") }
+        }
+        for (fmt <- Seq("parquet", "orc")) {
+            assert(two(fmt, "date", "2024-01-02") == Map(1 -> "2024-01-02", 2 -> "s"), fmt)
+            val ts = two(fmt, "timestamp", "2024-01-03 04:05:06")
+            assert(ts(1).isInstanceOf[String] && ts(1).toString.startsWith("2024-01-0") && ts(1).toString.endsWith("Z") && ts(2) == "s", fmt + ": " + ts)
+            assert(two(fmt, "boolean", "true") == Map(1 -> "true", 2 -> "s"), fmt)
+        }
+    }
+
+    test("a column the files name in another letter case keeps the files' case, as the plain read did") {
+        val (_, out) = newDir("parquet-case")
+        load(out, "parquet", List(SchemaField("ID", "int"), SchemaField("Name", "string")), Nil, "1,a")
+        val r = read(out, "parquet", config("parquet", List(SchemaField("id", "int"), SchemaField("name", "string"))))
+        assert(r.columns.asScala.toList == List("ID", "Name"), r.columns)
+        assert(r.rows.get(0).get("ID") == 1 && r.rows.get(0).get("Name") == "a", r.rows)
+    }
+
+    test("file schemas are cached: a second query reads no footers, and a changed file is read again") {
+        val (_, out) = newDir("parquet-cache")
+        (1 to 3).foreach(i => load(out, "parquet", f1, Nil, s"$i,east,$i.5"))
+        val cfg = config("parquet", f1)
+        assert(readStats(out, "parquet", cfg)._2.footersRead == 3)
+        assert(readStats(out, "parquet", cfg)._2.footersRead == 0)
+        val f = dataFiles(out).head
+        Files.setLastModifiedTime(f, java.nio.file.attribute.FileTime.fromMillis(Files.getLastModifiedTime(f).toMillis + 60000))
+        assert(readStats(out, "parquet", cfg)._2.footersRead == 1)
     }
 }
