@@ -38,10 +38,17 @@ object DestSchemaProjector {
         logger.info("projectRowsToDestSchema: source fields=" + sourceFields.map(_.name).mkString(",") +
             " dest fields=" + destFields.map(_.name).mkString(","))
 
-        // If source and destination schemas have the same fields in the same order, no projection needed
+        // If source and destination schemas have the same fields in the same order, no projection needed,
+        // unless the rows no longer have that layout: a transformation that added, dropped or reordered
+        // columns carries its own header, and the rows are then mapped by name below.
         if (sourceFields.size == destFields.size && sourceFields.map(_.name.toLowerCase) == destFields.map(_.name.toLowerCase)) {
-            logger.info("projectRowsToDestSchema: schemas match, no projection needed")
-            return rows
+            val header = Option(jobContext.data.header).getOrElse(Nil)
+            val headerKeys = header.map(h => if (h == null) "" else h.toLowerCase)
+            val loaded = destFields.map(_.name.toLowerCase).filter(headerKeys.contains)
+            if (header.isEmpty || loaded == headerKeys) {
+                logger.info("projectRowsToDestSchema: schemas match, no projection needed")
+                return rows
+            }
         }
 
         // Build a map from source field name (lowercase) to its position index
@@ -69,9 +76,25 @@ object DestSchemaProjector {
 
         val splitter = Pattern.quote(delim)
         rows.map { row =>
-            val columns = row.split(splitter, -1)
+            val columns = if (row.indexOf('"') < 0) row.split(splitter, -1) else splitQuoted(row, delim)
             destColumnIndices.map(idx => if (idx < columns.length) columns(idx) else "").mkString(delim)
         }
+    }
+
+    /** `row` split on `delim` outside double quotes. Each piece keeps its
+      * quotes, so joining the pieces gives the same text back. */
+    private[util] def splitQuoted(row: String, delim: String): Array[String] = {
+        val out = Array.newBuilder[String]
+        var inQuotes = false
+        var start = 0
+        var i = 0
+        while (i < row.length) {
+            if (row.charAt(i) == '"') { inQuotes = !inQuotes; i += 1 }
+            else if (!inQuotes && row.startsWith(delim, i)) { out += row.substring(start, i); i += delim.length; start = i }
+            else i += 1
+        }
+        out += row.substring(start)
+        out.result()
     }
 
     /** The CSV body a SQL bulk loader feeds to its COPY / PUT, as a stream of

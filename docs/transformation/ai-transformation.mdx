@@ -63,6 +63,18 @@ On a compose install the script runs in `datris-codegen-runner`, an isolated con
 
 An `aiTransformation` whose `instruction` is empty or only whitespace is ignored: no script is generated at save and the run skips the stage with a status line saying so.
 
+## Columns the transformation adds, removes or reorders
+
+A transformation on delimited data can change the columns, for example "add a `sector` column". The destination schema is built from the source columns when the pipeline is saved, so it does not list a column the transformation creates. The run handles this:
+
+- **Added columns** join the destination schema at the end, on the first run that produces them, and the stored pipeline is updated. Each takes a type inferred from every value that run produced (`boolean`, `int`, `bigint`, `double`, `date`, `timestamp`, otherwise `string`; a column with mixed or no values is `string`). The run status lists them: "CodeGen transformation added columns to the destination schema: ...". The destination table gains the column the same way it does for a [new source column](/schemas). To choose the type yourself, declare the column in the destination schema before the first run; a declared column keeps its type.
+- **Removed columns** stay in the destination schema and are loaded as null.
+- **Reordered columns** land under their own names on PostgreSQL, Snowflake, Databricks, SQL Server and the object store (Parquet, ORC, Iceberg).
+
+A later run whose value does not fit the inferred type (for example text in a column first seen holding only numbers) fails at the load. Change the column's type in the destination schema, or make the instruction state the format. An added column whose name the destination cannot hold, or that repeats another added column's name, fails the run before anything is written.
+
+Kafka, ActiveMQ, REST endpoint and Live Read destinations send each row under the transformation's own column names.
+
 ## When the script is generated
 
 The script is generated once and stored, not on every run:

@@ -272,4 +272,33 @@ class DestSchemaProjectorSpec extends AnyFunSuite with BeforeAndAfterAll {
         val first3 = DestSchemaProjector.project(jc, endless).take(3).toList
         assert(first3 == List("n1,1", "n2,2", "n3,3"))
     }
+
+    // A transformation that changes the columns carries its own header. With
+    // source and destination schemas equal, the rows were passed through as
+    // they were and the load got more values than columns.
+    test("matched schemas, header with extra columns: the rows are mapped by name and the extra columns are left out") {
+        val cfg = config(Seq("id", "name"), Seq("id", "name"), ",")
+        val jc = ctx(cfg, List("id", "label", "name", "extra"), List("1,x,alice,9"), ",", new RecordingStatusUtil)
+        assert(DestSchemaProjector.project(jc, Iterator("1,x,alice,9", "2,y,bob,8")).toList == List("1,alice", "2,bob"))
+    }
+
+    test("matched schemas, header in another order: each value lands under its own name") {
+        val cfg = config(Seq("id", "name"), Seq("id", "name"), ",")
+        val jc = ctx(cfg, List("name", "id"), List("alice,1"), ",", new RecordingStatusUtil)
+        assert(DestSchemaProjector.project(jc, Iterator("alice,1")).toList == List("1,alice"))
+    }
+
+    test("matched schemas, header missing a column: rows still pass through untouched") {
+        val cfg = config(Seq("id", "name", "age"), Seq("id", "name", "age"), ",")
+        val rows = List("1,10", "2,\"2,0\"")
+        val jc = ctx(cfg, List("id", "age"), rows, ",", new RecordingStatusUtil)
+        assert(DestSchemaProjector.project(jc, rows.iterator).toList == rows)
+    }
+
+    test("a quoted value holding the delimiter stays one value when rows are mapped by name") {
+        val cfg = config(Seq("id", "name"), Seq("id", "name", "note"), ",")
+        val jc = ctx(cfg, List("id", "note", "name"), List("1,n,a"), ",", new RecordingStatusUtil)
+        val out = DestSchemaProjector.project(jc, Iterator("1,\"rain, heavy\",\"says \"\"hi\"\"\"", "2,dry,bob")).toList
+        assert(out == List("1,\"says \"\"hi\"\"\",\"rain, heavy\"", "2,bob,dry"))
+    }
 }

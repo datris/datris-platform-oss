@@ -66,6 +66,38 @@ object SparkObjectStoreLoader {
             .csv(uri)
     }
 
+    /** The staged file as a DataFrame laid out as the destination schema.
+      *
+      *  The staged rows are in `header` order. When that is the destination
+      *  schema's own order (or there is no header) the file is read by position,
+      *  as before. When a transformation added, dropped or reordered columns
+      *  and every header column is a destination column, the file is read in
+      *  header order and each value lands in the destination column of the same
+      *  name; a destination column the rows do not carry is null. A header
+      *  naming a column the destination does not have keeps the positional read. */
+    private[util] def stagedDataFrameFor(
+        spark: SparkSession,
+        stagedPath: String,
+        destFields: List[SchemaField],
+        header: List[String],
+        delimiter: String
+    ): DataFrame = {
+        def key(n: String): String = if (n == null) "" else n.toLowerCase
+        val destKeys = destFields.map(f => key(f.name))
+        val headerKeys = Option(header).getOrElse(Nil).map(key)
+        val byName = destFields.map(f => key(f.name) -> f).toMap
+        val mapByName =
+            headerKeys.nonEmpty && headerKeys != destKeys && headerKeys.distinct.size == headerKeys.size && headerKeys.forall(byName.contains)
+        if (!mapByName) return stagedDataFrame(spark, stagedPath, destFields, delimiter)
+        val read = stagedDataFrame(spark, stagedPath, headerKeys.map(byName), delimiter)
+        val present = headerKeys.toSet
+        val columns = buildSchema(destFields).fields.map { f =>
+            if (present.contains(key(f.name))) read.col(IcebergWriter.quote(f.name))
+            else org.apache.spark.sql.functions.lit(null).cast(f.dataType).as(f.name)
+        }
+        read.select(columns: _*)
+    }
+
     /** `df` with exactly `schema`'s columns, in its order. Each name is
       * backtick-quoted (IcebergWriter.quote) before Spark resolves it, so a
       * dot, a space or a backtick in a name is part of the name, never a
@@ -130,7 +162,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 case StagedFormat.Delimited(_) => staged.path
                 case other => throw new DatrisException("objectStore destination needs delimited rows; the payload is " + other)
             }
-        val df = SparkObjectStoreLoader.stagedDataFrame(spark, stagedPath, schemaFields, delimiter)
+        val df = SparkObjectStoreLoader.stagedDataFrameFor(spark, stagedPath, schemaFields, jobContext.data.header, delimiter)
 
         // Determine file format (default parquet)
         val fileFormat = {

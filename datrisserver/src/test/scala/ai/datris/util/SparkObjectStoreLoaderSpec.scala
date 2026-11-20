@@ -191,6 +191,38 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(actual == expected, s"staged read differs from the parallelize path:\n  staged:      $actual\n  parallelize: $expected")
     }
 
+    test("rows in the destination schema's own order are read by position, with or without a header") {
+        val rows = List("1,alice,true,2.5,2024-01-02", "2,bob,false,0.5,2024-01-03")
+        val expected = legacyRows(rows, ",")
+        val path = stageRows(rows)
+        val names = schemaFields.map(_.name)
+        Seq(null, Nil, names, names.map(_.toUpperCase)).foreach { header =>
+            val df = SparkObjectStoreLoader.stagedDataFrameFor(spark, path, schemaFields, header, ",")
+            assert(df.schema == sparkSchema(schemaFields))
+            assert(df.collect().toList.sortBy(_.getInt(0)) == expected, s"header $header")
+        }
+    }
+
+    test("rows a transformation reordered or trimmed land under their own names; a column they lack is null") {
+        // header order: score, id, day, name (no `active`)
+        val rows = List("2.5,1,2024-01-02,alice", ",2,2024-01-03,\"b,ob\"")
+        val df = SparkObjectStoreLoader.stagedDataFrameFor(spark, stageRows(rows), schemaFields, List("score", "ID", "day", "name"), ",")
+        assert(df.schema == sparkSchema(schemaFields), s"the frame keeps the destination schema, got ${df.schema}")
+        val actual = df.collect().toList.sortBy(_.getInt(0))
+        assert(
+            actual == List(
+                Row(1, "alice", null, 2.5, java.sql.Date.valueOf("2024-01-02")),
+                Row(2, "b,ob", null, null, java.sql.Date.valueOf("2024-01-03"))
+            )
+        )
+    }
+
+    test("a header naming a column the destination does not have keeps the positional read") {
+        val rows = List("1,alice,true,2.5,2024-01-02")
+        val df = SparkObjectStoreLoader.stagedDataFrameFor(spark, stageRows(rows), schemaFields, List("a", "b", "c", "d", "e"), ",")
+        assert(df.collect().toList == legacyRows(rows, ","))
+    }
+
     test("the staged-path read honours a non-comma delimiter") {
         val rows = List("1;alice;true;2.5;2024-01-02", "2;bob;false;0.5;2024-01-03")
         val expected = legacyRows(rows, ";")
