@@ -22,12 +22,14 @@ import java.nio.charset.StandardCharsets
   *   - a name longer than the destination allows (Postgres 63 UTF-8 bytes,
   *     SQL Server 128 characters, Snowflake and Databricks 255 characters;
   *     other destinations have no limit);
-  *   - on Postgres, a name equal to the first 63 bytes of another column.
+  *   - on Postgres, a name equal to the first 63 bytes of another column;
+  *   - on an object store writing ORC files, a name holding a backtick
+  *     (ORC files do not keep it: the column reads back under another name).
   * Stored names are never examined. */
 object IngestColumnNames {
 
     /** Length rules for the configured destination. Built by [[limitsFor]]. */
-    final case class Limits(maxBytes: Option[Int], maxChars: Option[Int], postgresPrefix: Boolean)
+    final case class Limits(maxBytes: Option[Int], maxChars: Option[Int], postgresPrefix: Boolean, orcNoBacktick: Boolean = false)
 
     private val PostgresMaxBytes = 63
     private val SqlServerMaxChars = 128
@@ -41,7 +43,12 @@ object IngestColumnNames {
             db.filter(_.useSqlServer).map(_ => SqlServerMaxChars),
             db.filter(d => d.useSnowflake || d.useDatabricks).map(_ => SnowflakeDatabricksMaxChars)
         ).flatten
-        Limits(if (postgres) Some(PostgresMaxBytes) else None, if (chars.isEmpty) None else Some(chars.min), postgres)
+        val orc = Option(config)
+            .flatMap(c => Option(c.destination))
+            .flatMap(d => Option(d.objectStore))
+            .flatMap(o => Option(o.fileFormat))
+            .exists(_.trim.equalsIgnoreCase("orc"))
+        Limits(if (postgres) Some(PostgresMaxBytes) else None, if (chars.isEmpty) None else Some(chars.min), postgres, orc)
     }
 
     /** The first problem among `newNames`, or None. The message names the
@@ -61,6 +68,8 @@ object IngestColumnNames {
                 if (name == null || name.trim.isEmpty) Some(cell + " is blank")
                 else if (name.exists(Character.isISOControl))
                     Some(cell + " holds a control character; rename the header cell")
+                else if (limits.orcNoBacktick && name.contains("`"))
+                    Some(cell + " holds a backtick, which ORC files cannot keep in a column name; rename the header cell")
                 else if (storedByKey.contains(key(name)))
                     Some(cell + " is the existing column '" + display(storedByKey(key(name))) + "' apart from spaces or letter case; rename the header cell")
                 else if (seen.contains(key(name)))

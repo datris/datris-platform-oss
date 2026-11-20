@@ -255,4 +255,77 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
             assert(spark.read.format(fmt).load(canary.toUri.toString).count() == 2, fmt + ": canary")
         }
     }
+
+    // ---- dotted, spaced and backticked column names (e2e follow-up) ----
+
+    private def writeAndRead(fmt: String, name: String, root: java.nio.file.Path): (Seq[String], org.apache.spark.sql.DataFrame) = {
+        val fields = List(SchemaField("id", "int"), SchemaField("v", "string"), SchemaField(name, "string"))
+        val schema = SparkObjectStoreLoader.buildSchema(fields)
+        val staged = SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(List("1,a,x1")), fields, ",")
+        val out = root.resolve(fmt + "-" + Integer.toHexString(name.hashCode)).toUri.toString
+        SparkObjectStoreLoader.projectToSchema(staged, schema).write.mode("append").format(fmt).save(out)
+        val back = spark.read.format(fmt).load(out)
+        (back.columns.toSeq, back)
+    }
+
+    test("a dotted, spaced or backticked column round-trips under exactly that name for parquet and ORC, through the loader's projection") {
+        val names = Seq("a.b", "a. b c", "x`y", "unit \"price\"; drop table canary")
+        val root = Files.createTempDirectory("spark-object-store-tricky-names-")
+        import scala.collection.JavaConverters._
+        // ORC does not keep a backtick in a column name (see the next test);
+        // the ingest guard refuses such a new name for ORC destinations.
+        for (fmt <- Seq("parquet", "orc"); name <- names if !(fmt == "orc" && name.contains("`"))) {
+            val fields = List(SchemaField("id", "int"), SchemaField("v", "string"), SchemaField(name, "string"))
+            val schema = SparkObjectStoreLoader.buildSchema(fields)
+            val staged = SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(List("1,a,x1", "2,b,\"x;2\"")), fields, ",")
+            val projected = SparkObjectStoreLoader.projectToSchema(staged, schema)
+            assert(projected.columns.toSeq == Seq("id", "v", name), fmt + " " + name + ": " + projected.columns.toSeq)
+            val out = root.resolve(fmt + "-" + names.indexOf(name)).toUri.toString
+            projected.write.mode("append").format(fmt).save(out)
+            projected.write.mode("append").format(fmt).save(out)
+            val back = spark.read.format(fmt).load(out)
+            assert(back.columns.toSeq == Seq("id", "v", name), fmt + " " + name + ": " + back.columns.toSeq)
+            val rows = back.collect().map(r => (r.getInt(0), r.getString(1), r.getString(2))).toList.sorted
+            assert(rows == List((1, "a", "x1"), (1, "a", "x1"), (2, "b", "x;2"), (2, "b", "x;2")), fmt + " " + name + ": " + rows)
+            // the object-store query read returns the values under that name
+            val q = ObjectStoreQueryUtil.readPath(spark, out, fmt, 100)
+            assert(q.columns.asScala.toList == List("id", "v", name), fmt + " " + name + ": " + q.columns)
+            assert(q.rows.asScala.map(r => r.get(name)).toSet == Set("x1", "x;2"), fmt + " " + name + ": " + q.rows)
+        }
+    }
+
+    test("projectToSchema keeps every column by its exact name, never as a nested-field path") {
+        val fields = List(SchemaField("a", "string"), SchemaField("a.b", "string"), SchemaField("x`y", "string"))
+        val schema = SparkObjectStoreLoader.buildSchema(fields)
+        val staged = SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(List("p,q,r")), fields, ",")
+        // reversed order: the projection selects by name
+        val reversed = staged.select(staged.columns.reverse.map(c => staged.col("`" + c.replace("`", "``") + "`")): _*)
+        val projected = SparkObjectStoreLoader.projectToSchema(reversed, schema)
+        assert(projected.columns.toSeq == Seq("a", "a.b", "x`y"))
+        assert(projected.collect().head.toSeq == Seq("p", "q", "r"))
+    }
+
+    test("ORC does not keep a backtick in a column name, so the ingest guard refuses one for ORC destinations") {
+        val root = Files.createTempDirectory("spark-object-store-orc-backtick-")
+        val (columns, _) = writeAndRead("orc", "x`y", root)
+        info("orc x`y reads back as: " + columns.mkString(", "))
+        assert(columns != Seq("id", "v", "x`y"), "ORC now keeps a backtick name; the ORC backtick refusal in IngestColumnNames can go")
+        assert(writeAndRead("parquet", "x`y", root)._1 == Seq("id", "v", "x`y"))
+
+        def orcConfig(fmt: String): ai.datris.model.PipelineConfig = {
+            import ai.datris.model._
+            val fs = new java.util.ArrayList[SchemaField](java.util.Arrays.asList(SchemaField("id", "int")))
+            PipelineConfig(
+                name = "col_os",
+                source = Source(schemaProperties = SchemaProperties("db", fs), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+                destination = Destination(schemaProperties = SchemaProperties("db", fs), objectStore = ObjectStore(prefixKey = "col", fileFormat = fmt))
+            )
+        }
+        val refused = IngestColumnNames.problem(List("x`y"), List("id"), IngestColumnNames.limitsFor(orcConfig("orc")))
+        assert(refused.exists(m => m.contains("x`y") && m.contains("#1") && m.contains("ORC")), refused.toString)
+        assert(IngestColumnNames.problem(List("x`y"), List("id"), IngestColumnNames.limitsFor(orcConfig(" ORC "))).isDefined)
+        for (fmt <- Seq("parquet", "iceberg", null))
+            assert(IngestColumnNames.problem(List("x`y", "a.b"), List("id"), IngestColumnNames.limitsFor(orcConfig(fmt))) == None, String.valueOf(fmt))
+        assert(IngestColumnNames.problem(List("a.b", "a. b c"), List("id"), IngestColumnNames.limitsFor(orcConfig("orc"))) == None)
+    }
 }

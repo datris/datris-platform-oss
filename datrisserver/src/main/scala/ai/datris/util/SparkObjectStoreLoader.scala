@@ -66,6 +66,13 @@ object SparkObjectStoreLoader {
             .csv(uri)
     }
 
+    /** `df` with exactly `schema`'s columns, in its order. Each name is
+      * backtick-quoted (IcebergWriter.quote) before Spark resolves it, so a
+      * dot, a space or a backtick in a name is part of the name, never a
+      * nested-field path. */
+    private[util] def projectToSchema(df: DataFrame, schema: StructType): DataFrame =
+        df.select(schema.fieldNames.map(n => df.col(IcebergWriter.quote(n))): _*)
+
     private[util] def buildSchema(fields: List[SchemaField]): StructType = {
         StructType(fields.map(field => {
             val dataType = field.`type`.toLowerCase match {
@@ -182,7 +189,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 )
                 // MERGE uses UPDATE SET * / INSERT *, so the source must carry
                 // exactly the dest schema's columns in its order.
-                val projected = df.select(sparkSchema.fieldNames.map(df.col): _*)
+                val projected = SparkObjectStoreLoader.projectToSchema(df, sparkSchema)
                 def writeIceberg(): IcebergWriter.WriteResult =
                     IcebergWriter.write(projected, outputPath, writeModeName, partitions, keyFields, sparkSchema, statusUtil, config.name, restPlan.target)
                 try Some(writeIceberg())

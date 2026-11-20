@@ -196,4 +196,18 @@ class IngestColumnNamesSpec extends AnyFunSuite {
         for ((label, cfg) <- allEngines)
             assert(problem(Nil, storedOdd, cfg) == None, label)
     }
+
+    // ------------------------------------------- ORC and backticks (e2e follow-up)
+
+    test("a new name holding a backtick is refused for an ORC object store only; dots and spaces pass everywhere") {
+        val orc = withDestination(Destination(
+            schemaProperties = SchemaProperties("db", fields("id", "amount")),
+            objectStore = ObjectStore(prefixKey = "col", fileFormat = "orc")
+        ))
+        val p = problem(List("note", "x`y"), List("id"), orc)
+        assert(p.isDefined && p.get.contains("x`y") && mentionsPosition(p.get, 2), p.toString)
+        for ((label, cfg) <- allEngines)
+            assert(problem(List("x`y", "a.b", "a. b c"), List("id"), cfg) == None, label)
+        assert(problem(List("a.b", "a. b c"), List("id"), orc) == None)
+    }
 }

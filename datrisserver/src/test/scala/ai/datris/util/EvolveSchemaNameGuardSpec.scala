@@ -144,4 +144,23 @@ class EvolveSchemaNameGuardSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(len.getMessage.contains("col_pg"), len.getMessage)
         assert(len.getMessage.contains(tooLong), "names the cell: " + len.getMessage)
     }
+
+    test("an ORC object store refuses a new backticked column before persist; a dotted one is added") {
+        val fs = fields("id", "amount")
+        val cfg = PipelineConfig(
+            name = "col_orc",
+            source = Source(schemaProperties = SchemaProperties("db", fs), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+            destination =
+                Destination(schemaProperties = SchemaProperties("db", fields("id", "amount")), objectStore = ObjectStore(prefixKey = "col", fileFormat = "orc"))
+        )
+        val su = new LevelStatusUtil
+        val persisted = ListBuffer[PipelineConfig]()
+        val e = intercept[DatrisException](DataUtil.evolveSchema(List("id", "amount", "x`y"), cfg, su, c => persisted += c))
+        assert(e.getMessage.contains("col_orc") && e.getMessage.contains("x`y"), e.getMessage)
+        assert(persisted.isEmpty && su.events.isEmpty)
+
+        val (evolved, _, _, _) = DataUtil.evolveSchema(List("id", "amount", "a.b"), cfg, new LevelStatusUtil, c => persisted += c)
+        assert(evolved.source.schemaProperties.fields.asScala.map(_.name).toList == List("id", "amount", "a.b"))
+        assert(persisted.size == 1)
+    }
 }

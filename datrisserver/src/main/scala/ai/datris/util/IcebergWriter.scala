@@ -561,7 +561,10 @@ object IcebergWriter {
             )
         if (added.nonEmpty) {
             val update = table.updateSchema()
-            added.foreach(f => update.addColumn(f.name, SparkSchemaUtil.convert(f.dataType)))
+            // addColumn(parent = null, name, type): a top-level column whose
+            // name is taken whole. addColumn(name, type) reads a dot as a
+            // nested path and refuses the name as ambiguous.
+            added.foreach(f => update.addColumn(null, f.name, SparkSchemaUtil.convert(f.dataType)))
             update.commit()
             statusUtil.info("processing", "Iceberg schema evolved: added column(s) " + added.map(_.name).mkString(", "))
         }

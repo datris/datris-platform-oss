@@ -1308,4 +1308,45 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(snapshots(canary).size == canarySnapshots, "the canary table gained a snapshot")
         assert(readAll(canary).count() == 2)
     }
+
+    // ---- dotted, spaced and backticked column names (e2e follow-up) ----
+    //  The loader projects the staged frame onto the dest schema
+    //  (SparkObjectStoreLoader.projectToSchema) and IcebergWriter writes it.
+    //  A column added by schema evolution whose name holds a dot, a space, a
+    //  backtick, a double quote or a semicolon round-trips under exactly that
+    //  name: append (evolving the table), merge on id, merge on that column.
+
+    private val trickyNames = Seq("a.b", "a. b c", "x`y", "unit \"price\"; drop table canary")
+
+    test("a dotted, spaced or backticked column added by evolution round-trips through append, merge on id and merge on that column") {
+        for (name <- trickyNames) {
+            val location = newLocation("tricky-names/" + trickyNames.indexOf(name))
+            val baseTwo = StructType(Seq(StructField("id", LongType, nullable = false), StructField("v", StringType, nullable = true)))
+            val evolved = StructType(baseTwo.fields :+ StructField(name, StringType, nullable = true))
+            def frame(schema: StructType, rows: Row*): DataFrame =
+                SparkObjectStoreLoader.projectToSchema(spark.createDataFrame(rows.asJava, schema), schema)
+            def state(): Map[Long, (String, String)] = {
+                val read = readAll(location)
+                assert(read.columns.toSeq == Seq("id", "v", name), name + ": " + read.columns.toSeq)
+                read.collect().map(r => r.getLong(0) -> (r.getString(1), r.getString(2))).toMap
+            }
+
+            write(frame(baseTwo, Row(1L, "a")), location, "append", destSchema = baseTwo)
+            write(frame(evolved, Row(2L, "b", "x2")), location, "append", destSchema = evolved)
+            assert(state() == Map(1L -> ("a", null), 2L -> ("b", "x2")), name + ": append after evolution")
+
+            write(frame(evolved, Row(2L, "bb", "y2"), Row(3L, "c", "y3")), location, "merge", keyFields = Seq("id"), destSchema = evolved)
+            assert(state() == Map(1L -> ("a", null), 2L -> ("bb", "y2"), 3L -> ("c", "y3")), name + ": merge on id")
+
+            write(frame(evolved, Row(9L, "cc", "y3")), location, "merge", keyFields = Seq(name), destSchema = evolved)
+            assert(state() == Map(1L -> ("a", null), 2L -> ("bb", "y2"), 9L -> ("cc", "y3")), name + ": merge on " + name)
+
+            assert(loadTable(location).schema().columns().asScala.map(_.name()).toList == List("id", "v", name), name)
+
+            // the object-store query read returns the values under that name
+            val q = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
+            assert(q.columns.asScala.toList == List("id", "v", name), name + ": " + q.columns)
+            assert(q.rows.asScala.map(r => r.get(name)).toSet == Set(null, "y2", "y3"), name + ": " + q.rows)
+        }
+    }
 }
