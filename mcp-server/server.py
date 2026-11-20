@@ -1533,7 +1533,7 @@ Query endpoints (POST). Response shapes are EXACT and STABLE — trust them, do 
 - PostgreSQL: `POST /api/v1/query/postgres` with body `{"sql": "SELECT col FROM public.table_name", "database": <pg_db>, "limit": -1}` → `{results: [row dicts], count: int}`
 - MongoDB: `POST /api/v1/query/mongodb` with body `{"query": "...", "database": <mongo_db>, "collection": "...", "limit": -1}` → `{results: [document dicts], count: int}`
 
-Always pass `"limit": -1` (return everything); omitting it applies a small preview default and the tap silently reads a tiny slice. Metadata discovery is also available via GET: `/metadata/postgres/tables?database={pg_db}&schema=public`, `/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE`, `/metadata/mongodb/collections?database={mongo_db}`.
+Always pass `"limit": -1` (return everything); omitting it applies a small preview default and the tap silently reads a tiny slice. A single PostgreSQL query is limited to five minutes, also with `"limit": -1`: page a large read across several queries (for example by key range) instead of reading it in one. Metadata discovery is also available via GET: `/metadata/postgres/tables?database={pg_db}&schema=public`, `/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE`, `/metadata/mongodb/collections?database={mongo_db}`.
 
 Use this whenever a tap's fetch logic is driven by data in a Datris destination — e.g. a tap that reads an id/key list from a table a pipeline maintains, then fetches from the external source per id. The list stays live: no frozen copies of it hardcoded in the script, and no re-fetching data the platform already holds.
 

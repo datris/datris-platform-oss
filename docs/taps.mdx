@@ -213,6 +213,8 @@ response = requests.post(f'{base_url}/query/postgres', json={
 results = response.json()['results']
 ```
 
+A single PostgreSQL query is limited to five minutes, also with `limit: -1`. Page a large read across several queries (for example by key range) instead of reading it in one.
+
 **Query MongoDB data:**
 ```python
 mongo_db = os.environ['DATRIS_MONGODB_DATABASE']

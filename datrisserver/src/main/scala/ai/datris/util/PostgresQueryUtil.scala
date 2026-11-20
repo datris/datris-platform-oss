@@ -35,10 +35,9 @@ object PostgresQueryUtil {
     private val CONNECT_TIMEOUT_SECONDS = 10
 
     /** Issued on the connection before it goes back to the pool, after the
-      * query's transaction is rolled back: drops every session-level change
-      * a query could have made (settings, advisory locks, temporary objects,
-      * prepared statements, cursors, LISTENs; pgjdbc invalidates its own
-      * prepared-statement cache when it sees this command complete). Startup
+      * query's transaction is rolled back: returns the session to its
+      * starting state (pgjdbc invalidates its own prepared-statement cache
+      * when it sees this command complete). Startup
       * parameters of the connection are its reset values, so the session ends
       * as the pool opened it. */
     private[util] val SessionReset = "DISCARD ALL"
@@ -72,25 +71,50 @@ object PostgresQueryUtil {
         "EXEC"
     )
 
-    // Functions a read-only transaction does not stop and that have no place in
-    // a query: they act outside the transaction (other backends, the server
-    // process, the server's file system, another connection). Checked as whole
-    // words, case-insensitive, like the keywords above.
+    // A second line, not the control: the read-only transaction is what stops
+    // writes, and the database role's privileges are what bound the rest. This
+    // list refuses, as whole words (case-insensitive, like the keywords above),
+    // functions that have no place in a query: ones that act outside the
+    // query's transaction (other backends, the server process and its files,
+    // replication state, statistics, another connection) and ones that run a
+    // query given as text. It is the only such list; keep additions here.
     private[util] val BLOCKED_FUNCTIONS: Seq[String] = Seq(
+        // backend and server control
         "pg_terminate_backend",
         "pg_cancel_backend",
         "pg_reload_conf",
         "pg_rotate_logfile",
         "pg_promote",
         "pg_switch_wal",
+        "pg_create_restore_point",
+        "pg_backup_\\w+",
+        "pg_stat_reset\\w*",
+        // replication state
+        "pg_\\w*replication_slot\\w*",
+        "pg_logical_\\w+",
+        // server files and large objects
         "pg_read_file",
         "pg_read_binary_file",
         "pg_ls_\\w+",
         "pg_stat_file",
         "lo_import",
         "lo_export",
-        "dblink\\w*"
+        // another connection
+        "dblink\\w*",
+        // functions that run a query given as text
+        "query_to_xml\\w*",
+        "table_to_xml\\w*",
+        "cursor_to_xml\\w*",
+        "database_to_xml\\w*",
+        "schema_to_xml\\w*",
+        "ts_stat",
+        "ts_rewrite",
+        "crosstab\\w*"
     )
+
+    // Unicode-escaped identifiers and strings (U&"..." and U&'...') can spell
+    // any name, so they are refused outright.
+    private val UnicodeEscapeQuote = "(?i)u&[\"']".r
 
     /** Lightweight reachability probe: connect with a short login timeout and
      *  run SELECT 1. Returns None when Postgres answers, Some(error message)
@@ -129,6 +153,10 @@ object PostgresQueryUtil {
         }
     }
 
+    /** Test seam: when set, queries take their connection from this pool
+      * (and the secret is not read). */
+    @volatile private[util] var poolOverride: com.zaxxer.hikari.HikariDataSource = null
+
     def query(sql: String, database: String = null, limit: Int = DEFAULT_LIMIT): java.util.List[java.util.Map[String, Any]] =
         run(sql, Nil, database, limit)
 
@@ -155,6 +183,11 @@ object PostgresQueryUtil {
 
         logger.info("Executing read-only query: " + finalSql)
 
+        val timeout = timeoutSeconds(limit)
+        val testPool = poolOverride
+        if (testPool != null)
+            return PostgresPool.withEvictableConnectionFrom(testPool) { (conn, evict) => runOn(conn, finalSql, params, timeout, evict) }
+
         val secrets = SecretsRetrieverUtil.postgresSecrets()
         Class.forName("org.postgresql.Driver")
 
@@ -165,7 +198,7 @@ object PostgresQueryUtil {
         // Pooled: this is the interactive path where per-request DriverManager
         // connections hurt most. Connect/login timeouts live in PostgresPool.
         PostgresPool.withEvictableConnection(jdbcUrl, secrets.username, secrets.password) { (conn, evict) =>
-            runOn(conn, finalSql, params, timeoutSeconds(limit), evict)
+            runOn(conn, finalSql, params, timeout, evict)
         }
     }
 
@@ -283,6 +316,9 @@ object PostgresQueryUtil {
             if (pattern.findFirstIn(normalized).isDefined)
                 throw new DatrisException("Query contains blocked keyword: " + keyword)
         }
+
+        if (UnicodeEscapeQuote.findFirstIn(normalized).isDefined)
+            throw new DatrisException("Unicode escape quoting (U&) is not allowed in queries")
 
         BLOCKED_FUNCTIONS.foreach { fn =>
             ("(?i)\\b" + fn + "\\b").r.findFirstIn(normalized).foreach { found =>

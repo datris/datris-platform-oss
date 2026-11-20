@@ -248,4 +248,89 @@ class PostgresReadOnlyQuerySpec extends AnyFunSuite {
             assert(e.getMessage.startsWith("Query contains blocked function: "), expr)
         }
     }
+
+    test("the keyword filter refuses functions with effects outside the transaction and functions that run a query given as text") {
+        Seq(
+            "pg_create_restore_point('r')",
+            "pg_backup_start('b')",
+            "pg_backup_stop()",
+            "pg_stat_reset()",
+            "pg_stat_reset_shared('x')",
+            "pg_create_logical_replication_slot('s', 'p')",
+            "pg_create_physical_replication_slot('s')",
+            "pg_drop_replication_slot('s')",
+            "pg_replication_slot_advance('s', '0/0')",
+            "pg_logical_emit_message(true, 'p', 'm')",
+            "query_to_xml('q', true, false, '')",
+            "query_to_xml_and_xmlschema('q', true, false, '')",
+            "table_to_xml('t', true, false, '')",
+            "cursor_to_xml('c', 1, true, false, '')",
+            "database_to_xml(true, false, '')",
+            "schema_to_xml('s', true, false, '')",
+            "ts_stat('q')",
+            "ts_rewrite('a'::tsquery, 'q')",
+            "crosstab('q')",
+            "crosstab3('q')"
+        ).foreach { expr =>
+            val e = intercept[DatrisException](PostgresQueryUtil.validateQuery("SELECT * FROM " + expr))
+            assert(e.getMessage.startsWith("Query contains blocked function: "), expr)
+        }
+    }
+
+    test("Unicode-escaped identifiers and strings are refused, whatever their case") {
+        Seq("SELECT U&\"x\" FROM t", "SELECT u&'x' AS a", "SELECT * FROM t WHERE a = U&'b'").foreach { q =>
+            val e = intercept[DatrisException](PostgresQueryUtil.validateQuery(q))
+            assert(e.getMessage.contains("U&"), q)
+        }
+        // an ampersand elsewhere is fine
+        PostgresQueryUtil.validateQuery("SELECT a & b, 'u & me' FROM t")
+    }
+
+    // ---------------------------------------------------------- wiring through query / queryBound
+
+    private def withPool[A](r: Recorder)(f: com.zaxxer.hikari.HikariDataSource => A): A = {
+        val ds = org.mockito.Mockito.mock(classOf[com.zaxxer.hikari.HikariDataSource])
+        org.mockito.Mockito.when(ds.getConnection).thenReturn(r.conn)
+        PostgresQueryUtil.poolOverride = ds
+        try f(ds)
+        finally PostgresQueryUtil.poolOverride = null
+    }
+
+    test("query passes the timeout chosen for its limit to the statement, on a plain statement") {
+        for (
+            (limit, t) <- Seq(
+                -1 -> PostgresQueryUtil.UNLIMITED_QUERY_TIMEOUT_SECONDS,
+                0 -> PostgresQueryUtil.QUERY_TIMEOUT_SECONDS,
+                7 -> PostgresQueryUtil.QUERY_TIMEOUT_SECONDS
+            )
+        ) {
+            val r = new Recorder()
+            withPool(r)(_ => PostgresQueryUtil.query("SELECT a FROM t", "db", limit))
+            assert(r.calls.contains("stmt.execute:SET LOCAL statement_timeout = " + (t * 1000L)), s"limit $limit: ${r.calls}")
+            assert(r.calls.contains("stmt.setQueryTimeout:" + t), s"limit $limit: ${r.calls}")
+            assert(!r.calls.exists(_.startsWith("prepareStatement")), r.calls)
+            assertRestored(r)
+        }
+    }
+
+    test("queryBound runs a prepared statement under the bounded timeout") {
+        val r = new Recorder()
+        withPool(r)(_ => PostgresQueryUtil.queryBound("SELECT a FROM t WHERE b = ?", Seq("x"), "db", 200))
+        assert(r.calls.contains("prepareStatement:SELECT a FROM t WHERE b = ? LIMIT 200"), r.calls)
+        assert(r.calls.contains("ps.setQueryTimeout:" + PostgresQueryUtil.QUERY_TIMEOUT_SECONDS), r.calls)
+        assertRestored(r)
+    }
+
+    test("a connection whose restore fails is evicted from the pool it came from; a restored one is not") {
+        val bad = new Recorder(failOn = Set("reset"))
+        withPool(bad)(ds => {
+            PostgresQueryUtil.query("SELECT a FROM t", "db", 5)
+            org.mockito.Mockito.verify(ds).evictConnection(bad.conn)
+        })
+        val good = new Recorder()
+        withPool(good)(ds => {
+            PostgresQueryUtil.query("SELECT a FROM t", "db", 5)
+            org.mockito.Mockito.verify(ds, org.mockito.Mockito.never()).evictConnection(org.mockito.ArgumentMatchers.any())
+        })
+    }
 }
