@@ -668,11 +668,11 @@ class ObjectStoreQueryReadSpec extends AnyFunSuite with BeforeAndAfterAll {
             // locations are made until one samples the run-1 file (no `c`).
             var sampledLacksC = false
             var tries = 0
-            while (!sampledLacksC && tries < 12) {
+            while (!sampledLacksC && tries < 40) {
                 tries += 1
                 val (_, out) = newDir("orc-degrade-" + storedType)
                 load(out, "orc", List(SchemaField("id", "int")), Nil, "1")
-                dataFiles(out).foreach(f => Files.move(f, f.resolveSibling("zzzz-run1-" + tries + ".orc")))
+                dataFiles(out).foreach(f => Files.move(f, f.resolveSibling("run1-" + java.util.UUID.randomUUID() + ".orc")))
                 load(out, "orc", List(SchemaField("id", "int"), SchemaField("c", fileType)), Nil, "2," + value)
                 val plain = spark.read.format("orc").load(out)
                 sampledLacksC = !plain.columns.contains("c")
