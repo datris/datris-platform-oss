@@ -589,8 +589,8 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
 
     private def jl(xs: String*): java.util.List[String] = new java.util.ArrayList[String](java.util.Arrays.asList(xs: _*))
 
-    private def guard(os: ObjectStore, header: List[String], fields: List[SchemaField] = cityFields): Either[String, Unit] =
-        try Right(SparkObjectStoreLoader.refuseNullFilledRequired(guardConfig(fields, os), fields, header))
+    private def guard(os: ObjectStore, header: List[String], fields: List[SchemaField] = cityFields, rowCount: Long = 1L): Either[String, Unit] =
+        try Right(SparkObjectStoreLoader.refuseNullFilledRequired(guardConfig(fields, os), fields, header, rowCount))
         catch { case e: ai.datris.model.DatrisException => Left(e.getMessage) }
 
     test("a transformation header without the Iceberg merge key fails naming it") {
@@ -633,8 +633,16 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
         val ctx = ai.datris.model.JobContext(null, null, data, guardConfig(fields, os), null, null, null, su)
         val e = intercept[ai.datris.model.DatrisException](new SparkObjectStoreLoader(ctx).process())
         assert(e.getMessage.contains("partition column(s): city"), e.getMessage)
+        assert(e.getMessage.endsWith("Nothing was written to the object store"), e.getMessage)
         assert(!su.events.exists(_.contains("Deleting existing data")), su.events.toString)
         assert(su.events.toList == List("Writing data to object store"), "nothing after the begin line: " + su.events)
+    }
+
+    test("zero rows with a short header are not refused; one row with the same header is") {
+        val os = ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", writeMode = "merge", keyFields = jl("id"), partitionBy = jl("city"))
+        assert(guard(os, List("name"), rowCount = 0L) == Right(()), "an empty transformation output loads as on main")
+        val one = guard(os, List("name"), rowCount = 1L)
+        assert(one.left.toOption.exists(_.contains("key field(s): id")), one.toString)
     }
 
     test("pin: stray keyFields on an append or a parquet/orc pipeline do not refuse rows that lack them") {

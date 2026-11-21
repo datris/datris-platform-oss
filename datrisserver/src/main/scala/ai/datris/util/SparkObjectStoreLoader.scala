@@ -120,15 +120,16 @@ object SparkObjectStoreLoader {
       * column, whatever produced the header (the source file, a
       * transformation, a REST preprocessor). Only the columns the by-name read
       * would fill with null are examined, so a positional read and rows that
-      * carry every key and partition column are never refused. */
-    private[util] def refuseNullFilledRequired(config: PipelineConfig, destFields: List[SchemaField], header: List[String]): Unit = {
-        val filled = nullFilledColumns(destFields, header)
+      * carry every key and partition column are never refused, and neither is
+      * a payload of `rowCount` 0, which has nothing to null-fill. */
+    private[util] def refuseNullFilledRequired(config: PipelineConfig, destFields: List[SchemaField], header: List[String], rowCount: Long): Unit = {
+        val filled = if (rowCount > 0) nullFilledColumns(destFields, header) else Nil
         DataUtil.objectStoreMissingRequired(config, filled).foreach {
             case (kind, cols) =>
                 throw new DatrisException(
                     "The rows to load are missing required " + kind + ": " + cols.mkString(", ") +
                         ", which cannot be loaded as null. Row columns: " + header.mkString(", ") +
-                        ". Destination columns: " + destFields.map(_.name).mkString(", ") + ". Nothing was written"
+                        ". Destination columns: " + destFields.map(_.name).mkString(", ") + ". Nothing was written to the object store"
                 )
         }
     }
@@ -187,8 +188,10 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
             }
 
         // Rows without a merge key or partition column fail here, before the
-        // write lock, the delete-before-write or any object-store access.
-        if (stagedPath != null) SparkObjectStoreLoader.refuseNullFilledRequired(config, schemaFields, jobContext.data.header)
+        // write lock, the delete-before-write or any object-store access. A
+        // payload with no rows has nothing to null-fill and loads as before
+        // (every delimited payload's rowCount is counted as it is staged).
+        if (stagedPath != null) SparkObjectStoreLoader.refuseNullFilledRequired(config, schemaFields, jobContext.data.header, staged.rowCount)
 
         val spark = SparkSessionManager.getOrCreate()
 
