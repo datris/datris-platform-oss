@@ -14,7 +14,7 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 
 /** Columns an AI transformation adds join the destination schema
-  * (`TransformedColumns`): typed from the run's values, appended, stored once,
+  * (`TransformedColumns`): as string, appended, stored once,
   * and never stored by a rehearsal run. */
 class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
 
@@ -103,25 +103,18 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(TransformedColumns.added(null, dest) == Nil)
     }
 
-    test("inferTypes reads every row: numbers widen, a quoted delimiter stays in its value, an empty column is string") {
-        val types = TransformedColumns.inferTypes(rows.iterator, header, List("temp_f", "label", "day", "empty"), ",")
-        assert(types.map(f => f.name -> f.`type`) == List("temp_f" -> "double", "label" -> "string", "day" -> "date", "empty" -> "string"))
-        val mixed = TransformedColumns.inferTypes(Iterator("1,7", "x,8", "2,9.5"), List("a", "b"), List("a", "b"), ",")
-        assert(mixed.map(_.`type`) == List("string", "double"))
-    }
-
-    test("reconcile appends the added columns to the destination schema, typed, and stores them once") {
+    test("reconcile appends the added columns to the destination schema, as string, and stores them once") {
         val status = new RecordingStatusUtil
         val stored = ListBuffer[(String, List[SchemaField])]()
         val out = TransformedColumns.reconcile(ctx(config(), header, rows, status), (n, f) => stored += ((n, f)))
-        val added = List("temp_f" -> "double", "label" -> "string", "day" -> "date", "empty" -> "string")
+        val added = List("temp_f" -> "string", "label" -> "string", "day" -> "string", "empty" -> "string")
         assert(destOf(out.config) == source.toList ++ added)
         assert(out.config.destination.schemaProperties.schemaVersion == 2)
         assert(out.config.source.schemaProperties.fields.size == 2, "the source schema is not changed")
         assert(out.data.headerWithSchema.map(f => f.name -> f.`type`) == source.toList ++ added)
         assert(stored.toList.map(s => s._1 -> s._2.map(f => f.name -> f.`type`)) == List("weather" -> added))
         assert(status.messages.exists(
-            _._2 == "CodeGen transformation added columns to the destination schema: temp_f (double), label (string), day (date), empty (string)"
+            _._2 == "CodeGen transformation added columns to the destination schema: temp_f (string), label (string), day (string), empty (string)"
         ))
     }
 
@@ -147,7 +140,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(destOf(grown) == source.toList :+ ("temp_f" -> "double"))
     }
 
-    test("an added column the destination cannot hold, or two with one name, stops the run before anything is stored") {
+    test("on an object store pipeline an added column the destination cannot hold, or two with one name, stops the run before anything is stored") {
         val orc = config(ObjectStore(prefixKey = "weather", fileFormat = "orc"))
         val bad = intercept[DatrisException](
             TransformedColumns.reconcile(ctx(orc, List("city", "temp_c", "a`b"), List("x,1,2"), new RecordingStatusUtil), (_, _) => fail("not stored"))
@@ -155,7 +148,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(bad.getMessage.contains("the transformation added a column named 'a`b'"))
         val twice = intercept[DatrisException](
             TransformedColumns.reconcile(
-                ctx(config(), List("city", "temp_c", "f", "F"), List("x,1,2,3"), new RecordingStatusUtil),
+                ctx(orc, List("city", "temp_c", "f", "F"), List("x,1,2,3"), new RecordingStatusUtil),
                 (_, _) => fail("not stored")
             )
         )

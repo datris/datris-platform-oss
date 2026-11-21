@@ -15,9 +15,8 @@ import scala.collection.JavaConverters._
   * The destination schema is built when the pipeline is saved, from the
   * source columns, so it does not list a column the transformation creates.
   * After the transformation runs, each such column joins the destination
-  * schema (appended, with a type inferred from every value this run produced)
-  * and the stored pipeline is updated, the way a new source column joins the
-  * schema at ingest. Loaders then create or extend the destination from the
+  * schema (appended, as `string`) and the stored pipeline is updated, the way
+  * a new source column joins the schema at ingest. Loaders then create or extend the destination from the
   * schema as they do for any new column.
   */
 object TransformedColumns {
@@ -32,28 +31,6 @@ object TransformedColumns {
     def added(header: List[String], destFields: List[SchemaField]): List[String] = {
         val declared = destFields.filter(_ != null).map(f => key(f.name)).toSet
         Option(header).getOrElse(Nil).filterNot(h => declared.contains(key(h)))
-    }
-
-    /** A type for each of `names`, from every value the rows hold in that
-      * column (DestTypeInference: conservative, string when values disagree or
-      * none is present). `rows` are in `header` order. */
-    def inferTypes(rows: Iterator[String], header: List[String], names: List[String], delimiter: String): List[SchemaField] = {
-        val positions = names.map(n => header.indexWhere(h => key(h) == key(n)))
-        val types = new Array[String](names.size)
-        rows.foreach { row =>
-            // Once every column is string nothing can change; the rest of the file is not parsed.
-            if (!types.forall(_ == "string")) {
-                val values = CodeGenTransformationEvaluator.splitLine(row, delimiter)
-                var i = 0
-                while (i < positions.size) {
-                    val p = positions(i)
-                    if (types(i) != "string" && p >= 0 && p < values.size)
-                        DestTypeInference.classify(values(p)).foreach(t => types(i) = if (types(i) == null) t else DestTypeInference.widen(types(i), t))
-                    i += 1
-                }
-            }
-        }
-        names.zip(types).map { case (n, t) => SchemaField(n, if (t == null) "string" else t) }
     }
 
     /** `config` with `fields` appended to its destination schema (names it
@@ -83,8 +60,13 @@ object TransformedColumns {
 
     /** The job context after an AI transformation wrote rows in `ctx.data.header`
       * order: unchanged when every header column is a destination column,
-      * otherwise with the added columns typed and listed in the destination
-      * schema (and stored, unless this is a rehearsal run). */
+      * otherwise with the added columns listed in the destination schema as
+      * `string` (and stored, unless this is a rehearsal run).
+      *
+      * A name the destination cannot hold, or a name two added columns share:
+      * with an object store destination the run fails (its positional read
+      * cannot skip a column, as on v1.60.0); otherwise the column is left out
+      * of the schema with a warn line, and the load leaves it out by name. */
     def reconcile(ctx: JobContext, persist: (String, List[SchemaField]) => Unit = persistStored): JobContext = {
         val config = ctx.config
         val data = ctx.data
@@ -95,26 +77,46 @@ object TransformedColumns {
         }
         if (names.isEmpty) return ctx
 
+        val objectStore = Option(config.destination).exists(_.objectStore != null)
         val limits = IngestColumnNames.limitsFor(config)
-        names.foreach { n =>
-            IngestColumnNames.holdProblem(n, limits).foreach { why =>
+        val unholdable = names.flatMap(n => IngestColumnNames.holdProblem(n, limits).map(n -> _))
+        val holdable = names.filter(n => IngestColumnNames.holdProblem(n, limits).isEmpty)
+        val shared = holdable.groupBy(key).filter(_._2.size > 1)
+        val sharedFirst = holdable.filter(n => shared.contains(key(n))).map(key).distinct.map(k => shared(k).head)
+
+        if (objectStore) {
+            unholdable.headOption.foreach { case (n, why) =>
                 throw new DatrisException(
                     "Pipeline " + config.name + ": the transformation added a column named '" + IngestColumnNames.display(n) +
                         "', which the destination cannot hold: " + why + ". Change the instruction so the column has another name"
                 )
             }
-        }
-        names.groupBy(key).collectFirst { case (_, same) if same.size > 1 => same.head }.foreach { n =>
-            throw new DatrisException(
-                "Pipeline " + config.name + ": the transformation's output has two columns named '" + IngestColumnNames.display(n) +
-                    "'. Change the instruction so each new column has its own name"
-            )
+            sharedFirst.headOption.foreach { n =>
+                throw new DatrisException(
+                    "Pipeline " + config.name + ": the transformation's output has two columns named '" + IngestColumnNames.display(n) +
+                        "'. Change the instruction so each new column has its own name"
+                )
+            }
         }
 
-        val rows = data.rowIterator()
-        val fields =
-            try inferTypes(rows, header, names, data.delimiter)
-            finally rows.close()
+        unholdable.foreach { case (n, why) =>
+            val line = "CodeGen transformation added a column named '" + IngestColumnNames.display(n) + "', which the destination cannot hold: " + why +
+                "; it is left out of the destination. Change the instruction so the column has another name"
+            logger.warn(line + " (pipeline " + config.name + ")")
+            ctx.statusUtil.warn("processing", line)
+        }
+        sharedFirst.foreach { n =>
+            val line = "CodeGen transformation output has more than one column named '" + IngestColumnNames.display(n) +
+                "'; they are left out of the destination. Change the instruction so each new column has its own name"
+            logger.warn(line + " (pipeline " + config.name + ")")
+            ctx.statusUtil.warn("processing", line)
+        }
+
+        // Stored as string, the rule a new source column follows: no later
+        // run's values can fail the load. A type can be set afterwards through
+        // the destination-types flow.
+        val fields = holdable.filterNot(n => shared.contains(key(n))).map(n => SchemaField(n, "string"))
+        if (fields.isEmpty) return ctx
 
         val listed = fields.map(f => f.name + " (" + f.`type` + ")").mkString(", ")
         logger.info("Transformation added destination column(s) [" + listed + "] to pipeline " + config.name)
