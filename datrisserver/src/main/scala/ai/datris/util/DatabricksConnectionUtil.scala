@@ -89,8 +89,9 @@ object DatabricksConnectionUtil {
             // socket timeouts, so with the long warehouse-start bound a dead
             // workspace host would wait that long; a plain TCP connect first
             // fails it within WorkspaceConnectSeconds.
-            // Skipped behind a configured proxy (a direct connect may be refused there).
-            if (warehouseStartSeconds.isDefined && !proxyConfigured) workspaceReachable(host, Port, jdbcUrl)
+            // The driver connects directly here (no UseProxy / UseSystemProxy is
+            // ever set on this connection), so a direct connect is what it does too.
+            if (warehouseStartSeconds.isDefined) workspaceReachable(host, Port, jdbcUrl)
             logger.info("Databricks jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + " httpPath: " + httpPath)
             onInfo("jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + " httpPath: " + httpPath)
             // getConnection blocks while a stopped warehouse auto-starts — classic
@@ -113,20 +114,45 @@ object DatabricksConnectionUtil {
     /** The port of the workspace's JDBC URL. */
     val Port = 443
 
-    /** An HTTPS proxy configured for the JVM or the process: the pre-check
-      * cannot tell a refused direct connect from a dead host there. */
-    private[util] def proxyConfigured: Boolean =
-        Seq(System.getProperty("https.proxyHost"), System.getenv("HTTPS_PROXY"), System.getenv("https_proxy")).exists(v => v != null && v.trim.nonEmpty)
-
     /** The delete's workspace pre-check connect bound, in seconds. */
     val WorkspaceConnectSeconds = 30
 
     /** Test seam: opens (and closes) a TCP connection to (host, port) within
-      * the timeout in milliseconds, or throws. */
-    @volatile private[util] var tcpConnect: (String, Int, Int) => Unit = (host, port, timeoutMs) => {
-        val s = new java.net.Socket()
-        try s.connect(new java.net.InetSocketAddress(host, port), timeoutMs)
-        finally Try(s.close())
+      * the timeout in milliseconds, or throws. The default tries every
+      * address the host resolves to, as the driver's HTTP client does. */
+    @volatile private[util] var tcpConnect: (String, Int, Int) => Unit = (host, port, timeoutMs) =>
+        connectAny(java.net.InetAddress.getAllByName(host).toSeq, port, timeoutMs)
+
+    /** Connects to each of `addresses` in turn (a fresh socket each, always
+      * closed) until one accepts; otherwise rethrows the last failure. One
+      * deadline of `timeoutMs` is shared: each address gets the remaining
+      * time divided by the addresses left, so an unroutable first address
+      * cannot use the whole budget. */
+    private[util] def connectAny(
+        addresses: Seq[java.net.InetAddress],
+        port: Int,
+        timeoutMs: Int,
+        newSocket: () => java.net.Socket = () => new java.net.Socket()
+    ): Unit = {
+        if (addresses.isEmpty) throw new java.net.UnknownHostException("no address")
+        val deadline = System.nanoTime() + timeoutMs * 1000000L
+        var last: Exception = null
+        var connected = false
+        var i = 0
+        while (!connected && i < addresses.size) {
+            val remainingMs = (deadline - System.nanoTime()) / 1000000L
+            if (remainingMs <= 0) throw (if (last != null) last else new java.net.SocketTimeoutException("connect timed out"))
+            val budget = math.max(1L, remainingMs / (addresses.size - i)).toInt
+            val s = newSocket()
+            try {
+                s.connect(new java.net.InetSocketAddress(addresses(i), port), budget)
+                connected = true
+            } catch {
+                case e: Exception => last = e
+            } finally Try(s.close())
+            i += 1
+        }
+        if (!connected) throw last
     }
 
     /** The delete's pre-check: the workspace accepts a TCP connection on

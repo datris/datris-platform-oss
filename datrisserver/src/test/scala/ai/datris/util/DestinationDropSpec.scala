@@ -582,6 +582,59 @@ class DestinationDropSpec extends AnyFunSuite {
             java.nio.charset.StandardCharsets.UTF_8
         )
         assert(src.contains("val jdbcUrl = \"jdbc:databricks://\" + host + \":\" + Port"))
-        assert(src.contains("if (warehouseStartSeconds.isDefined && !proxyConfigured) workspaceReachable(host, Port, jdbcUrl)"))
+        // Round 4: no proxy skip (the driver is never given UseProxy / UseSystemProxy here).
+        assert(src.contains("if (warehouseStartSeconds.isDefined) workspaceReachable(host, Port, jdbcUrl)"))
+        assert(!src.contains("proxyConfigured") && !src.contains("UseProxy\"") && !src.contains("UseSystemProxy\""))
+    }
+
+    test("round 4: the default pre-check connects to a listening loopback port and closes the socket; a closed port is refused") {
+        val loop = java.net.InetAddress.getByName("127.0.0.1")
+        val server = new java.net.ServerSocket(0, 5, loop)
+        try {
+            val port = server.getLocalPort
+            DatabricksConnectionUtil.tcpConnect("127.0.0.1", port, 5000)
+            val made = scala.collection.mutable.ArrayBuffer[java.net.Socket]()
+            DatabricksConnectionUtil.connectAny(Seq(loop), port, 5000, () => { val s = new java.net.Socket(); made += s; s })
+            assert(made.size == 1 && made.head.isClosed, made)
+        } finally server.close()
+        // A port nothing listens on (just released).
+        val freed = { val t = new java.net.ServerSocket(0, 1, loop); val p = t.getLocalPort; t.close(); p }
+        intercept[java.net.ConnectException](DatabricksConnectionUtil.tcpConnect("127.0.0.1", freed, 5000))
+        intercept[java.net.UnknownHostException](DatabricksConnectionUtil.connectAny(Nil, freed, 5000))
+    }
+
+    test("round 4: every resolved address is tried: first refused, second accepts, so the workspace is reachable; all refused rethrows the last") {
+        val loop = java.net.InetAddress.getByName("127.0.0.1")
+        val server = new java.net.ServerSocket(0, 5, loop)
+        try {
+            val port = server.getLocalPort
+            // The IPv6 loopback has no listener on this port (the server is bound
+            // to 127.0.0.1 only): refused, or unavailable on an IPv4-only host.
+            val v6 = java.net.InetAddress.getByName("::1")
+            val made = scala.collection.mutable.ArrayBuffer[java.net.Socket]()
+            DatabricksConnectionUtil.connectAny(Seq(v6, loop), port, 10000, () => { val s = new java.net.Socket(); made += s; s })
+            assert(made.size == 2 && made.forall(_.isClosed), made)
+            // Both refused: the last failure is thrown.
+            val freed = { val t = new java.net.ServerSocket(0, 1, loop); val p = t.getLocalPort; t.close(); p }
+            intercept[java.io.IOException](DatabricksConnectionUtil.connectAny(Seq(v6, loop), freed, 10000))
+        } finally server.close()
+    }
+
+    test("round 4: one shared deadline: each address gets the remaining time divided by the addresses left") {
+        val budgets = scala.collection.mutable.ArrayBuffer[Int]()
+        class Fake extends java.net.Socket {
+            override def connect(endpoint: java.net.SocketAddress, timeout: Int): Unit = {
+                budgets += timeout
+                // A blackholed address: the connect uses its whole budget.
+                Thread.sleep(timeout.toLong)
+                throw new java.net.SocketTimeoutException("connect timed out")
+            }
+        }
+        val addrs = Seq("10.0.0.1", "10.0.0.2", "10.0.0.3").map(a => java.net.InetAddress.getByName(a))
+        intercept[java.net.SocketTimeoutException](DatabricksConnectionUtil.connectAny(addrs, 443, 600, () => new Fake))
+        assert(budgets.size == 3, budgets)
+        // 600 ms shared by three: about 200 each, never more than what is left.
+        assert(budgets.head <= 200 && budgets.head >= 150, budgets)
+        assert(budgets.sum <= 600, budgets)
     }
 }
