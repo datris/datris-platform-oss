@@ -97,6 +97,18 @@ object DestinationDrop {
       * `DestinationProbe.DefaultDeadline`. */
     val TimeoutSeconds: Int = 30
 
+    /** The socket read bound of the Postgres, pgvector and SQL Server drop
+      * connections: the bound plus a margin, so the server's statement
+      * timeout (57014) or the driver's query-timeout answer arrives before
+      * the socket gives up (a socket timeout would read as "could not be
+      * reached" and leave the server-side state unknown). */
+    val SocketTimeoutSeconds: Int = TimeoutSeconds + 10
+
+    /** How long the Databricks drop's connection waits for a stopped SQL
+      * warehouse to start (the driver's retry window for "temporarily
+      * unavailable"); the drop statement then has [[TimeoutSeconds]]. */
+    val DatabricksWarehouseStartSeconds: Int = 300
+
     /** One removal. `kind` (postgres, pgvector, mongodb, snowflake,
       * sqlserver, databricks, objectstore, scratch, or empty) is what a
       * throwing `run` is classified as. `countsAsData` is false for the
@@ -139,17 +151,21 @@ object DestinationDrop {
 
     // ------------------------------------------------------------ bounds
 
-    /** Postgres / pgvector connection properties: the credentials and the
-      * probe's connect, login and socket timeouts. */
+    /** Postgres / pgvector connection properties: the credentials, the
+      * probe's connect and login timeouts and the [[SocketTimeoutSeconds]]
+      * socket timeout. */
     def jdbcProperties(user: String, password: String): java.util.Properties = {
         val p = new java.util.Properties()
         p.setProperty("user", if (user == null) "" else user)
         p.setProperty("password", if (password == null) "" else password)
         p.setProperty("connectTimeout", TimeoutSeconds.toString)
         p.setProperty("loginTimeout", TimeoutSeconds.toString)
-        p.setProperty("socketTimeout", TimeoutSeconds.toString)
+        p.setProperty("socketTimeout", SocketTimeoutSeconds.toString)
         p
     }
+
+    /** The server-side bound of a Postgres / pgvector drop's transaction. */
+    val StatementTimeoutSql: String = "SET LOCAL statement_timeout = " + (TimeoutSeconds * 1000L)
 
     private def transactional(kind: String): Boolean = kind == "postgres" || kind == "pgvector"
 
@@ -157,7 +173,10 @@ object DestinationDrop {
       * query timeout; never throws. Postgres and pgvector: inside an explicit
       * transaction with `SET LOCAL statement_timeout`, committed only when the
       * drop answered, so a drop the bound cut off is rolled back by the server
-      * rather than completed later. Removed when the statement ran (a
+      * rather than completed later. A store that rejects the `SET LOCAL` (a
+      * Postgres-compatible store without it) gets the drop as before this
+      * bound: rolled back, autocommit restored, then the drop bounded by the
+      * query timeout only. Removed when the statement ran (a
       * `DROP ... IF EXISTS` of a missing table included); otherwise the
       * classified failure (detail logged). */
     def execute(kind: String, conn: Connection, sql: String): Outcome =
@@ -167,15 +186,28 @@ object DestinationDrop {
                 Try(st.setQueryTimeout(TimeoutSeconds))
                 if (transactional(kind)) {
                     val began = Try(conn.setAutoCommit(false)).isSuccess && !Try(conn.getAutoCommit).getOrElse(true)
-                    try {
-                        st.execute("SET LOCAL statement_timeout = " + (TimeoutSeconds * 1000L))
+                    val bounded =
+                        try { st.execute(StatementTimeoutSql); true }
+                        catch {
+                            case NonFatal(e) =>
+                                logger.warn("Pipeline delete: " + kind + " store rejected the statement timeout; dropping without it: " + e)
+                                false
+                        }
+                    if (!bounded) {
+                        if (began) {
+                            Try(conn.rollback())
+                            Try(conn.setAutoCommit(true))
+                        }
                         st.execute(sql)
-                        if (began) conn.commit()
-                    } catch {
-                        case e: Throwable =>
-                            if (began) Try(conn.rollback())
-                            throw e
-                    }
+                    } else
+                        try {
+                            st.execute(sql)
+                            if (began) conn.commit()
+                        } catch {
+                            case e: Throwable =>
+                                if (began) Try(conn.rollback())
+                                throw e
+                        }
                 } else st.execute(sql)
                 Removed
             } finally Try(st.close())
@@ -254,6 +286,11 @@ object DestinationDrop {
     private def one(kind: String, t: Throwable): Option[Outcome] =
         t match {
             case d: DatrisException => datrisText(kind, Option(d.getMessage).getOrElse(""))
+            // A connection-class error the socket timeout caused (pgjdbc 08006,
+            // mssql-jdbc 08S01): the store did not answer in time, unless the
+            // timeout was the connect itself.
+            case s: SQLException if state(s).startsWith("08") && socketTimeoutIn(s).isDefined =>
+                socketTimeoutIn(s).map(st => if (connectTimedOut(st)) Failed(Unreachable) else Failed(TimedOut))
             case _ =>
                 val specific = kind match {
                     case "postgres" | "pgvector" => sql(t).flatMap(postgres)
@@ -266,6 +303,13 @@ object DestinationDrop {
                 }
                 specific.orElse(generic(t))
         }
+
+    private def socketTimeoutIn(t: Throwable): Option[java.net.SocketTimeoutException] =
+        causes(t).drop(1).collectFirst { case s: java.net.SocketTimeoutException => s }
+
+    // The JDK's fixed text for a connect that timed out (not store text).
+    private def connectTimedOut(e: java.net.SocketTimeoutException): Boolean =
+        Option(e.getMessage).exists(_.toLowerCase(Locale.ROOT).startsWith("connect timed out"))
 
     private def sql(t: Throwable): Option[SQLException] = t match {
         case s: SQLException => Some(s)

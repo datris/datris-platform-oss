@@ -31,8 +31,18 @@ object DatabricksConnectionUtil {
      *  lets callers mirror progress into their own status log.
      *  `timeoutSeconds` (None for loaders and queries: driver defaults) sets
      *  the driver's `socketTimeout` (seconds; the name databricks-jdbc 3.4.1 declares in
-     *  `DatabricksJdbcUrlParams`, looked up lower-cased). */
-    def withConnection[T](db: Database, onInfo: String => Unit = _ => (), pipelineName: String = null, timeoutSeconds: Option[Int] = None)(
+     *  `DatabricksJdbcUrlParams`, looked up lower-cased).
+     *  `warehouseStartSeconds` (None everywhere but the pipeline delete)
+     *  bounds how long the driver keeps retrying a warehouse that answers
+     *  "temporarily unavailable" while it starts, and keeps the per-request
+     *  socket timeout at least that long ([[timeoutProperties]]). */
+    def withConnection[T](
+        db: Database,
+        onInfo: String => Unit = _ => (),
+        pipelineName: String = null,
+        timeoutSeconds: Option[Int] = None,
+        warehouseStartSeconds: Option[Int] = None
+    )(
         f: Connection => T
     ): T = {
         val creds = CredentialResolver.resolveDatabricks(db.credentialsSecret)
@@ -53,7 +63,7 @@ object DatabricksConnectionUtil {
             if (db.dbName != null) properties.setProperty("ConnCatalog", db.dbName)
             if (db.schema != null) properties.setProperty("ConnSchema", db.schema)
             properties.setProperty("UserAgentEntry", "Datris")
-            timeoutSeconds.foreach(s => properties.setProperty("socketTimeout", s.toString))
+            timeoutProperties(timeoutSeconds, warehouseStartSeconds).foreach { case (k, v) => properties.setProperty(k, v) }
             // Required for the driver's Unity Catalog volume operations (PUT/REMOVE):
             // it refuses to read local files outside this allowlist. Staging CSVs are
             // written to the JVM temp dir.
@@ -91,6 +101,24 @@ object DatabricksConnectionUtil {
         } finally {
             if (conn != null) Try(conn.close())
         }
+    }
+
+    /** The driver timeout properties for `timeoutSeconds` and
+     *  `warehouseStartSeconds` (databricks-jdbc 3.4.1, read from its
+     *  `DatabricksJdbcUrlParams` and `DatabricksHttpClient`; not measured
+     *  against a live warehouse). `socketTimeout` (seconds, default 900) is
+     *  applied to every HTTP request as Apache HttpClient's connect, socket
+     *  (read idle) and connection-request timeouts. A 503 "temporarily
+     *  unavailable" answer (a warehouse starting) is retried with backoff for
+     *  up to `TemporarilyUnavailableRetryTimeout` seconds (default 900); a
+     *  socket timeout is not retried. So with `warehouseStartSeconds` the
+     *  retry window is that bound and the per-request socket timeout is
+     *  raised to it too, so a start answered by one long request is not cut
+     *  short by `timeoutSeconds`. Nothing set: driver defaults. */
+    private[util] def timeoutProperties(timeoutSeconds: Option[Int], warehouseStartSeconds: Option[Int]): Seq[(String, String)] = {
+        val socket = (timeoutSeconds.toSeq ++ warehouseStartSeconds.toSeq).reduceOption(_ max _)
+        socket.map(s => "socketTimeout" -> s.toString).toSeq ++
+            warehouseStartSeconds.map(s => "TemporarilyUnavailableRetryTimeout" -> s.toString).toSeq
     }
 
     /** Convert the driver's opaque connect-time failures into actionable errors

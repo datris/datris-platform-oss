@@ -30,8 +30,13 @@ object SqlServerConnectionUtil {
      *  `dbName`, run `f`, and close the connection. `onInfo` lets callers mirror
      *  progress into their own status log (the loader routes it to the job
      *  status). `timeoutSeconds` (None for loaders and queries: driver
-     *  defaults) bounds login, each socket read and each statement. */
-    def withConnection[T](db: Database, onInfo: String => Unit = _ => (), timeoutSeconds: Option[Int] = None)(f: Connection => T): T = {
+     *  defaults) bounds login, each socket read and each statement.
+     *  `socketTimeoutSeconds` (None: `timeoutSeconds`) sets the socket read
+     *  bound on its own, so the query timeout's answer can arrive before the
+     *  socket gives up. */
+    def withConnection[T](db: Database, onInfo: String => Unit = _ => (), timeoutSeconds: Option[Int] = None, socketTimeoutSeconds: Option[Int] = None)(
+        f: Connection => T
+    ): T = {
         val creds = CredentialResolver.resolveSqlServer(db.credentialsSecret)
 
         Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
@@ -47,7 +52,7 @@ object SqlServerConnectionUtil {
                     val props = connectionProperties(creds)
                     timeoutSeconds.foreach { s =>
                         props.setProperty("loginTimeout", s.toString)
-                        props.setProperty("socketTimeout", (s * 1000L).toString)
+                        props.setProperty("socketTimeout", (socketTimeoutSeconds.getOrElse(s) * 1000L).toString)
                         props.setProperty("queryTimeout", s.toString)
                     }
                     DriverManager.getConnection(url, props)

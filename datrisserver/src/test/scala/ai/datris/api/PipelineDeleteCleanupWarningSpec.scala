@@ -338,11 +338,13 @@ class PipelineDeleteCleanupWarningSpec extends AnyFunSuite with BeforeAndAfterEa
                 val w = PipelineAPIController.ledgerCleanupWarning(r, cd)
                 assert(w.startsWith("Could not remove "), w)
                 assert(w.contains(": " + r + ". "), w)
+                // Review finding 6: platform-internal state, nothing to remove in a store.
                 assert(
-                    w.endsWith(if (cd) "Its pipeline configuration was deleted; remove it in the store."
-                    else "Run the reset again once the store is available."),
+                    w.endsWith(if (cd) "It is left in the platform storage and is removed the next time a pipeline of this name is deleted."
+                    else "Run the reset again to retry."),
                     w
                 )
+                assert(!w.contains("remove it in the store"), w)
                 assert(!w.contains("'"), s"the ledger warning quotes a name: $w")
             }
         }
@@ -412,6 +414,9 @@ class PipelineDeleteCleanupWarningSpec extends AnyFunSuite with BeforeAndAfterEa
         // No data touched (keep-data delete): the original error, no claim.
         val e2 = intercept[Exception](PipelineAPIController.deleteConfigRow(dataRemoved = false, () => throw storeDown))
         assert(!e2.getMessage.contains("already removed"), e2.getMessage)
+        // Review finding 5: no store text in either 500.
+        Seq(e, e2).foreach(x => assert(!x.getMessage.contains("mongo-host") && !x.getMessage.contains("27017"), x.getMessage))
+        assert(e2.getMessage == "The pipeline configuration could not be deleted. Run the delete again.", e2.getMessage)
 
         // Wiring: the delete removes its config row through this seam.
         val outcome = method("deletePipelineOutcome")
@@ -438,5 +443,35 @@ class PipelineDeleteCleanupWarningSpec extends AnyFunSuite with BeforeAndAfterEa
         assert(controller.contains("DestinationDrop.pgvectorJdbc("), "the pgvector drop does not use the bounded connection target")
         assert(controller.contains("DestinationDrop.execute("), "the JDBC drop statements do not get a query timeout")
         assert(controller.contains("DestinationDrop.mongoSettings("), "the MongoDB drop client is not bounded")
+    }
+
+    // ------------------------------------------------------------ review follow-ups
+
+    test("review 5: the config row's 'already removed' sentence needs a step that removed data") {
+        val outcome = method("deletePipelineOutcome")
+        assert(outcome.contains("dataRemoved = cleanup.steps.exists(_._2 == DestinationDrop.Removed)"), "dataRemoved is not taken from the removed steps")
+        assert(!outcome.contains("dataRemoved = deleteDataBool"), "dataRemoved still claims removal for every data delete")
+    }
+
+    test("review 6: stored history, CodeGen scripts and Unity Catalog state failures use the platform wording") {
+        Seq(PipelineAPIController.HistoryLabel, PipelineAPIController.ScriptsLabel, PipelineAPIController.UnityCatalogStateLabel).foreach { l =>
+            val w = PipelineAPIController.platformCleanupWarning(l, RE, configDeleted = true)
+            assert(
+                w == "Could not remove " + l + ": the store reported an error. It is left in the platform storage and is removed the next time a pipeline of this name is deleted.",
+                w
+            )
+        }
+        val outcome = method("deletePipelineOutcome")
+        assert(outcome.contains("PipelineAPIController.platformCleanupWarning(label, reason, configDeleted = true)"))
+    }
+
+    test("review 8: an empty object-store prefixKey is not deleted, not reported and not data left") {
+        Seq("", "/", null).foreach { prefix =>
+            val c = PipelineConfig(name = "cf_os_empty", destination = Destination(objectStore = ObjectStore(prefixKey = prefix)))
+            val done = new PipelineAPIController().cleanupDestinationData(c, Set.empty, Set.empty, None)
+            assert(done.steps.map(_._2) == Seq(DestinationDrop.NotSent), done.steps)
+            assert(PipelineAPIController.cleanupWarnings(done, configDeleted = true).isEmpty)
+            assert(!done.dataLeft && !done.objectStoreDataDeleted && done.keptPrefixes.isEmpty)
+        }
     }
 }

@@ -990,6 +990,8 @@ class PipelineAPIController {
         // A managed commit's doc always survives (the table lives on in Unity
         // Catalog and a recreated pipeline continues it).
         var ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, dataDeleted = true, adviceGiven = false)
+        // Whether any destination data was removed (for the config row's 500).
+        var dataRemoved = false
 
         // Clean up destination data
         if (deleteDataBool && config.destination != null) {
@@ -1001,6 +1003,7 @@ class PipelineAPIController {
             val cleanup =
                 cleanupDestinationData(config, sharedVector.map(_._1).toSet, sharedStructured.map(_._1).toSet, dsEnv.tenantDatabase)
             val objectStoreDataDeleted = cleanup.objectStoreDataDeleted
+            dataRemoved = cleanup.steps.exists(_._2 == DestinationDrop.Removed)
             sharedVector.foreach { case (k, sharers) =>
                 logger.warn(
                     "Skipped vector data delete for pipeline '" + pipeline + "': " + VectorContainers.label(VectorContainers.displayKey(k, config)) +
@@ -1087,7 +1090,7 @@ class PipelineAPIController {
         if (deleteConfigBool) {
             // A failure here is a 500; after the data was removed it says so.
             PipelineAPIController.deleteConfigRow(
-                dataRemoved = deleteDataBool && config.destination != null,
+                dataRemoved = dataRemoved,
                 () => NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
             )
             // Hard-delete all definition-version snapshots for this pipeline
@@ -1095,7 +1098,7 @@ class PipelineAPIController {
             // A failure is reported (no detail) and does not stop the delete.
             def sideFailure(label: String, kind: String, ex: Exception): Unit =
                 DestinationDrop.classify(kind, ex) match {
-                    case DestinationDrop.Failed(reason) => warnings += DestinationDrop.warning(label, reason, configDeleted = true)
+                    case DestinationDrop.Failed(reason) => warnings += PipelineAPIController.platformCleanupWarning(label, reason, configDeleted = true)
                     case _ =>
                 }
             try {
@@ -1306,7 +1309,11 @@ class PipelineAPIController {
         // so it owns it and may drop it).
         if (dest.database != null && dest.database.useSqlServer && dropStructured("sqlserver")) {
             structured += step("sqlserver", "sqlserver table of this pipeline") {
-                SqlServerConnectionUtil.withConnection(dest.database, timeoutSeconds = Some(DestinationDrop.TimeoutSeconds)) { conn =>
+                SqlServerConnectionUtil.withConnection(
+                    dest.database,
+                    timeoutSeconds = Some(DestinationDrop.TimeoutSeconds),
+                    socketTimeoutSeconds = Some(DestinationDrop.SocketTimeoutSeconds)
+                ) { conn =>
                     val o = DestinationDrop.execute("sqlserver", conn, "DROP TABLE IF EXISTS " + SqlServerConnectionUtil.qualifiedTable(dest.database))
                     if (o == DestinationDrop.Removed)
                         logger.info(
@@ -1323,13 +1330,20 @@ class PipelineAPIController {
         // shared datris_staging volume is left alone — other pipelines use it.
         if (dest.database != null && dest.database.useDatabricks && dropStructured("databricks")) {
             structured += step("databricks", "databricks table of this pipeline") {
-                DatabricksConnectionUtil.withConnection(dest.database, pipelineName = config.name, timeoutSeconds = Some(DestinationDrop.TimeoutSeconds)) {
-                    conn =>
-                        val o =
-                            DestinationDrop.execute("databricks", conn, "DROP TABLE IF EXISTS " + DatabricksConnectionUtil.qualifiedTable(dest.database))
-                        if (o == DestinationDrop.Removed)
-                            logger.info("Dropped Databricks table: " + dest.database.dbName + "." + dest.database.schema + "." + dest.database.table)
-                        o
+                // A stopped warehouse may take minutes to start: the connection
+                // waits up to DatabricksWarehouseStartSeconds for it, then the
+                // drop statement has TimeoutSeconds.
+                DatabricksConnectionUtil.withConnection(
+                    dest.database,
+                    pipelineName = config.name,
+                    timeoutSeconds = Some(DestinationDrop.TimeoutSeconds),
+                    warehouseStartSeconds = Some(DestinationDrop.DatabricksWarehouseStartSeconds)
+                ) { conn =>
+                    val o =
+                        DestinationDrop.execute("databricks", conn, "DROP TABLE IF EXISTS " + DatabricksConnectionUtil.qualifiedTable(dest.database))
+                    if (o == DestinationDrop.Removed)
+                        logger.info("Dropped Databricks table: " + dest.database.dbName + "." + dest.database.schema + "." + dest.database.table)
+                    o
                 }
             }
         }
@@ -1396,20 +1410,27 @@ class PipelineAPIController {
                 label,
                 countsAsData = true,
                 () => {
-                    val sharedWith = pipelinesSharingObjectStorePrefix(config)
-                    if (sharedWith.nonEmpty) {
-                        logger.warn(
-                            "Skipped object store data delete for pipeline '" + config.name + "': prefixKey '" +
-                                dest.objectStore.prefixKey + "' overlaps with pipeline(s): " + sharedWith.mkString(", ")
-                        )
-                        keptPrefixes += label
+                    // An empty prefixKey is never deleted (it would be the whole
+                    // bucket) and, as before, is not reported.
+                    if (ObjectStoreSpark.normalizePrefix(dest.objectStore.prefixKey).isEmpty) {
+                        logger.info("Skipped object store data delete for pipeline '" + config.name + "': prefixKey is empty")
                         DestinationDrop.NotSent
                     } else {
-                        // Deletes only s3a://<bucket>/<prefixKey>. A catalogMode
-                        // managed table lives where Unity Catalog put it (e.g.
-                        // __unitystorage), never under prefixKey, so it is never
-                        // touched here (UnityCatalogDeleteAdvice says so).
-                        if (ObjectStoreSpark.deleteDestinationData(dest.objectStore)) DestinationDrop.Removed else DestinationDrop.Absent
+                        val sharedWith = pipelinesSharingObjectStorePrefix(config)
+                        if (sharedWith.nonEmpty) {
+                            logger.warn(
+                                "Skipped object store data delete for pipeline '" + config.name + "': prefixKey '" +
+                                    dest.objectStore.prefixKey + "' overlaps with pipeline(s): " + sharedWith.mkString(", ")
+                            )
+                            keptPrefixes += label
+                            DestinationDrop.NotSent
+                        } else {
+                            // Deletes only s3a://<bucket>/<prefixKey>. A catalogMode
+                            // managed table lives where Unity Catalog put it (e.g.
+                            // __unitystorage), never under prefixKey, so it is never
+                            // touched here (UnityCatalogDeleteAdvice says so).
+                            if (ObjectStoreSpark.deleteDestinationData(dest.objectStore)) DestinationDrop.Removed else DestinationDrop.Absent
+                        }
                     }
                 },
                 "objectstore"
@@ -1915,22 +1936,37 @@ object PipelineAPIController {
     /** The warning for document-tap ledgers that could not be cleared. Names
       * no tap. */
     def ledgerCleanupWarning(reason: String, configDeleted: Boolean): String =
-        DestinationDrop.warning("the document-tap ledgers of this pipeline", reason, configDeleted)
+        platformCleanupWarning("the document-tap ledgers of this pipeline", reason, configDeleted)
+
+    /** The warning for platform-internal state of the pipeline (document-tap
+      * ledgers, stored history, CodeGen scripts, Unity Catalog sync state)
+      * that could not be removed: what was left, and that deleting a pipeline
+      * of this name again (or running the reset again) retries it. Nothing for
+      * the user to remove in a store. */
+    def platformCleanupWarning(label: String, reason: String, configDeleted: Boolean): String =
+        "Could not remove " + label + ": " + reason + ". " +
+            (if (configDeleted) "It is left in the platform storage and is removed the next time a pipeline of this name is deleted."
+             else "Run the reset again to retry.")
 
     /** The text of a config row delete that failed after the destination
       * data was removed. */
     val ConfigRowAfterDataMessage: String =
         "The pipeline's destination data was already removed; the configuration could not be deleted. Run the delete again."
 
-    /** Deletes the config row with `delete`. A failure propagates (500); when
-      * the data was already removed (`dataRemoved`) it says so instead of the
-      * store's error (which goes to the log). */
+    /** The text of a config row delete that failed when no destination
+      * data was removed. */
+    val ConfigRowMessage: String = "The pipeline configuration could not be deleted. Run the delete again."
+
+    /** Deletes the config row with `delete`. A failure propagates (500)
+      * without the store's error text (that goes to the log): when some
+      * destination data was removed (`dataRemoved`) it says so. */
     def deleteConfigRow(dataRemoved: Boolean, delete: () => Unit): Unit =
         try delete()
         catch {
-            case e: Exception if dataRemoved =>
-                auditLogger.warn("Pipeline delete: the configuration row could not be deleted after the data was removed: " + e)
-                val out = new DatrisException(ConfigRowAfterDataMessage)
+            case e: Exception =>
+                auditLogger.warn("Pipeline delete: the configuration row could not be deleted" + (if (dataRemoved) " after the data was removed"
+                                                                                                  else "") + ": " + e)
+                val out = new DatrisException(if (dataRemoved) ConfigRowAfterDataMessage else ConfigRowMessage)
                 out.initCause(e)
                 throw out
         }

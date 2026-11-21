@@ -261,7 +261,9 @@ class DestinationDropSpec extends AnyFunSuite {
             case Right((url, props)) =>
                 assert(url == DestinationProbe.pgvectorJdbcUrl(raw, Some("tenant")), url)
                 assert(props.getProperty("user") == "u" && props.getProperty("password") == "p", props)
-                Seq("connectTimeout", "loginTimeout", "socketTimeout").foreach(p => assert(props.getProperty(p) == "30", s"$p: $props"))
+                Seq("connectTimeout", "loginTimeout").foreach(p => assert(props.getProperty(p) == "30", s"$p: $props"))
+                // Review finding 2: the socket waits past the bound so the statement timeout answers first.
+                assert(props.getProperty("socketTimeout") == "40", props)
             case other => fail(s"expected a connection target, got $other")
         }
     }
@@ -382,7 +384,10 @@ class DestinationDropSpec extends AnyFunSuite {
         assert(TimeoutSeconds.toLong == DestinationProbe.DefaultDeadline.toSeconds)
         val p = jdbcProperties("datris", "pw")
         assert(p.getProperty("user") == "datris" && p.getProperty("password") == "pw")
-        Seq("connectTimeout", "loginTimeout", "socketTimeout").foreach(k => assert(p.getProperty(k) == "30", s"$k: $p"))
+        Seq("connectTimeout", "loginTimeout").foreach(k => assert(p.getProperty(k) == "30", s"$k: $p"))
+        // Review finding 2: the bound plus a margin, so 57014 arrives before the socket gives up.
+        assert(p.getProperty("socketTimeout") == "40", p)
+        assert(SocketTimeoutSeconds == TimeoutSeconds + 10)
     }
 
     test("Decision 3: the drop statement gets setQueryTimeout(30) before it runs; a cancelled statement is 'did not answer in time' and is closed") {
@@ -430,5 +435,97 @@ class DestinationDropSpec extends AnyFunSuite {
         assert(s.getSocketSettings.getConnectTimeout(TimeUnit.SECONDS) == 30)
         assert(s.getSocketSettings.getReadTimeout(TimeUnit.SECONDS) == 30)
         assert(s.getClusterSettings.getHosts.get(0).getHost == "mongo-host.internal", "the connection string is applied")
+    }
+
+    // ------------------------------------------------------------ review follow-ups
+
+    test("review 2: a connection-class error caused by a socket timeout is 'did not answer in time'; a connect timeout is 'could not be reached'") {
+        Seq("postgres", "pgvector").foreach { k =>
+            expect(k, new SQLException("An I/O error occurred while sending to the backend.", "08006", new SocketTimeoutException()), TO)
+            expect(k, new SQLException("An I/O error occurred", "08006", new SocketTimeoutException("Read timed out")), TO)
+            expect(k, new SQLException("The connection attempt failed.", "08001", new SocketTimeoutException("connect timed out")), UR)
+            expect(k, new SQLException("Connection refused", "08001", new ConnectException("Connection refused")), UR)
+        }
+        expect("sqlserver", new SQLException("Read timed out", "08S01", new SocketTimeoutException("Read timed out")), TO)
+        expect("sqlserver", new SQLException("The TCP/IP connection to the host failed.", "08S01", 0), UR)
+    }
+
+    private def fakeConn(): (Connection, Statement) = {
+        val conn = mock(classOf[Connection])
+        val st = mock(classOf[Statement])
+        when(conn.createStatement()).thenReturn(st)
+        (conn, st)
+    }
+
+    test("review 3: a Postgres drop runs in one transaction: SET LOCAL and the drop, then one commit") {
+        val (conn, st) = fakeConn()
+        when(st.execute(anyString())).thenReturn(false)
+        assert(DestinationDrop.execute("postgres", conn, "DROP TABLE IF EXISTS \"public\".\"t\"") == Removed)
+        val o = inOrder(conn, st)
+        o.verify(conn).setAutoCommit(false)
+        o.verify(st).execute(StatementTimeoutSql)
+        o.verify(st).execute("DROP TABLE IF EXISTS \"public\".\"t\"")
+        o.verify(conn).commit()
+        verify(conn, org.mockito.Mockito.times(1)).commit()
+        verify(conn, never()).rollback()
+        assert(StatementTimeoutSql == "SET LOCAL statement_timeout = 30000")
+    }
+
+    test("review 3: a drop cancelled by the statement timeout (57014) is rolled back and never committed") {
+        val (conn, st) = fakeConn()
+        when(st.execute(StatementTimeoutSql)).thenReturn(false)
+        when(st.execute("DROP TABLE IF EXISTS \"public\".\"t\"")).thenThrow(new SQLException("canceling statement due to statement timeout", "57014"))
+        assert(DestinationDrop.execute("pgvector", conn, "DROP TABLE IF EXISTS \"public\".\"t\"") == Failed(TO))
+        verify(conn).rollback()
+        verify(conn, never()).commit()
+        verify(st).close()
+    }
+
+    test("review 3: a snowflake drop sends no SET LOCAL and no commit") {
+        val (conn, st) = fakeConn()
+        when(st.execute(anyString())).thenReturn(false)
+        assert(DestinationDrop.execute("snowflake", conn, "DROP TABLE IF EXISTS T") == Removed)
+        verify(st).setQueryTimeout(30)
+        verify(st).execute("DROP TABLE IF EXISTS T")
+        verify(st, never()).execute(StatementTimeoutSql)
+        verify(conn, never()).commit()
+        verify(conn, never()).setAutoCommit(false)
+    }
+
+    test("review 9: a store that rejects SET LOCAL gets the drop as before: rolled back, autocommit restored, drop run, no commit") {
+        val (conn, st) = fakeConn()
+        when(st.execute(StatementTimeoutSql)).thenThrow(new SQLException("unrecognized configuration parameter", "42704"))
+        when(st.execute("DROP TABLE IF EXISTS \"public\".\"t\"")).thenReturn(false)
+        assert(DestinationDrop.execute("postgres", conn, "DROP TABLE IF EXISTS \"public\".\"t\"") == Removed)
+        val o = inOrder(conn, st)
+        o.verify(st).execute(StatementTimeoutSql)
+        o.verify(conn).rollback()
+        o.verify(conn).setAutoCommit(true)
+        o.verify(st).execute("DROP TABLE IF EXISTS \"public\".\"t\"")
+        verify(conn, never()).commit()
+        verify(st).setQueryTimeout(30)
+    }
+
+    test("review 3: a pgvector secret without username connects as postgres, as the loader does") {
+        val m = new java.util.HashMap[String, String]()
+        m.put("jdbcUrl", "jdbc:postgresql://pgv-host:5432/datris")
+        pgvectorJdbc(Some(m), None) match {
+            case Right((url, props)) =>
+                assert(url == "jdbc:postgresql://pgv-host:5432/datris")
+                assert(props.getProperty("user") == "postgres" && props.getProperty("password") == "", props)
+            case other => fail(s"expected a connection target, got $other")
+        }
+    }
+
+    test(
+        "review 1: the Databricks delete waits up to 300 s for a warehouse start; the per-request socket timeout never cuts it shorter; nothing set by default"
+    ) {
+        assert(DatabricksWarehouseStartSeconds == 300)
+        val p = DatabricksConnectionUtil.timeoutProperties(Some(TimeoutSeconds), Some(DatabricksWarehouseStartSeconds)).toMap
+        assert(p == Map("socketTimeout" -> "300", "TemporarilyUnavailableRetryTimeout" -> "300"), p)
+        // The probe's (and any other bounded) use: unchanged.
+        assert(DatabricksConnectionUtil.timeoutProperties(Some(30), None) == Seq("socketTimeout" -> "30"))
+        // Loads and queries: driver defaults.
+        assert(DatabricksConnectionUtil.timeoutProperties(None, None).isEmpty)
     }
 }
