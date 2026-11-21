@@ -106,7 +106,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
     test("reconcile appends the added columns to the destination schema, as string, and stores them once") {
         val status = new RecordingStatusUtil
         val stored = ListBuffer[(String, List[SchemaField])]()
-        val out = TransformedColumns.reconcile(ctx(config(), header, rows, status), (n, f) => stored += ((n, f)))
+        val out = TransformedColumns.reconcile(ctx(config(), header, rows, status), Nil, (n, f) => stored += ((n, f)))
         val added = List("temp_f" -> "string", "label" -> "string", "day" -> "string", "empty" -> "string")
         assert(destOf(out.config) == source.toList ++ added)
         assert(out.config.destination.schemaProperties.schemaVersion == 2)
@@ -121,14 +121,14 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
     test("reconcile changes nothing when every header column is already a destination column") {
         val status = new RecordingStatusUtil
         val in = ctx(config(), List("temp_c", "city"), List("4.7,Shanghai"), status)
-        val out = TransformedColumns.reconcile(in, (_, _) => fail("nothing to store"))
+        val out = TransformedColumns.reconcile(in, Nil, (_, _) => fail("nothing to store"))
         assert(out eq in)
         assert(status.messages.isEmpty)
     }
 
     test("a rehearsal run lands the added columns but stores nothing") {
         val out = PipelineScripts.withRehearsal(true) {
-            TransformedColumns.reconcile(ctx(config(), header, rows, new RecordingStatusUtil), (_, _) => fail("a rehearsal stores nothing"))
+            TransformedColumns.reconcile(ctx(config(), header, rows, new RecordingStatusUtil), Nil, (_, _) => fail("a rehearsal stores nothing"))
         }
         assert(destOf(out.config).size == 6)
     }
@@ -143,12 +143,13 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
     test("on an object store pipeline an added column the destination cannot hold, or two with one name, stops the run before anything is stored") {
         val orc = config(ObjectStore(prefixKey = "weather", fileFormat = "orc"))
         val bad = intercept[DatrisException](
-            TransformedColumns.reconcile(ctx(orc, List("city", "temp_c", "a`b"), List("x,1,2"), new RecordingStatusUtil), (_, _) => fail("not stored"))
+            TransformedColumns.reconcile(ctx(orc, List("city", "temp_c", "a`b"), List("x,1,2"), new RecordingStatusUtil), Nil, (_, _) => fail("not stored"))
         )
         assert(bad.getMessage.contains("the transformation added a column named 'a`b'"))
         val twice = intercept[DatrisException](
             TransformedColumns.reconcile(
                 ctx(orc, List("city", "temp_c", "f", "F"), List("x,1,2,3"), new RecordingStatusUtil),
+                Nil,
                 (_, _) => fail("not stored")
             )
         )
@@ -196,7 +197,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
             val hdr = List("city", "temp_c", bad, "score")
             val in = ctx(pgConfig(), hdr, List("Shanghai,4.7,zzz,7"), status)
             val out =
-                try TransformedColumns.reconcile(in, (n, f) => stored += ((n, f)))
+                try TransformedColumns.reconcile(in, Nil, (n, f) => stored += ((n, f)))
                 catch { case e: DatrisException => fail("'" + label + "': the run must continue, but reconcile threw: " + e.getMessage) }
 
             assert(destOf(out.config) == source.toList :+ ("score" -> "string"), label + ": the unholdable column is left out, the rest is added")
@@ -218,7 +219,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         val stored = ListBuffer[(String, List[SchemaField])]()
         val hdr = List("city", "temp_c", "f", "score", "F")
         val out =
-            try TransformedColumns.reconcile(ctx(pgConfig(), hdr, List("Shanghai,4.7,1,7,2"), status), (n, f) => stored += ((n, f)))
+            try TransformedColumns.reconcile(ctx(pgConfig(), hdr, List("Shanghai,4.7,1,7,2"), status), Nil, (n, f) => stored += ((n, f)))
             catch { case e: DatrisException => fail("the run must continue, but reconcile threw: " + e.getMessage) }
 
         assert(destOf(out.config) == source.toList :+ ("score" -> "string"), "neither f nor F joins the schema")
@@ -230,7 +231,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
     test("with an object store destination an unholdable added name still fails with today's message") {
         def msg(c: PipelineConfig, hdr: List[String]): String =
             intercept[DatrisException](
-                TransformedColumns.reconcile(ctx(c, hdr, List("x,1,2,3"), new LevelStatusUtil), (_, _) => fail("nothing is stored"))
+                TransformedColumns.reconcile(ctx(c, hdr, List("x,1,2,3"), new LevelStatusUtil), Nil, (_, _) => fail("nothing is stored"))
             ).getMessage
 
         val orc = config(ObjectStore(prefixKey = "weather", fileFormat = "orc"))
@@ -268,7 +269,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
             List("Shanghai,4.7,40.5,true,2026-11-20,7,9000000000,2026-11-20T10:00:00", "Lagos,31,87.8,false,2026-11-21,8,9000000001,2026-11-21T10:00:00"),
             status
         )
-        val out = TransformedColumns.reconcile(in, (n, f) => stored += ((n, f)))
+        val out = TransformedColumns.reconcile(in, Nil, (n, f) => stored += ((n, f)))
         val added = List("temp_f", "flag", "day", "n", "big", "at").map(_ -> "string")
         assert(destOf(out.config) == source.toList ++ added)
         assert(out.data.headerWithSchema.drop(2).map(f => f.name -> f.`type`) == added, "the run's own header schema matches what is stored")
@@ -283,12 +284,12 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         val persist: (String, List[SchemaField]) => Unit = (_, f) => storedConfig = TransformedColumns.withDestFields(storedConfig, f)
         val hdr = List("city", "temp_c", "score")
 
-        TransformedColumns.reconcile(ctx(storedConfig, hdr, List("Shanghai,4.7,7"), new LevelStatusUtil), persist)
+        TransformedColumns.reconcile(ctx(storedConfig, hdr, List("Shanghai,4.7,7"), new LevelStatusUtil), Nil, persist)
         val afterFirst = destOf(storedConfig)
         assert(afterFirst == source.toList :+ ("score" -> "string"), "run 1 (score = 7) stores score as string, which every later value fits")
 
         val status2 = new LevelStatusUtil
-        val out2 = TransformedColumns.reconcile(ctx(storedConfig, hdr, List("Lagos,31,n/a"), status2), persist)
+        val out2 = TransformedColumns.reconcile(ctx(storedConfig, hdr, List("Lagos,31,n/a"), status2), Nil, persist)
         assert(destOf(storedConfig) == afterFirst, "run 2 (score = n/a) leaves the stored schema as run 1 left it")
         assert(destOf(out2.config) == afterFirst)
         assert(status2.warns.isEmpty && status2.errors.isEmpty, status2.warns.toString + status2.errors)
@@ -300,6 +301,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         val out = PipelineScripts.withRehearsal(true) {
             try TransformedColumns.reconcile(
                     ctx(pgConfig(), List("city", "temp_c", " ", "score"), List("x,1,2,3"), status),
+                    Nil,
                     (_, _) => fail("a rehearsal stores nothing")
                 )
             catch { case e: DatrisException => fail("the rehearsal must continue, but reconcile threw: " + e.getMessage) }
@@ -311,7 +313,8 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
     test("pin: a normal added column still arrives in the destination on a Postgres pipeline") {
         val status = new LevelStatusUtil
         val stored = ListBuffer[(String, List[SchemaField])]()
-        val out = TransformedColumns.reconcile(ctx(pgConfig(), List("city", "temp_c", "score"), List("Shanghai,4.7,7"), status), (n, f) => stored += ((n, f)))
+        val out =
+            TransformedColumns.reconcile(ctx(pgConfig(), List("city", "temp_c", "score"), List("Shanghai,4.7,7"), status), Nil, (n, f) => stored += ((n, f)))
         assert(destOf(out.config).map(_._1) == List("city", "temp_c", "score"))
         assert(out.config.destination.schemaProperties.schemaVersion == 2)
         assert(stored.toList.map(s => s._1 -> s._2.map(_.name)) == List("weather" -> List("score")), "stored once")
@@ -329,18 +332,18 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
             partitionBy = jl("city"),
             deleteBeforeWrite = true
         )
-        val keep = TransformedColumns.reconcile(ctx(config(os), List("city", "temp_c", "score"), List("x,1,2"), new LevelStatusUtil), (_, _) => ())
+        val keep = TransformedColumns.reconcile(ctx(config(os), List("city", "temp_c", "score"), List("x,1,2"), new LevelStatusUtil), Nil, (_, _) => ())
         assert(destOf(keep.config).map(_._1) == List("city", "temp_c", "score"))
         val keepFields = keep.config.destination.schemaProperties.fields.asScala.toList
         SparkObjectStoreLoader.refuseNullFilledRequired(keep.config, keepFields, List("city", "temp_c", "score"), 1L) // not refused
 
-        val lost = TransformedColumns.reconcile(ctx(config(os), List("temp_c", "score"), List("1,2"), new LevelStatusUtil), (_, _) => ())
+        val lost = TransformedColumns.reconcile(ctx(config(os), List("temp_c", "score"), List("1,2"), new LevelStatusUtil), Nil, (_, _) => ())
         val lostFields = lost.config.destination.schemaProperties.fields.asScala.toList
         val e = intercept[DatrisException](SparkObjectStoreLoader.refuseNullFilledRequired(lost.config, lostFields, List("temp_c", "score"), 1L))
         assert(e.getMessage.contains("missing required key field(s): city"), e.getMessage)
 
         val parquet = config(ObjectStore(prefixKey = "weather", fileFormat = "parquet", partitionBy = jl("city")))
-        val p = TransformedColumns.reconcile(ctx(parquet, List("temp_c", "score"), List("1,2"), new LevelStatusUtil), (_, _) => ())
+        val p = TransformedColumns.reconcile(ctx(parquet, List("temp_c", "score"), List("1,2"), new LevelStatusUtil), Nil, (_, _) => ())
         val pe = intercept[DatrisException](
             SparkObjectStoreLoader.refuseNullFilledRequired(p.config, p.config.destination.schemaProperties.fields.asScala.toList, List("temp_c", "score"), 1L)
         )
@@ -373,7 +376,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         val status = new LevelStatusUtil
         val (stored, persist) = recorder()
         val hdr = List("city", "temp_c", "notes", "score")
-        val out = TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("Shanghai,4.7,secret,7"), status), persist)
+        val out = TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("Shanghai,4.7,secret,7"), status), Nil, persist)
         assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
         assert(stored.toList.map(s => s._1 -> typesOf(s._2)) == List("weather" -> List("score" -> "string")), "persist receives only score")
         assert(status.warns.isEmpty, status.warns)
@@ -384,7 +387,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
     test("a transformation that changes no columns adds nothing, stores nothing and says nothing") {
         val status = new LevelStatusUtil
         val in = ctx(excludedConfig(), List("city", "temp_c", "notes"), List("Shanghai,4.7,secret"), status)
-        val out = TransformedColumns.reconcile(in, (_, _) => fail("nothing to store"))
+        val out = TransformedColumns.reconcile(in, Nil, (_, _) => fail("nothing to store"))
         assert(out eq in)
         assert(status.infos.isEmpty && status.warns.isEmpty, status.infos.toString + status.warns)
         assert(DestSchemaProjector.project(out, Iterator("Shanghai,4.7,secret")).toList == List("Shanghai,4.7"))
@@ -395,7 +398,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
             val status = new LevelStatusUtil
             val (stored, persist) = recorder()
             val hdr = List("city", "temp_c", renamed, "score")
-            val out = TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("Shanghai,4.7,secret,7"), status), persist)
+            val out = TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("Shanghai,4.7,secret,7"), status), Nil, persist)
             assert(destOf(out.config) == source.toList :+ ("score" -> "string"), "'" + renamed + "'")
             assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"), "'" + renamed + "'")
             assert(status.warns.isEmpty, status.warns)
@@ -407,7 +410,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         val status = new LevelStatusUtil
         val (stored, persist) = recorder()
         val hdr = List("score", "temp_c", "city", "notes")
-        val out = TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("7,4.7,Shanghai,secret"), status), persist)
+        val out = TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("7,4.7,Shanghai,secret"), status), Nil, persist)
         assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
         assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"))
         assert(status.warns.isEmpty, status.warns)
@@ -420,7 +423,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         val cfg = cfg0.copy(source = cfg0.source.copy(schemaProperties = schema((source :+ (long -> "string")): _*)))
         val status = new LevelStatusUtil
         val (stored, persist) = recorder()
-        val out = TransformedColumns.reconcile(ctx(cfg, List("city", "temp_c", long, "score"), List("Shanghai,4.7,secret,7"), status), persist)
+        val out = TransformedColumns.reconcile(ctx(cfg, List("city", "temp_c", long, "score"), List("Shanghai,4.7,secret,7"), status), Nil, persist)
         assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
         assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"))
         assert(status.warns.isEmpty, status.warns)
@@ -432,7 +435,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
             for (hdr <- Seq(List("city", "temp_c", "notes"), List("city", "temp_c", "notes", "score"), List("city", "notes", "score"))) {
                 val status = new LevelStatusUtil
                 val in = ctx(excludedConfig(objectStore = os, database = null), hdr, List(hdr.map(_ => "x").mkString(",")), status)
-                val out = TransformedColumns.reconcile(in, (_, _) => fail("nothing is stored: " + fmt + " " + hdr))
+                val out = TransformedColumns.reconcile(in, Nil, (_, _) => fail("nothing is stored: " + fmt + " " + hdr))
                 assert(destOf(out.config) == source.toList, fmt + " " + hdr)
                 assert(out.config.destination.schemaProperties.schemaVersion == in.config.destination.schemaProperties.schemaVersion)
                 assert(status.warns.isEmpty && status.errors.isEmpty, status.warns.toString + status.errors)
@@ -442,7 +445,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
 
     test("the run warning for an over-long added name does not speak of a new destination") {
         val status = new LevelStatusUtil
-        TransformedColumns.reconcile(ctx(pgConfig(), List("city", "temp_c", "s" * 64), List("x,1,2"), status), (_, _) => ())
+        TransformedColumns.reconcile(ctx(pgConfig(), List("city", "temp_c", "s" * 64), List("x,1,2"), status), Nil, (_, _) => ())
         assert(status.warns.exists(_.contains("it is 64 bytes long; the destination allows at most 63 bytes")), status.warns)
         assert(status.warns.forall(!_.contains("new destination")), status.warns)
     }
@@ -452,14 +455,14 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         val (stored, persist) = recorder()
         val before = List("city", "temp_c", "region")
         val hdr = List("city", "temp_c", "region", "score")
-        val out = TransformedColumns.reconcile(ctx(pgConfig(), hdr, List("Shanghai,4.7,east,7"), status), persist, inputHeader = before)
+        val out = TransformedColumns.reconcile(ctx(pgConfig(), hdr, List("Shanghai,4.7,east,7"), status), before, persist)
         assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
         assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"))
         assert(status.warns.isEmpty, status.warns)
         assert(DestSchemaProjector.project(out, Iterator("Shanghai,4.7,east,7")).toList == List("Shanghai,4.7,7"))
 
         // the same header without a pre-transformation header: region counts as created
-        val alone = TransformedColumns.reconcile(ctx(pgConfig(), hdr, List("Shanghai,4.7,east,7"), new LevelStatusUtil), (_, _) => ())
+        val alone = TransformedColumns.reconcile(ctx(pgConfig(), hdr, List("Shanghai,4.7,east,7"), new LevelStatusUtil), Nil, (_, _) => ())
         assert(destOf(alone.config).map(_._1) == List("city", "temp_c", "region", "score"))
     }
 
@@ -483,7 +486,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
             val status = new LevelStatusUtil
             val (stored, persist) = recorder()
             val out =
-                TransformedColumns.reconcile(raw(cfg, List("city", "temp_c", "notes", "score"), status), persist, inputHeader = List("city", "temp_c", "notes"))
+                TransformedColumns.reconcile(raw(cfg, List("city", "temp_c", "notes", "score"), status), List("city", "temp_c", "notes"), persist)
             assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
             assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"))
             assert(status.warns.isEmpty, status.warns)
@@ -526,7 +529,7 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
             (n, f) => TransformedColumns.persistStored(n, f, x => db.getOrElse(x, null), c => db = db.updated(c.name, c))
         val hdr = List("city", "temp_c", "notes", "score")
         val out =
-            TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("Shanghai,4.7,secret,7"), new LevelStatusUtil), persist, inputHeader = hdr.take(3))
+            TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("Shanghai,4.7,secret,7"), new LevelStatusUtil), hdr.take(3), persist)
         assert(destOf(db("weather")) == destOf(out.config))
         assert(destOf(db("weather")) == source.toList :+ ("score" -> "string"))
     }

@@ -804,7 +804,7 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
                 thread = null,
                 statusUtil = new CapturingStatus
             )
-            val out = TransformedColumns.reconcile(jc, (_, _) => fail("nothing is stored"), inputHeader = List("id", "name", "notes"))
+            val out = TransformedColumns.reconcile(jc, List("id", "name", "notes"), (_, _) => fail("nothing is stored"))
             val fields = out.config.destination.schemaProperties.fields.asScala.toList
             assert(fields == dest, header.toString)
             val path = stageRows(rows)

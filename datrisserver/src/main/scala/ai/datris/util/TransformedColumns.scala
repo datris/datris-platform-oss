@@ -76,7 +76,8 @@ object TransformedColumns {
 
     /** The job context after an AI transformation wrote rows in `ctx.data.header`
       * order: unchanged when the transformation created no column (see
-      * [[created]]; `inputHeader` is the header the transformation read),
+      * [[created]]; `inputHeader` is the header the transformation read, required
+      * so a caller cannot leave it out),
       * otherwise with the created columns listed in the destination schema as
       * `string` (and stored, unless this is a rehearsal run).
       *
@@ -90,8 +91,8 @@ object TransformedColumns {
       * schema is then left as it is so that read is unchanged. */
     def reconcile(
         ctx: JobContext,
-        persist: (String, List[SchemaField]) => Unit = (n, f) => persistStored(n, f),
-        inputHeader: List[String] = Nil
+        inputHeader: List[String],
+        persist: (String, List[SchemaField]) => Unit = (n, f) => persistStored(n, f)
     ): JobContext = {
         val config = ctx.config
         val data = ctx.data
