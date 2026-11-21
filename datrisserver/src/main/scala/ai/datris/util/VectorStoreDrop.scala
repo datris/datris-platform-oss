@@ -194,9 +194,11 @@ object VectorStoreDrop {
         }
     }
 
-    /** Past the deadline (System.nanoTime), a SocketTimeoutException. */
+    /** Past the deadline (System.nanoTime), or once the calling thread is
+      * interrupted (an abandoned probe worker), a SocketTimeoutException. */
     private def checkDeadline(deadlineNanos: Long): Unit =
-        if (System.nanoTime() - deadlineNanos > 0) throw new SocketTimeoutException("drop did not finish within its deadline")
+        if (System.nanoTime() - deadlineNanos > 0 || Thread.currentThread().isInterrupted)
+            throw new SocketTimeoutException("the store's answer did not finish within the deadline")
 
     /** The answer was longer than the caller's cap and the caller asked
       * for that to fail (`send(..., failOverCap = true)`). */
@@ -231,11 +233,14 @@ object VectorStoreDrop {
       * SocketTimeoutException past the deadline). */
     def send(r: Request, deadlineMs: Long = TotalDeadlineMs, maxBodyBytes: Int = MaxBodyBytes, failOverCap: Boolean = false): (Int, String) = {
         val deadlineNanos = System.nanoTime() + deadlineMs * 1000000L
+        if (deadlineMs <= 0) throw new SocketTimeoutException("the store's answer did not finish within the deadline")
+        // Never wait on one connect or read past the whole-call deadline.
+        val perStepMs = math.max(1L, math.min(deadlineMs, ConnectTimeoutMs.toLong)).toInt
         val conn = new URL(r.url).openConnection().asInstanceOf[HttpURLConnection]
         try {
             conn.setInstanceFollowRedirects(false)
-            conn.setConnectTimeout(ConnectTimeoutMs)
-            conn.setReadTimeout(ReadTimeoutMs)
+            conn.setConnectTimeout(math.min(ConnectTimeoutMs, perStepMs))
+            conn.setReadTimeout(math.min(ReadTimeoutMs, perStepMs))
             conn.setUseCaches(false)
             conn.setRequestMethod(r.method)
             r.headers.foreach { case (k, v) => conn.setRequestProperty(k, v) }

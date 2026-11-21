@@ -650,7 +650,9 @@ object DestinationProbe {
       * (`VectorStoreDrop.endpoint`: host, port, scheme, auth header):
       *  - qdrant: `GET /collections`, then `GET /aliases` (REST at the
       *    secret's gRPC port minus one);
-      *  - weaviate: `GET /v1/schema`, then `GET /v1/aliases`;
+      *  - weaviate: `GET /v1/schema`, then the alias of that exact name
+      *    `GET /v1/aliases/{exact}`, then the alias list `GET /v1/aliases`
+      *    (for an alias that differs in letter case);
       *  - milvus: `POST /v2/vectordb/collections/has` with
       *    `{"collectionName": ...}` (no `dbName`: the default database, as
       *    the loader and the delete);
@@ -671,6 +673,7 @@ object DestinationProbe {
                     case "weaviate" =>
                         Seq(
                             VectorStoreDrop.Request("GET", base + "/v1/schema", headers, None),
+                            VectorStoreDrop.Request("GET", base + "/v1/aliases/" + VectorStoreDrop.segment(exact), headers, None),
                             VectorStoreDrop.Request("GET", base + "/v1/aliases", headers, None)
                         )
                     case "milvus" =>
@@ -738,13 +741,24 @@ object DestinationProbe {
                 if (listed) Some(true)
                 else if (answers.size < 2) None
                 else
+                    // An alias is written through by name, so a same-named one counts as existing.
+                    // First by exact name: answered even where the list is filtered to what the key may read.
                     answers(1)._1 match {
-                        // A Weaviate without collection aliases (before 1.32) has no such path.
-                        case 404 => Some(false)
-                        // A same-named alias (any letter case) is written through by name, so it counts as existing.
-                        case 200 => Some(arrayField(store, objectOf(store, answers(1)._2), "aliases").exists(a =>
-                                stringField(store, a, "alias").equalsIgnoreCase(exact)
-                            ))
+                        case 200 => Some(true)
+                        case 404 =>
+                            if (answers.size < 3) None
+                            else
+                                answers(2)._1 match {
+                                    // A Weaviate without collection aliases (before 1.32) has no such path.
+                                    case 404 => Some(false)
+                                    case 200 =>
+                                        // Weaviate serialises an empty alias list as `null`.
+                                        val o = objectOf(store, answers(2)._2)
+                                        val list = o.get("aliases")
+                                        if (list == null || list.isJsonNull) Some(false)
+                                        else Some(arrayField(store, o, "aliases").exists(a => stringField(store, a, "alias").equalsIgnoreCase(exact)))
+                                    case other => unknown(store, "alias list answer HTTP " + other)
+                                }
                         case other => unknown(store, "alias answer HTTP " + other)
                     }
             case "milvus" =>
@@ -785,10 +799,13 @@ object DestinationProbe {
       * `result.collections[].name`, `result.aliases[].alias_name` (an alias
       * of that name counts as existing: the loader and the delete address it
       * by name). Weaviate: 200 `classes[].class`, compared ignoring case,
-      * then `GET /v1/aliases`: 200 `aliases[].alias` compared ignoring case
-      * (an alias counts as existing), 404 = a Weaviate without aliases (no
-      * alias), anything else not definite; the alias answer shape is from
-      * the Weaviate REST reference only, unverified against a live store.
+      * then `GET /v1/aliases/{exact}`: 200 = an alias of that name exists,
+      * 404 = none by that exact name, anything else not definite; then
+      * `GET /v1/aliases`: 200 `aliases[].alias` compared ignoring case
+      * (`aliases` null or missing = none), 404 = a Weaviate without aliases,
+      * anything else (401, 403, 5xx, not JSON) not definite. The alias
+      * answers are from the Weaviate REST reference only, unverified against
+      * a live store.
       * Milvus: 200 `code` 0 with boolean `data.has`. Chroma v2: 200 with the
       * collection's `name`, or 404 with the control list answering a 200
       * JSON array. */
@@ -838,15 +855,17 @@ object DestinationProbe {
       * than parse a truncated list. */
     val VectorProbeMaxBodyBytes: Int = 8 * 1024 * 1024
 
-    /** Whole-call bound for one probe request: the save's own deadline
-      * (`withDeadline`, [[DefaultDeadline]] by default) bounds the probe as a
-      * whole, so a list read gets that long rather than the drop's 10 s. */
+    /** One deadline shared by all requests of one probe (each request gets
+      * the time that is left): the save's own deadline (`withDeadline`,
+      * [[DefaultDeadline]] by default), rather than the drop's 10 s per
+      * request, so a list read gets long enough and the probe as a whole
+      * never outlasts it. */
     val VectorProbeRequestDeadlineMs: Long = DefaultDeadline.toMillis
 
     /** One probe request: `VectorStoreDrop.send` with the probe's cap (a
-      * larger answer throws) and deadline. */
-    def vectorContainerSend(r: VectorStoreDrop.Request): (Int, String) =
-        VectorStoreDrop.send(r, VectorProbeRequestDeadlineMs, VectorProbeMaxBodyBytes, failOverCap = true)
+      * larger answer throws) and `remainingMs` of the probe's shared deadline. */
+    def vectorContainerSend(r: VectorStoreDrop.Request, remainingMs: Long): (Int, String) =
+        VectorStoreDrop.send(r, remainingMs, VectorProbeMaxBodyBytes, failOverCap = true)
 
     /** Production: [[vectorContainerExistsWith]] over the environment's
       * store secret ([[vectorStoreSecretName]], read with
@@ -862,7 +881,15 @@ object DestinationProbe {
       * [[vectorContainerSend]]. */
     def vectorContainerExists(
         t: DestinationTargets.VectorContainerTarget,
-        readSecret: String => scala.util.Try[Option[java.util.Map[String, String]]]
-    ): Boolean =
-        vectorContainerExistsWith(t, store => scala.util.Try(vectorStoreSecretName(store)).flatMap(readSecret), r => vectorContainerSend(r))
+        readSecret: String => scala.util.Try[Option[java.util.Map[String, String]]],
+        deadlineMs: Long = VectorProbeRequestDeadlineMs
+    ): Boolean = {
+        // One deadline for every request of this probe.
+        val deadlineNanos = System.nanoTime() + deadlineMs * 1000000L
+        vectorContainerExistsWith(
+            t,
+            store => scala.util.Try(vectorStoreSecretName(store)).flatMap(readSecret),
+            r => vectorContainerSend(r, (deadlineNanos - System.nanoTime()) / 1000000L)
+        )
+    }
 }

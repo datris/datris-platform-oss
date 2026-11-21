@@ -292,16 +292,21 @@ object DestinationTargets {
         }
     }
 
-    /** Milvus accepts only letters, digits and `_` in a collection name; a
-      * name it rejects could never be checked (its `has` answers an error),
-      * so a new or changed one is refused up front. */
+    /** Milvus accepts a collection name of letters, digits and `_` that
+      * starts with a letter or `_`, at most 255 characters; a name it rejects
+      * could never be checked (its `has` answers an error), so a new or
+      * changed one is refused up front. */
     private def plainMilvusName(n: String): Boolean =
-        n.forall(ch => (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_')
+        n.nonEmpty && n.length <= 255 && {
+            val first = n.charAt(0)
+            (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') || first == '_'
+        } && n.forall(ch => (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_')
 
     /** 400 refusal text for a new or changed name that is not plain; names nothing. */
     val UnsafeVectorContainerRefusal: String =
         "A Qdrant or Chroma collection name or a Weaviate class name may use only letters, digits, '.', '_' and '-', " +
-            "and cannot be '.' or '..'; a Milvus collection name only letters, digits and '_'. Choose a plain name."
+            "and cannot be '.' or '..'; a Milvus collection name only letters, digits and '_', starting with a letter or '_', " +
+            "at most 255 characters. Choose a plain name."
 
     /** True when the config has a qdrant, weaviate, milvus or chroma
       * destination whose name is null or blank (no container key). */

@@ -2010,10 +2010,12 @@ paths:
             Qdrant or Chroma collection or Weaviate class name with a
             character other than letters, digits, `.`, `_` and `-`, or `.` /
             `..`, or Milvus collection name with a character other than
-            letters, digits and `_`: `A Qdrant or Chroma collection name or a
-            Weaviate class name may use only letters, digits, '.', '_' and
-            '-', and cannot be '.' or '..'; a Milvus collection name only
-            letters, digits and '_'. Choose a plain name.`, or (restricted users
+            letters, digits and `_`, not starting with a letter or `_`, or
+            longer than 255 characters: `A Qdrant or Chroma collection name
+            or a Weaviate class name may use only letters, digits, '.', '_'
+            and '-', and cannot be '.' or '..'; a Milvus collection name only
+            letters, digits and '_', starting with a letter or '_', at most
+            255 characters. Choose a plain name.`, or (restricted users
             only) one with a missing or blank name the saved pipeline does not
             already have: `A Qdrant, Milvus or Chroma destination needs a
             collection name, and a Weaviate destination a class name. Set
@@ -2040,8 +2042,9 @@ paths:
             Server error (for example the configuration store is unreachable).
             For a restricted user, also when the check that a new destination
             does not exist yet could not reach the database, warehouse, bucket
-            or vector store (a vector store not configured on the install, or
-            an answer the check does not recognise, counts too; an
+            or vector store (a vector store not configured on the install, an
+            answer the check does not recognise, or a collection list larger
+            than 8 MB counts too; an
             object-store endpoint that does not answer within a few seconds
             counts; the check does not retry), or did not finish within 30
             seconds: `Could not check whether the destination already
@@ -2092,7 +2095,7 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a vector collection, class or table kept because another pipeline also names it (the warning starts with `Kept` and names the container; the other pipeline is named only when the caller can see it), a Postgres, SQL Server, Snowflake or Databricks table or MongoDB collection kept because another pipeline also writes to it (including a pgvector table and a Postgres table with the same schema and name; the warning starts with `Kept` and names it; it is dropped with the last pipeline that writes to it), a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand. A Qdrant, Milvus or Chroma collection or Weaviate class the store could not remove (store not configured, unreachable, no answer within 5 seconds, an HTTP error or a reported error) is listed as a warning starting `Could not remove <store> collection|class <name>`, then the reason, then `Its pipeline configuration was deleted; remove it in the store.` (delete) or `Run the reset again once the store is available.` (deleteConfig=false); the status stays 200 and the configuration is still deleted on a delete. A data-only reset whose drop failed keeps the document-tap ledgers.
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a vector collection, class or table kept because another pipeline also names it (the warning starts with `Kept` and names the container; the other pipeline is named only when the caller can see it), a Postgres, SQL Server, Snowflake or Databricks table or MongoDB collection kept because another pipeline also writes to it (including a pgvector table and a Postgres table with the same schema and name; the warning starts with `Kept` and names it; it is dropped with the last pipeline that writes to it), a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand. A Qdrant, Milvus or Chroma collection or Weaviate class the store could not remove (store not configured, unreachable, no answer within 5 seconds, an HTTP error or a reported error) is listed as a warning starting `Could not remove <store> collection|class <name>`, then the reason, then `Its pipeline configuration was deleted; remove it in the store.` (delete) or `Run the reset again once the store is available.` (deleteConfig=false), with `The removal may still complete in the store; check it there.` before that when the reason is that the store did not answer in time; the status stays 200 and the configuration is still deleted on a delete. A data-only reset whose drop failed keeps the document-tap ledgers.
           content:
             application/json:
               schema:

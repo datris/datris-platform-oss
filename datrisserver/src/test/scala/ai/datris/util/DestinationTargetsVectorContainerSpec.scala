@@ -214,4 +214,15 @@ class DestinationTargetsVectorContainerSpec extends AnyFunSuite {
             assert(!unsafeFreshVectorContainerName(on(store, "p", n), null), s"$store '$n'")
         assert(UnsafeVectorContainerRefusal.contains("Milvus"))
     }
+
+    test("review: a new or changed milvus name starts with a letter or '_' and is at most 255 characters") {
+        for (n <- Seq("9docs", "0", "a" * 256))
+            assert(unsafeFreshVectorContainerName(on("milvus", "p", n), null), n.take(20))
+        for (n <- Seq("_docs", "docs9", "a" * 255, "D"))
+            assert(!unsafeFreshVectorContainerName(on("milvus", "p", n), null), n.take(20))
+        // Unchanged stored names still pass; other stores keep a leading digit.
+        assert(!unsafeFreshVectorContainerName(on("milvus", "p", "9docs"), on("milvus", "p", "9docs")))
+        assert(!unsafeFreshVectorContainerName(on("qdrant", "p", "9docs"), null))
+        assert(UnsafeVectorContainerRefusal.contains("starting with a letter or '_'") && UnsafeVectorContainerRefusal.contains("255"))
+    }
 }

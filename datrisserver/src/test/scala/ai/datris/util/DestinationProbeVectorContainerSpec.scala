@@ -107,11 +107,19 @@ class DestinationProbeVectorContainerSpec extends AnyFunSuite with BeforeAndAfte
 
         // Weaviate: the schema list; scheme http and port 8079 by default; Bearer auth.
         val w = vectorContainerRequest("weaviate", secret("host" -> "wv.store"), "Docs_1")
-        assert(w.map(r => r.method -> r.url) == Seq("GET" -> "http://wv.store:8079/v1/schema", "GET" -> "http://wv.store:8079/v1/aliases"), w)
+        assert(
+            w.map(r => r.method -> r.url) == Seq(
+                "GET" -> "http://wv.store:8079/v1/schema",
+                "GET" -> "http://wv.store:8079/v1/aliases/Docs_1",
+                "GET" -> "http://wv.store:8079/v1/aliases"
+            ),
+            w
+        )
         assert(w.head.headers.isEmpty && w.head.body.isEmpty, w)
         val ws = secret("host" -> "wv.store", "port" -> "8080", "scheme" -> "https", "apiKey" -> "wk")
         val wFull = vectorContainerRequest("weaviate", ws, "Docs_1")
-        assert(wFull.map(_.url) == Seq("https://wv.store:8080/v1/schema", "https://wv.store:8080/v1/aliases"), wFull)
+        assert(wFull.map(_.url) == Seq("https://wv.store:8080/v1/schema", "https://wv.store:8080/v1/aliases/Docs_1", "https://wv.store:8080/v1/aliases"), wFull)
+        wFull.foreach(r => assert(hdrs(r) == Map("authorization" -> "Bearer wk"), r))
         assert(hdrs(wFull.head) == Map("authorization" -> "Bearer wk"), wFull)
         assert(VectorStoreDrop.request("weaviate", ws, "Docs_1").map(_.url) == Right(wFull.head.url + "/Docs_1"))
 
@@ -162,23 +170,37 @@ class DestinationProbeVectorContainerSpec extends AnyFunSuite with BeforeAndAfte
         assert(answer("weaviate", "Docs", 200 -> wSchema("Docs")))
         assert(answer("weaviate", "Docs", 200 -> wSchema("Other", "DOCS")))
         assert(answer("weaviate", "MyDocs", 200 -> wSchema("Mydocs")))
-        assert(!answer("weaviate", "Docs", 200 -> wSchema("Other", "Docs2"), 404 -> ""))
-        assert(!answer("weaviate", "Docs", 200 -> wSchema(), 200 -> "{\"aliases\":[]}"))
+        assert(!answer("weaviate", "Docs", 200 -> wSchema("Other", "Docs2"), 404 -> "", 404 -> ""))
+        assert(!answer("weaviate", "Docs", 200 -> wSchema(), 404 -> "", 200 -> "{\"aliases\":[]}"))
     }
 
-    test("weaviate aliases: a same-named alias (any case) is exists; 404 is no alias support; anything else throws") {
+    test("weaviate aliases: the alias by exact name, then the list ignoring case (null = none); 404 is no alias support; anything else throws") {
+        val real = 200 -> wSchema("RealClass")
+        val none = 404 -> "{\"error\":[{\"message\":\"alias not found\"}]}"
         val aliases = "{\"aliases\":[{\"alias\":\"DOCS\",\"class\":\"RealClass\"}]}"
-        assert(answer("weaviate", "Docs", 200 -> wSchema("RealClass"), 200 -> aliases))
-        assert(!answer("weaviate", "Other", 200 -> wSchema("RealClass"), 200 -> aliases))
+        // By exact name: 200 is exists (answered even when the list is filtered to what the key may read).
+        assert(answer("weaviate", "Docs", real, 200 -> "{\"alias\":\"Docs\",\"class\":\"RealClass\"}"))
+        // The list: a same-named alias in another letter case.
+        assert(answer("weaviate", "Docs", real, none, 200 -> aliases))
+        assert(!answer("weaviate", "Other", real, none, 200 -> aliases))
         // An alias pointing at a class called Docs is not an alias named Docs.
-        assert(!answer("weaviate", "Docs", 200 -> wSchema("Real"), 200 -> "{\"aliases\":[{\"alias\":\"x\",\"class\":\"Docs\"}]}"))
-        assert(!answer("weaviate", "Docs", 200 -> wSchema("Real"), 404 -> "{\"error\":\"not found\"}"))
-        throwsAnswer("weaviate", "Docs", 200 -> wSchema("Real"))
-        throwsAnswer("weaviate", "Docs", 200 -> wSchema("Real"), 500 -> "")
-        throwsAnswer("weaviate", "Docs", 200 -> wSchema("Real"), 401 -> "")
-        throwsAnswer("weaviate", "Docs", 200 -> wSchema("Real"), 200 -> "{}")
-        throwsAnswer("weaviate", "Docs", 200 -> wSchema("Real"), 200 -> "not json")
-        throwsAnswer("weaviate", "Docs", 200 -> wSchema("Real"), 200 -> "{\"aliases\":[{\"class\":\"Docs\"}]}")
+        assert(!answer("weaviate", "Docs", real, none, 200 -> "{\"aliases\":[{\"alias\":\"x\",\"class\":\"Docs\"}]}"))
+        // An empty list serialised as null, or missing: none.
+        assert(!answer("weaviate", "Docs", real, none, 200 -> "{\"aliases\":null}"))
+        assert(!answer("weaviate", "Docs", real, none, 200 -> "{}"))
+        // No alias support: 404 to both.
+        assert(!answer("weaviate", "Docs", real, 404 -> "", 404 -> ""))
+        // Not definite.
+        throwsAnswer("weaviate", "Docs", real)
+        throwsAnswer("weaviate", "Docs", real, none)
+        for (code <- Seq(401, 403, 500)) {
+            throwsAnswer("weaviate", "Docs", real, code -> "")
+            throwsAnswer("weaviate", "Docs", real, none, code -> "")
+        }
+        throwsAnswer("weaviate", "Docs", real, none, 200 -> "not json")
+        throwsAnswer("weaviate", "Docs", real, none, 200 -> "[]")
+        throwsAnswer("weaviate", "Docs", real, none, 200 -> "{\"aliases\":[{\"class\":\"Docs\"}]}")
+        throwsAnswer("weaviate", "Docs", real, none, 200 -> "{\"aliases\":\"Docs\"}")
     }
 
     test("milvus: has true / false with code 0") {
