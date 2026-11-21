@@ -5,6 +5,7 @@ import { AuthService } from '../auth.service';
 import { isAllTextDestination } from '../shared/dest-types';
 import { LineageService, LineageNeighborhood } from '../lineage.service';
 import { httpErrorText } from '../shared/http-error';
+import { deleteWarnings } from '../delete-warnings';
 
 @Component({
     selector: 'app-pipeline-view',
@@ -20,6 +21,8 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
   copySuccess = false;
   confirmDelete = false;
   deleteLoading = false;
+  // Warnings a reset returned (data kept or not removed), shown in place.
+  deleteNotices: string[] = [];
   showDestTypes = false;
   lineage: LineageNeighborhood | null = null;
   unityCatalog: any = null;
@@ -148,13 +151,22 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
     this.confirmDelete = false;
   }
 
+  dismissDeleteNotices(): void {
+    this.deleteNotices = [];
+  }
+
   deletePipeline(deleteConfig: boolean): void {
     this.deleteLoading = true;
     if (deleteConfig) {
       // Delete config + data
       this.pipelineService.deletePipeline(this.name).subscribe({
-        next: () => {
-          this.router.navigate(['/catalog']);
+        next: (res: any) => {
+          // The catalog page shows the warnings in its banner.
+          const warnings = deleteWarnings(res);
+          if (warnings.length > 0)
+            this.router.navigate(['/catalog'], { state: { deletedPipeline: this.name, deleteWarnings: warnings } });
+          else
+            this.router.navigate(['/catalog']);
         },
         error: (err) => {
           this.error = httpErrorText(err, 'Failed to delete pipeline');
@@ -165,10 +177,11 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
     } else {
       // Delete data only (keep config)
       this.pipelineService.deletePipelineData(this.name).subscribe({
-        next: () => {
+        next: (res: any) => {
           this.deleteLoading = false;
           this.confirmDelete = false;
           this.error = '';
+          this.deleteNotices = deleteWarnings(res);
         },
         error: (err) => {
           this.error = httpErrorText(err, 'Failed to delete data');

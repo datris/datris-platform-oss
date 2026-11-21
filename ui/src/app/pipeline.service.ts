@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpResponse } from '@angular/common/http';
 import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
 
 @Injectable({
   providedIn: 'root'
@@ -107,8 +108,19 @@ export class PipelineService {
       { observe: 'response' });
   }
 
+  /** Reset: delete the data, keep the config. The body is read as text and
+   *  parsed here (an empty or non-JSON body is `{}`), so callers get the
+   *  `{warnings: [...]}` object a delete returns. */
   deletePipelineData(name: string): Observable<any> {
-    return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(name) + '&deleteData=true&deleteConfig=false', { responseType: 'text' as 'json' });
+    return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(name) + '&deleteData=true&deleteConfig=false', { responseType: 'text' as 'json' })
+      .pipe(map((body: any) => {
+        if (typeof body !== 'string') return body;
+        try {
+          return body.trim() ? JSON.parse(body) : {};
+        } catch {
+          return {};
+        }
+      }));
   }
 
   createPipeline(config: any): Observable<string> {

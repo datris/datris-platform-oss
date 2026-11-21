@@ -18,6 +18,19 @@
     </div>
   </ng-container>
 
+  <div class="delete-notices" *ngIf="deleteNotices.length > 0">
+    <div class="delete-notices-head">
+      <span class="material-icons">info</span>
+      <span>{{ deleteNoticesLabel }}: {{ deleteNotices.length }} warning{{ deleteNotices.length !== 1 ? 's' : '' }} to review.</span>
+      <button class="delete-notices-close" (click)="dismissDeleteNotices()" title="Dismiss">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <ul class="delete-notices-list">
+      <li *ngFor="let w of deleteNotices">{{ w }}</li>
+    </ul>
+  </div>
+
   <div class="table-container" *ngIf="filteredPipelines.length > 0">
     <div *ngFor="let group of catalogGroups" class="catalog-group">
       <div class="catalog-group-header" *ngIf="!isEmbedded" (click)="group.expanded = !group.expanded">

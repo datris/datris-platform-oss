@@ -146,7 +146,9 @@ class DestinationDropSpec extends AnyFunSuite {
         expect("snowflake", new SocketTimeoutException("Read timed out"), TO)
         expect("snowflake", new SQLException("Incorrect username or password was specified.", "08004", 390100), CR)
         expect("snowflake", new SQLException("SQL access control error: Insufficient privileges to operate on table 'T'", "42501", 3001), PM)
-        expect("snowflake", new SQLException("SQL compilation error: Database 'GONE' does not exist or not authorized.", "02000", 2003), Absent)
+        // Lead ruling 4: "does not exist or not authorized" is ambiguous (the
+        // table may still be there), so it is a reported error, not Absent.
+        expect("snowflake", new SQLException("SQL compilation error: Database 'GONE' does not exist or not authorized.", "02000", 2003), RE)
         expect("snowflake", new SQLException("SQL compilation error", "42000", 1003), RE)
 
         // SQL Server: 08S01 link failure, query timeout, login 18456,
@@ -156,7 +158,8 @@ class DestinationDropSpec extends AnyFunSuite {
         expect("sqlserver", new SQLTimeoutException("The query has timed out."), TO)
         expect("sqlserver", new SQLException("Login failed for user 'loader'.", "S0001", 18456), CR)
         expect("sqlserver", new SQLException("Cannot drop the table 'dbo.t', because it does not exist or you do not have permission.", "S0001", 3701), PM)
-        expect("sqlserver", new SQLException("Cannot open database \"gone\" requested by the login. The login failed.", "S0001", 4060), Absent)
+        // Lead ruling 4: 4060 is missing OR no user for the login: a reported error.
+        expect("sqlserver", new SQLException("Cannot open database \"gone\" requested by the login. The login failed.", "S0001", 4060), RE)
         expect("sqlserver", new SQLException("Database 'gone' does not exist. Make sure that the name is entered correctly.", "S0001", 911), Absent)
         expect("sqlserver", new SQLException("Incorrect syntax", "S0001", 102), RE)
 

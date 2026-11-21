@@ -298,9 +298,6 @@ object VectorStoreDrop {
     /** The delete warning for a container that could not be removed. `key`
       * should be the display key (weaviate: the class as configured). */
     def warning(key: VectorContainers.Key, reason: String, configDeleted: Boolean): String =
-        "Could not remove " + VectorContainers.label(key) + ": " + reason + ". " +
-            // A drop that outlasted the timeout may still finish in the store.
-            (if (reason == TimedOut) "The removal may still complete in the store; check it there. " else "") +
-            (if (configDeleted) "Its pipeline configuration was deleted; remove it in the store."
-             else "Run the reset again once the store is available.")
+        // One implementation for every store (DestinationDrop.warning).
+        DestinationDrop.warning(VectorContainers.label(key), reason, configDeleted)
 }

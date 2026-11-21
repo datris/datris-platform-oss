@@ -17,7 +17,6 @@ import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 
 import java.sql.DriverManager
-import java.util.Properties
 import scala.collection.JavaConverters._
 
 @RestController
@@ -986,7 +985,7 @@ class PipelineAPIController {
 
         // Unity Catalog state, read before anything is deleted: a table
         // committed through the REST catalog is not dropped by Datris.
-        val ucPrevious = unityCatalogStateForDelete(config)
+        val (ucPrevious, ucReadFailure) = unityCatalogStateForDelete(config)
         val warnings = Seq.newBuilder[String]
         // A managed commit's doc always survives (the table lives on in Unity
         // Catalog and a recreated pipeline continues it).
@@ -1030,6 +1029,10 @@ class PipelineAPIController {
             cleanup.vectorFailures.foreach { case (k, reason) =>
                 warnings += VectorStoreDrop.warning(VectorContainers.displayKey(k, config), reason, deleteConfigBool)
             }
+            // Every other table, collection, prefix or folder kept because it
+            // overlaps another pipeline's, or that could not be removed: after
+            // the vector failures, in destination order.
+            warnings ++= PipelineAPIController.cleanupWarnings(cleanup, deleteConfigBool)
             // Wipe document-tap ledgers/staged files for any tap targeting this
             // pipeline. The ledger records "already-processed URIs"; leaving it
             // intact after the destination is emptied would cause the next tap
@@ -1037,12 +1040,16 @@ class PipelineAPIController {
             // A data-only reset that kept a shared vector container keeps the
             // ledgers too: the chunks are still there, and a re-ingest would
             // duplicate them in a container that cannot be cleaned per pipeline.
-            // So does a reset whose vector drop failed (the chunks are still there).
-            if (PipelineAPIController.clearTapLedgersForPlan(plan, sharedVector.nonEmpty || cleanup.vectorFailures.nonEmpty))
-                cleanupDocumentTapLedgers(pipeline)
-            else
+            // So does a reset whose vector drop or any other data removal
+            // failed (the rows are still there; the scratch folder does not count).
+            if (PipelineAPIController.clearTapLedgersForPlan(plan, sharedVector.nonEmpty || cleanup.dataLeft)) {
+                cleanupDocumentTapLedgers(pipeline) match {
+                    case DestinationDrop.Failed(reason) => warnings += PipelineAPIController.ledgerCleanupWarning(reason, deleteConfigBool)
+                    case _ =>
+                }
+            } else
                 logger.warn(
-                    "Pipeline reset: " + pipeline + ": document-tap ledgers kept because a vector container was kept or could not be removed"
+                    "Pipeline reset: " + pipeline + ": document-tap ledgers kept because a vector container was kept or destination data could not be removed"
                 )
         }
 
@@ -1055,11 +1062,15 @@ class PipelineAPIController {
         val kept =
             if (!plan.keepData) None
             else {
-                if (config.destination != null) cleanupScratchData(config)
+                val scratch = if (config.destination != null) cleanupScratchData(config) else DestinationDrop.NotSent
                 UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, dataDeleted = false, configDeleted = true).foreach { advice =>
                     warnings += advice
                     logger.warn("Pipeline delete: " + pipeline + ": " + advice)
                     auditUnityCatalogDelete(request, pipeline, advice)
+                }
+                scratch match {
+                    case DestinationDrop.Failed(reason) => warnings += DestinationDrop.warning(PipelineAPIController.ScratchLabel, reason, configDeleted = true)
+                    case _ =>
                 }
                 // Only a committed table's state survives; an uncommitted
                 // (created-only) or register-mode doc goes, as on any delete.
@@ -1074,13 +1085,25 @@ class PipelineAPIController {
 
         // Delete the json configuration
         if (deleteConfigBool) {
-            NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
+            // A failure here is a 500; after the data was removed it says so.
+            PipelineAPIController.deleteConfigRow(
+                dataRemoved = deleteDataBool && config.destination != null,
+                () => NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
+            )
             // Hard-delete all definition-version snapshots for this pipeline
             // (snapshots pin no scripts; the stored CodeGen scripts are removed below).
+            // A failure is reported (no detail) and does not stop the delete.
+            def sideFailure(label: String, kind: String, ex: Exception): Unit =
+                DestinationDrop.classify(kind, ex) match {
+                    case DestinationDrop.Failed(reason) => warnings += DestinationDrop.warning(label, reason, configDeleted = true)
+                    case _ =>
+                }
             try {
                 EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.pipelineVersionTableName, pipeline)
             } catch {
-                case ex: Exception => logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
+                case ex: Exception =>
+                    logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
+                    sideFailure(PipelineAPIController.HistoryLabel, "mongodb", ex)
             }
             // Stored CodeGen scripts (objects under pipeline-scripts/<pipeline>/
             // and their index records). Non-fatal, as for tap scripts. A
@@ -1088,31 +1111,40 @@ class PipelineAPIController {
             // and named in a warning.
             try warnings ++= PipelineScripts.deleteAll(pipeline)
             catch {
-                case ex: Exception => logger.warn("CodeGen script cleanup failed for " + pipeline + ": " + ex.getMessage)
+                case ex: Exception =>
+                    logger.warn("CodeGen script cleanup failed for " + pipeline + ": " + ex.getMessage)
+                    sideFailure(PipelineAPIController.ScriptsLabel, "objectstore", ex)
             }
             // Unity Catalog sync state for this pipeline (<env>-uc-sync).
             // Kept while the catalog-committed table's files still exist, so
             // a pipeline recreated at the same name and prefix keeps the
             // guard against a path write forking the catalog's history, and
             // always for a catalogMode managed commit (keepStateOnDelete).
+            // An unreadable state is not deleted (it may guard a managed
+            // commit) and is reported.
             if (ucPrevious != null && !ucTableFilesKept) {
                 try UnityCatalogSyncIO.delete(pipeline)
                 catch {
-                    case ex: Exception => logger.warn("Unity Catalog state cleanup failed for " + pipeline + ": " + ex.getMessage)
+                    case ex: Exception =>
+                        logger.warn("Unity Catalog state cleanup failed for " + pipeline + ": " + ex.getMessage)
+                        sideFailure(PipelineAPIController.UnityCatalogStateLabel, "mongodb", ex)
                 }
             }
+            ucReadFailure.foreach(ex => sideFailure(PipelineAPIController.UnityCatalogStateLabel, "mongodb", ex))
         }
         (warnings.result(), kept)
     }
 
     /** The pipeline's Unity Catalog sync state, or null (none, or unreadable:
-      * the delete goes ahead without the advice). */
-    private def unityCatalogStateForDelete(config: PipelineConfig): ai.datris.model.UnityCatalogSyncState =
-        try UnityCatalogSyncIO.read(config.name)
-        catch {
+      * the delete goes ahead without the advice), with the read failure. */
+    private def unityCatalogStateForDelete(config: PipelineConfig): (ai.datris.model.UnityCatalogSyncState, Option[Exception]) =
+        try {
+            val state: ai.datris.model.UnityCatalogSyncState = UnityCatalogSyncIO.read(config.name)
+            (state, None)
+        } catch {
             case ex: Exception =>
                 logger.warn("Could not read Unity Catalog state for pipeline " + config.name + " on delete: " + ex.getMessage)
-                null
+                (null, Some(ex))
         }
 
     private def auditUnityCatalogDelete(request: HttpServletRequest, pipeline: String, advice: String): Unit =
@@ -1141,8 +1173,13 @@ class PipelineAPIController {
      * wiped so the next tap run re-ingests every document from source.
      * Swallows individual MinIO delete errors — the ledger row is authoritative,
      * so a missing staged file shouldn't block the rest of the cleanup.
+     * Returns Removed when every affected tap's ledger was cleared, NotSent
+     * when no document tap targets the pipeline, and the classified failure
+     * when the taps could not be read or a ledger could not be cleared (the
+     * other taps' ledgers are still cleared). Never throws; tap names go to
+     * the log only.
      */
-    private def cleanupDocumentTapLedgers(pipelineName: String): Unit = {
+    private def cleanupDocumentTapLedgers(pipelineName: String): DestinationDrop.Outcome = {
         try {
             val env = DatrisEnvironment.current
             val ledgerTable = env.tapLedgerTableName
@@ -1152,30 +1189,44 @@ class PipelineAPIController {
                 t != null && "document" == t.tapType &&
                     t.targetPipeline != null && t.targetPipeline == pipelineName
             )
-            if (affected.isEmpty) return
+            if (affected.isEmpty) return DestinationDrop.NotSent
+            var failure: Option[DestinationDrop.Outcome] = None
             affected.foreach { tap =>
-                val entries = TapDocumentLedgerIO.readByTap(ledgerTable, tap.name)
-                entries.foreach { e =>
-                    if (e.stagedPath != null && e.stagedPath.nonEmpty) {
-                        try { ObjectStoreUtil.deleteBucketObject(bucket, e.stagedPath) }
-                        catch { case ex: Exception => logger.warn("Failed to delete staged doc " + e.stagedPath + ": " + ex.getMessage) }
+                try {
+                    val entries = TapDocumentLedgerIO.readByTap(ledgerTable, tap.name)
+                    entries.foreach { e =>
+                        if (e.stagedPath != null && e.stagedPath.nonEmpty) {
+                            try { ObjectStoreUtil.deleteBucketObject(bucket, e.stagedPath) }
+                            catch { case ex: Exception => logger.warn("Failed to delete staged doc " + e.stagedPath + ": " + ex.getMessage) }
+                        }
                     }
+                    TapDocumentLedgerIO.deleteByTap(ledgerTable, tap.name)
+                    logger.info(
+                        "Cleared document tap ledger for tap '" + tap.name + "' (" + entries.size + " entries) after pipeline data delete: " + pipelineName
+                    )
+                } catch {
+                    case e: Exception =>
+                        logger.warn("Failed to clear the document tap ledger of tap '" + tap.name + "' for pipeline '" + pipelineName + "': " + e.getMessage)
+                        if (failure.isEmpty) failure = Some(DestinationDrop.classify("mongodb", e))
                 }
-                TapDocumentLedgerIO.deleteByTap(ledgerTable, tap.name)
-                logger.info("Cleared document tap ledger for tap '" + tap.name + "' (" + entries.size + " entries) after pipeline data delete: " + pipelineName)
             }
+            failure.getOrElse(DestinationDrop.Removed)
         } catch {
             case e: Exception =>
                 logger.warn("Failed to clean up document tap ledgers for pipeline '" + pipelineName + "': " + e.getMessage)
+                DestinationDrop.classify("mongodb", e)
         }
     }
 
     /** Drops the destination data. `objectStoreDataDeleted` is true when the
-      * object-store destination's files were deleted (false when there is
-      * none, the prefix is shared, or the delete failed); `vectorFailures`
-      * holds each qdrant / weaviate / milvus / chroma container (identity
-      * key) that could not be removed, with its closed-set reason, in store
-      * order. */
+      * object-store destination's files were deleted or were already absent
+      * (false when there is none, the prefix is shared, or the delete
+      * failed); `vectorFailures` holds each qdrant / weaviate / milvus /
+      * chroma container (identity key) that could not be removed, with its
+      * closed-set reason, in store order; `steps` every other removal with its
+      * outcome, in destination order; `keptPrefixes` the object-store prefix
+      * kept because another pipeline's prefix overlaps it. Never throws for a
+      * store failure: each removal is a DestinationDrop step. */
     private[api] def cleanupDestinationData(
         config: PipelineConfig,
         keepVector: Set[VectorContainers.Key],
@@ -1183,14 +1234,20 @@ class PipelineAPIController {
         tenantDatabase: Option[String]
     ): PipelineAPIController.DestinationCleanup = {
         val dest = config.destination
-        var objectStoreDataDeleted = false
         val vectorFailures = Seq.newBuilder[(VectorContainers.Key, String)]
+        val keptPrefixes = Seq.newBuilder[String]
         // A vector container another pipeline also names is kept.
         def dropVector(store: String, name: String, schema: Option[String] = None): Boolean =
             !VectorContainers.key(store, name, schema).exists(keepVector.contains)
         // A table or collection another pipeline also writes is kept. The
         // keys are this config's own, at most one per destination kind.
         def dropStructured(kind: String): Boolean = !keepStructured.exists(_.kind == kind)
+        // Labels from the config's own keys, as the Kept lines use.
+        val ownKeys = SharedDatasets.keysOf(config, PipelineAPIController.keepDatasetEnv().copy(tenantDatabase = tenantDatabase))
+        def labelOf(kind: String, fallback: String): String = ownKeys.find(_.kind == kind).map(SharedDatasets.label).getOrElse(fallback)
+        def step(kind: String, fallback: String)(run: => DestinationDrop.Outcome): DestinationDrop.Step =
+            DestinationDrop.Step(labelOf(kind, fallback), countsAsData = true, () => run, kind)
+        val structured = Seq.newBuilder[DestinationDrop.Step]
 
         // PostgreSQL — DROP TABLE. Never for a database, schema or table name
         // that fails the naming rule (DatabaseDestinationNames.postgresDropProblem):
@@ -1200,26 +1257,20 @@ class PipelineAPIController {
             else None
         pgDropProblem.foreach(p => logger.warn("Skipped PostgreSQL table drop for pipeline '" + config.name + "': " + p))
         if (dest.database != null && dest.database.usePostgres && pgDropProblem.isEmpty && dropStructured("postgres")) {
-            try {
+            structured += step("postgres", "postgres table of this pipeline") {
                 val secrets = SecretsRetrieverUtil.postgresSecrets()
                 Class.forName("org.postgresql.Driver")
-                val properties = new Properties()
-                properties.setProperty("user", secrets.username)
-                properties.setProperty("password", secrets.password)
                 val pgDbName = tenantDatabase.getOrElse(dest.database.dbName)
                 val jdbcUrl = PostgresSql.jdbcUrl(secrets.jdbcUrl, pgDbName)
-                val conn = DriverManager.getConnection(jdbcUrl, properties)
+                val conn = DriverManager.getConnection(jdbcUrl, DestinationDrop.jdbcProperties(secrets.username, secrets.password))
                 try {
                     val schema = if (dest.database.schema != null) dest.database.schema else "public"
-                    val stmt = conn.createStatement()
-                    stmt.execute(PostgresSql.dropTable(schema, dest.database.table))
-                    stmt.close()
-                    logger.info("Dropped PostgreSQL table: " + schema + "." + dest.database.table)
+                    val o = DestinationDrop.execute("postgres", conn, PostgresSql.dropTable(schema, dest.database.table))
+                    if (o == DestinationDrop.Removed) logger.info("Dropped PostgreSQL table: " + schema + "." + dest.database.table)
+                    o
                 } finally {
-                    conn.close()
+                    scala.util.Try(conn.close())
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop PostgreSQL table: " + e.getMessage)
             }
         }
 
@@ -1227,11 +1278,12 @@ class PipelineAPIController {
         if (dest.database != null && dest.database.useMongoDB && dropStructured("mongodb")) {
             // Never in a reserved database or collection: no client, no drop;
             // mongoReservedDeleteWarning reports it.
-            try {
-                if (!PipelineAPIController.dropMongoDestination(dest.database))
+            structured += step("mongodb", "mongodb collection of this pipeline") {
+                if (PipelineAPIController.dropMongoDestination(dest.database)) DestinationDrop.Removed
+                else {
                     logger.warn("Skipped MongoDB collection drop for pipeline '" + config.name + "': not a pipeline destination")
-            } catch {
-                case e: Exception => logger.warn("Failed to drop MongoDB collection: " + e.getMessage)
+                    DestinationDrop.NotSent
+                }
             }
         }
 
@@ -1239,18 +1291,13 @@ class PipelineAPIController {
         // pipeline's own credentialsSecret/warehouse/role (the loader role owns
         // the tables it created, so it is allowed to drop them).
         if (dest.database != null && dest.database.useSnowflake && dropStructured("snowflake")) {
-            try {
-                SnowflakeConnectionUtil.withConnection(dest.database) { conn =>
-                    val stmt = conn.createStatement()
-                    try {
-                        stmt.execute("DROP TABLE IF EXISTS " + SnowflakeConnectionUtil.qualifiedTable(dest.database))
+            structured += step("snowflake", "snowflake table of this pipeline") {
+                SnowflakeConnectionUtil.withConnection(dest.database, timeoutSeconds = Some(DestinationDrop.TimeoutSeconds)) { conn =>
+                    val o = DestinationDrop.execute("snowflake", conn, "DROP TABLE IF EXISTS " + SnowflakeConnectionUtil.qualifiedTable(dest.database))
+                    if (o == DestinationDrop.Removed)
                         logger.info("Dropped Snowflake table: " + dest.database.dbName + "." + dest.database.schema + "." + dest.database.table)
-                    } finally {
-                        stmt.close()
-                    }
+                    o
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop Snowflake table: " + e.getMessage)
             }
         }
 
@@ -1258,20 +1305,15 @@ class PipelineAPIController {
         // pipeline's own credentialsSecret (the loader login created the table,
         // so it owns it and may drop it).
         if (dest.database != null && dest.database.useSqlServer && dropStructured("sqlserver")) {
-            try {
-                SqlServerConnectionUtil.withConnection(dest.database) { conn =>
-                    val stmt = conn.createStatement()
-                    try {
-                        stmt.execute("DROP TABLE IF EXISTS " + SqlServerConnectionUtil.qualifiedTable(dest.database))
+            structured += step("sqlserver", "sqlserver table of this pipeline") {
+                SqlServerConnectionUtil.withConnection(dest.database, timeoutSeconds = Some(DestinationDrop.TimeoutSeconds)) { conn =>
+                    val o = DestinationDrop.execute("sqlserver", conn, "DROP TABLE IF EXISTS " + SqlServerConnectionUtil.qualifiedTable(dest.database))
+                    if (o == DestinationDrop.Removed)
                         logger.info(
                             "Dropped SQL Server table: " + dest.database.dbName + "." + SqlServerConnectionUtil.schemaName(dest.database) + "." + dest.database.table
                         )
-                    } finally {
-                        stmt.close()
-                    }
+                    o
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop SQL Server table: " + e.getMessage)
             }
         }
 
@@ -1280,61 +1322,51 @@ class PipelineAPIController {
         // owns the tables it created, so it is allowed to drop them). The
         // shared datris_staging volume is left alone — other pipelines use it.
         if (dest.database != null && dest.database.useDatabricks && dropStructured("databricks")) {
-            try {
-                DatabricksConnectionUtil.withConnection(dest.database, pipelineName = config.name) { conn =>
-                    val stmt = conn.createStatement()
-                    try {
-                        stmt.execute("DROP TABLE IF EXISTS " + DatabricksConnectionUtil.qualifiedTable(dest.database))
-                        logger.info("Dropped Databricks table: " + dest.database.dbName + "." + dest.database.schema + "." + dest.database.table)
-                    } finally {
-                        stmt.close()
-                    }
+            structured += step("databricks", "databricks table of this pipeline") {
+                DatabricksConnectionUtil.withConnection(dest.database, pipelineName = config.name, timeoutSeconds = Some(DestinationDrop.TimeoutSeconds)) {
+                    conn =>
+                        val o =
+                            DestinationDrop.execute("databricks", conn, "DROP TABLE IF EXISTS " + DatabricksConnectionUtil.qualifiedTable(dest.database))
+                        if (o == DestinationDrop.Removed)
+                            logger.info("Dropped Databricks table: " + dest.database.dbName + "." + dest.database.schema + "." + dest.database.table)
+                        o
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop Databricks table: " + e.getMessage)
             }
         }
 
         // pgvector — DROP TABLE. Never for a null or blank table name: no
         // shared-table guard has a key for it, so the table may be another
         // pipeline's (the delete warns instead, blankVectorTableDeleteWarning).
+        // No pgvector secret, or one without a jdbcUrl, is "not configured".
         if (
             dest.pgvector != null && !DestinationTargets.blankVectorTableName(config) &&
             dropVector("pgvector", dest.pgvector.tableName, Option(dest.pgvector.schemaName)) && dropStructured("pgvector")
         ) {
-            try {
-                val secretName = DatrisEnvironment.current.pgvectorSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val jdbcUrl = secretMap.get("jdbcUrl")
-                    val username = secretMap.get("username")
-                    val password = secretMap.get("password")
-                    if (jdbcUrl != null) {
-                        val pgvJdbcUrl = if (DatrisEnvironment.current.multiTenant) {
-                            jdbcUrl.replaceFirst("/[^/]*$", "/" + DatrisEnvironment.current.environment)
-                        } else jdbcUrl
+            structured += step("pgvector", "pgvector table of this pipeline") {
+                val env = DatrisEnvironment.current
+                val secretName = env.pgvectorSecretName
+                val secret = if (secretName == null || secretName.trim.isEmpty) None else SecretsUtil.getSecretMap(secretName)
+                val tenant = if (env.multiTenant) Option(env.environment) else None
+                DestinationDrop.pgvectorJdbc(secret, tenant) match {
+                    case Left(o) =>
+                        logger.warn("Skipped pgvector table drop for pipeline '" + config.name + "': no pgvector secret or no jdbcUrl in it")
+                        o
+                    case Right((pgvJdbcUrl, properties)) =>
                         Class.forName("org.postgresql.Driver")
-                        val properties = new Properties()
-                        properties.setProperty("user", username)
-                        properties.setProperty("password", password)
                         val conn = DriverManager.getConnection(pgvJdbcUrl, properties)
                         try {
                             val schema = PGVectorSql.schemaOf(dest.pgvector)
                             val table = PGVectorSql.tableOf(dest.pgvector)
-                            val stmt = conn.createStatement()
-                            stmt.execute(PGVectorSql.dropTable(schema, table))
-                            stmt.close()
-                            logger.info("Dropped pgvector table: " + schema + "." + table)
+                            val o = DestinationDrop.execute("pgvector", conn, PGVectorSql.dropTable(schema, table))
+                            if (o == DestinationDrop.Removed) logger.info("Dropped pgvector table: " + schema + "." + table)
+                            o
                         } finally {
-                            conn.close()
+                            scala.util.Try(conn.close())
                         }
-                    }
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop pgvector table: " + e.getMessage)
             }
         }
+        val structuredResults = DestinationDrop.runAll(structured.result())
 
         // Qdrant, Weaviate, Milvus, Chroma — one bounded call each
         // (dropVectorContainers); the store secret is read here, a read
@@ -1354,49 +1386,70 @@ class PipelineAPIController {
         // to be unique across pipelines, so refuse to delete when another
         // pipeline's objectStore destination shares or nests with this prefix —
         // a blind prefix delete would take out data a live pipeline still reads.
+        // That prefix is kept and reported (no pipeline names). S3A keeps its
+        // own timeouts and retries here.
+        val files = Seq.newBuilder[DestinationDrop.Step]
+        var objectStoreStep: Option[DestinationDrop.Step] = None
         if (dest.objectStore != null) {
-            try {
-                val sharedWith = pipelinesSharingObjectStorePrefix(config)
-                if (sharedWith.nonEmpty) {
-                    logger.warn(
-                        "Skipped object store data delete for pipeline '" + config.name + "': prefixKey '" +
-                            dest.objectStore.prefixKey + "' overlaps with pipeline(s): " + sharedWith.mkString(", ")
-                    )
-                } else {
-                    // Deletes only s3a://<bucket>/<prefixKey>. A catalogMode
-                    // managed table lives where Unity Catalog put it (e.g.
-                    // __unitystorage), never under prefixKey, so it is never
-                    // touched here (UnityCatalogDeleteAdvice says so).
-                    ObjectStoreSpark.deleteDestinationData(dest.objectStore)
-                    objectStoreDataDeleted = true
-                }
-            } catch {
-                case e: Exception => logger.warn("Failed to delete object store data: " + e.getMessage)
-            }
+            val label = labelOf("objectstore", "object-store prefix of this pipeline")
+            val s = DestinationDrop.Step(
+                label,
+                countsAsData = true,
+                () => {
+                    val sharedWith = pipelinesSharingObjectStorePrefix(config)
+                    if (sharedWith.nonEmpty) {
+                        logger.warn(
+                            "Skipped object store data delete for pipeline '" + config.name + "': prefixKey '" +
+                                dest.objectStore.prefixKey + "' overlaps with pipeline(s): " + sharedWith.mkString(", ")
+                        )
+                        keptPrefixes += label
+                        DestinationDrop.NotSent
+                    } else {
+                        // Deletes only s3a://<bucket>/<prefixKey>. A catalogMode
+                        // managed table lives where Unity Catalog put it (e.g.
+                        // __unitystorage), never under prefixKey, so it is never
+                        // touched here (UnityCatalogDeleteAdvice says so).
+                        if (ObjectStoreSpark.deleteDestinationData(dest.objectStore)) DestinationDrop.Removed else DestinationDrop.Absent
+                    }
+                },
+                "objectstore"
+            )
+            objectStoreStep = Some(s)
+            files += s
         }
 
-        cleanupScratchData(config)
-        PipelineAPIController.DestinationCleanup(objectStoreDataDeleted, vectorFailures.result())
+        // Scratch: platform working storage; its failure warns but does not
+        // keep the document-tap ledgers.
+        if (dest.scratch != null)
+            files += DestinationDrop.Step(PipelineAPIController.ScratchLabel, countsAsData = false, () => cleanupScratchData(config), "scratch")
+        val fileResults = DestinationDrop.runAll(files.result())
+
+        val objectStoreDataDeleted = objectStoreStep.exists(s =>
+            fileResults.exists { case (st, o) => (st eq s) && (o == DestinationDrop.Removed || o == DestinationDrop.Absent) }
+        )
+        PipelineAPIController.DestinationCleanup(objectStoreDataDeleted, vectorFailures.result(), structuredResults ++ fileResults, keptPrefixes.result())
     }
 
     /** Scratch — recursively delete `_scratch/<pipeline>/` from <env>-data and
-      * nothing else (no-op without a scratch destination). The prefix comes
+      * nothing else (NotSent without a scratch destination). The prefix comes
       * from ScratchPaths.prefix, which refuses a blank or path-traversing
       * pipeline segment; asserted here too before the recursive delete. Run
       * by every delete that deletes the data, and by a keep-data delete.
-      * Never throws. */
-    private def cleanupScratchData(config: PipelineConfig): Unit = {
+      * Never throws: a failure is classified (detail logged). */
+    private def cleanupScratchData(config: PipelineConfig): DestinationDrop.Outcome = {
         val dest = config.destination
         if (dest != null && dest.scratch != null) {
             try {
                 val prefix = ScratchPaths.prefix(config.name)
                 if (!prefix.startsWith(ScratchPaths.Root) || prefix == ScratchPaths.Root)
                     throw new IllegalStateException("refusing to delete scratch data: prefix '" + prefix + "' is not under " + ScratchPaths.Root)
-                ScratchLoader.deleteScratchData(config.name)
+                if (ScratchLoader.deleteScratchData(config.name)) DestinationDrop.Removed else DestinationDrop.Absent
             } catch {
-                case e: Exception => logger.warn("Failed to delete scratch data for pipeline '" + config.name + "': " + e.getMessage)
+                case e: Exception =>
+                    logger.warn("Failed to delete scratch data for pipeline '" + config.name + "': " + e.getMessage)
+                    DestinationDrop.classify("scratch", e)
             }
-        }
+        } else DestinationDrop.NotSent
     }
 
     /** Names of other pipelines whose objectStore destination would be hit by a
@@ -1679,17 +1732,15 @@ object PipelineAPIController {
             if (factory != null) factory()
             else {
                 val secrets = SecretsRetrieverUtil.mongoDbSecrets()
-                val settings = com.mongodb.MongoClientSettings.builder()
-                    .applyConnectionString(new com.mongodb.ConnectionString(secrets.connectionString))
-                    .build()
-                com.mongodb.client.MongoClients.create(settings)
+                // Bounded as the destination probe's client (30 s).
+                com.mongodb.client.MongoClients.create(DestinationDrop.mongoSettings(secrets.connectionString))
             }
         try {
             val dbName = MongoReservedNames.deleteDatabase(db, env)
             client.getDatabase(dbName).getCollection(db.table).drop()
             auditLogger.info("Dropped MongoDB collection: " + dbName + "." + db.table)
             true
-        } finally client.close()
+        } finally scala.util.Try(client.close())
     }
 
     /** DELETE /pipeline with data (and reset): the one warning line for a
@@ -1825,9 +1876,64 @@ object PipelineAPIController {
         }
 
     /** What [[PipelineAPIController.cleanupDestinationData]] did: whether the
-      * object-store files were deleted, and the vector containers (identity
-      * keys, store order) that could not be removed, with their reasons. */
-    case class DestinationCleanup(objectStoreDataDeleted: Boolean, vectorFailures: Seq[(VectorContainers.Key, String)])
+      * object-store files were deleted, the vector containers (identity
+      * keys, store order) that could not be removed, with their reasons,
+      * every other removal with its outcome (destination order), and the
+      * labels of object-store prefixes kept because another pipeline's prefix
+      * overlaps them. */
+    case class DestinationCleanup(
+        objectStoreDataDeleted: Boolean,
+        vectorFailures: Seq[(VectorContainers.Key, String)],
+        steps: Seq[(DestinationDrop.Step, DestinationDrop.Outcome)] = Nil,
+        keptPrefixes: Seq[String] = Nil
+    ) {
+
+        /** Destination data is still there: a vector container or a data step
+          * (not the scratch folder) could not be removed. */
+        def dataLeft: Boolean =
+            vectorFailures.nonEmpty || steps.exists {
+                case (s, DestinationDrop.Failed(_)) => s.countsAsData
+                case _ => false
+            }
+    }
+
+    /** The label of the scratch folder's removal. */
+    val ScratchLabel = "scratch folder of this pipeline"
+
+    /** Labels of the config-store cleanups of a full delete. */
+    val HistoryLabel = "stored history of this pipeline"
+    val ScriptsLabel = "stored CodeGen scripts of this pipeline"
+    val UnityCatalogStateLabel = "Unity Catalog sync state of this pipeline"
+
+    /** The delete warnings for a cleanup: a Kept line per kept overlapping
+      * object-store prefix (no pipeline names), then one line per failed
+      * step, in step order. Vector failures are added by the delete itself. */
+    def cleanupWarnings(cleanup: DestinationCleanup, configDeleted: Boolean): Seq[String] =
+        cleanup.keptPrefixes.map(SharedDatasets.keptOnDeleteMessage(_, None)) ++
+            cleanup.steps.collect { case (s, DestinationDrop.Failed(reason)) => DestinationDrop.warning(s.label, reason, configDeleted) }
+
+    /** The warning for document-tap ledgers that could not be cleared. Names
+      * no tap. */
+    def ledgerCleanupWarning(reason: String, configDeleted: Boolean): String =
+        DestinationDrop.warning("the document-tap ledgers of this pipeline", reason, configDeleted)
+
+    /** The text of a config row delete that failed after the destination
+      * data was removed. */
+    val ConfigRowAfterDataMessage: String =
+        "The pipeline's destination data was already removed; the configuration could not be deleted. Run the delete again."
+
+    /** Deletes the config row with `delete`. A failure propagates (500); when
+      * the data was already removed (`dataRemoved`) it says so instead of the
+      * store's error (which goes to the log). */
+    def deleteConfigRow(dataRemoved: Boolean, delete: () => Unit): Unit =
+        try delete()
+        catch {
+            case e: Exception if dataRemoved =>
+                auditLogger.warn("Pipeline delete: the configuration row could not be deleted after the data was removed: " + e)
+                val out = new DatrisException(ConfigRowAfterDataMessage)
+                out.initCause(e)
+                throw out
+        }
 
     /** [[clearTapLedgersOnDelete]] for a delete plan: never for a keep-data
       * delete (the ledgers mirror the kept data; clearing them would
