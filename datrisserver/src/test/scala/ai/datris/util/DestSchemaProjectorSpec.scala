@@ -301,4 +301,21 @@ class DestSchemaProjectorSpec extends AnyFunSuite with BeforeAndAfterAll {
         val out = DestSchemaProjector.project(jc, Iterator("1,\"rain, heavy\",\"says \"\"hi\"\"\"", "2,dry,bob")).toList
         assert(out == List("1,\"says \"\"hi\"\"\",\"rain, heavy\"", "2,bob,dry"))
     }
+
+    // plans/stories/transformation-added-columns-upgrade-safe.md: a column the
+    // transformation added but the destination could not hold is left out of the
+    // destination schema; the load leaves it out by name.
+    test("a header column the destination schema does not list is not loaded and the other values keep their columns") {
+        // the schema gained score from the transformation; the control-character column was left out
+        val grown = config(Seq("id", "name"), Seq("id", "name", "score"), ",")
+        val status = new RecordingStatusUtil
+        val jc = ctx(grown, List("id", "bad\u0001", "name", "score"), List("1,z,alice,7"), ",", status)
+        assert(DestSchemaProjector.project(jc, Iterator("1,z,alice,7", "2,y,bob,n/a")).toList == List("1,alice,7", "2,bob,n/a"))
+        assert(status.dropped.isEmpty, status.dropped.toString)
+
+        // nothing joined the schema at all: source and destination still match
+        val same = config(Seq("id", "name"), Seq("id", "name"), ",")
+        val jc2 = ctx(same, List("id", " ", "name"), List("1,z,alice"), ",", new RecordingStatusUtil)
+        assert(DestSchemaProjector.project(jc2, Iterator("1,z,alice")).toList == List("1,alice"))
+    }
 }
