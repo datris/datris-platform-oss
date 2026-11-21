@@ -571,4 +571,90 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
             assert(back.filter("city = 'paris'").count() == 2 && back.filter("city is null").count() == 0, fmt)
         }
     }
+
+    // ---- loader guard: rows that would load a null merge key or partition ----
+    //  Whatever produced the header (source file, AI transformation, REST
+    //  preprocessor), the loader refuses rows that lack a merge key or a
+    //  partition column instead of filling it with null.
+
+    private def guardConfig(fields: List[SchemaField], os: ObjectStore): PipelineConfig = {
+        import scala.collection.JavaConverters._
+        val dest = new java.util.ArrayList[SchemaField](fields.asJava)
+        PipelineConfig(
+            name = "os_guard",
+            source = Source(schemaProperties = SchemaProperties("db", dest), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+            destination = Destination(schemaProperties = SchemaProperties("db", dest), objectStore = os)
+        )
+    }
+
+    private def jl(xs: String*): java.util.List[String] = new java.util.ArrayList[String](java.util.Arrays.asList(xs: _*))
+
+    private def guard(os: ObjectStore, header: List[String], fields: List[SchemaField] = cityFields): Either[String, Unit] =
+        try Right(SparkObjectStoreLoader.refuseNullFilledRequired(guardConfig(fields, os), fields, header))
+        catch { case e: ai.datris.model.DatrisException => Left(e.getMessage) }
+
+    test("a transformation header without the Iceberg merge key fails naming it") {
+        for (keys <- Seq(jl("id"), jl("ID"))) {
+            val os = ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", writeMode = "merge", keyFields = keys)
+            val r = guard(os, List("name", "city"))
+            assert(r.isLeft, keys.toString)
+            val m = r.left.get
+            assert(m.contains("missing required key field(s): id"), m)
+            assert(!m.contains("CSV"), "worded for every route: " + m)
+        }
+    }
+
+    test("a transformation header without the partition column fails naming it, for parquet, orc and iceberg") {
+        for (fmt <- Seq("parquet", "orc", "iceberg")) {
+            val r = guard(ObjectStore(prefixKey = "os_guard", fileFormat = fmt, partitionBy = jl("City")), List("name", "id"))
+            assert(r.isLeft, fmt)
+            assert(r.left.get.contains("missing required partition column(s): city"), fmt + ": " + r.left.get)
+        }
+    }
+
+    test("a partition column that exists only in the destination schema fails: the ingest header never carries it") {
+        // the source schema is id,name; the destination adds city and partitions by it
+        val r = guard(ObjectStore(prefixKey = "os_guard", fileFormat = "parquet", partitionBy = jl("city")), List("id", "name"))
+        assert(r.left.toOption.exists(_.contains("partition column(s): city")), r.toString)
+    }
+
+    test("the refusal comes before the write lock and deleteBeforeWrite, so existing data is untouched") {
+        val fields = cityFields
+        val os = ObjectStore(prefixKey = "os_guard", fileFormat = "parquet", partitionBy = jl("city"), deleteBeforeWrite = true)
+        val path = stageRows(List("1,alice", "2,bob"))
+        val data = ai.datris.model.Data(
+            size = 0L,
+            header = List("id", "name"),
+            headerWithSchema = null,
+            staged = ai.datris.model.StagedPayload(path, ai.datris.model.StagedFormat.Delimited(","), 2L, 0L),
+            rawBytes = null
+        )
+        val su = new CapturingStatus
+        val ctx = ai.datris.model.JobContext(null, null, data, guardConfig(fields, os), null, null, null, su)
+        val e = intercept[ai.datris.model.DatrisException](new SparkObjectStoreLoader(ctx).process())
+        assert(e.getMessage.contains("partition column(s): city"), e.getMessage)
+        assert(!su.events.exists(_.contains("Deleting existing data")), su.events.toString)
+        assert(su.events.toList == List("Writing data to object store"), "nothing after the begin line: " + su.events)
+    }
+
+    test("pin: stray keyFields on an append or a parquet/orc pipeline do not refuse rows that lack them") {
+        val stores = Seq(
+            ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", writeMode = "append", keyFields = jl("id")),
+            ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", keyFields = jl("id")),
+            ObjectStore(prefixKey = "os_guard", fileFormat = "parquet", writeMode = "merge", keyFields = jl("id")),
+            ObjectStore(prefixKey = "os_guard", fileFormat = "orc", keyFields = jl("id"))
+        )
+        stores.foreach(os => assert(guard(os, List("name", "city")) == Right(()), os.toString))
+    }
+
+    test("pin: a full header, a reordered full header and the positional path are never refused") {
+        val os = ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", writeMode = "merge", keyFields = jl("id"), partitionBy = jl("city"))
+        for (h <- Seq(List("id", "name", "city"), List("city", "id", "name"), Nil, null, List("id", "name", "extra"), List("name", "name")))
+            assert(guard(os, h) == Right(()), String.valueOf(h))
+        assert(SparkObjectStoreLoader.nullFilledColumns(cityFields, List("id", "name", "city")).isEmpty)
+        assert(SparkObjectStoreLoader.nullFilledColumns(cityFields, List("id", "name", "extra")).isEmpty, "positional read fills nothing")
+        assert(SparkObjectStoreLoader.nullFilledColumns(cityFields, List("NAME", "id")) == List("city"))
+        // an ordinary column missing from the rows is still loaded as null
+        assert(guard(os, List("city", "id")) == Right(()))
+    }
 }

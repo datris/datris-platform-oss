@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.Gson
 import ai.datris.model.{CsvAttributes, DatrisEnvironment, DatrisException, Notification, SchemaField, StagedFormat}
-import ai.datris.model.JobContext
+import ai.datris.model.{JobContext, PipelineConfig}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
 import org.slf4j.{Logger, LoggerFactory}
@@ -82,20 +82,55 @@ object SparkObjectStoreLoader {
         header: List[String],
         delimiter: String
     ): DataFrame = {
-        def key(n: String): String = if (n == null) "" else n.toLowerCase
-        val destKeys = destFields.map(f => key(f.name))
-        val headerKeys = Option(header).getOrElse(Nil).map(key)
-        val byName = destFields.map(f => key(f.name) -> f).toMap
-        val mapByName =
-            headerKeys.nonEmpty && headerKeys != destKeys && headerKeys.distinct.size == headerKeys.size && headerKeys.forall(byName.contains)
-        if (!mapByName) return stagedDataFrame(spark, stagedPath, destFields, delimiter)
+        if (!mapsByName(destFields, header)) return stagedDataFrame(spark, stagedPath, destFields, delimiter)
+        val headerKeys = header.map(columnKey)
+        val byName = destFields.map(f => columnKey(f.name) -> f).toMap
         val read = stagedDataFrame(spark, stagedPath, headerKeys.map(byName), delimiter)
         val present = headerKeys.toSet
         val columns = buildSchema(destFields).fields.map { f =>
-            if (present.contains(key(f.name))) read.col(IcebergWriter.quote(f.name))
+            if (present.contains(columnKey(f.name))) read.col(IcebergWriter.quote(f.name))
             else org.apache.spark.sql.functions.lit(null).cast(f.dataType).as(f.name)
         }
         read.select(columns: _*)
+    }
+
+    private def columnKey(n: String): String = if (n == null) "" else n.toLowerCase
+
+    /** True when [[stagedDataFrameFor]] reads the rows by name (header order)
+      * rather than by position. */
+    private def mapsByName(destFields: List[SchemaField], header: List[String]): Boolean = {
+        val destKeys = destFields.map(f => columnKey(f.name))
+        val headerKeys = Option(header).getOrElse(Nil).map(columnKey)
+        val dest = destKeys.toSet
+        headerKeys.nonEmpty && headerKeys != destKeys && headerKeys.distinct.size == headerKeys.size && headerKeys.forall(dest.contains)
+    }
+
+    /** The destination columns [[stagedDataFrameFor]] fills with null because
+      * the rows (`header`) do not carry them, in destination order. Empty when
+      * the rows are read by position. */
+    private[util] def nullFilledColumns(destFields: List[SchemaField], header: List[String]): List[String] =
+        if (!mapsByName(destFields, header)) Nil
+        else {
+            val present = header.map(columnKey).toSet
+            destFields.map(_.name).filterNot(n => present.contains(columnKey(n)))
+        }
+
+    /** Refuses rows that would load a null Iceberg merge key (a null key never
+      * matches, so every row would be inserted again) or a null partition
+      * column, whatever produced the header (the source file, a
+      * transformation, a REST preprocessor). Only the columns the by-name read
+      * would fill with null are examined, so a positional read and rows that
+      * carry every key and partition column are never refused. */
+    private[util] def refuseNullFilledRequired(config: PipelineConfig, destFields: List[SchemaField], header: List[String]): Unit = {
+        val filled = nullFilledColumns(destFields, header)
+        DataUtil.objectStoreMissingRequired(config, filled).foreach {
+            case (kind, cols) =>
+                throw new DatrisException(
+                    "The rows to load are missing required " + kind + ": " + cols.mkString(", ") +
+                        ", which cannot be loaded as null. Row columns: " + header.mkString(", ") +
+                        ". Destination columns: " + destFields.map(_.name).mkString(", ") + ". Nothing was written"
+                )
+        }
     }
 
     /** `df` with exactly `schema`'s columns, in its order. Each name is
@@ -137,20 +172,8 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
         statusUtil.info("begin", "Writing data to object store")
 
-        val spark = SparkSessionManager.getOrCreate()
-
-        val objectStore = config.destination.objectStore
-        val bucket = ObjectStoreSpark.resolveBucket(objectStore)
-        val prefixKey = objectStore.prefixKey
-        val outputPath = "s3a://" + bucket + "/" + prefixKey
-
-        ObjectStoreSpark.applyPerBucketConfig(spark, bucket, objectStore)
-
         // Build schema from pipeline config
         val schemaFields = config.destination.schemaProperties.fields.asScala.toList
-        val sparkSchema = SparkObjectStoreLoader.buildSchema(schemaFields)
-
-        val delimiter = CsvAttributes.delimiterOf(config)
 
         // Read the staged file directly (no driver-side row list). Only a
         // delimited payload has rows to write (the old `data.rows` was null —
@@ -162,6 +185,24 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 case StagedFormat.Delimited(_) => staged.path
                 case other => throw new DatrisException("objectStore destination needs delimited rows; the payload is " + other)
             }
+
+        // Rows without a merge key or partition column fail here, before the
+        // write lock, the delete-before-write or any object-store access.
+        if (stagedPath != null) SparkObjectStoreLoader.refuseNullFilledRequired(config, schemaFields, jobContext.data.header)
+
+        val spark = SparkSessionManager.getOrCreate()
+
+        val objectStore = config.destination.objectStore
+        val bucket = ObjectStoreSpark.resolveBucket(objectStore)
+        val prefixKey = objectStore.prefixKey
+        val outputPath = "s3a://" + bucket + "/" + prefixKey
+
+        ObjectStoreSpark.applyPerBucketConfig(spark, bucket, objectStore)
+
+        val sparkSchema = SparkObjectStoreLoader.buildSchema(schemaFields)
+
+        val delimiter = CsvAttributes.delimiterOf(config)
+
         val df = SparkObjectStoreLoader.stagedDataFrameFor(spark, stagedPath, schemaFields, jobContext.data.header, delimiter)
 
         // Determine file format (default parquet)
