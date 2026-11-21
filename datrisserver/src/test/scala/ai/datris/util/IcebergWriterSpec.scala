@@ -1378,4 +1378,99 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         val rows = readAll(location).collect().map(r => (r.getLong(0), Option(r.getString(1)), r.getDouble(2))).toList.sortBy(_._1)
         assert(rows == List((1L, Some("east"), 1.5), (2L, Some("west"), 2.5), (3L, None, 4.5), (4L, None, 5.5)), rows.toString)
     }
+
+    // ---- plans/stories/iceberg-partition-spec-is-the-guard.md (loader half) ----
+    //  For an existing table its partition spec decides which columns may not
+    //  be null-filled; the config's partitionBy decides only for a new table.
+
+    private def writeNullFilled(
+        data: DataFrame,
+        location: String,
+        writeMode: String,
+        partitionBy: Seq[String],
+        nullFilled: Seq[String],
+        destSchema: StructType = baseSchema
+    ): Either[String, IcebergWriter.WriteResult] =
+        try Right(IcebergWriter.write(data, location, writeMode, partitionBy, Nil, destSchema, new RecordingStatusUtil, null, None, nullFilled))
+        catch { case e: DatrisException => Left(e.getMessage) }
+
+    private def nullRegion(rows: (Long, Double)*): DataFrame = df(rows.map { case (i, a) => (i, null: String, a) }: _*)
+
+    test("rows that null-fill a column of the existing table's partition spec are refused before any snapshot, whatever partitionBy now says") {
+        val location = newLocation("spec-guard-existing/t")
+        write(df((1L, "east", 1.0)), location, "append", partitionBy = Seq("region"))
+        val before = snapshots(location).size
+        for (mode <- Seq("append", "overwrite")) {
+            val r = writeNullFilled(nullRegion((2L, 2.0)), location, mode, partitionBy = Seq("amount"), nullFilled = Seq("region"))
+            assert(
+                r.left.toOption.exists(m => m.contains("partition column(s): region") && m.endsWith("Nothing was written to the object store")),
+                mode + ": " + r
+            )
+        }
+        assert(snapshots(location).size == before)
+        assert(readAll(location).filter("region is null").count() == 0)
+    }
+
+    test("rows that lack a column named only in the edited partitionBy load into the existing table") {
+        val location = newLocation("spec-guard-edited/t")
+        write(df((1L, "east", 1.0)), location, "append", partitionBy = Seq("region"))
+        val r = writeNullFilled(
+            df((2L, "west", 0.0)).withColumn("amount", org.apache.spark.sql.functions.lit(null).cast(DoubleType)),
+            location,
+            "append",
+            partitionBy = Seq("amount"),
+            nullFilled = Seq("amount")
+        )
+        assert(r.isRight, r.toString)
+        assert(readAll(location).count() == 2)
+    }
+
+    test("a new table is checked against the config's list before it is created") {
+        val location = newLocation("spec-guard-new/t")
+        val r = writeNullFilled(nullRegion((1L, 1.0)), location, "append", partitionBy = Seq("Region"), nullFilled = Seq("region"))
+        assert(r.left.toOption.exists(_.contains("partition column(s): region")), r.toString)
+        assert(!new HadoopTables(spark.sessionState.newHadoopConf()).exists(location), "no table was created")
+    }
+
+    test("an unpartitioned existing table refuses nothing") {
+        val location = newLocation("spec-guard-unpartitioned/t")
+        write(df((1L, "east", 1.0)), location, "append")
+        val r = writeNullFilled(nullRegion((2L, 2.0)), location, "append", partitionBy = Seq("region"), nullFilled = Seq("region"))
+        assert(r.isRight, r.toString)
+        assert(readAll(location).count() == 2)
+    }
+
+    test("ignore on an existing table writes nothing and refuses nothing; on a new table it is checked") {
+        val location = newLocation("spec-guard-ignore/t")
+        write(df((1L, "east", 1.0)), location, "append", partitionBy = Seq("region"))
+        assert(writeNullFilled(nullRegion((2L, 2.0)), location, "ignore", Seq("region"), Seq("region")).isRight)
+        assert(readAll(location).count() == 1)
+        val fresh = newLocation("spec-guard-ignore-new/t")
+        assert(writeNullFilled(nullRegion((2L, 2.0)), fresh, "ignore", Seq("region"), Seq("region")).isLeft)
+    }
+
+    test("a partition column missing from the frame (field protection drop) is refused before the table is created or evolved") {
+        val noRegion = StructType(baseSchema.fields.filterNot(_.name == "region"))
+        val frame = spark.createDataFrame(java.util.Arrays.asList(Row(1L, 1.0)), noRegion)
+        val fresh = newLocation("spec-guard-dropped-new/t")
+        val r1 = writeNullFilled(frame, fresh, "append", Seq("region"), Nil, destSchema = noRegion)
+        assert(r1.left.toOption.exists(_.contains("partition column(s): region")), r1.toString)
+        assert(!new HadoopTables(spark.sessionState.newHadoopConf()).exists(fresh))
+        val existing = newLocation("spec-guard-dropped-existing/t")
+        write(df((1L, "east", 1.0)), existing, "append", partitionBy = Seq("region"))
+        val before = snapshots(existing).size
+        val r2 = writeNullFilled(frame, existing, "append", Seq("region"), Nil, destSchema = noRegion)
+        assert(r2.left.toOption.exists(_.contains("partition column(s): region")), r2.toString)
+        assert(snapshots(existing).size == before)
+    }
+
+    test("a table whose spec cannot be read falls back to the config's partitionBy") {
+        val broken = org.mockito.Mockito.mock(classOf[Table])
+        org.mockito.Mockito.when(broken.spec()).thenThrow(new RuntimeException("metadata unreadable"))
+        assert(IcebergWriter.requiredPartitionColumns(Some(broken), Seq("Region")) == Seq("Region"))
+        assert(IcebergWriter.requiredPartitionColumns(None, Seq("Region")) == Seq("Region"), "a new table: the config's list")
+        val location = newLocation("spec-guard-read/t")
+        write(df((1L, "east", 1.0)), location, "append", partitionBy = Seq("region"))
+        assert(IcebergWriter.requiredPartitionColumns(Some(loadTable(location)), Seq("amount")) == Seq("region"), "the table's identity spec")
+    }
 }

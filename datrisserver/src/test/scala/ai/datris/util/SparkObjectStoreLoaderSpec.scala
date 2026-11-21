@@ -605,8 +605,11 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
     }
 
     test("a transformation header without the partition column fails naming it, for parquet, orc and iceberg") {
+        // Iceberg: before the write lock only when deleteBeforeWrite rebuilds the
+        // table from the config; otherwise IcebergWriter checks the table's spec.
         for (fmt <- Seq("parquet", "orc", "iceberg")) {
-            val r = guard(ObjectStore(prefixKey = "os_guard", fileFormat = fmt, partitionBy = jl("City")), List("name", "id"))
+            val r =
+                guard(ObjectStore(prefixKey = "os_guard", fileFormat = fmt, partitionBy = jl("City"), deleteBeforeWrite = fmt == "iceberg"), List("name", "id"))
             assert(r.isLeft, fmt)
             assert(r.left.get.contains("missing required partition column(s): city"), fmt + ": " + r.left.get)
         }
@@ -664,5 +667,86 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(SparkObjectStoreLoader.nullFilledColumns(cityFields, List("NAME", "id")) == List("city"))
         // an ordinary column missing from the rows is still loaded as null
         assert(guard(os, List("city", "id")) == Right(()))
+    }
+
+    // ---- E2E follow-ups: field-protection drop, ignore mode, the Iceberg spec ----
+
+    private val idName = List(SchemaField("id", "int"), SchemaField("name", "string"))
+
+    test("a partition column field protection drops is refused before the write: parquet and orc, and iceberg with deleteBeforeWrite") {
+        // FieldProtection strips a `drop` field from the destination schema and
+        // the header; partitionBy still names it.
+        val stores = Seq(
+            ObjectStore(prefixKey = "os_guard", fileFormat = "parquet", partitionBy = jl("city")),
+            ObjectStore(prefixKey = "os_guard", fileFormat = "orc", partitionBy = jl("City"), writeMode = "ignore"),
+            ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", partitionBy = jl("city"), deleteBeforeWrite = true)
+        )
+        for (os <- stores; rows <- Seq(0L, 2L)) {
+            val r = guard(os, List("id", "name"), fields = idName, rowCount = rows)
+            // named as configured (`City` on the ORC case)
+            assert(
+                r.left.toOption.exists(m => m.toLowerCase.contains("partition column(s): city") && m.endsWith("Nothing was written to the object store")),
+                os + ": " + r
+            )
+        }
+    }
+
+    test("an Iceberg merge key field protection drops is refused before the write") {
+        val os = ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", writeMode = "merge", keyFields = jl("id"))
+        val r = guard(os, List("name", "city"), fields = List(SchemaField("name", "string"), SchemaField("city", "string")))
+        assert(r.left.toOption.exists(_.contains("key field(s): id")), r.toString)
+    }
+
+    test("iceberg without deleteBeforeWrite leaves partition columns to the table (IcebergWriter), so the loader refuses none") {
+        for (mode <- Seq("append", "overwrite", "ignore", "errorifexists")) {
+            val os = ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", writeMode = mode, partitionBy = jl("city"))
+            assert(guard(os, List("id", "name")) == Right(()), mode + ": null-filled")
+            assert(guard(os, List("id", "name"), fields = idName) == Right(()), mode + ": dropped")
+        }
+    }
+
+    test("parquet/orc writeMode ignore: a null-filled partition is checked only when nothing exists at the path") {
+        for (fmt <- Seq("parquet", "orc")) {
+            val os = ObjectStore(prefixKey = "os_guard", fileFormat = fmt, writeMode = "ignore", partitionBy = jl("city"))
+            assert(guard(os, List("id", "name")) == Right(()), fmt + ": not refused before the lock (Spark skips an existing path)")
+            val cfg = guardConfig(cityFields, os)
+            def at(exists: () => Boolean, rows: Long = 2L): Either[String, Unit] =
+                try Right(SparkObjectStoreLoader.refuseIgnoreWrite(cfg, cityFields, List("id", "name"), rows, exists))
+                catch { case e: ai.datris.model.DatrisException => Left(e.getMessage) }
+            assert(at(() => true) == Right(()), fmt + ": the path exists, nothing is written")
+            assert(at(() => throw new java.io.IOException("store down")) == Right(()), fmt + ": an unanswered check leaves the write as before")
+            assert(at(() => false, rows = 0L) == Right(()), fmt + ": no rows")
+            assert(at(() => false).left.toOption.exists(_.contains("partition column(s): city")), fmt)
+            // with deleteBeforeWrite the path is emptied first: refused up front
+            val del = os.copy(deleteBeforeWrite = true)
+            assert(guard(del, List("id", "name")).isLeft, fmt + ": deleteBeforeWrite")
+        }
+    }
+
+    test("process(): a dropped partition column is refused before deleteBeforeWrite and before any store access") {
+        for (fmt <- Seq("parquet", "orc", "iceberg")) {
+            // provider is not one the loader knows: reaching the store setup would fail differently
+            val os = ObjectStore(prefixKey = "os_guard", fileFormat = fmt, partitionBy = jl("city"), deleteBeforeWrite = true, provider = "spec-no-store")
+            val data = ai.datris.model.Data(
+                size = 0L,
+                header = List("id", "name"),
+                headerWithSchema = null,
+                staged = ai.datris.model.StagedPayload(stageRows(List("1,alice")), ai.datris.model.StagedFormat.Delimited(","), 1L, 0L),
+                rawBytes = null
+            )
+            val su = new CapturingStatus
+            val ctx = ai.datris.model.JobContext(null, null, data, guardConfig(idName, os), null, null, null, su)
+            val e = intercept[ai.datris.model.DatrisException](new SparkObjectStoreLoader(ctx).process())
+            assert(e.getMessage.contains("partition column(s): city"), fmt + ": " + e.getMessage)
+            assert(su.events.toList == List("Writing data to object store"), fmt + ": " + su.events)
+        }
+    }
+
+    test("pin (v1.60.0): Spark refuses a partition column the frame lacks even in ignore mode on an existing path") {
+        val out = Files.createTempDirectory("pin-ignore-dropped").resolve("t")
+        val full = SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(List("1,alice,paris")), cityFields, ",")
+        full.write.mode("append").partitionBy("city").parquet(out.toUri.toString)
+        val dropped = SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(List("2,bob")), idName, ",")
+        intercept[Exception](dropped.write.mode("ignore").partitionBy("city").parquet(out.toUri.toString))
     }
 }

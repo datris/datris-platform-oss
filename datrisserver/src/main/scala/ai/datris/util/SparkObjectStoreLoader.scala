@@ -15,6 +15,7 @@ import org.slf4j.{Logger, LoggerFactory}
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
 import scala.collection.JavaConverters._
+import scala.util.Try
 
 object SparkObjectStoreLoader {
     private val writeLocks = new ConcurrentHashMap[String, ReentrantLock]()
@@ -115,23 +116,85 @@ object SparkObjectStoreLoader {
             destFields.map(_.name).filterNot(n => present.contains(columnKey(n)))
         }
 
-    /** Refuses rows that would load a null Iceberg merge key (a null key never
-      * matches, so every row would be inserted again) or a null partition
-      * column, whatever produced the header (the source file, a
-      * transformation, a REST preprocessor). Only the columns the by-name read
-      * would fill with null are examined, so a positional read and rows that
-      * carry every key and partition column are never refused, and neither is
-      * a payload of `rowCount` 0, which has nothing to null-fill. */
+    private def norm(s: String): String = Option(s).map(_.trim.toLowerCase).getOrElse("")
+
+    private def namesOf(l: java.util.List[String]): List[String] =
+        Option(l).map(_.asScala.toList.filter(n => n != null && n.trim.nonEmpty).map(_.trim)).getOrElse(Nil)
+
+    /** The refusal for rows without a merge key or partition column: `filled`
+      * are the ones the load would fill with null, `absent` the ones the rows
+      * to write do not have at all (field protection `drop` removed them). */
+    private[util] def requiredColumnRefusal(
+        kind: String,
+        filled: Seq[String],
+        absent: Seq[String],
+        rowColumns: Seq[String],
+        destColumns: Seq[String]
+    ): DatrisException = {
+        val what =
+            if (filled.nonEmpty)
+                "The rows to load are missing required " + kind + ": " + filled.mkString(", ") + ", which cannot be loaded as null. Row columns: " +
+                    rowColumns.mkString(", ") + ". Destination columns: " + destColumns.mkString(", ")
+            else
+                "The rows to load do not carry required " + kind + ": " + absent.mkString(", ") +
+                    " (removed before the load, for example by field protection drop), so they cannot be written. Row columns: " + rowColumns.mkString(", ")
+        new DatrisException(what + ". Nothing was written to the object store")
+    }
+
+    /** Refuses, before the write lock and deleteBeforeWrite, rows that would
+      * load a null Iceberg merge key (a null key never matches, so every row
+      * would be inserted again) or a null partition column, whatever produced
+      * the header (the source file, a transformation, a REST preprocessor), and
+      * rows that do not carry such a column at all (field protection `drop`).
+      * Null-filling is examined only for the columns the by-name read would
+      * fill, and never for a payload of `rowCount` 0, so a positional read and
+      * rows that carry every key and partition column are never refused.
+      *
+      * Partition columns are checked here for Parquet and ORC, and for Iceberg
+      * only with deleteBeforeWrite (the table is rebuilt from the config);
+      * otherwise IcebergWriter checks the existing table's own partition spec.
+      * Parquet/ORC writeMode ignore without deleteBeforeWrite writes nothing
+      * when the path exists, so its null-fill check waits for
+      * [[refuseIgnoreWrite]] under the lock (a dropped column fails in Spark
+      * in every mode, so it is refused here). */
     private[util] def refuseNullFilledRequired(config: PipelineConfig, destFields: List[SchemaField], header: List[String], rowCount: Long): Unit = {
-        val filled = if (rowCount > 0) nullFilledColumns(destFields, header) else Nil
-        DataUtil.objectStoreMissingRequired(config, filled).foreach {
-            case (kind, cols) =>
-                throw new DatrisException(
-                    "The rows to load are missing required " + kind + ": " + cols.mkString(", ") +
-                        ", which cannot be loaded as null. Row columns: " + header.mkString(", ") +
-                        ". Destination columns: " + destFields.map(_.name).mkString(", ") + ". Nothing was written to the object store"
-                )
+        val os = Option(config.destination).flatMap(d => Option(d.objectStore))
+        if (os.isEmpty) return
+        val o = os.get
+        val format = Option(o.fileFormat).map(norm).filter(_.nonEmpty).getOrElse("parquet")
+        val mode = Option(o.writeMode).map(norm).filter(_.nonEmpty).getOrElse("append")
+        val keys = if (format == "iceberg" && mode == "merge") namesOf(o.keyFields) else Nil
+        val partitionsHere = if (format != "iceberg" || o.deleteBeforeWrite) namesOf(o.partitionBy) else Nil
+        val deferFill = format != "iceberg" && mode == "ignore" && !o.deleteBeforeWrite
+        val dest = destFields.map(f => norm(f.name)).toSet
+        val filled = (if (rowCount > 0) nullFilledColumns(destFields, header) else Nil).map(norm).toSet
+        val rowColumns = Option(header).getOrElse(Nil)
+        def check(kind: String, cols: List[String], fill: Boolean): Unit = {
+            val absent = cols.filterNot(c => dest.contains(norm(c)))
+            val nulls = if (fill) destFields.map(_.name).filter(n => filled.contains(norm(n)) && cols.exists(c => norm(c) == norm(n))) else Nil
+            if (nulls.nonEmpty || absent.nonEmpty) throw requiredColumnRefusal(kind, nulls, absent, rowColumns, destFields.map(_.name))
         }
+        check("key field(s)", keys, fill = true)
+        check("partition column(s)", partitionsHere, fill = !deferFill)
+    }
+
+    /** Parquet/ORC writeMode ignore without deleteBeforeWrite, under the write
+      * lock: Spark writes nothing when the path exists, so null-filled rows are
+      * refused only when it does not. A check that cannot be answered leaves
+      * the write as it was (Spark makes the same check itself). */
+    private[util] def refuseIgnoreWrite(
+        config: PipelineConfig,
+        destFields: List[SchemaField],
+        header: List[String],
+        rowCount: Long,
+        pathExists: () => Boolean
+    ): Unit = {
+        val o = config.destination.objectStore
+        if (rowCount <= 0 || o.deleteBeforeWrite || Option(o.writeMode).map(norm).getOrElse("") != "ignore") return
+        val partitions = namesOf(o.partitionBy).map(norm).toSet
+        val nulls = nullFilledColumns(destFields, header).filter(n => partitions.contains(norm(n)))
+        if (nulls.nonEmpty && !Try(pathExists()).getOrElse(true))
+            throw requiredColumnRefusal("partition column(s)", nulls, Nil, Option(header).getOrElse(Nil), destFields.map(_.name))
     }
 
     /** `df` with exactly `schema`'s columns, in its order. Each name is
@@ -191,7 +254,8 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         // write lock, the delete-before-write or any object-store access. A
         // payload with no rows has nothing to null-fill and loads as before
         // (every delimited payload's rowCount is counted as it is staged).
-        if (stagedPath != null) SparkObjectStoreLoader.refuseNullFilledRequired(config, schemaFields, jobContext.data.header, staged.rowCount)
+        val rowCount = if (stagedPath != null) staged.rowCount else 0L
+        SparkObjectStoreLoader.refuseNullFilledRequired(config, schemaFields, jobContext.data.header, rowCount)
 
         val spark = SparkSessionManager.getOrCreate()
 
@@ -266,8 +330,22 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 // MERGE uses UPDATE SET * / INSERT *, so the source must carry
                 // exactly the dest schema's columns in its order.
                 val projected = SparkObjectStoreLoader.projectToSchema(df, sparkSchema)
+                // IcebergWriter checks these against the table's partition spec
+                // (or, for a new table, the config's partitionBy).
+                val nullFilled = if (rowCount > 0) SparkObjectStoreLoader.nullFilledColumns(schemaFields, jobContext.data.header) else Nil
                 def writeIceberg(): IcebergWriter.WriteResult =
-                    IcebergWriter.write(projected, outputPath, writeModeName, partitions, keyFields, sparkSchema, statusUtil, config.name, restPlan.target)
+                    IcebergWriter.write(
+                        projected,
+                        outputPath,
+                        writeModeName,
+                        partitions,
+                        keyFields,
+                        sparkSchema,
+                        statusUtil,
+                        config.name,
+                        restPlan.target,
+                        nullFilled
+                    )
                 try Some(writeIceberg())
                 catch {
                     // Lost a create race for the identifier: re-decide once
@@ -300,6 +378,16 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 }
 
                 // Write with optional partitioning
+                SparkObjectStoreLoader.refuseIgnoreWrite(
+                    config,
+                    schemaFields,
+                    jobContext.data.header,
+                    rowCount,
+                    () => {
+                        val path = new org.apache.hadoop.fs.Path(outputPath)
+                        path.getFileSystem(spark.sparkContext.hadoopConfiguration).exists(path)
+                    }
+                )
                 val writer = df.write.mode(writeMode)
                 val partitionedWriter = {
                     if (partitions.nonEmpty) {
