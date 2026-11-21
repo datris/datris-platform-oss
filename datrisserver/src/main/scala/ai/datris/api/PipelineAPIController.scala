@@ -1936,7 +1936,13 @@ object PipelineAPIController {
     /** The warning for document-tap ledgers that could not be cleared. Names
       * no tap. */
     def ledgerCleanupWarning(reason: String, configDeleted: Boolean): String =
-        platformCleanupWarning("the document-tap ledgers of this pipeline", reason, configDeleted)
+        if (configDeleted)
+            // Ledgers are keyed by tap, not pipeline: a later delete of a
+            // pipeline of this name does not clear the ledger of a surviving tap.
+            "Could not remove the document-tap ledgers of this pipeline: " + reason + ". " +
+                "A document tap that still feeds a pipeline of this name will skip the documents it already loaded; " +
+                "clear the ledger of that tap (DELETE /api/v1/tap/ledger?name=<tap>) before loading again."
+        else platformCleanupWarning("the document-tap ledgers of this pipeline", reason, configDeleted)
 
     /** The warning for platform-internal state of the pipeline (document-tap
       * ledgers, stored history, CodeGen scripts, Unity Catalog sync state)
@@ -1945,7 +1951,9 @@ object PipelineAPIController {
       * the user to remove in a store. */
     def platformCleanupWarning(label: String, reason: String, configDeleted: Boolean): String =
         "Could not remove " + label + ": " + reason + ". " +
-            (if (configDeleted) "It is left in the platform storage and is removed the next time a pipeline of this name is deleted."
+            (if (configDeleted)
+                 "It is left in the platform storage and is removed the next time a pipeline of this name is deleted. " +
+                     "A new pipeline created with this name will see it until then."
              else "Run the reset again to retry.")
 
     /** The text of a config row delete that failed after the destination

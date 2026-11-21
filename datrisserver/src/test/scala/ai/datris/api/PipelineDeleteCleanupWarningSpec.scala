@@ -340,11 +340,13 @@ class PipelineDeleteCleanupWarningSpec extends AnyFunSuite with BeforeAndAfterEa
                 assert(w.contains(": " + r + ". "), w)
                 // Review finding 6: platform-internal state, nothing to remove in a store.
                 assert(
-                    w.endsWith(if (cd) "It is left in the platform storage and is removed the next time a pipeline of this name is deleted."
+                    w.endsWith(if (cd) "clear the ledger of that tap (DELETE /api/v1/tap/ledger?name=<tap>) before loading again."
                     else "Run the reset again to retry."),
                     w
                 )
                 assert(!w.contains("remove it in the store"), w)
+                // Ledgers are keyed by tap: never claim a later pipeline delete clears them.
+                if (cd) assert(w.contains("will skip the documents it already loaded") && !w.contains("removed the next time"), w)
                 assert(!w.contains("'"), s"the ledger warning quotes a name: $w")
             }
         }
@@ -457,7 +459,8 @@ class PipelineDeleteCleanupWarningSpec extends AnyFunSuite with BeforeAndAfterEa
         Seq(PipelineAPIController.HistoryLabel, PipelineAPIController.ScriptsLabel, PipelineAPIController.UnityCatalogStateLabel).foreach { l =>
             val w = PipelineAPIController.platformCleanupWarning(l, RE, configDeleted = true)
             assert(
-                w == "Could not remove " + l + ": the store reported an error. It is left in the platform storage and is removed the next time a pipeline of this name is deleted.",
+                w == "Could not remove " + l + ": the store reported an error. It is left in the platform storage and is removed the next time a pipeline of this name is deleted. " +
+                    "A new pipeline created with this name will see it until then.",
                 w
             )
         }
@@ -473,5 +476,11 @@ class PipelineDeleteCleanupWarningSpec extends AnyFunSuite with BeforeAndAfterEa
             assert(PipelineAPIController.cleanupWarnings(done, configDeleted = true).isEmpty)
             assert(!done.dataLeft && !done.objectStoreDataDeleted && done.keptPrefixes.isEmpty)
         }
+    }
+
+    test("review 3 (round 3): the SQL Server and Databricks drops pass the socket and warehouse-start bounds") {
+        val cleanupSrc = method("cleanupDestinationData")
+        assert(cleanupSrc.contains("socketTimeoutSeconds = Some(DestinationDrop.SocketTimeoutSeconds)"), "SQL Server drop socket bound")
+        assert(cleanupSrc.contains("warehouseStartSeconds = Some(DestinationDrop.DatabricksWarehouseStartSeconds)"), "Databricks warehouse-start bound")
     }
 }

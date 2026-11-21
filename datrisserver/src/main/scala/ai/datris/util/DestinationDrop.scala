@@ -106,8 +106,11 @@ object DestinationDrop {
 
     /** How long the Databricks drop's connection waits for a stopped SQL
       * warehouse to start (the driver's retry window for "temporarily
-      * unavailable"); the drop statement then has [[TimeoutSeconds]]. */
-    val DatabricksWarehouseStartSeconds: Int = 300
+      * unavailable"): 900 s, the driver's own default, so the delete waits
+      * as long as before this bound; the drop statement then has
+      * [[TimeoutSeconds]]. An unreachable workspace fails within 30 s
+      * (`DatabricksConnectionUtil.workspaceReachable`). */
+    val DatabricksWarehouseStartSeconds: Int = 900
 
     /** One removal. `kind` (postgres, pgvector, mongodb, snowflake,
       * sqlserver, databricks, objectstore, scratch, or empty) is what a

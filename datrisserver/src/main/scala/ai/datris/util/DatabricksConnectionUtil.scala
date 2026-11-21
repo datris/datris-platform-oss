@@ -83,7 +83,14 @@ object DatabricksConnectionUtil {
                     properties.setProperty("PWD", creds.token.get)
             }
 
-            val jdbcUrl = "jdbc:databricks://" + normalizeHost(creds.host) + ":443"
+            val host = normalizeHost(creds.host)
+            val jdbcUrl = "jdbc:databricks://" + host + ":" + Port
+            // The delete only: the driver uses one value for its connect and
+            // socket timeouts, so with the long warehouse-start bound a dead
+            // workspace host would wait that long; a plain TCP connect first
+            // fails it within WorkspaceConnectSeconds.
+            // Skipped behind a configured proxy (a direct connect may be refused there).
+            if (warehouseStartSeconds.isDefined && !proxyConfigured) workspaceReachable(host, Port, jdbcUrl)
             logger.info("Databricks jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + " httpPath: " + httpPath)
             onInfo("jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + " httpPath: " + httpPath)
             // getConnection blocks while a stopped warehouse auto-starts — classic
@@ -102,6 +109,42 @@ object DatabricksConnectionUtil {
             if (conn != null) Try(conn.close())
         }
     }
+
+    /** The port of the workspace's JDBC URL. */
+    val Port = 443
+
+    /** An HTTPS proxy configured for the JVM or the process: the pre-check
+      * cannot tell a refused direct connect from a dead host there. */
+    private[util] def proxyConfigured: Boolean =
+        Seq(System.getProperty("https.proxyHost"), System.getenv("HTTPS_PROXY"), System.getenv("https_proxy")).exists(v => v != null && v.trim.nonEmpty)
+
+    /** The delete's workspace pre-check connect bound, in seconds. */
+    val WorkspaceConnectSeconds = 30
+
+    /** Test seam: opens (and closes) a TCP connection to (host, port) within
+      * the timeout in milliseconds, or throws. */
+    @volatile private[util] var tcpConnect: (String, Int, Int) => Unit = (host, port, timeoutMs) => {
+        val s = new java.net.Socket()
+        try s.connect(new java.net.InetSocketAddress(host, port), timeoutMs)
+        finally Try(s.close())
+    }
+
+    /** The delete's pre-check: the workspace accepts a TCP connection on
+      * `port` within [[WorkspaceConnectSeconds]]; otherwise the same "No
+      * Databricks workspace answers at" error the driver's unknown-host
+      * failure gives (the host is in the message, which only the log sees). */
+    private[util] def workspaceReachable(host: String, port: Int, jdbcUrl: String): Unit =
+        try tcpConnect(host, port, WorkspaceConnectSeconds * 1000)
+        catch {
+            case e: Exception =>
+                logger.warn("Databricks workspace pre-check failed for " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + ": " + e)
+                val out = new DatrisException(
+                    "No Databricks workspace answers at " + jdbcUrl + " within " + WorkspaceConnectSeconds + " seconds. " +
+                        "The credentials secret's 'host' field must be the workspace hostname."
+                )
+                out.initCause(e)
+                throw out
+        }
 
     /** The driver timeout properties for `timeoutSeconds` and
      *  `warehouseStartSeconds` (databricks-jdbc 3.4.1, read from its

@@ -50,11 +50,7 @@ object SqlServerConnectionUtil {
             conn =
                 try {
                     val props = connectionProperties(creds)
-                    timeoutSeconds.foreach { s =>
-                        props.setProperty("loginTimeout", s.toString)
-                        props.setProperty("socketTimeout", (socketTimeoutSeconds.getOrElse(s) * 1000L).toString)
-                        props.setProperty("queryTimeout", s.toString)
-                    }
+                    timeoutProperties(timeoutSeconds, socketTimeoutSeconds).foreach { case (k, v) => props.setProperty(k, v) }
                     DriverManager.getConnection(url, props)
                 } catch {
                     case e: SQLException => throw connectError(e, creds, db.dbName)
@@ -65,6 +61,19 @@ object SqlServerConnectionUtil {
             if (conn != null) Try(conn.close())
         }
     }
+
+    /** The driver timeout properties: `loginTimeout` and `queryTimeout`
+     *  (seconds) from `timeoutSeconds`, `socketTimeout` (milliseconds) from
+     *  `socketTimeoutSeconds`, else `timeoutSeconds`. Nothing without
+     *  `timeoutSeconds` (driver defaults). */
+    private[util] def timeoutProperties(timeoutSeconds: Option[Int], socketTimeoutSeconds: Option[Int]): Seq[(String, String)] =
+        timeoutSeconds.toSeq.flatMap { s =>
+            Seq(
+                "loginTimeout" -> s.toString,
+                "socketTimeout" -> (socketTimeoutSeconds.getOrElse(s) * 1000L).toString,
+                "queryTimeout" -> s.toString
+            )
+        }
 
     /** `jdbc:sqlserver://host:port;databaseName=...;encrypt=...;trustServerCertificate=...`.
      *  Values holding `;`, `=` or braces are brace-escaped per the driver's

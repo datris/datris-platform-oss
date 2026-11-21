@@ -518,14 +518,70 @@ class DestinationDropSpec extends AnyFunSuite {
     }
 
     test(
-        "review 1: the Databricks delete waits up to 300 s for a warehouse start; the per-request socket timeout never cuts it shorter; nothing set by default"
+        "review 1: the Databricks delete waits up to 900 s (the driver default) for a warehouse start; the per-request socket timeout never cuts it shorter; nothing set by default"
     ) {
-        assert(DatabricksWarehouseStartSeconds == 300)
+        // Round 3, ruling 4: 900 s, what main tolerated (was 300).
+        assert(DatabricksWarehouseStartSeconds == 900)
         val p = DatabricksConnectionUtil.timeoutProperties(Some(TimeoutSeconds), Some(DatabricksWarehouseStartSeconds)).toMap
-        assert(p == Map("socketTimeout" -> "300", "TemporarilyUnavailableRetryTimeout" -> "300"), p)
+        assert(p == Map("socketTimeout" -> "900", "TemporarilyUnavailableRetryTimeout" -> "900"), p)
         // The probe's (and any other bounded) use: unchanged.
         assert(DatabricksConnectionUtil.timeoutProperties(Some(30), None) == Seq("socketTimeout" -> "30"))
         // Loads and queries: driver defaults.
         assert(DatabricksConnectionUtil.timeoutProperties(None, None).isEmpty)
+    }
+
+    test("round 3: SQL Server timeout properties: login and query from the bound, socket from its own bound (ms)") {
+        assert(
+            SqlServerConnectionUtil.timeoutProperties(Some(30), Some(40)).toMap ==
+                Map("loginTimeout" -> "30", "queryTimeout" -> "30", "socketTimeout" -> "40000")
+        )
+        assert(
+            SqlServerConnectionUtil.timeoutProperties(Some(30), None).toMap ==
+                Map("loginTimeout" -> "30", "queryTimeout" -> "30", "socketTimeout" -> "30000")
+        )
+        assert(SqlServerConnectionUtil.timeoutProperties(None, None).isEmpty)
+        assert(SqlServerConnectionUtil.timeoutProperties(Some(TimeoutSeconds), Some(SocketTimeoutSeconds)).toMap.get("socketTimeout").contains("40000"))
+    }
+
+    test(
+        "round 3: the Databricks delete pre-checks the workspace with a 30 s TCP connect on the JDBC URL's port; a refused or timed-out connect is 'could not be reached' with no host in the warning"
+    ) {
+        val saved = DatabricksConnectionUtil.tcpConnect
+        try {
+            val seen = scala.collection.mutable.ArrayBuffer[(String, Int, Int)]()
+            DatabricksConnectionUtil.tcpConnect = (h, p, t) => seen += ((h, p, t))
+            DatabricksConnectionUtil.workspaceReachable(
+                "dbc-x.cloud.databricks.com",
+                DatabricksConnectionUtil.Port,
+                "jdbc:databricks://dbc-x.cloud.databricks.com:443"
+            )
+            assert(seen == Seq(("dbc-x.cloud.databricks.com", 443, 30000)), seen)
+            assert(DatabricksConnectionUtil.Port == 443 && DatabricksConnectionUtil.WorkspaceConnectSeconds == 30)
+
+            Seq[Throwable](new ConnectException("Connection refused"), new SocketTimeoutException("connect timed out"), new UnknownHostException("dbc-x")).foreach {
+                cause =>
+                    DatabricksConnectionUtil.tcpConnect = (_, _, _) => throw cause
+                    val e = intercept[DatrisException](
+                        DatabricksConnectionUtil.workspaceReachable("dbc-x.cloud.databricks.com", 443, "jdbc:databricks://dbc-x.cloud.databricks.com:443")
+                    )
+                    assert(e.getMessage.startsWith("No Databricks workspace answers at"), e.getMessage)
+                    assert(classify("databricks", e) == Failed(UR), cause.toString)
+                    val w = warning("databricks table c.s.t", UR, configDeleted = true)
+                    assert(!w.contains("dbc-x") && !w.contains("jdbc:"), w)
+            }
+        } finally DatabricksConnectionUtil.tcpConnect = saved
+
+        // Wiring: only the delete (warehouseStartSeconds set) pre-checks, on the URL's port.
+        val src = new String(
+            java.nio.file.Files.readAllBytes(
+                Seq("src/main/scala/", "datrisserver/src/main/scala/")
+                    .map(r => java.nio.file.Paths.get(r + "ai/datris/util/DatabricksConnectionUtil.scala"))
+                    .find(java.nio.file.Files.exists(_))
+                    .get
+            ),
+            java.nio.charset.StandardCharsets.UTF_8
+        )
+        assert(src.contains("val jdbcUrl = \"jdbc:databricks://\" + host + \":\" + Port"))
+        assert(src.contains("if (warehouseStartSeconds.isDefined && !proxyConfigured) workspaceReachable(host, Port, jdbcUrl)"))
     }
 }
