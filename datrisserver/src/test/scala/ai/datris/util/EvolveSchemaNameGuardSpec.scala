@@ -263,4 +263,37 @@ class EvolveSchemaNameGuardSpec extends AnyFunSuite with BeforeAndAfterAll {
         val (_, _, _, missing2) = DataUtil.evolveSchema(List("name"), postgresConfig("id", "name"), new LevelStatusUtil, _ => ())
         assert(missing2 == List("id"))
     }
+
+    test("object-store keyFields refuse a file only on an Iceberg merge; stray keys elsewhere load the column as null") {
+        val stores = Seq(
+            ObjectStore(prefixKey = "os_cols", fileFormat = "iceberg", writeMode = "append", keyFields = keyList("id")),
+            ObjectStore(prefixKey = "os_cols", fileFormat = "iceberg", keyFields = keyList("id")),
+            ObjectStore(prefixKey = "os_cols", fileFormat = "parquet", writeMode = "merge", keyFields = keyList("id")),
+            ObjectStore(prefixKey = "os_cols", fileFormat = "orc", keyFields = keyList("id")),
+            ObjectStore(prefixKey = "os_cols", keyFields = keyList("id"))
+        )
+        stores.foreach { os =>
+            val su = new LevelStatusUtil
+            val persisted = ListBuffer[PipelineConfig]()
+            val (_, _, present, missing) = DataUtil.evolveSchema(List("name", "city"), objectStoreConfig(os, "id", "name", "city"), su, c => persisted += c)
+            assert(present == List("name", "city") && missing == List("id"), os.toString)
+            assert(su.events.toList == List(("info", nullLine + "id")), os + ": " + su.events)
+            assert(persisted.isEmpty, os.toString)
+        }
+        // a new column in the same refused file is not persisted either
+        val persisted = ListBuffer[PipelineConfig]()
+        val e = intercept[DatrisException](
+            DataUtil.evolveSchema(
+                List("name", "city", "extra"),
+                objectStoreConfig(mergeOn("id"), "id", "name", "city"),
+                new LevelStatusUtil,
+                c => persisted += c
+            )
+        )
+        assert(
+            e.getMessage == "CSV is missing required key field(s): id. CSV columns: name, city, extra. Expected columns: id, name, city, extra",
+            e.getMessage
+        )
+        assert(persisted.isEmpty, persisted.toString)
+    }
 }

@@ -65,6 +65,8 @@ Every run that writes rows produces exactly one new snapshot. Readers see either
 
 `merge` is a true upsert: all non-key columns of the incoming row overwrite the existing row, including nulls. This matches `keyFields` on the PostgreSQL, MongoDB, Snowflake, Databricks and SQL Server destinations, so an agent that already knows the concept can reuse it here. If your source emits partial rows, coalesce them upstream.
 
+A file that lacks one of the `keyFields` columns fails a `merge` run before anything is written, with a message naming the column, so rows are never inserted with a null key. The same holds for a `partitionBy` column on any write mode.
+
 ## Partitioning
 
 `partitionBy` creates an identity partition on each named column. Data files land under `data/<column>=<value>/` inside the prefix, and engines that understand Iceberg partition pruning skip partitions your query does not touch. Every column in `partitionBy` must exist in the destination schema.

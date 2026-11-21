@@ -184,7 +184,7 @@ A new column is added without [field protection](/transformation/field-protectio
 
 ### What does NOT trigger evolution
 
-- **Missing columns** — if a CSV is missing a non-key column from the schema, the missing values are filled with empty strings (existing behavior). Key fields must always be present.
+- **Missing columns** — if a CSV is missing a column of the schema, the file still loads and that column is null in the new rows, on every structured destination including object stores (Parquet, ORC and Iceberg); the run status lists the missing columns. A file that lacks a column the destination cannot do without fails before anything is written, with a message naming the column: a database `keyFields` column, an Iceberg `merge` key (`destination.objectStore.keyFields`), or a `partitionBy` column.
 - **Column renames** — treated as a removal + addition. The old column gets empty values, and the new column is added.
 - **Type changes** — new columns default to `string`. Changing an existing column's type requires manual pipeline update.
 - **JSON/XML data** — these use a single `_json` or `_xml` field, so column-level evolution does not apply.

@@ -58,6 +58,8 @@ Set the format with the `fileFormat` field. `parquet` and `orc` write loose file
 
 Partition output files by one or more columns using the `partitionBy` array. Spark creates a directory structure based on the distinct values of the specified columns.
 
+A file that lacks one of the `partitionBy` columns fails before anything is written, with a message naming the column. A file that lacks any other column of the schema loads, and that column is null in the new rows.
+
 ## Delete Before Write
 
 Set `deleteBeforeWrite` to `true` to remove all existing objects under the output prefix before writing new data. This is useful when you need a clean target path but want finer control than the `overwrite` write mode provides.
