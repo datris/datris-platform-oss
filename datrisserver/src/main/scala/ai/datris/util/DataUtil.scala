@@ -254,7 +254,7 @@ object DataUtil {
       * Used by the ingest check only. writeMode ignore without
       * deleteBeforeWrite skips the partition columns: when the target exists
       * nothing is written (as on v1.60.0), and when it does not the loader
-      * refuses (SparkObjectStoreLoader.refuseIgnoreWrite for Parquet/ORC,
+      * refuses (SparkObjectStoreLoader.refuseIgnoreWrite for Parquet and ORC,
       * IcebergWriter with the config's list for a new Iceberg table). */
     private[util] def objectStoreMissingRequired(config: PipelineConfig, missing: List[String]): Option[(String, List[String])] = {
         val os = Option(config.destination).flatMap(d => Option(d.objectStore))

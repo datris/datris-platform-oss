@@ -153,7 +153,7 @@ object SparkObjectStoreLoader {
       * Partition columns are checked here for Parquet and ORC, and for Iceberg
       * only with deleteBeforeWrite (the table is rebuilt from the config);
       * otherwise IcebergWriter checks the existing table's own partition spec.
-      * Parquet/ORC writeMode ignore without deleteBeforeWrite writes nothing
+      * Parquet and ORC writeMode ignore without deleteBeforeWrite writes nothing
       * when the path exists, so its null-fill check waits for
       * [[refuseIgnoreWrite]] under the lock (a dropped column fails in Spark
       * in every mode, so it is refused here). */
@@ -178,7 +178,7 @@ object SparkObjectStoreLoader {
         check("partition column(s)", partitionsHere, fill = !deferFill)
     }
 
-    /** Parquet/ORC writeMode ignore without deleteBeforeWrite, under the write
+    /** Parquet and ORC writeMode ignore without deleteBeforeWrite, under the write
       * lock: Spark writes nothing when the path exists, so null-filled rows are
       * refused only when it does not. A check that cannot be answered leaves
       * the write as it was (Spark makes the same check itself). */

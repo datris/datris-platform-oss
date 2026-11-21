@@ -648,7 +648,7 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(one.left.toOption.exists(_.contains("key field(s): id")), one.toString)
     }
 
-    test("pin: stray keyFields on an append or a parquet/orc pipeline do not refuse rows that lack them") {
+    test("pin: stray keyFields on an append, ORC or Parquet pipeline do not refuse rows that lack them") {
         val stores = Seq(
             ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", writeMode = "append", keyFields = jl("id")),
             ObjectStore(prefixKey = "os_guard", fileFormat = "iceberg", keyFields = jl("id")),
@@ -705,7 +705,7 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
         }
     }
 
-    test("parquet/orc writeMode ignore: a null-filled partition is checked only when nothing exists at the path") {
+    test("Parquet and ORC writeMode ignore: a null-filled partition is checked only when nothing exists at the path") {
         for (fmt <- Seq("parquet", "orc")) {
             val os = ObjectStore(prefixKey = "os_guard", fileFormat = fmt, writeMode = "ignore", partitionBy = jl("city"))
             assert(guard(os, List("id", "name")) == Right(()), fmt + ": not refused before the lock (Spark skips an existing path)")
@@ -751,7 +751,7 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
     }
 
     test("pin: with the ingest check exempting ignore mode, the loader still refuses an ignore write whose target is absent") {
-        // Parquet/ORC: refuseIgnoreWrite under the lock. Iceberg: IcebergWriter
+        // Parquet and ORC: refuseIgnoreWrite under the lock. Iceberg: IcebergWriter
         // checks a new table against the config's list (IcebergWriterSpec).
         for (fmt <- Seq("parquet", "orc")) {
             val os = ObjectStore(prefixKey = "os_guard", fileFormat = fmt, writeMode = "ignore", partitionBy = jl("city"))
