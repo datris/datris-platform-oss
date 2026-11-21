@@ -296,4 +296,28 @@ class EvolveSchemaNameGuardSpec extends AnyFunSuite with BeforeAndAfterAll {
         )
         assert(persisted.isEmpty, persisted.toString)
     }
+
+    test("writeMode ignore without deleteBeforeWrite: a missing partition column is left to the loader, which writes nothing when the target exists") {
+        for (fmt <- Seq("parquet", "orc", "iceberg"); mode <- Seq("ignore", " IGNORE ")) {
+            val su = new LevelStatusUtil
+            val persisted = ListBuffer[PipelineConfig]()
+            val os = ObjectStore(prefixKey = "os_cols", fileFormat = fmt, writeMode = mode, partitionBy = keyList("city"))
+            val (_, _, present, missing) = DataUtil.evolveSchema(List("id", "name"), objectStoreConfig(os, "id", "name", "city"), su, c => persisted += c)
+            assert(present == List("id", "name") && missing == List("city"), fmt + "/" + mode)
+            assert(su.events.toList == List(("info", nullLine + "city")), fmt + "/" + mode + ": " + su.events)
+            assert(persisted.isEmpty)
+        }
+        // with deleteBeforeWrite the target is emptied first: still refused here
+        for (fmt <- Seq("parquet", "orc", "iceberg")) {
+            val os = ObjectStore(prefixKey = "os_cols", fileFormat = fmt, writeMode = "ignore", partitionBy = keyList("city"), deleteBeforeWrite = true)
+            val e =
+                intercept[DatrisException](DataUtil.evolveSchema(List("id", "name"), objectStoreConfig(os, "id", "name", "city"), new LevelStatusUtil, _ => ()))
+            assert(e.getMessage.contains("partition column(s): city"), fmt + ": " + e.getMessage)
+        }
+        // other modes are unchanged
+        for (mode <- Seq("append", "overwrite", "errorifexists", null)) {
+            val os = ObjectStore(prefixKey = "os_cols", fileFormat = "parquet", writeMode = mode, partitionBy = keyList("city"))
+            intercept[DatrisException](DataUtil.evolveSchema(List("id", "name"), objectStoreConfig(os, "id", "name", "city"), new LevelStatusUtil, _ => ()))
+        }
+    }
 }

@@ -250,7 +250,12 @@ object DataUtil {
       * without that `missing` contains, with the missing names: the MERGE ON
       * keys of an Iceberg merge (keyFields are ignored for any other format or
       * mode, so they refuse nothing there), then the `partitionBy` columns.
-      * Names compare case-insensitively. None for non-object-store pipelines. */
+      * Names compare case-insensitively. None for non-object-store pipelines.
+      * Used by the ingest check only. writeMode ignore without
+      * deleteBeforeWrite skips the partition columns: when the target exists
+      * nothing is written (as on v1.60.0), and when it does not the loader
+      * refuses (SparkObjectStoreLoader.refuseIgnoreWrite for Parquet/ORC,
+      * IcebergWriter with the config's list for a new Iceberg table). */
     private[util] def objectStoreMissingRequired(config: PipelineConfig, missing: List[String]): Option[(String, List[String])] = {
         val os = Option(config.destination).flatMap(d => Option(d.objectStore))
         if (missing.isEmpty || os.isEmpty) None
@@ -261,7 +266,8 @@ object DataUtil {
             val o = os.get
             val merging = norm(o.fileFormat) == "iceberg" && norm(o.writeMode) == "merge"
             val keys = if (merging) names(o.keyFields) else Set.empty[String]
-            val partitions = names(o.partitionBy)
+            val ignoring = norm(o.writeMode) == "ignore" && !o.deleteBeforeWrite
+            val partitions = if (ignoring) Set.empty[String] else names(o.partitionBy)
             val missingKeys = missing.filter(c => keys.contains(c.trim.toLowerCase))
             val missingPartitions = missing.filter(c => partitions.contains(c.trim.toLowerCase))
             if (missingKeys.nonEmpty) Some(("key field(s)", missingKeys))

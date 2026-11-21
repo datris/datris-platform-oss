@@ -749,4 +749,19 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
         val dropped = SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(List("2,bob")), idName, ",")
         intercept[Exception](dropped.write.mode("ignore").partitionBy("city").parquet(out.toUri.toString))
     }
+
+    test("pin: with the ingest check exempting ignore mode, the loader still refuses an ignore write whose target is absent") {
+        // Parquet/ORC: refuseIgnoreWrite under the lock. Iceberg: IcebergWriter
+        // checks a new table against the config's list (IcebergWriterSpec).
+        for (fmt <- Seq("parquet", "orc")) {
+            val os = ObjectStore(prefixKey = "os_guard", fileFormat = fmt, writeMode = "ignore", partitionBy = jl("city"))
+            val cfg = guardConfig(cityFields, os)
+            val absent =
+                intercept[ai.datris.model.DatrisException](SparkObjectStoreLoader.refuseIgnoreWrite(cfg, cityFields, List("id", "name"), 1L, () => false))
+            assert(absent.getMessage.contains("partition column(s): city"), absent.getMessage)
+            SparkObjectStoreLoader.refuseIgnoreWrite(cfg, cityFields, List("id", "name"), 1L, () => true) // target exists: nothing is written, nothing refused
+            // the ingest exemption does not reach the loader's up-front guard for a dropped column
+            assert(guard(os, List("id", "name"), fields = idName).isLeft, fmt)
+        }
+    }
 }

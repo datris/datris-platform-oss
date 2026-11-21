@@ -58,7 +58,7 @@ Set the format with the `fileFormat` field. `parquet` and `orc` write loose file
 
 Partition output files by one or more columns using the `partitionBy` array. Spark creates a directory structure based on the distinct values of the specified columns.
 
-Rows that lack one of the `partitionBy` columns, because the file, an [AI transformation](/transformation/ai-transformation) or a REST preprocessor left it out, because it exists only in the destination schema, or because a field protection `drop` removes it, fail the run before anything is written to the object store, with a message naming the column. Rows that lack any other column of the schema load, and that column is null in the new rows.
+Rows that lack one of the `partitionBy` columns, because the file, an [AI transformation](/transformation/ai-transformation) or a REST preprocessor left it out, because it exists only in the destination schema, or because a field protection `drop` removes it, fail the run before anything is written to the object store, with a message naming the column. With `writeMode: ignore` and data already at the prefix nothing is written, so such rows are not refused. Rows that lack any other column of the schema load, and that column is null in the new rows.
 
 ## Delete Before Write
 
