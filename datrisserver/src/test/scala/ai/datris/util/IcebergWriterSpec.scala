@@ -1349,4 +1349,33 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
             assert(q.rows.asScala.map(r => r.get(name)).toSet == Set(null, "y2", "y3"), name + ": " + q.rows)
         }
     }
+
+    // ---- plans/stories/object-store-load-missing-columns.md -------------------
+
+    private def stagedCsv(lines: String*): String = {
+        val f = Files.createTempFile("iceberg-writer-spec-staged-", ".csv")
+        f.toFile.deleteOnExit()
+        Files.write(f, lines.mkString("\n").getBytes(java.nio.charset.StandardCharsets.UTF_8))
+        f.toAbsolutePath.toString
+    }
+
+    test("an append whose staged rows lack a nullable column commits, and the column is null in the new rows") {
+        import ai.datris.model.SchemaField
+        val fields = List(SchemaField("id", "bigint"), SchemaField("region", "string"), SchemaField("amount", "double"))
+        val destSchema = SparkObjectStoreLoader.buildSchema(fields)
+        val location = newLocation("missing-column-append/t")
+        // what the loader does: staged read under Data.header, then projection to the dest schema
+        def load(path: String, header: List[String]): IcebergWriter.WriteResult = {
+            val staged = SparkObjectStoreLoader.stagedDataFrameFor(spark, path, fields, header, ",")
+            write(SparkObjectStoreLoader.projectToSchema(staged, destSchema), location, "append", destSchema = destSchema)
+        }
+        load(stagedCsv("1,east,1.5", "2,west,2.5"), List("id", "region", "amount"))
+        val before = snapshots(location).size
+        val second = load(stagedCsv("3,4.5", "4,5.5"), List("id", "amount")) // no region
+        assert(snapshots(location).size == before + 1, "the append commits one snapshot")
+        assert(second.addedRecords == 2 && second.totalRecords == 4, second.toString)
+        assert(loadTable(location).schema().columns().asScala.map(_.name()).toList == List("id", "region", "amount"), "no column added or dropped")
+        val rows = readAll(location).collect().map(r => (r.getLong(0), Option(r.getString(1)), r.getDouble(2))).toList.sortBy(_._1)
+        assert(rows == List((1L, Some("east"), 1.5), (2L, Some("west"), 2.5), (3L, None, 4.5), (4L, None, 5.5)), rows.toString)
+    }
 }

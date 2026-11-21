@@ -390,4 +390,185 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
             assert(byId(1).get("a.b") == "v0" && byId(1).get("a. b c") == null && byId(2).get(names(2)) == "w2", fmt + ": " + q.rows)
         }
     }
+
+    // ---- plans/stories/object-store-load-missing-columns.md -------------------
+    //  A later file that lacks an ordinary schema column loads with that column
+    //  null. Driven through the real ingest read (`DataUtil.read`: header off
+    //  the file, `evolveSchema`, `CSVReader.readToWriter` into the staged file,
+    //  `Data.header`), then the loader's `stagedDataFrameFor` with that header,
+    //  then the write the loader does for parquet and ORC, read back.
+
+    private def ingestEnv(root: java.nio.file.Path): ai.datris.model.DatrisEnvironment = ai.datris.model.DatrisEnvironment(
+        initialized = true,
+        environment = "test",
+        fileNotifierQueue = null,
+        ttlFileNotifierQueueMessages = 0,
+        pipelineTopic = null,
+        pipelineTableName = null,
+        archivedMetadataTableName = null,
+        pipelineStatusTableName = null,
+        fileNotifierMessageTableName = null,
+        dataPullTableName = null,
+        useApiKeys = false,
+        apiKeysSecretName = null,
+        postgresSecretName = null,
+        mongoDbSecretName = null,
+        kafkaProducerSecretName = null,
+        kafkaConsumerConfig = null,
+        mongoDbConfig = null,
+        minIOConfig = null,
+        activeMQConfig = null,
+        aiConfig = null,
+        aiEnabled = false,
+        embeddingSecretName = null,
+        qdrantSecretName = null,
+        weaviateSecretName = null,
+        milvusSecretName = null,
+        chromaSecretName = null,
+        pgvectorSecretName = null,
+        multiTenant = false,
+        tempDir = root.toString
+    )
+
+    private class CapturingStatus extends StatusUtil {
+        val events = scala.collection.mutable.ListBuffer[String]()
+        override def info(state: String, description: String): Unit = events += description
+        override def warn(state: String, description: String): Unit = events += description
+        override def error(state: String, description: String): Unit = events += description
+    }
+
+    private def osConfig(fields: List[SchemaField], fmt: String): PipelineConfig = {
+        import scala.collection.JavaConverters._
+        // A pipeline built from a first file: the source schema is all strings,
+        // the destination schema carries the types.
+        val src = new java.util.ArrayList[SchemaField](fields.map(f => SchemaField(f.name, "string")).asJava)
+        val dest = new java.util.ArrayList[SchemaField](fields.asJava)
+        PipelineConfig(
+            name = "os_cols",
+            source = Source(schemaProperties = SchemaProperties("db", src), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+            destination = Destination(schemaProperties = SchemaProperties("db", dest), objectStore = ObjectStore(prefixKey = "os_cols", fileFormat = fmt))
+        )
+    }
+
+    /** One file through the ingest read and the loader's staged read, as the
+      * run does: returns the frame the loader would write, the `Data.header`,
+      * and the status lines. */
+    private def ingestAndStage(fields: List[SchemaField], fmt: String, csv: String): (org.apache.spark.sql.DataFrame, List[String], List[String]) = {
+        val root = Files.createTempDirectory("spark-object-store-missing-cols-")
+        ai.datris.model.TenantContext.set(ingestEnv(root))
+        try {
+            val su = new CapturingStatus
+            val token = "missing-cols-" + java.util.UUID.randomUUID().toString
+            val (data, _) = StagingArea.withToken(token) {
+                DataUtil.read(
+                    List("s3://raw/os_cols/f.csv"),
+                    _ => new java.io.ByteArrayInputStream(csv.getBytes(StandardCharsets.UTF_8)),
+                    csv.length.toLong,
+                    osConfig(fields, fmt),
+                    su
+                )
+            }
+            val df = SparkObjectStoreLoader.stagedDataFrameFor(spark, data.staged.path, fields, data.header, ",")
+            // materialise before the staged file can go away
+            val cached = spark.createDataFrame(java.util.Arrays.asList(df.collect(): _*), df.schema)
+            (cached, data.header, su.events.toList)
+        } finally ai.datris.model.TenantContext.clear()
+    }
+
+    private val cityFields = List(SchemaField("id", "int"), SchemaField("name", "string"), SchemaField("city", "string"))
+
+    test("a source file that lacks the last schema column loads with that column null, for parquet and for orc") {
+        for (fmt <- Seq("parquet", "orc")) {
+            val out = Files.createTempDirectory("missing-last-" + fmt).resolve("t").toUri.toString
+            // a.csv: every column (loads exactly as before)
+            val (full, fullHeader, _) = ingestAndStage(cityFields, fmt, "id,name,city\n1,alice,paris\n2,bob,rome\n")
+            assert(fullHeader == List("id", "name", "city"), fmt)
+            full.write.mode("append").format(fmt).save(out)
+            // b.csv: no city
+            val (short, shortHeader, events) = ingestAndStage(cityFields, fmt, "id,name\n3,carol\n4,dave\n")
+            assert(shortHeader == List("id", "name"), fmt + ": Data.header is the present columns")
+            assert(events.exists(_.contains("CSV is missing columns (will be NULL in destination): city")), fmt + ": " + events)
+            assert(short.schema == sparkSchema(cityFields), fmt + ": " + short.schema)
+            short.write.mode("append").format(fmt).save(out)
+
+            val back = spark.read.format(fmt).load(out)
+            assert(back.columns.toSeq == Seq("id", "name", "city"), fmt + ": " + back.columns.toSeq)
+            val rows = back.collect().map(r => (r.getInt(0), r.getString(1), Option(r.getString(2)))).toList.sortBy(_._1)
+            assert(
+                rows == List((1, "alice", Some("paris")), (2, "bob", Some("rome")), (3, "carol", None), (4, "dave", None)),
+                fmt + ": " + rows
+            )
+        }
+    }
+
+    test("a missing first column and a missing middle column land every present value under its own column") {
+        // A shift by one would put a name into `id` (int) or a date into `score`
+        // (double): FAILFAST would throw, or the assertion shows it.
+        val fields = List(SchemaField("id", "int"), SchemaField("name", "string"), SchemaField("score", "double"), SchemaField("day", "date"))
+        for (fmt <- Seq("parquet", "orc")) {
+            val out = Files.createTempDirectory("missing-first-middle-" + fmt).resolve("t").toUri.toString
+            val (noFirst, h1, _) = ingestAndStage(fields, fmt, "name,score,day\nalice,2.5,2024-01-02\n")
+            assert(h1 == List("name", "score", "day"), fmt)
+            val (noMiddle, h2, _) = ingestAndStage(fields, fmt, "id,score,day\n7,0.5,2024-03-04\n")
+            assert(h2 == List("id", "score", "day"), fmt)
+            // a file whose header is in another order than the schema
+            val (reordered, h3, _) = ingestAndStage(fields, fmt, "day,id,name\n2024-05-06,8,erin\n")
+            assert(h3 == List("id", "name", "day"), fmt + ": Data.header is in schema order")
+            Seq(noFirst, noMiddle, reordered).foreach(_.write.mode("append").format(fmt).save(out))
+
+            val back = spark.read.format(fmt).load(out)
+            assert(back.columns.toSeq == Seq("id", "name", "score", "day"), fmt)
+            val rows = back.collect().map(r => (Option(r.get(0)), Option(r.get(1)), Option(r.get(2)), Option(r.get(3)))).toSet
+            assert(
+                rows == Set(
+                    (None, Some("alice"), Some(2.5), Some(java.sql.Date.valueOf("2024-01-02"))),
+                    (Some(7), None, Some(0.5), Some(java.sql.Date.valueOf("2024-03-04"))),
+                    (Some(8), Some("erin"), None, Some(java.sql.Date.valueOf("2024-05-06")))
+                ),
+                fmt + ": " + rows
+            )
+        }
+    }
+
+    test("the null column has the schema's type in the written file") {
+        val fields = List(SchemaField("id", "int"), SchemaField("score", "double"), SchemaField("day", "date"), SchemaField("big", "bigint"))
+        for (fmt <- Seq("parquet", "orc")) {
+            val out = Files.createTempDirectory("missing-typed-" + fmt).resolve("t").toUri.toString
+            val (short, _, _) = ingestAndStage(fields, fmt, "id\n1\n")
+            short.write.mode("append").format(fmt).save(out)
+            // read with no schema: the types come from the file itself
+            val fileSchema = spark.read.format(fmt).load(out).schema
+            assert(fileSchema.fieldNames.toSeq == Seq("id", "score", "day", "big"), fmt)
+            assert(fileSchema("id").dataType == IntegerType, fmt + ": " + fileSchema)
+            assert(fileSchema("score").dataType == DoubleType, fmt + ": " + fileSchema)
+            assert(fileSchema("day").dataType == DateType, fmt + ": " + fileSchema)
+            assert(fileSchema("big").dataType == LongType, fmt + ": " + fileSchema)
+        }
+    }
+
+    test("a value that does not cast still fails the load") {
+        // `id` is present and holds a value that is not an int; `city` is missing.
+        for (fmt <- Seq("parquet", "orc")) {
+            val e = intercept[Exception](ingestAndStage(cityFields, fmt, "id,name\nnot-a-number,alice\n"))
+            val chain = Iterator.iterate[Throwable](e)(_.getCause).takeWhile(_ != null).map(t => String.valueOf(t.getMessage)).mkString(" | ")
+            assert(chain.toLowerCase.contains("malformed") || chain.contains("FAILFAST"), fmt + ": " + chain)
+        }
+    }
+
+    test("pin: a file with every column, partitioned by a column it carries, loads exactly as before") {
+        for (fmt <- Seq("parquet", "orc")) {
+            val rows = "1,alice,paris\n2,bob,rome\n3,carol,paris"
+            val (df, header, events) = ingestAndStage(cityFields, fmt, "id,name,city\n" + rows + "\n")
+            assert(header == List("id", "name", "city"))
+            assert(!events.exists(_.contains("missing")), fmt + ": " + events)
+            // the same rows as the positional read the loader used on v1.60.0
+            val positional = SparkObjectStoreLoader.stagedDataFrame(spark, stageRows(rows.split("\n").toList), cityFields, ",")
+            assert(df.collect().toList.sortBy(_.getInt(0)) == positional.collect().toList.sortBy(_.getInt(0)), fmt)
+            val out = Files.createTempDirectory("pin-partitioned-" + fmt).resolve("t")
+            df.write.mode("append").partitionBy("city").format(fmt).save(out.toUri.toString)
+            assert(Files.isDirectory(out.resolve("city=paris")) && Files.isDirectory(out.resolve("city=rome")), fmt)
+            val back = spark.read.format(fmt).load(out.toUri.toString)
+            assert(back.filter("city = 'paris'").count() == 2 && back.filter("city is null").count() == 0, fmt)
+        }
+    }
 }

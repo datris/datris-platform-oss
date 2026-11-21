@@ -163,4 +163,104 @@ class EvolveSchemaNameGuardSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(evolved.source.schemaProperties.fields.asScala.map(_.name).toList == List("id", "amount", "a.b"))
         assert(persisted.size == 1)
     }
+
+    // ---- plans/stories/object-store-load-missing-columns.md, Decisions 2, 3, 5 ----
+    //  A file that lacks an ordinary schema column loads (the column is null).
+    //  A file that lacks an Iceberg merge key (`destination.objectStore.keyFields`)
+    //  or a `partitionBy` column fails here, before staging, naming the column.
+
+    private def objectStoreConfig(objectStore: ObjectStore, names: String*): PipelineConfig =
+        PipelineConfig(
+            name = "os_cols",
+            source = Source(schemaProperties = SchemaProperties("db", fields(names: _*)), fileAttributes = FileAttributes(csvAttributes = CsvAttributes())),
+            destination = Destination(schemaProperties = SchemaProperties("db", fields(names: _*)), objectStore = objectStore)
+        )
+
+    private def keyList(ks: String*): java.util.List[String] = new java.util.ArrayList[String](ks.asJava)
+
+    private def mergeOn(keys: String*): ObjectStore =
+        ObjectStore(prefixKey = "os_cols", fileFormat = "iceberg", writeMode = "merge", keyFields = keyList(keys: _*))
+
+    private val nullLine = "CSV is missing columns (will be NULL in destination): "
+
+    test("a missing object-store merge key fails with the missing required key message and persists nothing") {
+        // stored lower-case as the validator persists them, and a caller-cased one
+        for (keys <- Seq(Seq("id"), Seq("ID"))) {
+            val su = new LevelStatusUtil
+            val persisted = ListBuffer[PipelineConfig]()
+            val cfg = objectStoreConfig(mergeOn(keys: _*), "id", "name", "city")
+            val e = intercept[DatrisException](DataUtil.evolveSchema(List("name", "city"), cfg, su, c => persisted += c))
+            assert(e.getMessage.contains("CSV is missing required key field(s): id"), keys + ": " + e.getMessage)
+            assert(persisted.isEmpty, keys + ": " + persisted)
+            assert(!su.events.exists(_._2.contains("will be NULL")), keys + ": no will-be-NULL line for a refused file: " + su.events)
+            assert(cfg.source.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name", "city"))
+        }
+    }
+
+    test("a missing partition column fails naming it and persists nothing") {
+        for (fmt <- Seq("parquet", "orc", "iceberg")) {
+            val su = new LevelStatusUtil
+            val persisted = ListBuffer[PipelineConfig]()
+            val cfg = objectStoreConfig(ObjectStore(prefixKey = "os_cols", fileFormat = fmt, partitionBy = keyList("City")), "id", "name", "city")
+            val e = intercept[DatrisException](DataUtil.evolveSchema(List("id", "name"), cfg, su, c => persisted += c))
+            assert(e.getMessage.toLowerCase.contains("partition column"), fmt + ": names the kind: " + e.getMessage)
+            assert(e.getMessage.toLowerCase.contains("city"), fmt + ": names the column: " + e.getMessage)
+            assert(persisted.isEmpty, fmt + ": " + persisted)
+            assert(!su.events.exists(_._2.contains("will be NULL")), fmt + ": " + su.events)
+        }
+    }
+
+    test("a missing ordinary column on an object-store pipeline is returned in missingColumns with the will-be-NULL line") {
+        // merge key and partition column both present; only `note` is missing
+        val stores = Seq(
+            ObjectStore(prefixKey = "os_cols", fileFormat = "parquet"),
+            ObjectStore(prefixKey = "os_cols", fileFormat = "orc", partitionBy = keyList("city")),
+            ObjectStore(prefixKey = "os_cols", fileFormat = "iceberg", writeMode = "merge", keyFields = keyList("id"), partitionBy = keyList("city"))
+        )
+        stores.foreach { os =>
+            val su = new LevelStatusUtil
+            val persisted = ListBuffer[PipelineConfig]()
+            val cfg = objectStoreConfig(os, "id", "name", "city", "note")
+            val (evolved, schemaColumns, presentColumns, missingColumns) =
+                DataUtil.evolveSchema(List("ID", "city", "name"), cfg, su, c => persisted += c)
+            assert(schemaColumns == List("id", "name", "city", "note"), os.toString)
+            assert(presentColumns == List("id", "name", "city"), os.toString)
+            assert(missingColumns == List("note"), os.toString)
+            assert(su.events.toList == List(("info", nullLine + "note")), os + ": " + su.events)
+            assert(persisted.isEmpty && (evolved eq cfg), os.toString)
+        }
+    }
+
+    test("pin: an object-store file with every column, key and partition column evolves nothing and reports nothing") {
+        val cfg = objectStoreConfig(
+            ObjectStore(prefixKey = "os_cols", fileFormat = "iceberg", writeMode = "merge", keyFields = keyList("id"), partitionBy = keyList("city")),
+            "id",
+            "name",
+            "city"
+        )
+        val su = new LevelStatusUtil
+        val persisted = ListBuffer[PipelineConfig]()
+        val (_, schemaColumns, presentColumns, missingColumns) = DataUtil.evolveSchema(List("id", "name", "city"), cfg, su, c => persisted += c)
+        assert(schemaColumns == List("id", "name", "city") && presentColumns == schemaColumns && missingColumns.isEmpty)
+        assert(su.events.isEmpty && persisted.isEmpty)
+    }
+
+    test("a database pipeline's missing-key and missing-column behaviour is unchanged") {
+        def pg(keys: String*): PipelineConfig = {
+            val base = postgresConfig("id", "name", "city")
+            base.copy(destination = base.destination.copy(database = base.destination.database.copy(keyFields = keyList(keys: _*))))
+        }
+        val e = intercept[DatrisException](DataUtil.evolveSchema(List("name", "city"), pg("id"), new LevelStatusUtil, _ => ()))
+        assert(
+            e.getMessage == "CSV is missing required key field(s): id. CSV columns: name, city. Expected columns: id, name, city",
+            e.getMessage
+        )
+        val su = new LevelStatusUtil
+        val (_, _, present, missing) = DataUtil.evolveSchema(List("id", "name"), pg("id"), su, _ => ())
+        assert(present == List("id", "name") && missing == List("city"))
+        assert(su.events.toList == List(("info", nullLine + "city")), su.events.toString)
+        // no keys at all: a missing column is only reported
+        val (_, _, _, missing2) = DataUtil.evolveSchema(List("name"), postgresConfig("id", "name"), new LevelStatusUtil, _ => ())
+        assert(missing2 == List("id"))
+    }
 }
