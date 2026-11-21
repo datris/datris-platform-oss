@@ -1342,13 +1342,9 @@ class PipelineAPIController {
         vectorFailures ++= PipelineAPIController.dropVectorContainers(
             config,
             keepVector,
-            store =>
-                SecretsUtil.tryGetSecretMap(store match {
-                    case "qdrant" => DatrisEnvironment.current.qdrantSecretName
-                    case "weaviate" => DatrisEnvironment.current.weaviateSecretName
-                    case "milvus" => DatrisEnvironment.current.milvusSecretName
-                    case "chroma" => DatrisEnvironment.current.chromaSecretName
-                })
+            // The environment's secret for each store, the one the save's
+            // existence probe reads too (DestinationProbe.vectorStoreSecretName).
+            store => scala.util.Try(DestinationProbe.vectorStoreSecretName(store)).flatMap(name => SecretsUtil.tryGetSecretMap(name))
         )
 
         // Object Store — recursively delete s3a://<bucket>/<prefixKey> through

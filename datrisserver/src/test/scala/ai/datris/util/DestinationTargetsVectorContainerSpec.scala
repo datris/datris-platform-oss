@@ -195,4 +195,23 @@ class DestinationTargetsVectorContainerSpec extends AnyFunSuite {
         for (text <- Seq(UnsafeVectorContainerRefusal, BlankVectorContainerRefusal))
             ai.datris.auth.ScopeDenialWording.assertHides(text, Seq("bob_p", "sales_p", "Sales", "Finance"))
     }
+
+    test("review: a visible pipeline covers a container only with the same exact name (weaviate FooBar does not cover FOOBAR)") {
+        val stored = on("weaviate", "bob_p", "FooBar")
+        val visible = Seq(on("weaviate", "sales_p", "FooBar"))
+        assert(vectorContainersToProbe(on("weaviate", "bob_p", "FOOBAR"), stored, visible) == Seq(target("weaviate", "FOOBAR")))
+        // The same class as written (or with only its first letter recased) is covered.
+        assert(vectorContainersToProbe(on("weaviate", "bob_p", "fooBar"), null, visible).isEmpty)
+        assert(vectorContainersToProbe(on("weaviate", "bob_p", "FooBar"), null, visible).isEmpty)
+    }
+
+    test("review: a new or changed milvus name may use only letters, digits and '_'; the other stores keep '.' and '-'; unchanged names pass") {
+        for (n <- Seq("my-docs", "a.b", "docs.v2", "x-y"))
+            assert(unsafeFreshVectorContainerName(on("milvus", "p", n), null), n)
+        assert(!unsafeFreshVectorContainerName(on("milvus", "p", "my_docs_1"), null))
+        assert(!unsafeFreshVectorContainerName(on("milvus", "p", "my-docs"), on("milvus", "p", "my-docs")))
+        for (store <- Seq("qdrant", "weaviate", "chroma"); n <- Seq("my-docs", "a.b"))
+            assert(!unsafeFreshVectorContainerName(on(store, "p", n), null), s"$store '$n'")
+        assert(UnsafeVectorContainerRefusal.contains("Milvus"))
+    }
 }

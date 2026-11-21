@@ -650,7 +650,7 @@ object DestinationProbe {
       * (`VectorStoreDrop.endpoint`: host, port, scheme, auth header):
       *  - qdrant: `GET /collections`, then `GET /aliases` (REST at the
       *    secret's gRPC port minus one);
-      *  - weaviate: `GET /v1/schema`;
+      *  - weaviate: `GET /v1/schema`, then `GET /v1/aliases`;
       *  - milvus: `POST /v2/vectordb/collections/has` with
       *    `{"collectionName": ...}` (no `dbName`: the default database, as
       *    the loader and the delete);
@@ -668,7 +668,11 @@ object DestinationProbe {
                             VectorStoreDrop.Request("GET", base + "/collections", headers, None),
                             VectorStoreDrop.Request("GET", base + "/aliases", headers, None)
                         )
-                    case "weaviate" => Seq(VectorStoreDrop.Request("GET", base + "/v1/schema", headers, None))
+                    case "weaviate" =>
+                        Seq(
+                            VectorStoreDrop.Request("GET", base + "/v1/schema", headers, None),
+                            VectorStoreDrop.Request("GET", base + "/v1/aliases", headers, None)
+                        )
                     case "milvus" =>
                         Seq(VectorStoreDrop.Request("POST", base + "/v2/vectordb/collections/has", headers, Some(VectorStoreDrop.milvusNameBody(exact))))
                     case "chroma" =>
@@ -729,7 +733,20 @@ object DestinationProbe {
                     Some(arrayField(store, ar.getAsJsonObject, "aliases").exists(a => stringField(store, a, "alias_name") == exact))
                 }
             case "weaviate" =>
-                Some(arrayField(store, objectOf(store, ok(store, answers.head)), "classes").exists(c => stringField(store, c, "class").equalsIgnoreCase(exact)))
+                val listed =
+                    arrayField(store, objectOf(store, ok(store, answers.head)), "classes").exists(c => stringField(store, c, "class").equalsIgnoreCase(exact))
+                if (listed) Some(true)
+                else if (answers.size < 2) None
+                else
+                    answers(1)._1 match {
+                        // A Weaviate without collection aliases (before 1.32) has no such path.
+                        case 404 => Some(false)
+                        // A same-named alias (any letter case) is written through by name, so it counts as existing.
+                        case 200 => Some(arrayField(store, objectOf(store, answers(1)._2), "aliases").exists(a =>
+                                stringField(store, a, "alias").equalsIgnoreCase(exact)
+                            ))
+                        case other => unknown(store, "alias answer HTTP " + other)
+                    }
             case "milvus" =>
                 val o = objectOf(store, ok(store, answers.head))
                 val code = o.get("code")
@@ -767,7 +784,11 @@ object DestinationProbe {
       * chroma; milvus is from its REST v2 reference only). Qdrant: 200
       * `result.collections[].name`, `result.aliases[].alias_name` (an alias
       * of that name counts as existing: the loader and the delete address it
-      * by name). Weaviate: 200 `classes[].class`, compared ignoring case.
+      * by name). Weaviate: 200 `classes[].class`, compared ignoring case,
+      * then `GET /v1/aliases`: 200 `aliases[].alias` compared ignoring case
+      * (an alias counts as existing), 404 = a Weaviate without aliases (no
+      * alias), anything else not definite; the alias answer shape is from
+      * the Weaviate REST reference only, unverified against a live store.
       * Milvus: 200 `code` 0 with boolean `data.has`. Chroma v2: 200 with the
       * collection's `name`, or 404 with the control list answering a 200
       * JSON array. */
@@ -810,10 +831,27 @@ object DestinationProbe {
         }
     }
 
+    /** The cap on one probe answer: list answers (qdrant collections and
+      * aliases, the weaviate schema with every class's config) are far
+      * larger than a drop's, so the drop's 64 KB would cut a healthy store's
+      * list short. Over this cap the probe fails ("answer too large") rather
+      * than parse a truncated list. */
+    val VectorProbeMaxBodyBytes: Int = 8 * 1024 * 1024
+
+    /** Whole-call bound for one probe request: the save's own deadline
+      * (`withDeadline`, [[DefaultDeadline]] by default) bounds the probe as a
+      * whole, so a list read gets that long rather than the drop's 10 s. */
+    val VectorProbeRequestDeadlineMs: Long = DefaultDeadline.toMillis
+
+    /** One probe request: `VectorStoreDrop.send` with the probe's cap (a
+      * larger answer throws) and deadline. */
+    def vectorContainerSend(r: VectorStoreDrop.Request): (Int, String) =
+        VectorStoreDrop.send(r, VectorProbeRequestDeadlineMs, VectorProbeMaxBodyBytes, failOverCap = true)
+
     /** Production: [[vectorContainerExistsWith]] over the environment's
       * store secret ([[vectorStoreSecretName]], read with
-      * `SecretsUtil.tryGetSecretMap`) and `VectorStoreDrop.send` (5 s
-      * connect and read, no redirects, a whole-call deadline). Runs under
+      * `SecretsUtil.tryGetSecretMap`) and [[vectorContainerSend]] (5 s
+      * connect and read, no redirects, the probe's cap and deadline). Runs under
       * the save's deadline and slot (`withDeadline`, by the caller). */
     def vectorContainerExists(t: DestinationTargets.VectorContainerTarget): Boolean =
         vectorContainerExists(t, name => SecretsUtil.tryGetSecretMap(name))
@@ -821,10 +859,10 @@ object DestinationProbe {
     /** [[vectorContainerExists]] with the secret read given (by secret
       * name): the environment's [[vectorStoreSecretName]] for the target's
       * store is read with `readSecret`, and the store is asked over
-      * `VectorStoreDrop.send`. */
+      * [[vectorContainerSend]]. */
     def vectorContainerExists(
         t: DestinationTargets.VectorContainerTarget,
         readSecret: String => scala.util.Try[Option[java.util.Map[String, String]]]
     ): Boolean =
-        vectorContainerExistsWith(t, store => scala.util.Try(vectorStoreSecretName(store)).flatMap(readSecret), r => VectorStoreDrop.send(r))
+        vectorContainerExistsWith(t, store => scala.util.Try(vectorStoreSecretName(store)).flatMap(readSecret), r => vectorContainerSend(r))
 }

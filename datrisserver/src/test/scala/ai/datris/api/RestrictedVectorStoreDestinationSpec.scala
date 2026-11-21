@@ -370,4 +370,24 @@ class RestrictedVectorStoreDestinationSpec extends AnyFunSuite {
             assert(quiet.calls == 0, store)
         }
     }
+
+    test("review: a restricted milvus save with a name milvus rejects is the 400 plain-name refusal, before any probe; an unchanged one passes") {
+        val probe = new VecProbe(Set.empty, fail = true)
+        for (n <- Seq("my-docs", "a.b")) {
+            val r = refuse(req(bob), on("milvus", "bob_v", n), null, Nil, probe)
+            assert(status(r).contains(400) && errorOf(r.get) == DestinationTargets.UnsafeVectorContainerRefusal, s"'$n': $r")
+            assert(refuse(req(bob), on("milvus", "bob_v", n), on("milvus", "bob_v", n), Nil, probe).isEmpty, n)
+        }
+        assert(probe.calls == 0)
+        // Unrestricted callers are unaffected.
+        assert(refuse(req(editor), on("milvus", "x", "my-docs"), null, Nil, probe).isEmpty)
+    }
+
+    test("review: a weaviate class recased beyond its first letter is probed even when a visible pipeline names the old spelling") {
+        val probe = new VecProbe(Set("weaviate" -> "foobar"))
+        val visible = Seq(on("weaviate", "sales_v", "FooBar"))
+        val r = refuse(req(bob), on("weaviate", "bob_v", "FOOBAR"), on("weaviate", "bob_v", "FooBar"), visible, probe)
+        assert(status(r).contains(400), r)
+        assert(probe.calls == 1 && probe.seen.head.exact == "FOOBAR")
+    }
 }

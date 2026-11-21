@@ -403,6 +403,9 @@ class VectorStoreDropSpec extends AnyFunSuite with BeforeAndAfterAll {
         val cfg = PipelineConfig(name = "vd_w", destination = Destination(weaviate = WeaviateConfig("VdW", ChunkingConfig(), null, null, null)))
         val wk = VectorContainers.keysOf(cfg).head
         val ww = warning(VectorContainers.displayKey(wk, cfg), "the store did not answer in time", configDeleted = false)
-        assert(ww == "Could not remove weaviate class VdW: the store did not answer in time. Run the reset again once the store is available.", ww)
+        assert(
+            ww == "Could not remove weaviate class VdW: the store did not answer in time. The removal may still complete in the store; check it there. Run the reset again once the store is available.",
+            ww
+        )
     }
 }

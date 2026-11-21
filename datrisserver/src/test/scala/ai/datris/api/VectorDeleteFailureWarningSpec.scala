@@ -109,10 +109,14 @@ class VectorDeleteFailureWarningSpec extends AnyFunSuite {
         val body = JsonParser.parseString(PipelineAPIController.deleteResponseBody(kept +: ws, None)).getAsJsonObject
         assert(body.get("warnings").getAsJsonArray.asScala.map(_.getAsString).toList == (kept +: ws).toList, body)
 
-        // Store order in the delete: qdrant, weaviate, milvus, chroma.
+        // Store order in the delete: qdrant, weaviate, milvus, chroma (the
+        // drops live in dropVectorContainers; VectorDropContainersSpec drives
+        // the order). The secret names come from the probe's mapping.
         val cleanup = method("cleanupDestinationData")
-        val order = Seq("qdrantSecretName", "weaviateSecretName", "milvusSecretName", "chromaSecretName").map(cleanup.indexOf(_))
-        assert(order.forall(_ >= 0) && order == order.sorted, s"store order in cleanupDestinationData: $order")
+        assert(cleanup.contains("DestinationProbe.vectorStoreSecretName("), "cleanupDestinationData does not read the stores' secret names")
+        val drops = method("dropVectorContainers")
+        val order = Seq("\"Qdrant collection\"", "\"Weaviate class\"", "\"Milvus collection\"", "\"Chroma collection\"").map(drops.indexOf(_))
+        assert(order.forall(_ >= 0) && order == order.sorted, s"store order in dropVectorContainers: $order")
         // The failure warnings are added after the Kept warnings and before the ledger decision.
         val outcome = method("deletePipelineOutcome")
         val keptAt = outcome.indexOf("PipelineAPIController.vectorDeleteWarnings(")

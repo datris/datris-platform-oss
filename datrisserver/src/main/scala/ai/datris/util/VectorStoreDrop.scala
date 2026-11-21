@@ -198,27 +198,38 @@ object VectorStoreDrop {
     private def checkDeadline(deadlineNanos: Long): Unit =
         if (System.nanoTime() - deadlineNanos > 0) throw new SocketTimeoutException("drop did not finish within its deadline")
 
-    private def readCapped(in: InputStream, deadlineNanos: Long): String =
+    /** The answer was longer than the caller's cap and the caller asked
+      * for that to fail (`send(..., failOverCap = true)`). */
+    class AnswerTooLarge(cap: Int) extends IOException("answer too large (over " + cap + " bytes)")
+
+    /** At most `cap` bytes of `in`. Over the cap: the first `cap` bytes, or
+      * [[AnswerTooLarge]] when `failOverCap`. */
+    private def readCapped(in: InputStream, deadlineNanos: Long, cap: Int, failOverCap: Boolean): String =
         if (in == null) ""
         else {
             val out = new ByteArrayOutputStream
             val buf = new Array[Byte](8192)
             checkDeadline(deadlineNanos)
-            var n = in.read(buf, 0, math.min(buf.length, MaxBodyBytes))
-            while (n > 0 && out.size < MaxBodyBytes) {
+            // One byte past the cap tells "exactly cap" from "more than cap".
+            val limit = if (failOverCap) cap.toLong + 1 else cap.toLong
+            var n = in.read(buf, 0, math.min(buf.length.toLong, limit).toInt)
+            while (n > 0 && out.size < limit) {
                 out.write(buf, 0, n)
+                if (failOverCap && out.size > cap) throw new AnswerTooLarge(cap)
                 checkDeadline(deadlineNanos)
-                n = in.read(buf, 0, math.min(buf.length, MaxBodyBytes - out.size))
+                n = in.read(buf, 0, math.min(buf.length.toLong, limit - out.size).toInt)
             }
             new String(out.toByteArray, StandardCharsets.UTF_8)
         }
 
     /** One bounded HTTP call: 5 s connect, 5 s per read, `deadlineMs` for
       * the whole answer (checked between reads), redirects not followed, at
-      * most 64 KB of the answer read. Streams are closed and the connection
+      * most `maxBodyBytes` of the answer read (64 KB for a drop, whose answer
+      * is small; over it the rest is not read, or with `failOverCap` the call
+      * throws [[AnswerTooLarge]]). Streams are closed and the connection
       * disconnected whatever happens. Throws the I/O error (a
       * SocketTimeoutException past the deadline). */
-    def send(r: Request, deadlineMs: Long = TotalDeadlineMs): (Int, String) = {
+    def send(r: Request, deadlineMs: Long = TotalDeadlineMs, maxBodyBytes: Int = MaxBodyBytes, failOverCap: Boolean = false): (Int, String) = {
         val deadlineNanos = System.nanoTime() + deadlineMs * 1000000L
         val conn = new URL(r.url).openConnection().asInstanceOf[HttpURLConnection]
         try {
@@ -238,7 +249,7 @@ object VectorStoreDrop {
             checkDeadline(deadlineNanos)
             val in = if (status >= 400) conn.getErrorStream else scala.util.Try(conn.getInputStream).getOrElse(conn.getErrorStream)
             val body =
-                try readCapped(in, deadlineNanos)
+                try readCapped(in, deadlineNanos, maxBodyBytes, failOverCap)
                 finally if (in != null) in.close()
             (status, body)
         } finally conn.disconnect()
@@ -283,6 +294,8 @@ object VectorStoreDrop {
       * should be the display key (weaviate: the class as configured). */
     def warning(key: VectorContainers.Key, reason: String, configDeleted: Boolean): String =
         "Could not remove " + VectorContainers.label(key) + ": " + reason + ". " +
+            // A drop that outlasted the timeout may still finish in the store.
+            (if (reason == TimedOut) "The removal may still complete in the store; check it there. " else "") +
             (if (configDeleted) "Its pipeline configuration was deleted; remove it in the store."
              else "Run the reset again once the store is available.")
 }

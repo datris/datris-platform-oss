@@ -265,8 +265,10 @@ object DestinationTargets {
         val fresh = freshVectorContainers(candidate, stored)
         if (fresh.isEmpty) return Nil
         val name = if (candidate == null) null else candidate.name
-        val visibleKeys = Option(visibleOthers).getOrElse(Nil).filter(o => o != null && o.name != name).flatMap(o => vectorContainerTargets(o).map(_.key)).toSet
-        fresh.filterNot(t => visibleKeys.contains(t.key))
+        // Same key and same exact name: a visible pipeline on `FooBar` does
+        // not cover a change to `FOOBAR` (another weaviate class in the store).
+        val visibleTargets = Option(visibleOthers).getOrElse(Nil).filter(o => o != null && o.name != name).flatMap(o => vectorContainerTargets(o)).toSet
+        fresh.filterNot(visibleTargets.contains)
     }
 
     private def plainContainerName(n: String): Boolean =
@@ -286,14 +288,20 @@ object DestinationTargets {
     def unsafeFreshVectorContainerName(candidate: PipelineConfig, stored: PipelineConfig): Boolean = {
         val freshStores = freshVectorContainers(candidate, stored).map(_.key.store).toSet
         vectorContainerNames(candidate).exists { case (store, n) =>
-            freshStores.contains(store) && n != null && n.trim.nonEmpty && !plainContainerName(n)
+            freshStores.contains(store) && n != null && n.trim.nonEmpty && (!plainContainerName(n) || (store == "milvus" && !plainMilvusName(n)))
         }
     }
 
+    /** Milvus accepts only letters, digits and `_` in a collection name; a
+      * name it rejects could never be checked (its `has` answers an error),
+      * so a new or changed one is refused up front. */
+    private def plainMilvusName(n: String): Boolean =
+        n.forall(ch => (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_')
+
     /** 400 refusal text for a new or changed name that is not plain; names nothing. */
     val UnsafeVectorContainerRefusal: String =
-        "A Qdrant, Milvus or Chroma collection name or a Weaviate class name may use only letters, digits, '.', '_' and '-', " +
-            "and cannot be '.' or '..'. Choose a plain name."
+        "A Qdrant or Chroma collection name or a Weaviate class name may use only letters, digits, '.', '_' and '-', " +
+            "and cannot be '.' or '..'; a Milvus collection name only letters, digits and '_'. Choose a plain name."
 
     /** True when the config has a qdrant, weaviate, milvus or chroma
       * destination whose name is null or blank (no container key). */

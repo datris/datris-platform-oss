@@ -1983,7 +1983,8 @@ paths:
             or (restricted users only) a new or changed Postgres, SQL Server,
             Snowflake or Databricks table, pgvector table, MongoDB collection,
             Qdrant, Milvus or Chroma collection, Weaviate class (for Qdrant
-            also an alias of that name; for Weaviate any letter case) or
+            also an alias of that name; for Weaviate any letter case, and a
+            collection alias of that name) or
             object-store prefix already exists: `The
             destination <kind> <coordinates> already exists. Choose a table or
             prefix that does not exist yet, or ask a user with install-wide
@@ -2006,11 +2007,13 @@ paths:
             SQL Server temporary table (`#name`): `A SQL Server temporary table
             (a name starting with #) cannot be a pipeline destination. Choose
             another table name.`, or (restricted users only) a new or changed
-            Qdrant, Milvus or Chroma collection or Weaviate class name with a
+            Qdrant or Chroma collection or Weaviate class name with a
             character other than letters, digits, `.`, `_` and `-`, or `.` /
-            `..`: `A Qdrant, Milvus or Chroma collection name or a Weaviate
-            class name may use only letters, digits, '.', '_' and '-', and
-            cannot be '.' or '..'. Choose a plain name.`, or (restricted users
+            `..`, or Milvus collection name with a character other than
+            letters, digits and `_`: `A Qdrant or Chroma collection name or a
+            Weaviate class name may use only letters, digits, '.', '_' and
+            '-', and cannot be '.' or '..'; a Milvus collection name only
+            letters, digits and '_'. Choose a plain name.`, or (restricted users
             only) one with a missing or blank name the saved pipeline does not
             already have: `A Qdrant, Milvus or Chroma destination needs a
             collection name, and a Weaviate destination a class name. Set
