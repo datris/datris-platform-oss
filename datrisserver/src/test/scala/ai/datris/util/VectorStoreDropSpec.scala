@@ -408,4 +408,16 @@ class VectorStoreDropSpec extends AnyFunSuite with BeforeAndAfterAll {
             ww
         )
     }
+
+    test("a connect timeout (nothing was sent) is 'could not be reached'; a read timeout or the whole-call deadline is 'did not answer in time'") {
+        import VectorStoreDrop._
+        assert(failureOf(new java.net.SocketTimeoutException("Connect timed out")) == Failed(Unreachable))
+        assert(failureOf(new java.net.SocketTimeoutException("connect timed out")) == Failed(Unreachable))
+        assert(failureOf(new java.net.SocketTimeoutException("Read timed out")) == Failed(TimedOut))
+        assert(failureOf(new java.net.SocketTimeoutException("the store's answer did not finish within the deadline")) == Failed(TimedOut))
+        assert(failureOf(new java.net.SocketTimeoutException()) == Failed(TimedOut))
+        assert(failureOf(new java.net.ConnectException("Connection refused")) == Failed(Unreachable))
+        val w = VectorStoreDrop.warning(VectorContainers.key("qdrant", "vd_q", None).get, Unreachable, configDeleted = false)
+        assert(!w.contains("may still complete"), w)
+    }
 }

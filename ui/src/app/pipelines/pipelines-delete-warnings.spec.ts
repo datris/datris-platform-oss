@@ -33,8 +33,8 @@ describe('PipelinesComponent — delete and reset warnings', () => {
 
   const deleteWarning = 'Could not remove mongodb collection analytics.orders: the store could not be reached. ' +
     'Its pipeline configuration was deleted; remove it in the store.';
-  const resetWarning = 'Could not remove postgres table datris.public.p_one: the store did not answer in time. ' +
-    'Run the reset again once the store is available.';
+  const resetWarning = 'Could not remove postgres table datris.public.p_one: the store stopped the removal at its time limit and rolled it back. ' +
+    'It was not removed. Run the reset again once the store is available.';
 
   beforeEach(async () => {
     pipeSvc = {

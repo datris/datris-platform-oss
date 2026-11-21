@@ -260,9 +260,23 @@ object VectorStoreDrop {
         } finally conn.disconnect()
     }
 
-    /** Request, send and classify; never throws. A timeout is "did not
-      * answer in time", any other failure to talk to the store "could not
-      * be reached". The detail is logged here, never returned. */
+    /** The JDK's fixed text for a connect that timed out (not store text). */
+    private[util] def connectTimedOut(e: SocketTimeoutException): Boolean =
+        Option(e.getMessage).exists(_.toLowerCase(Locale.ROOT).startsWith("connect timed out"))
+
+    /** A failed call's outcome: a connect that timed out sent nothing, so the
+      * store "could not be reached"; a read timeout or the whole-call deadline
+      * (the request was sent) "did not answer in time"; any other I/O error
+      * "could not be reached". */
+    private[util] def failureOf(e: IOException): Outcome = e match {
+        case st: SocketTimeoutException if connectTimedOut(st) => Failed(Unreachable)
+        case _: SocketTimeoutException => Failed(TimedOut)
+        case _ => Failed(Unreachable)
+    }
+
+    /** Request, send and classify; never throws. A read timeout is "did not
+      * answer in time", a connect timeout or any other failure to talk to the
+      * store "could not be reached" ([[failureOf]]). The detail is logged here, never returned. */
     def drop(store: String, secret: java.util.Map[String, String], name: String, deadlineMs: Long = TotalDeadlineMs): Outcome =
         try {
             request(store, secret, name) match {
@@ -281,12 +295,9 @@ object VectorStoreDrop {
                         }
                         o
                     } catch {
-                        case e: SocketTimeoutException =>
-                            logger.warn("Vector store drop: " + store + " did not answer for '" + name + "': " + e.getMessage)
-                            Failed(TimedOut)
                         case e: IOException =>
-                            logger.warn("Vector store drop: " + store + " could not be reached for '" + name + "': " + e)
-                            Failed(Unreachable)
+                            logger.warn("Vector store drop: " + store + " request for '" + name + "' failed: " + e)
+                            failureOf(e)
                     }
             }
         } catch {

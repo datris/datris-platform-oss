@@ -68,7 +68,8 @@ class DestinationDropSpec extends AnyFunSuite {
     private val CR = "the store refused the credentials"
     private val PM = "the store refused permission to remove it"
     private val RE = "the store reported an error"
-    private val ClosedReasons = Set(NC, UR, TO, CR, PM, RE)
+    private val RB = "the store stopped the removal at its time limit and rolled it back"
+    private val ClosedReasons = Set(NC, UR, TO, RB, CR, PM, RE)
 
     private val Kinds = Seq("postgres", "pgvector", "mongodb", "snowflake", "sqlserver", "databricks", "objectstore", "scratch")
 
@@ -90,16 +91,16 @@ class DestinationDropSpec extends AnyFunSuite {
     // ------------------------------------------------------------ bullet 1
 
     test(
-        "classify postgres: 08xxx and ConnectException are 'could not be reached'; SocketTimeoutException, SQLTimeoutException, 57014 and 55P03 are 'did not answer in time'; 28xxx is 'refused the credentials'; 42501 is 'refused permission'; 3D000 and 3F000 are Absent; anything else is 'reported an error'"
+        "classify postgres: 08xxx and ConnectException are 'could not be reached'; a read SocketTimeoutException is 'did not answer in time'; SQLTimeoutException, 57014 and 55P03 are 'rolled it back'; 28xxx is 'refused the credentials'; 42501 is 'refused permission'; 3D000 and 3F000 are Absent; anything else is 'reported an error'"
     ) {
         Seq("postgres", "pgvector").foreach { k =>
             Seq("08001", "08006", "08004", "08003").foreach(s => expect(k, sql(s), UR))
             expect(k, new ConnectException("Connection refused"), UR)
             expect(k, new SQLException("Connection to db-host:5432 refused", "08001", new ConnectException("Connection refused")), UR)
             expect(k, new SocketTimeoutException("Read timed out"), TO)
-            expect(k, new SQLTimeoutException("timed out"), TO)
-            expect(k, sql("57014", msg = "canceling statement due to statement timeout"), TO)
-            expect(k, sql("55P03", msg = "could not obtain lock on relation"), TO)
+            expect(k, new SQLTimeoutException("timed out"), RB)
+            expect(k, sql("57014", msg = "canceling statement due to statement timeout"), RB)
+            expect(k, sql("55P03", msg = "could not obtain lock on relation"), RB)
             Seq("28000", "28P01").foreach(s => expect(k, sql(s, msg = "password authentication failed for user \"datris\""), CR))
             expect(k, sql("42501", msg = "must be owner of table cf_pg"), PM)
             expect(k, sql("3D000", msg = "database \"gone\" does not exist"), Absent)
@@ -406,9 +407,9 @@ class DestinationDropSpec extends AnyFunSuite {
         verify(s1).close()
 
         // The server abandons the lock wait (57014): the table is not dropped
-        // late, and the caller is told it did not answer in time.
+        // late, and the caller is told it was rolled back.
         val (c2, s2) = fake(st => when(st.execute(anyString())).thenThrow(new SQLException("canceling statement due to statement timeout", "57014")))
-        assert(DestinationDrop.execute("pgvector", c2, "DROP TABLE IF EXISTS \"public\".\"v\"") == Failed(TO))
+        assert(DestinationDrop.execute("pgvector", c2, "DROP TABLE IF EXISTS \"public\".\"v\"") == Failed(RB))
         verify(s2).setQueryTimeout(30)
         verify(s2).close()
 
@@ -475,7 +476,7 @@ class DestinationDropSpec extends AnyFunSuite {
         val (conn, st) = fakeConn()
         when(st.execute(StatementTimeoutSql)).thenReturn(false)
         when(st.execute("DROP TABLE IF EXISTS \"public\".\"t\"")).thenThrow(new SQLException("canceling statement due to statement timeout", "57014"))
-        assert(DestinationDrop.execute("pgvector", conn, "DROP TABLE IF EXISTS \"public\".\"t\"") == Failed(TO))
+        assert(DestinationDrop.execute("pgvector", conn, "DROP TABLE IF EXISTS \"public\".\"t\"") == Failed(RB))
         verify(conn).rollback()
         verify(conn, never()).commit()
         verify(st).close()
@@ -636,5 +637,34 @@ class DestinationDropSpec extends AnyFunSuite {
         // 600 ms shared by three: about 200 each, never more than what is left.
         assert(budgets.head <= 200 && budgets.head >= 150, budgets)
         assert(budgets.sum <= 600, budgets)
+    }
+
+    // ---- E2E follow-up: timeout wording ----
+
+    test("a Postgres or pgvector statement or lock-wait timeout says the removal was rolled back and not removed, never that it may still complete") {
+        for (cd <- Seq(true, false)) {
+            val w = warning("postgres table datris.public.t", RB, cd)
+            assert(w.startsWith("Could not remove postgres table datris.public.t: " + RB + ". It was not removed. "), w)
+            assert(!w.contains("may still complete"), w)
+        }
+        assert(
+            warning("postgres table datris.public.t", RB, configDeleted = false) ==
+                "Could not remove postgres table datris.public.t: " + RB + ". It was not removed. Run the reset again once the store is available."
+        )
+        // a read timeout elsewhere keeps "may still complete"
+        assert(warning("mongodb collection a.b", TO, configDeleted = false).contains("The removal may still complete in the store; check it there."))
+        // other engines' timeouts are unchanged
+        expect("snowflake", new SQLException("Statement reached its statement or warehouse timeout", "57014", 604), TO)
+        expect("sqlserver", new SQLTimeoutException("The query has timed out."), TO)
+    }
+
+    test("a connect timeout is 'could not be reached' for every kind; a read timeout stays 'did not answer in time'") {
+        for (k <- Kinds) {
+            expect(k, new SocketTimeoutException("connect timed out"), UR)
+            expect(k, new SocketTimeoutException("Connect timed out"), UR)
+            expect(k, new RuntimeException("wrapped", new SocketTimeoutException("Connect timed out")), UR)
+        }
+        for (k <- Seq("mongodb", "objectstore", "scratch", "snowflake", "sqlserver", "databricks"))
+            expect(k, new SocketTimeoutException("Read timed out"), TO)
     }
 }

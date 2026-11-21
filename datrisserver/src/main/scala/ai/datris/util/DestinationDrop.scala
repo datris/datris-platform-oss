@@ -89,6 +89,10 @@ object DestinationDrop {
     val NotConfigured: String = VectorStoreDrop.NotConfigured
     val Unreachable: String = VectorStoreDrop.Unreachable
     val TimedOut: String = VectorStoreDrop.TimedOut
+    // Postgres / pgvector: the drop runs in a transaction the server rolls
+    // back when its statement or lock-wait timeout fires, so it never
+    // completes later (unlike a store that did not answer in time).
+    val RolledBack = "the store stopped the removal at its time limit and rolled it back"
     val CredentialsRefused = "the store refused the credentials"
     val PermissionRefused = "the store refused permission to remove it"
     val ReportedError: String = VectorStoreDrop.ReportedError
@@ -148,7 +152,9 @@ object DestinationDrop {
     def warning(label: String, reason: String, configDeleted: Boolean): String =
         "Could not remove " + label + ": " + reason + ". " +
             // A drop that outlasted the timeout may still finish in the store.
-            (if (reason == TimedOut) "The removal may still complete in the store; check it there. " else "") +
+            (if (reason == TimedOut) "The removal may still complete in the store; check it there. "
+             else if (reason == RolledBack) "It was not removed. "
+             else "") +
             (if (configDeleted) "Its pipeline configuration was deleted; remove it in the store."
              else "Run the reset again once the store is available.")
 
@@ -311,8 +317,7 @@ object DestinationDrop {
         causes(t).drop(1).collectFirst { case s: java.net.SocketTimeoutException => s }
 
     // The JDK's fixed text for a connect that timed out (not store text).
-    private def connectTimedOut(e: java.net.SocketTimeoutException): Boolean =
-        Option(e.getMessage).exists(_.toLowerCase(Locale.ROOT).startsWith("connect timed out"))
+    private def connectTimedOut(e: java.net.SocketTimeoutException): Boolean = VectorStoreDrop.connectTimedOut(e)
 
     private def sql(t: Throwable): Option[SQLException] = t match {
         case s: SQLException => Some(s)
@@ -333,7 +338,11 @@ object DestinationDrop {
 
     private def postgres(s: SQLException): Option[Outcome] =
         state(s) match {
-            case "55P03" => Some(Failed(TimedOut))
+            // Statement timeout (57014), lock not available (55P03), or the
+            // driver's query timeout (which cancels the statement): the server
+            // rolled the drop back.
+            case "55P03" | "57014" => Some(Failed(RolledBack))
+            case _ if s.isInstanceOf[SQLTimeoutException] => Some(Failed(RolledBack))
             case "3D000" | "3F000" => Some(Absent)
             case _ => standardState(s)
         }
@@ -397,7 +406,8 @@ object DestinationDrop {
     private def generic(t: Throwable): Option[Outcome] =
         t match {
             case _: SQLTimeoutException => Some(Failed(TimedOut))
-            case _: java.net.SocketTimeoutException => Some(Failed(TimedOut))
+            // A connect that timed out sent nothing: the store was not reached.
+            case st: java.net.SocketTimeoutException => Some(Failed(if (connectTimedOut(st)) Unreachable else TimedOut))
             case _: java.net.ConnectException => Some(Failed(Unreachable))
             case _: java.net.UnknownHostException => Some(Failed(Unreachable))
             case _: java.net.NoRouteToHostException => Some(Failed(Unreachable))
