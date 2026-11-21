@@ -764,4 +764,55 @@ class SparkObjectStoreLoaderSpec extends AnyFunSuite with BeforeAndAfterAll {
             assert(guard(os, List("id", "name"), fields = idName).isLeft, fmt)
         }
     }
+
+    // A source column the destination schema leaves out (docs/schemas.mdx) is
+    // still in the rows the transformation writes back. On an object store the
+    // transformation stage then leaves the destination schema as it is, so the
+    // loader reads those rows exactly as v1.60.0 did: by position against the
+    // destination schema.
+    test("pin (v1.60.0): an excluded source column in the transformed rows keeps the object store's positional read") {
+        import scala.collection.JavaConverters._
+        def outcome(df: => org.apache.spark.sql.DataFrame): Either[String, List[Row]] =
+            try Right(df.collect().toList)
+            catch { case e: Throwable => Left(e.getClass.getName) }
+        val dest = List(SchemaField("id", "int"), SchemaField("name", "string"))
+        val cases = Seq(
+            List("id", "name", "notes") -> List("1,alice,secret"),
+            List("id", "name", "notes", "score") -> List("1,alice,secret,7"),
+            List("id", "notes") -> List("1,secret"),
+            List("id", "notes", "score") -> List("1,secret,7")
+        )
+        for ((header, rows) <- cases) {
+            val cfg = PipelineConfig(
+                name = "os_excluded",
+                source = Source(
+                    schemaProperties = SchemaProperties("db", new java.util.ArrayList[SchemaField]((dest :+ SchemaField("notes", "string")).asJava)),
+                    fileAttributes = FileAttributes(csvAttributes = CsvAttributes())
+                ),
+                destination = Destination(
+                    schemaProperties = SchemaProperties("db", new java.util.ArrayList[SchemaField](dest.asJava)),
+                    objectStore = ObjectStore(prefixKey = "os_excluded", fileFormat = "parquet")
+                )
+            )
+            val jc = ai.datris.model.JobContext(
+                pipelineToken = "t",
+                metadata = ai.datris.model.PipelineMetadata("os_excluded", "f.csv", "/tmp/f.csv", "p", bulkUpload = false),
+                data = ai.datris.model.Data(1L, header, header.map(h => SchemaField(h, "string")), rows, null),
+                config = cfg,
+                pipelineProperties = null,
+                state = null,
+                thread = null,
+                statusUtil = new CapturingStatus
+            )
+            val out = TransformedColumns.reconcile(jc, (_, _) => fail("nothing is stored"), inputHeader = List("id", "name", "notes"))
+            val fields = out.config.destination.schemaProperties.fields.asScala.toList
+            assert(fields == dest, header.toString)
+            val path = stageRows(rows)
+            assert(
+                outcome(SparkObjectStoreLoader.stagedDataFrameFor(spark, path, fields, out.data.header, ",")) ==
+                    outcome(SparkObjectStoreLoader.stagedDataFrame(spark, path, dest, ",")),
+                header.toString
+            )
+        }
+    }
 }

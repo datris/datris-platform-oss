@@ -33,6 +33,17 @@ object TransformedColumns {
         Option(header).getOrElse(Nil).filterNot(h => declared.contains(key(h)))
     }
 
+    /** Header columns the transformation created: not in the destination
+      * schema, not in the source schema and not in `inputHeader` (the rows'
+      * header before the transformation ran), names compared trimmed and
+      * lower-cased, in header order. A source column the destination schema
+      * leaves out is never one of them, whatever the transformation did with
+      * it. */
+    def created(header: List[String], destFields: List[SchemaField], sourceFields: List[SchemaField], inputHeader: List[String]): List[String] = {
+        val known = (Option(sourceFields).getOrElse(Nil).filter(_ != null).map(f => key(f.name)) ++ Option(inputHeader).getOrElse(Nil).map(key)).toSet
+        added(header, destFields).filterNot(h => known.contains(key(h)))
+    }
+
     /** `config` with `fields` appended to its destination schema (names it
       * already lists are skipped) and the schema version raised by one. */
     def withDestFields(config: PipelineConfig, fields: List[SchemaField]): PipelineConfig = {
@@ -50,34 +61,62 @@ object TransformedColumns {
     /** Add `fields` to the stored pipeline's destination schema. The stored
       * config is read fresh: the run's own copy can differ from it (field
       * protection, provenance). */
-    private def persistStored(pipelineName: String, fields: List[SchemaField]): Unit = {
-        val stored = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
+    private[util] def persistStored(
+        pipelineName: String,
+        fields: List[SchemaField],
+        read: String => PipelineConfig = name => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name),
+        write: PipelineConfig => Unit = PipelineConfigIO.write
+    ): Unit = {
+        val stored = read(pipelineName)
         if (stored != null && destFieldsOf(stored).isDefined) {
             val updated = withDestFields(stored, fields)
-            if (updated ne stored) PipelineConfigIO.write(updated)
+            if (updated ne stored) write(updated)
         }
     }
 
     /** The job context after an AI transformation wrote rows in `ctx.data.header`
-      * order: unchanged when every header column is a destination column,
-      * otherwise with the added columns listed in the destination schema as
+      * order: unchanged when the transformation created no column (see
+      * [[created]]; `inputHeader` is the header the transformation read),
+      * otherwise with the created columns listed in the destination schema as
       * `string` (and stored, unless this is a rehearsal run).
       *
-      * A name the destination cannot hold, or a name two added columns share:
-      * with an object store destination the run fails (its positional read
-      * cannot skip a column, as on v1.60.0); otherwise the column is left out
-      * of the schema with a warn line, and the load leaves it out by name. */
-    def reconcile(ctx: JobContext, persist: (String, List[SchemaField]) => Unit = persistStored): JobContext = {
+      * A name the destination cannot hold, or a name two created columns
+      * share: with an object store destination the run fails (its positional
+      * read cannot skip a column, as on v1.60.0); otherwise the column is left
+      * out of the schema with a warn line, and the load leaves it out by name.
+      *
+      * With an object store destination, rows that still carry a column the
+      * destination schema leaves out are read by position, as on v1.60.0; the
+      * schema is then left as it is so that read is unchanged. */
+    def reconcile(
+        ctx: JobContext,
+        persist: (String, List[SchemaField]) => Unit = (n, f) => persistStored(n, f),
+        inputHeader: List[String] = Nil
+    ): JobContext = {
         val config = ctx.config
         val data = ctx.data
         val header = data.header
-        val names = destFieldsOf(config) match {
-            case Some(destFields) if header != null => added(header, destFields)
-            case _ => Nil
+        val sourceFields = Option(config.source).flatMap(s => Option(s.schemaProperties)).flatMap(sp => Option(sp.fields)).map(_.asScala.toList).getOrElse(Nil)
+        val (names, excluded) = destFieldsOf(config) match {
+            case Some(destFields) if header != null =>
+                val made = created(header, destFields, sourceFields, inputHeader)
+                val madeKeys = made.map(key).toSet
+                (made, added(header, destFields).filterNot(h => madeKeys.contains(key(h))))
+            case _ => (Nil, Nil)
         }
         if (names.isEmpty) return ctx
 
         val objectStore = Option(config.destination).exists(_.objectStore != null)
+        if (objectStore && excluded.nonEmpty) {
+            logger.info("Transformation added column(s) [" + names.mkString(", ") + "] to pipeline " + config.name +
+                "; the object store destination schema is left as it is: the rows also carry a column it leaves out")
+            ctx.statusUtil.info(
+                "processing",
+                "CodeGen transformation added column(s) " + names.map(n => "'" + IngestColumnNames.display(n) + "'").mkString(", ") +
+                    "; the object store destination schema is left as it is because the rows also carry a column the destination schema leaves out"
+            )
+            return ctx
+        }
         val limits = IngestColumnNames.limitsFor(config)
         val unholdable = names.flatMap(n => IngestColumnNames.holdProblem(n, limits).map(n -> _))
         val holdable = names.filter(n => IngestColumnNames.holdProblem(n, limits).isEmpty)
@@ -99,7 +138,8 @@ object TransformedColumns {
             }
         }
 
-        unholdable.foreach { case (n, why) =>
+        unholdable.foreach { case (n, _) =>
+            val why = IngestColumnNames.holdProblem(n, limits, "the destination").getOrElse("")
             val line = "CodeGen transformation added a column named '" + IngestColumnNames.display(n) + "', which the destination cannot hold: " + why +
                 "; it is left out of the destination. Change the instruction so the column has another name"
             logger.warn(line + " (pipeline " + config.name + ")")

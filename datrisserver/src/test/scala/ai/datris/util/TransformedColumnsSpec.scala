@@ -346,4 +346,188 @@ class TransformedColumnsSpec extends AnyFunSuite with BeforeAndAfterAll {
         )
         assert(pe.getMessage.contains("missing required partition column(s): city"), pe.getMessage)
     }
+
+    // ---- A source column the destination schema leaves out stays out ----
+    //  docs/schemas.mdx: a destination schema can "drop fields that should not
+    //  reach the destination". Such a column is still in the rows a
+    //  transformation reads and writes back; it was not created by the
+    //  transformation, so it must not join the destination schema, be stored,
+    //  be loaded or produce a warning, whatever the transformation did.
+
+    private val excludedSource = source :+ ("notes" -> "string")
+
+    /** Source [city, temp_c, notes], destination [city, temp_c]. */
+    private def excludedConfig(objectStore: ObjectStore = null, database: Database = Database(usePostgres = true, table = "weather")): PipelineConfig =
+        PipelineConfig(
+            name = "weather",
+            source = Source(schemaProperties = schema(excludedSource: _*), fileAttributes = FileAttributes(csvAttributes = CsvAttributes(delimiter = ","))),
+            destination = Destination(schemaProperties = schema(source: _*), objectStore = objectStore, database = database)
+        )
+
+    private def recorder(): (ListBuffer[(String, List[SchemaField])], (String, List[SchemaField]) => Unit) = {
+        val stored = ListBuffer[(String, List[SchemaField])]()
+        (stored, (n, f) => stored += ((n, f)))
+    }
+
+    test("a source column the destination schema leaves out stays out: only the transformation's own column is added") {
+        val status = new LevelStatusUtil
+        val (stored, persist) = recorder()
+        val hdr = List("city", "temp_c", "notes", "score")
+        val out = TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("Shanghai,4.7,secret,7"), status), persist)
+        assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
+        assert(stored.toList.map(s => s._1 -> typesOf(s._2)) == List("weather" -> List("score" -> "string")), "persist receives only score")
+        assert(status.warns.isEmpty, status.warns)
+        assert(status.infos.forall(!_.contains("notes")), status.infos)
+        assert(DestSchemaProjector.project(out, Iterator("Shanghai,4.7,secret,7", "Lagos,31,private,n/a")).toList == List("Shanghai,4.7,7", "Lagos,31,n/a"))
+    }
+
+    test("a transformation that changes no columns adds nothing, stores nothing and says nothing") {
+        val status = new LevelStatusUtil
+        val in = ctx(excludedConfig(), List("city", "temp_c", "notes"), List("Shanghai,4.7,secret"), status)
+        val out = TransformedColumns.reconcile(in, (_, _) => fail("nothing to store"))
+        assert(out eq in)
+        assert(status.infos.isEmpty && status.warns.isEmpty, status.infos.toString + status.warns)
+        assert(DestSchemaProjector.project(out, Iterator("Shanghai,4.7,secret")).toList == List("Shanghai,4.7"))
+    }
+
+    test("an excluded source column the transformation renames only by letter case or surrounding spaces stays out") {
+        for (renamed <- Seq("NOTES", " notes", "Notes ")) {
+            val status = new LevelStatusUtil
+            val (stored, persist) = recorder()
+            val hdr = List("city", "temp_c", renamed, "score")
+            val out = TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("Shanghai,4.7,secret,7"), status), persist)
+            assert(destOf(out.config) == source.toList :+ ("score" -> "string"), "'" + renamed + "'")
+            assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"), "'" + renamed + "'")
+            assert(status.warns.isEmpty, status.warns)
+            assert(DestSchemaProjector.project(out, Iterator("Shanghai,4.7,secret,7")).toList == List("Shanghai,4.7,7"), "'" + renamed + "'")
+        }
+    }
+
+    test("an excluded source column the transformation removes and re-emits elsewhere stays out") {
+        val status = new LevelStatusUtil
+        val (stored, persist) = recorder()
+        val hdr = List("score", "temp_c", "city", "notes")
+        val out = TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("7,4.7,Shanghai,secret"), status), persist)
+        assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
+        assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"))
+        assert(status.warns.isEmpty, status.warns)
+        assert(DestSchemaProjector.project(out, Iterator("7,4.7,Shanghai,secret")).toList == List("Shanghai,4.7,7"))
+    }
+
+    test("an excluded source column whose name the destination could not hold produces no warning") {
+        val long = "n" * 64
+        val cfg0 = excludedConfig()
+        val cfg = cfg0.copy(source = cfg0.source.copy(schemaProperties = schema((source :+ (long -> "string")): _*)))
+        val status = new LevelStatusUtil
+        val (stored, persist) = recorder()
+        val out = TransformedColumns.reconcile(ctx(cfg, List("city", "temp_c", long, "score"), List("Shanghai,4.7,secret,7"), status), persist)
+        assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
+        assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"))
+        assert(status.warns.isEmpty, status.warns)
+    }
+
+    test("on an object store pipeline an excluded source column in the rows leaves the schema as it is, so the load is v1.60.0's") {
+        for (fmt <- Seq("parquet", "orc", "iceberg")) {
+            val os = ObjectStore(prefixKey = "weather", fileFormat = fmt)
+            for (hdr <- Seq(List("city", "temp_c", "notes"), List("city", "temp_c", "notes", "score"), List("city", "notes", "score"))) {
+                val status = new LevelStatusUtil
+                val in = ctx(excludedConfig(objectStore = os, database = null), hdr, List(hdr.map(_ => "x").mkString(",")), status)
+                val out = TransformedColumns.reconcile(in, (_, _) => fail("nothing is stored: " + fmt + " " + hdr))
+                assert(destOf(out.config) == source.toList, fmt + " " + hdr)
+                assert(out.config.destination.schemaProperties.schemaVersion == in.config.destination.schemaProperties.schemaVersion)
+                assert(status.warns.isEmpty && status.errors.isEmpty, status.warns.toString + status.errors)
+            }
+        }
+    }
+
+    test("the run warning for an over-long added name does not speak of a new destination") {
+        val status = new LevelStatusUtil
+        TransformedColumns.reconcile(ctx(pgConfig(), List("city", "temp_c", "s" * 64), List("x,1,2"), status), (_, _) => ())
+        assert(status.warns.exists(_.contains("it is 64 bytes long; the destination allows at most 63 bytes")), status.warns)
+        assert(status.warns.forall(!_.contains("new destination")), status.warns)
+    }
+
+    test("a column the rows carried before the transformation (a preprocessor's, or one the source schema does not list) is not added") {
+        val status = new LevelStatusUtil
+        val (stored, persist) = recorder()
+        val before = List("city", "temp_c", "region")
+        val hdr = List("city", "temp_c", "region", "score")
+        val out = TransformedColumns.reconcile(ctx(pgConfig(), hdr, List("Shanghai,4.7,east,7"), status), persist, inputHeader = before)
+        assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
+        assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"))
+        assert(status.warns.isEmpty, status.warns)
+        assert(DestSchemaProjector.project(out, Iterator("Shanghai,4.7,east,7")).toList == List("Shanghai,4.7,7"))
+
+        // the same header without a pre-transformation header: region counts as created
+        val alone = TransformedColumns.reconcile(ctx(pgConfig(), hdr, List("Shanghai,4.7,east,7"), new LevelStatusUtil), (_, _) => ())
+        assert(destOf(alone.config).map(_._1) == List("city", "temp_c", "region", "score"))
+    }
+
+    test("a missing or empty source schema falls back to the pre-transformation header") {
+        def raw(cfg: PipelineConfig, hdr: List[String], status: StatusUtil): JobContext =
+            JobContext(
+                pipelineToken = "job-token-1",
+                metadata = PipelineMetadata("weather", "rows.csv", "/tmp/rows.csv", "pub-1", bulkUpload = false),
+                data = Data(1L, hdr, hdr.map(h => SchemaField(h, "string")), List("Shanghai,4.7,secret,7"), null),
+                config = cfg,
+                pipelineProperties = null,
+                state = null,
+                thread = null,
+                statusUtil = status
+            )
+        val base = excludedConfig()
+        val noSchema = base.copy(source = base.source.copy(schemaProperties = null))
+        val emptyFields = base.copy(source = base.source.copy(schemaProperties = schema()))
+        val noSource = base.copy(source = null)
+        for (cfg <- Seq(noSchema, emptyFields, noSource)) {
+            val status = new LevelStatusUtil
+            val (stored, persist) = recorder()
+            val out =
+                TransformedColumns.reconcile(raw(cfg, List("city", "temp_c", "notes", "score"), status), persist, inputHeader = List("city", "temp_c", "notes"))
+            assert(destOf(out.config) == source.toList :+ ("score" -> "string"))
+            assert(stored.toList.flatMap(_._2.map(_.name)) == List("score"))
+            assert(status.warns.isEmpty, status.warns)
+        }
+    }
+
+    test("persistStored reads the stored pipeline fresh, appends the columns once and writes only when something is new") {
+        val writes = ListBuffer[PipelineConfig]()
+        var db: Map[String, PipelineConfig] = Map("weather" -> excludedConfig())
+        val read: String => PipelineConfig = n => db.getOrElse(n, null)
+        val write: PipelineConfig => Unit = c => { writes += c; db = db.updated(c.name, c) }
+
+        TransformedColumns.persistStored("weather", List(SchemaField("score", "string")), read, write)
+        assert(writes.size == 1)
+        assert(destOf(db("weather")) == source.toList :+ ("score" -> "string"))
+        assert(db("weather").destination.schemaProperties.schemaVersion == 2)
+        assert(db("weather").source.schemaProperties.fields.asScala.map(_.name).toList == excludedSource.map(_._1).toList, "the source schema is untouched")
+
+        // a second run with the same column: nothing new, nothing written
+        TransformedColumns.persistStored("weather", List(SchemaField("SCORE", "string")), read, write)
+        assert(writes.size == 1)
+
+        // a stored column of another type (this branch's earlier behaviour) is kept as stored
+        db = db.updated("weather", TransformedColumns.withDestFields(excludedConfig(), List(SchemaField("score", "int"))))
+        TransformedColumns.persistStored("weather", List(SchemaField("score", "string")), read, write)
+        assert(writes.size == 1)
+        assert(destOf(db("weather")).last == ("score" -> "int"))
+
+        // a pipeline deleted meanwhile, or one with no destination schema, is not written
+        TransformedColumns.persistStored("gone", List(SchemaField("score", "string")), read, write)
+        val noDest = excludedConfig().copy(name = "nodest")
+        db = db.updated("nodest", noDest.copy(destination = noDest.destination.copy(schemaProperties = null)))
+        TransformedColumns.persistStored("nodest", List(SchemaField("score", "string")), read, write)
+        assert(writes.size == 1)
+    }
+
+    test("reconcile hands persistStored's own arguments through: the stored schema matches the run's") {
+        var db: Map[String, PipelineConfig] = Map("weather" -> excludedConfig())
+        val persist: (String, List[SchemaField]) => Unit =
+            (n, f) => TransformedColumns.persistStored(n, f, x => db.getOrElse(x, null), c => db = db.updated(c.name, c))
+        val hdr = List("city", "temp_c", "notes", "score")
+        val out =
+            TransformedColumns.reconcile(ctx(excludedConfig(), hdr, List("Shanghai,4.7,secret,7"), new LevelStatusUtil), persist, inputHeader = hdr.take(3))
+        assert(destOf(db("weather")) == destOf(out.config))
+        assert(destOf(db("weather")) == source.toList :+ ("score" -> "string"))
+    }
 }
