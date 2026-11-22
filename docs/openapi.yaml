@@ -3746,8 +3746,8 @@ paths:
       summary: Get job status
       description: >-
         Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
-        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) of a run fed by such a tap, or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
-        An API key limited by `catalog=` or `owner=` on a pipeline or tap capability gets the same filtering and the same 404 for pipelines outside its scope, and the same `[hidden]` tap names and omitted columns when it does not read every tap.
+        A restricted user sees only the jobs of pipelines in its catalog grants. A `pipelinetoken` / `publishertoken` query for a run of a pipeline outside the grants answers exactly what a token with no runs answers: `200` with an empty array, or with `withrollup=true` `{"rollup":{"allDone":false,"status":"processing","jobs":[]},"events":[]}`. A publisher token whose runs span pipelines inside and outside the grants returns only the runs inside them, and the rollup's `allDone` and `status` are computed from those runs. Summary pages (no token) are filled with the user's own rows: `page=N` is the Nth page of 20 rows the user may see, read from at most N + 9 pages of stored rows, so a page can come back short (or empty) when most recent activity is outside the grants. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) of a run fed by such a tap, or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        An API key limited by `catalog=` or `owner=` on a pipeline or tap capability gets the same filtering, the same answers for tokens and pages, and the same `[hidden]` tap names and omitted columns when it does not read every tap.
       parameters:
         - name: publishertoken
           in: query
@@ -3834,7 +3834,7 @@ paths:
       tags: [Status]
       summary: Get a Live Read (scratch) pipeline's result
       description: >-
-        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants, and so do API keys limited by `catalog=` or `owner=` for a pipeline outside their scope.
+        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants, and so do API keys limited by `catalog=` or `owner=` for a pipeline outside their scope. For them a `publishertoken` is resolved on the runs they may read only: one Live Read run inside the scope is returned even when the token also covers runs outside it.
         Page through the rows a Live Read (scratch destination) pipeline run
         produced. Paging reads the stored result and never re-runs the source.
         Only Live Read pipelines have a result. `limit` is clamped server-side to the
@@ -5178,7 +5178,7 @@ paths:
     get:
       tags: [Taps]
       summary: Get run history across all taps
-      description: Returns run log entries for every tap, newest window first. Feeds the Ops activity dashboard's aggregation. Defaults to the last 30 days, capped at 2000 rows. Requires `job:read`. A restricted user sees only the runs of taps in its catalog grants.
+      description: Returns run log entries for every tap, newest window first. Feeds the Ops activity dashboard's aggregation. Defaults to the last 30 days, capped at 2000 rows. Requires `job:read`. A restricted user, or an API key limited by `catalog=` or `owner=`, sees only the runs of taps it may read; for them up to five times `limit` of the newest runs (at most 5000) are read so that up to `limit` of their own runs come back.
       parameters:
         - name: since
           in: query
@@ -6896,6 +6896,13 @@ paths:
         Incidents the platform opened for failed, stale or anomalous data
         flows, newest first. Read-only — only the platform opens incidents.
         `enabled` is false while RECOVERY_AGENT_ENABLED is off.
+        An API key limited by `catalog=` or `owner=` sees only incidents on
+        pipelines and taps it may read; for it up to five times `limit` of the
+        newest incidents (at most 200) are read so that up to `limit` of its
+        own come back. In the incidents it sees, the names of taps and
+        pipelines it may not read read `[hidden]` in the free text (step
+        summaries and details, the trigger's error and AI summary, the
+        outcome and the proposal), as on `GET /api/v1/incidents/{id}`.
       parameters:
         - in: query
           name: state
@@ -6928,6 +6935,13 @@ paths:
     get:
       tags: [Recovery Agent]
       summary: Read one incident
+      description: >-
+        For an API key limited by `catalog=` or `owner=`, an incident on a
+        pipeline or tap it may not read answers 404 as an unknown id does; in
+        one it may read, the names of taps and pipelines outside its scope
+        read `[hidden]` in the free text (step summaries and details, the
+        trigger's error and AI summary, the outcome and the proposal) and in
+        the evidence's downstream pipelines. The stored incident is not changed.
       parameters:
         - in: path
           name: id
@@ -8285,6 +8299,7 @@ paths:
         between them, freshness for the pipeline the node is (or feeds), and
         optionally the most recent recorded runs touching the node — what each
         read and wrote, per destination.
+        For a restricted user or an API key limited by `catalog=` or `owner=`, freshness is computed only from taps it may read: a pipeline whose feeding tap is outside its scope reports from its own landings only (`state` is `fresh` or `unknown`, never `stale`, and there is no `cursorUpdatedAt`).
         For a restricted user, the walk covers only their granted catalogs: a node outside them is 404 (`no such node`), and hidden upstream or downstream items are left out. In `runs`, a run fed by a tap the user cannot read (filed in another catalog, or no longer stored) keeps `input.kind` but omits `input.tapName`, `tapRunTime`, `scriptSha` and `source`, and its feed filename reads `tap-[hidden].csv` / `.json`.
       parameters:
         - in: path

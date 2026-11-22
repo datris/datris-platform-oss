@@ -620,6 +620,20 @@ object LineageService {
         o
     }
 
+    /** The taps freshness is computed from on a walk of `graph`: `taps`
+      * itself when `graph` is null (the whole cached graph); otherwise only
+      * the taps whose `tap:<name>` node is in `graph`. On a caller-filtered
+      * graph ([[visibleTo]]) a tap the caller may not read is absent, so a
+      * visible pipeline it feeds is reported from its own landings only
+      * (`fresh` or `unknown`, never `stale`, no `cursorUpdatedAt`) and the
+      * hidden tap's state is never read. Pure. */
+    def freshnessTaps(taps: List[TapConfig], graph: Graph): List[TapConfig] =
+        if (graph == null) taps
+        else {
+            val ids = graph.nodes.iterator.map(_.id).filter(_.startsWith("tap:")).toSet
+            taps.filter(t => t != null && t.name != null && ids.contains("tap:" + t.name))
+        }
+
     /** The stored pipelines the cached graph was built from. */
     def pipelines(): List[PipelineConfig] = loadCached().pipelines
 
@@ -716,7 +730,12 @@ object LineageService {
         // A caller-filtered graph: a name whose runs the caller may not see
         // (PipelineAliases.recordShown) reports as if it had no runs.
         def runsShown(p: String): Boolean = graph == null || runShown(p, entry.pipelines, byId.contains)
-        pipelineName.foreach(p => o.add("freshness", if (graph == null) freshness(p, entry.taps) else freshness(p, entry.taps, runsShown(p))))
+        // Freshness comes from the taps the walked graph holds: on a
+        // caller-filtered graph a feeding tap the caller may not read is not
+        // there, so the pipeline reads from its own landings only.
+        pipelineName.foreach(p =>
+            o.add("freshness", if (graph == null) freshness(p, entry.taps) else freshness(p, freshnessTaps(entry.taps, graph), runsShown(p)))
+        )
 
         if (runs > 0) {
             val arr = new JsonArray()

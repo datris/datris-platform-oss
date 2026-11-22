@@ -21,8 +21,8 @@ import java.time.Instant
 
 /** Pending agent actions parked by the policy, and the human decisions on
   * them. Agents see only what they queued; people see everything. Deciding
-  * is for admins and editors — and never for an agent, whatever key it
-  * holds. */
+  * is for administrators (with API keys turned off, editors can decide too)
+  * — and never for an agent, whatever key it holds. */
 @RestController
 @RequestMapping(Array("/api/v1/approvals"))
 class ApprovalsAPIController {
@@ -53,8 +53,9 @@ class ApprovalsAPIController {
                 val lim = Option(limit).map(_.intValue()).getOrElse(100)
                 val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
                 val runs = IncidentsAPIController.storeRuns()
+                val items = IncidentsAPIController.storeItems()
                 PendingActionIO.list(st, actorFilter, lim).foreach(pa =>
-                    arr.add(ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, readPipeline, readTap, runs))
+                    arr.add(ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, readPipeline, readTap, runs, items))
                 )
             }
             out.add("approvals", arr)
@@ -73,7 +74,8 @@ class ApprovalsAPIController {
             visible(id, request) match {
                 case Some(pa) =>
                     val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
-                    val body = ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, readPipeline, readTap, IncidentsAPIController.storeRuns())
+                    val (runs, items) = (IncidentsAPIController.storeRuns(), IncidentsAPIController.storeItems())
+                    val body = ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, readPipeline, readTap, runs, items)
                     new ResponseEntity[String](gson.toJson(body), HttpStatus.OK)
                 case None => notFound(id)
             }
@@ -246,14 +248,17 @@ object ApprovalsAPIController {
       * ([[IncidentsAPIController.incidentRefusal]]), as
       * [[IncidentsAPIController.shownIncident]] scrubs it; otherwise the
       * field is left out, exactly as for an approval whose incident does not
-      * exist or has no evidence. A failed lookup leaves the field out. */
+      * exist or has no evidence. A failed lookup leaves the field out. Only
+      * the evidence is added, and it holds no free text, so `items` (the
+      * stored items for the free-text scrub) is not called. */
     def withIncidentEvidence(
         request: HttpServletRequest,
         pa: PendingAction,
         load: String => Option[ai.datris.incident.Incident],
         readPipeline: String => ai.datris.model.PipelineConfig,
         readTap: String => ai.datris.model.TapConfig,
-        run: String => Option[ai.datris.model.RunLineage]
+        run: String => Option[ai.datris.model.RunLineage],
+        items: () => IncidentsAPIController.StoredItems = IncidentsAPIController.NoItems
     ): JsonObject = {
         val o = pa.toPublicJson
         pa.incidentId.foreach { iid =>
@@ -262,7 +267,7 @@ object ApprovalsAPIController {
                 val shown =
                     if (!ai.datris.auth.CapabilityCheck.isLimited(request)) stored
                     else if (IncidentsAPIController.incidentRefusal(request, iid, stored, readPipeline, readTap).isDefined) None
-                    else stored.map(i => IncidentsAPIController.shownIncident(request, i, readPipeline, readTap, run))
+                    else stored.map(i => IncidentsAPIController.shownEvidence(request, i, readPipeline, readTap, run))
                 shown.flatMap(_.evidence).foreach(e => o.add("incidentEvidence", e))
             } catch { case e: Exception => logger.debug("approval " + pa.id + ": incident evidence lookup failed: " + e.getMessage) }
         }

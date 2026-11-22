@@ -875,10 +875,12 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
                 assert(x.exists(_.getBody == noIncident(i.id)) && x.exists(xx => status(xx) == 404), s.name + " " + i.id)
             }
             // token: the key's answer is the session's answer (D2: no new oracle)
+            // limited-caller-read-leaks (pinned edit, D2 (a)): was both the 404; both now read
+            // as a token with no rows
             if (!s.pipelines.contains("payroll")) {
                 val k = PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event("payroll")), pipelines, taps)
                 val ss = PipelineStatusAPIController.restrictedViewWith(req(bob), java.util.Arrays.asList(event("payroll")), pipelines, taps)
-                assert(k.isLeft && status(k.left.get) == status(ss.left.get) && k.left.get.getBody == ss.left.get.getBody, s.name)
+                assert(k.isRight && ss.isRight && gson.toJson(k.right.get) == gson.toJson(ss.right.get) && gson.toJson(k.right.get) == "[]", s.name)
             }
         }
     }

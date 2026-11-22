@@ -67,12 +67,57 @@ object PipelineStatusAPIController {
                 c => PipelineAPIController.mayRead(request, c)
             )
 
+    /** GET /pipeline/result: the job the token reads ([[ScratchReader.pick]]
+      * on `jobs`, the token's rollup jobs). For a limited caller
+      * ([[ai.datris.auth.CapabilityCheck.isLimited]]) the jobs of pipelines
+      * whose records it may not see ([[resultHidden]]) are dropped first, so
+      * a token whose jobs are all hidden answers exactly what a token with
+      * no run answers, and a publisher token spanning a visible and a hidden
+      * scratch job reads the visible one. `configs` is called at most once,
+      * and only for a limited caller. Throws [[ScratchResultException]]. */
+    def resultJob(
+        request: jakarta.servlet.http.HttpServletRequest,
+        pipelinetoken: String,
+        publishertoken: String,
+        jobs: List[PipelineJobRollup],
+        configs: () => Seq[ai.datris.model.PipelineConfig]
+    ): PipelineJobRollup = {
+        val shown =
+            if (!ai.datris.auth.CapabilityCheck.isLimited(request) || jobs.isEmpty) jobs
+            else {
+                lazy val loaded = configs()
+                jobs.filterNot(j => j != null && resultHidden(request, j.pipeline, loaded))
+            }
+        ScratchReader.pick(pipelinetoken, publishertoken, shown)
+    }
+
+    /** GET /pipeline/status summary path (no token): for a caller that is
+      * not limited, `readPage(page)` itself (one store read, `pipelines` not
+      * called). For a limited caller, the `page`th page of the summary rows
+      * of pipelines whose records it may see
+      * ([[PipelineAliases.shownRecordNames]]), filled from further store
+      * pages within a bound ([[PipelineStatusUtil.filledSummaryPage]]). */
+    def summaryData(
+        request: jakarta.servlet.http.HttpServletRequest,
+        page: Int,
+        readPage: Int => java.util.List[PipelineStatusSummary],
+        pipelines: () => Seq[ai.datris.model.PipelineConfig]
+    ): java.util.List[PipelineStatusSummary] =
+        if (!ai.datris.auth.CapabilityCheck.isLimited(request)) readPage(page)
+        else {
+            val configs = Option(pipelines()).getOrElse(Nil).filter(_ != null)
+            val visible = PipelineAliases.shownRecordNames(PipelineAPIController.visiblePipelines(request, configs), configs)
+            PipelineStatusUtil.filledSummaryPage(page, s => s.pipeline != null && visible.contains(s.pipeline), readPage)
+        }
+
     /** GET /pipeline/status for a limited caller (a restricted user's
-      * session, or a catalog- / owner-scoped API key): summary rows of
-      * pipelines it may not read are dropped; a token query that touches any
-      * hidden pipeline is 404 (as if the token were unknown, for keys too:
-      * D2); tap names the caller cannot see are scrubbed from what remains
-      * (see [[restrictedViewWith]]). Everyone else: `data` unchanged, nothing
+      * session, or a catalog- / owner-scoped API key): summary rows and
+      * events of pipelines it may not read are dropped, so a token whose
+      * runs are all hidden answers exactly what a token with no rows answers
+      * (D2 (a)); a token spanning visible and hidden pipelines shows the
+      * visible runs, its rollup computed from them; tap names the caller
+      * cannot see are scrubbed from what remains (see
+      * [[restrictedViewWith]]). Everyone else: `data` unchanged, nothing
       * read. */
     def restrictedView(request: jakarta.servlet.http.HttpServletRequest, data: AnyRef): Either[ResponseEntity[String], AnyRef] = {
         val env = DatrisEnvironment.current
@@ -271,20 +316,39 @@ object PipelineStatusAPIController {
             if (rows eq page.records) page else page.copy(records = rows)
         }
 
-    /** Pure core of [[restrictedView]]. */
+    /** Pure core of [[restrictedView]]: summary rows, events and rollup
+      * jobs of a pipeline outside `visible` are dropped, so they read as
+      * missing (a token whose rows are all hidden reads as a token with no
+      * rows: an empty list, or the empty rollup). A rollup that loses a job
+      * is recomputed from the jobs kept ([[PipelineStatusUtil.rollupOf]]).
+      * `data` itself when nothing is dropped. Always Right. */
     def filterFor(visible: Set[String], data: AnyRef): Either[ResponseEntity[String], AnyRef] = {
         import scala.collection.JavaConverters._
-        def hidden(names: Seq[String]): Boolean = names.exists(n => n != null && !visible.contains(n))
-        val notFound = ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](ApiErrors.errorBody("Pipeline status not found"))
+        def hidden(name: String): Boolean = name != null && !visible.contains(name)
         data match {
             case r: PipelineStatusResponse =>
-                val events = Option(r.events).map(_.asScala.toSeq).getOrElse(Nil)
-                if (hidden(events.map(_.pipeline))) Left(notFound) else Right(r)
+                val events = Option(r.events).map(_.asScala.toList).getOrElse(Nil)
+                val jobs = Option(r.rollup).flatMap(ro => Option(ro.jobs)).map(_.asScala.toList).getOrElse(Nil)
+                val eventHidden = events.exists(e => e != null && hidden(e.pipeline))
+                val jobHidden = jobs.exists(j => j != null && hidden(j.pipeline))
+                if (!eventHidden && !jobHidden) Right(r)
+                else {
+                    val keptEvents = events.filterNot(e => e != null && hidden(e.pipeline))
+                    val keptJobs = jobs.filterNot(j => j != null && hidden(j.pipeline))
+                    val rollup = if (r.rollup == null) null else if (jobHidden) PipelineStatusUtil.rollupOf(keptJobs) else r.rollup
+                    Right(
+                        r.copy(
+                            rollup = rollup,
+                            events = if (r.events == null) null else new java.util.ArrayList[PipelineStatus](keptEvents.asJava)
+                        )
+                    )
+                }
             case l: java.util.List[_] =>
                 val items = l.asScala.toSeq
                 if (items.forall(_.isInstanceOf[PipelineStatusSummary]))
                     Right(items.collect { case s: PipelineStatusSummary if s.pipeline != null && visible.contains(s.pipeline) => s }.asJava)
-                else if (hidden(items.collect { case e: PipelineStatus => e.pipeline })) Left(notFound)
+                else if (items.exists { case e: PipelineStatus => hidden(e.pipeline); case _ => false })
+                    Right(new java.util.ArrayList[Any](items.filterNot { case e: PipelineStatus => hidden(e.pipeline); case _ => false }.asJava))
                 else Right(l)
             case other => Right(other)
         }
@@ -329,7 +393,14 @@ class PipelineStatusAPIController {
                         else
                             page.toInt
                     }
-                    PipelineStatusUtil.getPipelineStatusSummary(pipelinename, pageNbr)
+                    // A limited caller's page is filled with the rows it may
+                    // see, within a bound; everyone else reads the one page.
+                    PipelineStatusAPIController.summaryData(
+                        request,
+                        pageNbr,
+                        n => PipelineStatusUtil.getPipelineStatusSummary(pipelinename, n),
+                        () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+                    )
                 } else {
                     if (rollup) PipelineStatusUtil.getPipelineStatusWithRollup(pipelinetoken)
                     else PipelineStatusUtil.getPipelineStatus(pipelinetoken)
@@ -368,21 +439,18 @@ class PipelineStatusAPIController {
 
             val offsetOpt = Option(offset).map(_.trim).filter(_.nonEmpty).map(_.toLong)
             val limitOpt = Option(limit).map(_.trim).filter(_.nonEmpty).map(_.toInt)
-            val job = ScratchReader.resolve(pipelinetoken, publishertoken)
             // Limited callers (restricted users, catalog- or owner-scoped
-            // keys): a job of a pipeline they may not read reads exactly as
-            // an unknown token. The job's name is judged by the previous-name
-            // rule (PipelineAliases.recordShown). The configs are read only
-            // for them (the same decision resultHidden makes).
-            if (
-                ai.datris.auth.CapabilityCheck.isLimited(request) &&
-                PipelineStatusAPIController.resultHidden(
-                    request,
-                    job.pipeline,
-                    PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
-                )
+            // keys): jobs of pipelines they may not read are dropped before
+            // the job is picked, so a hidden run reads exactly as an unknown
+            // token. The job's name is judged by the previous-name rule
+            // (PipelineAliases.recordShown). The configs are read only for them.
+            val job = PipelineStatusAPIController.resultJob(
+                request,
+                pipelinetoken,
+                publishertoken,
+                ScratchReader.jobsOf(pipelinetoken, publishertoken),
+                () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
             )
-                throw PipelineStatusAPIController.unknownToken(pipelinetoken, publishertoken)
             val read = ScratchReader.read(ScratchLoader.settingsFromEnvironment(), job, offsetOpt, limitOpt)
             val page = PipelineStatusAPIController.scrubResultPage(
                 request,

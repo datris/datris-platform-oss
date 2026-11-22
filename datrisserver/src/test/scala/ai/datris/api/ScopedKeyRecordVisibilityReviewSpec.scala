@@ -549,7 +549,9 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             assert(status(g) == 200 && g.getBody == gson.toJson(incs(1).toPublicJson), name)
         }
         val src = source("datrisserver/src/main/scala/ai/datris/api/IncidentsAPIController.scala")
-        assert(methodBody(src, "def list(").contains("listedJson("))
+        // limited-caller-read-leaks (pinned edit, D3): the list route reads through listedFor,
+        // which lists through listedJson for a caller that is not limited (LimitedPagingSpec)
+        assert(methodBody(src, "def list(").contains("listedFor("))
         assert(methodBody(src, "def get(").contains("getResponse("))
         assert(methodBody(src, "def evidence(").contains("evidenceResponse("))
     }

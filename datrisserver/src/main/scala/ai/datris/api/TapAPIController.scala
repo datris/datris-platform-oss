@@ -97,8 +97,8 @@ object TapAPIController {
       * scope): one `readAll`, then only logs whose `tapName` names a stored
       * tap it may read ([[mayRead]]); a log with a null or missing
       * `tapName`, or naming a tap no longer stored, is hidden. Everyone
-      * else: `logs` itself, `readAll` not called. The route caps the rows it
-      * reads before this filter; the response carries no count. */
+      * else: `logs` itself, `readAll` not called. The response carries no
+      * count; the route reads through [[visibleTapLogsPage]]. */
     def visibleTapLogs(request: HttpServletRequest, logs: Seq[JsonElement], readAll: () => Seq[TapConfig]): Seq[JsonElement] =
         if (!CapabilityCheck.isLimited(request)) logs
         else {
@@ -109,6 +109,28 @@ object TapAPIController {
                     o.has("tapName") && o.get("tapName").isJsonPrimitive && names.contains(o.get("tapName").getAsString)
                 }
             }
+        }
+
+    /** Most run-log rows GET /tap/logs/all reads in one request. */
+    val MaxTapLogRows = 5000
+
+    /** GET /tap/logs/all: the newest `maxItems` run logs the caller sees,
+      * `read(n)` reading the `n` newest run-log values in the window. A
+      * caller that is not limited: `read(maxItems)` itself, `readAll` not
+      * called. A limited caller ([[CapabilityCheck.isLimited]]): one read of
+      * up to five times `maxItems` (at most [[MaxTapLogRows]]), then
+      * [[visibleTapLogs]], cut to `maxItems`; past that bound the list is
+      * short. */
+    def visibleTapLogsPage(
+        request: HttpServletRequest,
+        maxItems: Int,
+        read: Int => Seq[JsonElement],
+        readAll: () => Seq[TapConfig]
+    ): Seq[JsonElement] =
+        if (!CapabilityCheck.isLimited(request)) read(maxItems)
+        else {
+            val n = math.min(5L * math.max(0, maxItems), MaxTapLogRows.toLong).toInt
+            visibleTapLogs(request, read(math.max(n, maxItems)), readAll).take(math.max(0, maxItems))
         }
 
     /** Scope check on a loaded tap, mapped to a response: None when allowed,
@@ -854,38 +876,42 @@ class TapAPIController {
             val sinceMs: Long = if (since != null) since.longValue() else System.currentTimeMillis() - 30L * 86400000L
             val maxItems: Int = {
                 val raw = if (limit != null) limit.intValue() else 2000
-                if (raw <= 0) 2000 else math.min(raw, 5000)
+                if (raw <= 0) 2000 else math.min(raw, TapAPIController.MaxTapLogRows)
             }
             logger.info("API endpoint GET /tap/logs/all called since=" + sinceMs + " limit=" + maxItems)
-
-            val rows = NoSQLDbUtil.getItemsSinceAsJSON(
-                DatrisEnvironment.current.tapLogTableName,
-                "created_at",
-                sinceMs,
-                maxItems
-            )
 
             // Mongo rows have shape {"key": ..., "value": {...TapRunLog...}, "created_at": ...}.
             // Unwrap to just the embedded TapRunLog values so the response is a flat
             // array of run logs the UI can iterate. No pipeline-rollup enrichment
             // here — that's only needed by the per-tap detail view; this endpoint
             // exists to feed the Ops activity dashboard's tile/chart aggregation.
-            val parser = new JsonParser()
-            val values = rows.flatMap { json =>
-                try {
-                    val el = parser.parse(json)
-                    if (el.isJsonObject && el.getAsJsonObject.has("value")) Some(el.getAsJsonObject.get("value")) else None
-                } catch {
-                    case e: Exception =>
-                        // skip malformed row, don't fail the whole request
-                        logger.debug("Skipping malformed tap run log row", e)
-                        None
+            def read(n: Int): Seq[JsonElement] = {
+                val rows = NoSQLDbUtil.getItemsSinceAsJSON(
+                    DatrisEnvironment.current.tapLogTableName,
+                    "created_at",
+                    sinceMs,
+                    n
+                )
+                val parser = new JsonParser()
+                rows.flatMap { json =>
+                    try {
+                        val el = parser.parse(json)
+                        if (el.isJsonObject && el.getAsJsonObject.has("value")) Some(el.getAsJsonObject.get("value")) else None
+                    } catch {
+                        case e: Exception =>
+                            // skip malformed row, don't fail the whole request
+                            logger.debug("Skipping malformed tap run log row", e)
+                            None
+                    }
                 }
             }
             // A limited caller (restricted user, catalog- or owner-scoped key)
-            // sees run logs of the taps it may read only.
+            // sees run logs of the taps it may read only, read further back
+            // (bounded) so its list is filled.
             val out = new com.google.gson.JsonArray()
-            TapAPIController.visibleTapLogs(request, values, () => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)).foreach(out.add)
+            TapAPIController
+                .visibleTapLogsPage(request, maxItems, read, () => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName))
+                .foreach(out.add)
             new ResponseEntity[String](out.toString, HttpStatus.OK)
         } catch {
             case e: Exception =>

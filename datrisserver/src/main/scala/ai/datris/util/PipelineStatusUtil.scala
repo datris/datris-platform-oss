@@ -50,6 +50,47 @@ object PipelineStatusUtil {
         }).sortWith(_.createdAt > _.createdAt).asJava
     }
 
+    /** Rows per store page of the summary table ([[getPipelineStatusSummary]]). */
+    val SummaryPageSize = 20
+
+    /** Store pages a filled page may read beyond the page asked for
+      * ([[filledSummaryPage]]): page 1 reads at most 10. */
+    val SummaryOverReadPages = 9
+
+    /** Page `page` (1-based, [[SummaryPageSize]] rows) of the summary rows
+      * `keep` accepts, newest first, for a caller that may see only some
+      * rows: store pages are read in order from `readPage(n)` (store page `n`,
+      * 1-based, [[SummaryPageSize]] rows, newest first; a short or empty page
+      * is the end of the store) until the kept rows reach the end of the page
+      * asked for, the store ends, or `page` + [[SummaryOverReadPages]] store
+      * pages have been read. Past that bound the page is short (possibly
+      * empty), never an error. A caller that keeps every row gets exactly the
+      * rows of store page `page`. A `page` below 1 reads `readPage(page)`
+      * once, filtered. */
+    def filledSummaryPage(
+        page: Int,
+        keep: PipelineStatusSummary => Boolean,
+        readPage: Int => java.util.List[PipelineStatusSummary]
+    ): java.util.List[PipelineStatusSummary] = {
+        if (page < 1) {
+            val one = Option(readPage(page)).map(_.asScala.toList).getOrElse(Nil)
+            return new java.util.ArrayList[PipelineStatusSummary](one.filter(s => s != null && keep(s)).asJava)
+        }
+        val from = (page.toLong - 1L) * SummaryPageSize
+        val until = from + SummaryPageSize
+        val maxReads = page.toLong + SummaryOverReadPages
+        val kept = scala.collection.mutable.ArrayBuffer[PipelineStatusSummary]()
+        var n = 1
+        var ended = false
+        while (!ended && kept.size < until && n <= maxReads) {
+            val rows = Option(readPage(n)).map(_.asScala.toList).getOrElse(Nil)
+            rows.foreach(s => if (s != null && keep(s)) kept += s)
+            if (rows.size < SummaryPageSize) ended = true
+            n += 1
+        }
+        new java.util.ArrayList[PipelineStatusSummary](kept.slice(from.toInt, until.toInt).asJava)
+    }
+
     private def deriveStatusFromEvents(pipelineToken: String): Option[(String, Long)] = {
         if (pipelineToken == null || pipelineToken.isEmpty)
             return None
@@ -188,6 +229,13 @@ object PipelineStatusUtil {
                 .map { case (_, rows) => classifyJob(rows) }
                 .sortBy(_.startedAt)
 
+        PipelineStatusResponse(rollup = rollupOf(jobs), events = events)
+    }
+
+    /** The aggregate rollup of `jobs` (each already classified): all done
+      * when every job is terminal; status error, warning, success or
+      * processing as the jobs decide; no jobs reads not done, processing. */
+    def rollupOf(jobs: List[PipelineJobRollup]): PipelineStatusRollup = {
         val terminalStates = Set("success", "warning", "error", "timed_out")
         val allDone = jobs.nonEmpty && jobs.forall(j => terminalStates.contains(j.status))
 
@@ -198,10 +246,7 @@ object PipelineStatusUtil {
             else if (jobs.forall(_.status == "success")) "success"
             else "processing"
 
-        PipelineStatusResponse(
-            rollup = PipelineStatusRollup(allDone = allDone, status = aggStatus, jobs = jobs.asJava),
-            events = events
-        )
+        PipelineStatusRollup(allDone = allDone, status = aggStatus, jobs = jobs.asJava)
     }
 
     def getPipelineStatusByPublisherWithRollup(publisherToken: String): PipelineStatusResponse =
