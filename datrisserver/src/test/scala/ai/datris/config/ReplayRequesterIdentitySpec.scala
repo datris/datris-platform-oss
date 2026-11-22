@@ -212,11 +212,10 @@ class ReplayRequesterIdentitySpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(deleteStatus(o, fin) == 200)
     }
 
-    test("a restricted approver still limits the replay: it runs with the approver's own identity, the requester's identity is a second limit beside it") {
+    test("a restricted approver's approval runs with the approver's own identity, as before, and is held to the approver's catalogs") {
         val o = replay(deleteAction("pa_bob", keyActor(oldAgent), fin.name), approver = "bob")
         assertRuns(o, "replay")
         assert(o.identity.contains(TenantInterceptor.onBehalfOfIdentity(uiLegacy, bob)), String.valueOf(o.identity))
-        assert(TenantInterceptor.replaySecondLimit(o.r).contains(oldAgent), String.valueOf(TenantInterceptor.replaySecondLimit(o.r)))
         assert(deleteStatus(o, fin) != 200)
     }
 

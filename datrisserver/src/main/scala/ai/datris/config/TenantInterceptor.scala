@@ -72,7 +72,7 @@ object TenantInterceptor {
     /** The approver's identity for an approval replay, used where the
       * replay does not run with its requester's (API keys off, the
       * platform's own key as the requester, or a restricted approver:
-      * [[replayAccess]]): with no approver named (user sign-in off)
+      * [[replayIdentity]]): with no approver named (user sign-in off)
       * the carrier itself; an admin or an approver who is not restricted
       * the carrier's bundle relabelled `session:<approver>`; a restricted
       * approver their own narrowed bundle. */
@@ -127,51 +127,7 @@ object TenantInterceptor {
             case _ => false
         }
 
-    /** True when the verified replay of `pa` runs with its requester's own
-      * identity ([[replayIdentity]]): API keys on, and the requester is a
-      * chat or a key other than the platform's own `ui` key. */
-    private def runsAsRequester(pa: PendingAction, useApiKeys: Boolean): Boolean = {
-        val actor = pa.actor
-        val chat = actor.actorType == "assistant" || actor.actorType == "user"
-        useApiKeys && (chat || actor.keyLabel.getOrElse(actor.label) != AuditActor.UiKeyLabel)
-    }
-
-    /** True when the verified replay of `pa` is approved by a restricted
-      * user (limited to some catalogs) and would otherwise run as its
-      * requester ([[runsAsRequester]]). Such a replay runs with the
-      * approver's own identity ([[approverIdentity]]), so every check a
-      * restricted session meets limits it, and the requester's identity is
-      * the second limit beside it ([[replayAccess]]). */
-    private[config] def approverLimitsReplay(pa: PendingAction, approver: Option[User], useApiKeys: Boolean): Boolean =
-        runsAsRequester(pa, useApiKeys) && approver.exists(_.isRestricted)
-
-    /** The identity the verified replay of `pa` runs with and the second
-      * limit beside it (None: no second limit), or the refusal of
-      * [[replayIdentity]] (checked first, so a requester that is gone or
-      * cannot be checked refuses before anything runs).
-      *   - a restricted approver ([[approverLimitsReplay]]): the identity is
-      *     the approver's own ([[approverIdentity]]: their narrowed session
-      *     bundle, which also owns what the replay creates); the second
-      *     limit is the requester's identity ([[replayIdentity]], unchanged).
-      *     The action runs only where both allow it: the route gate
-      *     (CapabilityInterceptor) and the shared per-item checks
-      *     (`CapabilityCheck.assertScope`, `assertVisible`, `grants`)
-      *     consult the second limit, each with its ordinary refusal;
-      *   - every other case: [[replayIdentity]] and no second limit. */
-    private[config] def replayAccess(
-        pa: PendingAction,
-        carrier: ResolvedKey,
-        approver: Option[User],
-        useApiKeys: Boolean,
-        lookupKey: String => Option[ResolvedKey],
-        lookupUser: String => Option[User]
-    ): Either[(Int, String, String), (ResolvedKey, Option[ResolvedKey])] =
-        replayIdentity(pa, carrier, approver, useApiKeys, lookupKey, lookupUser).map { requester =>
-            if (approverLimitsReplay(pa, approver, useApiKeys)) (approverIdentity(carrier, approver), Some(requester))
-            else (requester, None)
-        }
-
-    /** The requester's identity for the verified replay of `pa`: its
+    /** The identity the verified replay of `pa` runs with: the requester's
       * current access, never more.
       *   - API keys off: [[approverIdentity]], as before (the API is open);
       *   - a chat (actor `assistant`, or a `user`): that user's on-behalf-of
@@ -184,12 +140,13 @@ object TenantInterceptor {
       *     revoked or a different key ([[otherKey]]);
       *   - a store that cannot be read refuses 503: nothing runs.
       * `approver` is None when no person is named (user sign-in off). For a
-      * chat or a key the result is the requester's identity unchanged, never
-      * folded with the approver's: with an approver who is not restricted
-      * the replay runs with it, so the rules for keys apply exactly as on a
-      * direct call by that key and what the replay creates is the
-      * requester's; with a restricted approver it is the second limit
-      * ([[replayAccess]]). */
+      * chat or a key approved by a restricted user (limited to some
+      * catalogs), the requester is checked as above and the replay then runs
+      * with that approver's own identity ([[approverIdentity]]: their
+      * narrowed session bundle, which owns what the replay creates), as
+      * before. Otherwise the result is the requester's identity unchanged,
+      * so the rules for keys apply exactly as on a direct call by that key
+      * and what the replay creates is the requester's. */
     private[config] def replayIdentity(
         pa: PendingAction,
         carrier: ResolvedKey,
@@ -198,29 +155,33 @@ object TenantInterceptor {
         lookupKey: String => Option[ResolvedKey],
         lookupUser: String => Option[User]
     ): Either[(Int, String, String), ResolvedKey] = {
-        if (!runsAsRequester(pa, useApiKeys)) return Right(approverIdentity(carrier, approver))
+        if (!useApiKeys) return Right(approverIdentity(carrier, approver))
         val actor = pa.actor
         val chat = actor.actorType == "assistant" || actor.actorType == "user"
         val label = actor.keyLabel.getOrElse(actor.label)
-        try
-            if (chat)
-                actor.username.flatMap(lookupUser) match {
-                    case Some(u) => Right(onBehalfOfIdentity(carrier, u))
-                    case None => Left((HttpServletResponse.SC_UNAUTHORIZED, RequesterUserGoneBody, "approval requester user no longer exists"))
-                }
-            else
-                lookupKey(label) match {
-                    case Some(rk) if !otherKey(actor.keyId, rk.keyId) => Right(rk)
-                    case _ => Left((HttpServletResponse.SC_UNAUTHORIZED, RequesterKeyInvalidBody, "approval requester key is no longer valid"))
-                }
-        catch {
-            case e: Exception =>
-                Left((
-                    HttpServletResponse.SC_SERVICE_UNAVAILABLE,
-                    RequesterUncheckedBody,
-                    "approval requester could not be checked: " + LogSafe.text(String.valueOf(e.getMessage)).take(200)
-                ))
-        }
+        if (!chat && label == AuditActor.UiKeyLabel) return Right(approverIdentity(carrier, approver))
+        val requester: Either[(Int, String, String), ResolvedKey] =
+            try
+                if (chat)
+                    actor.username.flatMap(lookupUser) match {
+                        case Some(u) => Right(onBehalfOfIdentity(carrier, u))
+                        case None => Left((HttpServletResponse.SC_UNAUTHORIZED, RequesterUserGoneBody, "approval requester user no longer exists"))
+                    }
+                else
+                    lookupKey(label) match {
+                        case Some(rk) if !otherKey(actor.keyId, rk.keyId) => Right(rk)
+                        case _ => Left((HttpServletResponse.SC_UNAUTHORIZED, RequesterKeyInvalidBody, "approval requester key is no longer valid"))
+                    }
+            catch {
+                case e: Exception =>
+                    Left((
+                        HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                        RequesterUncheckedBody,
+                        "approval requester could not be checked: " + LogSafe.text(String.valueOf(e.getMessage)).take(200)
+                    ))
+            }
+        if (approver.exists(_.isRestricted)) requester.map(_ => approverIdentity(carrier, approver))
+        else requester
     }
 
     /** Request attribute TenantInterceptor sets on a request it verified as
@@ -232,25 +193,12 @@ object TenantInterceptor {
     val ReplayVerifiedAttr: String = "ai.datris.policy.replayVerified"
 
     /** The approval a request was verified as, the key that presented it,
-      * the person who approved it (None when user sign-in is off), the
-      * requester's label as the approval records it (`originalActor`), and
-      * the second limit the replay is also held to ([[replayAccess]]: the
-      * requester's identity when a restricted approver's identity runs it;
-      * None: no second limit). */
-    final case class VerifiedReplay(
-        approvalId: String,
-        carrier: ResolvedKey,
-        approver: Option[User],
-        originalActor: Option[String] = None,
-        secondLimit: Option[ResolvedKey] = None
-    )
+      * the person who approved it (None when user sign-in is off), and the
+      * requester's label as the approval records it (`originalActor`). */
+    final case class VerifiedReplay(approvalId: String, carrier: ResolvedKey, approver: Option[User], originalActor: Option[String] = None)
 
     def verifiedReplay(request: HttpServletRequest): Option[VerifiedReplay] =
         if (request == null) None else Option(request.getAttribute(ReplayVerifiedAttr)).collect { case v: VerifiedReplay => v }
-
-    /** The second limit on a verified replay ([[VerifiedReplay.secondLimit]]),
-      * read from the request only: None on every other request. */
-    def replaySecondLimit(request: HttpServletRequest): Option[ResolvedKey] = verifiedReplay(request).flatMap(_.secondLimit)
 
     /** Must PolicyInterceptor find a [[VerifiedReplay]] before it uses an
       * approval token on this request? Yes for a request the platform's own
@@ -390,9 +338,8 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
       *   - the replay of an approved action (PolicyReplay: the header names
       *     the approver) that [[ReplayAuthority]] verifies runs with the
       *     requester's current access ([[TenantInterceptor.replayIdentity]]);
-      *     approved by a restricted user it runs with that approver's own
-      *     identity, with the requester's as a second limit beside it
-      *     ([[TenantInterceptor.replayAccess]]); a requester that no longer
+      *     approved by a restricted user it runs, once the requester is
+      *     checked, with that approver's own identity; a requester that no longer
       *     exists is refused 401 and an unreadable key, user or approval
       *     store 503 before anything runs or the token is used. The same
       *     holds for a replay that names no approver (user sign-in off, or
@@ -407,7 +354,7 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
       * The audit log attributes the action to the person (for a replay, the
       * approver, with the requester as `originalActor`); owner tagging uses
       * the identity's label (for a replay, the requester's; the restricted
-      * approver's when that approver's identity runs it).
+      * approver's when that approver approved it).
       *
       * Any other key sending the header is ignored — and the attempt is
       * itself recorded as a security event. */
@@ -500,9 +447,9 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
                     names
                 ))
             case ReplayAuthority.Replay(pa) =>
-                val decided = TenantInterceptor.replayAccess(pa, resolved, approver, env.useApiKeys, APIKeyValidator.resolveByLabel, UserStore.find)
+                val decided = TenantInterceptor.replayIdentity(pa, resolved, approver, env.useApiKeys, APIKeyValidator.resolveByLabel, UserStore.find)
                 Some(decided match {
-                    case Right((rk, secondLimit)) =>
+                    case Right(rk) =>
                         approver.foreach { u =>
                             request.setAttribute(AuditActor.OnBehalfOfAttr, u)
                             request.setAttribute(AuditActor.CarrierKeyLabelAttr, resolved.label)
@@ -510,13 +457,7 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
                         }
                         request.setAttribute(
                             TenantInterceptor.ReplayVerifiedAttr,
-                            TenantInterceptor.VerifiedReplay(
-                                pa.id,
-                                resolved,
-                                approver,
-                                originalActor = Some(pa.actor.label),
-                                secondLimit = secondLimit
-                            )
+                            TenantInterceptor.VerifiedReplay(pa.id, resolved, approver, originalActor = Some(pa.actor.label))
                         )
                         TenantInterceptor.Act(rk)
                     case Left((status, body, reason)) =>
