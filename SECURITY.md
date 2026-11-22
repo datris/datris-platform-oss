@@ -56,7 +56,9 @@ laptop, wrong for anything shared. Turn both on for production.
 - **Sessions**: successful login issues an opaque, `SecureRandom`-generated token
   stored in a `datris-session` cookie (`HttpOnly`, `SameSite=Strict`, 8-hour TTL).
   Sessions live in MongoDB with a TTL index that auto-purges expired sessions; the
-  database holds only a SHA-256 hash of each token, never the cookie value. The
+  database stores a SHA-256 hash of each token, not the cookie value (a session
+  created by an earlier version is converted to that form when it is next used,
+  and one never used again expires on its usual schedule). The
   cookie's `Secure` flag is off by default because TLS is terminated at the
   reverse proxy; set `SESSION_COOKIE_SECURE=true` in the `datris` service
   environment when that proxy serves HTTPS, and keep it in front in production.

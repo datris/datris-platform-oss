@@ -13,6 +13,18 @@ import java.security.SecureRandom
 import java.time.Instant
 import java.util.Base64
 
+/** The session writes that carry a BSON Date field (for the TTL index) and
+  * the session indexes: what [[SessionStore]] needs beyond [[NoSQLDbUtility]].
+  * Implemented by [[MongoDBUtil]]; a spec fake implements it to run the same
+  * branch. `replaceWithDateField` replaces the one matching document and
+  * never inserts; it is true when a document matched. */
+trait SessionDateFieldWrites {
+    def ensureTtlIndex(tableName: String, fieldName: String, expireAfterSeconds: Long): Unit
+    def ensureUniqueIndexWhereExists(tableName: String, fieldName: String): Unit
+    def insertWithDateField(tableName: String, json: String, dateFieldName: String, dateValueEpochMillis: Long): Unit
+    def replaceWithDateField(tableName: String, keyName: String, key: String, json: String, dateFieldName: String, dateValueEpochMillis: Long): Boolean
+}
+
 /** UI browser sessions. Documents in {env}-user-session, keyed on
   * `tokenHash`: the hex SHA-256 of the browser's `datris-session` cookie
   * value. The cookie value is returned once by [[create]] and never stored;
@@ -48,14 +60,14 @@ object SessionStore {
       * unique index on `tokenHash` covers only documents that have the field. */
     def ensureIndex(): Unit = {
         db match {
-            case m: MongoDBUtil =>
+            case m: SessionDateFieldWrites =>
                 m.ensureTtlIndex(tableName, DateField, 0L)
                 // sign-in works without it (lookups are equality reads either
                 // way), so a failure here must not stop the startup step after it
                 try m.ensureUniqueIndexWhereExists(tableName, KeyField)
                 catch {
                     case e: Exception =>
-                        logger.warn("Could not create the session tokenHash index (continuing): " + e.getClass.getSimpleName)
+                        logger.warn("Could not create the session tokenHash index (continuing): " + e.getClass.getSimpleName + mongoErrorCode(e))
                 }
             case _ => // non-Mongo backend: TTL handled in code on lookup
         }
@@ -74,7 +86,7 @@ object SessionStore {
             createdAt = now.toString
         )
         db match {
-            case m: MongoDBUtil =>
+            case m: SessionDateFieldWrites =>
                 m.insertWithDateField(tableName, gson.toJson(session), DateField, expires.toEpochMilli)
             case other =>
                 other.insertJSON(tableName, gson.toJson(session))
@@ -104,7 +116,7 @@ object SessionStore {
             val expires = now.plusSeconds(SessionTtlSeconds)
             val renewed = current.copy(expiresAt = expires.toString)
             db match {
-                case m: MongoDBUtil =>
+                case m: SessionDateFieldWrites =>
                     m.replaceWithDateField(tableName, KeyField, renewed.tokenHash, gson.toJson(renewed), DateField, expires.toEpochMilli)
                 case other =>
                     other.upsertJSON(tableName, java.util.Collections.singletonList(KeyField), gson.toJson(renewed))
@@ -114,8 +126,19 @@ object SessionStore {
     }
 
     def delete(token: String): Unit = {
-        if (token != null && token.nonEmpty)
+        if (token != null && token.nonEmpty) {
             db.deleteItemJSON(tableName, KeyField, hash(token))
+            deleteStoredBeforeHashing(token)
+        }
+    }
+
+    /** The Mongo error code (and code name, when the server sent one) of a
+      * failure, for the log; never the driver's message text. */
+    private def mongoErrorCode(e: Exception): String = e match {
+        case c: com.mongodb.MongoCommandException =>
+            " (code " + c.getErrorCode + Option(c.getErrorCodeName).filter(_.nonEmpty).map(" " + _).getOrElse("") + ")"
+        case m: com.mongodb.MongoException => " (code " + m.getCode + ")"
+        case _ => ""
     }
 
     private def readByHash(h: String): Option[UserSession] =
@@ -129,8 +152,9 @@ object SessionStore {
       * hashed holds the token itself in a `token` field. Found by the token,
       * a live one is rewritten in place in the hashed form (same document,
       * `tokenHash` added, `token` removed, user, creation time and expiry
-      * kept), so the browser stays signed in. Removing this method (and its
-      * one call in [[find]]) ends the transition. */
+      * kept), so the browser stays signed in. Removing this method and
+      * [[deleteStoredBeforeHashing]] (and their calls in [[find]] and
+      * [[delete]]) ends the transition. */
     private def findStoredBeforeHashing(token: String, h: String): Option[UserSession] = {
         val LegacyField = "token"
         val legacy = Option(db.getItemJSON(tableName, LegacyField, token, null).orNull)
@@ -138,7 +162,7 @@ object SessionStore {
         legacy.filter(live).map { s =>
             try {
                 db match {
-                    case m: MongoDBUtil =>
+                    case m: SessionDateFieldWrites =>
                         // replace by the legacy field: exactly one document results; a
                         // concurrent rewrite of the same session matches nothing here
                         m.replaceWithDateField(tableName, LegacyField, token, gson.toJson(s), DateField, Instant.parse(s.expiresAt).toEpochMilli)
@@ -155,6 +179,11 @@ object SessionStore {
             s
         }
     }
+
+    /** Transition delete, for one release: signing out also removes a
+      * session still stored in the form from before tokens were hashed. */
+    private def deleteStoredBeforeHashing(token: String): Unit =
+        db.deleteItemJSON(tableName, "token", token)
 
     private def newToken(): String = {
         val bytes = new Array[Byte](32)

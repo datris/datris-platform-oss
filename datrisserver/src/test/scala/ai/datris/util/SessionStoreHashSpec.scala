@@ -69,7 +69,7 @@ class SessionStoreHashSpec extends AnyFunSuite with BeforeAndAfterEach {
     private def str(o: JsonObject, field: String): Option[String] =
         Option(o.get(field)).filter(_.isJsonPrimitive).map(_.getAsString)
 
-    /** A session as the previous server version stored it: the token in the clear. */
+    /** A session in the stored form from before the change: a `token` field and no tokenHash. */
     private def putLegacy(token: String, username: String, expiresAt: Instant = Instant.now().plusSeconds(3600)): Unit = {
         val o = new JsonObject
         o.addProperty("token", token)
@@ -241,6 +241,14 @@ class SessionStoreHashSpec extends AnyFunSuite with BeforeAndAfterEach {
         putLegacy(raw, "carol", Instant.now().minusSeconds(1))
         assert(SessionStore.find(raw).isEmpty)
         assert(SessionStore.renew(raw).isEmpty)
+    }
+
+    test("signing out removes a session stored before the change, with no find first") {
+        val raw = "legacy-token-value-logout-only-0123456789ab"
+        putLegacy(raw, "carol")
+        SessionStore.delete(raw)
+        assert(db.docs.isEmpty, s"left behind: ${db.docs}")
+        assert(SessionStore.find(raw).isEmpty)
     }
 
     test("a legacy session is not found by the hash of some other value") {

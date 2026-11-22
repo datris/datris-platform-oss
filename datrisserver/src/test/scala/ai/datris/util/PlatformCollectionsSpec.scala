@@ -92,7 +92,7 @@ class PlatformCollectionsSpec extends AnyFunSuite {
     }
 
     test("no store call names a collection with a string literal") {
-        val literal = """(?:\.collection|ensureTtlIndex|insertWithDateField|upsertWithDateField)\(\s*"""".r
+        val literal = """(?:\.collection|ensureTtlIndex|insertWithDateField|replaceWithDateField|ensureUniqueIndexWhereExists)\(\s*"""".r
         val offenders = for {
             p <- sources
             text = read(p)

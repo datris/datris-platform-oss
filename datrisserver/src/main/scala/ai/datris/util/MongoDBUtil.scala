@@ -13,7 +13,7 @@ import org.bson.json.{JsonMode, JsonWriterSettings}
 
 import scala.collection.JavaConverters._
 
-class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
+class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility with SessionDateFieldWrites {
 
     private val jsonSettings = JsonWriterSettings.builder().outputMode(JsonMode.RELAXED).build()
 
