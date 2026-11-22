@@ -64,10 +64,10 @@ object CapabilityCheck {
       * and noted on the request for the audit log; the exception's message
       * carries only the key's side ([[scopeDenialMessage]]).
       *
-      * On the verified replay of an approved action with a restricted
-      * approver, the approver's bundle ([[approverCeiling]]) must grant it
-      * too; it is checked after the request's identity, with the same
-      * wording naming that bundle.
+      * On the verified replay of an approved action with a second limit
+      * ([[replaySecondLimit]]: the requester's identity beside a restricted
+      * approver's), that limit must grant it too; it is checked after the
+      * request's identity, with the same wording naming that identity.
       *
       * Returns normally on success, so callers can chain:
       *   CapabilityCheck.assertScope(request, "secret", "write", Map("_type" -> existingType))
@@ -77,10 +77,12 @@ object CapabilityCheck {
         resource: String,
         action: String,
         context: Map[String, String]
-    ): Unit = {
-        readResolvedKey(request).foreach(denyUnlessGranted(request, _, resource, action, context))
-        approverCeiling(request).foreach(denyUnlessGranted(request, _, resource, action, context))
-    }
+    ): Unit = checkedIdentities(request).foreach(denyUnlessGranted(request, _, resource, action, context))
+
+    /** The identities a check applies to: the request's identity, then the
+      * second limit of a verified replay ([[replaySecondLimit]]), if any. */
+    private def checkedIdentities(request: HttpServletRequest): Seq[ResolvedKey] =
+        readResolvedKey(request).toSeq ++ replaySecondLimit(request).toSeq
 
     /** [[assertScope]] for one identity. */
     private def denyUnlessGranted(request: HttpServletRequest, rk: ResolvedKey, resource: String, action: String, context: Map[String, String]): Unit =
@@ -91,10 +93,12 @@ object CapabilityCheck {
             throw new CapabilityDeniedException(scopeDenialMessage(rk, resource, action), detail)
         }
 
-    /** The restricted approver's bundle a verified replay is also held to
-      * (`TenantInterceptor.approverCeiling`); None on every other request. */
-    def approverCeiling(request: HttpServletRequest): Option[ResolvedKey] =
-        if (request == null) None else TenantInterceptor.approverCeiling(request)
+    /** The second limit a verified replay is also held to
+      * (`TenantInterceptor.replaySecondLimit`: the requester's identity when
+      * a restricted approver's identity runs the replay); None on every
+      * other request. */
+    def replaySecondLimit(request: HttpServletRequest): Option[ResolvedKey] =
+        if (request == null) None else TenantInterceptor.replaySecondLimit(request)
 
     /** The `collection=` check on `search:vector` and `document:upload`
       * (plans/stories/api-key-inert-scopes.md, Fix 2). Each entry of
@@ -108,20 +112,22 @@ object CapabilityCheck {
       * passed only through an inert capability under
       * `DATRIS_KEY_INERT_SCOPES=allow`, or under
       * `CAPABILITY_ENFORCEMENT=log-only` as would-deny, and both keep their
-      * v1.60.0 answer. No-op for no identity and legacy keys. */
+      * v1.60.0 answer. No-op for no identity and legacy keys. Decided for
+      * the request's identity and then, the same way, for a verified
+      * replay's second limit ([[replaySecondLimit]]). */
     def assertCollectionScope(
         request: HttpServletRequest,
         resource: String,
         action: String,
         collections: Seq[Option[String]]
     ): Unit =
-        readResolvedKey(request).foreach { rk =>
+        checkedIdentities(request).foreach { rk =>
             if (!rk.isLegacyFullAccess && rk.capabilities.exists(_.matchesResourceAction(resource, action))) {
-                if (collections.isEmpty) assertScope(request, resource, action, Map.empty)
+                if (collections.isEmpty) denyUnlessGranted(request, rk, resource, action, Map.empty)
                 else
                     collections.foreach {
-                        case Some(c) => assertScope(request, resource, action, Map("collection" -> c))
-                        case None => assertScope(request, resource, action, Map.empty)
+                        case Some(c) => denyUnlessGranted(request, rk, resource, action, Map("collection" -> c))
+                        case None => denyUnlessGranted(request, rk, resource, action, Map.empty)
                     }
             }
         }
@@ -152,25 +158,21 @@ object CapabilityCheck {
       * instead, so the controller answers 404 as if the resource did not
       * exist. API keys keep the 403 (`CapabilityDeniedException`). Routes
       * that must not refuse a key holding the action nowhere (the route gate
-      * decided) use [[assertKeyScope]] for the key side instead. A
-      * restricted approver's bundle on a verified replay
-      * ([[approverCeiling]]) is a restricted session's: checked after the
-      * request's identity, it answers [[ResourceHiddenException]]. */
+      * decided) use [[assertKeyScope]] for the key side instead. A verified
+      * replay's second limit ([[replaySecondLimit]]) is checked the same
+      * way after the request's identity, with its own ordinary refusal
+      * (404 for a restricted user's session, the 403 for a key). */
     def assertVisible(
         request: HttpServletRequest,
         resource: String,
         action: String,
         context: Map[String, String]
-    ): Unit = {
-        readResolvedKey(request).foreach { rk =>
+    ): Unit =
+        checkedIdentities(request).foreach { rk =>
             if (rk.restrictedSession && !rk.grants(resource, action, context))
                 throw new ResourceHiddenException("not found")
             denyUnlessGranted(request, rk, resource, action, context)
         }
-        approverCeiling(request).foreach { c =>
-            if (!c.grants(resource, action, context)) throw new ResourceHiddenException("not found")
-        }
-    }
 
     /** True when the request runs as a restricted user's session. */
     def isRestrictedSession(request: HttpServletRequest): Boolean =
@@ -245,8 +247,8 @@ object CapabilityCheck {
     /** Same as assertScope but returns a boolean instead of throwing. Used
       * by list endpoints to filter result sets, where "denied" means
       * "exclude from the list" rather than "fail the whole request". A
-      * restricted approver's bundle on a verified replay
-      * ([[approverCeiling]]) must grant it too. */
+      * verified replay's second limit ([[replaySecondLimit]]) must grant it
+      * too. */
     def grants(
         request: HttpServletRequest,
         resource: String,
@@ -254,7 +256,7 @@ object CapabilityCheck {
         context: Map[String, String]
     ): Boolean = {
         readResolvedKey(request) match {
-            case Some(rk) => rk.grants(resource, action, context) && approverCeiling(request).forall(_.grants(resource, action, context))
+            case Some(rk) => rk.grants(resource, action, context) && replaySecondLimit(request).forall(_.grants(resource, action, context))
             case None => true
         }
     }

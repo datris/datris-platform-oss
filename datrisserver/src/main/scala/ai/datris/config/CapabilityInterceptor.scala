@@ -298,13 +298,13 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         true
 
                     case Some(rk) =>
-                        // The verified replay of an approved action runs with
-                        // its requester's identity and, for a restricted
-                        // approver, is also held to the approver's own
-                        // bundle (TenantInterceptor.replayCeiling): both must
-                        // pass, the requester's first.
+                        // The verified replay of an approved action that a
+                        // restricted user approved runs with the approver's
+                        // identity and is also held to its requester's
+                        // (TenantInterceptor.replayAccess): both must pass,
+                        // the request's identity first.
                         checkIdentity(request, response, rk, resource, action, method, path, logMethod, logPath) &&
-                        TenantInterceptor.approverCeiling(request).forall(c =>
+                        TenantInterceptor.replaySecondLimit(request).forall(c =>
                             checkIdentity(request, response, c, resource, action, method, path, logMethod, logPath)
                         )
                 }
@@ -314,7 +314,8 @@ class CapabilityInterceptor extends HandlerInterceptor {
     /** The route gate for one identity `rk` holding (resource, action):
       * true when it passes, else the denial is written and false. Applied to
       * the request's identity and, on the verified replay of an approved
-      * action, to the restricted approver's bundle beside it. */
+      * action with a second limit, to that limit (the requester's identity
+      * beside a restricted approver's). */
     private def checkIdentity(
         request: HttpServletRequest,
         response: HttpServletResponse,

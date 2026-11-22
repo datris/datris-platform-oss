@@ -27,22 +27,28 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import scala.collection.JavaConverters._
 
 /** Story: an approved agent action runs with the requester's access
-  * (plans/stories/approval-replay-requester-scope.md), owner decision D1 (a):
-  * the replay runs with the requester's own identity, never more than the
-  * requester has, and a restricted approver (a signed-in user limited to
-  * some catalogs) cannot approve beyond their own grants. The approver's
-  * bundle is a second limit beside the requester's identity
-  * (`TenantInterceptor.replayCeiling`), consulted at the route gate and by
-  * the shared per-item checks; it is never folded into the identity, so the
-  * rules for keys apply to a key requester exactly as on a direct call.
+  * (plans/stories/approval-replay-requester-scope.md), owner decision D1 (a),
+  * for an approver who is a restricted user (limited to some catalogs). Such
+  * a replay runs with the approver's own identity, so every check a
+  * restricted session meets limits it; the requester's own identity (the
+  * key, or the chat user's on-behalf-of identity, unchanged) is a second
+  * limit beside it (`TenantInterceptor.replayAccess`), consulted at the
+  * route gate and by the shared per-item checks (`CapabilityCheck.assertScope`,
+  * `assertVisible`, `grants`), each with the requester's ordinary refusal.
+  * An approver who is not restricted adds no limit: the replay runs with the
+  * requester's identity (ApprovalReplayRequesterScopeSpec).
   *
   * End to end as in ApprovalReplayRequesterScopeSpec:
   * `ApprovalsAPIController.approve` with the approval in
   * [[FakePendingActionCollection]], and `PolicyReplay.execute` sending the
   * replay to a loopback stand-in that runs the real `TenantInterceptor`,
   * `CapabilityInterceptor`, `PolicyInterceptor`, `RoleEnforcementInterceptor`
-  * and `AuditInterceptor` with API keys on, then the real DELETE /pipeline
-  * check (`PipelineAPIController.deleteRefusal`). */
+  * and `AuditInterceptor` with API keys on, then the real controller checks:
+  * DELETE /pipeline (`PipelineAPIController.deleteRefusal`) and, through
+  * [[check]], the catalog rules of a save or move
+  * (`PipelineAPIController.catalogForSave`), a catalog-level operation
+  * (`RestrictedCatalogRules.catalogRefusal`) and a named-pipeline action
+  * (`PipelineAPIController.refusalFor`). */
 class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     // ------------------------------------------------------------ people and keys
@@ -81,7 +87,15 @@ class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterE
     private val deleted = new ConcurrentLinkedQueue[String]()
     private val handled = new ConcurrentLinkedQueue[String]()
     @volatile private var lastIdentity: Option[ResolvedKey] = None
-    @volatile private var lastCeiling: Option[ResolvedKey] = None
+    @volatile private var lastSecondLimit: Option[ResolvedKey] = None
+    @volatile private var lastOwnerLabel: Option[String] = None
+
+    /** The controller check the stand-in applies to a request other than
+      * DELETE /pipeline, after the interceptors: Some((status, body)) is the
+      * route's refusal, None lets it run. */
+    @volatile private var check: jakarta.servlet.http.HttpServletRequest => Option[(Int, String)] = (_: jakarta.servlet.http.HttpServletRequest) => None
+
+    private def entity(e: org.springframework.http.ResponseEntity[String]): (Int, String) = (e.getStatusCode.value, e.getBody)
 
     private val pipelines: Map[String, PipelineConfig] = Seq(
         PipelineConfig(name = "fin_ledger", catalog = "Finance", createdByKeyLabel = "someone"),
@@ -113,7 +127,9 @@ class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterE
         deleted.clear()
         handled.clear()
         lastIdentity = None
-        lastCeiling = None
+        lastSecondLimit = None
+        lastOwnerLabel = None
+        check = _ => None
         AuditLog.sinkOverride = (e: AuditEntry) => { audit.add(e); () }
         UserContext.clear()
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
@@ -170,7 +186,9 @@ class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterE
         }
         if (!new TenantInterceptor().preHandle(r, resp.response, null)) return (resp.status, resp.body)
         lastIdentity = ai.datris.auth.ResolvedKeyAccess.fromRequest(r)
-        lastCeiling = CapabilityCheck.approverCeiling(r)
+        lastSecondLimit = CapabilityCheck.replaySecondLimit(r)
+        // the label the save paths stamp as createdByKeyLabel
+        lastOwnerLabel = ai.datris.auth.ResolvedKeyAccess.keyLabel(r)
         if (!new CapabilityInterceptor().preHandle(r, resp.response, hm)) return (resp.status, resp.body)
         if (!new PolicyInterceptor().preHandle(r, resp.response, hm)) return (resp.status, resp.body)
         if (!new RoleEnforcementInterceptor().preHandle(r, resp.response, hm)) return (resp.status, resp.body)
@@ -189,10 +207,11 @@ class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterE
                                 (200, PipelineAPIController.deleteResponseBody(Nil, None))
                         }
                 }
-            } else {
-                handled.add(ex.getRequestMethod + " " + path)
-                (200, "{\"status\":\"ok\"}")
-            }
+            } else
+                check(r).getOrElse {
+                    handled.add(ex.getRequestMethod + " " + path)
+                    (200, "{\"status\":\"ok\"}")
+                }
         resp.status = answer._1
         auditI.afterCompletion(r, resp.response, hm, null)
         answer
@@ -276,13 +295,32 @@ class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterE
 
     // ================================================================ a key requester with a restricted approver
 
-    test("a key limited to what it created, deleting its own pipeline in a catalog the approver owns, runs with the key's identity") {
+    /** The identity a replay approved by `approver` (restricted) runs with. */
+    private def approverOwn(approver: User): ResolvedKey = TenantInterceptor.onBehalfOfIdentity(uiLegacy, approver)
+
+    private def assertApproverIdentity(approver: User, requester: ResolvedKey): Unit = {
+        assert(lastIdentity.contains(approverOwn(approver)), String.valueOf(lastIdentity))
+        assert(lastIdentity.exists(_.restrictedSession), String.valueOf(lastIdentity))
+        assert(lastSecondLimit.contains(requester), String.valueOf(lastSecondLimit))
+    }
+
+    test("a key limited to what it created, deleting its own pipeline in a catalog the approver owns, runs; the key is the second limit") {
         queueDelete("pa_self_own", keyActor(selfDeleter), "self_sales")
         val res = approveAs(olga, "pa_self_own")
         assertRan("pa_self_own", res)
         assert(deleted.asScala.toList == List("self_sales"))
-        assert(lastIdentity.contains(selfDeleter), String.valueOf(lastIdentity))
-        assert(lastCeiling.contains(APIKeyValidator.resolveFromSession(olga)), String.valueOf(lastCeiling))
+        assertApproverIdentity(olga, selfDeleter)
+        // what the replay creates is owned by the identity: the approver
+        assert(lastOwnerLabel.contains("session:olga"), String.valueOf(lastOwnerLabel))
+        // the audit row names the approver, the approval and the requester
+        val rows = audit.asScala.toList.filter(e => e.category != "security" && e.metadata.exists(_.has("approvalId")))
+        assert(rows.size == 1, audit.toString)
+        val row = rows.head
+        assert(row.actor.label == "session:olga", row.actor.toString)
+        val md = row.metadata.get
+        assert(md.get("approvalId").getAsString == "pa_self_own", md.toString)
+        assert(md.get("originalActor").getAsString == "self-deleter", md.toString)
+        assert(md.get("approvedBy").getAsString == "olga", md.toString)
     }
 
     test("the same key on a pipeline it did not create ends failed with the key's ordinary refusal") {
@@ -308,14 +346,14 @@ class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterE
         assert(deleted.isEmpty)
     }
 
-    test("a key with unscoped delete and read limited to another catalog is refused exactly as a direct call by that key is") {
+    test(
+        "a key with unscoped delete and read limited to another catalog, approved by a restricted user who owns the pipeline's catalog, runs with the approver's identity"
+    ) {
         queueDelete("pa_fin_reader", keyActor(finReader), "sales_orders")
         val res = approveAs(olga, "pa_fin_reader")
-        assert(deleted.isEmpty, "a key that cannot read the pipeline deleted it")
-        val (st, body) = directRefusal(finReader, "sales_orders").getOrElse(fail("a direct call by the key is refused"))
-        assert(st == 403, body)
-        assertFailed("pa_fin_reader", res, st)
-        assert(record("pa_fin_reader").getString("resultBody") == body)
+        assertRan("pa_fin_reader", res)
+        assert(deleted.asScala.toList == List("sales_orders"))
+        assertApproverIdentity(olga, finReader)
     }
 
     test("a restricted approver approving a delete in a catalog they hold no grant on, for an unscoped key, is refused with not found") {
@@ -324,7 +362,7 @@ class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterE
         assert(deleted.isEmpty, "a Sales-only approver had a Finance pipeline deleted")
         assertFailed("pa_ops_fin", res, 404)
         assert(record("pa_ops_fin").getString("resultBody") == notFoundBody("fin_ledger"))
-        assert(lastIdentity.contains(opsAgent), String.valueOf(lastIdentity))
+        assertApproverIdentity(olga, opsAgent)
     }
 
     test("the same unscoped key's delete inside the restricted approver's grants runs") {
@@ -336,10 +374,143 @@ class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterE
     test("an approver who is not restricted adds no second limit") {
         queueDelete("pa_ed", keyActor(salesDeleter), "sales_orders")
         assertRan("pa_ed", approveAs(ed, "pa_ed"))
-        assert(lastCeiling.isEmpty, String.valueOf(lastCeiling))
+        assert(lastSecondLimit.isEmpty, String.valueOf(lastSecondLimit))
         queueDelete("pa_root", keyActor(salesDeleter), "sales_orders")
         approveAs(root, "pa_root")
-        assert(lastCeiling.isEmpty, String.valueOf(lastCeiling))
+        assert(lastSecondLimit.isEmpty, String.valueOf(lastSecondLimit))
+    }
+
+    test("with a restricted approver a requesting key that is gone ends failed with 401 before anything runs") {
+        val keys = (liveKeys ++ extraKeys) - "ops-agent"
+        APIKeyValidator.resolveByLabelOverride = (l: String) => keys.get(l)
+        queueDelete("pa_ops_gone", keyActor(opsAgent), "sales_orders")
+        assertFailed("pa_ops_gone", approveAs(olga, "pa_ops_gone"), 401)
+        assert(record("pa_ops_gone").getString("resultBody") == TenantInterceptor.RequesterKeyInvalidBody)
+        assert(deleted.isEmpty && lastIdentity.isEmpty)
+    }
+
+    // ================================================================ checks a restricted session meets limit the replay
+
+    /** The name PolicyGate reads from the request, as the replay sends it. */
+    private def nameOf(method: String, path: String, body: Option[String]): Option[String] =
+        ai.datris.policy.PolicyGate.resourceName(call(method, path, None, body)._1)
+
+    private def queueRequest(id: String, actor: AuditActorInfo, method: String, path: String, body: String, action: String): Unit =
+        PendingActionIO.insert(pending(id, actor, method, path, None, Some(body), action).copy(resourceName = nameOf(method, path, Some(body))))
+
+    private def saveBody(cfg: PipelineConfig): String = "{\"name\":\"" + cfg.name + "\",\"catalog\":\"" + cfg.catalog + "\"}"
+
+    private def catalogNotFound(c: String): String = RestrictedCatalogRules.catalogNotFound(c).getBody
+
+    test(
+        "an unscoped key's save or move into a catalog the restricted approver holds no grant on ends failed with not found; into the approver's catalog it runs"
+    ) {
+        @volatile var saving: PipelineConfig = null
+        check = r => PipelineAPIController.catalogForSave(r, saving, pipelines.get(saving.name).orNull).left.toOption.map(entity)
+
+        saving = PipelineConfig(name = "fin_new", catalog = "Finance")
+        queueRequest("pa_save_fin", keyActor(oldAgent), "POST", CreatePath, saveBody(saving), "pipeline:create")
+        assertFailed("pa_save_fin", approveAs(olga, "pa_save_fin"), 404)
+        assert(record("pa_save_fin").getString("resultBody") == catalogNotFound("Finance"))
+        assertApproverIdentity(olga, oldAgent)
+
+        saving = PipelineConfig(name = "sales_orders", catalog = "Finance")
+        queueRequest("pa_move_fin", keyActor(oldAgent), "POST", CreatePath, saveBody(saving), "pipeline:create")
+        assertFailed("pa_move_fin", approveAs(olga, "pa_move_fin"), 404)
+        assert(record("pa_move_fin").getString("resultBody") == catalogNotFound("Finance"))
+        assert(handled.isEmpty, handled.toString)
+
+        saving = PipelineConfig(name = "sales_new", catalog = "Sales")
+        queueRequest("pa_save_sales", keyActor(oldAgent), "POST", CreatePath, saveBody(saving), "pipeline:create")
+        assertRan("pa_save_sales", approveAs(olga, "pa_save_sales"))
+        assert(handled.asScala.toList == List("POST " + CreatePath))
+        assert(lastOwnerLabel.contains("session:olga"), String.valueOf(lastOwnerLabel))
+    }
+
+    test("an unscoped key's catalog-level operation on a catalog the restricted approver holds no grant on ends failed with not found") {
+        @volatile var catalog = ""
+        check = r => RestrictedCatalogRules.catalogRefusal(r, catalog, "delete").map(entity)
+
+        catalog = "Finance"
+        queueRequest("pa_cat_fin", keyActor(oldAgent), "PUT", "/api/v1/catalog/Finance", "{\"newName\":\"Fin2\"}", "pipeline:update")
+        assertFailed("pa_cat_fin", approveAs(olga, "pa_cat_fin"), 404)
+        assert(record("pa_cat_fin").getString("resultBody") == catalogNotFound("Finance"))
+        assertApproverIdentity(olga, oldAgent)
+        assert(handled.isEmpty, handled.toString)
+
+        catalog = "Sales"
+        queueRequest("pa_cat_sales", keyActor(oldAgent), "PUT", "/api/v1/catalog/Sales", "{\"newName\":\"Sales2\"}", "pipeline:update")
+        assertRan("pa_cat_sales", approveAs(olga, "pa_cat_sales"))
+    }
+
+    private def renamePath(p: String): String = "/api/v1/pipelines/" + p + "/rename"
+
+    test("an unscoped key's named-pipeline action outside the restricted approver's grants ends failed with not found") {
+        @volatile var target = ""
+        check = r => PipelineAPIController.refusalFor(r, target, pipelines(target), "delete").map(entity)
+
+        target = "fin_ledger"
+        queueRequest("pa_rename_fin", keyActor(oldAgent), "POST", renamePath(target), "{\"newName\":\"x\"}", "pipeline:delete")
+        assertFailed("pa_rename_fin", approveAs(olga, "pa_rename_fin"), 404)
+        assert(record("pa_rename_fin").getString("resultBody") == notFoundBody("fin_ledger"))
+        assertApproverIdentity(olga, oldAgent)
+        assert(handled.isEmpty, handled.toString)
+
+        target = "sales_orders"
+        queueRequest("pa_rename_sales", keyActor(oldAgent), "POST", renamePath(target), "{\"newName\":\"y\"}", "pipeline:delete")
+        assertRan("pa_rename_sales", approveAs(olga, "pa_rename_sales"))
+    }
+
+    // ================================================================ the requester's own scope, with a restricted approver
+
+    test(
+        "a key's approved request on a route the key holds no capability for, approved by a restricted user who holds it, ends failed with the key's capability refusal"
+    ) {
+        val cfg = PipelineConfig(name = "sales_new", catalog = "Sales")
+        queueRequest("pa_sd_create", keyActor(salesDeleter), "POST", CreatePath, saveBody(cfg), "pipeline:create")
+        val res = approveAs(olga, "pa_sd_create")
+        assert(handled.isEmpty, "the key created a pipeline it holds no capability to create")
+        assertFailed("pa_sd_create", res, 403)
+        assert(
+            record("pa_sd_create").getString("resultBody") ==
+                CapabilityInterceptor.deniedBody("sales-deleter", "pipeline", "create", "POST", CreatePath, None)
+        )
+        val md = gateDenials.head.metadata.get
+        assert(md.get("approvalId").getAsString == "pa_sd_create" && md.get("originalActor").getAsString == "sales-deleter", md.toString)
+    }
+
+    /** The per-item check of a named-pipeline action through the shared
+      * [[CapabilityCheck.assertScope]], answered as the controllers do. */
+    private def scopeCheck(r: jakarta.servlet.http.HttpServletRequest, p: String): Option[(Int, String)] =
+        try {
+            CapabilityCheck.assertScope(r, "pipeline", "delete", ai.datris.util.CatalogOps.scopeContext(pipelines(p).catalog, pipelines(p).createdByKeyLabel))
+            None
+        } catch { case e: ai.datris.auth.CapabilityDeniedException => Some(entity(PipelineAPIController.capabilityDenied(e))) }
+
+    test(
+        "a catalog-limited key's approved action in another catalog, approved by a restricted user who owns it, is refused by the shared checks as a direct call by the key is"
+    ) {
+        val seen = new ConcurrentLinkedQueue[(Boolean, Boolean)]()
+        def readable(r: jakarta.servlet.http.HttpServletRequest, p: String) =
+            CapabilityCheck.grants(r, "pipeline", "read", ai.datris.util.CatalogOps.scopeContext(pipelines(p).catalog, pipelines(p).createdByKeyLabel))
+        check = r => { seen.add((readable(r, "fin_ledger"), readable(r, "sales_orders"))); scopeCheck(r, "fin_ledger") }
+
+        queueRequest("pa_sd_rename_fin", keyActor(salesDeleter), "POST", renamePath("fin_ledger"), "{\"newName\":\"x\"}", "pipeline:delete")
+        val res = approveAs(pia, "pa_sd_rename_fin")
+        assertApproverIdentity(pia, salesDeleter)
+        assert(handled.isEmpty, handled.toString)
+
+        ScopeDenialFixtures.install(serverEnv)
+        val (direct, directReadable) =
+            try {
+                val (r, _) = ScopeDenialFixtures.request(salesDeleter, "POST", renamePath("fin_ledger"))
+                (scopeCheck(r, "fin_ledger").getOrElse(fail("a direct call by the key is refused")), (readable(r, "fin_ledger"), readable(r, "sales_orders")))
+            } finally ScopeDenialFixtures.install(approveEnv)
+        assertFailed("pa_sd_rename_fin", res, direct._1)
+        assert(record("pa_sd_rename_fin").getString("resultBody") == direct._2)
+        assert(direct._2.contains("sales-deleter"), direct._2)
+        // grants: the approver may read both, the key only Sales
+        assert(seen.asScala.toList == List(directReadable) && directReadable == ((false, true)), seen.toString)
     }
 
     // ================================================================ a chat requester with a restricted approver
@@ -356,8 +527,7 @@ class ApprovalReplayApproverCeilingSpec extends AnyFunSuite with BeforeAndAfterE
         queueDelete("pa_olga_sales_oona", chatActor(olga), "sales_orders")
         assertRan("pa_olga_sales_oona", approveAs(oona, "pa_olga_sales_oona"))
         assert(deleted.asScala.toList == List("sales_orders"))
-        assert(lastIdentity.exists(rk => rk.label == "session:olga" && rk.restrictedSession), String.valueOf(lastIdentity))
-        assert(lastCeiling.contains(APIKeyValidator.resolveFromSession(oona)), String.valueOf(lastCeiling))
+        assertApproverIdentity(oona, TenantInterceptor.onBehalfOfIdentity(uiLegacy, olga))
     }
 
     // ================================================================ the route gate and its audit row
