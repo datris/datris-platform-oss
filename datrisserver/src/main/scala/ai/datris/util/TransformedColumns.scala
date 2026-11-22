@@ -232,8 +232,11 @@ object TransformedColumns {
             }
     }
 
-    /** A column as a SQL store's catalog (information_schema) reports it. */
-    case class StoreColumn(dataType: String, maxLength: Option[Long] = None)
+    /** A column as a SQL store's catalog (information_schema) reports it:
+      * its stored name, type and character length, and whether it takes NULL
+      * and whether the database generates its values (None when the catalog
+      * did not say). */
+    case class StoreColumn(name: String, dataType: String, maxLength: Option[Long] = None, nullable: Option[Boolean] = None, generated: Option[Boolean] = None)
 
     val Postgres = "postgres"
     val SqlServer = "sqlserver"
@@ -297,7 +300,7 @@ object TransformedColumns {
         existing: Set[String],
         execute: String => Unit,
         attempt: String => Option[Throwable],
-        readColumns: () => Either[Throwable, Map[String, StoreColumn]]
+        readColumns: () => Either[Throwable, Seq[StoreColumn]]
     ): Set[String] = {
         val run = runColumns(ctx)
         val status = ctx.statusUtil
@@ -320,7 +323,7 @@ object TransformedColumns {
         }
         run.foreach { r =>
             val present = destFieldsOf(ctx.config).getOrElse(Nil).filter(f => f != null && r.isAdded(f.name) && existing.contains(f.name.toLowerCase))
-            out ++= checkTypes(ctx, r, destination, engine, present, readColumns, manual = false)
+            out ++= checkExisting(ctx, r, destination, engine, present, readColumns, manual = false)
         }
         out.toSet
     }
@@ -330,21 +333,21 @@ object TransformedColumns {
       * holds as a type that does not take every text value, is left out with
       * a warn line. The table is read only when there is such a column.
       * Returns the names left out, lower-cased. */
-    def manualTable(ctx: JobContext, destination: String, engine: String, readColumns: () => Either[Throwable, Map[String, StoreColumn]]): Set[String] =
+    def manualTable(ctx: JobContext, destination: String, engine: String, readColumns: () => Either[Throwable, Seq[StoreColumn]]): Set[String] =
         runColumns(ctx) match {
             case None => Set.empty
             case Some(run) =>
                 val added = destFieldsOf(ctx.config).getOrElse(Nil).filter(f => f != null && run.isAdded(f.name))
-                checkTypes(ctx, run, destination, engine, added, readColumns, manual = true)
+                checkExisting(ctx, run, destination, engine, added, readColumns, manual = true)
         }
 
-    private def checkTypes(
+    private def checkExisting(
         ctx: JobContext,
         run: RunColumns,
         destination: String,
         engine: String,
         fields: List[SchemaField],
-        readColumns: () => Either[Throwable, Map[String, StoreColumn]],
+        readColumns: () => Either[Throwable, Seq[StoreColumn]],
         manual: Boolean
     ): Set[String] =
         if (fields.isEmpty) Set.empty
@@ -364,9 +367,9 @@ object TransformedColumns {
                     )
                     fields.map(f => key(f.name)).toSet
                 case Right(columns) =>
-                    val byName = columns.map { case (n, c) => key(n) -> c }
                     fields.flatMap { f =>
-                        byName.get(key(f.name)) match {
+                        val same = columns.filter(c => c != null && key(c.name) == key(f.name))
+                        same.find(c => sameName(engine, f.name, c.name)).orElse(same.headOption) match {
                             case None if manual =>
                                 leave(
                                     ctx,
@@ -377,23 +380,76 @@ object TransformedColumns {
                                         "It is left out of this destination for this run and is not added to the stored destination schema"
                                 )
                                 Some(key(f.name))
-                            case Some(c) if !holdsAnyText(engine, c) =>
+                            case None =>
                                 leave(
                                     ctx,
                                     run,
                                     f.name,
                                     "CodeGen transformation added column " + shown(
                                         f.name
-                                    ) + ", but " + destination + " already has a column of that name of type " +
-                                        IngestColumnNames.display(String.valueOf(c.dataType)) + c.maxLength.map(l => "(" + l + ")").getOrElse("") +
-                                        ", which does not take every text value; it is left out of this destination, that column gets no value from this run, " +
-                                        "and it is not added to the stored destination schema"
+                                    ) + ", but its column in " + destination + " could not be read; " + LeftOut
                                 )
                                 Some(key(f.name))
-                            case _ => None
+                            case Some(c) =>
+                                refusal(engine, f.name, c).map { why =>
+                                    leave(
+                                        ctx,
+                                        run,
+                                        f.name,
+                                        "CodeGen transformation added column " + shown(
+                                            f.name
+                                        ) + ", but " + destination + " already has a column of that name " + why +
+                                            "; it is left out of this destination, that column gets no value from this run, " +
+                                            "and it is not added to the stored destination schema"
+                                    )
+                                    key(f.name)
+                                }
                         }
                     }.toSet
             }
+
+    /** The name the load writes for `loadName`, as the store keeps it:
+      * Snowflake folds a plain name to upper case; the others keep it. */
+    private def storedName(engine: String, loadName: String): String =
+        if (engine == Snowflake) SnowflakeConnectionUtil.effectiveName(loadName) else loadName
+
+    /** True when the load's quoted `loadName` reaches the table's column
+      * `stored`: Databricks resolves names whatever their letter case;
+      * PostgreSQL and Snowflake compare quoted names exactly; SQL Server is
+      * compared exactly too, so a case-sensitive collation cannot fail the
+      * load. */
+    private def sameName(engine: String, loadName: String, stored: String): Boolean =
+        stored != null && loadName != null &&
+            (if (engine == Databricks) loadName.toLowerCase == stored.toLowerCase else storedName(engine, loadName) == stored)
+
+    /** Why the existing column `c` cannot take this run's values for the
+      * added column `loadName` without risking the load, worded to follow
+      * "already has a column of that name"; None when it can: a type that
+      * takes every text value ([[holdsAnyText]]), the exact name the load
+      * writes, nullable and not generated, both as read from the catalog
+      * (unknown counts as no). */
+    def refusal(engine: String, loadName: String, c: StoreColumn): Option[String] =
+        if (!holdsAnyText(engine, c))
+            Some(
+                "of type " + IngestColumnNames.display(String.valueOf(c.dataType)) + c.maxLength.map(l => "(" + l + ")").getOrElse("") +
+                    ", which does not take every text value"
+            )
+        else if (!sameName(engine, loadName, c.name))
+            Some(
+                "spelled " + shown(c.name) + ", which differs in letter case from the column the load writes, " + shown(storedName(engine, loadName))
+            )
+        else if (c.nullable.isEmpty || c.generated.isEmpty) Some("whose nullability or kind could not be read")
+        else if (c.nullable.contains(false)) Some("that is NOT NULL")
+        else if (c.generated.contains(true)) Some("whose values the database generates")
+        else None
+
+    /** A catalog YES / NO as a Boolean; None for anything else. */
+    def yesNo(s: String): Option[Boolean] =
+        Option(s).map(_.trim.toUpperCase(java.util.Locale.ROOT)) match {
+            case Some("YES") => Some(true)
+            case Some("NO") => Some(false)
+            case _ => None
+        }
 
     /** `ctx` with the destination schema fields named in `keys` (lower-cased)
       * removed, for one loader: the load then leaves them out by name. The

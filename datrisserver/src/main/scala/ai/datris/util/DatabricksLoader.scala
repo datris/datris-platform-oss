@@ -14,6 +14,7 @@ import java.nio.file.{Files, Path}
 import java.sql.Statement
 import java.util.UUID
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.util.Try
 
 /** Databricks (Unity Catalog managed Delta) SQL destination. Mirrors
@@ -298,13 +299,23 @@ class DatabricksLoader(initialContext: JobContext) {
     private def destinationLabel: String = "the Databricks table " + db.dbName + "." + db.schema + "." + db.table
 
     /** The table's columns with their types by lower-cased name. */
-    private def readColumnTypes(statement: Statement): Either[Throwable, Map[String, TransformedColumns.StoreColumn]] =
+    private def readColumnTypes(statement: Statement): Either[Throwable, Seq[TransformedColumns.StoreColumn]] =
         TransformedColumns.attemptRead(statement.getConnection, savepoint = false) {
             val rs = statement.executeQuery(DatabricksLoader.columnTypesSql(db))
             try {
-                val out = scala.collection.mutable.Map[String, TransformedColumns.StoreColumn]()
-                while (rs.next()) out(rs.getString(1).toLowerCase) = TransformedColumns.StoreColumn(rs.getString(2))
-                out.toMap
+                val out = ListBuffer[TransformedColumns.StoreColumn]()
+                while (rs.next()) {
+                    val (isGenerated, expression, isIdentity) = (rs.getString(4), rs.getString(5), rs.getString(6))
+                    val generated =
+                        if (isGenerated == null && isIdentity == null) None
+                        else
+                            Some(
+                                Option(isGenerated).exists(g => g.equalsIgnoreCase("ALWAYS") || g.equalsIgnoreCase("YES")) ||
+                                    Option(expression).exists(_.trim.nonEmpty) || TransformedColumns.yesNo(isIdentity).contains(true)
+                            )
+                    out += TransformedColumns.StoreColumn(rs.getString(1), rs.getString(2), None, TransformedColumns.yesNo(rs.getString(3)), generated)
+                }
+                out.toList
             } finally rs.close()
         }
 
@@ -390,10 +401,13 @@ object DatabricksLoader {
     def addPlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Seq[(SchemaField, String)] =
         fields.filter(f => !existing.contains(f.name.toLowerCase)).map(f => f -> addColumnSql(db, f))
 
-    /** The table's column names and types, by position, matched as the
-      * loader's column read is (Unity Catalog stores names lowercase). */
+    /** The table's columns, by position: name, type, is_nullable,
+      * is_generated, generation_expression, is_identity; matched as the
+      * loader's column read is (Unity Catalog stores names lowercase). If a
+      * workspace's catalog lacks one of these columns the read fails, and
+      * the added column is left out with a warning. */
     def columnTypesSql(db: Database): String =
-        s"""SELECT column_name, data_type FROM ${ident(db.dbName)}.information_schema.columns
+        s"""SELECT column_name, data_type, is_nullable, is_generated, generation_expression, is_identity FROM ${ident(db.dbName)}.information_schema.columns
            |WHERE lower(table_schema) = '${sqlLiteral(DatabricksConnectionUtil.effectiveName(db.schema))}' AND lower(table_name) = '${sqlLiteral(
                 DatabricksConnectionUtil.effectiveName(db.table)
             )}'""".stripMargin

@@ -246,12 +246,20 @@ object PostgresSql {
           |WHERE table_catalog = ? AND table_schema = ?
           |AND table_name = ?""".stripMargin
 
-    /** The table's columns, their types and character lengths; bind the
-      * database, the schema, the table. */
+    /** The table's columns: name, type, character length, nullability,
+      * generated (`ALWAYS` for a generated column) and identity; bind the
+      * database, the schema, the table. Every column read here is in
+      * information_schema.columns from PostgreSQL 10 on. */
     val ExistingColumnTypesSql: String =
-        """SELECT column_name, data_type, character_maximum_length FROM information_schema.columns
+        """SELECT column_name, data_type, character_maximum_length, is_nullable, is_generated, identity_generation
+          |FROM information_schema.columns
           |WHERE table_catalog = ? AND table_schema = ?
           |AND table_name = ?""".stripMargin
+
+    /** How long the ADD COLUMN of a column a transformation added waits for
+      * its table lock when the session sets no bound. See
+      * PostgresLoader.addWithBoundedLockWait. */
+    val AddedColumnLockTimeout: String = "5s"
 
     /** The table's columns and types in order; bind the schema, the table. */
     val ColumnsOfTableSql: String =

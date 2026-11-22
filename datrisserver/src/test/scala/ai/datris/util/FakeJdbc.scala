@@ -17,6 +17,7 @@ import scala.collection.mutable.ListBuffer
 class FakeJdbc(var autoCommit: Boolean = true) {
     val executed: ListBuffer[String] = ListBuffer[String]()
     val queries: ListBuffer[String] = ListBuffer[String]()
+    val queryParams: ListBuffer[Seq[String]] = ListBuffer[Seq[String]]()
     val savepoints: ListBuffer[String] = ListBuffer[String]()
     var refuse: String => Option[Exception] = (_: String) => None
     var answer: (String, Seq[String]) => (Seq[String], Seq[Seq[AnyRef]]) = (_: String, _: Seq[String]) => (Nil, Nil)
@@ -68,6 +69,7 @@ class FakeJdbc(var autoCommit: Boolean = true) {
 
     private def query(sql: String, params: Seq[String]): ResultSet = {
         queries += sql
+        queryParams += params
         val (labels, rows) = answer(sql, params)
         resultSet(labels, rows)
     }

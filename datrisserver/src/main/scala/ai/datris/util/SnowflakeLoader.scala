@@ -14,6 +14,7 @@ import java.nio.file.{Files, Path}
 import java.sql.{Connection, DriverManager, Statement}
 import java.util.{Properties, UUID}
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.util.Try
 
 /** Snowflake SQL destination. Mirrors [[PostgresLoader]] — same create-table /
@@ -275,19 +276,25 @@ class SnowflakeLoader(initialContext: JobContext) {
 
     /** The table's columns with their types by lower-cased name, read by
       * position (see [[createTableIfUndefined]]). */
-    private def readColumnTypes(statement: Statement): Either[Throwable, Map[String, TransformedColumns.StoreColumn]] =
+    private def readColumnTypes(statement: Statement): Either[Throwable, Seq[TransformedColumns.StoreColumn]] =
         TransformedColumns.attemptRead(statement.getConnection, savepoint = false) {
             val rs = statement.executeQuery(SnowflakeLoader.columnTypesSql(db))
             try {
-                val out = scala.collection.mutable.Map[String, TransformedColumns.StoreColumn]()
+                val out = ListBuffer[TransformedColumns.StoreColumn]()
                 while (rs.next()) {
                     val len = rs.getObject(3) match {
                         case n: Number => Some(n.longValue)
                         case _ => None
                     }
-                    out(rs.getString(1).toLowerCase) = TransformedColumns.StoreColumn(rs.getString(2), len)
+                    out += TransformedColumns.StoreColumn(
+                        rs.getString(1),
+                        rs.getString(2),
+                        len,
+                        TransformedColumns.yesNo(rs.getString(4)),
+                        TransformedColumns.yesNo(rs.getString(5))
+                    )
                 }
-                out.toMap
+                out.toList
             } finally rs.close()
         }
 
@@ -364,10 +371,11 @@ object SnowflakeLoader {
     def evolvePlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Either[String, ColumnTypeText.EvolvePlan] =
         ColumnTypeText.evolve(fields, existing, f => addColumnSql(db, f))
 
-    /** The table's column names, types and character lengths, by position,
+    /** The table's columns, by position: name, type, character length,
+      * is_nullable, is_identity (Snowflake has no other generated column);
       * matched on the effective stored names as the loader's column read is. */
     def columnTypesSql(db: Database): String =
-        s"""SELECT column_name, data_type, character_maximum_length FROM ${ident(db.dbName)}.information_schema.columns
+        s"""SELECT column_name, data_type, character_maximum_length, is_nullable, is_identity FROM ${ident(db.dbName)}.information_schema.columns
            |WHERE table_schema = '${SnowflakeConnectionUtil.effectiveName(db.schema).replace("'", "''")}' AND table_name = '${SnowflakeConnectionUtil
                 .effectiveName(db.table)
                 .replace("'", "''")}'""".stripMargin

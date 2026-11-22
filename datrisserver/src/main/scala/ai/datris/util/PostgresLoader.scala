@@ -14,6 +14,7 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import java.sql.{Connection, Statement}
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.util.Try
 
 class PostgresLoader(initialContext: JobContext) {
@@ -357,9 +358,7 @@ class PostgresLoader(initialContext: JobContext) {
                     ColumnTypeText.missingFields(fields, existingColumns).zip(plan.addColumns),
                     existingColumns,
                     alterSql => statement.execute(alterSql),
-                    // A refused statement inside a transaction would abort it:
-                    // the savepoint keeps the rest of the load going.
-                    alterSql => TransformedColumns.attempt(statement.getConnection, savepoint = true)(statement.execute(alterSql)),
+                    alterSql => addWithBoundedLockWait(statement, alterSql),
                     () => readColumnTypes(statement, tableName)
                 )
         }
@@ -401,13 +400,47 @@ class PostgresLoader(initialContext: JobContext) {
         left
     }
 
+    /** The ADD COLUMN of a column this run's transformation added. A refused
+      * statement inside a transaction would abort it, so it runs behind a
+      * savepoint ([[TransformedColumns.attempt]]). ADD COLUMN needs an ACCESS
+      * EXCLUSIVE lock and, while it waits, every other query on the table
+      * queues behind it; on v1.60.0 this pipeline issued no ALTER at all. So
+      * when the session sets no `lock_timeout` (it reads 0), the wait is
+      * bounded by [[PostgresSql.AddedColumnLockTimeout]]: in a transaction
+      * with SET LOCAL behind the savepoint (put back after the ADD, undone by
+      * the rollback on failure), in autocommit for the session, put back
+      * after the ADD whatever happens. A lock timeout is then a refusal: the
+      * column is left out with a warning. A bound the install already set is
+      * left alone. Declared columns never come here. */
+    private def addWithBoundedLockWait(statement: Statement, alterSql: String): Option[Throwable] = {
+        val conn = statement.getConnection
+        val current = {
+            val rs = statement.executeQuery("SELECT current_setting('lock_timeout')")
+            try if (rs.next()) Option(rs.getString(1)).map(_.trim) else None
+            finally rs.close()
+        }
+        val bound = "'" + PostgresSql.AddedColumnLockTimeout + "'"
+        if (!current.contains("0")) TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alterSql))
+        else if (!conn.getAutoCommit)
+            TransformedColumns.attempt(conn, savepoint = true) {
+                statement.execute("SET LOCAL lock_timeout = " + bound)
+                statement.execute(alterSql)
+                statement.execute("SET LOCAL lock_timeout = 0")
+            }
+        else {
+            statement.execute("SET lock_timeout = " + bound)
+            try TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alterSql))
+            finally statement.execute("SET lock_timeout = 0")
+        }
+    }
+
     private def destinationLabel: String =
         "the Postgres table " + config.destination.database.schema + "." + config.destination.database.table
 
     /** The table's columns with their types, by lower-cased name, read
       * behind a savepoint inside a transaction so a failure leaves the load
       * able to go on. */
-    private def readColumnTypes(statement: Statement, tableName: String): Either[Throwable, Map[String, TransformedColumns.StoreColumn]] = {
+    private def readColumnTypes(statement: Statement, tableName: String): Either[Throwable, Seq[TransformedColumns.StoreColumn]] = {
         val conn = statement.getConnection
         TransformedColumns.attemptRead(conn, savepoint = true) {
             val ps = conn.prepareStatement(PostgresSql.ExistingColumnTypesSql)
@@ -417,15 +450,16 @@ class PostgresLoader(initialContext: JobContext) {
                 ps.setString(3, tableName)
                 val rs = ps.executeQuery()
                 try {
-                    val out = scala.collection.mutable.Map[String, TransformedColumns.StoreColumn]()
+                    val out = ListBuffer[TransformedColumns.StoreColumn]()
                     while (rs.next()) {
                         val len = rs.getObject(3) match {
                             case n: Number => Some(n.longValue)
                             case _ => None
                         }
-                        out(rs.getString(1).toLowerCase) = TransformedColumns.StoreColumn(rs.getString(2), len)
+                        val generated = Option(rs.getString(5)).map(g => !g.trim.equalsIgnoreCase("NEVER") || rs.getString(6) != null)
+                        out += TransformedColumns.StoreColumn(rs.getString(1), rs.getString(2), len, TransformedColumns.yesNo(rs.getString(4)), generated)
                     }
-                    out.toMap
+                    out.toList
                 } finally rs.close()
             } finally ps.close()
         }

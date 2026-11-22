@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets
 import java.sql.{Connection, PreparedStatement, Statement}
 import java.util.UUID
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.util.Try
 
 /** Microsoft SQL Server / Azure SQL destination. Mirrors [[SnowflakeLoader]] —
@@ -259,9 +260,7 @@ class SqlServerLoader(initialContext: JobContext) {
                     ColumnTypeText.missingFields(fields, existing.toSet).zip(plan.addColumns),
                     existing.toSet,
                     alter => statement.execute(alter),
-                    // Behind a savepoint inside a transaction; a refusal that
-                    // ends the transaction fails the load.
-                    alter => TransformedColumns.attempt(statement.getConnection, savepoint = true)(statement.execute(alter)),
+                    alter => addWithBoundedLockWait(statement, alter),
                     () => readColumnTypes(statement)
                 )
         }
@@ -283,23 +282,56 @@ class SqlServerLoader(initialContext: JobContext) {
         left
     }
 
+    /** The ADD of a column this run's transformation added, behind a
+      * savepoint inside a transaction (a refusal that ends the transaction
+      * fails the load). ADD needs a schema-modification lock and queues
+      * behind open readers; on v1.60.0 this pipeline issued no ALTER. When
+      * the session waits without limit (`@@LOCK_TIMEOUT` is -1, the default),
+      * the wait is bounded by [[SqlServerLoader.AddedColumnLockTimeoutMs]]
+      * for this one statement and put back to -1 afterwards whatever happens
+      * (SET LOCK_TIMEOUT is not transactional, and a lock timeout does not
+      * end the transaction); a timeout is then a refusal and the column is
+      * left out with a warning. A bound the session already has is left alone. */
+    private def addWithBoundedLockWait(statement: Statement, alter: String): Option[Throwable] = {
+        val conn = statement.getConnection
+        val current = {
+            val rs = statement.executeQuery("SELECT @@LOCK_TIMEOUT")
+            try if (rs.next()) rs.getObject(1) match {
+                    case n: Number => Some(n.intValue)
+                    case _ => None
+                }
+                else None
+            finally rs.close()
+        }
+        if (!current.contains(-1)) TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alter))
+        else {
+            statement.execute("SET LOCK_TIMEOUT " + SqlServerLoader.AddedColumnLockTimeoutMs)
+            try TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alter))
+            finally statement.execute("SET LOCK_TIMEOUT -1")
+        }
+    }
+
     private def destinationLabel: String = "the SQL Server table " + SqlServerConnectionUtil.schemaName(db) + "." + db.table
 
     /** The table's columns with their types by lower-cased name
       * (CHARACTER_MAXIMUM_LENGTH is -1 for (n)varchar(max)). */
-    private def readColumnTypes(statement: Statement): Either[Throwable, Map[String, TransformedColumns.StoreColumn]] =
+    private def readColumnTypes(statement: Statement): Either[Throwable, Seq[TransformedColumns.StoreColumn]] =
         TransformedColumns.attemptRead(statement.getConnection, savepoint = true) {
             val rs = statement.executeQuery(SqlServerLoader.columnTypesSql(db))
             try {
-                val out = scala.collection.mutable.Map[String, TransformedColumns.StoreColumn]()
+                val out = ListBuffer[TransformedColumns.StoreColumn]()
                 while (rs.next()) {
                     val len = rs.getObject(3) match {
                         case n: Number => Some(n.longValue)
                         case _ => None
                     }
-                    out(rs.getString(1).toLowerCase) = TransformedColumns.StoreColumn(rs.getString(2), len)
+                    val generated = (rs.getObject(5), rs.getObject(6)) match {
+                        case (c: Number, i: Number) => Some(c.intValue == 1 || i.intValue == 1)
+                        case _ => None
+                    }
+                    out += TransformedColumns.StoreColumn(rs.getString(1), rs.getString(2), len, TransformedColumns.yesNo(rs.getString(4)), generated)
                 }
-                out.toMap
+                out.toList
             } finally rs.close()
         }
 
@@ -390,10 +422,20 @@ object SqlServerLoader {
             f => s"ALTER TABLE ${SqlServerConnectionUtil.qualifiedTable(db)} ADD ${columnDef(f, isKey = false)}"
         )
 
-    /** The table's column names, types and character lengths, by position. */
-    def columnTypesSql(db: Database): String =
-        "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = " +
-            nLiteral(SqlServerConnectionUtil.schemaName(db)) + " AND TABLE_NAME = " + nLiteral(db.table)
+    /** How long the ADD of a column a transformation added waits for its
+      * lock when the session waits without limit, in milliseconds. */
+    val AddedColumnLockTimeoutMs: Int = 5000
+
+    /** The table's columns, by position: name, type, character length (-1 for
+      * (n)varchar(max)), IS_NULLABLE, and COLUMNPROPERTY IsComputed and
+      * IsIdentity (1 or 0; available on every supported SQL Server and Azure
+      * SQL). */
+    def columnTypesSql(db: Database): String = {
+        val obj = "OBJECT_ID(QUOTENAME(TABLE_SCHEMA) + '.' + QUOTENAME(TABLE_NAME))"
+        "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMNPROPERTY(" + obj + ", COLUMN_NAME, 'IsComputed'), COLUMNPROPERTY(" + obj +
+            ", COLUMN_NAME, 'IsIdentity') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = " + nLiteral(SqlServerConnectionUtil.schemaName(db)) +
+            " AND TABLE_NAME = " + nLiteral(db.table)
+    }
 
     /** `name TYPE [NOT NULL] [CHECK (ISJSON(name) = 1)]`. */
     def columnDef(field: SchemaField, isKey: Boolean): String = {
