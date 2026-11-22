@@ -288,7 +288,11 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(!EntityVersionAPIController.hiddenFromRestricted(req(editor), "pipeline", "update", None))
     }
 
-    test("pipeline status drops other catalogs' runs and 404s a token that touches a hidden pipeline") {
+    // plans/stories/limited-caller-read-leaks.md (pinned edit, D2 (a)): was
+    // "... and 404s a token that touches a hidden pipeline"; a hidden
+    // pipeline's events now read as missing (no 404), so a token's answer
+    // does not tell whether a hidden run exists.
+    test("pipeline status drops other catalogs' runs and events, and a token's hidden events read as missing") {
         def summary(p: String) = PipelineStatusSummary("t", 0L, 0L, p, "tok-" + p, "proc", "s", "e", "1s", "success")
         def event(p: String) = PipelineStatus(0, "t", p, "proc", "pub", "tok", "f", "end", "ok", "", 0L)
         val visible = Set("orders")
@@ -299,11 +303,16 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         }
         assert(PipelineStatusAPIController.filterFor(visible, java.util.Arrays.asList(event("orders"))).isRight)
         PipelineStatusAPIController.filterFor(visible, java.util.Arrays.asList(event("orders"), event("payroll"))) match {
-            case Left(r) => assert(r.getStatusCode.value == 404, r.getBody)
-            case other => fail("a hidden pipeline's events must be 404, got " + other)
+            case Right(l: java.util.List[_]) =>
+                assert(l.asScala.map(_.asInstanceOf[PipelineStatus].pipeline) == Seq("orders"), l)
+            case other => fail("a hidden pipeline's events must read as missing, got " + other)
+        }
+        PipelineStatusAPIController.filterFor(visible, java.util.Arrays.asList(event("payroll"))) match {
+            case Right(l: java.util.List[_]) => assert(l.isEmpty, l)
+            case other => fail("a token whose events are all hidden must read as a token with none, got " + other)
         }
         val rollup = PipelineStatusResponse(null, java.util.Arrays.asList(event("payroll")))
-        assert(PipelineStatusAPIController.filterFor(visible, rollup).isLeft)
+        assert(PipelineStatusAPIController.filterFor(visible, rollup).isRight)
         // Unrestricted: data passes through untouched.
         val data = java.util.Arrays.asList(summary("payroll"))
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))

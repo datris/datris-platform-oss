@@ -127,7 +127,8 @@ class PipelineAliasReuseSpec extends AnyFunSuite {
         val events = new java.util.ArrayList[PipelineStatus]()
         events.add(PipelineStatus(0, "t", "sales", "JobRunner", "", "tok", "f.csv", "end", "ok", "done", 1L))
         val r = PipelineStatusAPIController.restrictedViewWith(bobMine, events, configs, Nil)
-        assert(r.isLeft && r.left.get.getStatusCode.value == 404, s"$r")
+        // limited-caller-read-leaks (pinned edit, D2 (a)): was the 404; now a token with no rows
+        assert(r.isRight && r.right.get.asInstanceOf[java.util.List[_]].isEmpty, s"$r")
         // unrestricted callers: payload unchanged
         val data = new java.util.ArrayList[PipelineStatusSummary](Seq(summary("sales")).asJava)
         assert(PipelineStatusAPIController.restrictedViewWith(full, data, configs, Nil).toOption.get eq data)

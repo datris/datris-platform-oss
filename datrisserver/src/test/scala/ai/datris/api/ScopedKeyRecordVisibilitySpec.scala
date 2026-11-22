@@ -425,20 +425,27 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
             val shown = PipelineStatusAPIController.restrictedViewWith(r, summaries, pipelines, taps)
             assert(summaryNames(shown) == s.pipelines, s.name)
 
-            // a token (event list or rollup) of a pipeline outside scope: the session's existing 404 (D2)
+            // plans/stories/limited-caller-read-leaks.md (pinned edit, D2 (a)): was "the
+            // session's existing 404"; a token (event list or rollup) of a pipeline outside
+            // scope now reads as a token with no rows, as the session's does
             for (hidden <- AllPipelines -- s.pipelines) {
                 val ev = PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event(hidden)), pipelines, taps)
                 val ru = PipelineStatusAPIController.restrictedViewWith(r, statusResponse(hidden, "upload.csv"), pipelines, taps)
+                val noRows = PipelineStatusAPIController.restrictedViewWith(r, new java.util.ArrayList[PipelineStatus](), pipelines, taps)
                 val session = PipelineStatusAPIController.restrictedViewWith(req(bob), java.util.Arrays.asList(event("payroll")), pipelines, taps)
                 for (got <- Seq(ev, ru)) {
-                    assert(got.isLeft, s.name + " " + hidden + ": expected the 404, got " + got)
-                    assert(status(got.left.get) == 404 && got.left.get.getBody == session.left.get.getBody, s.name + ": " + got.left.get.getBody)
-                    ScopeDenialWording.assertHides(got.left.get.getBody, Seq(hidden, "HR", "someone"))
+                    assert(got.isRight, s.name + " " + hidden + ": expected a token with no rows, got " + got)
+                    ScopeDenialWording.assertHides(gson.toJson(got.right.get), Seq(hidden, "HR", "someone"))
                 }
+                assert(gson.toJson(ev.right.get) == gson.toJson(noRows.right.get), s.name + ": " + gson.toJson(ev.right.get))
+                assert(session.isRight && gson.toJson(session.right.get) == gson.toJson(noRows.right.get), s.name)
             }
-            // a publisher token spanning a visible and a hidden pipeline: 404 too
+            // a publisher token spanning a visible and a hidden pipeline: only the visible run
             val mixed = PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event("orders"), event("payroll")), pipelines, taps)
-            if (!s.pipelines.contains("payroll")) assert(mixed.isLeft, s.name)
+            if (!s.pipelines.contains("payroll")) {
+                assert(mixed.isRight, s.name + ": " + mixed)
+                ScopeDenialWording.assertHides(gson.toJson(mixed.right.get), Seq("payroll"))
+            }
         }
         // in-scope token: shown
         val sales = shapes("job:read").head
@@ -795,7 +802,9 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
         val s = shapes("job:read").find(_.name == "pipeline-limited only").get
         val r = req(s.rk)
         assert(summaryNames(PipelineStatusAPIController.restrictedViewWith(r, summaries, pipelines, taps)) == Set("own_p"))
-        assert(PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event("orders")), pipelines, taps).isLeft)
+        // limited-caller-read-leaks (pinned edit, D2 (a)): was isLeft; a hidden token reads as one with no rows
+        val other = PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event("orders")), pipelines, taps)
+        assert(other.isRight && gson.toJson(other.right.get) == "[]", other.toString)
         val ok = PipelineStatusAPIController.restrictedViewWith(r, statusResponse("own_p", "tap-t_hr_feed.csv"), pipelines, taps)
         assert(gson.toJson(ok.toOption.get).contains("tap-t_hr_feed.csv"), "every tap is readable: its name stays")
         assert(!HiddenTapScrub.tapHidden(r, "t_hr_feed", readTap))

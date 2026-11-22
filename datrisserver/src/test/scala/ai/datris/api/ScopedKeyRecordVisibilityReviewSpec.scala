@@ -273,7 +273,9 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
     test("finding 2: GET /tap/logs embeds a run's rollup exactly as GET /pipeline/status shows it to a limited caller, and null when it may not read the run") {
         def rollupOf(r: HttpServletRequest, resp: PipelineStatusResponse): Option[PipelineStatusRollup] =
             PipelineStatusAPIController.restrictedViewWith(r, resp, pipelines, taps, _ => None) match {
-                case Right(x: PipelineStatusResponse) => Option(x.rollup)
+                // limited-caller-read-leaks (pinned edit, D2 (a)): a hidden run now reads as an
+                // empty rollup on /pipeline/status; /tap/logs embeds null for it, as for no jobs
+                case Right(x: PipelineStatusResponse) => Option(x.rollup).filter(ro => ro.jobs != null && !ro.jobs.isEmpty)
                 case _ => None
             }
         val cases: Seq[(String, HttpServletRequest, PipelineStatusResponse, Boolean)] = Seq(
