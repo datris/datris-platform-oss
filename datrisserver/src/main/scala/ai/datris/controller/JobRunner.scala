@@ -310,6 +310,10 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             Await.result(Future.sequence(destinationFutures.map(_._2)), Duration(JobRunner.destinationTimeoutMinutes, "minutes"))
 
             statusUtil.overrideProcessName(this.getClass.getSimpleName)
+            // Columns this run's transformation added, on a pipeline with a SQL
+            // table: stored now that every destination loaded, less any a SQL
+            // table left out. Never fails the run (a failed write is a warning).
+            TransformedColumns.storeAfterLoad(jobContextStamped)
             statusUtil.info("end", "Process completed")
             if (effects.recordLineage) recordRunLineage(startedAtMs, recordCount, dataType, loaderFutures, "SUCCESS", null)
         } catch {

@@ -116,11 +116,16 @@ object ColumnTypeText {
         else
             Right(
                 EvolvePlan(
-                    fields.filter(f => !existing.contains(f.name.toLowerCase)).map(addSql),
+                    missingFields(fields, existing).map(addSql),
                     if (unsafe.isEmpty) None else Some(notUsedStatus(unsafe))
                 )
             )
     }
+
+    /** The fields of `fields` whose lower-cased name is not in `existing`,
+      * in order: those [[evolve]]'s `addColumns` are for, one statement each. */
+    def missingFields(fields: Seq[SchemaField], existing: Set[String]): Seq[SchemaField] =
+        fields.filter(f => !existing.contains(f.name.toLowerCase))
 
     /** The refusal for `field` in the `schema` ("source" or "destination")
       * schema, worded like the save validator; None when its type is safe.

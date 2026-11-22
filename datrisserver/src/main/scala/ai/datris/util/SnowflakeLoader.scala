@@ -26,9 +26,12 @@ import scala.util.Try
  *  Credentials are a Platform-tab secret named by `Database.credentialsSecret`
  *  (resolved by [[CredentialResolver.resolveSnowflake]]); `warehouse`/`role`
  *  are routing knobs on the config. */
-class SnowflakeLoader(jobContext: JobContext) {
+class SnowflakeLoader(initialContext: JobContext) {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SnowflakeLoader])
-    private val config = jobContext.config
+    // The run's context, narrowed by [[prepareTable]] when a column this
+    // run's transformation added is left out of this table.
+    private var jobContext: JobContext = initialContext
+    private def config: PipelineConfig = jobContext.config
     private val statusUtil = jobContext.statusUtil
     private val db = config.destination.database
 
@@ -36,7 +39,6 @@ class SnowflakeLoader(jobContext: JobContext) {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
         statusUtil.info("begin", "Loading the data into Snowflake database: " + db.dbName + ", schema: " + db.schema + ", table: " + db.table)
 
-        var dataFile: Path = null
         try {
             SnowflakeConnectionUtil.withConnection(db, msg => statusUtil.info("processing", msg)) { conn =>
                 if (db.useTransaction)
@@ -44,7 +46,7 @@ class SnowflakeLoader(jobContext: JobContext) {
                 val statement = conn.createStatement()
                 try {
                     dataFile = createStagingFile()
-                    loadData(statement, dataFile)
+                    loadData(statement)
                     if (db.useTransaction)
                         conn.commit()
                 } catch {
@@ -87,11 +89,18 @@ class SnowflakeLoader(jobContext: JobContext) {
         file
     }
 
-    private def loadData(statement: Statement, dataFile: Path): Unit = {
+    /** The local CSV for PUT; replaced when [[prepareTable]] leaves a column
+      * out, because COPY reads the file by position. */
+    private var dataFile: Path = null
+
+    private def loadData(statement: Statement): Unit = {
         statusUtil.info("processing", "Loading data into " + db.table)
 
-        if (!db.manageTableManually)
-            createTableIfUndefined(statement)
+        if (prepareTable(statement).nonEmpty) {
+            Try(Files.deleteIfExists(dataFile))
+            dataFile = null
+            dataFile = createStagingFile()
+        }
 
         // Truncate AFTER create-if-not-exists so first-run pipelines with
         // truncateBeforeWrite=true don't fail against a not-yet-existing table.
@@ -198,8 +207,12 @@ class SnowflakeLoader(jobContext: JobContext) {
       * in the same order. Otherwise the existing columns are read first and
       * the run fails before any statement when a stored type that is not safe
       * would be needed ([[ColumnTypeText.loadProblem]]); else the table is not
-      * created again and only missing columns are added. */
-    private def createTableIfUndefined(statement: Statement): Unit = {
+      * created again and only missing columns are added. A column this run's
+      * transformation added is handled by [[TransformedColumns.evolve]]
+      * (left out of this table, names returned lower-cased, instead of
+      * failing the load). Snowflake runs DDL in its own transaction and a
+      * failed statement does not end the open one, so no savepoint is used. */
+    private def createTableIfUndefined(statement: Statement): Set[String] = {
         val fields = config.destination.schemaProperties.fields.asScala.toList
 
         val create = SnowflakeLoader.createPlan(db, fields)
@@ -229,12 +242,54 @@ class SnowflakeLoader(jobContext: JobContext) {
             case Left(problem) => throw new DatrisException(problem)
             case Right(plan) =>
                 plan.statusLine.foreach(line => statusUtil.info("processing", line))
-                plan.addColumns.foreach { alter =>
-                    statusUtil.info("processing", "Schema evolution: " + alter)
-                    statement.execute(alter)
-                }
+                TransformedColumns.evolve(
+                    jobContext,
+                    destinationLabel,
+                    TransformedColumns.Snowflake,
+                    ColumnTypeText.missingFields(fields, existing.toSet).zip(plan.addColumns),
+                    existing.toSet,
+                    alter => statement.execute(alter),
+                    alter => TransformedColumns.attempt(statement.getConnection, savepoint = false)(statement.execute(alter)),
+                    () => readColumnTypes(statement)
+                )
         }
     }
+
+    /** The context the load uses: the run's, less any column this run's
+      * transformation added that [[prepareTable]] left out of this table. */
+    private[util] def loadContext: JobContext = jobContext
+
+    /** Create or extend the table, or check a manually managed one against
+      * the columns this run's transformation added; then leave out of this
+      * load every such column the table cannot take. Returns those names,
+      * lower-cased. */
+    private[util] def prepareTable(statement: Statement): Set[String] = {
+        val left =
+            if (!db.manageTableManually) createTableIfUndefined(statement)
+            else TransformedColumns.manualTable(jobContext, destinationLabel, TransformedColumns.Snowflake, () => readColumnTypes(statement))
+        jobContext = TransformedColumns.withoutColumns(jobContext, left)
+        left
+    }
+
+    private def destinationLabel: String = "the Snowflake table " + db.dbName + "." + db.schema + "." + db.table
+
+    /** The table's columns with their types by lower-cased name, read by
+      * position (see [[createTableIfUndefined]]). */
+    private def readColumnTypes(statement: Statement): Either[Throwable, Map[String, TransformedColumns.StoreColumn]] =
+        TransformedColumns.attemptRead(statement.getConnection, savepoint = false) {
+            val rs = statement.executeQuery(SnowflakeLoader.columnTypesSql(db))
+            try {
+                val out = scala.collection.mutable.Map[String, TransformedColumns.StoreColumn]()
+                while (rs.next()) {
+                    val len = rs.getObject(3) match {
+                        case n: Number => Some(n.longValue)
+                        case _ => None
+                    }
+                    out(rs.getString(1).toLowerCase) = TransformedColumns.StoreColumn(rs.getString(2), len)
+                }
+                out.toMap
+            } finally rs.close()
+        }
 
     private def csvDelimiter(): String = CsvAttributes.delimiterOf(config)
 
@@ -308,6 +363,14 @@ object SnowflakeLoader {
       * columns ([[ColumnTypeText.evolve]]). */
     def evolvePlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Either[String, ColumnTypeText.EvolvePlan] =
         ColumnTypeText.evolve(fields, existing, f => addColumnSql(db, f))
+
+    /** The table's column names, types and character lengths, by position,
+      * matched on the effective stored names as the loader's column read is. */
+    def columnTypesSql(db: Database): String =
+        s"""SELECT column_name, data_type, character_maximum_length FROM ${ident(db.dbName)}.information_schema.columns
+           |WHERE table_schema = '${SnowflakeConnectionUtil.effectiveName(db.schema).replace("'", "''")}' AND table_name = '${SnowflakeConnectionUtil
+                .effectiveName(db.table)
+                .replace("'", "''")}'""".stripMargin
 
     /** `ALTER TABLE <db.schema.table> ADD COLUMN IF NOT EXISTS <col> <type>` */
     def addColumnSql(db: Database, field: SchemaField): String =

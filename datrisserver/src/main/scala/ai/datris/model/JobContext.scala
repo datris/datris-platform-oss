@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.util.StatusUtil
+import ai.datris.util.{StatusUtil, TransformedColumns}
 
 case class JobContext(
     pipelineToken: String,
@@ -16,5 +16,9 @@ case class JobContext(
     state: JobState,
     thread: Thread,
     statusUtil: StatusUtil,
-    tenantEnvironment: DatrisEnvironment = null
+    tenantEnvironment: DatrisEnvironment = null,
+    // The columns this run's AI transformation added, on a pipeline with a SQL
+    // table destination (TransformedColumns.reconcile); null otherwise. Shared
+    // by the run's loaders, which record a column they leave out.
+    transformationColumns: TransformedColumns.RunColumns = null
 )

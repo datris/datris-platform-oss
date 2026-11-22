@@ -33,9 +33,12 @@ import scala.util.Try
  *
  *  Credentials are a Platform-tab secret named by `Database.credentialsSecret`
  *  (resolved by [[CredentialResolver.resolveSqlServer]]). */
-class SqlServerLoader(jobContext: JobContext) {
+class SqlServerLoader(initialContext: JobContext) {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SqlServerLoader])
-    private val config = jobContext.config
+    // The run's context, narrowed by [[prepareTable]] when a column this
+    // run's transformation added is left out of this table.
+    private var jobContext: JobContext = initialContext
+    private def config: PipelineConfig = jobContext.config
     private val statusUtil = jobContext.statusUtil
     private val db = config.destination.database
 
@@ -75,8 +78,7 @@ class SqlServerLoader(jobContext: JobContext) {
     private def loadData(conn: Connection, statement: Statement): Unit = {
         statusUtil.info("processing", "Loading data into " + db.table)
 
-        if (!db.manageTableManually)
-            createTableIfUndefined(statement)
+        prepareTable(statement)
 
         // Truncate AFTER create-if-not-exists so first-run pipelines with
         // truncateBeforeWrite=true don't fail against a not-yet-existing table.
@@ -221,8 +223,10 @@ class SqlServerLoader(jobContext: JobContext) {
       * read first and the run fails before any statement when a stored type
       * that is not safe would be needed ([[ColumnTypeText.loadProblem]]);
       * else the table is not created again and only missing columns are
-      * added. */
-    private def createTableIfUndefined(statement: Statement): Unit = {
+      * added. A column this run's transformation added is handled by
+      * [[TransformedColumns.evolve]] (left out of this table, names returned
+      * lower-cased, instead of failing the load). */
+    private def createTableIfUndefined(statement: Statement): Set[String] = {
         val schema = SqlServerConnectionUtil.schemaName(db)
         val fields = config.destination.schemaProperties.fields.asScala.toSeq
 
@@ -248,12 +252,56 @@ class SqlServerLoader(jobContext: JobContext) {
             case Left(problem) => throw new DatrisException(problem)
             case Right(plan) =>
                 plan.statusLine.foreach(line => statusUtil.info("processing", line))
-                plan.addColumns.foreach { alter =>
-                    statusUtil.info("processing", "Schema evolution: " + alter)
-                    statement.execute(alter)
-                }
+                TransformedColumns.evolve(
+                    jobContext,
+                    destinationLabel,
+                    TransformedColumns.SqlServer,
+                    ColumnTypeText.missingFields(fields, existing.toSet).zip(plan.addColumns),
+                    existing.toSet,
+                    alter => statement.execute(alter),
+                    // Behind a savepoint inside a transaction; a refusal that
+                    // ends the transaction fails the load.
+                    alter => TransformedColumns.attempt(statement.getConnection, savepoint = true)(statement.execute(alter)),
+                    () => readColumnTypes(statement)
+                )
         }
     }
+
+    /** The context the load uses: the run's, less any column this run's
+      * transformation added that [[prepareTable]] left out of this table. */
+    private[util] def loadContext: JobContext = jobContext
+
+    /** Create or extend the table, or check a manually managed one against
+      * the columns this run's transformation added; then leave out of this
+      * load every such column the table cannot take. Returns those names,
+      * lower-cased. */
+    private[util] def prepareTable(statement: Statement): Set[String] = {
+        val left =
+            if (!db.manageTableManually) createTableIfUndefined(statement)
+            else TransformedColumns.manualTable(jobContext, destinationLabel, TransformedColumns.SqlServer, () => readColumnTypes(statement))
+        jobContext = TransformedColumns.withoutColumns(jobContext, left)
+        left
+    }
+
+    private def destinationLabel: String = "the SQL Server table " + SqlServerConnectionUtil.schemaName(db) + "." + db.table
+
+    /** The table's columns with their types by lower-cased name
+      * (CHARACTER_MAXIMUM_LENGTH is -1 for (n)varchar(max)). */
+    private def readColumnTypes(statement: Statement): Either[Throwable, Map[String, TransformedColumns.StoreColumn]] =
+        TransformedColumns.attemptRead(statement.getConnection, savepoint = true) {
+            val rs = statement.executeQuery(SqlServerLoader.columnTypesSql(db))
+            try {
+                val out = scala.collection.mutable.Map[String, TransformedColumns.StoreColumn]()
+                while (rs.next()) {
+                    val len = rs.getObject(3) match {
+                        case n: Number => Some(n.longValue)
+                        case _ => None
+                    }
+                    out(rs.getString(1).toLowerCase) = TransformedColumns.StoreColumn(rs.getString(2), len)
+                }
+                out.toMap
+            } finally rs.close()
+        }
 
     private def qualifiedTable(): String = SqlServerConnectionUtil.qualifiedTable(db)
 
@@ -341,6 +389,11 @@ object SqlServerLoader {
             existing,
             f => s"ALTER TABLE ${SqlServerConnectionUtil.qualifiedTable(db)} ADD ${columnDef(f, isKey = false)}"
         )
+
+    /** The table's column names, types and character lengths, by position. */
+    def columnTypesSql(db: Database): String =
+        "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = " +
+            nLiteral(SqlServerConnectionUtil.schemaName(db)) + " AND TABLE_NAME = " + nLiteral(db.table)
 
     /** `name TYPE [NOT NULL] [CHECK (ISJSON(name) = 1)]`. */
     def columnDef(field: SchemaField, isKey: Boolean): String = {

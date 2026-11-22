@@ -246,6 +246,13 @@ object PostgresSql {
           |WHERE table_catalog = ? AND table_schema = ?
           |AND table_name = ?""".stripMargin
 
+    /** The table's columns, their types and character lengths; bind the
+      * database, the schema, the table. */
+    val ExistingColumnTypesSql: String =
+        """SELECT column_name, data_type, character_maximum_length FROM information_schema.columns
+          |WHERE table_catalog = ? AND table_schema = ?
+          |AND table_name = ?""".stripMargin
+
     /** The table's columns and types in order; bind the schema, the table. */
     val ColumnsOfTableSql: String =
         "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position"

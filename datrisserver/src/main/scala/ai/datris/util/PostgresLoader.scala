@@ -16,9 +16,12 @@ import java.sql.{Connection, Statement}
 import scala.collection.JavaConverters._
 import scala.util.Try
 
-class PostgresLoader(jobContext: JobContext) {
+class PostgresLoader(initialContext: JobContext) {
     private val logger: Logger = LoggerFactory.getLogger(classOf[PostgresLoader])
-    private val config = jobContext.config
+    // The run's context, narrowed by [[prepareTable]] when a column this
+    // run's transformation added is left out of this table.
+    private var jobContext: JobContext = initialContext
+    private def config: PipelineConfig = jobContext.config
     private val statusUtil = jobContext.statusUtil
 
     /** In multi-tenant mode, use the tenant's isolated database; otherwise use the pipeline config value. */
@@ -106,8 +109,7 @@ class PostgresLoader(jobContext: JobContext) {
 
         statusUtil.info("processing", "Copying data into " + config.destination.database.table)
 
-        if (!config.destination.database.manageTableManually)
-            createTableIfUndefined(statement, config.destination.database.table)
+        prepareTable(statement)
 
         // Truncate AFTER create-if-not-exists so first-run pipelines with truncateBeforeWrite=true
         // don't fail against a not-yet-existing table.
@@ -324,8 +326,12 @@ class PostgresLoader(jobContext: JobContext) {
       * statement when such a type would be needed to create the table or a
       * column ([[ColumnTypeText.loadProblem]]); else the table is not created
       * again, only missing columns are added, and one status line names the
-      * fields whose stored type was not used. */
-    private def createTableIfUndefined(statement: Statement, tableName: String): Unit = {
+      * fields whose stored type was not used. A column this run's
+      * transformation added is handled by [[TransformedColumns.evolve]]: an
+      * ADD COLUMN the store refuses, or an existing column whose type does
+      * not take every text value, leaves it out of this table (the names are
+      * returned, lower-cased) instead of failing the load. */
+    private def createTableIfUndefined(statement: Statement, tableName: String): Set[String] = {
         val schema = config.destination.database.schema
         val fields = config.destination.schemaProperties.fields.asScala.toList
 
@@ -344,10 +350,18 @@ class PostgresLoader(jobContext: JobContext) {
             case Left(problem) => throw new DatrisException(problem)
             case Right(plan) =>
                 plan.statusLine.foreach(line => statusUtil.info("processing", line))
-                plan.addColumns.foreach { alterSql =>
-                    statusUtil.info("processing", "Schema evolution: " + alterSql)
-                    statement.execute(alterSql)
-                }
+                TransformedColumns.evolve(
+                    jobContext,
+                    destinationLabel,
+                    TransformedColumns.Postgres,
+                    ColumnTypeText.missingFields(fields, existingColumns).zip(plan.addColumns),
+                    existingColumns,
+                    alterSql => statement.execute(alterSql),
+                    // A refused statement inside a transaction would abort it:
+                    // the savepoint keeps the rest of the load going.
+                    alterSql => TransformedColumns.attempt(statement.getConnection, savepoint = true)(statement.execute(alterSql)),
+                    () => readColumnTypes(statement, tableName)
+                )
         }
     }
 
@@ -367,6 +381,54 @@ class PostgresLoader(jobContext: JobContext) {
             } finally existingColumnsRs.close()
         } finally existingPs.close()
         existingColumns.toSet
+    }
+
+    /** The context the load uses: the run's, less any column this run's
+      * transformation added that [[prepareTable]] left out of this table. */
+    private[util] def loadContext: JobContext = jobContext
+
+    /** Create or extend the table ([[createTableIfUndefined]]), or, for a
+      * table managed manually, check the columns this run's transformation
+      * added against it ([[TransformedColumns.manualTable]]); then leave out
+      * of this load every such column the table cannot take. Returns those
+      * names, lower-cased. */
+    private[util] def prepareTable(statement: Statement): Set[String] = {
+        val tableName = config.destination.database.table
+        val left =
+            if (!config.destination.database.manageTableManually) createTableIfUndefined(statement, tableName)
+            else TransformedColumns.manualTable(jobContext, destinationLabel, TransformedColumns.Postgres, () => readColumnTypes(statement, tableName))
+        jobContext = TransformedColumns.withoutColumns(jobContext, left)
+        left
+    }
+
+    private def destinationLabel: String =
+        "the Postgres table " + config.destination.database.schema + "." + config.destination.database.table
+
+    /** The table's columns with their types, by lower-cased name, read
+      * behind a savepoint inside a transaction so a failure leaves the load
+      * able to go on. */
+    private def readColumnTypes(statement: Statement, tableName: String): Either[Throwable, Map[String, TransformedColumns.StoreColumn]] = {
+        val conn = statement.getConnection
+        TransformedColumns.attemptRead(conn, savepoint = true) {
+            val ps = conn.prepareStatement(PostgresSql.ExistingColumnTypesSql)
+            try {
+                ps.setString(1, dbName)
+                ps.setString(2, config.destination.database.schema)
+                ps.setString(3, tableName)
+                val rs = ps.executeQuery()
+                try {
+                    val out = scala.collection.mutable.Map[String, TransformedColumns.StoreColumn]()
+                    while (rs.next()) {
+                        val len = rs.getObject(3) match {
+                            case n: Number => Some(n.longValue)
+                            case _ => None
+                        }
+                        out(rs.getString(1).toLowerCase) = TransformedColumns.StoreColumn(rs.getString(2), len)
+                    }
+                    out.toMap
+                } finally rs.close()
+            } finally ps.close()
+        }
     }
 
     private def sendNotification(): Unit = {

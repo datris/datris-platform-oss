@@ -29,9 +29,12 @@ import scala.util.Try
  *  Credentials are a Platform-tab secret named by `Database.credentialsSecret`
  *  (resolved by [[CredentialResolver.resolveDatabricks]]); `dbName` is the
  *  Unity Catalog catalog and `warehouse` is the SQL warehouse ID. */
-class DatabricksLoader(jobContext: JobContext) {
+class DatabricksLoader(initialContext: JobContext) {
     private val logger: Logger = LoggerFactory.getLogger(classOf[DatabricksLoader])
-    private val config = jobContext.config
+    // The run's context, narrowed by [[prepareTable]] when a column this
+    // run's transformation added is left out of this table.
+    private var jobContext: JobContext = initialContext
+    private def config: PipelineConfig = jobContext.config
     private val statusUtil = jobContext.statusUtil
     private val db = config.destination.database
 
@@ -60,8 +63,20 @@ class DatabricksLoader(jobContext: JobContext) {
                 try {
                     dataFile = createStagingFile()
                     var tableCreated = false
-                    if (!db.manageTableManually)
-                        tableCreated = createTableIfUndefined(statement)
+                    val left =
+                        if (!db.manageTableManually) {
+                            val (created, out) = createTableIfUndefined(statement)
+                            tableCreated = created
+                            out
+                        } else manualTable(statement)
+                    jobContext = TransformedColumns.withoutColumns(jobContext, left)
+                    // The staged file's header names the load's columns: write
+                    // it again without the columns left out.
+                    if (left.nonEmpty) {
+                        Try(Files.deleteIfExists(dataFile))
+                        dataFile = null
+                        dataFile = createStagingFile()
+                    }
                     stagedPath = volumeFilePath()
                     putFile(statement, dataFile, stagedPath)
                     loadData(statement, stagedPath)
@@ -213,8 +228,10 @@ class DatabricksLoader(jobContext: JobContext) {
     /** Returns true when this call created the table (known only for pipelines
      *  that opted into the Unity Catalog push — the existence probe is skipped
      *  otherwise, so their DDL path is unchanged). A freshly created table has
-     *  none of the metadata a previous sync applied, so the sync re-applies it. */
-    private def createTableIfUndefined(statement: Statement): Boolean = {
+     *  none of the metadata a previous sync applied, so the sync re-applies it.
+     *  Also returns the columns this run's transformation added that are left
+     *  out of this table ([[TransformedColumns.evolve]]), lower-cased. */
+    private def createTableIfUndefined(statement: Statement): (Boolean, Set[String]) = {
         if (db.schema != null && db.schema.nonEmpty)
             statement.execute("CREATE SCHEMA IF NOT EXISTS " + schemaRef())
 
@@ -246,17 +263,50 @@ class DatabricksLoader(jobContext: JobContext) {
             rs.close()
         }
 
-        config.destination.schemaProperties.fields.forEach(field => {
-            if (!existing.contains(field.name.toLowerCase)) {
-                // No IF NOT EXISTS on ADD COLUMN in Databricks SQL — the
-                // information_schema pre-check above is the guard.
-                val alter = DatabricksLoader.addColumnSql(db, field)
-                statusUtil.info("processing", "Schema evolution: " + alter)
-                statement.execute(alter)
-            }
-        })
-        !tableExisted
+        // No IF NOT EXISTS on ADD COLUMN in Databricks SQL — the
+        // information_schema pre-check above is the guard.
+        val left = TransformedColumns.evolve(
+            jobContext,
+            destinationLabel,
+            TransformedColumns.Databricks,
+            DatabricksLoader.addPlan(db, config.destination.schemaProperties.fields.asScala.toList, existing.toSet),
+            existing.toSet,
+            alter => statement.execute(alter),
+            alter => TransformedColumns.attempt(statement.getConnection, savepoint = false)(statement.execute(alter)),
+            () => readColumnTypes(statement)
+        )
+        (!tableExisted, left)
     }
+
+    /** The context the load uses: the run's, less any column this run's
+      * transformation added that [[prepareTable]] left out of this table. */
+    private[util] def loadContext: JobContext = jobContext
+
+    /** The table step `process()` runs: create or extend the table, or check
+      * a manually managed one; then leave out of this load every column this
+      * run's transformation added that the table cannot take. Returns those
+      * names, lower-cased. */
+    private[util] def prepareTable(statement: Statement): Set[String] = {
+        val left = if (!db.manageTableManually) createTableIfUndefined(statement)._2 else manualTable(statement)
+        jobContext = TransformedColumns.withoutColumns(jobContext, left)
+        left
+    }
+
+    private def manualTable(statement: Statement): Set[String] =
+        TransformedColumns.manualTable(jobContext, destinationLabel, TransformedColumns.Databricks, () => readColumnTypes(statement))
+
+    private def destinationLabel: String = "the Databricks table " + db.dbName + "." + db.schema + "." + db.table
+
+    /** The table's columns with their types by lower-cased name. */
+    private def readColumnTypes(statement: Statement): Either[Throwable, Map[String, TransformedColumns.StoreColumn]] =
+        TransformedColumns.attemptRead(statement.getConnection, savepoint = false) {
+            val rs = statement.executeQuery(DatabricksLoader.columnTypesSql(db))
+            try {
+                val out = scala.collection.mutable.Map[String, TransformedColumns.StoreColumn]()
+                while (rs.next()) out(rs.getString(1).toLowerCase) = TransformedColumns.StoreColumn(rs.getString(2))
+                out.toMap
+            } finally rs.close()
+        }
 
     private def tableExists(statement: Statement): Boolean = {
         val rs = statement.executeQuery(
@@ -334,6 +384,19 @@ object DatabricksLoader {
         sql.append(")")
         sql.toString()
     }
+
+    /** Each field the table lacks (lower-cased `existing`), in field order,
+      * with its [[addColumnSql]]. */
+    def addPlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Seq[(SchemaField, String)] =
+        fields.filter(f => !existing.contains(f.name.toLowerCase)).map(f => f -> addColumnSql(db, f))
+
+    /** The table's column names and types, by position, matched as the
+      * loader's column read is (Unity Catalog stores names lowercase). */
+    def columnTypesSql(db: Database): String =
+        s"""SELECT column_name, data_type FROM ${ident(db.dbName)}.information_schema.columns
+           |WHERE lower(table_schema) = '${sqlLiteral(DatabricksConnectionUtil.effectiveName(db.schema))}' AND lower(table_name) = '${sqlLiteral(
+                DatabricksConnectionUtil.effectiveName(db.table)
+            )}'""".stripMargin
 
     /** `ALTER TABLE <cat.schema.table> ADD COLUMN <col> <type>`. No IF NOT
       * EXISTS on ADD COLUMN in Databricks SQL; the loader's information_schema
