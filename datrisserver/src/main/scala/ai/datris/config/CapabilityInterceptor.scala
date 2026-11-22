@@ -297,135 +297,161 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         )
                         true
 
-                    case Some(rk) if CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.RestrictedListing) =>
-                        // A restricted user's session holds metadata:read, but
-                        // raw table/collection listings cannot be narrowed to
-                        // its catalogs: refused with the capability-denied body
-                        // in both modes (the grants are a hard boundary).
-                        logger.info(
-                            "capability check: route={} {} required={}:{} key={} outcome=deny (restricted session, unfilterable listing)",
-                            Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
-                        )
-                        denyCapability(
-                            request,
-                            response,
-                            rk,
-                            resource,
-                            action,
-                            method,
-                            path,
-                            Some(CapabilityInterceptor.restrictedListingMessage(rk.label, resource + ":" + action))
-                        )
-                        false
-
                     case Some(rk) =>
-                        // Pre-action gate is scope-agnostic — we don't have
-                        // the loaded resource yet (the controller hasn't run),
-                        // so we only check that the key holds SOME capability
-                        // for this resource+action. Scope predicates like
-                        // `owner=self` or `_type=tap` are evaluated later by
-                        // the controller via `CapabilityCheck.assertScope`
-                        // once the resource is in hand. Without this split,
-                        // any scoped capability would false-deny here because
-                        // scope.forall on a non-empty scope with an empty
-                        // context always fails.
-                        val granted = rk.matchesResourceAction(resource, action)
-                        val inert = CapabilityInterceptor.inertOutcome(rk, resource, action)
-                        if (granted && CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.InstallWide)) {
-                            // A caller limited to a catalog or to what it
-                            // created holds the capability, but the route
-                            // covers the whole installation and has nothing
-                            // to filter (InstallWideForLimited, Decision D3):
-                            // refused in both modes, before the handler runs,
-                            // as the restricted-session listing refusal is.
-                            // Only a caller that holds the capability reaches
-                            // here: one that does not keeps the does-not-hold
-                            // or inert-scope 403 below.
-                            val message = CallerVisibility.InstallWideRequestMessage
-                            logger.info(
-                                "capability check: route={} {} required={}:{} key={} outcome=deny (scope-limited caller, install-wide route)",
-                                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
-                            )
-                            denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
-                            false
-                        } else if (granted) {
-                            // INFO during Phase 1 so the rollout is visible.
-                            // After enforce mode is on and the route map is
-                            // stable, dial this back to DEBUG to cut volume.
-                            logger.info(
-                                "capability check: route={} {} required={}:{} key={} legacy={} outcome=grant",
-                                Array[AnyRef](
-                                    logMethod,
-                                    logPath,
-                                    resource,
-                                    action,
-                                    LogSafe.text(rk.label),
-                                    java.lang.Boolean.valueOf(rk.isLegacyFullAccess)
-                                ): _*
-                            )
-                            inert match {
-                                case Some(InertOutcome.UsedUnderOptOut(caps)) =>
-                                    // DATRIS_KEY_INERT_SCOPES=allow: passed only
-                                    // through a capability whose scope is not applied.
-                                    val required = resource + ":" + action
-                                    val reason = CapabilityScopes.inertUsedMessage(rk.label, required, caps)
-                                    logger.warn(
-                                        "capability check: route={} {} required={} key={} outcome=inert-scope-used ({}=allow): {}",
-                                        Array[AnyRef](
-                                            logMethod,
-                                            logPath,
-                                            required,
-                                            LogSafe.text(rk.label),
-                                            CapabilityScopes.InertScopesEnv,
-                                            caps.map(_.raw).mkString(", ")
-                                        ): _*
-                                    )
-                                    AuditLog.inertScopeUsed(request, required, caps.map(_.raw), reason)
-                                case _ =>
-                            }
-                            true
-                        } else if (enforce) {
-                            inert match {
-                                case Some(InertOutcome.Refused(caps)) =>
-                                    val required = resource + ":" + action
-                                    val message = CapabilityScopes.inertDenialMessage(rk.label, required, caps)
-                                    logger.info(
-                                        "capability check: route={} {} required={} key={} outcome=deny (inert scope: {})",
-                                        Array[AnyRef](logMethod, logPath, required, LogSafe.text(rk.label), caps.map(_.raw).mkString(", ")): _*
-                                    )
-                                    denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message))
-                                case _ =>
-                                    logger.info(
-                                        "capability check: route={} {} required={}:{} key={} outcome=deny",
-                                        Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
-                                    )
-                                    denyCapability(request, response, rk, resource, action, method, path)
-                            }
-                            false
-                        } else if (CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.InstallWide)) {
-                            // Log-only never opens an install-wide route to a
-                            // caller limited to a catalog or to what it
-                            // created (a restricted session included): the
-                            // refusal above holds whether or not the caller
-                            // holds the capability. Enforce mode keeps the
-                            // does-not-hold / inert-scope answers above.
-                            val message = CallerVisibility.InstallWideRequestMessage
-                            logger.info(
-                                "capability check: route={} {} required={}:{} key={} outcome=deny (log-only; scope-limited caller, install-wide route)",
-                                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
-                            )
-                            denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
-                            false
-                        } else {
-                            logger.warn(
-                                "capability check: route={} {} required={}:{} key={} outcome=would-deny (log-only)",
-                                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
-                            )
-                            true
-                        }
+                        // The verified replay of an approved action runs with
+                        // its requester's identity and, for a restricted
+                        // approver, is also held to the approver's own
+                        // bundle (TenantInterceptor.replayCeiling): both must
+                        // pass, the requester's first.
+                        checkIdentity(request, response, rk, resource, action, method, path, logMethod, logPath) &&
+                        TenantInterceptor.approverCeiling(request).forall(c =>
+                            checkIdentity(request, response, c, resource, action, method, path, logMethod, logPath)
+                        )
                 }
         }
     }
+
+    /** The route gate for one identity `rk` holding (resource, action):
+      * true when it passes, else the denial is written and false. Applied to
+      * the request's identity and, on the verified replay of an approved
+      * action, to the restricted approver's bundle beside it. */
+    private def checkIdentity(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        rk: ResolvedKey,
+        resource: String,
+        action: String,
+        method: String,
+        path: String,
+        logMethod: String,
+        logPath: String
+    ): Boolean =
+        if (CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.RestrictedListing)) {
+            // A restricted user's session holds metadata:read, but
+            // raw table/collection listings cannot be narrowed to
+            // its catalogs: refused with the capability-denied body
+            // in both modes (the grants are a hard boundary).
+            logger.info(
+                "capability check: route={} {} required={}:{} key={} outcome=deny (restricted session, unfilterable listing)",
+                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
+            )
+            denyCapability(
+                request,
+                response,
+                rk,
+                resource,
+                action,
+                method,
+                path,
+                Some(CapabilityInterceptor.restrictedListingMessage(rk.label, resource + ":" + action))
+            )
+            false
+        } else {
+            // Pre-action gate is scope-agnostic — we don't have
+            // the loaded resource yet (the controller hasn't run),
+            // so we only check that the key holds SOME capability
+            // for this resource+action. Scope predicates like
+            // `owner=self` or `_type=tap` are evaluated later by
+            // the controller via `CapabilityCheck.assertScope`
+            // once the resource is in hand. Without this split,
+            // any scoped capability would false-deny here because
+            // scope.forall on a non-empty scope with an empty
+            // context always fails.
+            val granted = rk.matchesResourceAction(resource, action)
+            val inert = CapabilityInterceptor.inertOutcome(rk, resource, action)
+            if (granted && CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.InstallWide)) {
+                // A caller limited to a catalog or to what it
+                // created holds the capability, but the route
+                // covers the whole installation and has nothing
+                // to filter (InstallWideForLimited, Decision D3):
+                // refused in both modes, before the handler runs,
+                // as the restricted-session listing refusal is.
+                // Only a caller that holds the capability reaches
+                // here: one that does not keeps the does-not-hold
+                // or inert-scope 403 below.
+                val message = CallerVisibility.InstallWideRequestMessage
+                logger.info(
+                    "capability check: route={} {} required={}:{} key={} outcome=deny (scope-limited caller, install-wide route)",
+                    Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
+                )
+                denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
+                false
+            } else if (granted) {
+                // INFO during Phase 1 so the rollout is visible.
+                // After enforce mode is on and the route map is
+                // stable, dial this back to DEBUG to cut volume.
+                logger.info(
+                    "capability check: route={} {} required={}:{} key={} legacy={} outcome=grant",
+                    Array[AnyRef](
+                        logMethod,
+                        logPath,
+                        resource,
+                        action,
+                        LogSafe.text(rk.label),
+                        java.lang.Boolean.valueOf(rk.isLegacyFullAccess)
+                    ): _*
+                )
+                inert match {
+                    case Some(InertOutcome.UsedUnderOptOut(caps)) =>
+                        // DATRIS_KEY_INERT_SCOPES=allow: passed only
+                        // through a capability whose scope is not applied.
+                        val required = resource + ":" + action
+                        val reason = CapabilityScopes.inertUsedMessage(rk.label, required, caps)
+                        logger.warn(
+                            "capability check: route={} {} required={} key={} outcome=inert-scope-used ({}=allow): {}",
+                            Array[AnyRef](
+                                logMethod,
+                                logPath,
+                                required,
+                                LogSafe.text(rk.label),
+                                CapabilityScopes.InertScopesEnv,
+                                caps.map(_.raw).mkString(", ")
+                            ): _*
+                        )
+                        AuditLog.inertScopeUsed(request, required, caps.map(_.raw), reason)
+                    case _ =>
+                }
+                true
+            } else if (enforce) {
+                inert match {
+                    case Some(InertOutcome.Refused(caps)) =>
+                        val required = resource + ":" + action
+                        val message = CapabilityScopes.inertDenialMessage(rk.label, required, caps)
+                        logger.info(
+                            "capability check: route={} {} required={} key={} outcome=deny (inert scope: {})",
+                            Array[AnyRef](logMethod, logPath, required, LogSafe.text(rk.label), caps.map(_.raw).mkString(", ")): _*
+                        )
+                        denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message))
+                    case _ =>
+                        logger.info(
+                            "capability check: route={} {} required={}:{} key={} outcome=deny",
+                            Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
+                        )
+                        denyCapability(request, response, rk, resource, action, method, path)
+                }
+                false
+            } else if (CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.InstallWide)) {
+                // Log-only never opens an install-wide route to a
+                // caller limited to a catalog or to what it
+                // created (a restricted session included): the
+                // refusal above holds whether or not the caller
+                // holds the capability. Enforce mode keeps the
+                // does-not-hold / inert-scope answers above.
+                val message = CallerVisibility.InstallWideRequestMessage
+                logger.info(
+                    "capability check: route={} {} required={}:{} key={} outcome=deny (log-only; scope-limited caller, install-wide route)",
+                    Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
+                )
+                denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
+                false
+            } else {
+                logger.warn(
+                    "capability check: route={} {} required={}:{} key={} outcome=would-deny (log-only)",
+                    Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
+                )
+                true
+            }
+        }
 
     /** The 403 capability-denied JSON body and its audit row. Emit a clean
       * JSON body so agents can parse the denial. sendError() produces Tomcat's
@@ -446,11 +472,16 @@ class CapabilityInterceptor extends HandlerInterceptor {
         response.setContentType("application/json")
         response.getWriter.write(CapabilityInterceptor.deniedBody(rk.label, resource, action, method, path, message))
         response.getWriter.flush()
+        // The verified replay of an approved action: the row names the
+        // approval and its requester, as the replay's other rows do.
+        val replay =
+            TenantInterceptor.verifiedReplay(request).toSeq.flatMap(v => Seq("approvalId" -> v.approvalId) ++ v.originalActor.map("originalActor" -> _))
         AuditLog.denied(
             request,
             auditReason.getOrElse("capability denied for key '" + rk.label + "'"),
             HttpServletResponse.SC_FORBIDDEN,
-            required = Some(resource + ":" + action)
+            required = Some(resource + ":" + action),
+            names = replay
         )
     }
 

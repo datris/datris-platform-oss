@@ -64,6 +64,11 @@ object CapabilityCheck {
       * and noted on the request for the audit log; the exception's message
       * carries only the key's side ([[scopeDenialMessage]]).
       *
+      * On the verified replay of an approved action with a restricted
+      * approver, the approver's bundle ([[approverCeiling]]) must grant it
+      * too; it is checked after the request's identity, with the same
+      * wording naming that bundle.
+      *
       * Returns normally on success, so callers can chain:
       *   CapabilityCheck.assertScope(request, "secret", "write", Map("_type" -> existingType))
       *   SecretsUtil.writeSecret(...) */
@@ -73,16 +78,23 @@ object CapabilityCheck {
         action: String,
         context: Map[String, String]
     ): Unit = {
-        val resolved = readResolvedKey(request)
-        resolved.foreach { rk =>
-            if (!rk.grants(resource, action, context)) {
-                val detail = scopeDenialDetail(rk, resource, action, context)
-                logger.info("capability scope denial: " + detail)
-                AuditLog.noteScopeDenial(request, resource + ":" + action, detail)
-                throw new CapabilityDeniedException(scopeDenialMessage(rk, resource, action), detail)
-            }
-        }
+        readResolvedKey(request).foreach(denyUnlessGranted(request, _, resource, action, context))
+        approverCeiling(request).foreach(denyUnlessGranted(request, _, resource, action, context))
     }
+
+    /** [[assertScope]] for one identity. */
+    private def denyUnlessGranted(request: HttpServletRequest, rk: ResolvedKey, resource: String, action: String, context: Map[String, String]): Unit =
+        if (!rk.grants(resource, action, context)) {
+            val detail = scopeDenialDetail(rk, resource, action, context)
+            logger.info("capability scope denial: " + detail)
+            AuditLog.noteScopeDenial(request, resource + ":" + action, detail)
+            throw new CapabilityDeniedException(scopeDenialMessage(rk, resource, action), detail)
+        }
+
+    /** The restricted approver's bundle a verified replay is also held to
+      * (`TenantInterceptor.approverCeiling`); None on every other request. */
+    def approverCeiling(request: HttpServletRequest): Option[ResolvedKey] =
+        if (request == null) None else TenantInterceptor.approverCeiling(request)
 
     /** The `collection=` check on `search:vector` and `document:upload`
       * (plans/stories/api-key-inert-scopes.md, Fix 2). Each entry of
@@ -140,7 +152,10 @@ object CapabilityCheck {
       * instead, so the controller answers 404 as if the resource did not
       * exist. API keys keep the 403 (`CapabilityDeniedException`). Routes
       * that must not refuse a key holding the action nowhere (the route gate
-      * decided) use [[assertKeyScope]] for the key side instead. */
+      * decided) use [[assertKeyScope]] for the key side instead. A
+      * restricted approver's bundle on a verified replay
+      * ([[approverCeiling]]) is a restricted session's: checked after the
+      * request's identity, it answers [[ResourceHiddenException]]. */
     def assertVisible(
         request: HttpServletRequest,
         resource: String,
@@ -150,8 +165,11 @@ object CapabilityCheck {
         readResolvedKey(request).foreach { rk =>
             if (rk.restrictedSession && !rk.grants(resource, action, context))
                 throw new ResourceHiddenException("not found")
+            denyUnlessGranted(request, rk, resource, action, context)
         }
-        assertScope(request, resource, action, context)
+        approverCeiling(request).foreach { c =>
+            if (!c.grants(resource, action, context)) throw new ResourceHiddenException("not found")
+        }
     }
 
     /** True when the request runs as a restricted user's session. */
@@ -226,7 +244,9 @@ object CapabilityCheck {
 
     /** Same as assertScope but returns a boolean instead of throwing. Used
       * by list endpoints to filter result sets, where "denied" means
-      * "exclude from the list" rather than "fail the whole request". */
+      * "exclude from the list" rather than "fail the whole request". A
+      * restricted approver's bundle on a verified replay
+      * ([[approverCeiling]]) must grant it too. */
     def grants(
         request: HttpServletRequest,
         resource: String,
@@ -234,7 +254,7 @@ object CapabilityCheck {
         context: Map[String, String]
     ): Boolean = {
         readResolvedKey(request) match {
-            case Some(rk) => rk.grants(resource, action, context)
+            case Some(rk) => rk.grants(resource, action, context) && approverCeiling(request).forall(_.grants(resource, action, context))
             case None => true
         }
     }

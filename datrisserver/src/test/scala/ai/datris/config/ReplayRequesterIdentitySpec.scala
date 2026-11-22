@@ -212,12 +212,11 @@ class ReplayRequesterIdentitySpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(deleteStatus(o, fin) == 200)
     }
 
-    test("a restricted approver still narrows the replay: it never holds what the approver's own grants do not") {
+    test("a restricted approver still limits the replay: the approver's own grants are a second limit beside the requester's identity") {
         val o = replay(deleteAction("pa_bob", keyActor(oldAgent), fin.name), approver = "bob")
         assertRuns(o, "replay")
-        val bobs = APIKeyValidator.resolveFromSession(bob)
-        o.identity.get.effectiveCapabilities.foreach(c => assert(bobs.grants(c.resource, c.action, c.scope), c.raw + " is not the approver's"))
-        assert(!o.identity.get.isLegacyFullAccess)
+        assert(o.identity.contains(oldAgent), String.valueOf(o.identity))
+        assert(TenantInterceptor.approverCeiling(o.r).contains(APIKeyValidator.resolveFromSession(bob)), String.valueOf(TenantInterceptor.approverCeiling(o.r)))
         assert(deleteStatus(o, fin) != 200)
     }
 
