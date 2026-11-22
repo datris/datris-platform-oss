@@ -1,22 +1,28 @@
 # Release Notes
 
-## v1.60.0 — November 18, 2026
+## v1.61.0 — November 22, 2026
 
-**Delete a pipeline and keep its data, and tighter boundaries for scoped users and API keys.**
+**Deletes that tell you what happened, columns that land under their own names, and firmer boundaries for scoped users and API keys.**
 
-- **Delete a pipeline, keep the data.** Deleting a pipeline can now leave its destination data in place. Ask for it with the keep-data option in the API, the CLI or the MCP delete tool, and the result lists what was kept. Pipelines that write to a vector store cannot be deleted this way yet. A plain delete still removes the configuration and the data, as before.
-- **Scoped users start on new destinations.** A user limited to specific catalogs can no longer point a pipeline at a table, collection or storage location that already exists, unless a pipeline they can see already uses it. This covers saving, restoring an earlier version and renaming. An admin or any user with install-wide access can still adopt existing data.
-- **Scoped users see less about work outside their catalogs.** Provenance fields that identify a feeding tap are left out of search results, Live Read rows and query results when the user cannot see that tap. On Snowflake, SQL Server and Databricks, a scoped user gets a preview of the pipeline's own table and cannot run custom SQL. The Operations chat no longer tells a scoped user about open incidents.
-- **Chats act with the caller's own access.** An API key limited to a catalog, to its own pipelines or to specific capabilities now gets exactly that access in the Assistant and the other chats. Signed-in users and keys with install-wide access are unaffected. Tap scripts can no longer call the chats.
-- **MCP tools list for signed-in users.** The tools list now loads for a user who is signed in without an API key, filtered to their role.
-- **Clearer errors from schema generation.** Invalid or empty input now returns a clear message instead of a server error.
-- **Reserved metadata names.** With provenance stamping on, the platform's own provenance values replace any custom metadata that uses the same names. On Qdrant, Milvus, Chroma and Weaviate, custom metadata named `id`, `text`, `chunk_index`, `filename` or `embedding` is now ignored.
-- **Security hardening.** Several fixes tighten what scoped users and limited API keys can reach. We recommend upgrading.
+- **Delete and reset report what was left behind.** When a table, collection or set of files cannot be removed, the result names it and gives the reason, in the UI, the CLI and the MCP tools. The pipeline's configuration is still deleted. A store that does not answer no longer holds up the delete.
+- **Reset no longer re-ingests after a failed clear.** If a vector collection could not be cleared, the reset keeps its record of ingested documents, so nothing is loaded twice. Run the reset again once the store is available.
+- **Columns an AI transformation adds reach your database table.** A new column from a transformation is added to the table as text. If a table cannot take it, the run still succeeds, loads every other column, and shows a warning naming the column and the reason.
+- **Object-store files with a missing column.** A file that lacks a column of the pipeline's schema now loads with that column empty. Rows that lack an Iceberg merge key or a partition column are refused before anything is written, with a message naming the column, instead of duplicating rows or landing them in the wrong partition.
+- **Parquet and ORC queries return every column.** A query now returns every column the pipeline's files hold, including columns added after the first load.
+- **More column names load as they are.** On object stores, a column name with a dot, a space or a backtick loads under exactly that name. Saving a pipeline again keeps the column names its schema already has.
+- **Clearer refusals on save.** A table, schema, collection or column name a destination cannot hold, or a column type the platform does not know, is refused when you save, with a message naming it, instead of failing at load time.
+- **Read-only queries.** PostgreSQL queries from the query tools and from tap scripts are read-only and limited to five minutes each. MongoDB queries and listings cover your data and leave out the platform's own records.
+- **Restoring an earlier version is checked like a save.** A version that would not be accepted today is refused with the reason, and nothing is written. Restoring a deleted pipeline or tap needs permission to create one.
+- **API keys.** A limit the platform does not enforce can no longer be put on a new key, and the Keys page marks existing keys that carry one so you can replace them.
+- **Security hardening.** Several fixes tighten what scoped users and limited API keys can reach, in the API, the MCP tools and the chats. We recommend upgrading.
 
-**Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. No configuration changes are required and nothing is migrated. Three things to check:
+**Upgrading:** `docker compose pull && docker compose up -d`; the server, UI and MCP server images changed. Nothing is migrated. Six things to check:
 
-- If a script already asks a pipeline delete to keep data, that request is now honoured. Earlier versions removed the data anyway.
-- If you label vector chunks with custom metadata named `filename` or another reserved name above, switch to a different name.
-- If an integration calls the chats with a limited API key, it now gets that key's access, and a sign-in failure comes back as an error response instead of an error inside the stream.
+- **Object stores match columns by name.** If a pipeline relied on column order, for example a destination schema listed in a different order from the file, each value now lands under its own column name.
+- **Transformation columns appear in SQL tables.** If an AI transformation adds columns, expect them as new text columns after the next run. Earlier versions left them out without saying so.
+- **A missing merge key or partition column stops the whole run.** On a pipeline that writes to both a database and an object store, earlier versions still loaded the database. Now nothing loads until the file carries the column.
+- **pgvector pipelines must name their table.** A pipeline saved without a table name keeps loading into the table it already uses and shows a warning on each run until you set one.
+- **Limited API keys.** A key whose limit the platform never enforced no longer grants that access. Replace such keys with ones created in this version. The compose file carries a setting to keep the earlier behaviour while you replace them; refresh your `docker-compose.yml` if you want it.
+- **Tap scripts that query PostgreSQL.** A script that writes through the query route, or reads for more than five minutes in one query, needs changing: split a large read into several queries.
 
-Agents using the published skill get the keep-data and new-destination guidance with skill 1.7.9. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
+Agents using the published skill get the scoped-key guidance with skill 1.7.13. CLI users: `pip install -U datris-mcp-server` or `brew upgrade datris`.
