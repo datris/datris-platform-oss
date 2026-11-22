@@ -21,11 +21,15 @@ import java.nio.charset.StandardCharsets
   * to this server through the normal interceptor chain, so capability,
   * policy and audit see it exactly like a fresh call.
   *
-  * Identity on the replay: the platform's own `ui` key (when keys are on)
-  * plus `X-Datris-On-Behalf-Of: <approver>`, which TenantInterceptor turns
-  * into `session:<approver>` — the human who clicked Approve is the actor.
-  * `X-Datris-Approval: <id>.<token>` lets PolicyInterceptor recognize the
-  * replay and consume the single-use token instead of gating it again. */
+  * The replay carries the platform's own `ui` key (when keys are on),
+  * `X-Datris-On-Behalf-Of: <approver>` and `X-Datris-Approval: <id>.<token>`.
+  * Once TenantInterceptor has verified the token ([[ReplayAuthority]]) the
+  * action runs with the REQUESTER's current access (the agent's key, or the
+  * user its chat acted for), narrowed further by a restricted approver's
+  * own grants; an approval never widens what the requester may do. The
+  * audit log records the approver as the actor, with the requester as
+  * `originalActor`. PolicyInterceptor then uses the single-use token
+  * instead of gating the request again. */
 object PolicyReplay {
 
     private val logger = LoggerFactory.getLogger(getClass)

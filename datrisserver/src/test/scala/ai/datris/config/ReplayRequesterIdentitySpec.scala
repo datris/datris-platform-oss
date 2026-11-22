@@ -10,8 +10,7 @@ import ai.datris.audit.{AuditActor, AuditEntry, AuditLog}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
 import ai.datris.config.ChatAuthorityFixtures._
 import ai.datris.config.ReplayScopeFixtures._
-import ai.datris.incident.RecoveryKey
-import ai.datris.model.{Capability, DatrisEnvironment, PipelineConfig, ResolvedKey, TenantContext, UserContext}
+import ai.datris.model.{DatrisEnvironment, PipelineConfig, ResolvedKey, TenantContext, UserContext}
 import ai.datris.policy.{AgentPolicy, PendingAction, PolicyActor, PolicyIO, PolicyReplay}
 import ai.datris.util.{APIKeyValidator, InMemoryUserDb, PipelineDeletePlan, UserStore}
 import org.scalatest.BeforeAndAfterEach
@@ -367,25 +366,9 @@ class ReplayRequesterIdentitySpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(deleteStatus(o, fin) == 200)
     }
 
-    test("an approved recovery-agent action runs within the recovery key's bundle") {
-        val recovery = ResolvedKey(None, RecoveryKey.Label, Capability.parseList(RecoveryKey.Capabilities), isLegacyFullAccess = false, keyId = Some("k_rec"))
-        keys = liveKeys + (RecoveryKey.Label -> recovery)
-        val pa = approved(
-            "pa_rec",
-            keyActor(recovery),
-            Token,
-            method = "POST",
-            path = "/api/v1/tap",
-            body = Some("{\"name\":\"t1\"}"),
-            resourceName = Some("t1"),
-            resourceType = "tap",
-            action = "tap:create"
-        )
-        val o = replay(pa)
-        assertRuns(o, "replay")
-        assert(CapabilityCheck.grants(o.r, "tap", "create", Map("catalog" -> "Sales")))
-        assert(!CapabilityCheck.grants(o.r, "pipeline", "delete", Map("catalog" -> "Sales")), "the recovery key never deletes")
-    }
+    // The recovery runner's approved actions: ApprovalReplayRequesterScopeSpec
+    // replays the runner's own three calls (script save, tap run, script
+    // regenerate) through the capability, policy and role gates.
 
     test("the same replay sent twice: the second is refused and never holds more than the ordinary on-behalf-of identity") {
         val pa = deleteAction("pa_twice", keyActor(salesDeleter), sales.name)

@@ -7,7 +7,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.auth.{ResolvedKeyAccess, TapRunTokens}
 import ai.datris.config.TenantInterceptor
-import ai.datris.model.{ResolvedKey, User, UserContext}
+import ai.datris.incident.RecoveryKey
+import ai.datris.model.{DatrisEnvironment, ResolvedKey, User, UserContext}
 import jakarta.servlet.http.HttpServletRequest
 
 /** Resolves the actor behind a request for the audit log.
@@ -27,7 +28,9 @@ object AuditActor {
     val HeaderAgentSession = "X-Datris-Agent-Session"
 
     /** Incident id the recovery agent attaches to every call it makes while
-      * working an incident — joins audit entries to the incident record. */
+      * working an incident — joins audit entries to the incident record.
+      * Read only through [[incidentOf]]: it counts only from the platform's
+      * own callers ([[trustsIncident]]). */
     val HeaderIncident = "X-Datris-Incident"
 
     /** Free-text intent an agent may attach to a mutating call (the MCP
@@ -42,9 +45,12 @@ object AuditActor {
     val HeaderVia = "X-Datris-Via"
 
     /** Request attribute (the approval id) PolicyInterceptor sets on the
-      * replay of an approved agent action. The replay carries the ui key on
-      * behalf of the approver; with this attribute present the approver is
-      * recorded as a plain user — it is their decision being executed. */
+      * replay of an approved agent action once it has used the replay's
+      * one-time token. The replay carries the ui key on behalf of the
+      * approver and runs with the requester's current access (see
+      * TenantInterceptor); with this attribute present the approver is
+      * recorded as a plain user — it is their decision being executed — and
+      * the request is not an agent call ([[ai.datris.policy.PolicyActor]]). */
     val ApprovalReplayAttr = "ai.datris.policy.approvalReplay"
 
     /** Sent by TapScriptRunner on outbound HTTP-tap endpoint calls. NOT used
@@ -79,6 +85,44 @@ object AuditActor {
       * is moot in a mode where anyone can do anything). */
     def trustsOnBehalfOf(keyLabel: String, useApiKeys: Boolean): Boolean =
         keyLabel == UiKeyLabel || !useApiKeys
+
+    /** May this key label a request as incident work via `X-Datris-Incident`?
+      *
+      * Only the platform's own callers: the `ui` key (the in-platform chats),
+      * the recovery agent's key, or any request with API keys off. Labels are
+      * matched exactly. From any other key the header is ignored. */
+    def trustsIncident(keyLabel: String, useApiKeys: Boolean): Boolean =
+        !useApiKeys || keyLabel == UiKeyLabel || keyLabel == RecoveryKey.Label
+
+    /** The trimmed incident header (at most 64 characters), whoever sent it. */
+    private def incidentHeader(request: HttpServletRequest): Option[String] =
+        Option(request.getHeader(HeaderIncident)).map(_.trim).filter(_.nonEmpty).map(_.take(64))
+
+    /** The key the request presented: the carrier's label when
+      * TenantInterceptor relabelled it for on-behalf-of or gave a verified
+      * approval replay the requester's identity, else the attached
+      * identity's label. */
+    private def presentingKeyLabel(request: HttpServletRequest): Option[String] =
+        TenantInterceptor.verifiedReplay(request).map(_.carrier.label)
+            .orElse(Option(request.getAttribute(CarrierKeyLabelAttr)).collect { case s: String => s })
+            .orElse(ResolvedKeyAccess.fromRequest(request).map(_.label))
+
+    private def incidentTrusted(request: HttpServletRequest): Boolean = {
+        val env = DatrisEnvironment.values
+        trustsIncident(presentingKeyLabel(request).orNull, env != null && env.useApiKeys)
+    }
+
+    /** The incident this request works on: the incident header when the key
+      * that presented it is trusted ([[trustsIncident]], judged on the
+      * carrier key, not the identity a chat acts with), else None. Every
+      * reader of the header uses this. */
+    def incidentOf(request: HttpServletRequest): Option[String] =
+        if (request == null) None else incidentHeader(request).filter(_ => incidentTrusted(request))
+
+    /** The incident header a request carried that [[incidentOf]] ignores
+      * (its key is not trusted with it), for the `spoofed-incident` record. */
+    def ignoredIncident(request: HttpServletRequest): Option[String] =
+        if (request == null) None else incidentHeader(request).filterNot(_ => incidentTrusted(request))
 
     /** Pure resolution — the matrix the audit log documents. Testable without
       * a servlet request. */
@@ -147,6 +191,12 @@ object AuditActor {
         val carrier = Option(request.getAttribute(CarrierKeyLabelAttr)).collect { case s: String => s }
         val replay = request.getAttribute(ApprovalReplayAttr) != null
         val sessionUser = UserContext.get().orElse(if (replay) onBehalfOf else None)
-        from(ResolvedKeyAccess.fromRequest(request), sessionUser, if (replay) None else onBehalfOf, carrier, rejectedKeyOf(request))
+        // A replay that names no approver (user sign-in off) is recorded as
+        // the platform's key that presented it, as before; the requester is
+        // its `originalActor`.
+        val identity =
+            (if (replay && sessionUser.isEmpty) TenantInterceptor.verifiedReplay(request).map(_.carrier) else None)
+                .orElse(ResolvedKeyAccess.fromRequest(request))
+        from(identity, sessionUser, if (replay) None else onBehalfOf, carrier, rejectedKeyOf(request))
     }
 }

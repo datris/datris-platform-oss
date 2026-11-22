@@ -22,6 +22,7 @@ import org.scalatest.funsuite.AnyFunSuite
   *   sealed trait Answer
   *   final case class Replay(pa: PendingAction) extends Answer
   *   case object NotReplay extends Answer
+  *   case object Unchecked extends Answer
   *   def verify(request: HttpServletRequest, store: PolicyInterceptor.Store): Answer
   * }
   * }}}
@@ -117,9 +118,13 @@ class ReplayAuthoritySpec extends AnyFunSuite with BeforeAndAfterEach {
         notReplay(ask("pa_ok." + Token), "policy off")
     }
 
-    test("a store read that fails does not verify and does not throw") {
+    // Re-pinned (lead ruling: nothing runs when the approval cannot be
+    // checked): a failed read is its own answer, never NotReplay, so the
+    // request is refused instead of running with an ordinary identity.
+    test("a store read that fails answers Unchecked (neither a replay nor not one) and does not throw") {
         store.failReads = true
-        notReplay(ask("pa_ok." + Token), "store failure")
+        assert(ask("pa_ok." + Token) == ReplayAuthority.Unchecked)
+        assert(store.consumed.isEmpty)
     }
 
     test("an action stored before the upgrade (no hash version) verifies on its exact request") {

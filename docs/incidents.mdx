@@ -57,7 +57,7 @@ Guards, all enforced in code: one open incident per resource; a resource whose l
 
 During diagnosis it holds **read-only tools**, so it cannot change anything while investigating. They include the [doctor](/doctor), lineage, provenance, data discovery and pipeline version history, so its summary says what a change touches. For a tap, its proposal may only contain: re-run the tap, fix the tap script (then test it), or "this needs a human" with an explanation. For a pipeline, its only action is regenerating a stored AI script (see [Pipeline incidents](#pipeline-incidents)). Deletes, schema migrations and secret changes are structurally impossible for it. Script fixes land as a new version, so history is never lost.
 
-Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so with the audit log on, the [audit log](/audit-log) is the incident's complete ledger ([strict mode](/audit-log#strict-mode) guarantees no entry is dropped). Revoking that key stops the agent entirely, independent of any flag.
+Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so with the audit log on, the [audit log](/audit-log) is the incident's complete ledger ([strict mode](/audit-log#strict-mode) guarantees no entry is dropped). Only the platform's own callers can tag a call with an incident: an incident id sent by any other API key is ignored (and recorded as a `spoofed-incident` security event), so no other client can add entries to an incident's ledger or make its calls look like recovery work. Revoking that key stops the agent entirely, independent of any flag.
 
 ## What you see before you approve
 

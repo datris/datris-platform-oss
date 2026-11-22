@@ -21,10 +21,15 @@ import jakarta.servlet.http.HttpServletRequest
   *     anonymous no-keys identity → agent (external MCP clients, CLI scripts).
   *   - A tap's per-run callback token → not an agent (read-only, and a tap is
   *     not a decision-maker).
-  *   - `ui` key with no session header → the UI itself → human. */
+  *   - `ui` key with no session header → the UI itself → human.
+  *   - The replay of an approved action (its one-time token used by
+  *     PolicyInterceptor, `AuditActor.ApprovalReplayAttr`) → human: it is
+  *     the approver's decision being carried out, even though it runs with
+  *     the requesting agent's access. */
 object PolicyActor {
 
     def isAgent(request: HttpServletRequest): Boolean = {
+        if (request.getAttribute(AuditActor.ApprovalReplayAttr) != null) return false
         val agentSession = Option(request.getHeader(AuditActor.HeaderAgentSession)).exists(_.trim.nonEmpty)
         if (UserContext.get().isDefined && !agentSession) return false
         ResolvedKeyAccess.fromRequest(request) match {

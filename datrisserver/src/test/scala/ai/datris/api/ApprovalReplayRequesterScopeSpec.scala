@@ -9,7 +9,7 @@ import ai.datris.audit.{AuditActor, AuditActorInfo, AuditEntry, AuditLog}
 import ai.datris.auth.ScopeDenialFixtures
 import ai.datris.config.ChatAuthorityFixtures.{seedKey, uiLegacy, UiValue}
 import ai.datris.config.ReplayScopeFixtures._
-import ai.datris.config.{AuditInterceptor, PolicyInterceptor, TenantInterceptor}
+import ai.datris.config.{AuditInterceptor, CapabilityInterceptor, PolicyInterceptor, RoleEnforcementInterceptor, TenantInterceptor}
 import ai.datris.model.{DatrisEnvironment, PipelineConfig, ResolvedKey, TenantContext, User, UserContext}
 import ai.datris.policy.{FakePendingActionCollection, PendingAction, PendingActionIO, PolicyReplay}
 import ai.datris.util.{APIKeyValidator, InMemoryUserDb, MongoDBUtil, PipelineDeletePlan, UserStore}
@@ -60,8 +60,14 @@ class ApprovalReplayRequesterScopeSpec extends AnyFunSuite with BeforeAndAfterEa
         PipelineConfig(name = "sales_orders", catalog = "Sales", createdByKeyLabel = "someone")
     ).map(p => p.name -> p).toMap
 
+    /** User sign-in on (the default) or off, for both the approve call and the replay. */
+    @volatile private var signIn = true
+
+    /** What the stand-in handled: `<method> <path>` of every call that passed every gate. */
+    private val handled = new ConcurrentLinkedQueue[String]()
+
     private def baseEnv: DatrisEnvironment =
-        InMemoryUserDb.env(useAuditLog = true).copy(useAgentPolicy = true, pendingActionTableName = "test-pending-action")
+        InMemoryUserDb.env(useAuditLog = true).copy(useAgentPolicy = true, pendingActionTableName = "test-pending-action", useUserAuth = signIn)
 
     /** What the approve call runs under: keys off (PolicyReplay sends no key). */
     private def approveEnv: DatrisEnvironment = baseEnv.copy(useApiKeys = false)
@@ -84,6 +90,8 @@ class ApprovalReplayRequesterScopeSpec extends AnyFunSuite with BeforeAndAfterEa
         APIKeyValidator.resolveByLabelOverride = (l: String) => keys.get(l)
         audit.clear()
         deleted.clear()
+        handled.clear()
+        signIn = true
         AuditLog.sinkOverride = (e: AuditEntry) => { audit.add(e); () }
         UserContext.clear()
 
@@ -129,24 +137,61 @@ class ApprovalReplayRequesterScopeSpec extends AnyFunSuite with BeforeAndAfterEa
         seedKey(UiValue, uiLegacy)
         val (r, _) = call(ex.getRequestMethod, ex.getRequestURI.getRawPath, Option(ex.getRequestURI.getRawQuery), body, headers)
         val resp = new Resp
+        val path = ex.getRequestURI.getRawPath
+        val (hm, vars) = route(ex.getRequestMethod, path)
+        if (vars.nonEmpty) r.setAttribute(org.springframework.web.servlet.HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE, vars.asJava)
+        // The application's chain (WebMvcConfig): tenant, capability, policy,
+        // role, audit. No session cookie is sent, so SessionAuthenticator adds nothing.
         if (!new TenantInterceptor().preHandle(r, resp.response, null)) return (resp.status, resp.body)
-        if (!new PolicyInterceptor().preHandle(r, resp.response, handler)) return (resp.status, resp.body)
-        val ai = new AuditInterceptor()
-        ai.preHandle(r, resp.response, handler)
-        val name = Option(r.getParameter("pipeline")).getOrElse("")
-        val answer = pipelines.get(name) match {
-            case None => (404, "{\"error\":\"no pipeline " + name + "\"}")
-            case Some(cfg) =>
-                PipelineAPIController.deleteRefusal(r, cfg, PipelineDeletePlan.of("true", "true")) match {
-                    case Some(refusal) => (refusal.getStatusCode.value, refusal.getBody)
-                    case None =>
-                        deleted.add(name)
-                        (200, PipelineAPIController.deleteResponseBody(Nil, None))
+        if (!new CapabilityInterceptor().preHandle(r, resp.response, hm)) return (resp.status, resp.body)
+        if (!new PolicyInterceptor().preHandle(r, resp.response, hm)) return (resp.status, resp.body)
+        if (!new RoleEnforcementInterceptor().preHandle(r, resp.response, hm)) return (resp.status, resp.body)
+        val auditI = new AuditInterceptor()
+        auditI.preHandle(r, resp.response, hm)
+        lastIdentity = ai.datris.auth.ResolvedKeyAccess.fromRequest(r)
+        lastVersionActor = ai.datris.auth.VersionActor.resolve(r)
+        val answer =
+            if (ex.getRequestMethod == "DELETE" && path == DeletePath) {
+                val name = Option(r.getParameter("pipeline")).getOrElse("")
+                pipelines.get(name) match {
+                    case None => (404, "{\"error\":\"no pipeline " + name + "\"}")
+                    case Some(cfg) =>
+                        PipelineAPIController.deleteRefusal(r, cfg, PipelineDeletePlan.of("true", "true")) match {
+                            case Some(refusal) => (refusal.getStatusCode.value, refusal.getBody)
+                            case None =>
+                                deleted.add(name)
+                                (200, PipelineAPIController.deleteResponseBody(Nil, None))
+                        }
                 }
-        }
+            } else {
+                handled.add(ex.getRequestMethod + " " + path)
+                (200, "{\"status\":\"ok\"}")
+            }
         resp.status = answer._1
-        ai.afterCompletion(r, resp.response, handler, null)
+        auditI.afterCompletion(r, resp.response, hm, null)
         answer
+    }
+
+    @volatile private var lastIdentity: Option[ResolvedKey] = None
+    @volatile private var lastVersionActor: String = null
+
+    private def handlerOf(bean: AnyRef, name: String) =
+        new org.springframework.web.method.HandlerMethod(bean, bean.getClass.getMethods.find(_.getName == name).get)
+
+    /** The application's handler for a route (its role annotations are what
+      * RoleEnforcementInterceptor reads), with the path variables the
+      * dispatcher would extract. */
+    private def route(method: String, path: String): (org.springframework.web.method.HandlerMethod, Map[String, String]) = {
+        val regen = "/api/v1/pipelines/([^/]+)/codegen-scripts/([^/]+)/regenerate".r
+        val secret = "/api/v1/secrets/([^/]+)".r
+        (method, path) match {
+            case ("DELETE", DeletePath) => (handlerOf(new PipelineAPIController, "deletePipeline"), Map.empty)
+            case ("PUT", secret(n)) => (handlerOf(new SecretsAPIController, "putSecret"), Map("name" -> n))
+            case ("POST", "/api/v1/tap/script") => (handlerOf(new TapAPIController, "storeScript"), Map.empty)
+            case ("POST", "/api/v1/tap/run") => (handlerOf(new TapAPIController, "runTap"), Map.empty)
+            case ("POST", regen(n, k)) => (handlerOf(new PipelineAPIController, "regenerateCodegenScript"), Map("name" -> n, "kind" -> k))
+            case _ => (handler, Map.empty)
+        }
     }
 
     // ------------------------------------------------------------ the approval
@@ -175,9 +220,13 @@ class ApprovalReplayRequesterScopeSpec extends AnyFunSuite with BeforeAndAfterEa
         )
     }
 
-    private def approveAs(approver: User, id: String) = {
+    private def approveAs(approver: User, id: String) = approveBy(Some(approver), id)
+
+    /** Approve as `approver`; None: no signed-in person (user sign-in off). */
+    private def approveBy(approver: Option[User], id: String) = {
+        ScopeDenialFixtures.install(approveEnv)
         val (req, _) = ScopeDenialFixtures.request(null, "POST", "/api/v1/approvals/" + id + "/approve")
-        UserContext.set(approver)
+        approver.foreach(UserContext.set)
         try new ApprovalsAPIController().approve(id, req)
         finally UserContext.clear()
     }
@@ -268,5 +317,150 @@ class ApprovalReplayRequesterScopeSpec extends AnyFunSuite with BeforeAndAfterEa
         assert(approveAs(ed, "pa_twice").getStatusCode.value == 200)
         assert(approveAs(ed, "pa_twice").getStatusCode.value == 409)
         assert(deleted.asScala.toList == List("sales_orders"))
+    }
+
+    // ================================================================ other routes
+
+    /** A queued action for any route; the resource name is the one the
+      * policy gate reads from that request (path variable or body). */
+    private def queuedCall(
+        id: String,
+        actor: AuditActorInfo,
+        method: String,
+        path: String,
+        body: Option[String],
+        resourceType: String,
+        resourceName: Option[String],
+        action: String
+    ): PendingAction =
+        queued(id, actor, "unused").copy(
+            action = action,
+            resourceType = Some(resourceType),
+            resourceName = resourceName,
+            method = method,
+            path = path,
+            query = None,
+            contentType = body.map(_ => "application/json"),
+            body = body
+        )
+
+    private val SecretPath = "/api/v1/secrets/tap-cred"
+
+    private def secretWrite(id: String, actor: AuditActorInfo) =
+        queuedCall(id, actor, "PUT", SecretPath, Some("{\"value\":\"x\"}"), "secret", Some("tap-cred"), "secret:write")
+
+    private val secretWriter: ResolvedKey =
+        ResolvedKey(None, "secret-writer", ai.datris.model.Capability.parseList(Seq("secret:write")), isLegacyFullAccess = false, keyId = Some("k_sw"))
+
+    private def resultReason(id: String) = JsonParser.parseString(record(id).getString("resultBody")).getAsJsonObject
+
+    // ================================================================ the capability and role gates
+
+    test("a scoped key's approved request on an admin-only route is decided by the key's own access") {
+        keys = liveKeys + (secretWriter.label -> secretWriter)
+        PendingActionIO.insert(secretWrite("pa_sw", keyActor(secretWriter)))
+        val ok = approveAs(ed, "pa_sw")
+        assert(ok.getStatusCode.value == 200, ok.getBody)
+        assert(handled.asScala.toList == List("PUT " + SecretPath))
+
+        handled.clear()
+        PendingActionIO.insert(secretWrite("pa_sd", keyActor(salesDeleter)))
+        val refused = approveAs(root, "pa_sd")
+        assert(handled.isEmpty, "a key without secret:write wrote a secret")
+        assertFailedWith("pa_sd", refused, 403)
+        val reason = resultReason("pa_sd")
+        assert(reason.get("errorKind").getAsString == "capability_denied" && reason.get("key").getAsString == "sales-deleter", reason.toString)
+    }
+
+    test("an editor's chat request for an admin-only route, approved by an admin, ends failed with the editor's ordinary refusal") {
+        PendingActionIO.insert(secretWrite("pa_chat_ed_secret", chatActor(ed)))
+        val res = approveAs(root, "pa_chat_ed_secret")
+        assert(handled.isEmpty, "an editor's chat wrote a secret")
+        assertFailedWith("pa_chat_ed_secret", res, 403)
+        val reason = resultReason("pa_chat_ed_secret")
+        assert(reason.get("errorKind").getAsString == "capability_denied" && reason.get("key").getAsString == "session:ed", reason.toString)
+    }
+
+    test("unchanged: an admin's chat request for an admin-only route runs when approved") {
+        PendingActionIO.insert(secretWrite("pa_chat_root_secret", chatActor(root)))
+        val res = approveAs(ed, "pa_chat_root_secret")
+        assert(res.getStatusCode.value == 200, res.getBody)
+        assert(handled.asScala.toList == List("PUT " + SecretPath))
+        assert(lastIdentity.exists(rk => rk.isFullAccess && rk.label == "session:root"), String.valueOf(lastIdentity))
+    }
+
+    test("unchanged: the recovery runner's own calls (script save, tap run, script regenerate) run when an admin approves them") {
+        val recovery = ResolvedKey(
+            None,
+            ai.datris.incident.RecoveryKey.Label,
+            ai.datris.model.Capability.parseList(ai.datris.incident.RecoveryKey.Capabilities),
+            isLegacyFullAccess = false,
+            keyId = Some("k_rec")
+        )
+        keys = liveKeys + (recovery.label -> recovery)
+        val calls = ai.datris.incident.RecoveryRunnerCalls.mutating("t1", "orders", ai.datris.util.PipelineScripts.Kinds.head)
+        assert(calls.size == 3)
+        for (((tool, (method, path, body)), i) <- calls.zipWithIndex) {
+            handled.clear()
+            val (resourceType, resourceName, action) =
+                if (path.startsWith("/api/v1/pipelines/")) ("pipeline", Some("orders"), "pipeline:update")
+                else if (path == "/api/v1/tap/script") ("tap", Some("t1"), "tap:update")
+                else ("tap", Some("t1"), "tap:run")
+            val id = "pa_rec_" + i
+            PendingActionIO.insert(queuedCall(id, keyActor(recovery), method, path, body, resourceType, resourceName, action))
+            val res = approveAs(root, id)
+            assert(res.getStatusCode.value == 200, tool + ": " + res.getBody)
+            assert(handled.asScala.toList == List(method + " " + path), tool)
+            assert(lastIdentity.map(_.label).contains(ai.datris.incident.RecoveryKey.Label), tool + ": " + lastIdentity)
+            assert(lastIdentity.exists(!_.isFullAccess), tool + ": " + lastIdentity)
+            assert(record(id).getString("state") == PendingAction.Executed, tool)
+        }
+    }
+
+    // ================================================================ API keys on, user sign-in off
+
+    test("sign-in off: an approved delete outside the requesting key's scope ends failed with the key's own refusal") {
+        signIn = false
+        PendingActionIO.insert(queued("pa_off_fin", keyActor(salesDeleter), "fin_ledger"))
+        val res = approveBy(None, "pa_off_fin")
+        assert(deleted.isEmpty, "the Finance pipeline was deleted")
+        assertFailedWith("pa_off_fin", res, 403)
+        val reason = resultReason("pa_off_fin")
+        assert(reason.get("errorKind").getAsString == "capability_denied", reason.toString)
+        val msg = reason.get("message").getAsString
+        assert(msg.contains("sales-deleter") && msg.contains("pipeline:delete") && !msg.contains("Finance"), msg)
+    }
+
+    test("sign-in off: an approved delete inside the requesting key's scope runs, recorded as the platform's key with the key as originalActor") {
+        signIn = false
+        PendingActionIO.insert(queued("pa_off_sales", keyActor(salesDeleter), "sales_orders"))
+        val res = approveBy(None, "pa_off_sales")
+        assert(res.getStatusCode.value == 200, res.getBody)
+        assert(deleted.asScala.toList == List("sales_orders"))
+        assert(lastIdentity.map(_.label).contains("sales-deleter"), String.valueOf(lastIdentity))
+        assert(lastVersionActor == "ui", lastVersionActor)
+        val action = audit.asScala.toList.filter(e => e.resourceType.contains("pipeline") && e.category != "approval" && e.category != "security")
+        assert(action.size == 1, audit.toString)
+        assert(action.head.actor.actorType == "api-key" && action.head.actor.label == "ui", action.head.actor.toString)
+        assert(action.head.metadata.exists(_.get("originalActor").getAsString == "sales-deleter"), action.head.metadata.toString)
+    }
+
+    test("sign-in off: a requesting key revoked since the request makes the approval fail with 401 before anything runs") {
+        signIn = false
+        PendingActionIO.insert(queued("pa_off_rev", keyActor(salesDeleter), "sales_orders"))
+        keys = liveKeys - "sales-deleter"
+        val res = approveBy(None, "pa_off_rev")
+        assert(deleted.isEmpty)
+        assertFailedWith("pa_off_rev", res, 401)
+        assert(!record("pa_off_rev").containsKey("replayConsumedAt"), "the token was not used")
+    }
+
+    test("unchanged, sign-in off: an approved action requested under the platform's own key runs with that key's access and label") {
+        signIn = false
+        PendingActionIO.insert(queued("pa_off_ui", keyActor(ai.datris.config.ChatAuthorityFixtures.uiLegacy), "fin_ledger"))
+        val res = approveBy(None, "pa_off_ui")
+        assert(res.getStatusCode.value == 200, res.getBody)
+        assert(deleted.asScala.toList == List("fin_ledger"))
+        assert(lastIdentity.contains(ai.datris.config.ChatAuthorityFixtures.uiLegacy), String.valueOf(lastIdentity))
     }
 }

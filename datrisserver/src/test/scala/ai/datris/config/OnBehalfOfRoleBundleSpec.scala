@@ -122,9 +122,13 @@ class OnBehalfOfRoleBundleSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
-    test("an approval replay for an unrestricted editor keeps the carrier's bundle; for a restricted editor it stays narrowed") {
+    // plans/stories/approval-replay-requester-scope.md: the approval-replay
+    // flag no longer widens the approver's identity; a verified replay runs
+    // with the requester's access instead (ReplayRequesterIdentitySpec).
+    test("the approval-replay flag widens nothing: an editor gets the editor bundle, an admin the carrier's, a restricted editor stays narrowed") {
         for (carrier <- carriers) {
-            assert(obo(carrier, ed, replay = true) == carrier.copy(label = "session:ed"), carrier.label)
+            assert(obo(carrier, ed, replay = true) == obo(carrier, ed), carrier.label)
+            assert(!obo(carrier, ed, replay = true).isFullAccess, carrier.label)
             assert(obo(carrier, root, replay = true) == carrier.copy(label = "session:root"), carrier.label)
             val narrowed = obo(carrier, bob, replay = true)
             assert(narrowed == obo(carrier, bob), carrier.label)
@@ -455,9 +459,12 @@ class OnBehalfOfRoleBundleSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     // ================================================================ Step 3: approval replay
 
-    test("keys off: an approval replay on behalf of an editor keeps the carrier; a restricted approver stays narrowed") {
+    // plans/stories/approval-replay-requester-scope.md: an approval header
+    // that does not verify (here: the agent policy is off and no such
+    // approval exists) grants nothing; the ordinary on-behalf-of identity.
+    test("keys off: an unverified approval header on behalf of an editor yields the editor's bundle; a restricted approver stays narrowed") {
         val (got, _, _) = through(AuditActor.HeaderOnBehalfOf -> "ed", PolicyReplay.HeaderApproval -> "pa_1.tok")
-        assert(got.contains(anonymous.copy(label = "session:ed")), String.valueOf(got))
+        assert(got.contains(obo(anonymous, ed)), String.valueOf(got))
         val (bobGot, _, _) = through(AuditActor.HeaderOnBehalfOf -> "bob", PolicyReplay.HeaderApproval -> "pa_1.tok")
         assert(bobGot.contains(obo(anonymous, bob)), String.valueOf(bobGot))
     }

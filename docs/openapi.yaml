@@ -6802,8 +6802,14 @@ paths:
       tags: [Agent Policy]
       summary: Approve a queued action (admin / editor)
       description: >-
-        Performs the original request on the approver's behalf by replaying
-        it through the normal request chain. Never permitted from an
+        Performs the original request by replaying it through the normal
+        request chain, attributed to the approver. With API keys on it runs
+        with the requester's own current access (the requesting API key, or
+        the user an in-platform chat acted for), further limited to the
+        approver's catalogs when the approver is a restricted user; a request
+        made under the UI's own key, and any request with API keys off, runs
+        with full access limited to a restricted approver's catalogs, as
+        before. Never permitted from an
         agent-initiated request. Refused as stale (409) if the target
         pipeline or tap changed since the action was queued.
       parameters:
@@ -6834,7 +6840,15 @@ paths:
         '410':
           description: Expired before a decision
         '502':
-          description: Approved but the replay failed (state `failed`)
+          description: >-
+            Approved but the replay failed (state `failed`); `resultStatus` /
+            `resultBody` carry the reason. Includes the requester's own refusal
+            (403 or 404) when the action is outside the requester's access;
+            401 (`errorKind` `requester_key_invalid` or `requester_user_gone`)
+            when the requesting key was revoked or replaced, or the requesting
+            chat's user was deleted; 503 (`requester_unchecked`) when the
+            requester or the approval could not be checked. In those cases
+            nothing was run.
   /api/v1/approvals/{id}/reject:
     post:
       tags: [Agent Policy]

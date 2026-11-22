@@ -263,6 +263,42 @@ object APIKeyValidator {
         }
     }
 
+    /** Test seam for [[resolveByLabel]]: when set, answers in place of the
+      * secret store (None = unknown or revoked; a throw = store unavailable). */
+    @volatile private[datris] var resolveByLabelOverride: String => Option[ResolvedKey] = null
+
+    /** The key currently issued under `label`, as [[resolveKey]] would
+      * resolve its value: None when no key has that label or it is revoked;
+      * a key with no metadata is legacy full access. Throws when the key
+      * store or its metadata cannot be read (never answers None for an
+      * outage). Not cached: callers use it for one decision, not per request.
+      * With multi-tenant routing every key is legacy full access labelled
+      * with its environment, as [[resolveKey]] answers it. */
+    def resolveByLabel(label: String): Option[ResolvedKey] = {
+        val o = resolveByLabelOverride
+        if (o != null) return o(label)
+        if (label == null || label.isEmpty) return None
+        if (DatrisEnvironment.values.multiTenant)
+            return Some(ResolvedKey(Some(label), label, Seq(Capability.FullAccess), isLegacyFullAccess = true))
+        resolveLabelAgainst(label, readKeysMap(), readMetadataMap())
+    }
+
+    /** Pure core of [[resolveByLabel]]: the same answer [[resolveAgainst]]
+      * gives for the value stored under `label`. */
+    private[util] def resolveLabelAgainst(label: String, keys: Map[String, String], metadata: => Map[String, String]): Option[ResolvedKey] =
+        if (!keys.contains(label)) None
+        else
+            metadata.get(label) match {
+                case Some(json) =>
+                    val (revoked, capabilities, keyId) = parseMetadata(label, json)
+                    if (revoked) None
+                    else {
+                        val (applied, inert) = CapabilityScopes.partition(capabilities)
+                        Some(ResolvedKey(None, label, applied, isLegacyFullAccess = false, keyId = keyId, inertCapabilities = inert))
+                    }
+                case None => Some(ResolvedKey(None, label, Seq(Capability.FullAccess), isLegacyFullAccess = true))
+            }
+
     /** Clear the resolution cache. Call after a key's metadata changes or
       * it is revoked so the next request picks up the new state immediately
       * rather than waiting for the TTL. */

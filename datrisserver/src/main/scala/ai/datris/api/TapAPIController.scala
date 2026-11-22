@@ -1633,9 +1633,10 @@ class TapAPIController {
         }
     }
 
-    /** The incident id the recovery executor tags its calls with, if any. */
+    /** The incident id the recovery executor tags its calls with, if any
+      * (only from the platform's own callers: AuditActor.incidentOf). */
     private def incidentHeader(request: HttpServletRequest): Option[String] =
-        Option(request).flatMap(r => Option(r.getHeader(ai.datris.audit.AuditActor.HeaderIncident))).map(_.trim).filter(_.nonEmpty).map(_.take(64))
+        ai.datris.audit.AuditActor.incidentOf(request)
 
     private def actorLabel(request: HttpServletRequest): String =
         ResolvedKeyAccess.keyLabel(request).orNull
