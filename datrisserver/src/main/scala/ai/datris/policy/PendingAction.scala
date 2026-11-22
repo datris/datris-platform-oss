@@ -336,6 +336,17 @@ object PendingActionIO {
         r.getModifiedCount == 1
     }
 
+    /** Conditional finish of an approved action: moves it from approved to
+      * `to` (executed or failed) only when it is still approved, and in the
+      * same update removes the replay token hash, so a finished record holds
+      * none whether or not the replay used the token. Returns true when this
+      * call made the change. */
+    def finish(id: String, to: String, sets: (String, Any)*): Boolean = {
+        val updates = (Updates.set("state", to) +: sets.map { case (k, v) => Updates.set(k, v) }) :+ Updates.unset("replayTokenHash")
+        val r = collection().updateOne(Filters.and(Filters.eq("_id", id), Filters.eq("state", PendingAction.Approved)), Updates.combine(updates.asJava))
+        r.getModifiedCount == 1
+    }
+
     /** Single-use consumption of an approval's replay token: succeeds only
       * for an approved action that holds the token's hash and has not been
       * used. Matches on the hash, never on the presented value, and in the
@@ -368,7 +379,8 @@ object PendingActionIO {
       * versions stored from every record, and changes nothing else. Such a
       * token is never accepted (see [[consumeReplay]]). Idempotent; returns
       * the number of records changed. Without the MongoDB config store there
-      * are no approvals and it does nothing. Does not create the collection. */
+      * are no approvals and it does nothing. Does not create the collection.
+      * Covers this install's own approvals collection only. */
     def removeClearReplayTokens(): Long =
         db match {
             case m: MongoDBUtil =>

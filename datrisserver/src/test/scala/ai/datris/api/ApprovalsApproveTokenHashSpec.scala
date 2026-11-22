@@ -50,6 +50,11 @@ class ApprovalsApproveTokenHashSpec extends AnyFunSuite with BeforeAndAfterEach 
     private case class Replay(header: String, storedDuringReplay: Option[Document], accepted: Boolean)
     private val replays = new ConcurrentLinkedQueue[Replay]()
 
+    /** When false, the stand-in refuses the replay before it reaches the
+      * consuming update (as a missing internal key or an earlier interceptor
+      * would). */
+    @volatile private var consume = true
+
     override def beforeEach(): Unit = {
         saved = DatrisEnvironment.values
         savedPort = PolicyReplay.port
@@ -62,6 +67,7 @@ class ApprovalsApproveTokenHashSpec extends AnyFunSuite with BeforeAndAfterEach 
         PendingActionIO.dbOverride = new MongoDBUtil(fake.database)
         audit.clear()
         replays.clear()
+        consume = true
         AuditLog.sinkOverride = (e: AuditEntry) => { audit.add(e); () }
         UserContext.clear()
 
@@ -73,10 +79,17 @@ class ApprovalsApproveTokenHashSpec extends AnyFunSuite with BeforeAndAfterEach 
                 val dot = header.indexOf('.')
                 val (id, token) = if (dot > 0) (header.substring(0, dot), header.substring(dot + 1)) else (header, "")
                 val during = fake.doc(id)
-                val accepted = PolicyInterceptor.MongoStore.consumeReplay(id, token).isDefined
-                replays.add(Replay(header, during, accepted))
-                val out = (if (accepted) "handled" else "{\"errorKind\":\"policy_replay_rejected\"}").getBytes(StandardCharsets.UTF_8)
-                ex.sendResponseHeaders(if (accepted) 200 else 403, out.length.toLong)
+                val (status, text) =
+                    if (!consume) {
+                        replays.add(Replay(header, during, accepted = false))
+                        (401, "{\"error\":\"unauthorized\"}")
+                    } else {
+                        val accepted = PolicyInterceptor.MongoStore.consumeReplay(id, token).isDefined
+                        replays.add(Replay(header, during, accepted))
+                        if (accepted) (200, "handled") else (403, "{\"errorKind\":\"policy_replay_rejected\"}")
+                    }
+                val out = text.getBytes(StandardCharsets.UTF_8)
+                ex.sendResponseHeaders(status, out.length.toLong)
                 ex.getResponseBody.write(out)
                 ex.close()
             }
@@ -165,6 +178,7 @@ class ApprovalsApproveTokenHashSpec extends AnyFunSuite with BeforeAndAfterEach 
         assert(!d.containsKey("replayToken"), d.toJson)
         assert(!d.containsKey("replayTokenHash"), d.toJson)
         assert(d.getString("replayConsumedAt") != null)
+        assertFinishedInOneUpdate(PendingAction.Executed)
         // approving again does not run it again
         val again = approve("pa_b")
         assert(again.getStatusCode.value() == 409, again.getBody)
@@ -206,6 +220,59 @@ class ApprovalsApproveTokenHashSpec extends AnyFunSuite with BeforeAndAfterEach 
             assert(!body.contains(hash), body)
             assert(!body.contains("replayToken"), body)
         }
+    }
+
+    /** The finishing update: one update that sets the end state and unsets the hash. */
+    private def assertFinishedInOneUpdate(to: String): Unit = {
+        val finishing = fake.updates.filter(u => u.containsKey("$set") && u.getDocument("$set").containsKey("executedAt")).toList
+        assert(finishing.size == 1, s"$finishing")
+        val u = finishing.head
+        assert(u.getDocument("$set").getString("state").getValue == to, u.toJson)
+        assert(u.containsKey("$unset") && u.getDocument("$unset").containsKey("replayTokenHash"), u.toJson)
+    }
+
+    test("a replay refused before it uses the token leaves a failed record with neither the token nor its hash") {
+        consume = false
+        PendingActionIO.insert(queued("pa_refused"))
+        val res = approve("pa_refused")
+        // what the approver sees is unchanged: 502 and the failed record
+        assert(res.getStatusCode.value() == 502, s"${res.getStatusCode} ${res.getBody}")
+        val body = com.google.gson.JsonParser.parseString(res.getBody).getAsJsonObject
+        assert(body.get("state").getAsString == PendingAction.Failed, res.getBody)
+        assert(body.get("resultStatus").getAsInt == 401, res.getBody)
+        val r = replays.asScala.toList
+        assert(r.size == 1 && !r.head.accepted, s"$r")
+        val token = r.head.header.stripPrefix("pa_refused.")
+        val during = r.head.storedDuringReplay.getOrElse(fail("record missing during the replay"))
+        assert(during.getString("replayTokenHash") == TokenHash.sha256Hex(token), during.toJson)
+        val d = stored("pa_refused")
+        assert(d.getString("state") == PendingAction.Failed, d.toJson)
+        assert(!d.containsKey("replayConsumedAt"), d.toJson)
+        assert(!d.containsKey("replayToken"), d.toJson)
+        assert(!d.containsKey("replayTokenHash"), d.toJson)
+        assert(d.getInteger("resultStatus") == 401, d.toJson)
+        assertFinishedInOneUpdate(PendingAction.Failed)
+    }
+
+    test("a replay that cannot connect leaves a failed record with neither the token nor its hash") {
+        val closed = new java.net.ServerSocket(0, 0, java.net.InetAddress.getByName("127.0.0.1"))
+        val port = closed.getLocalPort
+        closed.close()
+        PolicyReplay.port = port
+        PendingActionIO.insert(queued("pa_noconn"))
+        val res = approve("pa_noconn")
+        assert(res.getStatusCode.value() == 502, s"${res.getStatusCode} ${res.getBody}")
+        val body = com.google.gson.JsonParser.parseString(res.getBody).getAsJsonObject
+        assert(body.get("state").getAsString == PendingAction.Failed, res.getBody)
+        assert(body.get("resultStatus").getAsInt == 0, res.getBody)
+        assert(replays.isEmpty, s"$replays")
+        val d = stored("pa_noconn")
+        assert(d.getString("state") == PendingAction.Failed, d.toJson)
+        assert(!d.containsKey("replayConsumedAt"), d.toJson)
+        assert(!d.containsKey("replayToken"), d.toJson)
+        assert(!d.containsKey("replayTokenHash"), d.toJson)
+        assert(d.getString("resultBody").startsWith("replay failed: "), d.toJson)
+        assertFinishedInOneUpdate(PendingAction.Failed)
     }
 
     test("no log line or audit row carries a token or its hash") {

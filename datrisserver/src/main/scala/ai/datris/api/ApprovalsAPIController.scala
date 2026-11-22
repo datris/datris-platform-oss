@@ -143,9 +143,9 @@ class ApprovalsAPIController {
                         PolicyReplay.Result(0, "replay failed: " + e.getMessage)
                 }
             val ok = result.status >= 200 && result.status < 300
-            PendingActionIO.transition(
+            // the same update removes the token hash, used or not
+            PendingActionIO.finish(
                 pa.id,
-                PendingAction.Approved,
                 if (ok) PendingAction.Executed else PendingAction.Failed,
                 "executedAt" -> Instant.now().toString,
                 "resultStatus" -> (result.status: java.lang.Integer),

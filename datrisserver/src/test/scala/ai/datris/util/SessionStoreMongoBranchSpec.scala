@@ -6,13 +6,19 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.{DatrisEnvironment, TenantContext}
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import com.google.gson.JsonObject
+import com.mongodb.{MongoCommandException, ServerAddress}
+import org.bson.{BsonDocument, BsonDouble, BsonInt32, BsonString}
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
+import org.slf4j.LoggerFactory
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
+import scala.collection.JavaConverters._
 
 /** Story: sign-in session tokens are stored as hashes
   * (plans/stories/session-tokens-hashed.md), review follow-up.
@@ -119,11 +125,48 @@ class SessionStoreMongoBranchSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(db.indexes.toList == List(s"ttl:$Table:expiresAtDate:0", s"uniqueWhereExists:$Table:tokenHash"), s"${db.indexes}")
     }
 
+    /** Every log line `f` wrote, with any attached exception's class and message. */
+    private def withLogs[T](f: => T): (T, List[String]) = {
+        val root = LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).asInstanceOf[ch.qos.logback.classic.Logger]
+        val appender = new ListAppender[ILoggingEvent]()
+        appender.start()
+        root.addAppender(appender)
+        try {
+            val r = f
+            val lines = appender.list.asScala.toList.map { e =>
+                e.getFormattedMessage + Option(e.getThrowableProxy).map(t => " " + t.getClassName + ": " + t.getMessage).getOrElse("")
+            }
+            (r, lines)
+        } finally root.detachAppender(appender)
+    }
+
+    private def indexWarning(lines: List[String]): String = {
+        val hits = lines.filter(_.contains("session tokenHash index"))
+        assert(hits.size == 1, s"expected one index warning, got: $lines")
+        hits.head
+    }
+
     test("a failed tokenHash index does not fail ensureIndex, and sessions still work") {
         db.failUniqueIndex = Some(new com.mongodb.MongoException(85, "index options conflict"))
-        SessionStore.ensureIndex()
+        val (_, lines) = withLogs(SessionStore.ensureIndex())
         assert(db.indexes.toList == List(s"ttl:$Table:expiresAtDate:0"))
+        val line = indexWarning(lines)
+        assert(line.contains("(code 85)"), line)
+        for (word <- Seq("index options conflict", "options", "conflict")) assert(!line.contains(word), line)
         val (_, raw) = SessionStore.create("alice")
         assert(SessionStore.find(raw).isDefined)
+    }
+
+    test("a failed tokenHash index reported by the server logs its code and code name, not its message") {
+        val response = new BsonDocument()
+            .append("ok", new BsonDouble(0))
+            .append("code", new BsonInt32(85))
+            .append("codeName", new BsonString("IndexOptionsConflict"))
+            .append("errmsg", new BsonString("existing index has different options secretcollection"))
+        db.failUniqueIndex = Some(new MongoCommandException(response, new ServerAddress("db.internal", 27017)))
+        val (_, lines) = withLogs(SessionStore.ensureIndex())
+        val line = indexWarning(lines)
+        assert(line.contains("(code 85 IndexOptionsConflict)"), line)
+        for (word <- Seq("existing index", "different options", "secretcollection", "db.internal", "27017")) assert(!line.contains(word), line)
     }
 }

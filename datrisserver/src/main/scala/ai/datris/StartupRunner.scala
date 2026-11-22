@@ -334,7 +334,7 @@ class StartupRunner extends ApplicationRunner {
         try ai.datris.policy.PendingActionIO.removeClearReplayTokens()
         catch {
             case scala.util.control.NonFatal(e) =>
-                logger.warn("Approval token cleanup failed (continuing): " + e.getClass.getSimpleName)
+                logger.warn("Approval token cleanup failed (continuing): " + e.getClass.getSimpleName + ai.datris.util.MongoDBUtil.mongoErrorCode(e))
         }
         if (useAgentPolicy)
             logger.info(

@@ -278,6 +278,16 @@ object MongoDBUtil {
         }
         if (clauses.size == 1) clauses.head else Filters.and(clauses.asJava)
     }
+
+    /** The Mongo error code (and code name, when the server sent one) of a
+      * failure, for a log line: `" (code N[ NAME])"`, or "" when the failure
+      * is not a Mongo one. Never the driver's message text. */
+    def mongoErrorCode(e: Throwable): String = e match {
+        case c: com.mongodb.MongoCommandException =>
+            " (code " + c.getErrorCode + Option(c.getErrorCodeName).filter(_.nonEmpty).map(" " + _).getOrElse("") + ")"
+        case m: com.mongodb.MongoException => " (code " + m.getCode + ")"
+        case _ => ""
+    }
 }
 
 object MongoDBUtilBuilder {

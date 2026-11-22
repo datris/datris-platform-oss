@@ -67,7 +67,7 @@ object SessionStore {
                 try m.ensureUniqueIndexWhereExists(tableName, KeyField)
                 catch {
                     case e: Exception =>
-                        logger.warn("Could not create the session tokenHash index (continuing): " + e.getClass.getSimpleName + mongoErrorCode(e))
+                        logger.warn("Could not create the session tokenHash index (continuing): " + e.getClass.getSimpleName + MongoDBUtil.mongoErrorCode(e))
                 }
             case _ => // non-Mongo backend: TTL handled in code on lookup
         }
@@ -130,15 +130,6 @@ object SessionStore {
             db.deleteItemJSON(tableName, KeyField, hash(token))
             deleteStoredBeforeHashing(token)
         }
-    }
-
-    /** The Mongo error code (and code name, when the server sent one) of a
-      * failure, for the log; never the driver's message text. */
-    private def mongoErrorCode(e: Exception): String = e match {
-        case c: com.mongodb.MongoCommandException =>
-            " (code " + c.getErrorCode + Option(c.getErrorCodeName).filter(_.nonEmpty).map(" " + _).getOrElse("") + ")"
-        case m: com.mongodb.MongoException => " (code " + m.getCode + ")"
-        case _ => ""
     }
 
     private def readByHash(h: String): Option[UserSession] =
