@@ -362,7 +362,7 @@ class StartupRunner extends ApplicationRunner {
         ai.datris.audit.AuditLog.system("system", "start", metadata = md)
     }
 
-    /** Idempotent: ensure the user-session TTL index exists, then
+    /** Idempotent: ensure the user-session indexes (TTL, tokenHash) exist, then
       * [[StartupRunner.bootstrapUsers]]. Runs regardless of `useUserAuth` so
       * flipping the flag later is a clean toggle — no provisioning step needed. */
     private def initUserAuth(): Unit = {

@@ -226,12 +226,27 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         collection.insertOne(doc)
     }
 
-    /** Upsert a session-style document with a BSON Date field. Used to slide TTL on session renew. */
-    def upsertWithDateField(tableName: String, keyName: String, key: String, json: String, dateFieldName: String, dateValueEpochMillis: Long): Unit = {
+    /** Replace the one document whose `keyName` equals `key` with `json` plus a
+      * BSON Date field, without inserting when none matches. The document keeps
+      * its `_id`; fields absent from `json` are removed. True when a document
+      * matched. Used by SessionStore (renew, and the rewrite of a session
+      * stored in the earlier shape). */
+    def replaceWithDateField(tableName: String, keyName: String, key: String, json: String, dateFieldName: String, dateValueEpochMillis: Long): Boolean = {
         val collection = database.getCollection(tableName)
         val doc = Document.parse(json)
         doc.put(dateFieldName, new java.util.Date(dateValueEpochMillis))
-        collection.replaceOne(Filters.eq(keyName, key), doc, new ReplaceOptions().upsert(true))
+        collection.replaceOne(Filters.eq(keyName, key), doc).getMatchedCount > 0
+    }
+
+    /** Create a unique index on `fieldName` over the documents that have the
+      * field (a partial index), so documents without it never conflict.
+      * Idempotent: Mongo accepts re-creation of an identical index. */
+    def ensureUniqueIndexWhereExists(tableName: String, fieldName: String): Unit = {
+        val collection = database.getCollection(tableName)
+        val options = new com.mongodb.client.model.IndexOptions()
+            .unique(true)
+            .partialFilterExpression(Filters.exists(fieldName, true))
+        collection.createIndex(new Document(fieldName, 1), options)
     }
 
     private def buildKeyFilter(keyName: String, key: String, sortKeyName: String, sortKeyValue: Number): org.bson.conversions.Bson = {

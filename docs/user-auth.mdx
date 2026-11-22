@@ -12,7 +12,7 @@ When `USE_USER_AUTH=true`:
 - The UI shows a **login screen** before any tab is reachable.
 - Sensitive **Configuration** sub-tabs (Secrets, API-Keys, [Audit Log](/audit-log), [Agent Policy](/agent-policy)) are gated to **admin** users. The AI Providers, Data Sources, and Code Repository sub-tabs remain visible to all roles. The Users and API-Keys sub-tabs appear based on the active flags (see the [matrix](/api-keys#supported-configurations) for full visibility rules).
 - A new **Users** sub-tab appears under Configuration for adding, removing, and changing roles (admin-only by virtue of being inside Configuration).
-- Sessions are server-side, with a TTL index cleaning them up automatically.
+- Sessions are server-side, with a TTL index cleaning them up automatically. The database stores only a hash of each browser's session token, so a session record read from the database cannot be used as a sign-in cookie.
 
 When the flag is off, the toggle has zero effect on data — pipelines, taps, secrets, and run history all work the same.
 
@@ -242,6 +242,8 @@ SSO is single-tenant: with `MULTI_TENANT=true` it is not verified and signs peop
 ## Reverting
 
 Set `USE_USER_AUTH=false` (or remove the line) and recreate the Datris container. The login screen disappears; the Configuration tab is unrestricted again. **User rows persist in the database** — they just aren't checked. Flipping back on later returns you to the same set of users with the same passwords.
+
+**Upgrade note (sessions).** Upgrading keeps everyone signed in: a session created by an earlier version is converted to the hashed form the first time its browser makes a request, and one never used again expires on its usual schedule. Downgrading to an earlier version is the exception: it cannot read the hashed sessions, so users sign in again.
 
 ## Production checklist
 

@@ -72,9 +72,9 @@ class AuthAPIController {
                 return unauthorized()
             }
 
-            val session = SessionStore.create(user.username)
+            val (_, sessionToken) = SessionStore.create(user.username)
             UserStore.touchLastLogin(user.username)
-            response.addCookie(buildSessionCookie(session.token, cookieMaxAgeSeconds))
+            response.addCookie(buildSessionCookie(sessionToken, cookieMaxAgeSeconds))
             ResponseEntity.ok(gson.toJson(toMeResponse(user)))
         } catch {
             case e: Exception =>
@@ -204,9 +204,9 @@ class AuthAPIController {
                     created
             }
 
-            val session = SessionStore.create(user.username)
+            val (_, sessionToken) = SessionStore.create(user.username)
             UserStore.touchLastLogin(user.username)
-            response.addCookie(buildSessionCookie(session.token, cookieMaxAgeSeconds))
+            response.addCookie(buildSessionCookie(sessionToken, cookieMaxAgeSeconds))
             val md = new JsonObject
             md.addProperty("method", "oidc")
             md.addProperty("role", user.role)
