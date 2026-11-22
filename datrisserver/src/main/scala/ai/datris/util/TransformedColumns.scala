@@ -398,7 +398,7 @@ object TransformedColumns {
                                         f.name,
                                         "CodeGen transformation added column " + shown(
                                             f.name
-                                        ) + ", but " + destination + " already has a column of that name " + why +
+                                        ) + ", but " + destination + " already has a column of that name" + why +
                                             "; it is left out of this destination, that column gets no value from this run, " +
                                             "and it is not added to the stored destination schema"
                                     )
@@ -427,21 +427,58 @@ object TransformedColumns {
       * "already has a column of that name"; None when it can: a type that
       * takes every text value ([[holdsAnyText]]), the exact name the load
       * writes, nullable and not generated, both as read from the catalog
-      * (unknown counts as no). */
+      * (unknown counts as no). On Databricks never: Unity Catalog may not
+      * report a generated column as one, so the column is left as it is. */
     def refusal(engine: String, loadName: String, c: StoreColumn): Option[String] =
-        if (!holdsAnyText(engine, c))
+        if (engine == Databricks)
+            // Unity Catalog may not report a generated column as such, so a
+            // column of that name already in the table is never written to.
+            Some(", which is left as it is: on Databricks such a column is not loaded")
+        else if (!holdsAnyText(engine, c))
             Some(
-                "of type " + IngestColumnNames.display(String.valueOf(c.dataType)) + c.maxLength.map(l => "(" + l + ")").getOrElse("") +
+                " of type " + IngestColumnNames.display(String.valueOf(c.dataType)) + c.maxLength.map(l => "(" + l + ")").getOrElse("") +
                     ", which does not take every text value"
             )
         else if (!sameName(engine, loadName, c.name))
-            Some(
-                "spelled " + shown(c.name) + ", which differs in letter case from the column the load writes, " + shown(storedName(engine, loadName))
-            )
-        else if (c.nullable.isEmpty || c.generated.isEmpty) Some("whose nullability or kind could not be read")
-        else if (c.nullable.contains(false)) Some("that is NOT NULL")
-        else if (c.generated.contains(true)) Some("whose values the database generates")
+            Some(" spelled " + shown(c.name) + ", which differs in letter case from the column the load writes, " + shown(storedName(engine, loadName)))
+        else if (c.nullable.isEmpty || c.generated.isEmpty) Some(" whose nullability or kind could not be read")
+        else if (c.nullable.contains(false)) Some(" that is NOT NULL")
+        else if (c.generated.contains(true)) Some(" whose values the database generates")
         else None
+
+    /** Run `add` (an [[attempt]]) between `set` and `putBack`, the statements
+      * that bound a session setting and put it back. `putBack` runs whatever
+      * `add` did. When it fails, `onPutBackFailure` runs (the connection must
+      * not be reused) and the load fails: with `add`'s own error, the
+      * put-back's suppressed on it, when `add` failed; else with the
+      * put-back's error, since the setting is then unknown for the rest of
+      * the load. */
+    def withSettingPutBack(set: => Unit, putBack: => Unit, onPutBackFailure: () => Unit)(add: => Option[Throwable]): Option[Throwable] = {
+        set
+        val outcome =
+            try add
+            catch {
+                case NonFatal(e) =>
+                    try putBack
+                    catch {
+                        case NonFatal(r) =>
+                            onPutBackFailure()
+                            e.addSuppressed(r)
+                    }
+                    throw e
+            }
+        try putBack
+        catch {
+            case NonFatal(r) =>
+                onPutBackFailure()
+                outcome.foreach { e =>
+                    e.addSuppressed(r)
+                    throw e
+                }
+                throw r
+        }
+        outcome
+    }
 
     /** A catalog YES / NO as a Boolean; None for anything else. */
     def yesNo(s: String): Option[Boolean] =

@@ -304,17 +304,7 @@ class DatabricksLoader(initialContext: JobContext) {
             val rs = statement.executeQuery(DatabricksLoader.columnTypesSql(db))
             try {
                 val out = ListBuffer[TransformedColumns.StoreColumn]()
-                while (rs.next()) {
-                    val (isGenerated, expression, isIdentity) = (rs.getString(4), rs.getString(5), rs.getString(6))
-                    val generated =
-                        if (isGenerated == null && isIdentity == null) None
-                        else
-                            Some(
-                                Option(isGenerated).exists(g => g.equalsIgnoreCase("ALWAYS") || g.equalsIgnoreCase("YES")) ||
-                                    Option(expression).exists(_.trim.nonEmpty) || TransformedColumns.yesNo(isIdentity).contains(true)
-                            )
-                    out += TransformedColumns.StoreColumn(rs.getString(1), rs.getString(2), None, TransformedColumns.yesNo(rs.getString(3)), generated)
-                }
+                while (rs.next()) out += TransformedColumns.StoreColumn(rs.getString(1), rs.getString(2))
                 out.toList
             } finally rs.close()
         }
@@ -401,13 +391,13 @@ object DatabricksLoader {
     def addPlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Seq[(SchemaField, String)] =
         fields.filter(f => !existing.contains(f.name.toLowerCase)).map(f => f -> addColumnSql(db, f))
 
-    /** The table's columns, by position: name, type, is_nullable,
-      * is_generated, generation_expression, is_identity; matched as the
-      * loader's column read is (Unity Catalog stores names lowercase). If a
-      * workspace's catalog lacks one of these columns the read fails, and
-      * the added column is left out with a warning. */
+    /** The table's column names and types, by position, matched as the
+      * loader's column read is (Unity Catalog stores names lowercase). Used
+      * to tell whether a manually managed table has a column; an existing
+      * column of an added column's name is never loaded on Databricks
+      * (TransformedColumns.refusal). */
     def columnTypesSql(db: Database): String =
-        s"""SELECT column_name, data_type, is_nullable, is_generated, generation_expression, is_identity FROM ${ident(db.dbName)}.information_schema.columns
+        s"""SELECT column_name, data_type FROM ${ident(db.dbName)}.information_schema.columns
            |WHERE lower(table_schema) = '${sqlLiteral(DatabricksConnectionUtil.effectiveName(db.schema))}' AND lower(table_name) = '${sqlLiteral(
                 DatabricksConnectionUtil.effectiveName(db.table)
             )}'""".stripMargin

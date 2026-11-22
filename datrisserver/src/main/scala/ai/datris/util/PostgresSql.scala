@@ -247,11 +247,12 @@ object PostgresSql {
           |AND table_name = ?""".stripMargin
 
     /** The table's columns: name, type, character length, nullability,
-      * generated (`ALWAYS` for a generated column) and identity; bind the
+      * generated (`ALWAYS` for a generated column), identity and the domain
+      * the column's type is, if any; bind the
       * database, the schema, the table. Every column read here is in
       * information_schema.columns from PostgreSQL 10 on. */
     val ExistingColumnTypesSql: String =
-        """SELECT column_name, data_type, character_maximum_length, is_nullable, is_generated, identity_generation
+        """SELECT column_name, data_type, character_maximum_length, is_nullable, is_generated, identity_generation, domain_name
           |FROM information_schema.columns
           |WHERE table_catalog = ? AND table_schema = ?
           |AND table_name = ?""".stripMargin

@@ -304,11 +304,14 @@ class SqlServerLoader(initialContext: JobContext) {
             finally rs.close()
         }
         if (!current.contains(-1)) TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alter))
-        else {
-            statement.execute("SET LOCK_TIMEOUT " + SqlServerLoader.AddedColumnLockTimeoutMs)
-            try TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alter))
-            finally statement.execute("SET LOCK_TIMEOUT -1")
-        }
+        else
+            // The connection is closed when the load ends; a put-back that
+            // fails fails the load (onPutBackFailure has nothing to do).
+            TransformedColumns.withSettingPutBack(
+                statement.execute("SET LOCK_TIMEOUT " + SqlServerLoader.AddedColumnLockTimeoutMs),
+                statement.execute("SET LOCK_TIMEOUT -1"),
+                () => ()
+            )(TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alter)))
     }
 
     private def destinationLabel: String = "the SQL Server table " + SqlServerConnectionUtil.schemaName(db) + "." + db.table

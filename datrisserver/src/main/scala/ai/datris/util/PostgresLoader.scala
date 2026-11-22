@@ -23,6 +23,10 @@ class PostgresLoader(initialContext: JobContext) {
     // run's transformation added is left out of this table.
     private var jobContext: JobContext = initialContext
     private def config: PipelineConfig = jobContext.config
+
+    /** Closes the load's connection instead of returning it to the pool once
+      * the load ends; set by [[process]] (a no-op until then). */
+    private[util] var evictConnection: () => Unit = () => ()
     private val statusUtil = jobContext.statusUtil
 
     /** In multi-tenant mode, use the tenant's isolated database; otherwise use the pipeline config value. */
@@ -52,7 +56,8 @@ class PostgresLoader(initialContext: JobContext) {
         statusUtil.info("processing", "jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl))
         // Pooled: close() below returns the connection to the pool; Hikari
         // resets autoCommit on return, so the transaction toggle is safe.
-        PostgresPool.withConnection(jdbcUrl, secrets.username, secrets.password) { conn =>
+        PostgresPool.withEvictableConnection(jdbcUrl, secrets.username, secrets.password) { (conn, evict) =>
+            evictConnection = () => evict(conn)
             statusUtil.info("processing", "Postgres connection acquired")
             if (config.destination.database.useTransaction)
                 conn.setAutoCommit(false)
@@ -427,11 +432,14 @@ class PostgresLoader(initialContext: JobContext) {
                 statement.execute(alterSql)
                 statement.execute("SET LOCAL lock_timeout = 0")
             }
-        else {
-            statement.execute("SET lock_timeout = " + bound)
-            try TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alterSql))
-            finally statement.execute("SET lock_timeout = 0")
-        }
+        else
+            // A session setting on a pooled connection: if it cannot be put
+            // back, the connection is closed rather than reused.
+            TransformedColumns.withSettingPutBack(
+                statement.execute("SET lock_timeout = " + bound),
+                statement.execute("SET lock_timeout = 0"),
+                evictConnection
+            )(TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alterSql)))
     }
 
     private def destinationLabel: String =
@@ -457,7 +465,10 @@ class PostgresLoader(initialContext: JobContext) {
                             case _ => None
                         }
                         val generated = Option(rs.getString(5)).map(g => !g.trim.equalsIgnoreCase("NEVER") || rs.getString(6) != null)
-                        out += TransformedColumns.StoreColumn(rs.getString(1), rs.getString(2), len, TransformedColumns.yesNo(rs.getString(4)), generated)
+                        // A domain reports its base type; its own rules (CHECK,
+                        // NOT NULL) are not read, so it never counts as text.
+                        val dataType = Option(rs.getString(7)).map(d => rs.getString(2) + " (domain " + d + ")").getOrElse(rs.getString(2))
+                        out += TransformedColumns.StoreColumn(rs.getString(1), dataType, len, TransformedColumns.yesNo(rs.getString(4)), generated)
                     }
                     out.toList
                 } finally rs.close()
