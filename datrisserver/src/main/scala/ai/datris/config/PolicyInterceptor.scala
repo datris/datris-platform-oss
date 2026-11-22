@@ -7,6 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.{AuditActor, AuditLog}
 import ai.datris.policy._
+import ai.datris.util.TokenHash
 import com.google.gson.JsonObject
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
@@ -14,6 +15,8 @@ import org.springframework.stereotype.Component
 import org.springframework.web.method.HandlerMethod
 import org.springframework.web.servlet.HandlerInterceptor
 
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
@@ -333,10 +336,15 @@ object PolicyInterceptor {
 
     @volatile private[datris] var store: Store = MongoStore
 
-    /** An approved action whose replay token is `token` and not used yet. */
+    /** An approved action that holds the hash of `token` and is not used
+      * yet. The presented value is hashed and the hashes compared in
+      * constant time; a record without a hash accepts nothing. */
     def replayable(pa: PendingAction, token: String): Boolean =
         pa != null && pa.state == PendingAction.Approved && token != null && token.nonEmpty &&
-            pa.replayToken.contains(token) && pa.replayConsumedAt.isEmpty
+            pa.replayConsumedAt.isEmpty && pa.replayTokenHash.exists { stored =>
+                val presented = TokenHash.sha256Hex(token)
+                MessageDigest.isEqual(presented.getBytes(StandardCharsets.UTF_8), stored.getBytes(StandardCharsets.UTF_8))
+            }
 
     /** Is `request` the approved action `pa`: the same canonical method and
       * path ([[ai.datris.auth.RequestPaths]], the stored raw path read the

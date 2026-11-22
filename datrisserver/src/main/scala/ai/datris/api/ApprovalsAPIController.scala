@@ -9,6 +9,7 @@ import ai.datris.audit.{AuditActor, AuditLog}
 import ai.datris.config.RequiresRole
 import ai.datris.model.UserContext
 import ai.datris.policy._
+import ai.datris.util.TokenHash
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import jakarta.servlet.http.HttpServletRequest
@@ -126,7 +127,9 @@ class ApprovalsAPIController {
                 PendingAction.Approved,
                 "decidedBy" -> approver,
                 "decidedAt" -> now.toString,
-                "replayToken" -> token
+                // only the hash is stored; the token itself stays in memory
+                // and goes to PolicyReplay.execute below
+                "replayTokenHash" -> TokenHash.sha256Hex(token)
             )
             if (!moved)
                 return ResponseEntity.status(HttpStatus.CONFLICT).body[String](errorJson("this approval was decided concurrently"))

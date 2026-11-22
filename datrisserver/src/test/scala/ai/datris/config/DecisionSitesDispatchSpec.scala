@@ -321,13 +321,19 @@ class DecisionSitesDispatchSpec extends AnyFunSuite with BeforeAndAfterAll with 
             createdAt = now,
             expiresAt = now.plus(1, ChronoUnit.HOURS),
             state = PendingAction.Approved,
-            replayToken = Some(token)
+            replayTokenHash = Some(ai.datris.util.TokenHash.sha256Hex(token))
         )
+        tokens.put(pa.id, token)
         store.put(pa)
         pa
     }
 
-    private def approvalHeader(pa: PendingAction) = Seq(PolicyReplay.HeaderApproval -> (pa.id + "." + pa.replayToken.get))
+    /** The clear token of each approval built here, kept beside the record
+      * (which holds only its hash), as the approving request holds it. */
+    private val tokens = scala.collection.concurrent.TrieMap[String, String]()
+    private def tokenOf(pa: PendingAction): String = tokens(pa.id)
+
+    private def approvalHeader(pa: PendingAction) = Seq(PolicyReplay.HeaderApproval -> (pa.id + "." + tokenOf(pa)))
 
     test("replay: the approved request skips the gate once, and its audit row carries the approval") {
         PolicyIO.currentOverride = AgentPolicy(actions = Map("tap:run" -> PolicyMode.Deny))
@@ -367,7 +373,7 @@ class DecisionSitesDispatchSpec extends AnyFunSuite with BeforeAndAfterAll with 
         PolicyReplay.port = port
         for (raw <- "/api/v1/tap/run" +: spellings("/api/v1/tap/run")) {
             val pa = approved("POST", raw, "{\"name\":\"t1\"}", Some("t1"), token = "tok" + Math.abs(raw.hashCode))
-            val res = PolicyReplay.execute(pa, pa.replayToken.get, None)
+            val res = PolicyReplay.execute(pa, tokenOf(pa), None)
             assert(res.status == 200, s"$raw -> ${res.status} ${res.body}")
             assert(store.consumed.contains(pa.id), raw)
         }
@@ -482,10 +488,10 @@ class DecisionSitesDispatchSpec extends AnyFunSuite with BeforeAndAfterAll with 
         install(baseEnv.copy(useApiKeys = false))
         PolicyReplay.port = port
         val pa = approved("POST", "/api/v1/pipelines/a%20b%2Bc/rename", "{}", Some("a b+c"), token = "tokpath")
-        val res = PolicyReplay.execute(pa, pa.replayToken.get, None)
+        val res = PolicyReplay.execute(pa, tokenOf(pa), None)
         assert(res.status == 200 && res.body == "handled", s"${res.status} ${res.body}")
         assert(store.consumed.contains(pa.id))
-        val again = PolicyReplay.execute(pa, pa.replayToken.get, None)
+        val again = PolicyReplay.execute(pa, tokenOf(pa), None)
         assert(again.status == 403 && json(again.body).get("errorKind").getAsString == "policy_replay_rejected", again.body)
     }
 
@@ -494,10 +500,10 @@ class DecisionSitesDispatchSpec extends AnyFunSuite with BeforeAndAfterAll with 
         PolicyReplay.port = port
         val pa = approved("DELETE", "/api/v1/tap", "{}", Some("t1"), token = "tokquery").copy(query = Some("name=t1"), contentType = None, body = None)
         store.put(pa)
-        val res = PolicyReplay.execute(pa, pa.replayToken.get, None)
+        val res = PolicyReplay.execute(pa, tokenOf(pa), None)
         assert(res.status == 200 && res.body == "handled", s"${res.status} ${res.body}")
         assert(store.consumed.contains(pa.id))
-        val again = PolicyReplay.execute(pa, pa.replayToken.get, None)
+        val again = PolicyReplay.execute(pa, tokenOf(pa), None)
         assert(again.status == 403 && json(again.body).get("errorKind").getAsString == "policy_replay_rejected", again.body)
     }
 

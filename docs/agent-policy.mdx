@@ -71,6 +71,10 @@ An approval executes what was proposed, not what the agent would propose now: if
 
 Some requests cannot be parked — file uploads, and bodies over 256 KB. If such an action is set to **Approve**, the agent is told to ask you to do it in the UI instead.
 
+The approval record in the database holds only a hash of the one-time value that lets the platform perform the approved request, and that hash is removed once the request has run.
+
+**Upgrade note (approvals).** When more than one server instance shares a database, stop every instance of the earlier version before starting the new one: an approval that an earlier-version instance is performing at the moment a new instance starts ends as failed, and the agent has to propose the action again.
+
 ## For agents
 
 Three MCP tools support the flow:

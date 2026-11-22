@@ -328,6 +328,14 @@ class StartupRunner extends ApplicationRunner {
         // when enforced). Never blocks boot.
         try ai.datris.util.TapSecretScopeScan.logAtStartup()
         catch { case scala.util.control.NonFatal(e) => logger.warn("Tap secret scope scan failed (continuing): " + e.getMessage) }
+        // Approval records keep only a hash of their one-time replay token;
+        // remove the clear token field earlier versions stored. Idempotent,
+        // runs whether or not the agent policy is on, never blocks boot.
+        try ai.datris.policy.PendingActionIO.removeClearReplayTokens()
+        catch {
+            case scala.util.control.NonFatal(e) =>
+                logger.warn("Approval token cleanup failed (continuing): " + e.getClass.getSimpleName)
+        }
         if (useAgentPolicy)
             logger.info(
                 "Agent policy enabled: collections=" + environment + "-agent-policy, " + environment + "-pending-action; approvals replay to port " + serverPort
