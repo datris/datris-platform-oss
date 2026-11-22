@@ -51,15 +51,15 @@ class IncidentsAPIController {
                 // A limited caller sees only incidents on a pipeline or tap it
                 // may read, read further back (bounded) so its list is filled;
                 // the response carries no count.
-                val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
+                val listing = IncidentsAPIController.storeListing()
                 arr.addAll(IncidentsAPIController.listedFor(
                     request,
                     Option(limit).map(_.intValue()).getOrElse(50),
                     n => IncidentIO.list(st, n),
-                    readPipeline,
-                    readTap,
+                    listing.readPipeline,
+                    listing.readTap,
                     IncidentsAPIController.storeRuns(),
-                    IncidentsAPIController.storeItems()
+                    listing.items
                 ))
             }
             out.add("incidents", arr)
@@ -75,15 +75,15 @@ class IncidentsAPIController {
     def get(@PathVariable("id") id: String, request: HttpServletRequest): ResponseEntity[String] = {
         try {
             if (!enabled) return disabled()
-            val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
+            val listing = IncidentsAPIController.storeListing()
             IncidentsAPIController.getResponse(
                 request,
                 id,
                 IncidentIO.get(id),
-                readPipeline,
-                readTap,
+                listing.readPipeline,
+                listing.readTap,
                 IncidentsAPIController.storeRuns(),
-                IncidentsAPIController.storeItems()
+                listing.items
             )
         } catch {
             case e: Exception =>
@@ -99,15 +99,14 @@ class IncidentsAPIController {
     def evidence(@PathVariable("id") id: String, request: HttpServletRequest): ResponseEntity[String] = {
         try {
             if (!enabled) return disabled()
-            val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
+            val listing = IncidentsAPIController.storeListing()
             IncidentsAPIController.evidenceResponse(
                 request,
                 id,
                 IncidentIO.get(id),
-                readPipeline,
-                readTap,
-                IncidentsAPIController.storeRuns(),
-                IncidentsAPIController.storeItems()
+                listing.readPipeline,
+                listing.readTap,
+                IncidentsAPIController.storeRuns()
             )
         } catch {
             case e: Exception =>
@@ -126,11 +125,13 @@ class IncidentsAPIController {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](errorJson("agents may not abandon incidents"))
             val stored = IncidentIO.get(id)
             // An incident on a resource the caller may not read is the unknown-incident 404, before anything changes.
-            val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
-            IncidentsAPIController.incidentRefusal(request, id, stored, readPipeline, readTap).foreach(return _)
+            val listing = IncidentsAPIController.storeListing()
+            IncidentsAPIController.incidentRefusal(request, id, stored, listing.readPipeline, listing.readTap).foreach(return _)
             val incident = stored.getOrElse(return ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](errorJson("no incident " + id)))
             if (!incident.isOpen)
                 return ResponseEntity.status(HttpStatus.CONFLICT).body[String](errorJson("incident is already " + incident.state))
+            // A limited caller's response needs every store: listed now, before the state changes.
+            IncidentsAPIController.listBeforeChange(request, listing)
             val by = PolicyActor.label(request)
             IncidentIO.transition(id, Incident.OpenStates, Incident.Abandoned, "outcome" -> ("abandoned by " + by))
             IncidentIO.appendStep(id, ai.datris.incident.IncidentStep(java.time.Instant.now(), "close", "abandoned by " + by))
@@ -138,10 +139,10 @@ class IncidentsAPIController {
             val updated = IncidentsAPIController.shownIncident(
                 request,
                 IncidentIO.get(id).getOrElse(incident),
-                readPipeline,
-                readTap,
+                listing.readPipeline,
+                listing.readTap,
                 IncidentsAPIController.storeRuns(),
-                IncidentsAPIController.storeItems()
+                listing.items
             )
             new ResponseEntity[String](gson.toJson(updated.toPublicJson), HttpStatus.OK)
         } catch {
@@ -162,9 +163,11 @@ class IncidentsAPIController {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](errorJson("agents may not proceed past needs-human evidence"))
             val stored = IncidentIO.get(id)
             // An incident on a resource the caller may not read is the unknown-incident 404, before anything runs.
-            val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
-            IncidentsAPIController.incidentRefusal(request, id, stored, readPipeline, readTap).foreach(return _)
+            val listing = IncidentsAPIController.storeListing()
+            IncidentsAPIController.incidentRefusal(request, id, stored, listing.readPipeline, listing.readTap).foreach(return _)
             val incident = stored.getOrElse(return ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](errorJson("no incident " + id)))
+            // A limited caller's response needs every store: listed now, before anything runs.
+            IncidentsAPIController.listBeforeChange(request, listing)
             IncidentRunner.proceed(id, PolicyActor.label(request)) match {
                 case Left(msg) => ResponseEntity.status(HttpStatus.CONFLICT).body[String](errorJson(msg))
                 case Right(_) =>
@@ -172,10 +175,10 @@ class IncidentsAPIController {
                     val updated = IncidentsAPIController.shownIncident(
                         request,
                         IncidentIO.get(id).getOrElse(incident),
-                        readPipeline,
-                        readTap,
+                        listing.readPipeline,
+                        listing.readTap,
                         IncidentsAPIController.storeRuns(),
-                        IncidentsAPIController.storeItems()
+                        listing.items
                     )
                     new ResponseEntity[String](gson.toJson(updated.toPublicJson), HttpStatus.OK)
             }
@@ -212,32 +215,55 @@ object IncidentsAPIController {
       * read are taken from these ([[nameScrubberFor]]). */
     final case class StoredItems(pipelines: Seq[PipelineConfig], taps: Seq[TapConfig])
 
-    /** No stored items: no free-text name is replaced. The default where no
-      * lister is given (seams that only judge visibility and evidence); every
-      * route passes [[storeItems]]. */
+    /** An empty listing: no free-text name is replaced. Passed explicitly
+      * by seams that only judge visibility and evidence; every route passes
+      * its [[StoreListing.items]]. */
     val NoItems: () => StoredItems = () => StoredItems(Nil, Nil)
 
-    /** The live stores, listed once, when first called (only for a limited
-      * caller's visible incident). */
-    def storeItems(): () => StoredItems = {
-        lazy val loaded = StoredItems(
-            PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName).filter(_ != null),
-            TapConfigIO.readAll(DatrisEnvironment.current.tapTableName).filter(_ != null)
-        )
-        () => loaded
+    /** One request's view of the pipeline and tap stores: each store is
+      * listed at most once, and only when first needed (never for a caller
+      * that is not limited); the by-name readers ([[readPipeline]],
+      * [[readTap]]) and the stored items for the free-text scrub
+      * ([[items]]) share that one listing. */
+    final class StoreListing(listPipelines: () => Seq[PipelineConfig], listTaps: () => Seq[TapConfig]) {
+        lazy val pipelines: Seq[PipelineConfig] = Option(listPipelines()).getOrElse(Nil).filter(_ != null)
+        lazy val taps: Seq[TapConfig] = Option(listTaps()).getOrElse(Nil).filter(_ != null)
+        private lazy val pipelineByName: Map[String, PipelineConfig] = pipelines.filter(_.name != null).map(p => p.name -> p).toMap
+        private lazy val tapByName: Map[String, TapConfig] = taps.filter(_.name != null).map(t => t.name -> t).toMap
+        val readPipeline: String => PipelineConfig = n => pipelineByName.getOrElse(n, null)
+        val readTap: String => TapConfig = n => tapByName.getOrElse(n, null)
+        val items: () => StoredItems = () => StoredItems(pipelines, taps)
     }
 
+    /** The live stores for one request ([[StoreListing]]). */
+    def storeListing(): StoreListing =
+        new StoreListing(
+            () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName),
+            () => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)
+        )
+
+    /** POST /{id}/abandon and /{id}/proceed: for a limited caller, `listing`
+      * lists both stores now, so the response after the change needs no
+      * store read that could fail once the change is made. Nothing is read
+      * for everyone else. */
+    def listBeforeChange(request: HttpServletRequest, listing: StoreListing): Unit =
+        if (limitedKey(request).isDefined) listing.items()
+
     /** The free-text scrubber for a limited identity `rk`: the names of
-      * stored pipelines and taps it may not read, less every name a stored
-      * item it may read carries (of either kind), so a visible name is never
-      * replaced. Built once per response. */
+      * stored pipelines and taps it may not read, with the previous names of
+      * those pipelines ([[ai.datris.util.PipelineAliases.previousNamesOf]]),
+      * are replaced; every name a stored item it may read carries (of either
+      * kind, a readable pipeline's previous names included) is kept whole,
+      * so a visible name is never replaced or cut. Built once per response. */
     def nameScrubberFor(rk: ResolvedKey, items: StoredItems): HiddenTapScrub.NameScrubber = {
+        import ai.datris.util.PipelineAliases
         val ps = Option(items).map(_.pipelines).getOrElse(Nil).filter(p => p != null && p.name != null && p.name.nonEmpty)
         val ts = Option(items).map(_.taps).getOrElse(Nil).filter(t => t != null && t.name != null && t.name.nonEmpty)
         val (shownP, hiddenP) = ps.partition(p => pipelineReadable(rk, p))
         val (shownT, hiddenT) = ts.partition(t => CallerVisibility.mayReadStored(Some(rk), "tap", t.catalog, t.createdByKeyLabel))
-        val visible = shownP.map(_.name).toSet ++ shownT.map(_.name)
-        new HiddenTapScrub.NameScrubber(hiddenT.map(_.name).toSet -- visible, hiddenP.map(_.name).toSet -- visible)
+        def namesOf(p: PipelineConfig): Seq[String] = p.name +: PipelineAliases.previousNamesOf(p)
+        val visible = shownP.flatMap(namesOf).toSet ++ shownT.map(_.name)
+        new HiddenTapScrub.NameScrubber(hiddenT.map(_.name).toSet -- visible, hiddenP.flatMap(namesOf).toSet -- visible, visible)
     }
 
     /** `i` with hidden names replaced in its free text (step `summary` and
@@ -300,17 +326,6 @@ object IncidentsAPIController {
             else { val out = new JsonObject(); kids.foreach { case (k, _, n) => out.add(k, n) }; out }
         }
 
-    /** Readers on the live stores for the decisions below: each store is read
-      * at most once, and only when a reader is first called (never for a
-      * caller that is not limited). */
-    def storeReaders(): (String => PipelineConfig, String => TapConfig) = {
-        lazy val pipelines: Map[String, PipelineConfig] =
-            PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName).filter(p => p != null && p.name != null).map(p => p.name -> p).toMap
-        lazy val taps: Map[String, TapConfig] =
-            TapConfigIO.readAll(DatrisEnvironment.current.tapTableName).filter(t => t != null && t.name != null).map(t => t.name -> t).toMap
-        (n => pipelines.getOrElse(n, null), n => taps.getOrElse(n, null))
-    }
-
     /** No run record for any id: profiles whose run cannot be established
       * are judged hidden (fail closed). The default where no run reader is
       * given. */
@@ -355,7 +370,7 @@ object IncidentsAPIController {
         readPipeline: String => PipelineConfig,
         readTap: String => TapConfig,
         run: String => Option[RunLineage] = NoRuns,
-        items: () => StoredItems = NoItems
+        items: () => StoredItems
     ): List[Incident] =
         limitedKey(request) match {
             case None => incidents
@@ -371,7 +386,7 @@ object IncidentsAPIController {
         readPipeline: String => PipelineConfig,
         readTap: String => TapConfig,
         run: String => Option[RunLineage] = NoRuns,
-        items: () => StoredItems = NoItems
+        items: () => StoredItems
     ): List[Incident] =
         if (incidents == null) incidents
         else {
@@ -437,7 +452,7 @@ object IncidentsAPIController {
         readPipeline: String => PipelineConfig,
         readTap: String => TapConfig,
         run: String => Option[RunLineage] = NoRuns,
-        items: () => StoredItems = NoItems
+        items: () => StoredItems
     ): Incident =
         limitedKey(request) match {
             case None => i
@@ -594,7 +609,7 @@ object IncidentsAPIController {
         readPipeline: String => PipelineConfig,
         readTap: String => TapConfig,
         run: String => Option[RunLineage] = NoRuns,
-        items: () => StoredItems = NoItems
+        items: () => StoredItems
     ): JsonArray = {
         val arr = new JsonArray()
         visibleIncidents(request, incidents, readPipeline, readTap, run, items).foreach(i => arr.add(i.toPublicJson))
@@ -611,7 +626,7 @@ object IncidentsAPIController {
         readPipeline: String => PipelineConfig,
         readTap: String => TapConfig,
         run: String => Option[RunLineage] = NoRuns,
-        items: () => StoredItems = NoItems
+        items: () => StoredItems
     ): ResponseEntity[String] =
         incidentRefusal(request, id, stored, readPipeline, readTap).getOrElse {
             stored.map(i => shownIncident(request, i, readPipeline, readTap, run, items)) match {
@@ -622,15 +637,14 @@ object IncidentsAPIController {
 
     /** GET /incidents/{id}/evidence on the stored incident: as [[getResponse]],
       * returning the evidence as the caller sees it, or 404 when absent. The
-      * evidence holds no free text, so `items` is not called. */
+      * evidence holds no free text, so the stores are not listed for it. */
     def evidenceResponse(
         request: HttpServletRequest,
         id: String,
         stored: Option[Incident],
         readPipeline: String => PipelineConfig,
         readTap: String => TapConfig,
-        run: String => Option[RunLineage] = NoRuns,
-        items: () => StoredItems = NoItems
+        run: String => Option[RunLineage] = NoRuns
     ): ResponseEntity[String] =
         incidentRefusal(request, id, stored, readPipeline, readTap).getOrElse {
             stored.map(i => shownEvidence(request, i, readPipeline, readTap, run)) match {

@@ -392,7 +392,7 @@ class ChatRoleAuthorityMatrixSpec extends AnyFunSuite with BeforeAndAfterEach wi
     private def incidentBlockFor(id: ChatIdentity): Option[List[Incident]] = {
         var reads = 0
         val loaded = incidents
-        val got = OpsChatAPIController.incidentsFor(id, () => { reads += 1; loaded }, failRead, failReadTap)
+        val got = OpsChatAPIController.incidentsFor(id, () => { reads += 1; loaded }, failRead, failReadTap, items = IncidentsAPIController.NoItems)
         if (got.isEmpty) { assert(reads == 0, s"$id: the incident store was read for a caller that gets none"); None }
         else { assert(got eq loaded, s"$id: an unlimited caller gets the loaded list itself"); Some(got) }
     }
@@ -435,7 +435,8 @@ class ChatRoleAuthorityMatrixSpec extends AnyFunSuite with BeforeAndAfterEach wi
             lid,
             () => incidents,
             _ => throw new RuntimeException("store down"),
-            _ => throw new RuntimeException("store down")
+            _ => throw new RuntimeException("store down"),
+            items = IncidentsAPIController.NoItems
         ) == Nil)
         Seq(
             RoleToolSets.stored("ops-inc-scoped", "incident:read:catalog=Sales", "pipeline:read"),

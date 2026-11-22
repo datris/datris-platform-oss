@@ -72,9 +72,10 @@ object TapAPIController {
       * `response.rollup` itself and no reader is called. A limited caller
       * (restricted session, catalog- or owner-scoped key) gets what
       * `GET /pipeline/status` with that token shows it
-      * ([[PipelineStatusAPIController.restrictedViewWith]]): None when the
-      * run touches a pipeline it may not read, else the scrubbed rollup
-      * (hidden tap names `[hidden]`, preview rows stripped). */
+      * ([[PipelineStatusAPIController.restrictedViewWith]]): the jobs of
+      * pipelines it may read, the rollup recomputed from them when a job
+      * was dropped, and scrubbed (hidden tap names `[hidden]`, preview rows
+      * stripped); None when no job of the run is on a pipeline it may read. */
     def shownRollup(
         request: HttpServletRequest,
         response: ai.datris.model.PipelineStatusResponse,

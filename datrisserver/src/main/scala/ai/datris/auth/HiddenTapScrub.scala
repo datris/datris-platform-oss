@@ -119,67 +119,82 @@ object HiddenTapScrub {
     /** `text` with the names of items a limited caller may not read
       * replaced by [[Placeholder]] (plans/stories/limited-caller-read-leaks.md,
       * D1): every name in `hiddenTaps` or `hiddenPipelines` wherever it stands
-      * as a whole name ([[NameScrubber]]), and each hidden tap name also in
-      * the tap contexts [[scrubText]] knows (`tap-<name>.csv|json`,
-      * `tap-docs/<name>/`). A name inside a longer name or word is left
-      * alone; longest names first; one pass, so a placeholder is never
-      * nested. Null stays null; `text` itself when both sets are empty or no
-      * name is replaced. For many texts with the same sets, build one
-      * [[NameScrubber]] and apply it to each. */
-    def scrubNames(text: String, hiddenTaps: Set[String], hiddenPipelines: Set[String]): String =
+      * as a whole name, in any letter case ([[NameScrubber]]), and each hidden
+      * tap name also in the tap contexts [[scrubText]] knows
+      * (`tap-<name>.csv|json`, `tap-docs/<name>/`). A name inside a longer
+      * name or word is left alone; a dot after a name ends it, so
+      * `<name>.csv` and `<name>.public` read `[hidden].csv` and
+      * `[hidden].public`. Every name in `keep` (the names of items the
+      * caller may read) is left whole where it stands, so a visible name
+      * holding a dot (`hr.eu`) is never cut by a shorter hidden one (`hr`);
+      * at a position the longest name wins. One pass, so a placeholder is
+      * never nested. Null stays null; `text` itself when both hidden sets
+      * are empty or no name is replaced. For many texts with the same sets,
+      * build one [[NameScrubber]] and apply it to each. */
+    def scrubNames(text: String, hiddenTaps: Set[String], hiddenPipelines: Set[String], keep: Set[String] = Set.empty): String =
         if (text == null || text.isEmpty || (hiddenTaps.isEmpty && hiddenPipelines.isEmpty)) text
-        else new NameScrubber(hiddenTaps, hiddenPipelines)(text)
+        else new NameScrubber(hiddenTaps, hiddenPipelines, keep)(text)
 
     /** Whether `c` can continue a name (a char before or after a whole name
-      * must not be one). */
+      * must not be one). A dot is not one: it ends a name. */
     private def nameChar(c: Char): Boolean =
         (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
 
-    /** [[scrubNames]] for one set of hidden names, built once and applied to
-      * many texts (one per response). The names are held in a character trie,
-      * so a text is scanned once whatever the number of names: at each
-      * position where a name can start, the trie is walked for the names
-      * that occur there (no pattern per name, no pattern per text). A name
-      * stands as a whole name when the char before it cannot continue a name
-      * (`A-Z a-z 0-9 _ -`) and the text after it ends, or the next char is
-      * none of those and no dot, or is a dot with no name char after it (as
-      * [[NameEnd]]). A hidden tap name is also replaced in a
-      * `tap-<name>.csv|json` feed file and a `tap-docs/<name>/` path. An
-      * existing [[Placeholder]] in the text is passed over whole. Not
-      * thread-safe (its counters); use one per response. */
-    final class NameScrubber(hiddenTaps: Set[String], hiddenPipelines: Set[String]) {
+    /** The letter case [[NameScrubber]] compares in. */
+    private def fold(c: Char): Char = Character.toLowerCase(c)
+
+    /** [[scrubNames]] for one set of hidden names and kept names, built once
+      * and applied to many texts (one per response). The names are held in a
+      * character trie, compared in lower case, so a text is scanned once
+      * whatever the number of names: at each position where a name can
+      * start, the trie is walked for the names that occur there (no pattern
+      * per name, no pattern per text), and the longest one whose boundaries
+      * hold is taken. A name stands as a whole name when the char before it
+      * cannot continue a name (`A-Z a-z 0-9 _ -`) and the text after it ends
+      * or the next char cannot continue a name (a dot, a space, punctuation).
+      * A hidden tap name is also replaced in a `tap-<name>.csv|json` feed
+      * file and a `tap-docs/<name>/` path. A kept name found there is copied
+      * as it is and the scan resumes after it; a kept name and a hidden name
+      * of the same spelling (in any case) count as kept. An existing
+      * [[Placeholder]] in the text is passed over whole. Not thread-safe
+      * (its counters); use one per response. */
+    final class NameScrubber(hiddenTaps: Set[String], hiddenPipelines: Set[String], keep: Set[String] = Set.empty) {
         private final class Node {
             val next = new java.util.HashMap[Char, Node](4)
             var name = false
             var tap = false
+            var kept = false
         }
         private val root = new Node
-        private var maxLen = 0
-        private var count = 0
+        private val hiddenEnds = scala.collection.mutable.LinkedHashSet[Node]()
 
-        private def add(n: String, isTap: Boolean): Unit =
+        private def add(n: String, isTap: Boolean, isKept: Boolean): Unit =
             if (n != null && n.nonEmpty) {
                 var node = root
                 var k = 0
                 while (k < n.length) {
-                    val c = n.charAt(k)
+                    val c = fold(n.charAt(k))
                     var child = node.next.get(c)
                     if (child == null) { child = new Node; node.next.put(c, child) }
                     node = child
                     k += 1
                 }
-                if (!node.name) count += 1
-                node.name = true
-                if (isTap) node.tap = true
-                maxLen = math.max(maxLen, n.length)
+                if (isKept) node.kept = true
+                else {
+                    node.name = true
+                    if (isTap) node.tap = true
+                    hiddenEnds += node
+                }
             }
-        hiddenTaps.foreach(add(_, isTap = true))
-        hiddenPipelines.foreach(add(_, isTap = false))
+        Option(hiddenTaps).getOrElse(Set.empty).foreach(add(_, isTap = true, isKept = false))
+        Option(hiddenPipelines).getOrElse(Set.empty).foreach(add(_, isTap = false, isKept = false))
+        Option(keep).getOrElse(Set.empty).foreach(add(_, isTap = false, isKept = true))
+        private val count = hiddenEnds.count(!_.kept)
 
-        /** Distinct hidden names held. */
+        /** Distinct hidden names held (in lower case), less those also kept. */
         def size: Int = count
 
-        /** True when no name is held: every text comes back as it is. */
+        /** True when no hidden name is held: every text comes back as it is. */
         def isEmpty: Boolean = count == 0
 
         private var stepsTaken = 0L
@@ -190,8 +205,8 @@ object HiddenTapScrub {
         def steps: Long = stepsTaken
 
         /** Names found in a text and tested for their boundaries, over every
-          * text so far: one per occurrence of a hidden name (or of a prefix
-          * of a longer one), whatever the number of names held. */
+          * text so far: one per occurrence of a hidden or kept name (or of a
+          * prefix of a longer one), whatever the number of names held. */
         def namesTested: Long = tested
 
         private def startsAt(text: String, i: Int, s: String): Boolean = i >= 0 && text.startsWith(s, i)
@@ -202,41 +217,42 @@ object HiddenTapScrub {
             startsAt(text, at, ctx) && (at == 0 || !nameChar(text.charAt(at - 1)))
         }
 
-        private def wholeEnd(text: String, end: Int): Boolean =
-            end >= text.length || {
-                val c = text.charAt(end)
-                if (c == '.') end + 1 >= text.length || { val d = text.charAt(end + 1); !(nameChar(d) && d != '-') }
-                else !nameChar(c)
-            }
+        private def wholeEnd(text: String, end: Int): Boolean = end >= text.length || !nameChar(text.charAt(end))
 
         private def feedEnd(text: String, end: Int): Boolean = {
             val ext = if (startsAt(text, end, ".csv")) 4 else if (startsAt(text, end, ".json")) 5 else 0
             ext > 0 && (end + ext >= text.length || { val c = text.charAt(end + ext); !(nameChar(c) && c != '-') })
         }
 
-        /** Length of the hidden name replaced at `i`, or 0. */
+        /** The name taken at `i`: its length when it is a hidden name to
+          * replace, minus its length when it is a kept name, 0 for none. */
         private def matchAt(text: String, i: Int): Int = {
             val wholeStart = i == 0 || !nameChar(text.charAt(i - 1))
             val feed = contextBefore(text, i, "tap-")
             val docs = contextBefore(text, i, "tap-docs/")
             if (!wholeStart && !feed && !docs) return 0
             // the names that occur at i, shortest first
-            var ends: List[(Int, Boolean)] = Nil
+            var ends: List[(Int, Node)] = Nil
             var node = root
             var j = i
             while (node != null && j < text.length) {
-                node = node.next.get(text.charAt(j))
+                node = node.next.get(fold(text.charAt(j)))
                 stepsTaken += 1
                 j += 1
-                if (node != null && node.name) ends = (j, node.tap) :: ends
+                if (node != null && (node.name || node.kept)) ends = (j, node) :: ends
             }
             // longest first
             var rest = ends
             while (rest.nonEmpty) {
-                val (end, isTap) = rest.head
+                val (end, n) = rest.head
                 tested += 1
-                if (wholeStart && wholeEnd(text, end)) return end - i
-                if (isTap && ((feed && feedEnd(text, end)) || (docs && startsAt(text, end, "/")))) return end - i
+                val inContext = (feed && feedEnd(text, end)) || (docs && startsAt(text, end, "/"))
+                if (n.kept) {
+                    if ((wholeStart && wholeEnd(text, end)) || inContext) return -(end - i)
+                } else {
+                    if (wholeStart && wholeEnd(text, end)) return end - i
+                    if (n.tap && inContext) return end - i
+                }
                 rest = rest.tail
             }
             0
@@ -252,10 +268,11 @@ object HiddenTapScrub {
             val len = text.length
             while (i < len) {
                 if (text.charAt(i) == '[' && text.startsWith(Placeholder, i)) i += Placeholder.length
-                else if (!root.next.containsKey(text.charAt(i))) i += 1
+                else if (!root.next.containsKey(fold(text.charAt(i)))) i += 1
                 else {
                     val m = matchAt(text, i)
                     if (m == 0) i += 1
+                    else if (m < 0) i += -m
                     else {
                         if (out == null) out = new java.lang.StringBuilder(len + 16)
                         out.append(text, copied, i).append(Placeholder)

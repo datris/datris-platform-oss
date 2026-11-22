@@ -228,11 +228,11 @@ object OpsChatAPIController {
       * on the request thread by `ChatCaller`; the same identity the agent's
       * tools run as, so ambient context and tools follow one caller), with
       * the incident filter read from the live stores
-      * ([[IncidentsAPIController.storeReaders]] and
-      * [[IncidentsAPIController.storeItems]], read only for a limited key). */
+      * ([[IncidentsAPIController.storeListing]], listed once and only for a
+      * limited key). */
     def incidentsFor(identity: ChatIdentity, load: () => List[Incident]): List[Incident] = {
-        val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
-        incidentsFor(identity, load, readPipeline, readTap, IncidentsAPIController.storeItems())
+        val listing = IncidentsAPIController.storeListing()
+        incidentsFor(identity, load, listing.readPipeline, listing.readTap, listing.items)
     }
 
     /** [[incidentsFor]] with the readers given. A caller
@@ -252,7 +252,7 @@ object OpsChatAPIController {
         load: () => List[Incident],
         readPipeline: String => ai.datris.model.PipelineConfig,
         readTap: String => ai.datris.model.TapConfig,
-        items: () => IncidentsAPIController.StoredItems = IncidentsAPIController.NoItems
+        items: () => IncidentsAPIController.StoredItems
     ): List[Incident] =
         if (!ChatCaller.mayReadIncidents(identity)) Nil
         else

@@ -51,11 +51,10 @@ class ApprovalsAPIController {
                     if (PolicyActor.isAgent(request)) Some(PolicyActor.label(request))
                     else Option(actor).map(_.trim).filter(_.nonEmpty)
                 val lim = Option(limit).map(_.intValue()).getOrElse(100)
-                val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
+                val listing = IncidentsAPIController.storeListing()
                 val runs = IncidentsAPIController.storeRuns()
-                val items = IncidentsAPIController.storeItems()
                 PendingActionIO.list(st, actorFilter, lim).foreach(pa =>
-                    arr.add(ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, readPipeline, readTap, runs, items))
+                    arr.add(ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, listing.readPipeline, listing.readTap, runs))
                 )
             }
             out.add("approvals", arr)
@@ -73,9 +72,9 @@ class ApprovalsAPIController {
             if (!PolicyIO.enabled) return disabled()
             visible(id, request) match {
                 case Some(pa) =>
-                    val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
-                    val (runs, items) = (IncidentsAPIController.storeRuns(), IncidentsAPIController.storeItems())
-                    val body = ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, readPipeline, readTap, runs, items)
+                    val listing = IncidentsAPIController.storeListing()
+                    val runs = IncidentsAPIController.storeRuns()
+                    val body = ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, listing.readPipeline, listing.readTap, runs)
                     new ResponseEntity[String](gson.toJson(body), HttpStatus.OK)
                 case None => notFound(id)
             }
@@ -249,16 +248,15 @@ object ApprovalsAPIController {
       * [[IncidentsAPIController.shownIncident]] scrubs it; otherwise the
       * field is left out, exactly as for an approval whose incident does not
       * exist or has no evidence. A failed lookup leaves the field out. Only
-      * the evidence is added, and it holds no free text, so `items` (the
-      * stored items for the free-text scrub) is not called. */
+      * the evidence is added, and it holds no free text, so no free-text
+      * scrub applies. */
     def withIncidentEvidence(
         request: HttpServletRequest,
         pa: PendingAction,
         load: String => Option[ai.datris.incident.Incident],
         readPipeline: String => ai.datris.model.PipelineConfig,
         readTap: String => ai.datris.model.TapConfig,
-        run: String => Option[ai.datris.model.RunLineage],
-        items: () => IncidentsAPIController.StoredItems = IncidentsAPIController.NoItems
+        run: String => Option[ai.datris.model.RunLineage]
     ): JsonObject = {
         val o = pa.toPublicJson
         pa.incidentId.foreach { iid =>

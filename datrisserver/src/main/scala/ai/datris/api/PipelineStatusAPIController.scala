@@ -91,24 +91,38 @@ object PipelineStatusAPIController {
         ScratchReader.pick(pipelinetoken, publishertoken, shown)
     }
 
-    /** GET /pipeline/status summary path (no token): for a caller that is
-      * not limited, `readPage(page)` itself (one store read, `pipelines` not
-      * called). For a limited caller, the `page`th page of the summary rows
-      * of pipelines whose records it may see
-      * ([[PipelineAliases.shownRecordNames]]), filled from further store
-      * pages within a bound ([[PipelineStatusUtil.filledSummaryPage]]). */
-    def summaryData(
+    /** GET /pipeline/status summary path (no token), as the caller sees
+      * it. A caller that is not limited: `Right(readPage(page))`, one store
+      * read and nothing else read (what [[restrictedView]] answers for it).
+      * A limited caller: the pipeline configs listed once, the record names
+      * it may see ([[PipelineAPIController.visiblePipelines]] under
+      * [[PipelineAliases.shownRecordNames]], the set [[restrictedView]]
+      * filters on), the page read with that set as the store filter
+      * (`readVisiblePage(page, names)`, one store read, page N being rows
+      * [20(N-1), 20N) of the rows it may see, newest first), then
+      * [[restrictedViewShown]] on the same set with `taps()` (listed once). */
+    def summaryView(
         request: jakarta.servlet.http.HttpServletRequest,
         page: Int,
         readPage: Int => java.util.List[PipelineStatusSummary],
-        pipelines: () => Seq[ai.datris.model.PipelineConfig]
-    ): java.util.List[PipelineStatusSummary] =
-        if (!ai.datris.auth.CapabilityCheck.isLimited(request)) readPage(page)
+        readVisiblePage: (Int, Set[String]) => java.util.List[PipelineStatusSummary],
+        pipelines: () => Seq[ai.datris.model.PipelineConfig],
+        taps: () => Seq[ai.datris.model.TapConfig],
+        run: String => Option[ai.datris.model.RunLineage]
+    ): Either[ResponseEntity[String], AnyRef] =
+        if (!ai.datris.auth.CapabilityCheck.isLimited(request)) Right(readPage(page))
         else {
-            val configs = Option(pipelines()).getOrElse(Nil).filter(_ != null)
-            val visible = PipelineAliases.shownRecordNames(PipelineAPIController.visiblePipelines(request, configs), configs)
-            PipelineStatusUtil.filledSummaryPage(page, s => s.pipeline != null && visible.contains(s.pipeline), readPage)
+            val visible = visibleRecordNames(request, pipelines())
+            restrictedViewShown(request, readVisiblePage(page, visible), visible, taps(), run)
         }
+
+    /** The record names a limited caller may see among `pipelines`: the
+      * pipelines it may read, with the previous names that resolve to them
+      * ([[PipelineAliases.shownRecordNames]]). */
+    def visibleRecordNames(request: jakarta.servlet.http.HttpServletRequest, pipelines: Seq[ai.datris.model.PipelineConfig]): Set[String] = {
+        val configs = Option(pipelines).getOrElse(Nil).filter(_ != null)
+        PipelineAliases.shownRecordNames(PipelineAPIController.visiblePipelines(request, configs), configs)
+    }
 
     /** GET /pipeline/status for a limited caller (a restricted user's
       * session, or a catalog- / owner-scoped API key): summary rows and
@@ -158,19 +172,30 @@ object PipelineStatusAPIController {
         taps: Seq[ai.datris.model.TapConfig],
         run: String => Option[ai.datris.model.RunLineage] = _ => None
     ): Either[ResponseEntity[String], AnyRef] = {
-        import ai.datris.auth.HiddenTapScrub
         if (!ai.datris.auth.CapabilityCheck.isLimited(request)) return Right(data)
         // Run records keep the name they were written under: a visible
         // pipeline's previous names count for it, and a name reused after a
         // rename only when every pipeline it may belong to is visible
         // (PipelineAliases).
-        val configs = Option(pipelines).getOrElse(Nil).filter(_ != null)
-        val visible = PipelineAliases.shownRecordNames(PipelineAPIController.visiblePipelines(request, configs), configs)
+        restrictedViewShown(request, data, visibleRecordNames(request, pipelines), taps, run)
+    }
+
+    /** [[restrictedViewWith]] on the record names the caller may see
+      * (`visible`, [[visibleRecordNames]]), already computed. */
+    def restrictedViewShown(
+        request: jakarta.servlet.http.HttpServletRequest,
+        data: AnyRef,
+        visible: Set[String],
+        taps: Seq[ai.datris.model.TapConfig],
+        run: String => Option[ai.datris.model.RunLineage]
+    ): Either[ResponseEntity[String], AnyRef] = {
+        import ai.datris.auth.HiddenTapScrub
+        if (!ai.datris.auth.CapabilityCheck.isLimited(request)) return Right(data)
         filterFor(visible, data).map { shown =>
-            val byName = taps.filter(t => t != null && t.name != null).map(t => t.name -> t).toMap
+            val byName = Option(taps).getOrElse(Nil).filter(t => t != null && t.name != null).map(t => t.name -> t).toMap
             val tapHidden: String => Boolean = n => HiddenTapScrub.tapHidden(request, n, byName.getOrElse(_, null))
             val fromPayload = HiddenTapScrub.feedFileNames(payloadTexts(shown)).filter(tapHidden)
-            scrubFor(HiddenTapScrub.hiddenFeedingTaps(request, taps, visible) ++ fromPayload, shown, tapHidden, run)
+            scrubFor(HiddenTapScrub.hiddenFeedingTaps(request, Option(taps).getOrElse(Nil), visible) ++ fromPayload, shown, tapHidden, run)
         }
     }
 
@@ -382,32 +407,39 @@ class PipelineStatusAPIController {
             // single pipelineToken's rows are a strict subset of its publisherToken's rows.
             // withrollup=true is only meaningful for token queries (publisher/pipeline);
             // the paginated summary path returns its own rollup-equivalent shape.
-            val data: AnyRef = {
-                if (publishertoken != null) {
-                    if (rollup) PipelineStatusUtil.getPipelineStatusByPublisherWithRollup(publishertoken)
-                    else PipelineStatusUtil.getPipelineStatusByPublisher(publishertoken)
-                } else if (pipelinetoken == null) {
+            val view: Either[ResponseEntity[String], AnyRef] =
+                if (publishertoken == null && pipelinetoken == null) {
                     val pageNbr = {
                         if (page == null)
                             1
                         else
                             page.toInt
                     }
-                    // A limited caller's page is filled with the rows it may
-                    // see, within a bound; everyone else reads the one page.
-                    PipelineStatusAPIController.summaryData(
+                    // A limited caller's page is read with the store filtered
+                    // to the pipelines it may see; everyone else reads the page.
+                    PipelineStatusAPIController.summaryView(
                         request,
                         pageNbr,
                         n => PipelineStatusUtil.getPipelineStatusSummary(pipelinename, n),
-                        () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+                        (n, names) => PipelineStatusUtil.getVisiblePipelineStatusSummary(names, n),
+                        () => PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName),
+                        () => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName),
+                        ai.datris.util.RunLineageIO.read
                     )
                 } else {
-                    if (rollup) PipelineStatusUtil.getPipelineStatusWithRollup(pipelinetoken)
-                    else PipelineStatusUtil.getPipelineStatus(pipelinetoken)
+                    val data: AnyRef = {
+                        if (publishertoken != null) {
+                            if (rollup) PipelineStatusUtil.getPipelineStatusByPublisherWithRollup(publishertoken)
+                            else PipelineStatusUtil.getPipelineStatusByPublisher(publishertoken)
+                        } else {
+                            if (rollup) PipelineStatusUtil.getPipelineStatusWithRollup(pipelinetoken)
+                            else PipelineStatusUtil.getPipelineStatus(pipelinetoken)
+                        }
+                    }
+                    PipelineStatusAPIController.restrictedView(request, data)
                 }
-            }
             val gson = new Gson
-            PipelineStatusAPIController.restrictedView(request, data) match {
+            view match {
                 case Left(hidden) => hidden
                 case Right(shown) => new ResponseEntity[String](gson.toJson(shown), HttpStatus.OK)
             }

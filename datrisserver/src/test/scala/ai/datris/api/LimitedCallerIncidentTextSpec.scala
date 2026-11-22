@@ -25,23 +25,24 @@ import scala.collection.JavaConverters._
   * to a catalog or to what it created, the names of taps and pipelines it
   * cannot read read `[hidden]`; everyone else gets the stored text.
   *
-  * New names the implementation provides (these specs do not compile until
-  * they exist):
+  * Names under test:
   * {{{
   * object HiddenTapScrub {
-  *   // scrubText's tap contexts for hiddenTaps, plus whole-token replacement
-  *   // of hiddenPipelines; null stays null; empty sets return `text` itself
-  *   def scrubNames(text: String, hiddenTaps: Set[String], hiddenPipelines: Set[String]): String
+  *   // scrubText's tap contexts for hiddenTaps, plus whole-name replacement
+  *   // of hidden names in any letter case; names in `keep` are left whole;
+  *   // null stays null; empty hidden sets return `text` itself
+  *   def scrubNames(text: String, hiddenTaps: Set[String], hiddenPipelines: Set[String], keep: Set[String]): String
   * }
   * object IncidentsAPIController {
   *   // every stored pipeline and tap, for the names a limited caller may not read
   *   final case class StoredItems(pipelines: Seq[PipelineConfig], taps: Seq[TapConfig])
+  *   // one request's listing of both stores, shared by the readers and `items`
+  *   final class StoreListing(listPipelines: () => Seq[PipelineConfig], listTaps: () => Seq[TapConfig])
   * }
-  * // a trailing parameter `items: () => IncidentsAPIController.StoredItems`
+  * // a required parameter `items: () => IncidentsAPIController.StoredItems`
   * // (called at most once per response, never for a caller that is not
   * // limited) on IncidentsAPIController.shownIncident, visibleIncidents,
-  * // visibleIncidentsFor, listedJson, getResponse, evidenceResponse,
-  * // ApprovalsAPIController.withIncidentEvidence and the 4-reader
+  * // visibleIncidentsFor, listedJson, getResponse and the 4-reader
   * // OpsChatAPIController.incidentsFor. Passed by name here.
   * }}}
   * The text fields are those the story lists: step `summary` and `detail`,
@@ -216,8 +217,8 @@ class LimitedCallerIncidentTextSpec extends AnyFunSuite with BeforeAndAfterEach 
 
     // ================================================================== D1: the text rule (pure)
 
-    private def scrub(text: String, hiddenTaps: Set[String], hiddenPipelines: Set[String]): String =
-        HiddenTapScrub.scrubNames(text, hiddenTaps, hiddenPipelines)
+    private def scrub(text: String, hiddenTaps: Set[String], hiddenPipelines: Set[String], keep: Set[String] = Set.empty): String =
+        HiddenTapScrub.scrubNames(text, hiddenTaps, hiddenPipelines, keep)
 
     test("bullet 1 / D1: a hidden tap name reads [hidden] in every tap context and a hidden pipeline name wherever it stands as a whole name") {
         val t = Set("hr_feed")
@@ -233,12 +234,43 @@ class LimitedCallerIncidentTextSpec extends AnyFunSuite with BeforeAndAfterEach 
 
     test("D1: a hidden name inside a longer visible name or an ordinary word leaves the visible text as it is") {
         // hidden pipeline `pay` and hidden tap `hr`; the visible text holds them only as parts of other words and names
+        // (`hr.eu` is the name of a visible item, so it is kept whole: a dot alone does not continue a name)
         val text = "payment of payroll via pay_v2 and pay-day; repay; tap hr_feed; tap-hr_feed.csv; hr.eu; shr; orders_pay"
-        assert(scrub(text, Set("hr"), Set("pay")) == text)
+        assert(scrub(text, Set("hr"), Set("pay"), keep = Set("hr.eu")) == text)
         // a hidden tap `hr` is not the visible tap `hr_feed` named in a tap context
         assert(scrub("tap hr_feed ran", Set("hr"), Set.empty) == "tap hr_feed ran")
         // a hidden pipeline `orders` does not touch the visible `orders_eu` or `orders-archive`
         assert(scrub("orders_eu and orders-archive landed; orders failed", Set.empty, Set("orders")) == "orders_eu and orders-archive landed; [hidden] failed")
+    }
+
+    test("D1: a dot after a hidden name ends it: file names, dated files and schema-qualified names read [hidden] before the dot") {
+        val p = Set("payroll")
+        assert(scrub("loaded payroll.csv", Set.empty, p) == "loaded [hidden].csv")
+        assert(scrub("loaded payroll.20261101.csv", Set.empty, p) == "loaded [hidden].20261101.csv")
+        assert(scrub("wrote payroll.public and public.payroll", Set.empty, p) == "wrote [hidden].public and public.[hidden]")
+        assert(scrub("tap payroll.", Set("payroll"), Set.empty) == "tap [hidden].")
+        // a name continued by a name char is still another name
+        assert(scrub("payroll_v2.csv and payroll-eu.csv", Set.empty, p) == "payroll_v2.csv and payroll-eu.csv")
+    }
+
+    test("D1: a visible name holding a dot is kept whole; a hidden name holding a dot is replaced where it stands") {
+        // visible `hr.eu`, hidden `hr`
+        assert(scrub("hr.eu landed; hr.eu.csv too", Set("hr"), Set("hr"), keep = Set("hr.eu")) == "hr.eu landed; hr.eu.csv too")
+        assert(scrub("hr failed; hr.csv; hr.eu fine", Set("hr"), Set("hr"), keep = Set("hr.eu")) == "[hidden] failed; [hidden].csv; hr.eu fine")
+        // a hidden name after a kept one is still found
+        assert(scrub("hr.eu.payroll", Set.empty, Set("payroll", "hr"), keep = Set("hr.eu")) == "hr.eu.[hidden]")
+        // hidden `hr.eu`, visible `hr`: only the longer hidden name is replaced
+        assert(scrub("hr.eu failed; hr ran; hr.eu.csv", Set.empty, Set("hr.eu"), keep = Set("hr")) == "[hidden] failed; hr ran; [hidden].csv")
+        // without a kept name the shorter hidden name ends at the dot
+        assert(scrub("hr.eu", Set.empty, Set("hr")) == "[hidden].eu")
+    }
+
+    test("D1: hidden names are found in any letter case; a kept name protects every spelling of itself") {
+        assert(scrub("Payroll failed; PAYROLL retried; payroll ok", Set.empty, Set("payroll")) == "[hidden] failed; [hidden] retried; [hidden] ok")
+        assert(scrub("Tap HR_Feed sent tap-HR_FEED.csv", Set("hr_feed"), Set.empty) == "Tap [hidden] sent tap-[hidden].csv")
+        // a kept name and a hidden name of the same spelling count as kept, in every case
+        assert(scrub("Orders and ORDERS and orders", Set.empty, Set("ORDERS"), keep = Set("orders")) == "Orders and ORDERS and orders")
+        assert(scrub("HR.EU and hr.Eu stay; HR goes", Set.empty, Set("hr"), keep = Set("hr.eu")) == "HR.EU and hr.Eu stay; [hidden] goes")
     }
 
     test("D1: names holding regex-special characters are matched literally and the replacement is literal") {
@@ -346,8 +378,7 @@ class LimitedCallerIncidentTextSpec extends AnyFunSuite with BeforeAndAfterEach 
                 Some(namingHidden()),
                 readPipeline,
                 readTap,
-                run = noRuns,
-                items = items
+                run = noRuns
             )
             assert(e.getStatusCode.value == 200, who + ": " + e.getBody)
             val down = JsonParser.parseString(e.getBody).getAsJsonObject.getAsJsonObject("blastRadius").getAsJsonArray("downstreamPipelines")
@@ -361,8 +392,7 @@ class LimitedCallerIncidentTextSpec extends AnyFunSuite with BeforeAndAfterEach 
                 load,
                 readPipeline,
                 readTap,
-                noRuns,
-                items = items
+                noRuns
             )
             assert(a.has("incidentEvidence"), who + ": " + a)
             assert(
@@ -411,6 +441,121 @@ class LimitedCallerIncidentTextSpec extends AnyFunSuite with BeforeAndAfterEach 
         }
     }
 
+    test("D1: the previous names of a hidden pipeline are replaced; a visible pipeline's previous names are kept") {
+        // payroll_v1 was the hidden hr_payroll's name; orders_legacy was the visible orders' name;
+        // shared_old was a name of both (kept: a visible item carries it)
+        val renamedHidden = hrPayroll.copy(previousNames = java.util.Arrays.asList("payroll_v1", "shared_old"))
+        val renamedVisible = orders.copy(previousNames = java.util.Arrays.asList("orders_legacy", "shared_old"))
+        val renamed = IncidentsAPIController.StoredItems(Seq(renamedVisible, ordersEu, renamedHidden, pay, hiddenNamedLikeVisibleTap), taps)
+        val inc = namingVisible.copy(steps =
+            List(IncidentStep(t0, "diagnose", "payroll_v1 and Payroll_V1.csv stale; orders_legacy and shared_old fine; hr_payroll stale"))
+        )
+        for ((who, rk) <- limited) {
+            val o = IncidentsAPIController.shownIncident(req(rk), inc, readPipeline, readTap, run = noRuns, items = () => renamed).toPublicJson
+            assert(
+                str(steps(o).head, "summary") == "[hidden] and [hidden].csv stale; orders_legacy and shared_old fine; [hidden] stale",
+                who + ": " + o
+            )
+        }
+    }
+
+    test("D1: through the incident seams, a visible name holding a dot is never cut by a hidden name") {
+        val hr = pipe("hr", "HR")
+        val hrEu = pipe("hr.eu", "Sales", owner = "own")
+        val dotted = IncidentsAPIController.StoredItems(pipelines ++ Seq(hr, hrEu), taps)
+        val inc = namingVisible.copy(steps = List(IncidentStep(t0, "diagnose", "hr.eu landed hr.eu.20261101.csv; HR and hr.csv stale")))
+        for ((who, rk) <- limited) {
+            val o = IncidentsAPIController.shownIncident(req(rk), inc, readPipeline, readTap, run = noRuns, items = () => dotted).toPublicJson
+            assert(str(steps(o).head, "summary") == "hr.eu landed hr.eu.20261101.csv; [hidden] and [hidden].csv stale", who + ": " + o)
+        }
+    }
+
+    // ================================================================== one store listing per response
+
+    /** A listing of `pipelines` and `taps` that counts how often each store is listed. */
+    private final class CountedListing {
+        var pipelineLists = 0
+        var tapLists = 0
+        val listing = new IncidentsAPIController.StoreListing(
+            () => { pipelineLists += 1; pipelines },
+            () => { tapLists += 1; taps }
+        )
+    }
+
+    test("one store listing serves the readers and the free-text scrub: each store is listed at most once per limited response") {
+        for ((who, rk) <- limited) {
+            val c = new CountedListing
+            val l = c.listing
+            val arr = IncidentsAPIController.listedFor(
+                req(rk),
+                20,
+                _ => (1 to 5).map(i => namingHidden("inc-" + i)).toList,
+                l.readPipeline,
+                l.readTap,
+                noRuns,
+                l.items
+            )
+            assert(arr.size == 5, who)
+            arr.asScala.foreach(el => assertScrubbed(el.getAsJsonObject, who))
+            assert(c.pipelineLists == 1 && c.tapLists == 1, who + ": listed " + c.pipelineLists + "/" + c.tapLists)
+
+            val g = new CountedListing
+            val r =
+                IncidentsAPIController.getResponse(req(rk), "inc-1", Some(namingHidden()), g.listing.readPipeline, g.listing.readTap, noRuns, g.listing.items)
+            assertScrubbed(JsonParser.parseString(r.getBody).getAsJsonObject, who)
+            assert(g.pipelineLists == 1 && g.tapLists == 1, who + ": listed " + g.pipelineLists + "/" + g.tapLists)
+
+            // abandon / proceed: both stores are listed before the change, none after
+            val a = new CountedListing
+            IncidentsAPIController.listBeforeChange(req(rk), a.listing)
+            assert(a.pipelineLists == 1 && a.tapLists == 1, who)
+            IncidentsAPIController.incidentRefusal(req(rk), "inc-1", Some(namingHidden()), a.listing.readPipeline, a.listing.readTap)
+            IncidentsAPIController.shownIncident(req(rk), namingHidden(), a.listing.readPipeline, a.listing.readTap, noRuns, a.listing.items)
+            assert(a.pipelineLists == 1 && a.tapLists == 1, who + ": nothing listed after the change")
+        }
+        for ((who, r) <- unchanged) {
+            val c = new CountedListing
+            IncidentsAPIController.listBeforeChange(r, c.listing)
+            IncidentsAPIController.listedFor(r, 20, _ => List(namingHidden()), c.listing.readPipeline, c.listing.readTap, noRuns, c.listing.items)
+            assert(c.pipelineLists == 0 && c.tapLists == 0, who + ": nothing listed for a caller that is not limited")
+        }
+    }
+
+    test("every incident route, approvals and the Ops chat context take their readers and items from one storeListing") {
+        def source(path: String): String = new String(java.nio.file.Files.readAllBytes(locate(path)), "UTF-8")
+        def locate(path: String): java.nio.file.Path = {
+            var dir = java.nio.file.Paths.get("").toAbsolutePath
+            while (dir != null && !java.nio.file.Files.exists(dir.resolve(path))) dir = dir.getParent
+            dir.resolve(path)
+        }
+
+        /** The text of `def name(` up to the next `@GetMapping`/`@PostMapping`/`def ` at the same indentation. */
+        def body(src: String, start: String): String = {
+            val at = src.indexOf(start)
+            assert(at >= 0, start)
+            val indent = src.lastIndexOf('\n', at)
+            val pad = src.substring(indent + 1, at)
+            val next = Seq("\n" + pad + "def ", "\n" + pad + "@").map(src.indexOf(_, at + start.length)).filter(_ > 0)
+            src.substring(at, if (next.isEmpty) src.length else next.min)
+        }
+        val incidents = source("datrisserver/src/main/scala/ai/datris/api/IncidentsAPIController.scala")
+        assert(!incidents.contains("def storeReaders(") && !incidents.contains("def storeItems("))
+        for (route <- Seq("def list(", "def get(", "def evidence(", "def abandon(", "def proceed(")) {
+            val b = body(incidents, route)
+            assert(b.split("storeListing\\(\\)", -1).length - 1 == 1, route + " lists the stores through one storeListing: " + b)
+        }
+        for (route <- Seq("def abandon(", "def proceed(")) {
+            val b = body(incidents, route)
+            val listed = b.indexOf("listBeforeChange(request, listing)")
+            val change = math.max(b.indexOf("IncidentIO.transition("), b.indexOf("IncidentRunner.proceed("))
+            assert(listed > 0 && change > listed, route + ": the stores are listed before the change")
+        }
+        val approvals = source("datrisserver/src/main/scala/ai/datris/api/ApprovalsAPIController.scala")
+        val ops = source("datrisserver/src/main/scala/ai/datris/api/OpsChatAPIController.scala")
+        for (src <- Seq(approvals, ops)) assert(!src.contains("storeReaders(") && !src.contains("storeItems("))
+        assert(ops.contains("incidentsFor(identity, load, listing.readPipeline, listing.readTap, listing.items)"))
+    }
+
     // ================================================================== unchanged
 
     test("unchanged: an admin and every caller that is not limited get the stored incident itself; no store is read or listed") {
@@ -426,7 +571,7 @@ class LimitedCallerIncidentTextSpec extends AnyFunSuite with BeforeAndAfterEach 
             val l = IncidentsAPIController.listedJson(r, List(stored), failReadPipeline, failReadTap, run = _ => fail("run read"), items = failItems)
             assert(l.size == 1 && l.get(0).toString == expected, who)
             val e =
-                IncidentsAPIController.evidenceResponse(r, "inc-1", Some(stored), failReadPipeline, failReadTap, run = _ => fail("run read"), items = failItems)
+                IncidentsAPIController.evidenceResponse(r, "inc-1", Some(stored), failReadPipeline, failReadTap, run = _ => fail("run read"))
             assert(e.getBody == gson.toJson(stored.evidence.get), who)
         }
         // admin in the Ops chat: the loaded list itself

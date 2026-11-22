@@ -152,6 +152,33 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility with SessionDa
             .toList
     }
 
+    /** One query: `field` `$in` `values` (sorted, so the query is the same
+      * for the same set), sorted on `sortField`, skip `pageNbr` *
+      * `maxPageSize`, limit `maxPageSize`. A query document is limited to
+      * 16 MiB, so `values` must fit well inside it (about 60,000 names of
+      * 255 bytes); a larger set is refused by the server and the read
+      * throws. No query for an empty set. */
+    override def getPageOfItemsWhereInAsJSON(
+        tableName: String,
+        field: String,
+        values: Set[String],
+        pageNbr: Int,
+        maxPageSize: Int,
+        sortField: String = null,
+        sortDescending: Boolean = true
+    ): List[String] = {
+        if (values == null || values.isEmpty) return Nil
+        val collection = database.getCollection(tableName)
+        var query = collection.find(Filters.in(field, values.toSeq.sorted.asJava))
+        if (sortField != null)
+            query = query.sort(new Document(sortField, if (sortDescending) -1 else 1))
+        query.skip(pageNbr * maxPageSize)
+            .limit(maxPageSize)
+            .asScala
+            .map(doc => doc.toJson(jsonSettings))
+            .toList
+    }
+
     override def getItemsSinceAsJSON(tableName: String, sortField: String, sinceEpochMs: Long, maxItems: Int): List[String] = {
         val collection = database.getCollection(tableName)
         collection.find(Filters.gte(sortField, sinceEpochMs: java.lang.Long))

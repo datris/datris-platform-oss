@@ -50,52 +50,63 @@ object PipelineStatusUtil {
         }).sortWith(_.createdAt > _.createdAt).asJava
     }
 
-    /** Rows per store page of the summary table ([[getPipelineStatusSummary]]). */
+    /** Rows per page of the summary table ([[getPipelineStatusSummary]],
+      * [[getVisiblePipelineStatusSummary]]). */
     val SummaryPageSize = 20
 
-    /** Store pages a filled page may read beyond the page asked for
-      * ([[filledSummaryPage]]): page 1 reads at most 10. */
-    val SummaryOverReadPages = 9
+    /** Store field of a summary row's pipeline name. */
+    val SummaryPipelineField = "json.pipeline"
 
-    /** Page `page` (1-based, [[SummaryPageSize]] rows) of the summary rows
-      * `keep` accepts, newest first, for a caller that may see only some
-      * rows: store pages are read in order from `readPage(n)` (store page `n`,
-      * 1-based, [[SummaryPageSize]] rows, newest first; a short or empty page
-      * is the end of the store) until the kept rows reach the end of the page
-      * asked for, the store ends, or `page` + [[SummaryOverReadPages]] store
-      * pages have been read. Past that bound the page is short (possibly
-      * empty), never an error. A caller that keeps every row gets exactly the
-      * rows of store page `page`. A `page` below 1 reads `readPage(page)`
-      * once, filtered. */
-    def filledSummaryPage(
+    /** Page `page` (1-based, [[SummaryPageSize]] rows, newest first) of the
+      * summary rows filed under one of `pipelines`, for a caller that may
+      * see only those: one store query whose filter keeps those names, with
+      * the sort, skip and limit [[getPipelineStatusSummary]] uses, so page
+      * N is rows [20(N-1), 20N) of the rows the caller may see and every
+      * one of them is reachable. Each row returned is brought up to date as
+      * [[getPipelineStatusSummary]] does (a row still `processing` is
+      * checked against its events, one read per such row returned). No
+      * store read for an empty set. */
+    def getVisiblePipelineStatusSummary(
+        pipelines: Set[String],
         page: Int,
-        keep: PipelineStatusSummary => Boolean,
-        readPage: Int => java.util.List[PipelineStatusSummary]
+        db: NoSQLDbUtility = NoSQLDbUtil
     ): java.util.List[PipelineStatusSummary] = {
-        if (page < 1) {
-            val one = Option(readPage(page)).map(_.asScala.toList).getOrElse(Nil)
-            return new java.util.ArrayList[PipelineStatusSummary](one.filter(s => s != null && keep(s)).asJava)
-        }
-        val from = (page.toLong - 1L) * SummaryPageSize
-        val until = from + SummaryPageSize
-        val maxReads = page.toLong + SummaryOverReadPages
-        val kept = scala.collection.mutable.ArrayBuffer[PipelineStatusSummary]()
-        var n = 1
-        var ended = false
-        while (!ended && kept.size < until && n <= maxReads) {
-            val rows = Option(readPage(n)).map(_.asScala.toList).getOrElse(Nil)
-            rows.foreach(s => if (s != null && keep(s)) kept += s)
-            if (rows.size < SummaryPageSize) ended = true
-            n += 1
-        }
-        new java.util.ArrayList[PipelineStatusSummary](kept.slice(from.toInt, until.toInt).asJava)
+        if (pipelines == null || pipelines.isEmpty) return new java.util.ArrayList[PipelineStatusSummary]()
+        val tableList = db.getPageOfItemsWhereInAsJSON(
+            DatrisEnvironment.current.pipelineStatusSummaryTableName,
+            SummaryPipelineField,
+            pipelines,
+            page - 1,
+            SummaryPageSize,
+            "created_at"
+        )
+        val gson = new Gson
+        tableList.map(json => currentSummary(gson.fromJson(json, classOf[PipelineStatusSummaryTable]).json, db)).sortWith(_.createdAt > _.createdAt).asJava
     }
 
-    private def deriveStatusFromEvents(pipelineToken: String): Option[(String, Long)] = {
+    /** A summary row as [[getPipelineStatusSummary]] shows it: a row still
+      * `processing` takes its status from its events when they hold a
+      * terminal one, else its elapsed time (and `error` once timed out). */
+    private def currentSummary(pipelineStatusSummary: PipelineStatusSummary, db: NoSQLDbUtility): PipelineStatusSummary =
+        if (pipelineStatusSummary.status.compareToIgnoreCase("processing") == 0) {
+            deriveStatusFromEvents(pipelineStatusSummary.pipelineToken, db) match {
+                case Some((terminalStatus, latestEventMillis)) =>
+                    val (elapsed, _) = ElapsedTimeUtil.getElapsedTime(latestEventMillis - pipelineStatusSummary.createdAt)
+                    pipelineStatusSummary.copy(totalTime = elapsed, status = terminalStatus)
+                case None =>
+                    val nowInMillis = new Timestamp(new Date().getTime).getTime
+                    val (elapsed, timedout) = ElapsedTimeUtil.getElapsedTime(nowInMillis - pipelineStatusSummary.createdAt)
+                    val totalTime = if (timedout) "timed out" else elapsed
+                    if (timedout) pipelineStatusSummary.copy(totalTime = totalTime, status = "error")
+                    else pipelineStatusSummary.copy(totalTime = totalTime)
+            }
+        } else pipelineStatusSummary
+
+    private def deriveStatusFromEvents(pipelineToken: String, db: NoSQLDbUtility = NoSQLDbUtil): Option[(String, Long)] = {
         if (pipelineToken == null || pipelineToken.isEmpty)
             return None
 
-        val tableList = NoSQLDbUtil.queryJSONItemsByKey(DatrisEnvironment.current.pipelineStatusTableName, "pipeline_token", pipelineToken)
+        val tableList = db.queryJSONItemsByKey(DatrisEnvironment.current.pipelineStatusTableName, "pipeline_token", pipelineToken)
         if (tableList == null || tableList.isEmpty)
             return None
 

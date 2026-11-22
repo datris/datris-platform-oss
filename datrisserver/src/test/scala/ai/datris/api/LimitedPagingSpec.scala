@@ -10,6 +10,7 @@ import ai.datris.auth.ScopeDenialFixtures
 import ai.datris.incident.{Incident, IncidentIO, IncidentStep}
 import ai.datris.model._
 import ai.datris.util.{APIKeyValidator, InMemoryUserDb, PipelineStatusUtil}
+import org.springframework.http.ResponseEntity
 import ai.datris.util.InMemoryUserDb.grants
 import com.google.gson.{JsonElement, JsonObject, JsonParser}
 import jakarta.servlet.http.HttpServletRequest
@@ -22,41 +23,30 @@ import scala.collection.mutable
 
 /** Story: Four small read leaks for callers limited to a catalog
   * (plans/stories/limited-caller-read-leaks.md), Acceptance bullet 3 (gap
-  * 10b, owner decision D3): a caller limited to a catalog or to what it
-  * created gets full pages of the rows it may see where enough exist within
-  * the bound (10 store pages of 20 summary rows per request; 5x the limit,
-  * capped at the existing maxima, on the incident and tap-log lists); past
-  * the bound a short page, never an error. Everyone else reads exactly what
-  * it reads today.
+  * 10b, owner decision D3, review ruling: filter in the store query): a
+  * caller limited to a catalog or to what it created reads its summary page
+  * with the store filtered to the pipelines it may see, so page N is rows
+  * [20(N-1), 20N) of the rows it may see, newest first, every one of them
+  * reachable and every page full until the last; one store read per page.
+  * The incident and tap-log lists read 5x the limit, capped at the existing
+  * maxima. Everyone else reads exactly what it reads today.
   *
-  * New names (these specs do not compile until they exist):
+  * Names under test:
   * {{{
   * object PipelineStatusUtil {
-  *   // Page `page` (1-based, 20 rows) of the summary rows `keep` accepts, newest
-  *   // first, read from `readPage(n)` (store page n, 1-based, 20 rows, newest
-  *   // first; a short or empty page is the end); at most 10 store pages read.
-  *   def filledSummaryPage(page: Int, keep: PipelineStatusSummary => Boolean,
-  *                         readPage: Int => java.util.List[PipelineStatusSummary]): java.util.List[PipelineStatusSummary]
+  *   def getVisiblePipelineStatusSummary(pipelines: Set[String], page: Int, db: NoSQLDbUtility): java.util.List[PipelineStatusSummary]
   * }
   * object PipelineStatusAPIController {
-  *   // GET /pipeline/status summary path (no token): `readPage(page)` itself for a
-  *   // caller that is not limited (one read, `pipelines` not called); for a limited
-  *   // caller filledSummaryPage over the names it may see (PipelineAliases.shownRecordNames).
-  *   def summaryData(request: HttpServletRequest, page: Int, readPage: Int => java.util.List[PipelineStatusSummary],
-  *                   pipelines: () => Seq[PipelineConfig]): java.util.List[PipelineStatusSummary]
+  *   def summaryView(request: HttpServletRequest, page: Int, readPage: Int => java.util.List[PipelineStatusSummary],
+  *                   readVisiblePage: (Int, Set[String]) => java.util.List[PipelineStatusSummary],
+  *                   pipelines: () => Seq[PipelineConfig], taps: () => Seq[TapConfig],
+  *                   run: String => Option[RunLineage]): Either[ResponseEntity[String], AnyRef]
   * }
   * object IncidentsAPIController {
-  *   // GET /incidents: `read(n)` reads the n newest stored incidents (IncidentIO.list(state, n)).
-  *   // Not limited: read(limit) once, then listedJson as today. Limited: one
-  *   // read(min(5 * limit, IncidentIO.MaxListLimit)), the visible ones (shown as
-  *   // listedJson shows them), cut to `limit`.
   *   def listedFor(request: HttpServletRequest, limit: Int, read: Int => List[Incident], readPipeline: String => PipelineConfig,
   *                 readTap: String => TapConfig, run: String => Option[RunLineage], items: () => StoredItems): JsonArray
   * }
   * object TapAPIController {
-  *   // GET /tap/logs/all: `read(n)` reads the n newest run-log values in the window.
-  *   // Not limited: read(maxItems) itself, `readAll` not called. Limited: one
-  *   // read(min(5 * maxItems, 5000)), visibleTapLogs, cut to `maxItems`.
   *   def visibleTapLogsPage(request: HttpServletRequest, maxItems: Int, read: Int => Seq[JsonElement],
   *                          readAll: () => Seq[TapConfig]): Seq[JsonElement]
   * }
@@ -95,31 +85,52 @@ class LimitedPagingSpec extends AnyFunSuite with BeforeAndAfterEach {
 
     // ------------------------------------------------------------ fake summary store
 
-    /** `total` summary rows, newest first (row 0 newest); row i is of
-      * `visible(i) ? orders : payroll`. Pages of 20, 1-based, as
-      * getPipelineStatusSummary reads them; every read is counted. */
-    private class SummaryStore(total: Int, visible: Int => Boolean) {
-        val rows: IndexedSeq[PipelineStatusSummary] = (0 until total).map { i =>
+    /** The summary table as stored: `total` rows, row 0 newest; row i is of
+      * `name(i)`, with status `status(i)`. Held in reverse store order, so a
+      * page is only right when the read sorts. Its filtered page read is the
+      * store trait's own (every row read, then filtered, sorted and paged in
+      * memory: the non-MongoDB branch); every read is counted. */
+    private class SummaryDb(total: Int, name: Int => String, status: Int => String = _ => "success") extends InMemoryUserDb {
+        private val gson = new com.google.gson.Gson
+        val summaries: IndexedSeq[PipelineStatusSummary] = (0 until total).map { i =>
             val at = 1800000000000L - i * 1000L
-            PipelineStatusSummary("ts" + i, at, at, if (visible(i)) "orders" else "payroll", "tok-" + i, "JobRunner", "s", "e", "1s", "success")
+            PipelineStatusSummary("ts" + i, at, at, name(i), "tok-" + i, "JobRunner", "s", "e", "1s", status(i))
         }
-        val pagesRead: mutable.ArrayBuffer[Int] = mutable.ArrayBuffer[Int]()
-        def reads: Int = pagesRead.size
-        val readPage: Int => java.util.List[PipelineStatusSummary] = n => {
-            pagesRead += n
-            val from = math.max(0, (n - 1) * 20)
-            new java.util.ArrayList[PipelineStatusSummary](rows.slice(from, from + 20).asJava)
+        private val docs: List[String] = summaries.reverse.map(r => gson.toJson(PipelineStatusSummaryTable(r.pipelineToken, r, r.createdAt))).toList
+        val filteredReads: mutable.ArrayBuffer[(String, Set[String], Int, Int, String)] = mutable.ArrayBuffer()
+        val eventReads: mutable.ArrayBuffer[String] = mutable.ArrayBuffer()
+        override def getAllItemsAsJSON(tableName: String): List[String] = docs
+        override def queryJSONItemsByKey(tableName: String, keyName: String, key: String): List[String] = { eventReads += key; Nil }
+        override def getPageOfItemsWhereInAsJSON(
+            tableName: String,
+            field: String,
+            values: Set[String],
+            pageNbr: Int,
+            maxPageSize: Int,
+            sortField: String,
+            sortDescending: Boolean
+        ): List[String] = {
+            filteredReads += ((field, values, pageNbr, maxPageSize, sortField))
+            super.getPageOfItemsWhereInAsJSON(tableName, field, values, pageNbr, maxPageSize, sortField, sortDescending)
         }
-        def visibleRows: IndexedSeq[PipelineStatusSummary] = rows.filter(_.pipeline == "orders")
+        def page(names: Set[String], n: Int): java.util.List[PipelineStatusSummary] = PipelineStatusUtil.getVisiblePipelineStatusSummary(names, n, this)
+        def tokensOf(keep: String => Boolean): IndexedSeq[String] = summaries.filter(r => keep(r.pipeline)).map(_.pipelineToken)
     }
 
-    private val isOrders: PipelineStatusSummary => Boolean = s => s.pipeline == "orders"
+    private def everyThird(i: Int): String = if (i % 3 == 0) "orders" else "payroll"
 
     private def tokens(l: java.util.List[PipelineStatusSummary]): Seq[String] = l.asScala.map(_.pipelineToken).toSeq
 
     private def assertNewestFirst(l: java.util.List[PipelineStatusSummary], who: String): Unit = {
         val at = l.asScala.map(_.createdAt)
         assert(at == at.sorted.reverse, who + ": newest first " + at)
+    }
+
+    private val failReadPage: Int => java.util.List[PipelineStatusSummary] = n => fail("the unfiltered page must not be read for this caller: " + n)
+
+    private def rows(r: Either[ResponseEntity[String], AnyRef]): java.util.List[PipelineStatusSummary] = r match {
+        case Right(l: java.util.List[_]) => new java.util.ArrayList[PipelineStatusSummary](l.asScala.map(_.asInstanceOf[PipelineStatusSummary]).asJava)
+        case other => fail("expected summary rows, got " + other)
     }
 
     private var savedEnv: DatrisEnvironment = _
@@ -138,81 +149,150 @@ class LimitedPagingSpec extends AnyFunSuite with BeforeAndAfterEach {
         DatrisEnvironment.values = savedEnv
     }
 
-    // ================================================================== summary rows: the fill rule (pure)
+    // ================================================================== summary rows: the store-filtered page
 
     test("bullet 3: 60 summary rows of which every third is visible: page 1 returns 20 visible rows and page 2 returns none") {
-        val s1 = new SummaryStore(60, _ % 3 == 0)
-        val p1 = PipelineStatusUtil.filledSummaryPage(1, isOrders, s1.readPage)
-        assert(p1.size == 20, tokens(p1))
-        assert(tokens(p1) == s1.visibleRows.map(_.pipelineToken), tokens(p1))
+        val db = new SummaryDb(60, everyThird)
+        val p1 = db.page(Set("orders"), 1)
+        assert(tokens(p1) == db.tokensOf(_ == "orders"), tokens(p1))
+        assert(p1.size == 20)
         assertNewestFirst(p1, "page 1")
-        assert(s1.reads <= 10, "store pages read: " + s1.pagesRead)
-        val s2 = new SummaryStore(60, _ % 3 == 0)
-        val p2 = PipelineStatusUtil.filledSummaryPage(2, isOrders, s2.readPage)
-        assert(p2.isEmpty, tokens(p2))
-        assert(s2.reads <= 10, "store pages read: " + s2.pagesRead)
+        assert(db.page(Set("orders"), 2).isEmpty)
+        assert(db.filteredReads.size == 2, "one store read per page: " + db.filteredReads)
     }
 
-    test("bullet 3: a full page is returned when exactly enough visible rows lie within the 10-page bound") {
-        val s = new SummaryStore(400, _ % 10 == 0) // 20 visible rows in the first 200
-        val p = PipelineStatusUtil.filledSummaryPage(1, isOrders, s.readPage)
-        assert(p.size == 20, tokens(p))
-        assert(tokens(p) == s.visibleRows.take(20).map(_.pipelineToken))
-        assert(s.reads <= 10, s.pagesRead)
-    }
-
-    test("bullet 3: with the bound hit the page is short, no error is raised and no more than 10 store pages are read") {
-        val sparse = new SummaryStore(1000, _ % 15 == 0) // 14 visible rows in the first 200 rows
-        val p = PipelineStatusUtil.filledSummaryPage(1, isOrders, sparse.readPage)
-        assert(sparse.reads == 10, "the bound: " + sparse.pagesRead)
-        assert(p.size == 14, tokens(p))
-        assert(tokens(p) == sparse.visibleRows.take(14).map(_.pipelineToken))
-        val none = new SummaryStore(1000, _ => false)
-        assert(PipelineStatusUtil.filledSummaryPage(1, isOrders, none.readPage).isEmpty)
-        assert(none.reads == 10, none.pagesRead)
-    }
-
-    test("bullet 3: pages are disjoint, newest first, and together hold every visible row in store order; the store is not read past its end") {
-        val s = new SummaryStore(90, _ % 3 == 0) // 30 visible
-        val pages = (1 to 3).map(n => PipelineStatusUtil.filledSummaryPage(n, isOrders, s.readPage))
-        assert(pages.map(_.size) == Seq(20, 10, 0), pages.map(tokens))
+    test("bullet 3: a sparse history (1 row in 15 visible): every visible row is reachable, in order, no duplicates, full pages until the last") {
+        val db = new SummaryDb(1000, i => if (i % 15 == 0) "orders" else "payroll") // 67 visible rows
+        val visible = db.tokensOf(_ == "orders")
+        assert(visible.size == 67)
+        val pages = (1 to 5).map(n => db.page(Set("orders"), n))
+        assert(pages.map(_.size) == Seq(20, 20, 20, 7, 0), pages.map(tokens))
         pages.foreach(p => assertNewestFirst(p, "page"))
-        assert(pages.flatMap(tokens) == s.visibleRows.map(_.pipelineToken))
-        val short = new SummaryStore(30, _ => true)
-        val p1 = PipelineStatusUtil.filledSummaryPage(1, isOrders, short.readPage)
-        assert(tokens(p1) == short.rows.take(20).map(_.pipelineToken))
-        val ended = new SummaryStore(30, _ % 2 == 0)
-        assert(PipelineStatusUtil.filledSummaryPage(1, isOrders, ended.readPage).size == 15)
-        assert(ended.reads <= 3, "a short store page is the end: " + ended.pagesRead)
+        val all = pages.flatMap(tokens)
+        assert(all == visible, all)
+        assert(all.distinct == all, "no duplicates")
+        // one store read per page: field, names, skip page, size and sort as the unfiltered read uses
+        assert(db.filteredReads == (0 until 5).map(n => ("json.pipeline", Set("orders"), n, 20, "created_at")), db.filteredReads)
+    }
+
+    test("bullet 3: deep pages stay full: page 40 of a half-visible history of 2000 rows holds visible rows 780 to 799") {
+        val db = new SummaryDb(2000, i => if (i % 2 == 0) "orders" else "payroll")
+        val visible = db.tokensOf(_ == "orders")
+        for (page <- Seq(1, 12, 40, 50)) assert(tokens(db.page(Set("orders"), page)) == visible.slice((page - 1) * 20, page * 20), "page " + page)
+        assert(db.page(Set("orders"), 51).isEmpty)
+    }
+
+    test("bullet 3: a row still processing is checked against its events only when it is returned") {
+        val db = new SummaryDb(90, everyThird, _ => "processing")
+        val p1 = db.page(Set("orders"), 1)
+        assert(db.eventReads == tokens(p1), db.eventReads)
+        assert(db.eventReads.size == 20)
+    }
+
+    test("bullet 3: no store read for an empty visible set") {
+        val db = new SummaryDb(60, everyThird)
+        assert(db.page(Set.empty, 1).isEmpty)
+        assert(db.filteredReads.isEmpty)
     }
 
     // ================================================================== summary rows through the route seam
 
-    test("bullet 3: a limited caller's summary page is filled from the pipelines it may see") {
+    // orders was renamed from orders_old: its old rows count for it (PipelineAliases)
+    private val ordersRenamed = orders.copy(previousNames = java.util.Arrays.asList("orders_old"))
+    private val renamedPipelines: Seq[PipelineConfig] = Seq(ordersRenamed, payroll)
+    private def renamedHistory(i: Int): String = if (i % 15 == 0) "orders" else if (i % 15 == 7) "orders_old" else "payroll"
+
+    test("bullet 3: a limited caller's page is the store page filtered to the record names it may see, equal to all rows filtered then paged") {
         for ((who, rk) <- limited) {
-            val s = new SummaryStore(60, _ % 3 == 0)
-            val p1 = PipelineStatusAPIController.summaryData(req(rk), 1, s.readPage, () => pipelines)
-            assert(tokens(p1) == s.visibleRows.map(_.pipelineToken), who + ": " + tokens(p1))
-            assert(s.reads <= 10, who + ": " + s.pagesRead)
-            assert(PipelineStatusAPIController.summaryData(req(rk), 2, new SummaryStore(60, _ % 3 == 0).readPage, () => pipelines).isEmpty, who)
+            val db = new SummaryDb(1000, renamedHistory)
+            var pipelineReads = 0
+            var tapReads = 0
+            val names = mutable.ArrayBuffer[Set[String]]()
+            def view(page: Int) = PipelineStatusAPIController.summaryView(
+                req(rk),
+                page,
+                failReadPage,
+                (n, v) => { names += v; db.page(v, n) },
+                () => { pipelineReads += 1; renamedPipelines },
+                () => { tapReads += 1; taps },
+                _ => None
+            )
+            // the in-memory rule: every row, filtered as restrictedView filters, then paged
+            val all = new java.util.ArrayList[PipelineStatusSummary](db.summaries.asJava)
+            val visible = PipelineStatusAPIController.visibleRecordNames(req(rk), renamedPipelines)
+            val filtered = tokens(rows(PipelineStatusAPIController.filterFor(visible, all)))
+            assert(visible == Set("orders", "orders_old"), who + ": " + visible)
+            assert(filtered.size == 134, who + ": " + filtered.size)
+            val pages = (1 to 8).map(view).map(rows)
+            for ((p, k) <- pages.zipWithIndex) assert(tokens(p) == filtered.slice(k * 20, (k + 1) * 20), who + " page " + (k + 1))
+            assert(pages.map(_.size) == Seq(20, 20, 20, 20, 20, 20, 14, 0), who)
+            assert(pipelineReads == 8 && tapReads == 8, who + ": each store listed once per request: " + pipelineReads + "/" + tapReads)
+            assert(names.toSet == Set(Set("orders", "orders_old")) && db.filteredReads.size == 8, who + ": " + names)
+        }
+    }
+
+    test("bullet 3: a limited caller's page still has hidden tap names scrubbed from what it shows") {
+        val db = new SummaryDb(3, _ => "orders")
+        val withSummary = (i: Int) => db.summaries(i).copy(aiSummary = "tap t_hr sent no rows")
+        // a tap outside every limited caller's scope that feeds the visible pipeline
+        val tHr = TapConfig(name = "t_hr", description = "d", targetPipeline = "orders", catalog = "HR", createdByKeyLabel = "someone")
+        for ((who, rk) <- limited) {
+            val got = PipelineStatusAPIController.summaryView(
+                req(rk),
+                1,
+                failReadPage,
+                (_, _) => new java.util.ArrayList[PipelineStatusSummary]((0 until 3).map(withSummary).asJava),
+                () => pipelines,
+                () => taps :+ tHr,
+                _ => None
+            )
+            assert(rows(got).asScala.map(_.aiSummary).toSet == Set("tap [hidden] sent no rows"), who + ": " + rows(got))
         }
     }
 
     test("unchanged: a caller that is not limited reads one store page, the page it asked for, and gets it as read") {
         for ((who, r) <- unchanged; page <- Seq(1, 2, 7)) {
-            val s = new SummaryStore(300, _ % 3 == 0)
-            val got = PipelineStatusAPIController.summaryData(r, page, s.readPage, failPipelines)
-            assert(s.pagesRead == Seq(page), who + " page " + page + ": " + s.pagesRead)
-            assert(tokens(got) == s.rows.slice((page - 1) * 20, page * 20).map(_.pipelineToken), who)
+            val db = new SummaryDb(300, everyThird)
+            val asked = mutable.ArrayBuffer[Int]()
+            val read: Int => java.util.List[PipelineStatusSummary] = n => {
+                asked += n
+                new java.util.ArrayList[PipelineStatusSummary](db.summaries.slice((n - 1) * 20, n * 20).asJava)
+            }
+            val got = PipelineStatusAPIController.summaryView(
+                r,
+                page,
+                read,
+                (_, _) => fail("the filtered page must not be read for this caller"),
+                failPipelines,
+                failTaps,
+                _ => fail("run read")
+            )
+            assert(asked == Seq(page), who + " page " + page + ": " + asked)
+            assert(got == Right(read(page)), who)
+            assert(tokens(rows(got)) == db.summaries.slice((page - 1) * 20, page * 20).map(_.pipelineToken), who)
         }
     }
 
-    test("unchanged: a limited caller that may see every row gets, on every page it can reach today, the rows it gets today") {
+    test("unchanged: a limited caller that may see every row gets, on every page, the rows of that store page") {
         for ((who, rk) <- limited; page <- Seq(1, 2, 5, 12)) {
-            val s = new SummaryStore(300, _ => true)
-            val got = PipelineStatusAPIController.summaryData(req(rk), page, s.readPage, () => pipelines)
-            assert(tokens(got) == s.rows.slice((page - 1) * 20, page * 20).map(_.pipelineToken), who + " page " + page + ": " + tokens(got))
+            val db = new SummaryDb(300, _ => "orders")
+            val got = PipelineStatusAPIController.summaryView(req(rk), page, failReadPage, (n, v) => db.page(v, n), () => pipelines, () => taps, _ => None)
+            assert(tokens(rows(got)) == db.summaries.slice((page - 1) * 20, page * 20).map(_.pipelineToken), who + " page " + page)
         }
+    }
+
+    test("wiring: GET /pipeline/status reads the summary through summaryView with the store-filtered page; filledSummaryPage is gone") {
+        def source(path: String): String = {
+            var dir = java.nio.file.Paths.get("").toAbsolutePath
+            while (dir != null && !java.nio.file.Files.exists(dir.resolve(path))) dir = dir.getParent
+            new String(java.nio.file.Files.readAllBytes(dir.resolve(path)), "UTF-8")
+        }
+        val route = source("datrisserver/src/main/scala/ai/datris/api/PipelineStatusAPIController.scala")
+        assert(route.contains("PipelineStatusAPIController.summaryView("))
+        assert(route.contains("(n, names) => PipelineStatusUtil.getVisiblePipelineStatusSummary(names, n)"))
+        assert(route.contains("n => PipelineStatusUtil.getPipelineStatusSummary(pipelinename, n)"))
+        val util = source("datrisserver/src/main/scala/ai/datris/util/PipelineStatusUtil.scala")
+        assert(!util.contains("def filledSummaryPage(") && !util.contains("SummaryOverReadPages"))
     }
 
     // ================================================================== GET /incidents
@@ -276,7 +356,7 @@ class LimitedPagingSpec extends AnyFunSuite with BeforeAndAfterEach {
                 () => fail("stores listed")
             )
             assert(st.asked == Seq(limit), who + ": " + st.asked)
-            assert(got.toString == IncidentsAPIController.listedJson(r, st.all.take(limit), null, null).toString, who)
+            assert(got.toString == IncidentsAPIController.listedJson(r, st.all.take(limit), null, null, items = IncidentsAPIController.NoItems).toString, who)
         }
     }
 

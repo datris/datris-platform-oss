@@ -312,7 +312,23 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
             case other => fail("a token whose events are all hidden must read as a token with none, got " + other)
         }
         val rollup = PipelineStatusResponse(null, java.util.Arrays.asList(event("payroll")))
-        assert(PipelineStatusAPIController.filterFor(visible, rollup).isRight)
+        PipelineStatusAPIController.filterFor(visible, rollup) match {
+            case Right(r: PipelineStatusResponse) => assert(r.rollup == null && r.events.isEmpty, r)
+            case other => fail("a response whose events are all hidden must read as one with no events, got " + other)
+        }
+        // a rollup spanning a visible and a hidden job keeps the visible job, recomputed from it
+        def job(p: String, status: String) = PipelineJobRollup("tok-" + p, p, "f", status, "s", "l", "1s", null)
+        val mixed = PipelineStatusResponse(
+            PipelineStatusRollup(allDone = false, status = "error", jobs = java.util.Arrays.asList(job("orders", "success"), job("payroll", "error"))),
+            java.util.Arrays.asList(event("orders"), event("payroll"))
+        )
+        PipelineStatusAPIController.filterFor(visible, mixed) match {
+            case Right(r: PipelineStatusResponse) =>
+                assert(r.rollup.jobs.asScala.map(_.pipeline) == Seq("orders"), r)
+                assert(r.rollup.allDone && r.rollup.status == "success", r.rollup)
+                assert(r.events.asScala.map(_.pipeline) == Seq("orders"), r.events)
+            case other => fail("the visible job must remain, got " + other)
+        }
         // Unrestricted: data passes through untouched.
         val data = java.util.Arrays.asList(summary("payroll"))
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))

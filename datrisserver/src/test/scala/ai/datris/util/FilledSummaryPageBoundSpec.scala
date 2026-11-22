@@ -5,63 +5,122 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.PipelineStatusSummary
+import ai.datris.model.{DatrisEnvironment, PipelineStatusSummary, PipelineStatusSummaryTable, TenantContext}
+import com.google.gson.Gson
+import com.mongodb.client.model.Filters
+import com.mongodb.client.{FindIterable, MongoCollection, MongoCursor, MongoDatabase}
+import org.bson.Document
+import org.bson.conversions.Bson
+import org.mockito.Answers.RETURNS_SELF
+import org.mockito.ArgumentCaptor
+import org.mockito.Mockito.{mock, never, verify, verifyNoInteractions, when}
+import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable
 
 /** Story: Four small read leaks for callers limited to a catalog
-  * (plans/stories/limited-caller-read-leaks.md), D3 with lead ruling 1: the
-  * over-read bound grows with the page asked for, so deep pages stay
-  * reachable. Visible page N reads at most N + 9 store pages of 20 rows. */
-class FilledSummaryPageBoundSpec extends AnyFunSuite {
+  * (plans/stories/limited-caller-read-leaks.md), D3 with the review ruling:
+  * a limited caller's summary page is one store query filtered to the
+  * pipeline names it may see, with the unfiltered read's sort, skip and
+  * limit, so no page is bounded and every visible row is reachable. Pinned
+  * on the query MongoDBUtil sends to a mocked collection. */
+class FilledSummaryPageBoundSpec extends AnyFunSuite with BeforeAndAfterEach {
 
-    private class Store(total: Int, visible: Int => Boolean) {
-        val rows: IndexedSeq[PipelineStatusSummary] = (0 until total).map { i =>
-            val at = 1800000000000L - i * 1000L
-            PipelineStatusSummary("ts" + i, at, at, if (visible(i)) "orders" else "payroll", "tok-" + i, "JobRunner", "s", "e", "1s", "success")
-        }
-        val pagesRead: mutable.ArrayBuffer[Int] = mutable.ArrayBuffer[Int]()
-        val readPage: Int => java.util.List[PipelineStatusSummary] = n => {
-            pagesRead += n
-            val from = math.max(0, (n - 1) * 20)
-            new java.util.ArrayList[PipelineStatusSummary](rows.slice(from, from + 20).asJava)
-        }
-        def visibleTokens: IndexedSeq[String] = rows.filter(_.pipeline == "orders").map(_.pipelineToken)
+    private val gson = new Gson
+
+    private def summaryDoc(i: Int, pipeline: String): Document = {
+        val at = 1800000000000L - i * 1000L
+        val s = PipelineStatusSummary("ts" + i, at, at, pipeline, "tok-" + i, "JobRunner", "s", "e", "1s", "success")
+        Document.parse(gson.toJson(PipelineStatusSummaryTable(s.pipelineToken, s, at)))
     }
 
-    private val keep: PipelineStatusSummary => Boolean = _.pipeline == "orders"
-    private def tokens(l: java.util.List[PipelineStatusSummary]): Seq[String] = l.asScala.map(_.pipelineToken).toSeq
+    /** A database whose collection `table` answers every find with `docs`. */
+    private def fixture(table: String, docs: Seq[Document]): (MongoDatabase, MongoCollection[Document], FindIterable[Document]) = {
+        val database = mock(classOf[MongoDatabase])
+        val coll = mock(classOf[MongoCollection[_]]).asInstanceOf[MongoCollection[Document]]
+        val find = mock(classOf[FindIterable[_]], RETURNS_SELF).asInstanceOf[FindIterable[Document]]
+        val it = docs.iterator
+        val cursor = mock(classOf[MongoCursor[_]]).asInstanceOf[MongoCursor[Document]]
+        when(cursor.hasNext).thenAnswer(_ => it.hasNext)
+        when(cursor.next()).thenAnswer(_ => it.next())
+        when(find.iterator()).thenReturn(cursor)
+        when(coll.find(org.mockito.ArgumentMatchers.any(classOf[Bson]))).thenReturn(find)
+        when(database.getCollection(table)).thenReturn(coll)
+        (database, coll, find)
+    }
 
-    test("ruling 1: visible page N reads at most N + 9 store pages and, where they hold enough rows, returns a full page") {
-        for (page <- Seq(1, 3, 12, 40)) {
-            val s = new Store(2000, _ % 2 == 0) // half visible: page N needs 2N store pages
-            val got = PipelineStatusUtil.filledSummaryPage(page, keep, s.readPage)
-            assert(s.pagesRead.size <= page + 9, page + ": " + s.pagesRead)
-            assert(s.pagesRead == (1 to s.pagesRead.size), "store pages in order, each once: " + s.pagesRead)
-            val expected = s.visibleTokens.slice((page - 1) * 20, page * 20)
-            if (2 * page <= page + 9) assert(tokens(got) == expected, page + ": " + tokens(got))
-            else {
-                // past the bound: a short (possibly empty) page, never rows out of place
-                val reachable = s.visibleTokens.take((page + 9) * 10)
-                assert(tokens(got) == reachable.slice((page - 1) * 20, page * 20), page + ": " + tokens(got))
-            }
+    private var savedEnv: DatrisEnvironment = _
+
+    override def beforeEach(): Unit = {
+        savedEnv = DatrisEnvironment.values
+        val e = InMemoryUserDb.env().copy(pipelineStatusTableName = "status")
+        DatrisEnvironment.init(e)
+        TenantContext.set(e)
+    }
+
+    override def afterEach(): Unit = {
+        TenantContext.clear()
+        DatrisEnvironment.values = savedEnv
+    }
+
+    test("the filtered page is one query: pipeline name in the set, newest first, skip of the pages before it, limit of one page") {
+        val (database, coll, find) = fixture("status-summary", Seq(summaryDoc(40, "orders"), summaryDoc(41, "orders_old")))
+        val util = new MongoDBUtil(database)
+        val got = util.getPageOfItemsWhereInAsJSON("status-summary", "json.pipeline", Set("orders_old", "orders"), 2, 20, "created_at")
+
+        val filter = ArgumentCaptor.forClass(classOf[Bson])
+        verify(coll).find(filter.capture())
+        assert(filter.getValue.toBsonDocument() == Filters.in("json.pipeline", java.util.Arrays.asList("orders", "orders_old")).toBsonDocument())
+        val sort = ArgumentCaptor.forClass(classOf[Bson])
+        verify(find).sort(sort.capture())
+        assert(sort.getValue.toBsonDocument() == (new Document("created_at", -1): Bson).toBsonDocument())
+        verify(find).skip(40)
+        verify(find).limit(20)
+        verify(coll, never()).find()
+        assert(got.map(j => gson.fromJson(j, classOf[PipelineStatusSummaryTable]).pipeline_token) == List("tok-40", "tok-41"))
+    }
+
+    test("GET /pipeline/status page N for a limited caller sends that query to the summary table: skip 20(N-1), limit 20") {
+        for (page <- Seq(1, 2, 40, 500)) {
+            val (database, coll, find) = fixture("status-summary", Seq(summaryDoc(0, "orders")))
+            val got = PipelineStatusUtil.getVisiblePipelineStatusSummary(Set("orders"), page, new MongoDBUtil(database))
+            val filter = ArgumentCaptor.forClass(classOf[Bson])
+            verify(coll).find(filter.capture())
+            assert(filter.getValue.toBsonDocument() == Filters.in("json.pipeline", java.util.Arrays.asList("orders")).toBsonDocument(), page)
+            verify(find).skip((page - 1) * 20)
+            verify(find).limit(20)
+            assert(got.asScala.map(_.pipelineToken) == Seq("tok-0"), page)
         }
     }
 
-    test("ruling 1: a caller that keeps every row reads exactly the store pages up to the one it asked for") {
-        for (page <- Seq(1, 2, 25)) {
-            val s = new Store(1000, _ => true)
-            val got = PipelineStatusUtil.filledSummaryPage(page, keep, s.readPage)
-            assert(s.pagesRead == (1 to page), page + ": " + s.pagesRead)
-            assert(tokens(got) == s.rows.slice((page - 1) * 20, page * 20).map(_.pipelineToken))
-        }
+    test("an empty visible set sends no query at all") {
+        val (database, _, _) = fixture("status-summary", Nil)
+        assert(PipelineStatusUtil.getVisiblePipelineStatusSummary(Set.empty, 1, new MongoDBUtil(database)).isEmpty)
+        assert(new MongoDBUtil(database).getPageOfItemsWhereInAsJSON("status-summary", "json.pipeline", Set.empty, 0, 20, "created_at").isEmpty)
+        verifyNoInteractions(database)
     }
 
-    test("a page below 1 reads that store page once, filtered, as the store answers it") {
-        val s = new Store(40, _ % 2 == 0)
-        assert(tokens(PipelineStatusUtil.filledSummaryPage(0, keep, s.readPage)) == s.rows.take(20).filter(keep).map(_.pipelineToken))
-        assert(s.pagesRead == Seq(0), s.pagesRead)
+    test("the store default (no query filter) gives the same rows: filtered on the field, sorted, then paged") {
+        val docs = (0 until 300).map(i => summaryDoc(i, if (i % 7 == 0) "orders" else if (i % 7 == 3) "orders_old" else "payroll"))
+        val db = new InMemoryUserDb {
+            override def getAllItemsAsJSON(tableName: String): List[String] = scala.util.Random.shuffle(docs.map(_.toJson).toList)
+        }
+        val names = Set("orders", "orders_old")
+        val expected =
+            docs.map(d => gson.fromJson(d.toJson, classOf[PipelineStatusSummaryTable]).json).filter(s => names.contains(s.pipeline)).map(_.pipelineToken)
+        val pages = (0 until 6).map(n =>
+            db.getPageOfItemsWhereInAsJSON("t", "json.pipeline", names, n, 20, "created_at").map(j =>
+                gson.fromJson(j, classOf[PipelineStatusSummaryTable]).pipeline_token
+            )
+        )
+        assert(pages.map(_.size) == Seq(20, 20, 20, 20, 6, 0), pages)
+        assert(pages.flatten == expected)
+        // a missing or non-string field never matches
+        val odd = new InMemoryUserDb {
+            override def getAllItemsAsJSON(tableName: String): List[String] =
+                List("""{"json":{"pipeline":null},"created_at":1}""", """{"json":{"pipeline":7},"created_at":2}""", """{"created_at":3}""", "not json")
+        }
+        assert(odd.getPageOfItemsWhereInAsJSON("t", "json.pipeline", Set("7", "null"), 0, 20, "created_at").isEmpty)
     }
 }
