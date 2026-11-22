@@ -46,7 +46,7 @@ Add a connection of type **Datris** in the Airflow UI (or via env var / CLI):
 
 <Warning>
 API keys are capability-scoped. A key scoped `tap:run:owner=self` can only run
-taps it created. For an Airflow connection, use a full-access key, or a key with
+taps it created, and needs `tap:read:owner=self` as well. For an Airflow connection, use a full-access key, or a key with
 an unscoped `tap:run` capability that also created the taps it triggers. See
 [API Keys](/api-keys).
 </Warning>

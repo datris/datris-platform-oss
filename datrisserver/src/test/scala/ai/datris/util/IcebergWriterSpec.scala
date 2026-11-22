@@ -1238,4 +1238,239 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(w.contains("state doc remains the only record of the adoption"), w)
         assert(!w.contains("\n"), w)
     }
+
+    // ---- plans/stories/ingest-column-name-escaping.md: an odd column name ----
+    //  A column named with a space, a double quote and a semicolon either
+    //  round-trips under exactly that name (create, append, MERGE on another
+    //  key, MERGE with it as the key) or the write fails; no other table or
+    //  path is touched. The MERGE ON clause quotes through IcebergWriter.quote.
+
+    private def filesUnder(root: Path, excluding: Path): Set[String] = {
+        val s = Files.walk(root)
+        try s.iterator().asScala.filter(p => !p.startsWith(excluding)).map(p =>
+                root.relativize(p).toString + (if (Files.isDirectory(p)) "/" else "@" + Files.size(p))
+            ).toSet
+        finally s.close()
+    }
+
+    test(
+        "a column named with a space, a double quote and a semicolon either round-trips under exactly that name or fails the write; no other table or path is touched"
+    ) {
+        val odd = "unit \"price\"; drop table canary"
+        val canary = newLocation("odd-names/canary")
+        write(df((1L, "east", 1.0), (2L, "west", 2.0)), canary, "append")
+        val canarySnapshots = snapshots(canary).size
+
+        val location = newLocation("odd-names/t")
+        val oddRoot = java.nio.file.Paths.get(java.net.URI.create(location))
+        val before = filesUnder(warehouse, oddRoot)
+
+        val oddSchema = StructType(Seq(StructField("id", LongType, nullable = false), StructField(odd, StringType, nullable = true)))
+        def oddDf(rows: (Long, String)*): DataFrame = spark.createDataFrame(rows.map { case (i, v) => Row(i, v) }.asJava, oddSchema)
+
+        // Each step runs only if the previous one round-tripped; after a
+        // successful step the table holds exactly the odd name and the values.
+        def state(): Map[Long, String] = {
+            val read = readAll(location)
+            assert(read.columns.toSeq == Seq("id", odd), read.columns.toSeq)
+            assert(loadTable(location).schema().findField(odd) != null)
+            read.collect().map(r => r.getLong(0) -> r.getString(1)).toMap
+        }
+        val steps: Seq[(String, () => Any, Map[Long, String])] = Seq(
+            ("append", () => write(oddDf((1L, "a"), (2L, "b")), location, "append", destSchema = oddSchema), Map(1L -> "a", 2L -> "b")),
+            (
+                "merge on id",
+                () => write(oddDf((2L, "bb"), (3L, "c")), location, "merge", keyFields = Seq("id"), destSchema = oddSchema),
+                Map(1L -> "a", 2L -> "bb", 3L -> "c")
+            ),
+            (
+                "merge on the odd column",
+                () => write(oddDf((9L, "c")), location, "merge", keyFields = Seq(odd), destSchema = oddSchema),
+                Map(1L -> "a", 2L -> "bb", 9L -> "c")
+            )
+        )
+        var failed = false
+        steps.foreach { case (label, run, expected) =>
+            if (!failed) {
+                scala.util.Try(run()) match {
+                    case scala.util.Success(_) =>
+                        info("iceberg " + label + ": round-trips")
+                        assert(state() == expected, label)
+                    case scala.util.Failure(e) =>
+                        info("iceberg " + label + ": fails: " + String.valueOf(e.getMessage).split("\n").head)
+                        failed = true
+                }
+            }
+        }
+
+        // nothing outside the table's own root changed
+        assert(filesUnder(warehouse, oddRoot) == before, "a path outside " + location + " changed")
+        assert(snapshots(canary).size == canarySnapshots, "the canary table gained a snapshot")
+        assert(readAll(canary).count() == 2)
+    }
+
+    // ---- dotted, spaced and backticked column names (e2e follow-up) ----
+    //  The loader projects the staged frame onto the dest schema
+    //  (SparkObjectStoreLoader.projectToSchema) and IcebergWriter writes it.
+    //  A column added by schema evolution whose name holds a dot, a space, a
+    //  backtick, a double quote or a semicolon round-trips under exactly that
+    //  name: append (evolving the table), merge on id, merge on that column.
+
+    private val trickyNames = Seq("a.b", "a. b c", "x`y", "unit \"price\"; drop table canary")
+
+    test("a dotted, spaced or backticked column added by evolution round-trips through append, merge on id and merge on that column") {
+        for (name <- trickyNames) {
+            val location = newLocation("tricky-names/" + trickyNames.indexOf(name))
+            val baseTwo = StructType(Seq(StructField("id", LongType, nullable = false), StructField("v", StringType, nullable = true)))
+            val evolved = StructType(baseTwo.fields :+ StructField(name, StringType, nullable = true))
+            def frame(schema: StructType, rows: Row*): DataFrame =
+                SparkObjectStoreLoader.projectToSchema(spark.createDataFrame(rows.asJava, schema), schema)
+            def state(): Map[Long, (String, String)] = {
+                val read = readAll(location)
+                assert(read.columns.toSeq == Seq("id", "v", name), name + ": " + read.columns.toSeq)
+                read.collect().map(r => r.getLong(0) -> (r.getString(1), r.getString(2))).toMap
+            }
+
+            write(frame(baseTwo, Row(1L, "a")), location, "append", destSchema = baseTwo)
+            write(frame(evolved, Row(2L, "b", "x2")), location, "append", destSchema = evolved)
+            assert(state() == Map(1L -> ("a", null), 2L -> ("b", "x2")), name + ": append after evolution")
+
+            write(frame(evolved, Row(2L, "bb", "y2"), Row(3L, "c", "y3")), location, "merge", keyFields = Seq("id"), destSchema = evolved)
+            assert(state() == Map(1L -> ("a", null), 2L -> ("bb", "y2"), 3L -> ("c", "y3")), name + ": merge on id")
+
+            write(frame(evolved, Row(9L, "cc", "y3")), location, "merge", keyFields = Seq(name), destSchema = evolved)
+            assert(state() == Map(1L -> ("a", null), 2L -> ("bb", "y2"), 9L -> ("cc", "y3")), name + ": merge on " + name)
+
+            assert(loadTable(location).schema().columns().asScala.map(_.name()).toList == List("id", "v", name), name)
+
+            // the object-store query read returns the values under that name
+            val q = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
+            assert(q.columns.asScala.toList == List("id", "v", name), name + ": " + q.columns)
+            assert(q.rows.asScala.map(r => r.get(name)).toSet == Set(null, "y2", "y3"), name + ": " + q.rows)
+        }
+    }
+
+    // ---- plans/stories/object-store-load-missing-columns.md -------------------
+
+    private def stagedCsv(lines: String*): String = {
+        val f = Files.createTempFile("iceberg-writer-spec-staged-", ".csv")
+        f.toFile.deleteOnExit()
+        Files.write(f, lines.mkString("\n").getBytes(java.nio.charset.StandardCharsets.UTF_8))
+        f.toAbsolutePath.toString
+    }
+
+    test("an append whose staged rows lack a nullable column commits, and the column is null in the new rows") {
+        import ai.datris.model.SchemaField
+        val fields = List(SchemaField("id", "bigint"), SchemaField("region", "string"), SchemaField("amount", "double"))
+        val destSchema = SparkObjectStoreLoader.buildSchema(fields)
+        val location = newLocation("missing-column-append/t")
+        // what the loader does: staged read under Data.header, then projection to the dest schema
+        def load(path: String, header: List[String]): IcebergWriter.WriteResult = {
+            val staged = SparkObjectStoreLoader.stagedDataFrameFor(spark, path, fields, header, ",")
+            write(SparkObjectStoreLoader.projectToSchema(staged, destSchema), location, "append", destSchema = destSchema)
+        }
+        load(stagedCsv("1,east,1.5", "2,west,2.5"), List("id", "region", "amount"))
+        val before = snapshots(location).size
+        val second = load(stagedCsv("3,4.5", "4,5.5"), List("id", "amount")) // no region
+        assert(snapshots(location).size == before + 1, "the append commits one snapshot")
+        assert(second.addedRecords == 2 && second.totalRecords == 4, second.toString)
+        assert(loadTable(location).schema().columns().asScala.map(_.name()).toList == List("id", "region", "amount"), "no column added or dropped")
+        val rows = readAll(location).collect().map(r => (r.getLong(0), Option(r.getString(1)), r.getDouble(2))).toList.sortBy(_._1)
+        assert(rows == List((1L, Some("east"), 1.5), (2L, Some("west"), 2.5), (3L, None, 4.5), (4L, None, 5.5)), rows.toString)
+    }
+
+    // ---- plans/stories/iceberg-partition-spec-is-the-guard.md (loader half) ----
+    //  For an existing table its partition spec decides which columns may not
+    //  be null-filled; the config's partitionBy decides only for a new table.
+
+    private def writeNullFilled(
+        data: DataFrame,
+        location: String,
+        writeMode: String,
+        partitionBy: Seq[String],
+        nullFilled: Seq[String],
+        destSchema: StructType = baseSchema
+    ): Either[String, IcebergWriter.WriteResult] =
+        try Right(IcebergWriter.write(data, location, writeMode, partitionBy, Nil, destSchema, new RecordingStatusUtil, null, None, nullFilled))
+        catch { case e: DatrisException => Left(e.getMessage) }
+
+    private def nullRegion(rows: (Long, Double)*): DataFrame = df(rows.map { case (i, a) => (i, null: String, a) }: _*)
+
+    test("rows that null-fill a column of the existing table's partition spec are refused before any snapshot, whatever partitionBy now says") {
+        val location = newLocation("spec-guard-existing/t")
+        write(df((1L, "east", 1.0)), location, "append", partitionBy = Seq("region"))
+        val before = snapshots(location).size
+        for (mode <- Seq("append", "overwrite")) {
+            val r = writeNullFilled(nullRegion((2L, 2.0)), location, mode, partitionBy = Seq("amount"), nullFilled = Seq("region"))
+            assert(
+                r.left.toOption.exists(m => m.contains("partition column(s): region") && m.endsWith("Nothing was written to the object store")),
+                mode + ": " + r
+            )
+        }
+        assert(snapshots(location).size == before)
+        assert(readAll(location).filter("region is null").count() == 0)
+    }
+
+    test("rows that lack a column named only in the edited partitionBy load into the existing table") {
+        val location = newLocation("spec-guard-edited/t")
+        write(df((1L, "east", 1.0)), location, "append", partitionBy = Seq("region"))
+        val r = writeNullFilled(
+            df((2L, "west", 0.0)).withColumn("amount", org.apache.spark.sql.functions.lit(null).cast(DoubleType)),
+            location,
+            "append",
+            partitionBy = Seq("amount"),
+            nullFilled = Seq("amount")
+        )
+        assert(r.isRight, r.toString)
+        assert(readAll(location).count() == 2)
+    }
+
+    test("a new table is checked against the config's list before it is created") {
+        val location = newLocation("spec-guard-new/t")
+        val r = writeNullFilled(nullRegion((1L, 1.0)), location, "append", partitionBy = Seq("Region"), nullFilled = Seq("region"))
+        assert(r.left.toOption.exists(_.contains("partition column(s): region")), r.toString)
+        assert(!new HadoopTables(spark.sessionState.newHadoopConf()).exists(location), "no table was created")
+    }
+
+    test("an unpartitioned existing table refuses nothing") {
+        val location = newLocation("spec-guard-unpartitioned/t")
+        write(df((1L, "east", 1.0)), location, "append")
+        val r = writeNullFilled(nullRegion((2L, 2.0)), location, "append", partitionBy = Seq("region"), nullFilled = Seq("region"))
+        assert(r.isRight, r.toString)
+        assert(readAll(location).count() == 2)
+    }
+
+    test("ignore on an existing table writes nothing and refuses nothing; on a new table it is checked") {
+        val location = newLocation("spec-guard-ignore/t")
+        write(df((1L, "east", 1.0)), location, "append", partitionBy = Seq("region"))
+        assert(writeNullFilled(nullRegion((2L, 2.0)), location, "ignore", Seq("region"), Seq("region")).isRight)
+        assert(readAll(location).count() == 1)
+        val fresh = newLocation("spec-guard-ignore-new/t")
+        assert(writeNullFilled(nullRegion((2L, 2.0)), fresh, "ignore", Seq("region"), Seq("region")).isLeft)
+    }
+
+    test("a partition column missing from the frame (field protection drop) is refused before the table is created or evolved") {
+        val noRegion = StructType(baseSchema.fields.filterNot(_.name == "region"))
+        val frame = spark.createDataFrame(java.util.Arrays.asList(Row(1L, 1.0)), noRegion)
+        val fresh = newLocation("spec-guard-dropped-new/t")
+        val r1 = writeNullFilled(frame, fresh, "append", Seq("region"), Nil, destSchema = noRegion)
+        assert(r1.left.toOption.exists(_.contains("partition column(s): region")), r1.toString)
+        assert(!new HadoopTables(spark.sessionState.newHadoopConf()).exists(fresh))
+        val existing = newLocation("spec-guard-dropped-existing/t")
+        write(df((1L, "east", 1.0)), existing, "append", partitionBy = Seq("region"))
+        val before = snapshots(existing).size
+        val r2 = writeNullFilled(frame, existing, "append", Seq("region"), Nil, destSchema = noRegion)
+        assert(r2.left.toOption.exists(_.contains("partition column(s): region")), r2.toString)
+        assert(snapshots(existing).size == before)
+    }
+
+    test("a table whose spec cannot be read falls back to the config's partitionBy") {
+        val broken = org.mockito.Mockito.mock(classOf[Table])
+        org.mockito.Mockito.when(broken.spec()).thenThrow(new RuntimeException("metadata unreadable"))
+        assert(IcebergWriter.requiredPartitionColumns(Some(broken), Seq("Region")) == Seq("Region"))
+        assert(IcebergWriter.requiredPartitionColumns(None, Seq("Region")) == Seq("Region"), "a new table: the config's list")
+        val location = newLocation("spec-guard-read/t")
+        write(df((1L, "east", 1.0)), location, "append", partitionBy = Seq("region"))
+        assert(IcebergWriter.requiredPartitionColumns(Some(loadTable(location)), Seq("amount")) == Seq("region"), "the table's identity spec")
+    }
 }

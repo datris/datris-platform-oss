@@ -79,7 +79,7 @@ Returns a JSON array of column definitions:
 GET /api/v1/metadata/mongodb/databases
 ```
 
-Returns a JSON array of MongoDB database names. System databases (`admin`, `config`, `local`) and the platform's internal database are excluded.
+Returns a JSON array of MongoDB database names. System databases (`admin`, `config`, `local`) are excluded, and the platform's internal database is listed only when it holds data collections.
 
 ---
 
@@ -93,7 +93,7 @@ GET /api/v1/metadata/mongodb/collections
 |-----------|------|---------|-------------|
 | `database` | query | (all databases) | Filter to a specific database |
 
-When `database` is provided, returns collection names from that database. When omitted, returns collections from all databases with a `database.collection` namespace prefix.
+When `database` is provided, returns the data collections of that database; a MongoDB system database answers `400` with `{"error": "This database or collection is not available for queries."}`. When omitted, returns the data collections of every database with a `database.collection` namespace prefix. `system.` collections and the collections holding the platform's own state are never listed.
 
 ---
 

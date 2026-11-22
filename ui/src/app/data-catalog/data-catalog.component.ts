@@ -10,6 +10,7 @@ import { canEditCatalog, canOwnCatalog, editableCatalogsOf, isRestrictedUser } f
 import { CatalogChatContextService, CatalogSnapshot } from '../catalog-chat/catalog-chat-context.service';
 import { CatalogAssistantStateService } from '../catalog-chat/catalog-assistant-state.service';
 import { httpErrorText } from '../shared/http-error';
+import { deleteWarnings } from '../delete-warnings';
 
 interface CatalogInfo {
   name: string;
@@ -192,6 +193,20 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
+    // A delete from the pipeline page lands here with its warnings in the
+    // navigation state.
+    const state: any = (typeof history !== 'undefined' && history.state) || {};
+    if (state && typeof state.deletedPipeline === 'string') {
+      const warnings = deleteWarnings({ warnings: state.deleteWarnings });
+      if (warnings.length > 0) this.showDeleteWarnings(state.deletedPipeline, warnings);
+      // Shown once: a reload or a later back navigation does not repeat it.
+      try {
+        const rest: any = { ...state };
+        delete rest.deletedPipeline;
+        delete rest.deleteWarnings;
+        history.replaceState(rest, '');
+      } catch { /* history not writable: the banner may show again */ }
+    }
     this.loadCatalogs();
     this.refreshInterval = setInterval(() => {
       // Pause auto-refresh during interactions a re-render would destroy: an
@@ -923,6 +938,12 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.opWarningsLabel = list.length > 0 ? label : '';
   }
 
+  /** A single pipeline delete's warnings (data kept or not removed) in the
+   *  warnings banner; none clears it. */
+  private showDeleteWarnings(name: string, warnings: string[]): void {
+    this.showOpWarnings(`Deleting pipeline '${name}'`, warnings.map(message => ({ pipeline: name, message })));
+  }
+
   dismissOpWarnings(): void {
     this.opWarnings = [];
     this.opWarningsLabel = '';
@@ -1317,7 +1338,12 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.deletingItem = key;
     this.deleteItemTarget = '';
     this.pipelineService.deletePipeline(name).subscribe({
-      next: () => { this.deletingItem = ''; this.clearMoveError(); this.loadCatalogs(); },
+      next: (res: any) => {
+        this.deletingItem = '';
+        this.clearMoveError();
+        this.showDeleteWarnings(name, deleteWarnings(res));
+        this.loadCatalogs();
+      },
       error: () => { this.deletingItem = ''; this.loadCatalogs(); }
     });
   }

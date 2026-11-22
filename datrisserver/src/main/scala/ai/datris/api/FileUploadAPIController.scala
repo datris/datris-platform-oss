@@ -6,7 +6,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.common.base.Throwables
-import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, JobContext}
+import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, CapabilityScopes}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, JobContext, PipelineConfig}
+import jakarta.servlet.http.HttpServletRequest
 import ai.datris.util.{AIProfileUtil, AISchemaUtil, AiSampleValues, PipelineConfigIO, StagingArea, StatusUtil}
 import com.google.gson.{GsonBuilder, JsonParser}
 import ai.datris.controller.StreamNotifier
@@ -19,6 +21,77 @@ import org.springframework.web.multipart.MultipartFile
 import java.io.BufferedInputStream
 import java.nio.file.Files
 import java.util.UUID
+
+object FileUploadAPIController {
+
+    /** The vector containers a pipeline's destination names, each as a
+      * `collection=` scope must name it
+      * ([[ai.datris.auth.CapabilityScopes.collectionNameOpt]] over the names
+      * the loaders use, untrimmed; pgvector's schema as
+      * `PGVectorSql.schemaOf` reads it). None for a present destination whose
+      * name is null or blank, or otherwise unnameable: no scope covers it. */
+    private[api] def collectionsOf(config: PipelineConfig): Seq[Option[String]] = {
+        val d = Option(config).flatMap(c => Option(c.destination)).orNull
+        if (d == null) Nil
+        else
+            Seq(
+                Option(d.qdrant).map(q => CapabilityScopes.collectionNameOpt("qdrant", q.collectionName, None)),
+                Option(d.weaviate).map(w => CapabilityScopes.collectionNameOpt("weaviate", w.className, None)),
+                Option(d.milvus).map(m => CapabilityScopes.collectionNameOpt("milvus", m.collectionName, None)),
+                Option(d.chroma).map(c => CapabilityScopes.collectionNameOpt("chroma", c.collectionName, None)),
+                Option(d.pgvector).map(p => CapabilityScopes.collectionNameOpt("pgvector", p.tableName, Option(p.schemaName)))
+            ).flatten
+    }
+
+    /** The `document:upload:collection=` check (plans/stories/api-key-inert-scopes.md,
+      * Fix 2): in scope when the pipeline has at least one vector container
+      * and the key grants every one. Some(403) otherwise, for a key whose
+      * applied `document:upload` is held only under `collection=` scopes.
+      * Unscoped keys, sessions, legacy keys, a request with no identity and
+      * a key with no applied `document:upload` (the gate decided): None. */
+    def uploadScopeRefusal(request: HttpServletRequest, config: PipelineConfig): Option[ResponseEntity[String]] =
+        try {
+            CapabilityCheck.assertCollectionScope(request, "document", "upload", collectionsOf(config))
+            None
+        } catch {
+            case e: CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
+        }
+
+    /** POST /pipeline/upload, after the config load (`config` null = no such
+      * pipeline), before any status row or staging. First the pipeline scope
+      * (plans/stories/scoped-key-read-routes.md): a restricted session gets
+      * [[PipelineAPIController.refusalFor]] on `run` (404 when hidden or
+      * missing, 403 when view-only); an API key that holds a `pipeline:run`
+      * capability or is limited for pipelines must hold, in scope on the
+      * stored pipeline, `pipeline:run` (when it holds any `pipeline:run`
+      * capability) and `pipeline:read`
+      * ([[ai.datris.auth.CallerVisibility.loadDenial]]), or gets the
+      * capability-denied 403 naming the one it lacks. Then, for an existing pipeline, the `collection=` check
+      * ([[uploadScopeRefusal]]). Both must pass; when both would refuse the
+      * pipeline refusal is the answer. None for everyone else (a key holding
+      * no pipeline capability, unscoped keys, unrestricted sessions, no
+      * identity). */
+    def uploadRefusal(request: HttpServletRequest, name: String, config: PipelineConfig): Option[ResponseEntity[String]] =
+        if (CapabilityCheck.isRestrictedSession(request))
+            PipelineAPIController.refusalFor(request, name, config, "run").orElse(if (config == null) None else uploadScopeRefusal(request, config))
+        else if (config == null) None
+        else
+            CapabilityCheck
+                .resolvedKey(request)
+                .filter(ai.datris.auth.CallerVisibility.loadChecked)
+                .flatMap { rk =>
+                    val ctx = ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
+                    ai.datris.auth.CallerVisibility.loadDenial(rk, ctx).map { action =>
+                        try {
+                            CapabilityCheck.assertScope(request, "pipeline", action, ctx)
+                            PipelineAPIController.capabilityDenied(new CapabilityDeniedException("capability denied"))
+                        } catch {
+                            case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
+                        }
+                    }
+                }
+                .orElse(uploadScopeRefusal(request, config))
+}
 
 @RestController
 @RequestMapping(Array("/api/v1"))
@@ -37,13 +110,16 @@ class FileUploadAPIController {
             logger.info("API endpoint POST /pipeline/upload called for pipeline: " + pipeline + ", filename: " + multipartFile
                 .getOriginalFilename + ", publishertoken: " + publishertoken)
             APIKeyValidator.validate(apiKey)
-            // A restricted user uploads only into a pipeline it may run; a
-            // hidden or missing one answers the pipeline 404 (and no error
-            // status row is written for it).
-            PipelineAPIController.restrictedRefusal(request, pipeline, "run").foreach(r => return r)
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
+            // A restricted user uploads only into a pipeline it may run (a
+            // hidden or missing one answers the pipeline 404, and no error
+            // status row is written for it); a scoped key only into a
+            // pipeline in its scope; a key scoped to collections only into
+            // pipelines whose vector destinations it names. Before any status
+            // row or staging.
+            FileUploadAPIController.uploadRefusal(request, pipeline, config).foreach(r => return r)
 
             // Validate pipeline is registered before processing
-            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if (config == null)
                 throw new IllegalArgumentException("Pipeline '" + pipeline + "' is not registered. Use POST /api/v1/pipeline to register it first.")
 

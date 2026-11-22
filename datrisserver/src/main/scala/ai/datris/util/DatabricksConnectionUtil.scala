@@ -31,8 +31,18 @@ object DatabricksConnectionUtil {
      *  lets callers mirror progress into their own status log.
      *  `timeoutSeconds` (None for loaders and queries: driver defaults) sets
      *  the driver's `socketTimeout` (seconds; the name databricks-jdbc 3.4.1 declares in
-     *  `DatabricksJdbcUrlParams`, looked up lower-cased). */
-    def withConnection[T](db: Database, onInfo: String => Unit = _ => (), pipelineName: String = null, timeoutSeconds: Option[Int] = None)(
+     *  `DatabricksJdbcUrlParams`, looked up lower-cased).
+     *  `warehouseStartSeconds` (None everywhere but the pipeline delete)
+     *  bounds how long the driver keeps retrying a warehouse that answers
+     *  "temporarily unavailable" while it starts, and keeps the per-request
+     *  socket timeout at least that long ([[timeoutProperties]]). */
+    def withConnection[T](
+        db: Database,
+        onInfo: String => Unit = _ => (),
+        pipelineName: String = null,
+        timeoutSeconds: Option[Int] = None,
+        warehouseStartSeconds: Option[Int] = None
+    )(
         f: Connection => T
     ): T = {
         val creds = CredentialResolver.resolveDatabricks(db.credentialsSecret)
@@ -53,7 +63,7 @@ object DatabricksConnectionUtil {
             if (db.dbName != null) properties.setProperty("ConnCatalog", db.dbName)
             if (db.schema != null) properties.setProperty("ConnSchema", db.schema)
             properties.setProperty("UserAgentEntry", "Datris")
-            timeoutSeconds.foreach(s => properties.setProperty("socketTimeout", s.toString))
+            timeoutProperties(timeoutSeconds, warehouseStartSeconds).foreach { case (k, v) => properties.setProperty(k, v) }
             // Required for the driver's Unity Catalog volume operations (PUT/REMOVE):
             // it refuses to read local files outside this allowlist. Staging CSVs are
             // written to the JVM temp dir.
@@ -73,7 +83,15 @@ object DatabricksConnectionUtil {
                     properties.setProperty("PWD", creds.token.get)
             }
 
-            val jdbcUrl = "jdbc:databricks://" + normalizeHost(creds.host) + ":443"
+            val host = normalizeHost(creds.host)
+            val jdbcUrl = "jdbc:databricks://" + host + ":" + Port
+            // The delete only: the driver uses one value for its connect and
+            // socket timeouts, so with the long warehouse-start bound a dead
+            // workspace host would wait that long; a plain TCP connect first
+            // fails it within WorkspaceConnectSeconds.
+            // The driver connects directly here (no UseProxy / UseSystemProxy is
+            // ever set on this connection), so a direct connect is what it does too.
+            if (warehouseStartSeconds.isDefined) workspaceReachable(host, Port, jdbcUrl)
             logger.info("Databricks jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + " httpPath: " + httpPath)
             onInfo("jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + " httpPath: " + httpPath)
             // getConnection blocks while a stopped warehouse auto-starts — classic
@@ -91,6 +109,85 @@ object DatabricksConnectionUtil {
         } finally {
             if (conn != null) Try(conn.close())
         }
+    }
+
+    /** The port of the workspace's JDBC URL. */
+    val Port = 443
+
+    /** The delete's workspace pre-check connect bound, in seconds. */
+    val WorkspaceConnectSeconds = 30
+
+    /** Test seam: opens (and closes) a TCP connection to (host, port) within
+      * the timeout in milliseconds, or throws. The default tries every
+      * address the host resolves to, as the driver's HTTP client does. */
+    @volatile private[util] var tcpConnect: (String, Int, Int) => Unit = (host, port, timeoutMs) =>
+        connectAny(java.net.InetAddress.getAllByName(host).toSeq, port, timeoutMs)
+
+    /** Connects to each of `addresses` in turn (a fresh socket each, always
+      * closed) until one accepts; otherwise rethrows the last failure. One
+      * deadline of `timeoutMs` is shared: each address gets the remaining
+      * time divided by the addresses left, so an unroutable first address
+      * cannot use the whole budget. */
+    private[util] def connectAny(
+        addresses: Seq[java.net.InetAddress],
+        port: Int,
+        timeoutMs: Int,
+        newSocket: () => java.net.Socket = () => new java.net.Socket()
+    ): Unit = {
+        if (addresses.isEmpty) throw new java.net.UnknownHostException("no address")
+        val deadline = System.nanoTime() + timeoutMs * 1000000L
+        var last: Exception = null
+        var connected = false
+        var i = 0
+        while (!connected && i < addresses.size) {
+            val remainingMs = (deadline - System.nanoTime()) / 1000000L
+            if (remainingMs <= 0) throw (if (last != null) last else new java.net.SocketTimeoutException("connect timed out"))
+            val budget = math.max(1L, remainingMs / (addresses.size - i)).toInt
+            val s = newSocket()
+            try {
+                s.connect(new java.net.InetSocketAddress(addresses(i), port), budget)
+                connected = true
+            } catch {
+                case e: Exception => last = e
+            } finally Try(s.close())
+            i += 1
+        }
+        if (!connected) throw last
+    }
+
+    /** The delete's pre-check: the workspace accepts a TCP connection on
+      * `port` within [[WorkspaceConnectSeconds]]; otherwise the same "No
+      * Databricks workspace answers at" error the driver's unknown-host
+      * failure gives (the host is in the message, which only the log sees). */
+    private[util] def workspaceReachable(host: String, port: Int, jdbcUrl: String): Unit =
+        try tcpConnect(host, port, WorkspaceConnectSeconds * 1000)
+        catch {
+            case e: Exception =>
+                logger.warn("Databricks workspace pre-check failed for " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + ": " + e)
+                val out = new DatrisException(
+                    "No Databricks workspace answers at " + jdbcUrl + " within " + WorkspaceConnectSeconds + " seconds. " +
+                        "The credentials secret's 'host' field must be the workspace hostname."
+                )
+                out.initCause(e)
+                throw out
+        }
+
+    /** The driver timeout properties for `timeoutSeconds` and
+     *  `warehouseStartSeconds` (databricks-jdbc 3.4.1, read from its
+     *  `DatabricksJdbcUrlParams` and `DatabricksHttpClient`; not measured
+     *  against a live warehouse). `socketTimeout` (seconds, default 900) is
+     *  applied to every HTTP request as Apache HttpClient's connect, socket
+     *  (read idle) and connection-request timeouts. A 503 "temporarily
+     *  unavailable" answer (a warehouse starting) is retried with backoff for
+     *  up to `TemporarilyUnavailableRetryTimeout` seconds (default 900); a
+     *  socket timeout is not retried. So with `warehouseStartSeconds` the
+     *  retry window is that bound and the per-request socket timeout is
+     *  raised to it too, so a start answered by one long request is not cut
+     *  short by `timeoutSeconds`. Nothing set: driver defaults. */
+    private[util] def timeoutProperties(timeoutSeconds: Option[Int], warehouseStartSeconds: Option[Int]): Seq[(String, String)] = {
+        val socket = (timeoutSeconds.toSeq ++ warehouseStartSeconds.toSeq).reduceOption(_ max _)
+        socket.map(s => "socketTimeout" -> s.toString).toSeq ++
+            warehouseStartSeconds.map(s => "TemporarilyUnavailableRetryTimeout" -> s.toString).toSeq
     }
 
     /** Convert the driver's opaque connect-time failures into actionable errors

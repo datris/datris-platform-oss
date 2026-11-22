@@ -162,7 +162,7 @@ class RestrictedQueryStampsSpec extends AnyFunSuite with BeforeAndAfterEach {
     }
 
     test(
-        "restrictedSqlRefusal is None for a restricted session without sql, with blank sql, and for an unrestricted editor and a catalog-scoped API key with any sql"
+        "restrictedSqlRefusal is None for a restricted session without sql, with blank sql, and for an unrestricted editor and a full key with any sql; a catalog-scoped API key is refused any non-blank sql"
     ) {
         assert(QueryAPIController.restrictedSqlRefusal(req(bob), None).isEmpty)
         Seq("", " ", "   \n\t ").foreach(s => assert(QueryAPIController.restrictedSqlRefusal(req(bob), Some(s)).isEmpty, s"blank sql '$s' is absent"))
@@ -174,8 +174,14 @@ class RestrictedQueryStampsSpec extends AnyFunSuite with BeforeAndAfterEach {
             Some("SHOW TABLES"),
             Some("SELECT * FROM INFORMATION_SCHEMA.COLUMNS")
         )
-        for (rk <- Seq(editor, salesKey, fullKey); sql <- anySql)
+        for (rk <- Seq(editor, fullKey); sql <- anySql)
             assert(QueryAPIController.restrictedSqlRefusal(req(rk), sql).isEmpty, s"${rk.label} / $sql must not be refused")
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part C): no caller SQL; blank is the preview.
+        for (sql <- anySql) {
+            val r = QueryAPIController.restrictedSqlRefusal(req(salesKey), sql)
+            if (sql.forall(_.trim.isEmpty)) assert(r.isEmpty, s"${salesKey.label} / $sql is the preview")
+            else assert(r.exists(_.getStatusCode.value == 403), s"${salesKey.label} / $sql must be refused 403")
+        }
     }
 
     // ------------------------------------------------------------ dropTapStampColumns
@@ -238,13 +244,21 @@ class RestrictedQueryStampsSpec extends AnyFunSuite with BeforeAndAfterEach {
     // ------------------------------------------------------------ restrictedRows / restrictedObjectStoreResult
 
     test("restrictedRows and restrictedObjectStoreResult return their argument for an unrestricted editor and a catalog-scoped API key") {
-        for (rk <- Seq(editor, salesKey, fullKey)) {
+        for (rk <- Seq(editor, fullKey)) {
             val in = rows(stampedRow(1), stampedRow(2))
             assert(QueryAPIController.restrictedRows(req(rk), in) eq in, rk.label)
             assert(keys(in.get(0)) == keys(stampedRow(1)), "rows are untouched")
             val res = osResult(strList(AllCols: _*), rows(stampedRow(1)))
             assert(QueryAPIController.restrictedObjectStoreResult(req(rk, path = "/api/v1/query/objectstore"), res) eq res, rk.label)
         }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): the columns go, as for the session.
+        val keyRows = QueryAPIController.restrictedRows(req(salesKey), rows(stampedRow(1), stampedRow(2)))
+        keyRows.asScala.foreach(r => assert(keys(r) == Kept, salesKey.label))
+        val keyRes = QueryAPIController.restrictedObjectStoreResult(
+            req(salesKey, path = "/api/v1/query/objectstore"),
+            osResult(strList(AllCols: _*), rows(stampedRow(1)))
+        )
+        assert(keyRes.columns.asScala.toList == Kept && keys(keyRes.rows.get(0)) == Kept, salesKey.label)
     }
 
     test("restrictedObjectStoreResult drops the columns from both columns and rows and keeps path, format, snapshotId, snapshotTimestamp") {

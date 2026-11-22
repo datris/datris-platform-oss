@@ -88,6 +88,28 @@ object DataUtil {
             schemaColumns.exists(_.equalsIgnoreCase(col))
         )
 
+        // A new name no configured destination can hold fails the run here,
+        // before anything is logged, reported or persisted, so the stored
+        // schema stays unchanged. Names already in the schema are not examined.
+        if (newColumns.nonEmpty)
+            IngestColumnNames.problem(newColumns, schemaColumns, IngestColumnNames.limitsFor(config)).foreach { p =>
+                throw new DatrisException("Pipeline " + config.name + ": " + p + ". The run is stopped and the pipeline schema is unchanged")
+            }
+
+        // An object store cannot load a file that lacks an Iceberg merge key
+        // (a null key never matches, so every row would be inserted again) or a
+        // partition column (the rows would land in the null partition). Refused
+        // here, before anything is persisted or reported. New columns are all
+        // in the file, so the columns missing now are the ones missing below.
+        objectStoreMissingRequired(config, schemaColumns.filterNot(col => sourceColumns.exists(_.equalsIgnoreCase(col)))).foreach {
+            case (kind, cols) =>
+                throw new DatrisException(
+                    "CSV is missing required " + kind + ": " + cols.mkString(", ") +
+                        ". CSV columns: " + sourceColumns.mkString(", ") +
+                        ". Expected columns: " + (schemaColumns ++ newColumns).mkString(", ")
+                )
+        }
+
         if (newColumns.nonEmpty) {
             logger.info("Schema evolved: added fields [" + newColumns.mkString(", ") + "] to pipeline " + config.name)
             statusUtil.info("processing", "Schema evolution: new columns detected [" + newColumns.mkString(", ") + "], adding to pipeline schema")
@@ -222,6 +244,36 @@ object DataUtil {
         )
 
         (updatedConfig, schemaColumns, presentColumns, missingColumns)
+    }
+
+    /** The first kind of column an object-store destination cannot load
+      * without that `missing` contains, with the missing names: the MERGE ON
+      * keys of an Iceberg merge (keyFields are ignored for any other format or
+      * mode, so they refuse nothing there), then the `partitionBy` columns.
+      * Names compare case-insensitively. None for non-object-store pipelines.
+      * Used by the ingest check only. writeMode ignore without
+      * deleteBeforeWrite skips the partition columns: when the target exists
+      * nothing is written (as on v1.60.0), and when it does not the loader
+      * refuses (SparkObjectStoreLoader.refuseIgnoreWrite for Parquet and ORC,
+      * IcebergWriter with the config's list for a new Iceberg table). */
+    private[util] def objectStoreMissingRequired(config: PipelineConfig, missing: List[String]): Option[(String, List[String])] = {
+        val os = Option(config.destination).flatMap(d => Option(d.objectStore))
+        if (missing.isEmpty || os.isEmpty) None
+        else {
+            def names(l: java.util.List[String]): Set[String] =
+                Option(l).map(_.asScala.filter(n => n != null && n.trim.nonEmpty).map(_.trim.toLowerCase).toSet).getOrElse(Set.empty)
+            def norm(s: String): String = Option(s).map(_.trim.toLowerCase).getOrElse("")
+            val o = os.get
+            val merging = norm(o.fileFormat) == "iceberg" && norm(o.writeMode) == "merge"
+            val keys = if (merging) names(o.keyFields) else Set.empty[String]
+            val ignoring = norm(o.writeMode) == "ignore" && !o.deleteBeforeWrite
+            val partitions = if (ignoring) Set.empty[String] else names(o.partitionBy)
+            val missingKeys = missing.filter(c => keys.contains(c.trim.toLowerCase))
+            val missingPartitions = missing.filter(c => partitions.contains(c.trim.toLowerCase))
+            if (missingKeys.nonEmpty) Some(("key field(s)", missingKeys))
+            else if (missingPartitions.nonEmpty) Some(("partition column(s)", missingPartitions))
+            else None
+        }
     }
 
     /** The CSV header line, validated with commons-csv BEFORE `evolveSchema` sees

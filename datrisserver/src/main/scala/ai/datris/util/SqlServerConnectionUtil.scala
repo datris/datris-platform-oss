@@ -30,8 +30,13 @@ object SqlServerConnectionUtil {
      *  `dbName`, run `f`, and close the connection. `onInfo` lets callers mirror
      *  progress into their own status log (the loader routes it to the job
      *  status). `timeoutSeconds` (None for loaders and queries: driver
-     *  defaults) bounds login, each socket read and each statement. */
-    def withConnection[T](db: Database, onInfo: String => Unit = _ => (), timeoutSeconds: Option[Int] = None)(f: Connection => T): T = {
+     *  defaults) bounds login, each socket read and each statement.
+     *  `socketTimeoutSeconds` (None: `timeoutSeconds`) sets the socket read
+     *  bound on its own, so the query timeout's answer can arrive before the
+     *  socket gives up. */
+    def withConnection[T](db: Database, onInfo: String => Unit = _ => (), timeoutSeconds: Option[Int] = None, socketTimeoutSeconds: Option[Int] = None)(
+        f: Connection => T
+    ): T = {
         val creds = CredentialResolver.resolveSqlServer(db.credentialsSecret)
 
         Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
@@ -45,11 +50,7 @@ object SqlServerConnectionUtil {
             conn =
                 try {
                     val props = connectionProperties(creds)
-                    timeoutSeconds.foreach { s =>
-                        props.setProperty("loginTimeout", s.toString)
-                        props.setProperty("socketTimeout", (s * 1000L).toString)
-                        props.setProperty("queryTimeout", s.toString)
-                    }
+                    timeoutProperties(timeoutSeconds, socketTimeoutSeconds).foreach { case (k, v) => props.setProperty(k, v) }
                     DriverManager.getConnection(url, props)
                 } catch {
                     case e: SQLException => throw connectError(e, creds, db.dbName)
@@ -60,6 +61,19 @@ object SqlServerConnectionUtil {
             if (conn != null) Try(conn.close())
         }
     }
+
+    /** The driver timeout properties: `loginTimeout` and `queryTimeout`
+     *  (seconds) from `timeoutSeconds`, `socketTimeout` (milliseconds) from
+     *  `socketTimeoutSeconds`, else `timeoutSeconds`. Nothing without
+     *  `timeoutSeconds` (driver defaults). */
+    private[util] def timeoutProperties(timeoutSeconds: Option[Int], socketTimeoutSeconds: Option[Int]): Seq[(String, String)] =
+        timeoutSeconds.toSeq.flatMap { s =>
+            Seq(
+                "loginTimeout" -> s.toString,
+                "socketTimeout" -> (socketTimeoutSeconds.getOrElse(s) * 1000L).toString,
+                "queryTimeout" -> s.toString
+            )
+        }
 
     /** `jdbc:sqlserver://host:port;databaseName=...;encrypt=...;trustServerCertificate=...`.
      *  Values holding `;`, `=` or braces are brace-escaped per the driver's

@@ -380,11 +380,14 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         listing.foreach(t => assert(!seen.contains(t), s"$t must be hidden from a restricted session"))
         kept.foreach(t => assert(seen.contains(t), s"$t must stay visible to a restricted session"))
 
-        // Unrestricted sessions and API keys holding metadata:read are unchanged.
+        // Unrestricted sessions are unchanged.
         val ed = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         val edSeen = MCPToolRoutes.allowedTools(ed)
         (listing ++ kept).foreach(t => assert(edSeen.contains(t), s"unrestricted editor sees $t"))
+        // A catalog-scoped API key holding metadata:read is held like the session (scoped-key-read-routes, Part C).
         val metaKey = key("metadata:read", "pipeline:read:catalog=Sales")
-        (listing ++ kept).foreach(t => assert(MCPToolRoutes.allowedTools(metaKey).contains(t), s"API key sees $t"))
+        val keySeen = MCPToolRoutes.allowedTools(metaKey)
+        listing.foreach(t => assert(!keySeen.contains(t), s"$t must be hidden from a catalog-scoped API key"))
+        kept.foreach(t => assert(keySeen.contains(t), s"catalog-scoped API key sees $t"))
     }
 }

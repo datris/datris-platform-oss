@@ -66,6 +66,35 @@ object AuditLog {
       * request by a denial path, so the interceptor doesn't double-log. */
     val RecordedAttr = "ai.datris.audit.recorded"
 
+    /** Request attribute holding the scope denials
+      * [[ai.datris.auth.CapabilityCheck.assertScope]] noted on this request,
+      * as a `Vector[(required, detail)]` (`required` = `resource:action`,
+      * `detail` = the refusal text with the target's scope). Read by
+      * [[ai.datris.config.AuditInterceptor]]; never sent to a client. */
+    val ScopeDenialsAttr = "ai.datris.audit.scopeDenials"
+
+    /** How many scope denials one request keeps (the first ones). */
+    val MaxScopeDenials = 20
+
+    /** Note a scope denial on the request for the audit entry the interceptor
+      * writes at completion. Appends; keeps the first [[MaxScopeDenials]].
+      * A null request is a no-op. Not gated on [[enabled]]: noting is a
+      * request attribute only, and the interceptor decides what is written. */
+    def noteScopeDenial(request: HttpServletRequest, required: String, detail: String): Unit = {
+        if (request == null) return
+        val current = scopeDenials(request)
+        if (current.size < MaxScopeDenials) request.setAttribute(ScopeDenialsAttr, current :+ (required -> detail))
+    }
+
+    /** The scope denials noted on the request, in order (empty when none). */
+    def scopeDenials(request: HttpServletRequest): Vector[(String, String)] = {
+        if (request == null) return Vector.empty
+        request.getAttribute(ScopeDenialsAttr) match {
+            case v: Vector[_] => v.collect { case (r: String, d: String) => r -> d }
+            case _ => Vector.empty
+        }
+    }
+
     /** `category:action` pairs whose bursts are folded into one record per
       * actor+resource per [[CollapseWindowMs]]. */
     val Collapsible: Set[String] = Set("document:upload", "pipeline:ingest", "pipeline:ingest-trigger")
@@ -131,7 +160,13 @@ object AuditLog {
     /** False only under strict while the queue is at its high-water mark
       * (capacity minus headroom): audited requests are then refused. Always
       * true in default mode. */
-    def acceptingWrites: Boolean = !strict || queue.hasRoom(Headroom)
+    def acceptingWrites: Boolean = {
+        val o = acceptingWritesOverride
+        if (o != null) o.booleanValue() else !strict || queue.hasRoom(Headroom)
+    }
+
+    /** Test seam: when set, [[acceptingWrites]] answers it. */
+    @volatile private[datris] var acceptingWritesOverride: java.lang.Boolean = null
 
     // ------------------------------------------------------------------
     // Producers
@@ -257,14 +292,25 @@ object AuditLog {
 
     /** A request refused by an auth interceptor. Called at the point of
       * denial because a `false` from an earlier interceptor's preHandle means
-      * the audit interceptor (registered last) never sees the request. */
-    def denied(request: HttpServletRequest, reason: String, httpStatus: Int, required: Option[String] = None): Unit = {
+      * the audit interceptor (registered last) never sees the request.
+      * `resourceName` and `names` (metadata name/value pairs) let a controller
+      * that refuses after reading the request body record which item the
+      * caller named (field protection: pipeline and field). Names only. */
+    def denied(
+        request: HttpServletRequest,
+        reason: String,
+        httpStatus: Int,
+        required: Option[String] = None,
+        resourceName: Option[String] = None,
+        names: Seq[(String, String)] = Nil
+    ): Unit = {
         if (!enabled) return
         request.setAttribute(RecordedAttr, java.lang.Boolean.TRUE)
         val md = new JsonObject()
         md.addProperty("reason", reason)
         required.foreach(md.addProperty("required", _))
-        val route = AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads = true)
+        names.foreach { case (k, v) => if (v != null) md.addProperty(k, v) }
+        val route = AuditClassifier.classify(ai.datris.auth.RequestPaths.method(request), ai.datris.auth.RequestPaths.path(request), logReads = true)
         route.foreach { r =>
             md.addProperty("category", r.category)
             md.addProperty("action", r.action)
@@ -275,7 +321,7 @@ object AuditLog {
             category = "security",
             action = "denied",
             resourceType = route.map(_.resourceType),
-            resourceName = None,
+            resourceName = resourceName,
             outcome = "denied",
             httpStatus = Some(httpStatus),
             errorMessage = Some(reason),
@@ -290,6 +336,40 @@ object AuditLog {
                 "audit log not accepting entries"
             )
         else submit(entry)
+    }
+
+    /** A request that passed the route gate only through a stored capability
+      * whose scope the platform does not apply, under the operator's
+      * `DATRIS_KEY_INERT_SCOPES=allow` opt-out
+      * (plans/stories/api-key-inert-scopes.md). One `security/inert-scope-used`
+      * row naming the capabilities. Does not mark the request recorded: the
+      * request's own entry is still written by the audit interceptor. */
+    def inertScopeUsed(request: HttpServletRequest, required: String, capabilities: Seq[String], reason: String): Unit = {
+        if (!enabled) return
+        val md = new JsonObject()
+        md.addProperty("required", required)
+        val arr = new com.google.gson.JsonArray()
+        capabilities.foreach(arr.add)
+        md.add("capabilities", arr)
+        md.addProperty("reason", reason)
+        val route = AuditClassifier.classify(ai.datris.auth.RequestPaths.method(request), ai.datris.auth.RequestPaths.path(request), logReads = true)
+        route.foreach { r =>
+            md.addProperty("category", r.category)
+            md.addProperty("action", r.action)
+        }
+        submit(AuditEntry(
+            ts = Instant.now(),
+            actor = AuditActor.resolve(request),
+            category = "security",
+            action = "inert-scope-used",
+            resourceType = route.map(_.resourceType),
+            resourceName = None,
+            outcome = "warning",
+            httpStatus = None,
+            errorMessage = None,
+            request = Some(requestInfo(request)),
+            metadata = Some(redact(md))
+        ))
     }
 
     def requestInfo(request: HttpServletRequest): AuditRequestInfo = {

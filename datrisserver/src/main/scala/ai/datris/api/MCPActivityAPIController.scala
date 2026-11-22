@@ -9,11 +9,25 @@ import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException}
 import ai.datris.util.APIKeyValidator
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 
 import scala.collection.JavaConverters._
+
+object MCPActivityAPIController {
+
+    /** GET and DELETE /mcp/activity: the MCP server's recent calls of every
+      * caller, with arguments and responses, cannot be narrowed to a catalog
+      * or owner, so a limited caller ([[ai.datris.auth.CapabilityCheck.isLimited]]:
+      * a scope-limited API key or a restricted user's session, D4) is refused
+      * (403) before the MCP server is called
+      * (plans/stories/scoped-key-read-routes.md). None for everyone else. */
+    def activityRefusal(request: HttpServletRequest): Option[ResponseEntity[String]] =
+        if (!ai.datris.auth.CapabilityCheck.isLimited(request)) None
+        else Some(PipelineAPIController.installWideRefusal(request, "MCP activity", "mcp:activity"))
+}
 
 @RestController
 @RequestMapping(Array("/api/v1"))
@@ -27,10 +41,12 @@ class MCPActivityAPIController {
     @GetMapping(path = Array("/mcp/activity"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getActivity(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestParam(required = false) since: String
+        @RequestParam(required = false) since: String,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
+            MCPActivityAPIController.activityRefusal(request).foreach(return _)
 
             val sinceParam = Option(since).filter(_.nonEmpty).getOrElse("0")
             val url = mcpBaseUrl + "/activity?since=" + sinceParam
@@ -78,9 +94,10 @@ class MCPActivityAPIController {
       * the cleared state survives page reloads — without this, the buffer replays
       * on the next /activity poll. Live sessions are left untouched. */
     @DeleteMapping(path = Array("/mcp/activity"))
-    def clearActivity(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+    def clearActivity(@RequestHeader(name = "x-api-key", required = false) apiKey: String, request: HttpServletRequest): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
+            MCPActivityAPIController.activityRefusal(request).foreach(return _)
 
             val url = mcpBaseUrl + "/activity"
             val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]

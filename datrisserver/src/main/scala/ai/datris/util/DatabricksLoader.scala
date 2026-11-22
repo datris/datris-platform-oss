@@ -14,6 +14,7 @@ import java.nio.file.{Files, Path}
 import java.sql.Statement
 import java.util.UUID
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.util.Try
 
 /** Databricks (Unity Catalog managed Delta) SQL destination. Mirrors
@@ -29,9 +30,12 @@ import scala.util.Try
  *  Credentials are a Platform-tab secret named by `Database.credentialsSecret`
  *  (resolved by [[CredentialResolver.resolveDatabricks]]); `dbName` is the
  *  Unity Catalog catalog and `warehouse` is the SQL warehouse ID. */
-class DatabricksLoader(jobContext: JobContext) {
+class DatabricksLoader(initialContext: JobContext) {
     private val logger: Logger = LoggerFactory.getLogger(classOf[DatabricksLoader])
-    private val config = jobContext.config
+    // The run's context, narrowed by [[prepareTable]] when a column this
+    // run's transformation added is left out of this table.
+    private var jobContext: JobContext = initialContext
+    private def config: PipelineConfig = jobContext.config
     private val statusUtil = jobContext.statusUtil
     private val db = config.destination.database
 
@@ -40,6 +44,11 @@ class DatabricksLoader(jobContext: JobContext) {
     def process(): Unit = {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
         statusUtil.info("begin", "Loading the data into Databricks catalog: " + db.dbName + ", schema: " + db.schema + ", table: " + db.table)
+
+        // Every load CASTs each column to its type (COPY INTO, MERGE and
+        // INSERT OVERWRITE alike), so a stored type that is not a supported
+        // type fails the run here, before anything is staged or sent.
+        DatabricksLoader.loadProblem(config).foreach(p => throw new DatrisException(p))
 
         if (db.useTransaction)
             statusUtil.info(
@@ -55,8 +64,20 @@ class DatabricksLoader(jobContext: JobContext) {
                 try {
                     dataFile = createStagingFile()
                     var tableCreated = false
-                    if (!db.manageTableManually)
-                        tableCreated = createTableIfUndefined(statement)
+                    val left =
+                        if (!db.manageTableManually) {
+                            val (created, out) = createTableIfUndefined(statement)
+                            tableCreated = created
+                            out
+                        } else manualTable(statement)
+                    jobContext = TransformedColumns.withoutColumns(jobContext, left)
+                    // The staged file's header names the load's columns: write
+                    // it again without the columns left out.
+                    if (left.nonEmpty) {
+                        Try(Files.deleteIfExists(dataFile))
+                        dataFile = null
+                        dataFile = createStagingFile()
+                    }
                     stagedPath = volumeFilePath()
                     putFile(statement, dataFile, stagedPath)
                     loadData(statement, stagedPath)
@@ -129,11 +150,7 @@ class DatabricksLoader(jobContext: JobContext) {
      *  `_json` is PARSE_JSON'd into its VARIANT column). */
     private def copyInsert(statement: Statement, stagedPath: String): Unit = {
         val fields = copyFields()
-        val copy = s"COPY INTO ${qualifiedTable()} " +
-            s"FROM (SELECT ${selectList(fields)} FROM '${sqlLiteral(stagedPath)}') " +
-            "FILEFORMAT = CSV " +
-            s"FORMAT_OPTIONS (${csvFormatOptions()}) " +
-            "COPY_OPTIONS ('mergeSchema' = 'false')"
+        val copy = DatabricksLoader.copySql(db, stagedPath, fields, csvDelimiter())
 
         statusUtil.info("processing", "COPY command: " + copy)
         // execute(), not executeQuery(): the Databricks driver rejects a COPY
@@ -153,25 +170,10 @@ class DatabricksLoader(jobContext: JobContext) {
      *  contract. */
     private def mergeInto(statement: Statement, stagedPath: String): Unit = {
         val fields = copyFields()
-        val keyNames = db.keyFields.asScala.toList
-        val keySet = keyNames.map(_.toLowerCase).toSet
-        val colNames = fields.map(_.name)
-        val nonKey = colNames.filterNot(c => keySet.contains(c.toLowerCase))
+        val merge = DatabricksLoader.mergeSql(db, stagedPath, fields, db.keyFields.asScala.toList, csvDelimiter())
 
-        val onClause = keyNames.map(k => s"t.${ident(k)} = s.${ident(k)}").mkString(" AND ")
-        val insertCols = colNames.map(ident).mkString(", ")
-        val insertVals = colNames.map(c => "s." + ident(c)).mkString(", ")
-
-        val merge = new StringBuilder()
-        merge.append(s"MERGE INTO ${qualifiedTable()} t USING (SELECT ${selectList(fields)} FROM ${readFiles(stagedPath)}) s ON $onClause ")
-        if (nonKey.nonEmpty) {
-            val setClause = nonKey.map(c => s"t.${ident(c)} = s.${ident(c)}").mkString(", ")
-            merge.append(s"WHEN MATCHED THEN UPDATE SET $setClause ")
-        }
-        merge.append(s"WHEN NOT MATCHED THEN INSERT ($insertCols) VALUES ($insertVals)")
-
-        statusUtil.info("processing", "Merge command: " + merge.toString())
-        val merged = statement.executeUpdate(merge.toString())
+        statusUtil.info("processing", "Merge command: " + merge)
+        val merged = statement.executeUpdate(merge)
         statusUtil.info("processing", "Rows merged into target: " + merged)
     }
 
@@ -182,9 +184,7 @@ class DatabricksLoader(jobContext: JobContext) {
     private def insertOverwrite(statement: Statement, stagedPath: String): Unit = {
         statusUtil.info("processing", "'truncateBeforeWrite' is set — replacing table contents atomically (INSERT OVERWRITE)")
         val fields = copyFields()
-        val colList = fields.map(f => ident(f.name)).mkString(", ")
-        val overwrite = s"INSERT OVERWRITE ${qualifiedTable()} ($colList) " +
-            s"SELECT ${selectList(fields)} FROM ${readFiles(stagedPath)}"
+        val overwrite = DatabricksLoader.insertOverwriteSql(db, stagedPath, fields, csvDelimiter())
 
         statusUtil.info("processing", "INSERT OVERWRITE command: " + overwrite)
         val loaded = statement.executeUpdate(overwrite)
@@ -216,40 +216,6 @@ class DatabricksLoader(jobContext: JobContext) {
             "/" + safeName + "_" + UUID.randomUUID().toString + ".csv"
     }
 
-    /** The SELECT list every load path shares: CSV columns (named by the header
-     *  row) CAST to their destination types, `_json` parsed into VARIANT. */
-    private def selectList(fields: Seq[SchemaField]): String =
-        fields.map { f =>
-            val src = DatabricksConnectionUtil.quote(f.name)
-            if (f.name.equalsIgnoreCase("_json")) s"PARSE_JSON($src) AS ${ident(f.name)}"
-            else s"CAST($src AS ${databricksType(f)}) AS ${ident(f.name)}"
-        }.mkString(", ")
-
-    /** read_files() source over the staged CSV — used by MERGE and INSERT
-     *  OVERWRITE (COPY INTO reads the path directly). Same CSV options as
-     *  csvFormatOptions; inference off, all columns arrive as STRING. */
-    /** The CSV parse options every load path shares — COPY INTO renders them
-     *  as FORMAT_OPTIONS pairs, MERGE/INSERT OVERWRITE as read_files named
-     *  arguments — so all three statements parse the staged file identically.
-     *  Values are pre-escaped for a single-quoted SQL context. */
-    private def csvOptions(): Seq[(String, String)] = Seq(
-        "header" -> "true",
-        "delimiter" -> sqlLiteral(csvDelimiter()),
-        "quote" -> ("" + '"'),
-        "escape" -> ("" + '"'),
-        "nullValue" -> "",
-        "multiLine" -> "true",
-        "inferSchema" -> "false"
-    )
-
-    private def readFiles(stagedPath: String): String =
-        "read_files('" + sqlLiteral(stagedPath) + "', format => 'csv', " +
-            csvOptions().map { case (k, v) => k + " => '" + v + "'" }.mkString(", ") +
-            ", schemaEvolutionMode => 'none')"
-
-    private def csvFormatOptions(): String =
-        csvOptions().map { case (k, v) => "'" + k + "' = '" + v + "'" }.mkString(", ")
-
     /** Destination fields actually present in the load (handles dropped columns),
      *  in destination-schema order — matches the CSV column order. */
     private def copyFields(): Seq[SchemaField] = {
@@ -263,8 +229,10 @@ class DatabricksLoader(jobContext: JobContext) {
     /** Returns true when this call created the table (known only for pipelines
      *  that opted into the Unity Catalog push — the existence probe is skipped
      *  otherwise, so their DDL path is unchanged). A freshly created table has
-     *  none of the metadata a previous sync applied, so the sync re-applies it. */
-    private def createTableIfUndefined(statement: Statement): Boolean = {
+     *  none of the metadata a previous sync applied, so the sync re-applies it.
+     *  Also returns the columns this run's transformation added that are left
+     *  out of this table ([[TransformedColumns.evolve]]), lower-cased. */
+    private def createTableIfUndefined(statement: Statement): (Boolean, Set[String]) = {
         if (db.schema != null && db.schema.nonEmpty)
             statement.execute("CREATE SCHEMA IF NOT EXISTS " + schemaRef())
 
@@ -273,32 +241,14 @@ class DatabricksLoader(jobContext: JobContext) {
         // installs pre-create the volume along with the table.
         statement.execute("CREATE VOLUME IF NOT EXISTS " + schemaRef() + "." + stagingVolumeName)
 
-        val keySet: Set[String] =
-            if (db.keyFields != null) db.keyFields.asScala.map(_.toLowerCase).toSet else Set.empty
-
         // Effective (block or install default): a defaulted pipeline needs the probe too.
         val ucSync = UnityCatalogSync.effective(config, UnityCatalogSync.defaultEnabledFromEnv).isDefined
         val tableExisted = !ucSync || UnityCatalogMetadataSync.probeTableExisted(statusUtil)(tableExists(statement))
 
-        val sql = new StringBuilder()
-        sql.append("CREATE TABLE IF NOT EXISTS " + qualifiedTable() + " (")
-        config.destination.schemaProperties.fields.forEach(field => {
-            // Unity Catalog PRIMARY KEY columns must be NOT NULL (the PK itself
-            // is informational/unenforced, like Snowflake's).
-            val notNull = if (keySet.contains(field.name.toLowerCase)) " NOT NULL" else ""
-            sql.append(ident(field.name) + " " + databricksType(field) + notNull + ", ")
-        })
-        sql.setLength(sql.length - 2)
+        val sql = DatabricksLoader.createTableSql(db, config.destination.schemaProperties.fields.asScala.toList)
 
-        if (db.keyFields != null && !db.keyFields.isEmpty) {
-            val keys = db.keyFields.asScala.map(ident).mkString(", ")
-            val pkName = "pk_" + effectiveName(db.table).replaceAll("[^a-z0-9_]", "_")
-            sql.append(", CONSTRAINT " + pkName + " PRIMARY KEY (" + keys + ")")
-        }
-        sql.append(")")
-
-        statusUtil.info("processing", "Databricks create table statement: " + sql.toString())
-        statement.execute(sql.toString())
+        statusUtil.info("processing", "Databricks create table statement: " + sql)
+        statement.execute(sql)
 
         // Additive schema evolution: add any new columns the table doesn't have
         // yet. Unity Catalog stores object names lowercase regardless of quoting,
@@ -314,17 +264,50 @@ class DatabricksLoader(jobContext: JobContext) {
             rs.close()
         }
 
-        config.destination.schemaProperties.fields.forEach(field => {
-            if (!existing.contains(field.name.toLowerCase)) {
-                // No IF NOT EXISTS on ADD COLUMN in Databricks SQL — the
-                // information_schema pre-check above is the guard.
-                val alter = s"ALTER TABLE ${qualifiedTable()} ADD COLUMN ${ident(field.name)} ${databricksType(field)}"
-                statusUtil.info("processing", "Schema evolution: " + alter)
-                statement.execute(alter)
-            }
-        })
-        !tableExisted
+        // No IF NOT EXISTS on ADD COLUMN in Databricks SQL — the
+        // information_schema pre-check above is the guard.
+        val left = TransformedColumns.evolve(
+            jobContext,
+            destinationLabel,
+            TransformedColumns.Databricks,
+            DatabricksLoader.addPlan(db, config.destination.schemaProperties.fields.asScala.toList, existing.toSet),
+            existing.toSet,
+            alter => statement.execute(alter),
+            alter => TransformedColumns.attempt(statement.getConnection, savepoint = false)(statement.execute(alter)),
+            () => readColumnTypes(statement)
+        )
+        (!tableExisted, left)
     }
+
+    /** The context the load uses: the run's, less any column this run's
+      * transformation added that [[prepareTable]] left out of this table. */
+    private[util] def loadContext: JobContext = jobContext
+
+    /** The table step `process()` runs: create or extend the table, or check
+      * a manually managed one; then leave out of this load every column this
+      * run's transformation added that the table cannot take. Returns those
+      * names, lower-cased. */
+    private[util] def prepareTable(statement: Statement): Set[String] = {
+        val left = if (!db.manageTableManually) createTableIfUndefined(statement)._2 else manualTable(statement)
+        jobContext = TransformedColumns.withoutColumns(jobContext, left)
+        left
+    }
+
+    private def manualTable(statement: Statement): Set[String] =
+        TransformedColumns.manualTable(jobContext, destinationLabel, TransformedColumns.Databricks, () => readColumnTypes(statement))
+
+    private def destinationLabel: String = "the Databricks table " + db.dbName + "." + db.schema + "." + db.table
+
+    /** The table's columns with their types by lower-cased name. */
+    private def readColumnTypes(statement: Statement): Either[Throwable, Seq[TransformedColumns.StoreColumn]] =
+        TransformedColumns.attemptRead(statement.getConnection, savepoint = false) {
+            val rs = statement.executeQuery(DatabricksLoader.columnTypesSql(db))
+            try {
+                val out = ListBuffer[TransformedColumns.StoreColumn]()
+                while (rs.next()) out += TransformedColumns.StoreColumn(rs.getString(1), rs.getString(2))
+                out.toList
+            } finally rs.close()
+        }
 
     private def tableExists(statement: Statement): Boolean = {
         val rs = statement.executeQuery(
@@ -333,26 +316,6 @@ class DatabricksLoader(jobContext: JobContext) {
         )
         try rs.next()
         finally rs.close()
-    }
-
-    /** Platform type -> Delta SQL DDL type. Mirrors SnowflakeLoader.snowflakeType;
-     *  `_json` -> VARIANT is the analog of Snowflake's VARIANT. Unknown types pass
-     *  through (e.g. decimal(p,s), which Delta accepts). */
-    private def databricksType(field: SchemaField): String = {
-        if (field.name.equalsIgnoreCase("_json")) "VARIANT"
-        else if (field.name.equalsIgnoreCase("_xml")) "STRING"
-        else field.`type`.toLowerCase match {
-            case "string" => "STRING"
-            case "int" | "integer" | "tinyint" |
-                "smallint" => "INT"
-            case "bigint" => "BIGINT"
-            case "float" => "FLOAT"
-            case "double" => "DOUBLE"
-            case "boolean" => "BOOLEAN"
-            case "date" => "DATE"
-            case "timestamp" => "TIMESTAMP"
-            case _ => field.`type`
-        }
     }
 
     private def csvDelimiter(): String = CsvAttributes.delimiterOf(config)
@@ -395,6 +358,162 @@ class DatabricksLoader(jobContext: JobContext) {
 }
 
 object DatabricksLoader {
+    private def ident(identifier: String): String = DatabricksConnectionUtil.ident(identifier)
+    private def sqlLiteral(value: String): String = DatabricksConnectionUtil.sqlLiteral(value)
+
+    // ---- Load statements. Pure, no I/O. Every column, key and table name
+    // goes through DatabricksConnectionUtil.ident / quote; column type text
+    // comes from databricksType.
+
+    /** `CREATE TABLE IF NOT EXISTS <cat.schema.table> (<col> <type>[ NOT NULL], ...[, CONSTRAINT pk_<table> PRIMARY KEY (<keys>)])`.
+      * Unity Catalog PRIMARY KEY columns must be NOT NULL (the PK itself is
+      * informational/unenforced, like Snowflake's). */
+    def createTableSql(db: Database, fields: Seq[SchemaField]): String = {
+        val keySet: Set[String] =
+            if (db.keyFields != null) db.keyFields.asScala.map(_.toLowerCase).toSet else Set.empty
+        val sql = new StringBuilder()
+        sql.append("CREATE TABLE IF NOT EXISTS " + DatabricksConnectionUtil.qualifiedTable(db) + " (")
+        sql.append(fields.map { field =>
+            val notNull = if (keySet.contains(field.name.toLowerCase)) " NOT NULL" else ""
+            ident(field.name) + " " + databricksType(field) + notNull
+        }.mkString(", "))
+        if (db.keyFields != null && !db.keyFields.isEmpty) {
+            val keys = db.keyFields.asScala.map(ident).mkString(", ")
+            val pkName = "pk_" + DatabricksConnectionUtil.effectiveName(db.table).replaceAll("[^a-z0-9_]", "_")
+            sql.append(", CONSTRAINT " + pkName + " PRIMARY KEY (" + keys + ")")
+        }
+        sql.append(")")
+        sql.toString()
+    }
+
+    /** Each field the table lacks (lower-cased `existing`), in field order,
+      * with its [[addColumnSql]]. */
+    def addPlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Seq[(SchemaField, String)] =
+        fields.filter(f => !existing.contains(f.name.toLowerCase)).map(f => f -> addColumnSql(db, f))
+
+    /** The table's column names and types, by position, matched as the
+      * loader's column read is (Unity Catalog stores names lowercase). Used
+      * to tell whether a manually managed table has a column; an existing
+      * column of an added column's name is never loaded on Databricks
+      * (TransformedColumns.refusal). */
+    def columnTypesSql(db: Database): String =
+        s"""SELECT column_name, data_type FROM ${ident(db.dbName)}.information_schema.columns
+           |WHERE lower(table_schema) = '${sqlLiteral(DatabricksConnectionUtil.effectiveName(db.schema))}' AND lower(table_name) = '${sqlLiteral(
+                DatabricksConnectionUtil.effectiveName(db.table)
+            )}'""".stripMargin
+
+    /** `ALTER TABLE <cat.schema.table> ADD COLUMN <col> <type>`. No IF NOT
+      * EXISTS on ADD COLUMN in Databricks SQL; the loader's information_schema
+      * pre-check is the guard. */
+    def addColumnSql(db: Database, field: SchemaField): String =
+        s"ALTER TABLE ${DatabricksConnectionUtil.qualifiedTable(db)} ADD COLUMN ${ident(field.name)} ${databricksType(field)}"
+
+    /** The SELECT list every load path shares: CSV columns (named by the header
+     *  row) CAST to their destination types, `_json` parsed into VARIANT. */
+    def selectList(fields: Seq[SchemaField]): String =
+        fields.map { f =>
+            val src = DatabricksConnectionUtil.quote(f.name)
+            if (f.name.equalsIgnoreCase("_json")) s"PARSE_JSON($src) AS ${ident(f.name)}"
+            else s"CAST($src AS ${databricksType(f)}) AS ${ident(f.name)}"
+        }.mkString(", ")
+
+    /** read_files() source over the staged CSV — used by MERGE and INSERT
+     *  OVERWRITE (COPY INTO reads the path directly). Same CSV options as
+     *  csvFormatOptions; inference off, all columns arrive as STRING. */
+    /** The CSV parse options every load path shares — COPY INTO renders them
+     *  as FORMAT_OPTIONS pairs, MERGE/INSERT OVERWRITE as read_files named
+     *  arguments — so all three statements parse the staged file identically.
+     *  Values are pre-escaped for a single-quoted SQL context. */
+    private def csvOptions(delimiter: String): Seq[(String, String)] = Seq(
+        "header" -> "true",
+        "delimiter" -> sqlLiteral(delimiter),
+        "quote" -> ("" + '"'),
+        "escape" -> ("" + '"'),
+        "nullValue" -> "",
+        "multiLine" -> "true",
+        "inferSchema" -> "false"
+    )
+
+    private def readFiles(stagedPath: String, delimiter: String): String =
+        "read_files('" + sqlLiteral(stagedPath) + "', format => 'csv', " +
+            csvOptions(delimiter).map { case (k, v) => k + " => '" + v + "'" }.mkString(", ") +
+            ", schemaEvolutionMode => 'none')"
+
+    private def csvFormatOptions(delimiter: String): String =
+        csvOptions(delimiter).map { case (k, v) => "'" + k + "' = '" + v + "'" }.mkString(", ")
+
+    /** Insert path: COPY INTO the target from the staged CSV, with an
+      * explicit SELECT-transform so every column is CAST to the destination
+      * type (and `_json` is PARSE_JSON'd into its VARIANT column). */
+    def copySql(db: Database, stagedPath: String, fields: Seq[SchemaField], delimiter: String): String =
+        s"COPY INTO ${DatabricksConnectionUtil.qualifiedTable(db)} " +
+            s"FROM (SELECT ${selectList(fields)} FROM '${sqlLiteral(stagedPath)}') " +
+            "FILEFORMAT = CSV " +
+            s"FORMAT_OPTIONS (${csvFormatOptions(delimiter)}) " +
+            "COPY_OPTIONS ('mergeSchema' = 'false')"
+
+    /** Upsert path: MERGE straight from the staged CSV (via read_files).
+      * Non-key columns (compared case-insensitively) are fully overwritten. */
+    def mergeSql(db: Database, stagedPath: String, fields: Seq[SchemaField], keyFields: Seq[String], delimiter: String): String = {
+        val keySet = keyFields.map(_.toLowerCase).toSet
+        val colNames = fields.map(_.name)
+        val nonKey = colNames.filterNot(c => keySet.contains(c.toLowerCase))
+
+        val onClause = keyFields.map(k => s"t.${ident(k)} = s.${ident(k)}").mkString(" AND ")
+        val insertCols = colNames.map(ident).mkString(", ")
+        val insertVals = colNames.map(c => "s." + ident(c)).mkString(", ")
+
+        val merge = new StringBuilder()
+        merge.append(
+            s"MERGE INTO ${DatabricksConnectionUtil.qualifiedTable(db)} t USING (SELECT ${selectList(fields)} FROM ${readFiles(stagedPath, delimiter)}) s ON $onClause "
+        )
+        if (nonKey.nonEmpty) {
+            val setClause = nonKey.map(c => s"t.${ident(c)} = s.${ident(c)}").mkString(", ")
+            merge.append(s"WHEN MATCHED THEN UPDATE SET $setClause ")
+        }
+        merge.append(s"WHEN NOT MATCHED THEN INSERT ($insertCols) VALUES ($insertVals)")
+        merge.toString()
+    }
+
+    /** Truncate-and-load path: INSERT OVERWRITE replaces the table contents
+      * in one atomic Delta commit. */
+    def insertOverwriteSql(db: Database, stagedPath: String, fields: Seq[SchemaField], delimiter: String): String = {
+        val colList = fields.map(f => ident(f.name)).mkString(", ")
+        s"INSERT OVERWRITE ${DatabricksConnectionUtil.qualifiedTable(db)} ($colList) " +
+            s"SELECT ${selectList(fields)} FROM ${readFiles(stagedPath, delimiter)}"
+    }
+
+    /** The up-front load decision: [[ColumnTypeText.loadProblem]] over every
+      * destination field with no existing columns, whatever
+      * `manageTableManually` says, because every load statement CASTs each
+      * column to its type. */
+    def loadProblem(config: PipelineConfig): Option[String] =
+        ColumnTypeText.loadProblem(config.destination.schemaProperties.fields.asScala.toList, Set.empty)
+
+    /** Platform type -> Delta SQL DDL type. Mirrors SnowflakeLoader.snowflakeType;
+     *  `_json` -> VARIANT is the analog of Snowflake's VARIANT. Any other type
+     *  is passed as written only when it has a [[ColumnTypeText.loadText]] (sent as that text) (e.g.
+     *  decimal(p,s), which Delta accepts); every other type text, null
+     *  included, is a `DatrisException`. */
+    private[util] def databricksType(field: SchemaField): String = {
+        if (field.name.equalsIgnoreCase("_json")) "VARIANT"
+        else if (field.name.equalsIgnoreCase("_xml")) "STRING"
+        else {
+            val t = ColumnTypeText.loadTextOrThrow(field)
+            t.toLowerCase(java.util.Locale.ROOT) match {
+                case "string" => "STRING"
+                case "int" | "integer" | "tinyint" |
+                    "smallint" => "INT"
+                case "bigint" => "BIGINT"
+                case "float" => "FLOAT"
+                case "double" => "DOUBLE"
+                case "boolean" => "BOOLEAN"
+                case "date" => "DATE"
+                case "timestamp" => "TIMESTAMP"
+                case _ => t
+            }
+        }
+    }
 
     /** Row count of a COPY INTO issued with `execute()`. With a result set,
      *  sum `num_inserted_rows` (else `num_affected_rows`; 0 when neither column

@@ -96,16 +96,8 @@ class TapServerManagedSecretSpec extends AnyFunSuite {
         )
     }
 
-    test("the restore endpoint applies the tap secret rule before saving") {
-        // Wiring pin: restoreTapVersion consults tapRestoreProblem ahead of the
-        // TapCronGate / writeVersioned path.
-        val rel = "src/main/scala/ai/datris/api/EntityVersionAPIController.scala"
-        val file = Seq(java.nio.file.Paths.get(rel), java.nio.file.Paths.get("datrisserver", rel))
-            .find(java.nio.file.Files.isRegularFile(_)).getOrElse(fail("EntityVersionAPIController.scala not found"))
-        val src = new String(java.nio.file.Files.readAllBytes(file), java.nio.charset.StandardCharsets.UTF_8)
-        val restore = src.substring(src.indexOf("def restoreTapVersion"))
-        val check = restore.indexOf("tapRestoreProblem")
-        val write = restore.indexOf("TapConfigIO.writeVersioned")
-        assert(check > 0 && write > check, "tapRestoreProblem must run before writeVersioned")
-    }
+    // The wiring pin "the restore endpoint applies the tap secret rule before
+    // saving" was replaced by TapVersionRestoreSpec's "the restore endpoint
+    // saves through the tap save path": the restore now saves through
+    // POST /tap's path, whose secret rule (tapSecretSaveProblem) runs first.
 }

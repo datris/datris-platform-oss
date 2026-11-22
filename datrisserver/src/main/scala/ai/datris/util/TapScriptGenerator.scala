@@ -107,6 +107,7 @@ object TapScriptGenerator {
           |- `-1` tells the server to return every matching row. It is the correct value for real cron/manual runs.
           |- Omitting `limit` makes the server apply a preview default (20 for Mongo, 100 for Postgres) and the tap will silently read a tiny slice. Do not rely on the default.
           |- There is no pagination on these endpoints. A single call returns the full result set; design the rest of the script accordingly (if a source is very large, `yield` as you go rather than accumulating every intermediate value).
+          |- A single PostgreSQL query is limited to five minutes, also with `"limit": -1`. Page a large read across several queries (for example by key range) instead of reading it in one.
           |
           |Test-sample environment variable `DATRIS_TAP_TEST_LIMIT`:
           |- When the user enables "Limit test sample" in the Create Tap test UI, the runner injects `DATRIS_TAP_TEST_LIMIT` (an integer string, e.g. "20") into the script process. Cron and manual runs never set this variable.

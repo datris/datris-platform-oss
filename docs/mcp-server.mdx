@@ -34,7 +34,7 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 | `list_pipeline_versions` | List a pipeline's definition-change history (newest first): `version`, `createdAt`, `createdBy`, `changeNote`. An **empty** result means it hasn't been edited since versioning was enabled — not that it has no version; the current number is the `version` field on `list_pipelines` / `get_pipeline` (≥ 1 for every pipeline) |
 | `get_pipeline_version` | View one historical snapshot of a pipeline's definition — the full config as it was at that version. Read-only |
 | `diff_pipeline_versions` | Compare two pipeline versions — server-computed field-by-field config diff. `version` is the selected/newer snapshot, `against` the baseline |
-| `restore_pipeline_version` | Roll a pipeline back (or forward) to a prior version. **Append-only**: writes the chosen snapshot as a new latest version; nothing is overwritten. "Rolling forward" is the same call with a higher version |
+| `restore_pipeline_version` | Roll a pipeline back (or forward) to a prior version. **Append-only**: writes the chosen snapshot as a new latest version; nothing is overwritten. "Rolling forward" is the same call with a higher version. Checked like a save of that version: a version the platform would not accept on save today is refused with the reason and nothing is written. The pipeline keeps its current name, catalog and owner |
 | `list_script_versions` | List the version history of the script a pipeline runs for its AI data-quality rule or AI transformation (`kind`), newest first: `version`, `createdAt`, `createdBy`, `changeNote`, `origin`, `model`, `commitSha`, `fingerprintMatchesCurrent`, `isLive`. Read-only |
 | `get_script_version` | View one script version, including the full script text. Read-only |
 | `diff_script_versions` | Compare two script versions — server-computed line diff (`ctx` / `add` / `del`). `version` is the selected/newer one, `against` the baseline |
@@ -133,7 +133,7 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 | `list_tap_versions` | List a tap's definition-change history (newest first): `version`, `createdAt`, `createdBy`, `changeNote`. The platform snapshots a tap's config + script on every create/update. An **empty** result means the tap hasn't been edited since versioning was enabled — not that it has no version; the current number is the `version` field on `list_taps` / `get_tap` (≥ 1 for every tap) |
 | `get_tap_version` | View one historical snapshot of a tap's definition — the full config and the pinned Python script as they were at that version. Read-only |
 | `diff_tap_versions` | Compare two tap versions — server-computed field-by-field config diff plus a line-level script diff. `version` is the selected/newer snapshot, `against` the baseline |
-| `restore_tap_version` | Roll a tap back (or forward) to a prior version. **Append-only**: writes the chosen snapshot as a new latest version (config + that version's script); nothing is overwritten. "Rolling forward" is the same call with a higher version. Does **not** run the tap |
+| `restore_tap_version` | Roll a tap back (or forward) to a prior version. **Append-only**: writes the chosen snapshot as a new latest version (config + that version's script); nothing is overwritten. "Rolling forward" is the same call with a higher version. Does **not** run the tap. Checked like a save of that version: a version the platform would not accept on save today is refused with the reason and nothing is written. Never changes the tap's catalog or enabled state |
 
 For a document tap, `create_tap` **requires** the `target_pipeline` to have an `unstructuredAttributes` source and a vector-store destination (qdrant, pgvector, weaviate, milvus, or chroma). The server rejects mismatched pairings with HTTP 400.
 
@@ -168,7 +168,7 @@ Every tool that changes platform state also accepts an optional `reason` — one
 
 | Tool | Description |
 |------|-------------|
-| `find_data` | Find datasets by meaning: ranks the pipelines the key can read against a natural-language query and returns location, [freshness](/provenance), provenance handles, lineage and a pre-filled `howToQuery` hint naming the existing query/search tool. Discovery only — the query call stays the agent's own. With `include_unity_catalog`, also searches the Unity Catalog tables visible to the Databricks secrets the key can read. See [Unity Catalog](/destinations/unity-catalog) |
+| `find_data` | Find datasets by meaning: ranks the pipelines the key can read against a natural-language query and returns location, [freshness](/provenance), provenance handles, lineage and a pre-filled `howToQuery` hint naming the existing query/search tool. Discovery only — the query call stays the agent's own. With `include_unity_catalog`, also searches the Unity Catalog tables visible to the Databricks secrets the key can read (not for a key or user limited to a catalog or to what it created). See [Unity Catalog](/destinations/unity-catalog) |
 | `get_provenance` | Resolve a stamped `_datris_run_id` back to its origin: pipeline run, tap run, script commit, config version and declared source. See [Provenance](/provenance) |
 | `get_lineage` | Traverse the lineage graph from one node — upstream, downstream or both, to a bounded depth — with freshness, optionally the most recent recorded runs (what each read and wrote, per destination), and optionally column-level lineage for a pipeline or dataset. Use it for impact analysis before changing or deleting something. See [Lineage](/provenance#lineage--freshness) |
 | `browse_unity_catalog` | Browse what a Databricks Platform secret can see in Unity Catalog, one level per call: catalogs, schemas, tables (marking tables a Datris pipeline loaded via the `datris_pipeline` tag), then columns and tags. No pipeline needed. See [Unity Catalog](/destinations/unity-catalog) |
@@ -228,6 +228,16 @@ Each agent should connect with its own labeled key (e.g. `claude-desktop`, `curs
 4. Copy the value once at issue time and paste it into the agent's MCP client config
 
 The platform's [capability framework](/api-keys#the-capability-model) enforces what each key is allowed to do — a `read-only` agent can't `create_tap` even if its system prompt tells it to try. See [API Keys](/api-keys#issuing-keys-for-cli-mcp-and-other-clients) for the full per-client pattern.
+
+### Tools for a key limited to a catalog or to what it created
+
+A key that carries `catalog=` or `owner=` on a pipeline or tap capability, without unscoped read on pipelines or on taps, sees only what its scope covers (see [API Keys](/api-keys#keys-limited-to-a-catalog-or-to-what-they-created)). Tools that read across the whole installation cannot be narrowed that way, so they leave its tool list even when the key holds their capability, and calling them directly is refused with `403`:
+
+- the table and collection listings: `list_postgres_databases`, `list_postgres_schemas`, `list_postgres_tables`, `list_postgres_columns`, `list_mongodb_databases`, `list_mongodb_collections`, `list_qdrant_collections`, `list_weaviate_classes`, `list_milvus_collections`, `list_chroma_collections`, `list_pgvector_collections`
+- `browse_unity_catalog`
+- the free-form queries `query_postgres`, `query_mongodb` and `query_natural`
+
+`find_data` stays, and returns only pipelines in the key's scope; with `include_unity_catalog` it adds no Unity Catalog tables for such a key. `query_snowflake`, `query_sqlserver` and `query_databricks` stay for previewing a pipeline in scope, but refuse a custom `sql`. The in-platform chats offer the same tools when they run with that key. The same tools are hidden from users limited to catalogs ([Catalog access](/user-auth#catalog-access)).
 
 ## Environment label
 

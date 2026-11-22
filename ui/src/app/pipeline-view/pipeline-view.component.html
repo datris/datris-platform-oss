@@ -38,6 +38,19 @@
     <pre>{{ error }}</pre>
   </div>
 
+  <div class="delete-notices" *ngIf="deleteNotices.length > 0">
+    <div class="delete-notices-head">
+      <span class="material-icons">info</span>
+      <span>Deleting the data: {{ deleteNotices.length }} warning{{ deleteNotices.length !== 1 ? 's' : '' }} to review.</span>
+      <button class="delete-notices-close" (click)="dismissDeleteNotices()" title="Dismiss">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <ul class="delete-notices-list">
+      <li *ngFor="let w of deleteNotices">{{ w }}</li>
+    </ul>
+  </div>
+
   <!-- Destination-typing banner: this dataset is stored all-text on a typable
        destination. Quiet by design — a line, not a modal. -->
   <div class="text-types-banner" *ngIf="isAllText()">

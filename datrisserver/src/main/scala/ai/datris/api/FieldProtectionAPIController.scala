@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.AuditLog
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException}
-import ai.datris.model.{DatrisEnvironment, DatrisException, ProtectionPolicy, SchemaField}
+import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineConfig, ProtectionPolicy, SchemaField}
 import ai.datris.util.{APIKeyValidator, CatalogOps, FieldCipher, FieldProtectionAdvisor, FieldProtectionKey, PipelineConfigIO, ProtectionPreset}
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonNull, JsonObject}
@@ -26,7 +26,16 @@ import scala.collection.JavaConverters._
   * REST only, gated by `protect:reveal` / `protect:admin` in CapabilityRoutes,
   * never exposed as an MCP tool. Reveal is stateless (the caller supplies the
   * ciphertext it read from the destination) and always audited; neither a
-  * value nor a ciphertext is ever logged or written to audit metadata. */
+  * value nor a ciphertext is ever logged or written to audit metadata.
+  *
+  * Scope (plans/stories/field-protection-key-scope.md): reveal, suggest and
+  * preset on a named pipeline run [[FieldProtectionAPIController.targetRefusal]]
+  * on the stored config before any field, schema or key is touched. A key
+  * limited to a catalog or to what it created may act only on a pipeline it
+  * may read in that scope, and a scoped `protect:reveal:catalog=X` /
+  * `:owner=self` reveals only in a pipeline that scope covers. A reveal-only
+  * key with no pipeline capability, and an unscoped `protect:reveal`, stay
+  * install-wide. Rotation (`protect:admin`) takes no scope. */
 @RestController
 @RequestMapping(Array("/api/v1"))
 class FieldProtectionAPIController {
@@ -61,7 +70,7 @@ class FieldProtectionAPIController {
             val (fields, keyFields, destTypes) = FieldProtectionAPIController.resolveFields(
                 pipeline,
                 Option(body).map(_.fields).orNull,
-                FieldProtectionAPIController.hideFromRestricted(request, pipeline)
+                config => FieldProtectionAPIController.targetRefusal(request, pipeline, config, None)
             )
 
             md = new JsonObject()
@@ -77,6 +86,11 @@ class FieldProtectionAPIController {
             audit("success", 200, null)
             new ResponseEntity[String](FieldProtectionAdvisor.toJson(suggestion), HttpStatus.OK)
         } catch {
+            // A scoped key outside its scope: 403 before the field list is read.
+            case e: CapabilityDeniedException =>
+                logger.warn("Field protection suggest refused: capability denied")
+                audit("failure", 403, e.getMessage)
+                PipelineAPIController.capabilityDenied(e)
             case e: DatrisException =>
                 logger.warn("Field protection suggest refused: " + e.getMessage)
                 audit("failure", 400, e.getMessage)
@@ -121,7 +135,7 @@ class FieldProtectionAPIController {
                 pipeline,
                 Option(body).map(_.fields).orNull,
                 config => {
-                    FieldProtectionAPIController.hideFromRestricted(request, pipeline)(config)
+                    FieldProtectionAPIController.targetRefusal(request, pipeline, config, None)
                     ProtectionPreset.proposalRefusal(preset, config).foreach(m => throw new DatrisException(m))
                 }
             )
@@ -134,6 +148,9 @@ class FieldProtectionAPIController {
             val current: Map[String, ProtectionPolicy] = input.map(f => f.name -> f.protect).toMap
             new ResponseEntity[String](ProtectionPreset.toJson(proposal, current), HttpStatus.OK)
         } catch {
+            case e: CapabilityDeniedException =>
+                logger.warn("Field protection preset refused: capability denied")
+                PipelineAPIController.capabilityDenied(e)
             case e: DatrisException =>
                 logger.warn("Field protection preset refused: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
@@ -186,6 +203,10 @@ class FieldProtectionAPIController {
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
+            // A scoped key reveals only in a pipeline it may read, and a scoped
+            // reveal capability only inside its scope, before the field, the
+            // schema or any key is looked at.
+            FieldProtectionAPIController.targetRefusal(request, pipeline, config, Some("reveal"))
             val sp = if (config.source != null) config.source.schemaProperties else null
             val sourceField: SchemaField =
                 Option(sp).flatMap(s => Option(s.fields)).map(_.asScala.toList).getOrElse(Nil)
@@ -231,7 +252,7 @@ class FieldProtectionAPIController {
             new ResponseEntity[String](new Gson().toJson(response), HttpStatus.OK)
         } catch {
             case e: CapabilityDeniedException =>
-                FieldProtectionAPIController.denied(request, e, "reveal")
+                FieldProtectionAPIController.denied(request, e, "reveal", pipeline, fieldName)
             case e: DatrisException if e.getMessage != null && e.getMessage.startsWith("Field protection: could not read") =>
                 logger.error("Field protection reveal: " + e.getMessage)
                 audit("failure", 500, 0, 0, e.getMessage)
@@ -268,7 +289,7 @@ class FieldProtectionAPIController {
             new ResponseEntity[String](new Gson().toJson(response), HttpStatus.OK)
         } catch {
             case e: CapabilityDeniedException =>
-                FieldProtectionAPIController.denied(request, e, "admin")
+                FieldProtectionAPIController.denied(request, e, "admin", null, null)
             case e: DatrisException =>
                 logger.warn("Field protection key rotation refused: " + e.getMessage)
                 try AuditLog.record(request, "key", "rotate", "field-protection", null, "failure", 400, null, e.getMessage)
@@ -285,22 +306,60 @@ class FieldProtectionAPIController {
 
 object FieldProtectionAPIController {
 
-    /** `checkStored` for a named pipeline: a restricted user's session gets
-      * the same error as a missing pipeline when the stored config is outside
-      * its catalog grants, so the field list and protection policy never
-      * leak. No-op for everyone else. */
-    private[api] def hideFromRestricted(request: HttpServletRequest, pipeline: String): ai.datris.model.PipelineConfig => Unit =
-        config =>
-            if (
-                ai.datris.auth.CapabilityCheck.isRestrictedSession(request) &&
-                !ai.datris.auth.CapabilityCheck.grants(
-                    request,
-                    "pipeline",
-                    "read",
-                    ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
-                )
-            )
+    /** The refusal for a named pipeline whose stored config is `config`, run
+      * right after the config is read and before any field, schema or key is
+      * touched (reveal, suggest, preset;
+      * plans/stories/field-protection-key-scope.md). Context =
+      * `CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)`.
+      *   1. Pipeline read: a restricted user's session outside its catalog
+      *      grants gets the same `DatrisException` as a missing pipeline (so
+      *      the field list and protection policy never leak); an API key
+      *      whose scope refuses `pipeline:read` on it
+      *      ([[CapabilityCheck.assertKeyScope]]) gets a
+      *      [[CapabilityDeniedException]] in the shared wording.
+      *   2. Then, for `protectAction = Some(a)`, `protect:<a>` on the same
+      *      context ([[CapabilityCheck.assertScope]]): a scoped
+      *      `protect:reveal:catalog=X` / `:owner=self` holds only inside its
+      *      scope; an unscoped one (and full access) everywhere.
+      *      When no unscoped capability grants reveal (every reveal capability
+      *      the key holds is scoped), `pipeline:read` on the same context is
+      *      required first, through the same shared refusal, so a scoped
+      *      reveal-only key reveals nothing until it may also read the
+      *      pipeline in scope (owner decision, review finding 1).
+      * No-op for no identity, full access and callers neither check refuses.
+      * An unscoped reveal-only key with no pipeline capability is not limited
+      * for pipelines (`CallerVisibility.limitedPipelines`), so only the
+      * (always granted) reveal check applies to it (D2). */
+    private[api] def targetRefusal(
+        request: HttpServletRequest,
+        pipeline: String,
+        config: PipelineConfig,
+        protectAction: Option[String]
+    ): Unit = {
+        val ctx = CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
+        if (CapabilityCheck.isRestrictedSession(request)) {
+            if (!CapabilityCheck.grants(request, "pipeline", "read", ctx))
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
+        } else CapabilityCheck.assertKeyScope(request, "pipeline", "read", ctx)
+        protectAction.foreach { a =>
+            // Owner decision on review finding 1: a reveal granted only by a
+            // scoped capability also needs pipeline read on the same pipeline
+            // ("may act and may read"). An unscoped reveal keeps D2.
+            if (a == "reveal" && !CapabilityCheck.isRestrictedSession(request) && !holdsUnscopedReveal(request))
+                CapabilityCheck.assertScope(request, "pipeline", "read", ctx)
+            CapabilityCheck.assertScope(request, "protect", a, ctx)
+        }
+    }
+
+    /** True when reveal is granted by an unscoped capability (`protect:reveal`,
+      * `protect:*`, `*:reveal`, `*:*`) among the key's granting capabilities,
+      * a legacy key, or no resolved key. Only then is reveal not tied to
+      * pipeline read (D2); a key whose reveal capabilities are all scoped is. */
+    private def holdsUnscopedReveal(request: HttpServletRequest): Boolean =
+        CapabilityCheck.resolvedKey(request) match {
+            case None => true
+            case Some(rk) => rk.isLegacyFullAccess || rk.effectiveCapabilities.exists(c => c.scope.isEmpty && c.matchesResourceAction("protect", "reveal"))
+        }
 
     /** The field list a suggest or preset call works on, with the pipeline's
       * constraints: the stored source schema when `pipeline` is named, else
@@ -371,9 +430,36 @@ object FieldProtectionAPIController {
       * admin rotates its key, so the controller enforces `protect:<action>`
       * itself and CAPABILITY_ENFORCEMENT=log-only never opens either route.
       * Runs before anything is read. A no-op when the request carries no
-      * resolved key (the platform-wide auth-disabled posture). */
+      * resolved key (the platform-wide auth-disabled posture).
+      *
+      * `reveal` is scope-agnostic here: a key holding a scoped
+      * `protect:reveal:catalog=X` passes, and its scope is held against the
+      * named pipeline by [[targetRefusal]]. Only an unscoped capability or an
+      * explicit `protect:reveal:<scope>` counts; a scoped wildcard
+      * (`*:*:catalog=X`, `protect:*:catalog=X`) never grants reveal
+      * (`Capability.grants`), in either DATRIS_KEY_INERT_SCOPES mode. A key
+      * with none is refused through [[CapabilityCheck.assertScope]] with an
+      * empty context, which no scoped capability satisfies. `admin` keeps the
+      * empty context: rotation is install-wide and a scoped `protect:admin`
+      * stays refused. */
     private[api] def requireCapability(request: HttpServletRequest, action: String): Unit =
-        CapabilityCheck.assertScope(request, "protect", action, Map.empty)
+        if (action != "reveal" || !holdsRevealAnywhere(request))
+            CapabilityCheck.assertScope(request, "protect", action, Map.empty)
+
+    /** True when the request's key holds `protect:reveal` in some scope:
+      * an unscoped capability covering it, or an APPLIED explicit scoped
+      * `protect:reveal:...` (`rk.capabilities`, never the inert ones, so a
+      * stored `protect:reveal:catalog=X,collection=y` is refused here before
+      * any read in both DATRIS_KEY_INERT_SCOPES modes). True with no resolved
+      * key. */
+    private def holdsRevealAnywhere(request: HttpServletRequest): Boolean =
+        CapabilityCheck.resolvedKey(request) match {
+            case None => true
+            case Some(rk) =>
+                rk.isLegacyFullAccess ||
+                rk.effectiveCapabilities.exists(c => c.scope.isEmpty && c.matchesResourceAction("protect", "reveal")) ||
+                rk.capabilities.exists(c => c.resource == "protect" && c.action == "reveal")
+        }
 
     /** Boolean form of [[requireCapability]]: true when the request's resolved
       * key holds `protect:<action>`, and true when no resolved key is on the
@@ -382,10 +468,26 @@ object FieldProtectionAPIController {
         CapabilityCheck.grants(request, "protect", action, Map.empty)
 
     /** 403 in the CapabilityInterceptor's shape, recorded once as a
-      * `security` denied entry (no `protect` entry for a denied call). */
-    private[api] def denied(request: HttpServletRequest, e: CapabilityDeniedException, action: String): ResponseEntity[String] = {
-        LoggerFactory.getLogger(classOf[FieldProtectionAPIController]).warn("Field protection " + action + " denied: " + e.getMessage)
-        try AuditLog.denied(request, e.getMessage, 403, Some("protect:" + action))
+      * `security` denied entry (no `protect` entry for a denied call).
+      * `required` is the protect action the route needs; `pipeline` and
+      * `field` (either may be null) are the names the caller sent, recorded
+      * with the detail in the audit row and log only, never in the body.
+      * Never a value or a ciphertext. */
+    private[api] def denied(
+        request: HttpServletRequest,
+        e: CapabilityDeniedException,
+        required: String,
+        pipeline: String,
+        field: String
+    ): ResponseEntity[String] = {
+        // The detail (target scope) goes to the log and audit row only; the
+        // body carries the message.
+        val detail = Option(e.detail).getOrElse(e.getMessage)
+        val names = Seq("pipeline" -> pipeline, "field" -> field).filter(_._2 != null)
+        LoggerFactory.getLogger(classOf[FieldProtectionAPIController]).warn(
+            "Field protection " + required + " denied: " + detail + names.map { case (k, v) => ", " + k + "=" + v }.mkString
+        )
+        try AuditLog.denied(request, detail, 403, Some("protect:" + required), Option(pipeline), names)
         catch { case _: Exception => () }
         ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON).body[String](CatalogOps.capabilityDeniedBody(e.getMessage))
     }

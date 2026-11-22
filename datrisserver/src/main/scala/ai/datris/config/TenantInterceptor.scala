@@ -6,8 +6,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.{AuditActor, AuditLog}
-import ai.datris.model.{DatrisEnvironment, ResolvedKey, TenantContext}
-import ai.datris.util.{APIKeyValidator, RevokedKeyException, UserStore}
+import ai.datris.model.{DatrisEnvironment, ResolvedKey, TenantContext, User}
+import ai.datris.policy.PolicyReplay
+import ai.datris.util.{APIKeyValidator, LogSafe, RevokedKeyException, UserStore}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -34,6 +35,79 @@ object TenantInterceptor {
     /** True when the header carries a non-blank value. A blank header is
       * treated exactly like no header (pre-existing behaviour). */
     def presented(apiKey: String): Boolean = apiKey != null && apiKey.trim.nonEmpty
+
+    /** Request attribute holding the carrier's own ResolvedKey (before the
+      * on-behalf-of narrowing or relabel), set together with
+      * `AuditActor.OnBehalfOfAttr`. CapabilityInterceptor restores it when the
+      * request turns out to carry its own sign-in session (the header is
+      * ignored on such a request). */
+    val OnBehalfOfCarrierAttr: String = "ai.datris.onBehalfOfCarrier"
+
+    /** Body of the 401 a trusted carrier gets when the on-behalf-of user is
+      * unknown or was deleted. Names neither the user nor the carrier, and is
+      * not the capability-denied body: the identity, not a permission, failed. */
+    val UnverifiedUserBody: String =
+        "{\"error\":\"The user this request acts for could not be verified\",\"errorKind\":\"acting_user_unverified\"}"
+
+    /** Body of the 503 a trusted carrier gets when the user store could not
+      * be read to resolve the on-behalf-of user. */
+    val UserStoreUnavailableBody: String =
+        "{\"error\":\"The user this request acts for could not be checked: the user store is unavailable\",\"errorKind\":\"user_store_unavailable\"}"
+
+    /** The identity a trusted carrier (`ui`, or the keys-off identity) gets
+      * acting on behalf of `user`. Pure: reads no thread-local and no store.
+      *   - an admin (`user.role == User.RoleAdmin`, exactly), or an approval
+      *     replay for a user who is not restricted: the carrier's own bundle,
+      *     relabelled `session:<user>` (attribution only);
+      *   - anyone else: the user's session bundle
+      *     (`APIKeyValidator.resolveFromSession`: the role bundle, or the
+      *     catalog-grant bundle for a restricted user), kept only where the
+      *     carrier itself grants it, with `restrictedSession` as the bundle
+      *     has it. This only ever narrows. */
+    def onBehalfOfIdentity(carrier: ResolvedKey, user: User, approvalReplay: Boolean): ResolvedKey =
+        if (user.role == User.RoleAdmin || (approvalReplay && !user.isRestricted))
+            carrier.copy(label = "session:" + user.username)
+        else {
+            val bundle = APIKeyValidator.resolveFromSession(user)
+            // Narrow only: a capability the carrier itself could not
+            // exercise under the same scope is dropped.
+            val narrowed =
+                if (carrier.isLegacyFullAccess) bundle.capabilities
+                else bundle.capabilities.filter(c => carrier.grants(c.resource, c.action, c.scope))
+            carrier.copy(
+                label = bundle.label,
+                capabilities = narrowed,
+                isLegacyFullAccess = false,
+                restrictedSession = bundle.restrictedSession,
+                // The session bundle holds only applied scopes; the carrier
+                // key's inert ones are not its own.
+                inertCapabilities = Nil
+            )
+        }
+
+    /** What applyOnBehalfOf decided: the identity to attach, or a refusal
+      * (status, body, audit reason) answered before any handler runs. */
+    private[config] sealed trait OnBehalf
+    private[config] final case class Act(identity: ResolvedKey) extends OnBehalf
+
+    /** Writes a Decision 7 refusal (no identity is attached and no handler
+      * runs) and records it, then answers false. The tenant preHandle may
+      * have set is cleared in a `finally`: afterCompletion is not called for
+      * an interceptor whose preHandle answered false or threw, and a write
+      * to a dropped connection (or the audit call) can throw. Without it the
+      * tenant would stay on the servlet thread for its next request, and
+      * `/minio-events` (outside this interceptor) would run under it. */
+    private[config] def answerRefusal(request: HttpServletRequest, response: HttpServletResponse, r: RefuseOnBehalf): Boolean =
+        try {
+            response.setStatus(r.status)
+            response.setContentType("application/json")
+            response.getWriter.write(r.body)
+            response.getWriter.flush()
+            AuditLog.denied(request, r.reason, r.status, names = r.auditNames)
+            false
+        } finally TenantContext.clear()
+
+    private[config] final case class RefuseOnBehalf(status: Int, body: String, reason: String, auditNames: Seq[(String, String)]) extends OnBehalf
 }
 
 @Component
@@ -66,49 +140,72 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
         // flows). With a key presented, the failure is recorded on the
         // request so CapabilityInterceptor fails closed — a revoked or
         // unknown key must never be treated like an anonymous request.
-        try {
-            val resolved = APIKeyValidator.resolveKey(apiKey)
-            request.setAttribute(TenantInterceptor.ResolvedKeyAttr, applyOnBehalfOf(request, resolved))
-        } catch {
-            case e: Throwable =>
-                if (TenantInterceptor.presented(apiKey)) {
-                    val reason = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
-                    logger.info("Rejected presented x-api-key: {}", reason)
-                    request.setAttribute(TenantInterceptor.ApiKeyRejectedAttr, reason)
-                    e match {
-                        case r: RevokedKeyException => request.setAttribute(TenantInterceptor.ApiKeyRejectedLabelAttr, r.label)
-                        case _ =>
-                    }
-                } else
-                    logger.debug("Could not resolve x-api-key into ResolvedKey: {}", e.getMessage)
-        }
+        val refusal: Option[TenantInterceptor.RefuseOnBehalf] =
+            try {
+                val resolved = APIKeyValidator.resolveKey(apiKey)
+                applyOnBehalfOf(request, resolved) match {
+                    case TenantInterceptor.Act(identity) =>
+                        request.setAttribute(TenantInterceptor.ResolvedKeyAttr, identity)
+                        None
+                    case r: TenantInterceptor.RefuseOnBehalf => Some(r)
+                }
+            } catch {
+                case e: Throwable =>
+                    if (TenantInterceptor.presented(apiKey)) {
+                        val reason = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                        logger.info("Rejected presented x-api-key: {}", reason)
+                        request.setAttribute(TenantInterceptor.ApiKeyRejectedAttr, reason)
+                        e match {
+                            case r: RevokedKeyException => request.setAttribute(TenantInterceptor.ApiKeyRejectedLabelAttr, r.label)
+                            case _ =>
+                        }
+                    } else
+                        logger.debug("Could not resolve x-api-key into ResolvedKey: {}", e.getMessage)
+                    None
+            }
 
-        true
+        refusal match {
+            case Some(r) => TenantInterceptor.answerRefusal(request, response, r)
+            case None => true
+        }
     }
 
-    /** The in-platform Assistant reaches REST through the MCP server with the
-      * reserved `ui` key, on behalf of the human whose chat it is. The MCP
-      * server forwards that user as `X-Datris-On-Behalf-Of`. When the header
-      * is present AND the carrying key is one we trust to vouch for a user
-      * (see AuditActor.trustsOnBehalfOf) AND the user exists, the ResolvedKey
-      * is relabeled `session:<user>` — so version history, owner tagging and
-      * the audit log all attribute the action to the person, exactly as if
-      * they had clicked in the UI. For an unrestricted user the capabilities
-      * are NOT changed: the key's bundle still governs what the call may do.
-      * For a restricted user the key's bundle is replaced by that user's
-      * session bundle (catalog grants; `restrictedSession = true`), so the
-      * Assistant acting for them sees exactly what they would see. This only
-      * ever narrows: a trusted carrier (`ui`, or the keys-off identity) holds
-      * full access, and a restricted bundle is a subset of it.
+    /** The in-platform chats reach REST through the MCP server with the
+      * reserved `ui` key, on behalf of the human whose chat it is; the
+      * approval replay (PolicyReplay) and the Configuration chat's loopback
+      * calls do the same. They send that user as `X-Datris-On-Behalf-Of`.
+      * When the header is present AND the carrying key is one we trust to
+      * vouch for a user (see AuditActor.trustsOnBehalfOf: the `ui` key, or
+      * any request with API keys off) AND user sign-in is on:
+      *   - a request that carries its own sign-in session (one the server
+      *     validates, as SessionAuthenticator does) ignores the header and
+      *     acts as that session's user (Decision 8). The platform's internal
+      *     callers never send a session cookie;
+      *   - a user who cannot be resolved (unknown, deleted, or the user store
+      *     read fails) refuses the request: 401 [[TenantInterceptor.UnverifiedUserBody]]
+      *     or 503 [[TenantInterceptor.UserStoreUnavailableBody]], never the
+      *     carrier's own identity (Decision 7);
+      *   - otherwise the identity is [[TenantInterceptor.onBehalfOfIdentity]]:
+      *     an admin keeps the carrier's bundle relabelled `session:<user>`;
+      *     every other user is narrowed to their own session bundle (role
+      *     bundle, or catalog grants for a restricted user), so a chat acting
+      *     for them can do what their role allows and no more. An approval
+      *     replay (`X-Datris-Approval` present) for a user who is not
+      *     restricted keeps the carrier's bundle: the agent's key was already
+      *     allowed the action and a human approved it.
+      * Version history, owner tagging and the audit log attribute the action
+      * to the person either way.
       *
       * Any other key sending the header is ignored — and the attempt is
       * itself recorded as a security event. */
-    private def applyOnBehalfOf(request: HttpServletRequest, resolved: ResolvedKey): ResolvedKey = {
+    private def applyOnBehalfOf(request: HttpServletRequest, resolved: ResolvedKey): TenantInterceptor.OnBehalf = {
         val header = Option(request.getHeader(AuditActor.HeaderOnBehalfOf)).map(_.trim).filter(_.nonEmpty)
-        if (header.isEmpty) return resolved
+        if (header.isEmpty) return TenantInterceptor.Act(resolved)
         val env = DatrisEnvironment.values
         if (!AuditActor.trustsOnBehalfOf(resolved.label, env.useApiKeys)) {
-            logger.warn("Ignoring " + AuditActor.HeaderOnBehalfOf + " from key '" + resolved.label + "' — only the ui key may act on behalf of a user")
+            logger.warn(
+                "Ignoring " + AuditActor.HeaderOnBehalfOf + " from key '" + LogSafe.text(resolved.label) + "' — only the ui key may act on behalf of a user"
+            )
             val md = new com.google.gson.JsonObject()
             md.addProperty("claimedUser", header.get.take(64))
             // Attach the key first so the security entry names the offending
@@ -119,38 +216,54 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
             // capability check still applies. Clear the mark so the audit
             // interceptor also records the underlying action normally.
             request.removeAttribute(AuditLog.RecordedAttr)
-            return resolved
+            return TenantInterceptor.Act(resolved)
         }
-        if (!env.useUserAuth) return resolved
+        if (!env.useUserAuth) return TenantInterceptor.Act(resolved)
+        if (carriesOwnSession(request)) {
+            logger.warn("Ignoring " + AuditActor.HeaderOnBehalfOf + " on a request that carries its own sign-in session")
+            return TenantInterceptor.Act(resolved)
+        }
+        val approvalReplay = request.getHeader(PolicyReplay.HeaderApproval) != null
+        // The audit row for a refusal carries the carrier's label and the
+        // claimed name (truncated); the response body names neither.
+        val names = Seq("carrierKey" -> resolved.label, "claimedUser" -> header.get.take(64))
         try {
             UserStore.find(header.get) match {
                 case Some(user) =>
                     request.setAttribute(AuditActor.OnBehalfOfAttr, user)
                     request.setAttribute(AuditActor.CarrierKeyLabelAttr, resolved.label)
-                    if (user.isRestricted) {
-                        val bundle = APIKeyValidator.resolveFromSession(user)
-                        // Narrow only: a capability the carrier itself could
-                        // not exercise under the same scope is dropped.
-                        val narrowed =
-                            if (resolved.isLegacyFullAccess) bundle.capabilities
-                            else bundle.capabilities.filter(c => resolved.grants(c.resource, c.action, c.scope))
-                        resolved.copy(
-                            label = bundle.label,
-                            capabilities = narrowed,
-                            isLegacyFullAccess = false,
-                            restrictedSession = true
-                        )
-                    } else resolved.copy(label = "session:" + user.username)
+                    request.setAttribute(TenantInterceptor.OnBehalfOfCarrierAttr, resolved)
+                    TenantInterceptor.Act(TenantInterceptor.onBehalfOfIdentity(resolved, user, approvalReplay))
                 case None =>
-                    logger.debug(AuditActor.HeaderOnBehalfOf + " names unknown user '" + header.get + "'; keeping key identity")
-                    resolved
+                    logger.info(AuditActor.HeaderOnBehalfOf + " names a user that does not exist; request refused")
+                    TenantInterceptor.RefuseOnBehalf(
+                        HttpServletResponse.SC_UNAUTHORIZED,
+                        TenantInterceptor.UnverifiedUserBody,
+                        "on-behalf-of user could not be verified",
+                        names
+                    )
             }
         } catch {
             case e: Exception =>
-                logger.debug("On-behalf-of lookup failed: " + e.getMessage)
-                resolved
+                logger.warn("On-behalf-of user lookup failed; request refused: " + LogSafe.text(String.valueOf(e.getMessage)))
+                TenantInterceptor.RefuseOnBehalf(
+                    HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                    TenantInterceptor.UserStoreUnavailableBody,
+                    "user store unavailable; on-behalf-of user could not be checked",
+                    names
+                )
         }
     }
+
+    /** True when the request carries a sign-in session the server validates
+      * (SessionAuthenticator.validatedSessionUser: a live session for an
+      * existing user). A stale or invalid cookie is not a session; a lookup
+      * that fails counts as none (the header then applies, and
+      * CapabilityInterceptor still drops it if SessionAuthenticator later
+      * finds the session). */
+    private def carriesOwnSession(request: HttpServletRequest): Boolean =
+        try SessionAuthenticator.validatedSessionUser(request).isDefined
+        catch { case _: Exception => false }
 
     override def afterCompletion(request: HttpServletRequest, response: HttpServletResponse, handler: Any, ex: Exception): Unit = {
         TenantContext.clear()

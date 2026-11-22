@@ -94,7 +94,9 @@ object CatalogFind {
             case "postgres" =>
                 val schema = coords.getOrElse("schema", "public")
                 val table = coords.getOrElse("table", "")
-                obj("query_postgres")("sql" -> ("SELECT * FROM \"" + schema + "\".\"" + table + "\" LIMIT 100"), "limit" -> 100)
+                // A name Postgres cannot address (empty, NUL) gets a placeholder.
+                val ref = scala.util.Try(PgIdentifier.qualified(schema, table)).getOrElse("<schema>.<table>")
+                obj("query_postgres")("sql" -> ("SELECT * FROM " + ref + " LIMIT 100"), "limit" -> 100)
             case "mongodb" => obj("query_mongodb")("collection" -> coords.getOrElse("collection", ""), "limit" -> 20)
             case "snowflake" => obj("query_snowflake")("pipeline" -> pipelineName)
             case "databricks" => obj("query_databricks")("pipeline" -> pipelineName)

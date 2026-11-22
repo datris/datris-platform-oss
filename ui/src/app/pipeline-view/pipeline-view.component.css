@@ -334,3 +334,43 @@
   font-size: 13px;
   color: var(--text-secondary, #666);
 }
+
+.delete-notices {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: rgba(217, 164, 65, 0.1);
+  border: 1px solid rgba(217, 164, 65, 0.3);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.delete-notices-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.delete-notices-head .material-icons {
+  font-size: 18px;
+  color: #d9a441;
+}
+
+.delete-notices-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+}
+
+.delete-notices-close .material-icons {
+  color: var(--text-secondary);
+}
+
+.delete-notices-list {
+  margin: 8px 0 0 26px;
+  padding: 0;
+}

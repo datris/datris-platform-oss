@@ -1533,7 +1533,7 @@ Query endpoints (POST). Response shapes are EXACT and STABLE — trust them, do 
 - PostgreSQL: `POST /api/v1/query/postgres` with body `{"sql": "SELECT col FROM public.table_name", "database": <pg_db>, "limit": -1}` → `{results: [row dicts], count: int}`
 - MongoDB: `POST /api/v1/query/mongodb` with body `{"query": "...", "database": <mongo_db>, "collection": "...", "limit": -1}` → `{results: [document dicts], count: int}`
 
-Always pass `"limit": -1` (return everything); omitting it applies a small preview default and the tap silently reads a tiny slice. Metadata discovery is also available via GET: `/metadata/postgres/tables?database={pg_db}&schema=public`, `/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE`, `/metadata/mongodb/collections?database={mongo_db}`.
+Always pass `"limit": -1` (return everything); omitting it applies a small preview default and the tap silently reads a tiny slice. A single PostgreSQL query is limited to five minutes, also with `"limit": -1`: page a large read across several queries (for example by key range) instead of reading it in one. Metadata discovery is also available via GET: `/metadata/postgres/tables?database={pg_db}&schema=public`, `/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE`, `/metadata/mongodb/collections?database={mongo_db}`.
 
 Use this whenever a tap's fetch logic is driven by data in a Datris destination — e.g. a tap that reads an id/key list from a table a pipeline maintains, then fetches from the external source per id. The list stays live: no frozen copies of it hardcoded in the script, and no re-fetching data the platform already holds.
 
@@ -2294,6 +2294,10 @@ def _base_tools():
                 "A vector collection another pipeline also writes to is kept and reported in `warnings`; "
                 "a keep_config=true reset then leaves that shared collection and the document-tap ledgers as they are. "
                 "Likewise, a table or collection another pipeline also writes to is kept and reported in `warnings`. "
+                "A table, collection, files or a vector collection the store could not remove is reported in `warnings`; "
+                "the configuration is deleted regardless, so relay the warning (it names what to remove in the store; after a "
+                "keep_config=true reset, the reset can be run again once the store is available, and a reset whose data "
+                "could not be removed keeps the document-tap ledgers). "
                 "ALWAYS confirm with the user before calling this tool."
             ),
             inputSchema={
@@ -3512,6 +3516,9 @@ def _base_tools():
                 "it reads snapshot `version` and writes it as a NEW latest version (config + that version's script), "
                 "preserving the full history — nothing is overwritten or lost. 'Rolling forward' is the same call with "
                 "a higher version number. "
+                "The restore is checked like a save of that version: a version that would not be accepted on save "
+                "today is refused with the reason and nothing is written; the tap keeps its current catalog, owner, "
+                "enabled state and run and test state. "
                 "Only call this when the operator has explicitly asked to restore/roll back this specific tap to a "
                 "specific version. It does NOT run the tap — after restoring, report the new version and stop; do not "
                 "chain into `run_tap` unless separately and explicitly asked."
@@ -3580,6 +3587,9 @@ def _base_tools():
                 "Roll a pipeline back (or forward) to a prior definition version. APPEND-ONLY and SIDE-EFFECTING: "
                 "reads snapshot `version` and writes it as a NEW latest version, preserving full history. 'Rolling "
                 "forward' is the same call with a higher version number. "
+                "The restore is checked like a save of that version: a version that would not be accepted on save "
+                "today is refused with the reason and nothing is written; the pipeline keeps its current name, "
+                "catalog and owner. "
                 "Only call this when the operator has explicitly asked to restore/roll back this specific pipeline to "
                 "a specific version. Report the new version and stop."
             ),

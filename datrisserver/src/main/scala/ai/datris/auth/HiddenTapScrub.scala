@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.{RunLineage, TapConfig}
-import ai.datris.util.{CatalogOps, VectorChunkWriter}
+import ai.datris.util.VectorChunkWriter
 import com.google.gson.{JsonArray, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
 
@@ -25,8 +25,10 @@ import scala.collection.JavaConverters._
   * restricted session, whatever the tap ([[dropTapStampColumns]],
   * [[dropTapStampNames]]).
   * These helpers scrub the hidden tap's identity from those records for a
-  * restricted user's session only; every other caller gets the records
-  * unchanged. */
+  * caller that sees only part of the install ([[CapabilityCheck.isLimited]]:
+  * a restricted user's session, or an API key limited by a `catalog=` /
+  * `owner=` scope, plans/stories/scoped-key-read-routes.md); every other
+  * caller gets the records unchanged and no tap is read. */
 object HiddenTapScrub {
 
     /** What a scrubbed tap name reads as in free text and filenames. */
@@ -35,23 +37,31 @@ object HiddenTapScrub {
     /** Run-input fields that identify the feeding tap. */
     val TapIdentityFields: Seq[String] = Seq("tapName", "tapRunTime", "scriptSha", "source")
 
-    /** True when `tapName` names a tap the restricted session cannot read
-      * (missing or outside its grants). Always false for everyone else. */
+    /** The fields of an incident's row profile (`RunProfile`) that identify
+      * the feeding tap: its script commit (`scriptSha`, as in
+      * [[TapIdentityFields]]) and its config version. A profile's `source`
+      * is the profiling method, not the tap. */
+    val RunProfileTapFields: Seq[String] = TapIdentityFields.filter(_ == "scriptSha") :+ "tapVersion"
+
+    /** True when `tapName` names a tap a limited caller
+      * ([[CapabilityCheck.isLimited]]) cannot read: missing, or outside its
+      * grants or key scope, judged on the stored tap's catalog and owner.
+      * Always false for everyone else, and `readTap` is not called. */
     def tapHidden(request: HttpServletRequest, tapName: String, readTap: String => TapConfig): Boolean =
-        CapabilityCheck.isRestrictedSession(request) && tapName != null && tapName.nonEmpty && {
+        CapabilityCheck.isLimited(request) && tapName != null && tapName.nonEmpty && {
             val t = readTap(tapName)
-            t == null || !CapabilityCheck.grants(request, "tap", "read", CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel))
+            t == null || !CallerVisibility.mayReadStored(CapabilityCheck.resolvedKey(request), "tap", t.catalog, t.createdByKeyLabel)
         }
 
-    /** Taps the restricted session cannot read that feed one of its visible
-      * pipelines: the only tap names a visible pipeline's run records can
-      * carry. Empty for everyone else. */
+    /** Taps a limited caller ([[CapabilityCheck.isLimited]]) cannot read
+      * that feed one of its visible pipelines: the only tap names a visible
+      * pipeline's run records can carry. Empty for everyone else. */
     def hiddenFeedingTaps(request: HttpServletRequest, taps: Seq[TapConfig], visiblePipelines: Set[String]): Set[String] =
-        if (!CapabilityCheck.isRestrictedSession(request)) Set.empty
+        if (!CapabilityCheck.isLimited(request)) Set.empty
         else
             taps.filter(t =>
                 t != null && t.name != null && t.name.nonEmpty && t.targetPipeline != null && visiblePipelines.contains(t.targetPipeline) &&
-                    !CapabilityCheck.grants(request, "tap", "read", CatalogOps.scopeContext(t.catalog, t.createdByKeyLabel))
+                    !CallerVisibility.mayReadStored(CapabilityCheck.resolvedKey(request), "tap", t.catalog, t.createdByKeyLabel)
             ).map(_.name).toSet
 
     /** A tap feed's file is named `tap-<name>.csv` or `tap-<name>.json`. */

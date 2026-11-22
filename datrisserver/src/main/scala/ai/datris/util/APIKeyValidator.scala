@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.auth.TapRunTokens
+import ai.datris.auth.{CapabilityScopes, TapRunTokens}
 import ai.datris.model.{Capability, DatrisEnvironment, DatrisException, ResolvedKey, User, UserContext}
 import com.google.common.cache.CacheBuilder
 import com.google.gson.JsonParser
@@ -214,7 +214,9 @@ object APIKeyValidator {
 
     /** Pure core of the single-tenant, keys-enabled branch of [[resolveKey]]:
       * unknown value → "Invalid x-api-key"; revoked metadata → "is revoked";
-      * no metadata → legacy full access. */
+      * no metadata → legacy full access. A metadata key's capabilities are
+      * split by [[CapabilityScopes.partition]]: inert ones go to
+      * `ResolvedKey.inertCapabilities`. */
     private[util] def resolveAgainst(apiKey: String, keys: Map[String, String], metadata: => Map[String, String]): ResolvedKey = {
         val label = labelForValue(keys, apiKey)
             .getOrElse(throw new DatrisException(InvalidKeyMessage))
@@ -224,7 +226,11 @@ object APIKeyValidator {
             case Some(json) =>
                 val (revoked, capabilities, keyId) = parseMetadata(label, json)
                 if (revoked) throw new RevokedKeyException(label)
-                ResolvedKey(None, label, capabilities, isLegacyFullAccess = false, keyId = keyId)
+                // A capability whose scope the platform does not apply on it
+                // grants nothing (CapabilityScopes; DATRIS_KEY_INERT_SCOPES=allow
+                // restores it at call time, so the opt-out is not cached here).
+                val (applied, inert) = CapabilityScopes.partition(capabilities)
+                ResolvedKey(None, label, applied, isLegacyFullAccess = false, keyId = keyId, inertCapabilities = inert)
             case None =>
                 ResolvedKey(None, label, Seq(Capability.FullAccess), isLegacyFullAccess = true)
         }

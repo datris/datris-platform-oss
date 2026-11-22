@@ -8,6 +8,7 @@ import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
 import { canEditCatalog, canOwnCatalog, editableCatalogsOf, isRestrictedUser } from '../shared/catalog-access';
 import { httpErrorText } from '../shared/http-error';
+import { deleteWarnings } from '../delete-warnings';
 
 @Component({
     selector: 'app-pipelines',
@@ -267,6 +268,9 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   // and data can take seconds, so the confirm widget shows progress and locks.
   deleting = '';
   deletingMode: 'all' | 'data' | '' = '';
+  // Warnings the last delete or reset returned (data kept or not removed).
+  deleteNotices: string[] = [];
+  deleteNoticesLabel = '';
 
   promptDelete(event: Event, name: string): void {
     event.stopPropagation();
@@ -342,15 +346,25 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     const done = () => { this.deleting = ''; this.deletingMode = ''; this.deleteTarget = ''; };
     if (deleteConfig) {
       this.pipelineService.deletePipeline(name).subscribe({
-        next: () => { done(); this.loadPipelines(); },
+        next: (res: any) => { this.showDeleteNotices(`Deleting pipeline '${name}'`, res); done(); this.loadPipelines(); },
         error: (err) => { alert('Failed to delete: ' + httpErrorText(err)); done(); }
       });
     } else {
       this.pipelineService.deletePipelineData(name).subscribe({
-        next: () => done(),
+        next: (res: any) => { this.showDeleteNotices(`Deleting the data of '${name}'`, res); done(); },
         error: (err) => { alert('Failed to delete data: ' + httpErrorText(err)); done(); }
       });
     }
+  }
+
+  private showDeleteNotices(label: string, body: any): void {
+    this.deleteNotices = deleteWarnings(body);
+    this.deleteNoticesLabel = this.deleteNotices.length > 0 ? label : '';
+  }
+
+  dismissDeleteNotices(): void {
+    this.deleteNotices = [];
+    this.deleteNoticesLabel = '';
   }
 
   getSourceType(dataset: any): string {

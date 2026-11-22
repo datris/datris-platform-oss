@@ -44,7 +44,18 @@ object PipelineValidatorUtil {
       * [[ValidationException]] (still a [[DatrisException]]) carrying the
       * validator's message unchanged, so controllers can answer 400 for a
       * config the caller must fix and keep 500 for real server failures. */
-    def validate(config: PipelineConfig): Unit = asValidation(validateConfig(config))
+    def validate(config: PipelineConfig): Unit =
+        validate(config, () => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, config.name))
+
+    /** As [[validate]], with the stored config of this name given: `stored`
+      * is called at most once, and only when a rule needs it (the object
+      * store's existing-pipeline rules, or a field name that is not plain,
+      * which is kept when the stored config's same schema has exactly that
+      * name: [[ColumnNameRule]]). Null when there is no stored pipeline. */
+    def validate(config: PipelineConfig, stored: () => PipelineConfig): Unit = {
+        lazy val once = stored()
+        asValidation(validateConfig(config, () => once))
+    }
 
     /** Runs `body`, turning a [[DatrisException]] it raises into a
       * [[ValidationException]] with the same message and stack. Anything else
@@ -60,7 +71,7 @@ object PipelineValidatorUtil {
                 throw v
         }
 
-    private def validateConfig(config: PipelineConfig): Unit = {
+    private def validateConfig(config: PipelineConfig, stored: () => PipelineConfig): Unit = {
         if (config.name == null)
             throw new DatrisException("pipeline 'name' is not defined in the JSON")
         if (config.name.length > 80)
@@ -80,7 +91,7 @@ object PipelineValidatorUtil {
         if (config.source.fileAttributes != null && config.source.fileAttributes.unstructuredAttributes != null)
             validateUnstructured(config)
         else
-            validateStructuredAndSemiStructured(config)
+            validateStructuredAndSemiStructured(config, stored)
     }
 
     /** Every secret a pipeline names (destination/source credentials and
@@ -328,7 +339,7 @@ object PipelineValidatorUtil {
             throw new DatrisException("For unstructured files with objectStore destination, the 'destination.objectStore.prefixKey' cannot be null")
     }
 
-    private def validateStructuredAndSemiStructured(config: PipelineConfig): Unit = {
+    private def validateStructuredAndSemiStructured(config: PipelineConfig, stored: () => PipelineConfig): Unit = {
         // Source schema properties
         if (config.source.schemaProperties == null)
             throw new DatrisException("'source.schemaProperties' must be defined")
@@ -450,6 +461,11 @@ object PipelineValidatorUtil {
                 config.destination.objectStore.partitionBy.forEach(field => {
                     if (!schemaFieldNames.contains(field))
                         throw new DatrisException("'partitionBy' field name: " + field + " is not in the schema properties for this pipeline")
+                    // A column kept from schema evolution may hold any
+                    // character; a partition directory is named after the
+                    // column, so a partition field stays a plain name.
+                    if (!ColumnNameRule.plain(field))
+                        throw new DatrisException("'partitionBy' field name: " + field + " is invalid.  Valid characters are a-z, 0-9 and _")
                 })
             }
             if (config.destination.objectStore.fileFormat != null) {
@@ -532,7 +548,7 @@ object PipelineValidatorUtil {
             }
 
             // Get the existing configuration
-            val existingConfig = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, config.name)
+            val existingConfig = stored()
             if (existingConfig != null) {
                 if (existingConfig.destination.objectStore != null) {
                     if (existingConfig.destination.objectStore.partitionBy != null && config.destination.objectStore.partitionBy == null)
@@ -675,9 +691,9 @@ object PipelineValidatorUtil {
             validateSemiStructured(config)
 
         // Validate columns
-        validateColumns(sourceSchema = true, config)
+        validateColumns(sourceSchema = true, config, stored)
         if (config.destination.schemaProperties != null)
-            validateColumns(sourceSchema = false, config)
+            validateColumns(sourceSchema = false, config, stored)
     }
 
     /** SQL identifiers (db/schema/table/warehouse names) are interpolated into
@@ -709,7 +725,7 @@ object PipelineValidatorUtil {
             )
     }
 
-    private def validateColumns(sourceSchema: Boolean, config: PipelineConfig): Unit = {
+    private def validateColumns(sourceSchema: Boolean, config: PipelineConfig, stored: () => PipelineConfig): Unit = {
         val fields = {
             if (sourceSchema)
                 config.source.schemaProperties.fields
@@ -728,8 +744,9 @@ object PipelineValidatorUtil {
             fields.asScala.foreach(field => {
                 if (field.name == null)
                     throw new DatrisException("Column name cannot be null")
-                if (!field.name.matches("([A-Za-z0-9\\_]+)"))
-                    throw new DatrisException("Column name: " + field.name + " is invalid.  Valid characters are a-z, 0-9 and _")
+                // A name that is not plain is kept only when the stored
+                // pipeline has exactly that name in this schema (ColumnNameRule).
+                ColumnNameRule.saveProblem(field.name, config, stored, sourceSchema).foreach(p => throw new DatrisException(p))
                 if (
                     field.`type` == null ||
                     (
@@ -796,11 +813,17 @@ object PipelineValidatorUtil {
         }
     }
 
+    /** A field type lower-cased (Locale.ROOT, so `INT` stays `int` under
+      * any default locale); a null type stays null, so the save's type
+      * rule (`PipelineAPIController.columnTypeRefusal`) answers it with a 400
+      * on a pipeline type the validator does not check. */
+    private def lowerOrNull(t: String): String = if (t == null) null else t.toLowerCase(java.util.Locale.ROOT)
+
     def modify(config: PipelineConfig): PipelineConfig = {
         val sourceSchemaProperties = {
             if (config.source.schemaProperties != null) {
                 val fields =
-                    config.source.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, field.`type`.toLowerCase, field.protect))
+                    config.source.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, lowerOrNull(field.`type`), field.protect))
                         .toList.asJava
                 SchemaProperties(config.source.schemaProperties.dbName, fields)
             } else
@@ -818,7 +841,7 @@ object PipelineValidatorUtil {
                     SchemaProperties(config.destination.schemaProperties.dbName, fields)
                 } else {
                     val fields =
-                        config.destination.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, field.`type`.toLowerCase)).toList.asJava
+                        config.destination.schemaProperties.fields.asScala.map(field => SchemaField(field.name.toLowerCase, lowerOrNull(field.`type`))).toList.asJava
                     SchemaProperties(config.destination.schemaProperties.dbName, fields)
                 }
             } else {

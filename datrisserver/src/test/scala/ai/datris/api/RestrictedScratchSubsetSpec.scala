@@ -237,7 +237,24 @@ class RestrictedScratchSubsetSpec extends AnyFunSuite with BeforeAndAfterEach {
     }
 
     test("unrestricted editor and catalog-scoped API key: the very same payload and page, no reader called") {
-        Seq(editor, salesKey).foreach { rk =>
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): scrubbed as for the session.
+        val keyOut = shown(salesKey, response(Some("tap-t_hr_feed.csv")), noRun)
+        previews(keyOut).foreach(assertStripped(_, "catalog-scoped key, status"))
+        assert(new Gson().toJson(keyOut).contains("tap-[hidden].csv"))
+        assertStripped(
+            PipelineStatusAPIController.scrubResultPage(
+                req(salesKey, "/api/v1/pipeline/result"),
+                page(),
+                readTap,
+                StreamFile,
+                "orders",
+                "tok",
+                noRun,
+                () => Nil
+            ).records,
+            "catalog-scoped key, /pipeline/result (stream run, fail closed)"
+        )
+        Seq(editor).foreach { rk =>
             val data = response(Some("tap-t_hr_feed.csv"))
             assert(PipelineStatusAPIController.restrictedViewWith(req(rk), data, pipelines, storedTaps, failRun).toOption.get eq data, rk.label)
             assert(PipelineStatusAPIController.restrictedView(req(rk), data).toOption.get eq data, rk.label)

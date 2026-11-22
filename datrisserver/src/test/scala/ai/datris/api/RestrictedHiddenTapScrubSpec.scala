@@ -104,11 +104,11 @@ class RestrictedHiddenTapScrubSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(HiddenTapScrub.tapHidden(req(bob), "gone", readTap), "a missing tap is hidden")
         assert(!HiddenTapScrub.tapHidden(req(bob), "t_sales", readTap))
         assert(!HiddenTapScrub.tapHidden(req(editor), "t_hr_feed", readTap))
-        assert(!HiddenTapScrub.tapHidden(req(salesKey), "t_hr_feed", readTap), "API keys are unchanged")
+        assert(HiddenTapScrub.tapHidden(req(salesKey), "t_hr_feed", readTap), "a catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B)")
         val all = taps.values.toSeq :+ tap("t_payroll", "payroll", "HR")
         assert(HiddenTapScrub.hiddenFeedingTaps(req(bob), all, Set("orders")) == Set("t_hr_feed"), "only taps feeding a visible pipeline")
         assert(HiddenTapScrub.hiddenFeedingTaps(req(editor), all, Set("orders")).isEmpty)
-        assert(HiddenTapScrub.hiddenFeedingTaps(req(salesKey), all, Set("orders")).isEmpty)
+        assert(HiddenTapScrub.hiddenFeedingTaps(req(salesKey), all, Set("orders")) == Set("t_hr_feed"), "a catalog-scoped API key: as the session")
     }
 
     // ------------------------------------------------------------ lineage
@@ -141,11 +141,13 @@ class RestrictedHiddenTapScrubSpec extends AnyFunSuite with BeforeAndAfterEach {
         // The visible tap's run is untouched.
         assert(runs(1).toString == runJson("r2", "t_sales").toString)
 
-        // Unrestricted session and API key: byte-identical.
-        Seq(editor, salesKey).foreach { rk =>
+        // Unrestricted session: byte-identical.
+        Seq(editor).foreach { rk =>
             val before = neighborhood
             assert(LineageAPIController.scrubNeighborhood(req(rk), before, readTap).toString == neighborhood.toString)
         }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): scrubbed as for the session.
+        assert(!LineageAPIController.scrubNeighborhood(req(salesKey), neighborhood, readTap).toString.contains("t_hr_feed"))
     }
 
     // ------------------------------------------------------------ provenance
@@ -178,12 +180,14 @@ class RestrictedHiddenTapScrubSpec extends AnyFunSuite with BeforeAndAfterEach {
         val scrubbedOld = ProvenanceAPIController.scrubProvenance(req(bob), old, readTap, Set("t_hr_feed"))
         assert(scrubbedOld.getAsJsonObject("job").get("filename").getAsString == "tap-[hidden].csv")
 
-        // Unrestricted session and API key: byte-identical.
-        Seq(editor, salesKey).foreach { rk =>
+        // Unrestricted session: byte-identical.
+        Seq(editor).foreach { rk =>
             assert(
                 ProvenanceAPIController.scrubProvenance(req(rk), provenance("t_hr_feed"), readTap, Set("t_hr_feed")).toString == provenance("t_hr_feed").toString
             )
         }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): scrubbed as for the session.
+        assert(!ProvenanceAPIController.scrubProvenance(req(salesKey), provenance("t_hr_feed"), readTap, Set("t_hr_feed")).toString.contains("t_hr_feed"))
     }
 
     test("a tap no longer stored is hidden: lineage run filename, provenance filenames and tap:<name> source are scrubbed") {
@@ -257,12 +261,15 @@ class RestrictedHiddenTapScrubSpec extends AnyFunSuite with BeforeAndAfterEach {
         // A visible tap's feed file is kept.
         val ok = gson.toJson(PipelineStatusAPIController.restrictedViewWith(req(bob), statusResponse("tap-t_sales.csv"), pipelines, stored).toOption.get)
         assert(ok.contains("tap-t_sales.csv"), ok)
-        // Unrestricted session and API key: the very same object.
-        Seq(editor, salesKey).foreach { rk =>
+        // Unrestricted session: the very same object.
+        Seq(editor).foreach { rk =>
             val data = statusResponse("tap-gone.csv")
             assert(PipelineStatusAPIController.restrictedViewWith(req(rk), data, pipelines, stored).toOption.get eq data)
             assert(PipelineStatusAPIController.restrictedView(req(rk), data).toOption.get eq data)
         }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): scrubbed as for the session.
+        val keyBody = gson.toJson(PipelineStatusAPIController.restrictedViewWith(req(salesKey), statusResponse("tap-gone.csv"), pipelines, stored).toOption.get)
+        assert(keyBody.contains("tap-[hidden].csv") && !keyBody.contains("tap-gone.csv"), keyBody)
     }
 
     // ------------------------------------------------------------ scratch rows (round 2, finding 1)
@@ -315,20 +322,27 @@ class RestrictedHiddenTapScrubSpec extends AnyFunSuite with BeforeAndAfterEach {
             .asInstanceOf[PipelineStatusResponse]
         assertRowsScrubbed(shown.rollup.jobs.get(0).resultPreview)
         assertRowsScrubbed(shown.events.get(0).scratchResult.resultPreview)
-        // Unrestricted session and API key: the very same object, rows intact.
-        Seq(editor, salesKey).foreach { rk =>
+        // Unrestricted session: the very same object, rows intact.
+        Seq(editor).foreach { rk =>
             val data = payload
             assert(PipelineStatusAPIController.restrictedViewWith(req(rk), data, pipelines, stored).toOption.get eq data)
         }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): rows scrubbed as for the session.
+        val keyShown =
+            PipelineStatusAPIController.restrictedViewWith(req(salesKey), payload, pipelines, stored).toOption.get.asInstanceOf[PipelineStatusResponse]
+        assertRowsScrubbed(keyShown.rollup.jobs.get(0).resultPreview)
+        assertRowsScrubbed(keyShown.events.get(0).scratchResult.resultPreview)
     }
 
     test("GET /pipeline/result page rows lose a hidden or deleted tap's stamp columns for a restricted session only") {
         def page = ai.datris.util.ScratchReader.ScratchResultPage(stampedRows, 4L, 4, 0L, truncated = false, "u", "e")
         assertRowsScrubbed(PipelineStatusAPIController.scrubResultPage(req(bob, path = "/api/v1/pipeline/result"), page, readTap).records)
-        Seq(editor, salesKey).foreach { rk =>
+        Seq(editor).foreach { rk =>
             val p = page
             assert(PipelineStatusAPIController.scrubResultPage(req(rk), p, readTap) eq p)
         }
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): scrubbed as for the session.
+        assertRowsScrubbed(PipelineStatusAPIController.scrubResultPage(req(salesKey, path = "/api/v1/pipeline/result"), page, readTap).records)
         // Nothing stamped with a hidden tap: the same page back.
         val clean =
             ai.datris.util.ScratchReader.ScratchResultPage(JsonParser.parseString("""[{"id":1}]""").getAsJsonArray, 1L, 1, 0L, truncated = false, "u", "e")

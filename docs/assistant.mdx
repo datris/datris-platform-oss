@@ -248,10 +248,16 @@ to permissions depends on which auth mode the platform is running in:
 
 - **`USE_USER_AUTH=true`** (recommended): the Assistant runs as your
   logged-in user. Audit log entries and capability checks both show
-  `session:<your username>`. Permissions follow your role — admin gets
-  full access, editor gets create/update/run on data resources, viewer
-  gets read-only. See [User Authentication](/user-auth) for the role-to-
-  capability mapping.
+  `session:<your username>`. Every tool call is held to your role:
+  admin gets every tool; editor can create, update, run and delete taps
+  and pipelines but cannot manage secrets, upload a raw configuration,
+  read the agent policy or approvals, or work with incidents through a
+  chat; viewer can use the Assistant read-only (list, read, query and
+  search) but cannot attach files (the upload is refused with `403`).
+  Tools your role does not allow are not offered,
+  and one called anyway is refused. This holds with API keys off too
+  (`USE_API_KEYS=false`). See
+  [User Authentication](/user-auth#roles-in-the-chats) for the details.
 - **`USE_USER_AUTH=false` + `USE_API_KEYS=true`**: the Assistant can do
   what the key you pasted into the Connect prompt can do. A full-access
   key (for example the seeded `ui` key) gets every tool; a key issued with

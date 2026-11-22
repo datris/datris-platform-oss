@@ -90,10 +90,7 @@ class SecretsAPIController {
                 // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
                 // deny — a stack-trace 500 reads to agents as a server fault,
                 // not a permission boundary.
-                logger.info("capability scope denial: " + e.getMessage)
-                ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
-                        e.getMessage.replace("\"", "\\\"") + "\"}")
+                SecretsAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 SecretsAPIController.failed(e)
@@ -142,10 +139,7 @@ class SecretsAPIController {
                 // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
                 // deny — a stack-trace 500 reads to agents as a server fault,
                 // not a permission boundary.
-                logger.info("capability scope denial: " + e.getMessage)
-                ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
-                        e.getMessage.replace("\"", "\\\"") + "\"}")
+                SecretsAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 SecretsAPIController.failed(e)
@@ -319,10 +313,7 @@ class SecretsAPIController {
                 // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
                 // deny — a stack-trace 500 reads to agents as a server fault,
                 // not a permission boundary.
-                logger.info("capability scope denial: " + e.getMessage)
-                ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
-                        e.getMessage.replace("\"", "\\\"") + "\"}")
+                SecretsAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 SecretsAPIController.failed(e)
@@ -371,10 +362,7 @@ class SecretsAPIController {
                 // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
                 // deny — a stack-trace 500 reads to agents as a server fault,
                 // not a permission boundary.
-                logger.info("capability scope denial: " + e.getMessage)
-                ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
-                        e.getMessage.replace("\"", "\\\"") + "\"}")
+                SecretsAPIController.capabilityDenied(e)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 SecretsAPIController.failed(e)
@@ -412,7 +400,7 @@ class SecretsAPIController {
                         FieldProtectionAPIController.requireCapability(request, "admin")
                         new CapabilityDeniedException("capability denied: protect:admin is required to change field-protection key material")
                     } catch { case denied: CapabilityDeniedException => denied }
-                Left(FieldProtectionAPIController.denied(request, e, "admin"))
+                Left(FieldProtectionAPIController.denied(request, e, "admin", null, null))
             case Invalid400(message) =>
                 logger.warn("PUT /secrets/" + FieldProtectionSecret + " refused: " + message)
                 Left(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
@@ -441,6 +429,13 @@ class SecretsAPIController {
 
 object SecretsAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
+
+    /** The 403 for a secret scope refusal: the shared capability-denied body
+      * (`error`, `errorKind`, `message`), JSON-escaped, so a capability string
+      * with a backslash or control character still yields valid JSON. */
+    private[api] def capabilityDenied(e: CapabilityDeniedException): ResponseEntity[String] =
+        ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON)
+            .body[String](ai.datris.util.CatalogOps.capabilityDeniedBody(e.getMessage))
 
     val FailedBody = "{\"error\":\"Secret operation failed\"}"
 

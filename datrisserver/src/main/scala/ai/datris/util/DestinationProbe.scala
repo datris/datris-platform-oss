@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import scala.concurrent.duration._
 import java.sql.{Connection, SQLException, Statement}
 import scala.util.Try
+import scala.collection.JavaConverters._
 
 /** Existence probe for the "new destinations only" save rule
   * ([[DestinationTargets]]): does a target of the candidate config already
@@ -364,18 +365,12 @@ object DestinationProbe {
 
     /** The JDBC URL the destination-type sample and the delete use: the
       * platform secret's URL, with `/<database>` appended unless it already
-      * names a database. */
-    private[util] def postgresJdbcUrl(baseUrl: String, database: String): String = {
-        val afterProtocol = baseUrl.replaceFirst("^jdbc:postgresql://", "")
-        if (afterProtocol.contains("/")) baseUrl else baseUrl + "/" + database
-    }
+      * names a database ([[PostgresSql.jdbcUrl]]: the name percent-encoded). */
+    private[util] def postgresJdbcUrl(baseUrl: String, database: String): String = PostgresSql.jdbcUrl(baseUrl, database)
 
     /** `"schema"."table"`, each a quoted identifier (case kept, `"` doubled),
       * as the loader and the sample address the table. */
-    private[util] def postgresRegclass(schema: String, table: String): String = {
-        def q(s: String): String = "\"" + s.replace("\"", "\"\"") + "\""
-        q(schema) + "." + q(table)
-    }
+    private[util] def postgresRegclass(schema: String, table: String): String = PgIdentifier.qualified(schema, table)
 
     /** `to_regclass` of the quoted name, a bound parameter: anything
       * `SELECT * FROM "schema"."table"` could resolve (table, view,
@@ -647,4 +642,254 @@ object DestinationProbe {
     private[util] def committed(doc: ai.datris.model.UnityCatalogSyncState): Boolean =
         doc != null && (IcebergRestSession.managedCommitted(doc) ||
             (doc.catalogMode == "rest" && doc.restMetadataLocation != null && doc.lastRestCommitAt != null))
+
+    // ------------------------------------------------ qdrant, weaviate, milvus, chroma containers
+
+    /** The requests the container probe sends for `exact` in `store`, in
+      * order, addressed exactly as the delete's drop addresses the store
+      * (`VectorStoreDrop.endpoint`: host, port, scheme, auth header):
+      *  - qdrant: `GET /collections`, then `GET /aliases` (REST at the
+      *    secret's gRPC port minus one);
+      *  - weaviate: `GET /v1/schema`, then the alias of that exact name
+      *    `GET /v1/aliases/{exact}`, then the alias list `GET /v1/aliases`
+      *    (for an alias that differs in letter case);
+      *  - milvus: `POST /v2/vectordb/collections/has` with
+      *    `{"collectionName": ...}` (no `dbName`: the default database, as
+      *    the loader and the delete);
+      *  - chroma: `GET` the collection under the default tenant and
+      *    database, then the control list `GET .../collections?limit=1`.
+      * Throws for a null secret, a blank host, an unusable port or scheme,
+      * or an unknown store. */
+    def vectorContainerRequest(store: String, secret: java.util.Map[String, String], exact: String): Seq[VectorStoreDrop.Request] =
+        VectorStoreDrop.endpoint(store, secret) match {
+            case Left(f) => throw new IllegalStateException(store + " container check: " + f.reason)
+            case Right((base, headers)) =>
+                store match {
+                    case "qdrant" =>
+                        Seq(
+                            VectorStoreDrop.Request("GET", base + "/collections", headers, None),
+                            VectorStoreDrop.Request("GET", base + "/aliases", headers, None)
+                        )
+                    case "weaviate" =>
+                        Seq(
+                            VectorStoreDrop.Request("GET", base + "/v1/schema", headers, None),
+                            VectorStoreDrop.Request("GET", base + "/v1/aliases/" + VectorStoreDrop.segment(exact), headers, None),
+                            VectorStoreDrop.Request("GET", base + "/v1/aliases", headers, None)
+                        )
+                    case "milvus" =>
+                        Seq(VectorStoreDrop.Request("POST", base + "/v2/vectordb/collections/has", headers, Some(VectorStoreDrop.milvusNameBody(exact))))
+                    case "chroma" =>
+                        Seq(
+                            VectorStoreDrop.Request("GET", base + VectorStoreDrop.ChromaCollectionsPath + "/" + VectorStoreDrop.segment(exact), headers, None),
+                            VectorStoreDrop.Request("GET", base + VectorStoreDrop.ChromaCollectionsPath + "?limit=1", headers, None)
+                        )
+                    case other => throw new IllegalArgumentException("not a probed vector store: " + other)
+                }
+        }
+
+    private def unknown(store: String, what: String): Nothing = throw new IllegalStateException(store + " container check: " + what)
+
+    private def jsonOf(store: String, body: String): com.google.gson.JsonElement =
+        try {
+            val e = com.google.gson.JsonParser.parseString(if (body == null) "" else body)
+            if (e == null || e.isJsonNull) unknown(store, "empty answer") else e
+        } catch {
+            case _: com.google.gson.JsonParseException => unknown(store, "answer is not JSON")
+        }
+
+    private def objectOf(store: String, body: String): com.google.gson.JsonObject = {
+        val e = jsonOf(store, body)
+        if (e.isJsonObject) e.getAsJsonObject else unknown(store, "answer is not a JSON object")
+    }
+
+    private def arrayField(store: String, o: com.google.gson.JsonObject, field: String): Seq[com.google.gson.JsonObject] = {
+        val a = o.get(field)
+        if (a == null || !a.isJsonArray) unknown(store, "answer without " + field)
+        a.getAsJsonArray.asScala.toSeq.map(e => if (e != null && e.isJsonObject) e.getAsJsonObject else unknown(store, "malformed " + field))
+    }
+
+    private def stringField(store: String, o: com.google.gson.JsonObject, field: String): String = {
+        val v = o.get(field)
+        if (v == null || !v.isJsonPrimitive || !v.getAsJsonPrimitive.isString) unknown(store, "answer without " + field)
+        v.getAsString
+    }
+
+    private def ok(store: String, a: (Int, String)): String =
+        if (a._1 == 200) a._2 else unknown(store, "answered HTTP " + a._1)
+
+    /** Some(answer) once `answers` (a prefix of [[vectorContainerRequest]]'s
+      * answers, in order) is definite, None when the next request is
+      * needed; throws for anything that is neither. */
+    private def decideVectorContainer(store: String, exact: String, answers: Seq[(Int, String)]): Option[Boolean] = {
+        if (answers.isEmpty) return None
+        store match {
+            case "qdrant" =>
+                val result = objectOf(store, ok(store, answers.head)).get("result")
+                if (result == null || !result.isJsonObject) unknown(store, "answer without result")
+                val listed = arrayField(store, result.getAsJsonObject, "collections").exists(c => stringField(store, c, "name") == exact)
+                if (listed) Some(true)
+                else if (answers.size < 2) None
+                else {
+                    // A same-named alias is read and written through by name, so it counts as existing.
+                    val ar = objectOf(store, ok(store, answers(1))).get("result")
+                    if (ar == null || !ar.isJsonObject) unknown(store, "alias answer without result")
+                    Some(arrayField(store, ar.getAsJsonObject, "aliases").exists(a => stringField(store, a, "alias_name") == exact))
+                }
+            case "weaviate" =>
+                val listed =
+                    arrayField(store, objectOf(store, ok(store, answers.head)), "classes").exists(c => stringField(store, c, "class").equalsIgnoreCase(exact))
+                if (listed) Some(true)
+                else if (answers.size < 2) None
+                else
+                    // An alias is written through by name, so a same-named one counts as existing.
+                    // First by exact name: answered even where the list is filtered to what the key may read.
+                    answers(1)._1 match {
+                        case 200 => Some(true)
+                        case 404 =>
+                            if (answers.size < 3) None
+                            else
+                                answers(2)._1 match {
+                                    // A Weaviate without collection aliases (before 1.32) has no such path.
+                                    case 404 => Some(false)
+                                    case 200 =>
+                                        // Weaviate serialises an empty alias list as `null`.
+                                        val o = objectOf(store, answers(2)._2)
+                                        val list = o.get("aliases")
+                                        if (list == null || list.isJsonNull) Some(false)
+                                        else Some(arrayField(store, o, "aliases").exists(a => stringField(store, a, "alias").equalsIgnoreCase(exact)))
+                                    case other => unknown(store, "alias list answer HTTP " + other)
+                                }
+                        case other => unknown(store, "alias answer HTTP " + other)
+                    }
+            case "milvus" =>
+                val o = objectOf(store, ok(store, answers.head))
+                val code = o.get("code")
+                if (code == null || !code.isJsonPrimitive || !code.getAsJsonPrimitive.isNumber || code.getAsJsonPrimitive.getAsDouble != 0.0)
+                    unknown(store, "answer without code 0")
+                val data = o.get("data")
+                if (data == null || !data.isJsonObject) unknown(store, "answer without data")
+                val has = data.getAsJsonObject.get("has")
+                if (has == null || !has.isJsonPrimitive || !has.getAsJsonPrimitive.isBoolean) unknown(store, "answer without data.has")
+                Some(has.getAsBoolean)
+            case "chroma" =>
+                answers.head._1 match {
+                    case 200 =>
+                        if (stringField(store, objectOf(store, answers.head._2), "name") == exact) Some(true)
+                        else unknown(store, "answer names another collection")
+                    case 404 =>
+                        // 404 is "absent" only when the control list proves the tenant and database path.
+                        if (answers.size < 2) None
+                        else if (jsonOf(store, ok(store, answers(1))).isJsonArray) Some(false)
+                        else unknown(store, "control answer is not a list")
+                    case other => unknown(store, "answered HTTP " + other)
+                }
+            case other => throw new IllegalArgumentException("not a probed vector store: " + other)
+        }
+    }
+
+    /** True = the container `exact` exists in `store`, false = definitely
+      * absent, from the answers to [[vectorContainerRequest]] (a prefix of
+      * them, in order; the probe stops once definite). Throws for anything
+      * else (a status other than 200, chroma's 404 without the control, an
+      * empty or non-JSON body, a missing field, milvus `code` not 0).
+      *
+      * The answers are the stores' documented ones; they were not recorded
+      * against live stores (the Docker E2E checks qdrant, weaviate and
+      * chroma; milvus is from its REST v2 reference only). Qdrant: 200
+      * `result.collections[].name`, `result.aliases[].alias_name` (an alias
+      * of that name counts as existing: the loader and the delete address it
+      * by name). Weaviate: 200 `classes[].class`, compared ignoring case,
+      * then `GET /v1/aliases/{exact}`: 200 = an alias of that name exists,
+      * 404 = none by that exact name, anything else not definite; then
+      * `GET /v1/aliases`: 200 `aliases[].alias` compared ignoring case
+      * (`aliases` null or missing = none), 404 = a Weaviate without aliases,
+      * anything else (401, 403, 5xx, not JSON) not definite. The alias
+      * answers are from the Weaviate REST reference only, unverified against
+      * a live store.
+      * Milvus: 200 `code` 0 with boolean `data.has`. Chroma v2: 200 with the
+      * collection's `name`, or 404 with the control list answering a 200
+      * JSON array. */
+    def vectorContainerAnswer(store: String, exact: String, answers: Seq[(Int, String)]): Boolean =
+        decideVectorContainer(store, exact, Option(answers).getOrElse(Nil)).getOrElse(unknown(store, "no definite answer"))
+
+    /** The container probe over a secret read keyed by store (Success(None)
+      * = no secret, Failure = the read failed: both throw, nothing is sent)
+      * and a transport. Sends [[vectorContainerRequest]]'s requests in order
+      * until [[vectorContainerAnswer]] is definite. */
+    def vectorContainerExistsWith(
+        t: DestinationTargets.VectorContainerTarget,
+        secretOf: String => scala.util.Try[Option[java.util.Map[String, String]]],
+        send: VectorStoreDrop.Request => (Int, String)
+    ): Boolean = {
+        require(t != null && t.key != null, "no vector container to probe")
+        val store = t.key.store
+        val secret = secretOf(store).get.getOrElse(unknown(store, "the store is not configured"))
+        val requests = vectorContainerRequest(store, secret, t.exact)
+        var answers = Vector.empty[(Int, String)]
+        var decided: Option[Boolean] = None
+        val it = requests.iterator
+        while (decided.isEmpty && it.hasNext) {
+            answers = answers :+ send(it.next())
+            decided = decideVectorContainer(store, t.exact, answers)
+        }
+        decided.getOrElse(unknown(store, "no definite answer"))
+    }
+
+    /** The environment's secret name for `store` (the one the loaders, the
+      * search and the delete read; one store instance per environment). */
+    def vectorStoreSecretName(store: String): String = {
+        val e = DatrisEnvironment.current
+        store match {
+            case "qdrant" => e.qdrantSecretName
+            case "weaviate" => e.weaviateSecretName
+            case "milvus" => e.milvusSecretName
+            case "chroma" => e.chromaSecretName
+            case other => throw new IllegalArgumentException("not a probed vector store: " + other)
+        }
+    }
+
+    /** The cap on one probe answer: list answers (qdrant collections and
+      * aliases, the weaviate schema with every class's config) are far
+      * larger than a drop's, so the drop's 64 KB would cut a healthy store's
+      * list short. Over this cap the probe fails ("answer too large") rather
+      * than parse a truncated list. */
+    val VectorProbeMaxBodyBytes: Int = 8 * 1024 * 1024
+
+    /** One deadline shared by all requests of one probe (each request gets
+      * the time that is left): the save's own deadline (`withDeadline`,
+      * [[DefaultDeadline]] by default), rather than the drop's 10 s per
+      * request, so a list read gets long enough and the probe as a whole
+      * never outlasts it. */
+    val VectorProbeRequestDeadlineMs: Long = DefaultDeadline.toMillis
+
+    /** One probe request: `VectorStoreDrop.send` with the probe's cap (a
+      * larger answer throws) and `remainingMs` of the probe's shared deadline. */
+    def vectorContainerSend(r: VectorStoreDrop.Request, remainingMs: Long): (Int, String) =
+        VectorStoreDrop.send(r, remainingMs, VectorProbeMaxBodyBytes, failOverCap = true)
+
+    /** Production: [[vectorContainerExistsWith]] over the environment's
+      * store secret ([[vectorStoreSecretName]], read with
+      * `SecretsUtil.tryGetSecretMap`) and [[vectorContainerSend]] (5 s
+      * connect and read, no redirects, the probe's cap and deadline). Runs under
+      * the save's deadline and slot (`withDeadline`, by the caller). */
+    def vectorContainerExists(t: DestinationTargets.VectorContainerTarget): Boolean =
+        vectorContainerExists(t, name => SecretsUtil.tryGetSecretMap(name))
+
+    /** [[vectorContainerExists]] with the secret read given (by secret
+      * name): the environment's [[vectorStoreSecretName]] for the target's
+      * store is read with `readSecret`, and the store is asked over
+      * [[vectorContainerSend]]. */
+    def vectorContainerExists(
+        t: DestinationTargets.VectorContainerTarget,
+        readSecret: String => scala.util.Try[Option[java.util.Map[String, String]]],
+        deadlineMs: Long = VectorProbeRequestDeadlineMs
+    ): Boolean = {
+        // One deadline for every request of this probe.
+        val deadlineNanos = System.nanoTime() + deadlineMs * 1000000L
+        vectorContainerExistsWith(
+            t,
+            store => scala.util.Try(vectorStoreSecretName(store)).flatMap(readSecret),
+            r => vectorContainerSend(r, (deadlineNanos - System.nanoTime()) / 1000000L)
+        )
+    }
 }

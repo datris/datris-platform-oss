@@ -42,6 +42,24 @@ object JobRunner {
         SideEffects(fixSuggestion = real, openIncident = real, recordLineage = real, storeCodeGenScripts = real)
     }
 
+    /** Wait for every destination loader (a failure or `timeout` throws),
+      * then, back under `processName`, store the columns this run's
+      * transformation added that no SQL table left out
+      * ([[TransformedColumns.storeAfterLoad]]; never for a rehearsal:
+      * `storeColumns` false). Nothing is stored when the wait throws. */
+    private[controller] def awaitDestinations(
+        loaders: List[Future[Unit]],
+        timeout: Duration,
+        ctx: JobContext,
+        storeColumns: Boolean,
+        statusUtil: StatusUtil,
+        processName: String
+    )(implicit ec: ExecutionContext): Unit = {
+        Await.result(Future.sequence(loaders), timeout)
+        statusUtil.overrideProcessName(processName)
+        if (storeColumns) TransformedColumns.storeAfterLoad(ctx)
+    }
+
     /** The destination-facing text for a loader failure: the exception's own
       * message, falling back to its class name. Never a stack trace — this is
       * what lands in `rollup.jobs[].lastError.description`, the field agents
@@ -307,9 +325,17 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             ).flatten
             loaderFutures = destinationFutures
 
-            Await.result(Future.sequence(destinationFutures.map(_._2)), Duration(JobRunner.destinationTimeoutMinutes, "minutes"))
-
-            statusUtil.overrideProcessName(this.getClass.getSimpleName)
+            // Columns this run's transformation added, on a pipeline with a SQL
+            // table, are stored once every destination loaded, less any a SQL
+            // table left out; never in a rehearsal, never failing the run.
+            JobRunner.awaitDestinations(
+                destinationFutures.map(_._2),
+                Duration(JobRunner.destinationTimeoutMinutes, "minutes"),
+                jobContextStamped,
+                effects.storeCodeGenScripts,
+                statusUtil,
+                this.getClass.getSimpleName
+            )
             statusUtil.info("end", "Process completed")
             if (effects.recordLineage) recordRunLineage(startedAtMs, recordCount, dataType, loaderFutures, "SUCCESS", null)
         } catch {

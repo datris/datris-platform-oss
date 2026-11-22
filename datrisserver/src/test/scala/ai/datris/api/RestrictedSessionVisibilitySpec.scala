@@ -282,8 +282,8 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
             assert(EntityVersionAPIController.hiddenFromRestricted(session, r, "update", Some(("Sales", "someone"))))
             assert(!EntityVersionAPIController.hiddenFromRestricted(session, r, "update", Some(("Ops", "someone"))))
         }
-        // API keys and unrestricted sessions are unchanged.
-        assert(!EntityVersionAPIController.hiddenFromRestricted(req(salesKey), "pipeline", "read", Some(("HR", "x"))))
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, D0); unrestricted sessions are unchanged.
+        assert(EntityVersionAPIController.hiddenFromRestricted(req(salesKey), "pipeline", "read", Some(("HR", "x"))))
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(!EntityVersionAPIController.hiddenFromRestricted(req(editor), "pipeline", "update", None))
     }
@@ -328,8 +328,8 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(PipelineAPIController.hiddenConfig(session, hr, "read"))
         assert(!PipelineAPIController.hiddenConfig(session, pipeline("orders", "Sales"), "read"))
         assert(PipelineAPIController.hiddenConfig(session, pipeline("orders", "Sales"), "update"))
-        // API keys and unrestricted sessions: unchanged (no refusal).
-        assert(PipelineAPIController.refusalFor(req(salesKey), "payroll", hr, "run").isEmpty)
+        // A catalog-scoped API key is refused outside its scope (scoped-key-read-routes, D0); unrestricted sessions: no refusal.
+        assert(PipelineAPIController.refusalFor(req(salesKey), "payroll", hr, "run").isDefined)
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(!PipelineAPIController.restrictedHidden(req(editor), "payroll", "read"), "no stored read for unrestricted")
         // GET /pipeline/result: a hidden job reads exactly as an unknown token.
@@ -340,10 +340,10 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
 
     test("field-protection suggest/preset hide a pipeline outside the grants with the missing-pipeline error") {
         val session = req(restrictedSession(grants("Sales" -> "view")))
-        val e = intercept[DatrisException](FieldProtectionAPIController.hideFromRestricted(session, "payroll")(pipeline("payroll", "HR")))
+        val e = intercept[DatrisException](FieldProtectionAPIController.targetRefusal(session, "payroll", pipeline("payroll", "HR"), None))
         assert(e.getMessage == "Pipeline: payroll is not configured in the NoSQL database")
-        FieldProtectionAPIController.hideFromRestricted(session, "orders")(pipeline("orders", "Sales"))
-        FieldProtectionAPIController.hideFromRestricted(req(salesKey), "payroll")(pipeline("payroll", "HR"))
+        FieldProtectionAPIController.targetRefusal(session, "orders", pipeline("orders", "Sales"), None)
+        intercept[CapabilityDeniedException](FieldProtectionAPIController.targetRefusal(req(salesKey), "payroll", pipeline("payroll", "HR"), None))
     }
 
     test("DELETE /pipeline/status is refused for a restricted session") {
@@ -459,7 +459,7 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         ResolvedKey(None, "sales-meta", Capability.parseList(Seq("pipeline:read:catalog=Sales", "metadata:read")), isLegacyFullAccess = false)
 
     test(
-        "GET /api/v1/metadata/postgres/tables is 403 with the capability-denied body for a restricted session and passes for a catalog-scoped API key holding metadata:read"
+        "GET /api/v1/metadata/postgres/tables is 403 with the capability-denied body for a restricted session and for a catalog-scoped API key holding metadata:read"
     ) {
         val path = "/api/v1/metadata/postgres/tables"
         val bob = restrictedSession(grants("Sales" -> "edit"))
@@ -479,9 +479,14 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(captured.exists(e => e.category == "security" && e.action == "denied"), captured.map(e => e.category + "/" + e.action))
 
         captured.clear()
+        // A catalog-scoped API key holding metadata:read is refused too (scoped-key-read-routes, Part C, D3).
         val (keyCont, keyStatus, keyBody) = intercept(req(catalogScopedMetadataKey, path = path))
-        assert(keyCont && keyStatus == 200 && keyBody.isEmpty, s"API key with metadata:read passes: $keyStatus $keyBody")
-        assert(!captured.exists(_.category == "security"), "no denial row for the key")
+        assert(!keyCont && keyStatus == 403, s"catalog-scoped API key with metadata:read is refused: $keyStatus $keyBody")
+        val ko = JsonParser.parseString(keyBody).getAsJsonObject
+        assert(ko.get("errorKind").getAsString == "capability_denied", keyBody)
+        assert(ko.get("required").getAsString == "metadata:read", keyBody)
+        assert(ko.get("route").getAsString == "GET " + path, keyBody)
+        assert(captured.exists(e => e.category == "security" && e.action == "denied"), "a denial row for the key")
         // An unrestricted session is unchanged too.
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(intercept(req(editor, path = path))._1)
@@ -495,7 +500,7 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         val (cont, status, body) = intercept(req(bob, path = path))
         assert(!cont && status == 403, s"$status $body")
         assert(JsonParser.parseString(body).getAsJsonObject.get("errorKind").getAsString == "capability_denied", body)
-        assert(intercept(req(catalogScopedMetadataKey, path = path))._1, "API keys with metadata:read are unchanged")
+        assert(!intercept(req(catalogScopedMetadataKey, path = path))._1, "a catalog-scoped API key with metadata:read is refused too (Part C)")
     }
 
     private val pgOrders = Destination(schemaProperties = null, database = Database(dbName = "datris", schema = "public", table = "orders", usePostgres = true))
@@ -533,10 +538,15 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(v.edges.forall(e => ids.contains(e.from) && ids.contains(e.to)), v.edges)
         assert(!v.edges.exists(e => e.from == "pipeline:payroll" || e.to == "pipeline:payroll"))
 
-        // Unrestricted session and API keys: the graph is untouched.
+        // Unrestricted session: the graph is untouched.
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
         assert(LineageAPIController.visibleGraph(req(editor), g) == g)
-        assert(LineageAPIController.visibleGraph(req(catalogScopedMetadataKey), g) == g)
+        // A catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B).
+        val keyIds = LineageAPIController.visibleGraph(req(catalogScopedMetadataKey), g).nodes.map(_.id).toSet
+        assert(keyIds.contains("pipeline:orders"), keyIds)
+        Seq("pipeline:payroll", "tap:t_hr_feed", "tap:t_payroll", "catalog:HR").foreach(i =>
+            assert(!keyIds.contains(i), s"$i must be dropped for the key: $keyIds")
+        )
     }
 
     test("lineage columns for a hidden pipeline is the no-such-pipeline 404") {

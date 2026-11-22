@@ -171,7 +171,7 @@ class CodeGenScriptVersionAPIController {
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
             else {
-                CapabilityCheck.assertVisible(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+                CapabilityCheck.assertVisibleToWrite(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
                 body(config)
             }
         } catch {

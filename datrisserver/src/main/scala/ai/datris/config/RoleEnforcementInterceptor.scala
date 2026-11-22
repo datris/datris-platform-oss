@@ -27,10 +27,15 @@ import org.springframework.web.servlet.HandlerInterceptor
   *  4. No UserContext (programmatic path):
   *       - role-gated endpoint → require a *validated* full-access API key
   *         (mere x-api-key presence, or the anonymous full-access identity in
-  *         useApiKeys=false mode, is NOT sufficient for an admin gate);
+  *         useApiKeys=false mode, is NOT sufficient for an admin gate). Short
+  *         of that: no credential is 401, a rejected key 401, a key-store
+  *         outage 503 (`unauthenticated`); a resolved key without the role
+  *         (the keys-off anonymous identity included) 403 `Insufficient role`;
   *       - otherwise → x-api-key validated per-controller, or legacy no-auth.
   *  5. Method or class has @RequiresRole → restrict to those roles.
-  *  6. Default rule: GET allowed for all logged-in roles; non-GET requires admin or editor.
+  *  6. Default rule: GET allowed for all logged-in roles; non-GET requires
+  *     admin or editor, except the four chat POSTs (`viewerMayPost`), open to
+  *     every role because a chat's tools run with the user's role bundle.
   *
   * Step 6 keeps the diff small — we don't have to annotate every write endpoint. */
 @Component
@@ -58,7 +63,7 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
         // ones with no role annotation. A role-gated method here falls through.
         if (ann.isEmpty && classFqn == "ai.datris.api.AuthAPIController") return true
 
-        val uri = request.getRequestURI
+        val uri = ai.datris.auth.RequestPaths.path(request)
         if (ann.isEmpty && uri != null && uri.startsWith("/api/v1/version")) return true
 
         val userOpt = UserContext.get()
@@ -101,13 +106,23 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                         resolvedKey(request).exists(rk =>
                             RoleEnforcementInterceptor.programmaticKeySatisfiesRoleGate(
                                 rk,
-                                request.getMethod,
-                                request.getRequestURI
+                                ai.datris.auth.RequestPaths.method(request),
+                                ai.datris.auth.RequestPaths.path(request)
                             )
                         )
                     )
                         return true
-                    return reject(request, response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
+                    // No credential at all is an authentication failure, not
+                    // a role question (Decision 6): 401, a rejected key 401,
+                    // a key-store outage 503. A caller that does hold a
+                    // resolved identity keeps the 403.
+                    RoleEnforcementInterceptor.unauthenticated(
+                        resolvedKey(request),
+                        Option(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr)).map(_.toString)
+                    ) match {
+                        case Some((status, body)) => return reject(request, response, HttpStatus.valueOf(status), body)
+                        case None => return reject(request, response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
+                    }
 
                 case None =>
                     // No session — programmatic / service-to-service path (CLI, MCP server, etc).
@@ -133,9 +148,13 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                 else reject(request, response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
             case None =>
                 // Default rule: viewers can GET; writes need admin or editor.
-                val httpMethod = request.getMethod
-                if (httpMethod == "GET" || httpMethod == "HEAD" || httpMethod == "OPTIONS") true
+                // The four chat POSTs are open to every role: the chat's tools
+                // run with the user's own role bundle (TenantInterceptor), so
+                // a viewer's chat is read-only.
+                val httpMethod = ai.datris.auth.RequestPaths.method(request)
+                if (httpMethod == "GET" || httpMethod == "OPTIONS") true
                 else if (WriteRoles.contains(user.role)) true
+                else if (httpMethod == "POST" && RoleEnforcementInterceptor.viewerMayPost(uri)) true
                 else reject(request, response, HttpStatus.FORBIDDEN, """{"error":"Read-only role"}""")
         }
     }
@@ -176,21 +195,52 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
 
 object RoleEnforcementInterceptor {
 
+    /** The chat POSTs a viewer (any role) may send: the Assistant, Operations,
+      * catalog and Search chats. Their tools run with the user's role bundle,
+      * so a viewer's chat can only read. Compared exactly against the
+      * dispatcher's matched path (`RequestPaths.path`). The attachment upload
+      * and the Configuration chat are not here. */
+    val ViewerChatPosts: Set[String] =
+        Set("/api/v1/assistant/chat", "/api/v1/ops-chat/chat", "/api/v1/catalog-chat/chat", "/api/v1/search-chat/chat")
+
+    /** May any signed-in role POST this matched path past the default rule? */
+    def viewerMayPost(path: String): Boolean = path != null && ViewerChatPosts.contains(path)
+
+    /** The answer for a role-gated route reached without a session when no
+      * key satisfied the gate: no resolved identity is 401 `Authentication
+      * required`; a presented key that was rejected answers as the capability
+      * gate does (401, or 503 for a key-store outage); a resolved identity
+      * without the role is None (the gate's 403 `Insufficient role`). */
+    def unauthenticated(resolved: Option[ResolvedKey], rejection: Option[String]): Option[(Int, String)] =
+        if (resolved.isDefined) None
+        else
+            rejection match {
+                case Some(reason) => Some(CapabilityInterceptor.rejectionResponse(reason))
+                case None => Some((HttpStatus.UNAUTHORIZED.value(), ai.datris.api.ApiErrors.AuthenticationRequiredBody))
+            }
+
     /** Does this validated key satisfy a role-gated endpoint reached without
-      * a user session? Full access (`*:*`) always does. A scoped key does
-      * only when the route is capability-mapped and the key holds the
-      * required capability — the same grant the CapabilityInterceptor
-      * already enforced earlier in the chain. Skip-listed and unmapped
-      * routes (key minting, user management) never accept a scoped key. */
+      * a user session? Full access ([[ResolvedKey.isFullAccess]]: a legacy
+      * key or unscoped `*:*`) always does. A scoped key does only when the
+      * route is capability-mapped and the key holds the required capability
+      * — the same grant the CapabilityInterceptor already enforced earlier
+      * in the chain. Skip-listed and unmapped routes (key minting, user
+      * management, the Configuration chat) never accept a scoped key.
+      *
+      * A scoped wildcard (`*:*:catalog=Sales`, `*:read:owner=self`) never
+      * satisfies a role gate, in either `DATRIS_KEY_INERT_SCOPES` mode
+      * (owner decision, api-key-inert-scopes review): the scope-blind
+      * `matchesResourceAction("*", "*")` used before let such a key mint keys
+      * and manage users. */
     private[config] def programmaticKeySatisfiesRoleGate(
         rk: ResolvedKey,
         method: String,
         path: String
     ): Boolean = {
-        if (rk.matchesResourceAction("*", "*")) return true
+        if (rk.isFullAccess) return true
         ai.datris.auth.CapabilityRoutes.lookup(method, path) match {
             case ai.datris.auth.RouteCheck.Require(resource, action) =>
-                rk.matchesResourceAction(resource, action)
+                rk.effectiveCapabilities.exists(c => !c.isScopedWildcard && c.matchesResourceAction(resource, action))
             case _ => false
         }
     }

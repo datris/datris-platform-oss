@@ -349,7 +349,13 @@ class Transformation(jobContext: JobContext) {
                 header = newHeader,
                 headerWithSchema = rebuildHeaderSchema(newHeader, data.headerWithSchema)
             )
-            jobContext.copy(data = newData)
+            // A column the transformation created is not in the destination
+            // schema yet (the schema was built from the source columns at save):
+            // it joins the schema here as string. A column the rows carried
+            // before the transformation (oldHeader) or the source schema lists
+            // was not created by it and is never added, so a source column the
+            // destination schema leaves out stays out.
+            TransformedColumns.reconcile(jobContext.copy(data = newData), oldHeader)
         } else if (data.isDocument) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen transformation on " + (if (isJson) "JSON" else "XML") + " data")

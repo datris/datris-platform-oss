@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets
 import java.sql.{Connection, PreparedStatement, Statement}
 import java.util.UUID
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.util.Try
 
 /** Microsoft SQL Server / Azure SQL destination. Mirrors [[SnowflakeLoader]] —
@@ -33,9 +34,12 @@ import scala.util.Try
  *
  *  Credentials are a Platform-tab secret named by `Database.credentialsSecret`
  *  (resolved by [[CredentialResolver.resolveSqlServer]]). */
-class SqlServerLoader(jobContext: JobContext) {
+class SqlServerLoader(initialContext: JobContext) {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SqlServerLoader])
-    private val config = jobContext.config
+    // The run's context, narrowed by [[prepareTable]] when a column this
+    // run's transformation added is left out of this table.
+    private var jobContext: JobContext = initialContext
+    private def config: PipelineConfig = jobContext.config
     private val statusUtil = jobContext.statusUtil
     private val db = config.destination.database
 
@@ -75,8 +79,7 @@ class SqlServerLoader(jobContext: JobContext) {
     private def loadData(conn: Connection, statement: Statement): Unit = {
         statusUtil.info("processing", "Loading data into " + db.table)
 
-        if (!db.manageTableManually)
-            createTableIfUndefined(statement)
+        prepareTable(statement)
 
         // Truncate AFTER create-if-not-exists so first-run pipelines with
         // truncateBeforeWrite=true don't fail against a not-yet-existing table.
@@ -213,17 +216,27 @@ class SqlServerLoader(jobContext: JobContext) {
         } else destFields.toSeq
     }
 
-    private def createTableIfUndefined(statement: Statement): Unit = {
+    /** Create the schema and table when missing, then add any configured
+      * column the table lacks. When every non-document field's type passes
+      * [[ColumnTypeText.loadText]] (a null type is `string` here, as in
+      * [[SqlServerLoader.sqlServerType]]) the statements are those earlier
+      * versions ran, in the same order. Otherwise the existing columns are
+      * read first and the run fails before any statement when a stored type
+      * that is not safe would be needed ([[ColumnTypeText.loadProblem]]);
+      * else the table is not created again and only missing columns are
+      * added. A column this run's transformation added is handled by
+      * [[TransformedColumns.evolve]] (left out of this table, names returned
+      * lower-cased, instead of failing the load). */
+    private def createTableIfUndefined(statement: Statement): Set[String] = {
         val schema = SqlServerConnectionUtil.schemaName(db)
-        // CREATE SCHEMA must be the only statement in its batch, hence EXEC.
-        statement.execute(
-            s"IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ${nLiteral(schema)}) EXEC(${nLiteral("CREATE SCHEMA " + ident(schema))})"
-        )
-
         val fields = config.destination.schemaProperties.fields.asScala.toSeq
-        val ddl = SqlServerLoader.createTableSql(db, fields)
-        statusUtil.info("processing", "SQL Server create table statement: " + ddl)
-        statement.execute(ddl)
+
+        val create = SqlServerLoader.createPlan(db, fields)
+        create.schemaSql.foreach(sql => statement.execute(sql))
+        create.tableSql.foreach { ddl =>
+            statusUtil.info("processing", "SQL Server create table statement: " + ddl)
+            statement.execute(ddl)
+        }
 
         // Additive schema evolution: add any new columns the table doesn't have yet.
         val existing = scala.collection.mutable.Set[String]()
@@ -236,15 +249,94 @@ class SqlServerLoader(jobContext: JobContext) {
             rs.close()
         }
 
-        fields.foreach { field =>
-            if (!existing.contains(field.name.toLowerCase)) {
-                // Added columns are nullable and never part of the key.
-                val alter = s"ALTER TABLE ${qualifiedTable()} ADD ${SqlServerLoader.columnDef(field, isKey = false)}"
-                statusUtil.info("processing", "Schema evolution: " + alter)
-                statement.execute(alter)
-            }
+        SqlServerLoader.evolvePlan(db, fields, existing.toSet) match {
+            case Left(problem) => throw new DatrisException(problem)
+            case Right(plan) =>
+                plan.statusLine.foreach(line => statusUtil.info("processing", line))
+                TransformedColumns.evolve(
+                    jobContext,
+                    destinationLabel,
+                    TransformedColumns.SqlServer,
+                    ColumnTypeText.missingFields(fields, existing.toSet).zip(plan.addColumns),
+                    existing.toSet,
+                    alter => statement.execute(alter),
+                    alter => addWithBoundedLockWait(statement, alter),
+                    () => readColumnTypes(statement)
+                )
         }
     }
+
+    /** The context the load uses: the run's, less any column this run's
+      * transformation added that [[prepareTable]] left out of this table. */
+    private[util] def loadContext: JobContext = jobContext
+
+    /** Create or extend the table, or check a manually managed one against
+      * the columns this run's transformation added; then leave out of this
+      * load every such column the table cannot take. Returns those names,
+      * lower-cased. */
+    private[util] def prepareTable(statement: Statement): Set[String] = {
+        val left =
+            if (!db.manageTableManually) createTableIfUndefined(statement)
+            else TransformedColumns.manualTable(jobContext, destinationLabel, TransformedColumns.SqlServer, () => readColumnTypes(statement))
+        jobContext = TransformedColumns.withoutColumns(jobContext, left)
+        left
+    }
+
+    /** The ADD of a column this run's transformation added, behind a
+      * savepoint inside a transaction (a refusal that ends the transaction
+      * fails the load). ADD needs a schema-modification lock and queues
+      * behind open readers; on v1.60.0 this pipeline issued no ALTER. When
+      * the session waits without limit (`@@LOCK_TIMEOUT` is -1, the default),
+      * the wait is bounded by [[SqlServerLoader.AddedColumnLockTimeoutMs]]
+      * for this one statement and put back to -1 afterwards whatever happens
+      * (SET LOCK_TIMEOUT is not transactional, and a lock timeout does not
+      * end the transaction); a timeout is then a refusal and the column is
+      * left out with a warning. A bound the session already has is left alone. */
+    private def addWithBoundedLockWait(statement: Statement, alter: String): Option[Throwable] = {
+        val conn = statement.getConnection
+        val current = {
+            val rs = statement.executeQuery("SELECT @@LOCK_TIMEOUT")
+            try if (rs.next()) rs.getObject(1) match {
+                    case n: Number => Some(n.intValue)
+                    case _ => None
+                }
+                else None
+            finally rs.close()
+        }
+        if (!current.contains(-1)) TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alter))
+        else
+            // The connection is closed when the load ends; a put-back that
+            // fails fails the load (onPutBackFailure has nothing to do).
+            TransformedColumns.withSettingPutBack(
+                statement.execute("SET LOCK_TIMEOUT " + SqlServerLoader.AddedColumnLockTimeoutMs),
+                statement.execute("SET LOCK_TIMEOUT -1"),
+                () => ()
+            )(TransformedColumns.attempt(conn, savepoint = true)(statement.execute(alter)))
+    }
+
+    private def destinationLabel: String = "the SQL Server table " + SqlServerConnectionUtil.schemaName(db) + "." + db.table
+
+    /** The table's columns with their types by lower-cased name
+      * (CHARACTER_MAXIMUM_LENGTH is -1 for (n)varchar(max)). */
+    private def readColumnTypes(statement: Statement): Either[Throwable, Seq[TransformedColumns.StoreColumn]] =
+        TransformedColumns.attemptRead(statement.getConnection, savepoint = true) {
+            val rs = statement.executeQuery(SqlServerLoader.columnTypesSql(db))
+            try {
+                val out = ListBuffer[TransformedColumns.StoreColumn]()
+                while (rs.next()) {
+                    val len = rs.getObject(3) match {
+                        case n: Number => Some(n.longValue)
+                        case _ => None
+                    }
+                    val generated = (rs.getObject(5), rs.getObject(6)) match {
+                        case (c: Number, i: Number) => Some(c.intValue == 1 || i.intValue == 1)
+                        case _ => None
+                    }
+                    out += TransformedColumns.StoreColumn(rs.getString(1), rs.getString(2), len, TransformedColumns.yesNo(rs.getString(4)), generated)
+                }
+                out.toList
+            } finally rs.close()
+        }
 
     private def qualifiedTable(): String = SqlServerConnectionUtil.qualifiedTable(db)
 
@@ -288,21 +380,64 @@ object SqlServerLoader {
      *  PostgresLoader.createTableIfUndefined: `_json` -> NVARCHAR(MAX) (with an
      *  ISJSON check, see [[columnDef]]) is the analog of Postgres' json, `_xml`
      *  -> XML. A string KEY column is NVARCHAR(450) because an index key over
-     *  NVARCHAR(MAX) is not allowed (900-byte clustered-key limit). Unknown
-     *  types pass through (e.g. decimal(p,s)). */
+     *  NVARCHAR(MAX) is not allowed (900-byte clustered-key limit). A null
+     *  type is `string`. Any other type is passed as written only when it
+     *  has a [[ColumnTypeText.loadText]] (sent as that text) (e.g. decimal(p,s), varchar(max)); every
+     *  other type text is a `DatrisException`. */
     def sqlServerType(field: SchemaField, isKey: Boolean = false): String = {
         if (field.name.equalsIgnoreCase("_json")) "NVARCHAR(MAX)"
         else if (field.name.equalsIgnoreCase("_xml")) "XML"
-        else Option(field.`type`).getOrElse("string").toLowerCase match {
-            case "string" => if (isKey) "NVARCHAR(450)" else "NVARCHAR(MAX)"
-            case "int" | "integer" | "smallint" | "tinyint" => "INT"
-            case "bigint" => "BIGINT"
-            case "float" | "double" => "FLOAT"
-            case "boolean" => "BIT"
-            case "date" => "DATE"
-            case "timestamp" => "DATETIME2"
-            case _ => field.`type`
+        else {
+            val t = if (field.`type` == null) "string" else ColumnTypeText.loadTextOrThrow(field)
+            t.toLowerCase(java.util.Locale.ROOT) match {
+                case "string" => if (isKey) "NVARCHAR(450)" else "NVARCHAR(MAX)"
+                case "int" | "integer" | "smallint" | "tinyint" => "INT"
+                case "bigint" => "BIGINT"
+                case "float" | "double" => "FLOAT"
+                case "boolean" => "BIT"
+                case "date" => "DATE"
+                case "timestamp" => "DATETIME2"
+                case _ => t
+            }
         }
+    }
+
+    /** The loader's create step: the `CREATE SCHEMA` batch and
+      * [[createTableSql]], or nothing when a field's stored type has no
+      * [[ColumnTypeText.loadText]] (a null type is `string` here). */
+    def createPlan(db: Database, fields: Seq[SchemaField]): ColumnTypeText.CreatePlan = {
+        val schema = SqlServerConnectionUtil.schemaName(db)
+        ColumnTypeText.create(
+            withNullAsString(fields),
+            // CREATE SCHEMA must be the only statement in its batch, hence EXEC.
+            Some(s"IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ${nLiteral(schema)}) EXEC(${nLiteral("CREATE SCHEMA " + ident(schema))})"),
+            createTableSql(db, fields)
+        )
+    }
+
+    /** The loader's evolve step over the table's existing (lower-cased)
+      * columns ([[ColumnTypeText.evolve]]; a null type is `string`). Added
+      * columns are nullable and never part of the key. */
+    def evolvePlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Either[String, ColumnTypeText.EvolvePlan] =
+        ColumnTypeText.evolve(
+            withNullAsString(fields),
+            existing,
+            f => s"ALTER TABLE ${SqlServerConnectionUtil.qualifiedTable(db)} ADD ${columnDef(f, isKey = false)}"
+        )
+
+    /** How long the ADD of a column a transformation added waits for its
+      * lock when the session waits without limit, in milliseconds. */
+    val AddedColumnLockTimeoutMs: Int = 5000
+
+    /** The table's columns, by position: name, type, character length (-1 for
+      * (n)varchar(max)), IS_NULLABLE, and COLUMNPROPERTY IsComputed and
+      * IsIdentity (1 or 0; available on every supported SQL Server and Azure
+      * SQL). */
+    def columnTypesSql(db: Database): String = {
+        val obj = "OBJECT_ID(QUOTENAME(TABLE_SCHEMA) + '.' + QUOTENAME(TABLE_NAME))"
+        "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMNPROPERTY(" + obj + ", COLUMN_NAME, 'IsComputed'), COLUMNPROPERTY(" + obj +
+            ", COLUMN_NAME, 'IsIdentity') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = " + nLiteral(SqlServerConnectionUtil.schemaName(db)) +
+            " AND TABLE_NAME = " + nLiteral(db.table)
     }
 
     /** `name TYPE [NOT NULL] [CHECK (ISJSON(name) = 1)]`. */
@@ -345,6 +480,10 @@ object SqlServerLoader {
         sb.append(s"WHEN NOT MATCHED BY TARGET THEN INSERT ($insertCols) VALUES ($insertVals);")
         sb.toString
     }
+
+    /** `fields` with a null type read as `string`, as [[sqlServerType]] reads it. */
+    private[util] def withNullAsString(fields: Seq[SchemaField]): Seq[SchemaField] =
+        fields.map(f => if (f != null && f.`type` == null) f.copy(`type` = "string") else f)
 
     def isDocumentColumn(f: SchemaField): Boolean =
         f.name.equalsIgnoreCase("_json") || f.name.equalsIgnoreCase("_xml")

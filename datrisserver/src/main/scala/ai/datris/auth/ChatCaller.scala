@@ -9,7 +9,7 @@ import ai.datris.api.ApiErrors
 import ai.datris.audit.{AuditActor, AuditLog}
 import ai.datris.config.{CapabilityInterceptor, TenantInterceptor}
 import ai.datris.model.{DatrisEnvironment, ResolvedKey, TenantContext, User, UserContext}
-import ai.datris.util.SecretsUtil
+import ai.datris.util.{APIKeyValidator, SecretsUtil}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.springframework.http.{HttpHeaders, HttpStatus, MediaType, ResponseEntity}
 
@@ -38,8 +38,10 @@ case class ChatIdentity(user: Option[User], key: Option[ResolvedKey], ownKey: Bo
   * never gives a caller more than its own credential allows:
   *   1. a tap-run token is refused (403), in every mode;
   *   2. a session user, or the `ui` key acting on behalf of a trusted user,
-  *      chats as that user with the `ui` key (narrowed by TenantInterceptor
-  *      for a restricted user), as before;
+  *      chats as that user with the `ui` key. The chat's tool calls carry
+  *      `X-Datris-On-Behalf-Of`, and TenantInterceptor narrows them to that
+  *      user's role bundle (catalog grants for a restricted user); an admin
+  *      keeps the `ui` key's full access;
   *   3. a full-access identity (legacy key, the `ui` key, keys-off anonymous,
   *      a multi-tenant key, an unscoped `*:*` key) uses the `ui` key, as before;
   *   4. any other key has its own presented key used for the agent's tools,
@@ -108,14 +110,32 @@ object ChatCaller {
 
     /** Install-wide full access. `grants` with no scope context, so a scoped
       * `*:*:catalog=x` does not count. */
-    def isFullAccess(rk: ResolvedKey): Boolean =
-        rk.isLegacyFullAccess || rk.grants("*", "*")
+    def isFullAccess(rk: ResolvedKey): Boolean = rk.isFullAccess
 
     /** May the Ops chat context carry open incidents for this caller? A user
-      * unless restricted; otherwise a full-access key or one holding unscoped
-      * `incident:read`. */
+      * is judged by their own session bundle
+      * (`APIKeyValidator.resolveFromSession`: full access or unscoped
+      * `incident:read`, today an admin only), whatever key comes with the
+      * request; a caller with no user by its key (full access, or unscoped
+      * `incident:read`). */
     def mayReadIncidents(id: ChatIdentity): Boolean =
-        id.user.map(!_.isRestricted).getOrElse(id.key.exists(k => isFullAccess(k) || k.grants("incident", "read")))
+        id.user match {
+            case Some(u) =>
+                val bundle = APIKeyValidator.resolveFromSession(u)
+                isFullAccess(bundle) || bundle.grants("incident", "read")
+            case None => id.key.exists(k => isFullAccess(k) || k.grants("incident", "read"))
+        }
+
+    /** The ceiling on a chat turn's agent iterations: the server's default.
+      * A request may ask for fewer, never more. */
+    val MaxIterations: Int = 50
+
+    /** `maxIterations` from a chat request body, clamped to [[MaxIterations]];
+      * the default when absent or null. */
+    def maxIterations(req: com.google.gson.JsonObject): Int =
+        if (req != null && req.has("maxIterations") && !req.get("maxIterations").isJsonNull)
+            math.min(req.get("maxIterations").getAsInt, MaxIterations)
+        else MaxIterations
 
     /** The Configuration chat with user auth off: only a full-access key. A
       * session user is never accepted here; with user auth on the class-level

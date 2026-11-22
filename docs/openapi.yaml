@@ -1499,7 +1499,8 @@ components:
         maxIterations:
           type: integer
           default: 50
-          description: Maximum agent-loop iterations (LLM + tool-call rounds) before the loop stops
+          maximum: 50
+          description: Maximum agent-loop iterations (LLM + tool-call rounds) before the loop stops. A request may lower it; values above 50 are treated as 50.
         context:
           type: object
           description: Optional endpoint-specific context object (see each chat endpoint's description)
@@ -1781,6 +1782,46 @@ paths:
         delimited or JSON). Like every other validator error, the rejection
         returns HTTP 400 with `{"error": "..."}` naming the field.
 
+        Database destination names: on every pipeline type (structured,
+        semi-structured and unstructured) a new or changed
+        `destination.database` section must pass the structured validator's
+        checks (`dbName`, `table` and, except MongoDB, `schema` required and
+        limited to `a-z`, `A-Z`, `0-9` and `_`; no `;` in an `options` entry;
+        exactly one engine flag), and with `usePostgres` its `dbName`,
+        `schema` and `table` are at most 63 bytes. Otherwise 400 with that
+        check's message. A save that keeps exactly the stored `dbName`,
+        `schema`, `table`, `warehouse`, `options` and engine flags is not
+        refused by this rule. Version restore and catalog restore apply it too.
+
+        Field types: on every pipeline type, each new or changed field type in
+        the source or destination schema is exactly one of `boolean`, `int`,
+        `tinyint`, `smallint`, `bigint`, `float`, `double`, `string`, `date`,
+        `timestamp`, `decimal(p)` or `decimal(p,s)` (1 to 4 digits each),
+        `varchar(n)` or `char(n)` (1 to 9 digits) or `varchar(max)`, in any
+        letter case, with spaces only inside the parentheses and after the
+        closing parenthesis (`integer` is also accepted on unstructured
+        pipelines, as before; the validator refuses it elsewhere). Otherwise 400
+        with `Invalid field type passed: ...` naming the field and the schema.
+        A field whose name and type the stored pipeline already has in the
+        same schema is not refused by this rule. Version restore and catalog
+        restore apply it too.
+
+        Field names: on structured and semi-structured pipelines, each field
+        name in the source or destination schema uses only `a-z`, `A-Z`, `0-9`
+        and `_`, otherwise 400 with `Column name: <name> is invalid.  Valid
+        characters are a-z, 0-9 and _`. A name that the stored pipeline
+        already has, exactly as written, in the same schema (for example one
+        added by schema evolution from a file header) is not refused, so the
+        pipeline can be saved again unchanged; a new or renamed field, or one
+        moved to the other schema, still follows the rule. A `partitionBy`
+        field always follows it. A save that changes the destination
+        (another database engine, another object-store `fileFormat`, or an
+        added destination) keeps such a name only when it passes the check a
+        new header cell passes for that destination (no control character,
+        the destination's length limit, no backtick on ORC); otherwise 400
+        naming the field. Version restore (against the live pipeline)
+        and catalog restore apply it too.
+
         One pipeline per vector container: a vector destination whose
         collection, class or table (pgvector: schema plus table) another
         pipeline already names is refused with 400 `{"error": "..."}` naming
@@ -1927,14 +1968,24 @@ paths:
         '400':
           description: >-
             The configuration was refused and nothing was saved: it failed
-            validation, it selects a Postgres destination when no Postgres is
+            validation (including a new or changed `destination.database`
+            name that breaks the naming rule, on any pipeline type, and a
+            MongoDB destination that is not a data collection or, when new or
+            changed, is in the platform's internal database (unless that is
+            also the install's data database): `A MongoDB
+            destination must be a data collection, and a new destination must
+            be in a data database. Choose another database or collection
+            name.`), it selects a Postgres destination when no Postgres is
             reachable, it conflicts with another pipeline's source-of-authority
             declaration, or its vector collection, class or table is already
             used by another pipeline, or (for a caller who cannot see every
             pipeline) its destination is written by a pipeline it cannot see,
             or (restricted users only) a new or changed Postgres, SQL Server,
-            Snowflake or Databricks table, pgvector table, MongoDB collection
-            or object-store prefix already exists: `The
+            Snowflake or Databricks table, pgvector table, MongoDB collection,
+            Qdrant, Milvus or Chroma collection, Weaviate class (for Qdrant
+            also an alias of that name; for Weaviate any letter case, and a
+            collection alias of that name) or
+            object-store prefix already exists: `The
             destination <kind> <coordinates> already exists. Choose a table or
             prefix that does not exist yet, or ask a user with install-wide
             access to save this destination.` (only the coordinates in the
@@ -1956,13 +2007,27 @@ paths:
             SQL Server temporary table (`#name`): `A SQL Server temporary table
             (a name starting with #) cannot be a pipeline destination. Choose
             another table name.`, or (restricted users only) a new or changed
-            pgvector schema or table name with a double quote, or an empty
-            schema: `The pgvector schema and table names must not contain
-            double quotes, and the schema must not be empty. Choose plain
-            names.`, or (restricted users only) a pgvector destination with a
-            missing or blank `tableName` that the saved pipeline does not
-            already have: `A pgvector destination needs a table name. Set
-            destination.pgvector.tableName.` Fix the configuration and save
+            Qdrant or Chroma collection or Weaviate class name with a
+            character other than letters, digits, `.`, `_` and `-`, or `.` /
+            `..`, or Milvus collection name with a character other than
+            letters, digits and `_`, not starting with a letter or `_`, or
+            longer than 255 characters: `A Qdrant or Chroma collection name
+            or a Weaviate class name may use only letters, digits, '.', '_'
+            and '-', and cannot be '.' or '..'; a Milvus collection name only
+            letters, digits and '_', starting with a letter or '_', at most
+            255 characters. Choose a plain name.`, or (restricted users
+            only) one with a missing or blank name the saved pipeline does not
+            already have: `A Qdrant, Milvus or Chroma destination needs a
+            collection name, and a Weaviate destination a class name. Set
+            collectionName or className.`, or a new or changed pgvector schema or
+            table name with a double quote, or an empty schema: `The pgvector
+            schema and table names must not contain double quotes, and the
+            schema must not be empty. Choose plain names.`, or a pgvector
+            destination with a missing or blank `tableName`: `A pgvector
+            destination needs a table name. Set
+            destination.pgvector.tableName.` (both pgvector rules apply to
+            every caller and are skipped when the saved pipeline already has
+            exactly that schema and table name). Fix the configuration and save
             again.
           content:
             application/json:
@@ -1976,7 +2041,10 @@ paths:
           description: >-
             Server error (for example the configuration store is unreachable).
             For a restricted user, also when the check that a new destination
-            does not exist yet could not reach the database, warehouse or bucket (an
+            does not exist yet could not reach the database, warehouse, bucket
+            or vector store (a vector store not configured on the install, an
+            answer the check does not recognise, or a collection list larger
+            than 8 MB counts too; an
             object-store endpoint that does not answer within a few seconds
             counts; the check does not retry), or did not finish within 30
             seconds: `Could not check whether the destination already
@@ -2027,7 +2095,7 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a vector collection, class or table kept because another pipeline also names it (the warning starts with `Kept` and names the container; the other pipeline is named only when the caller can see it), a Postgres, SQL Server, Snowflake or Databricks table or MongoDB collection kept because another pipeline also writes to it (including a pgvector table and a Postgres table with the same schema and name; the warning starts with `Kept` and names it; it is dropped with the last pipeline that writes to it), a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand.
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a vector collection, class or table kept because another pipeline also names it (the warning starts with `Kept` and names the container; the other pipeline is named only when the caller can see it), a Postgres, SQL Server, Snowflake or Databricks table or MongoDB collection kept because another pipeline also writes to it (including a pgvector table and a Postgres table with the same schema and name; the warning starts with `Kept` and names it; it is dropped with the last pipeline that writes to it), a Unity Catalog table (catalogMode rest) an admin has to drop, a catalogMode managed table Unity Catalog owns (Datris deleted nothing there), or an AI script file kept in the code repository because it was edited there since its recorded commit (or the repository could not be reached); the file is named so it can be removed by hand. A Qdrant, Milvus or Chroma collection or Weaviate class the store could not remove (store not configured, unreachable, no answer within 5 seconds, an HTTP error or a reported error) is listed as a warning starting `Could not remove <store> collection|class <name>`, then the reason, then `Its pipeline configuration was deleted; remove it in the store.` (delete) or `Run the reset again once the store is available.` (deleteConfig=false), with `The removal may still complete in the store; check it there.` before that when the reason is that the store did not answer in time, or `It was not removed.` when a Postgres or pgvector drop hit its time limit and was rolled back; the status stays 200 and the configuration is still deleted on a delete. A Postgres, SQL Server, Snowflake or Databricks table, MongoDB collection, pgvector table, object-store prefix or scratch folder that could not be removed is listed the same way (a warning starting `Could not remove <label>`, then the reason and the same closing sentence), with the reason one of `the store is not configured`, `the store could not be reached`, `the store did not answer in time`, `the store stopped the removal at its time limit and rolled it back` (Postgres and pgvector), `the store refused the credentials`, `the store refused permission to remove it` or `the store reported an error`; never the store's message, SQL, a host or a secret name. Each such drop is bounded at 30 seconds; a Databricks connection first waits for a stopped SQL warehouse to start, as before, for up to 15 minutes, and an unreachable Databricks workspace is reported after about 30 seconds (object-store and scratch deletes keep the object store's own timeouts and retries). Data already gone is not a failure, except a missing Snowflake database or schema or a missing SQL Server database, which is reported as `the store reported an error`. An object-store prefix kept because another pipeline's prefix overlaps it is listed as a warning starting `Kept object-store prefix <bucket>.<prefix>` that names no other pipeline. A full delete also lists document-tap ledgers, stored history, CodeGen scripts or Unity Catalog sync state that could not be removed; these are removed the next time a pipeline of that name is deleted, except document-tap ledgers, which belong to the tap; that warning says to clear the ledger of the tap (DELETE /api/v1/tap/ledger) before loading again. A data-only reset whose table, collection, prefix or vector collection could not be removed keeps the document-tap ledgers.
           content:
             application/json:
               schema:
@@ -2061,7 +2129,7 @@ paths:
                   error:
                     type: string
         '500':
-          description: Error
+          description: Error. When the configuration could not be deleted, `error` says so (and whether destination data was already removed) and asks to run the delete again (every removal is safe to repeat); that message never carries the store's own error text.
 
 
   /api/v1/catalog/{name}:
@@ -2125,7 +2193,7 @@ paths:
       tags: [Pipelines]
       summary: Delete a catalog (detach or cascade)
       description: |
-        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop or a vector container, table or collection kept because another pipeline still names it (it is dropped with the last one); warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
+        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop, a vector container, table or collection kept because another pipeline still names it (it is dropped with the last one), or a vector collection or class, table, collection or object-store files the store could not remove (the pipeline is still listed under `deleted`); warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -3309,6 +3377,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'A key limited by `catalog=` or `owner=` named a pipeline it may not read in that scope. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`; the message never names the pipeline''s catalog or owner. A restricted user gets the 400 for an unknown pipeline instead'
         '500':
           description: Error
 
@@ -3415,6 +3485,8 @@ paths:
                 properties:
                   error:
                     type: string
+        '403':
+          description: 'A key limited by `catalog=` or `owner=` named a pipeline it may not read in that scope. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`; the message never names the pipeline''s catalog or owner. A restricted user gets the 400 for an unknown pipeline instead'
         '500':
           description: Error
 
@@ -3432,6 +3504,9 @@ paths:
         pipeline or column fails. Needs the `protect:reveal` capability, which
         no key template or editor/viewer role carries; admins, the
         `full-access` template and legacy unscoped keys hold it through `*:*`.
+        `protect:reveal:catalog=<name>` or `protect:reveal:owner=self` reveals
+        only in pipelines in that scope, and a key limited by `catalog=` or
+        `owner=` on a pipeline capability reveals only in pipelines it may read.
         Not available as an MCP tool. Every call is recorded in the audit log
         as `protect / reveal` (field name and counts only, never a value), with
         outcome `warning` when any value failed; denied calls are recorded as
@@ -3493,7 +3568,7 @@ paths:
         '400':
           description: Missing `pipeline`, `field` or `values`, more than 1000 values, unknown pipeline, or a field not protected with `encrypt`
         '403':
-          description: The caller lacks `protect:reveal`
+          description: 'The caller lacks `protect:reveal`, or the named pipeline is outside the key''s scope (its pipeline read or its reveal capability''s `catalog=` / `owner=`). Checked before the field. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`; the message never names the pipeline''s catalog or owner'
         '500':
           description: 'The field-protection key could not be read from the secret store (`{"error": "Field protection: could not read ..."}`), or another server error (`{"error": "Reveal failed"}`). No value is revealed'
   /api/v1/protect/keys/rotate:
@@ -3556,8 +3631,21 @@ paths:
               schema:
                 type: string
                 description: Bare token or message text, not JSON-encoded
+        '403':
+          description: >-
+            Capability denied: the key holds `document:upload` only under `collection=`
+            scopes, and the pipeline has no vector destination or one of its vector
+            containers is not named by them. Nothing is staged and no status row is
+            written. Body:
+            `{"error": "capability denied", "errorKind": "capability_denied", "message": "..."}`.
         '500':
-          description: 'Error, including an unregistered pipeline. Body: `{"error": ...}`'
+          description: >-
+            Error, including an unregistered pipeline, or a CSV header with a
+            new column whose name the destination cannot hold (a control
+            character, a name equal to an existing or another new column once
+            spaces and letter case are ignored, or longer than the destination
+            allows). The error names the header cell; the pipeline schema is
+            left unchanged. Body: `{"error": ...}`
 
   /api/v1/pipeline/generate:
     post:
@@ -3659,6 +3747,7 @@ paths:
       description: >-
         Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
         A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) of a run fed by such a tap, or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        An API key limited by `catalog=` or `owner=` on a pipeline or tap capability gets the same filtering and the same 404 for pipelines outside its scope, and the same `[hidden]` tap names and omitted columns when it does not read every tap.
       parameters:
         - name: publishertoken
           in: query
@@ -3726,7 +3815,7 @@ paths:
     delete:
       tags: [Status]
       summary: Clear all ingestion history
-      description: Deletes every job status entry — detail rows and per-pipeline summaries — for the environment. Refused (403) for restricted users.
+      description: Deletes every job status entry — detail rows and per-pipeline summaries — for the environment. Refused (403) for restricted users and for API keys limited by `catalog=` or `owner=` (it covers the whole installation).
       responses:
         '200':
           description: Number of entries deleted
@@ -3745,13 +3834,13 @@ paths:
       tags: [Status]
       summary: Get a Live Read (scratch) pipeline's result
       description: >-
-        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants.
+        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants, and so do API keys limited by `catalog=` or `owner=` for a pipeline outside their scope.
         Page through the rows a Live Read (scratch destination) pipeline run
         produced. Paging reads the stored result and never re-runs the source.
         Only Live Read pipelines have a result. `limit` is clamped server-side to the
         inline cap, so the next page starts at `offset + returnedCount`, never
         `offset + limit`. Results expire after the retention window.
-        For a restricted user, rows of a run fed by a tap they cannot read (or one no longer stored), or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        For a restricted user, rows of a run fed by a tap they cannot read (or one no longer stored), or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns; likewise for an API key limited by `catalog=` or `owner=` that does not read every tap.
       parameters:
         - name: pipelinetoken
           in: query
@@ -3818,7 +3907,7 @@ paths:
     post:
       tags: [Query]
       summary: Query PostgreSQL
-      description: Execute a read-only SQL SELECT query against PostgreSQL. Enforces SELECT-only, blocks dangerous keywords, and auto-appends LIMIT. Not available to restricted users (403 from the capability check); free-form SQL cannot be limited to a catalog.
+      description: Execute a read-only SQL SELECT query against PostgreSQL. The query runs in a read-only transaction and is cancelled after 30 seconds (5 minutes with `limit` -1). Enforces SELECT-only, blocks dangerous keywords, server administration, server file, replication and remote-connection functions and a small set of other functions (the error names the word), does not accept Unicode-escape quoting (`U&`), and auto-appends LIMIT. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); free-form SQL cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3834,7 +3923,7 @@ paths:
                 database:
                   type: string
                   default: datris
-                  description: PostgreSQL database name
+                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database, and in multi-tenant installs.
                 limit:
                   type: integer
                   default: 100
@@ -3849,13 +3938,13 @@ paths:
         '400':
           description: '`limit` is not an integer. Body: `{"error": ...}`'
         '500':
-          description: Error
+          description: 'A query refused by the read-only checks (empty, not starting with SELECT or WITH, a blocked word or function, a semicolon, a comment, `U&` quoting), with a message naming the rule (for example `Query contains blocked keyword: DROP`), or any other error. Body: `{"error": ...}`'
 
   /api/v1/query/mongodb:
     post:
       tags: [Query]
       summary: Query MongoDB
-      description: Query a MongoDB collection with optional filter and projection. Blocks $where and $function operators. Not available to restricted users (403 from the capability check); it cannot be limited to a catalog.
+      description: Query a MongoDB collection with optional filter and projection. Reads data collections only; a system database, a `system.` collection or a collection holding the platform's own state is refused with 400. Blocks $where, $function and $accumulator in the filter and in the projection. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -3869,14 +3958,14 @@ paths:
                   description: MongoDB collection name
                 database:
                   type: string
-                  description: MongoDB database name (defaults to the configured database)
+                  description: MongoDB database name (defaults to the configured database). Ignored in multi-tenant installs, where the tenant's own database is queried. Must not be a MongoDB system database.
                 filter:
                   type: object
                   default: {}
                   description: MongoDB query filter
                 projection:
                   type: object
-                  description: Fields to include/exclude
+                  description: Fields to include/exclude. Inclusion and exclusion, $slice, $elemMatch, $meta and aggregation expressions are accepted; $where, $function and $accumulator are refused.
                 limit:
                   type: integer
                   default: 20
@@ -3889,9 +3978,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
         '400':
-          description: '`limit` is not an integer. Body: `{"error": ...}`'
+          description: '`limit` is not an integer, or the database or collection is not a data collection (body `{"error": "This database or collection is not available for queries."}`). Body: `{"error": ...}`'
         '500':
-          description: Error
+          description: 'A filter or projection holding $where, $function or $accumulator (message `MongoDB filter contains blocked operator: $where`, or `projection`), an empty collection name, or any other error. Body: `{"error": ...}`'
 
   /api/v1/query/objectstore:
     post:
@@ -3957,7 +4046,7 @@ paths:
     post:
       tags: [Query]
       summary: Query Snowflake
-      description: 'Execute a read-only SQL query against the Snowflake destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
+      description: 'Execute a read-only SQL query against the Snowflake destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`. For an API key limited by `catalog=` or `owner=`: a pipeline outside its scope is 403, a non-blank `sql` is 403 even for a pipeline in scope (omit `sql` for the preview), and the response omits the same columns when the key does not read every tap.'
       requestBody:
         required: true
         content:
@@ -4004,7 +4093,7 @@ paths:
                   error:
                     type: string
         '403':
-          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table.'
+          description: 'Restricted users: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. For an API key limited by `catalog=` or `owner=`: a non-blank `sql` is refused, before the pipeline is looked up, with `{"error": "capability denied", "errorKind": "capability_denied", "message": "capability denied: this request covers the whole installation and is not available to an API key or user limited to a catalog or to what it created"}`; a pipeline outside the key''s scope is refused with the capability-denied body naming `pipeline:read`.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -4014,7 +4103,7 @@ paths:
     post:
       tags: [Query]
       summary: Query SQL Server
-      description: 'Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY and no TOP, left as written when it already has OFFSET, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q` (for a WITH statement only the final SELECT is wrapped). When SQL Server rejects the wrapper (an unnamed or duplicate column name, FOR JSON / FOR XML) the query runs unwrapped with the same row cap. Write, exec and session keywords (INSERT, UPDATE, DELETE, INTO, EXEC, USE, OPENROWSET and others) are rejected anywhere in the statement, string literals included. Requires the `query:sqlserver` capability. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
+      description: 'Execute a read-only T-SQL query (SELECT or WITH; metadata through INFORMATION_SCHEMA views) against the SQL Server or Azure SQL destination of a pipeline. Connection credentials come from the pipeline''s configured `credentialsSecret`, for every `authMethod`. Rows are capped with `OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY` when the statement has a top-level ORDER BY and no TOP, left as written when it already has OFFSET, otherwise by wrapping it in `SELECT TOP (<limit>) * FROM (...) q` (for a WITH statement only the final SELECT is wrapped). When SQL Server rejects the wrapper (an unnamed or duplicate column name, FOR JSON / FOR XML) the query runs unwrapped with the same row cap. Write, exec and session keywords (INSERT, UPDATE, DELETE, INTO, EXEC, USE, OPENROWSET and others) are rejected anywhere in the statement, string literals included. Requires the `query:sqlserver` capability. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`. For an API key limited by `catalog=` or `owner=`: a pipeline outside its scope is 403, a non-blank `sql` is 403 even for a pipeline in scope (omit `sql` for the preview), and the response omits the same columns when the key does not read every tap.'
       requestBody:
         required: true
         content:
@@ -4061,7 +4150,7 @@ paths:
                   error:
                     type: string
         '403':
-          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table.'
+          description: 'Restricted users: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. For an API key limited by `catalog=` or `owner=`: a non-blank `sql` is refused, before the pipeline is looked up, with `{"error": "capability denied", "errorKind": "capability_denied", "message": "capability denied: this request covers the whole installation and is not available to an API key or user limited to a catalog or to what it created"}`; a pipeline outside the key''s scope is refused with the capability-denied body naming `pipeline:read`.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -4073,7 +4162,7 @@ paths:
     post:
       tags: [Query]
       summary: Query Databricks
-      description: 'Execute a read-only SQL query against the Databricks destination of a pipeline (a Unity Catalog managed Delta table). Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`.'
+      description: 'Execute a read-only SQL query against the Databricks destination of a pipeline (a Unity Catalog managed Delta table). Connection credentials come from the pipeline''s configured `credentialsSecret`. For a restricted user: `sql` is refused with 403 and the response omits `_datris_tap_run`, `_datris_script_sha`, `_datris_source`. For an API key limited by `catalog=` or `owner=`: a pipeline outside its scope is 403, a non-blank `sql` is 403 even for a pipeline in scope (omit `sql` for the preview), and the response omits the same columns when the key does not read every tap.'
       requestBody:
         required: true
         content:
@@ -4120,7 +4209,7 @@ paths:
                   error:
                     type: string
         '403':
-          description: 'Restricted users only: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. Also returned when Databricks denies the query a permission.'
+          description: 'Restricted users: a non-blank `sql` is refused with `{"error": "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline''s table."}`; omit `sql` to get the preview of the pipeline''s table. For an API key limited by `catalog=` or `owner=`: a non-blank `sql` is refused, before the pipeline is looked up, with `{"error": "capability denied", "errorKind": "capability_denied", "message": "capability denied: this request covers the whole installation and is not available to an API key or user limited to a catalog or to what it created"}`; a pipeline outside the key''s scope is refused with the capability-denied body naming `pipeline:read`. Also returned when Databricks denies the query a permission.'
         '404':
           description: 'Restricted users only: the named `pipeline` is not in the user''s catalog grants. Same body as a missing pipeline (`{"error": "Pipeline: <name> is not configured in the NoSQL database"}`).'
         '500':
@@ -4130,7 +4219,7 @@ paths:
     post:
       tags: [Query]
       summary: Natural-language query (AI)
-      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. Not available to restricted users (403 from the capability check); it cannot be limited to a catalog.
+      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results. The generated SQL runs like `/api/v1/query/postgres`, in a read-only transaction under the same time limit. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); it cannot be limited to a catalog.
       requestBody:
         required: true
         content:
@@ -4148,7 +4237,7 @@ paths:
                 database:
                   type: string
                   default: datris
-                  description: PostgreSQL database name
+                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database, and in multi-tenant installs.
                 schema:
                   type: string
                   default: public
@@ -4279,8 +4368,20 @@ paths:
             User-actionable error, returned as a plain message. Sent for an
             unknown or unavailable `{store}` (the message names the valid
             stores, e.g. "Unknown vector store: 'faiss'. Valid stores: chroma,
-            milvus, pgvector, qdrant, weaviate"), a missing `query`, or an
-            embedding dimension mismatch between ingest and query.
+            milvus, pgvector, qdrant, weaviate"), a missing `query`, an
+            embedding dimension mismatch between ingest and query, a pgvector
+            `table` or `schema` that is empty or contains a NUL character, or
+            a pgvector table with no queryable columns (including one that
+            does not exist). The pgvector `table` and `schema` are looked up
+            exactly as written.
+        '403':
+          description: >-
+            Capability denied: the key holds `search:vector` only under `collection=`
+            scopes and none names this container (pgvector: `<table>` in `public`,
+            `<schema>.<table>` elsewhere). Checked before any lookup, so the answer is
+            the same whether or not the container exists. Body:
+            `{"error": "capability denied", "errorKind": "capability_denied", "message": "..."}`;
+            the message lists the key's own `search` capabilities.
         '404':
           description: 'Restricted users only: no pipeline writes to the requested collection / class / table, or one of the pipelines writing to it is outside the user''s catalog grants (a container is searchable only when every pipeline writing to it is visible). Body: `{"error": "<Collection|ClassName|Table>: <name> not found"}`.'
         '500':
@@ -4410,7 +4511,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL databases
-      description: List all PostgreSQL databases available in the platform. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all PostgreSQL databases available in the platform. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of database names
@@ -4427,14 +4528,14 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL schemas
-      description: List all schemas in a PostgreSQL database. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all schemas in a PostgreSQL database. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
           schema:
             type: string
             default: datris
-          description: Database name
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
       responses:
         '200':
           description: Array of schema names
@@ -4451,14 +4552,14 @@ paths:
     get:
       tags: [Metadata]
       summary: List PostgreSQL tables
-      description: List all tables in a PostgreSQL schema. Set vectorOnly to true to filter to tables with an embedding column (pgvector tables). Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all tables in a PostgreSQL schema. Set vectorOnly to true to filter to tables with an embedding column (pgvector tables). Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
           schema:
             type: string
             default: datris
-          description: Database name
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
         - name: schema
           in: query
           schema:
@@ -4487,14 +4588,14 @@ paths:
     get:
       tags: [Metadata]
       summary: List table columns
-      description: List all columns and their data types for a specific PostgreSQL table. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all columns and their data types for a specific PostgreSQL table. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
           schema:
             type: string
             default: datris
-          description: Database name
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
         - name: schema
           in: query
           schema:
@@ -4523,7 +4624,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List MongoDB databases
-      description: List all MongoDB databases available in the platform. Excludes system databases (admin, config, local). Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all MongoDB databases available in the platform. Excludes system databases (admin, config, local). Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of database names
@@ -4540,7 +4641,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List MongoDB collections
-      description: List MongoDB collections. If database is specified, lists collections in that database. Otherwise lists all collections across all databases in "db.collection" format. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List MongoDB data collections. If database is specified, lists the data collections in that database. Otherwise lists the data collections of every database in "db.collection" format. System databases, `system.` collections and the collections holding the platform's own state are never listed. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       parameters:
         - name: database
           in: query
@@ -4556,6 +4657,8 @@ paths:
                 type: array
                 items:
                   type: string
+        '400':
+          description: 'The database is a MongoDB system database. Body: `{"error": "This database or collection is not available for queries."}`'
         '500':
           description: Error
 
@@ -4565,7 +4668,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Qdrant collections
-      description: List all collections in the Qdrant vector database. Returns an empty array if Qdrant is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all collections in the Qdrant vector database. Returns an empty array if Qdrant is not configured. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4582,7 +4685,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Weaviate classes
-      description: List all classes in the Weaviate vector database. Returns an empty array if Weaviate is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all classes in the Weaviate vector database. Returns an empty array if Weaviate is not configured. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of class names
@@ -4599,7 +4702,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Milvus collections
-      description: List all collections in the Milvus vector database. Returns an empty array if Milvus is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all collections in the Milvus vector database. Returns an empty array if Milvus is not configured. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4616,7 +4719,7 @@ paths:
     get:
       tags: [Metadata]
       summary: List Chroma collections
-      description: List all collections in the Chroma vector database. Returns an empty array if Chroma is not configured. Not available to restricted users (403 from the capability check); table and collection listings cannot be limited to a catalog.
+      description: List all collections in the Chroma vector database. Returns an empty array if Chroma is not configured. Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); table and collection listings cannot be limited to a catalog.
       responses:
         '200':
           description: Array of collection names
@@ -4745,6 +4848,12 @@ paths:
                 items:
                   type: string
               example: ["postgres", "mongodb", "embedding", "qdrant"]
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '500':
           description: Error
 
@@ -4773,6 +4882,12 @@ paths:
                     type: object
                     additionalProperties:
                       type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: Secret not found
         '500':
@@ -4800,6 +4915,12 @@ paths:
           description: Success
         '400':
           description: 'Unsafe secret name (could address a different secret path), or an invalid change to the field-protection key secret. Body: `{"error": ...}`'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'The key''s `secret:write` scope does not cover this secret (for example a `secret:write:_type=tap` key writing a non-tap secret), the field-protection key material needs `protect:admin`, or AI secrets are locked on a trial. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}` for scope denials'
         '409':
@@ -4820,6 +4941,12 @@ paths:
           description: Success
         '400':
           description: 'Unsafe secret name (could address a different secret path). Body: `{"error": ...}`'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'The key''s `secret:write` scope does not cover this secret (`{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`), or AI secrets are locked on a trial'
         '409':
@@ -5665,7 +5792,7 @@ paths:
                   type: string
                   enum: [run, test]
                   default: test
-                  description: "'run' feeds records into the configured target pipeline; 'test' executes the script and returns results without persisting"
+                  description: "'run' feeds records into the configured target pipeline; 'test' executes the script and returns results without persisting. Case-insensitive; missing or empty means test. Any other value is refused with 400 before the tap is read."
                 testLimit:
                   type: integer
                   default: 20
@@ -5713,6 +5840,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TapRunResult'
+        '400':
+          description: "A `mode` other than run or test: `{\"error\":\"Unknown mode '<mode>'. Valid values: run, test (default).\"}`"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '404':
           description: 'No such tap: `{"error":"Tap: <name> not found"}`'
           content:
@@ -6026,9 +6162,16 @@ paths:
       tags: [Versions]
       summary: Restore a tap version
       description: >-
-        Restores the tap's DEFINITION from the given version snapshot,
-        preserving the live tap's creation metadata, ownership, and run-status
-        fields. The restore itself is saved as a new version.
+        Restores the tap's DEFINITION from the given version snapshot. The
+        restore is checked like a save of that version (`POST /api/v1/tap`),
+        for every caller, and is always saved as a new version. With a live
+        tap, the restored config keeps the tap's current name, catalog, owner,
+        creation time, enabled state, and run, retry and test state; a restore
+        never moves a tap to another catalog or turns its schedule on or off.
+        A deleted tap is re-created as `POST /api/v1/tap` creates a tap: in the
+        version's catalog, owned by the caller, with its test status cleared (so
+        a schedule must pass a test run again before it can be set); its other
+        recorded run details are as they are in the version.
       parameters:
         - name: name
           in: query
@@ -6048,13 +6191,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/TapConfig'
         '400':
-          description: 'The snapshot''s `cronExpression` is invalid, or its `secretName` may not be used by a tap (server-managed or unsafe name, or not tagged `_type=tap` while tap-secret scoping is enforced). Body: `{"error": ...}`'
+          description: 'The snapshot''s `secretName` may not be used by a tap (server-managed or unsafe name, or not tagged `_type=tap` while tap-secret scoping is enforced), or its `cronExpression` is invalid, or the version fails another check `POST /api/v1/tap` makes, with the same message (for example an unknown `scriptKind`, an HTTP tap without a valid `endpointUrl` or with script fields, `endpointUrl` on a script tap, a document tap whose target pipeline cannot take documents, a script that is no longer in its storage backend, or a changed `dependsOn` that names a tap that is not in the tap''s catalog). Nothing is restored. Body: `{"error": ...}`'
+        '403':
+          description: Capability denied. A scoped key needs `tap:update` (or `tap:create`) and `tap:read` in scope for the tap (its live catalog and owner, or the newest stored version's when the tap was deleted), and, when it is checked on loads, the right to load into the tap's target pipeline with `pipeline:read` in scope. Restoring a version of a deleted tap re-creates it with the caller as owner, so every key also needs `tap:create` in scope on the tap as re-created (the version's catalog, the caller as owner), as `POST /api/v1/tap` requires for a new tap; a key without it, including one holding `tap:update` and no `tap:create` at all, gets the 403 naming `tap:create`. Restoring over a live tap needs no `tap:create`.
         '404':
           description: No such version for this tap. A restricted user gets the same 404 when the tap is outside its catalog grants or has been deleted.
         '409':
           description: >-
             The snapshot's script differs from the one that last passed a test while a
-            cron is set (test-before-cron). Body is `{"error": "<tap name + remedy>"}`.
+            cron is set (test-before-cron); or the version's changed `dependsOn` closes a
+            dependency cycle (the body also carries `cycle`); or the tap was created,
+            deleted, moved, given another owner, or enabled or disabled while the restore was
+            being checked: `Tap '<name>' changed while it was being restored; nothing was
+            restored. Try again.` Body is `{"error": "..."}`. Nothing is restored.
         '500':
           description: Error
 
@@ -6147,7 +6296,7 @@ paths:
     post:
       tags: [Versions]
       summary: Restore a pipeline version
-      description: Restores the pipeline's definition from the given version snapshot, preserving ownership. The restore itself is saved as a new version.
+      description: Restores the pipeline's definition from the given version snapshot. The restore is checked like a save of that version (`POST /api/v1/pipeline`), for every caller, and is saved as a new version. With a live pipeline, the restored config keeps the pipeline's current name, catalog, owner and earlier names (`previousNames`); a deleted pipeline is restored under the requested name in the version's catalog.
       parameters:
         - name: name
           in: query
@@ -6169,11 +6318,13 @@ paths:
         '404':
           description: No such version for this pipeline. A restricted user gets the same 404 when the pipeline is outside its catalog grants or has been deleted.
         '403':
-          description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope.
+          description: Capability denied. The key needs `pipeline:update` in scope for the pipeline (its live catalog and owner, or the restored version's when the pipeline was deleted); a scoped key cannot restore a pipeline outside its scope. Restoring a version of a deleted pipeline re-creates it, so every key also needs `pipeline:create` in scope on the pipeline as re-created (the version's catalog and the version's owner, which the re-created pipeline keeps), as `POST /api/v1/pipeline` requires for a new pipeline; a key without it, including one holding `pipeline:update` and no `pipeline:create` at all, gets the 403 naming `pipeline:create`. Restoring over a live pipeline needs no `pipeline:create`.
         '400':
-          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection or object-store prefix that already exists, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`). Body: `{"error": "..."}`.'
+          description: 'Refused like a save: the snapshot names a vector collection, class or table that the live pipeline does not and another pipeline already uses, or (for a caller who cannot see every pipeline) a destination the live pipeline does not write and a pipeline hidden from the caller writes, or (restricted users only) a new or changed table, collection, Weaviate class or object-store prefix that already exists, or a new or changed vector-store collection or class name that is not plain or is missing, or an object-store prefix or bucket that is not a plain path, or a SQL Server temporary table, or a pipeline name with an Iceberg table committed through Unity Catalog on record (`The destination <kind> <coordinates> already exists. Choose a table or prefix that does not exist yet, or ask a user with install-wide access to save this destination.` or `The object-store prefix and bucket must be plain names: ... Choose a plain prefix.` or `A pipeline of this name has an Iceberg table committed through Unity Catalog on record. ...`), or (every caller) a pgvector schema or table name the live pipeline does not have exactly and that holds a double quote, an empty schema or no table name (`The pgvector schema and table names must not contain double quotes, and the schema must not be empty. Choose plain names.` or `A pgvector destination needs a table name. Set destination.pgvector.tableName.`), or (every caller) a new or changed `destination.database` section that fails the save rule of `POST /api/v1/pipeline` (allowed characters, required fields, one engine, no `;` in options, 63 bytes for Postgres names), with the same message, or (every caller) a new or changed source or destination field type that is not one of the accepted forms of `POST /api/v1/pipeline` (`Invalid field type passed: ...` naming the field), or the version fails validation, with the same message as `POST /api/v1/pipeline` (for example a table name that is not a plain identifier, a server-managed secret, two destination engines, or Postgres not reachable). Nothing is restored. Body: `{"error": "..."}`.'
+        '409':
+          description: 'The pipeline was created, deleted, renamed or moved while the restore was being checked: `Pipeline ''<name>'' changed while it was being restored; nothing was restored. Try again.` Body: `{"error": "..."}`.'
         '500':
-          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse or bucket (an object-store endpoint that does not answer within a few seconds counts; the check does not retry) or did not finish within 30 seconds; nothing is restored.'
+          description: 'Error. For a restricted user, also `Could not check whether the destination already exists; nothing was saved. Try again.` when the destination check could not reach the warehouse, bucket or vector store (a vector store not configured on the install, or an answer the check does not recognise, counts too; an object-store endpoint that does not answer within a few seconds counts; the check does not retry) or did not finish within 30 seconds; nothing is restored.'
         '429':
           description: 'Restricted users only: two destination checks of the same user are still running, so this restore''s check was not started and nothing was restored: `Another destination check of yours is still running; nothing was saved. Wait a moment and try again.` Body: `{"error": "..."}`.'
           headers:
@@ -6393,6 +6544,12 @@ paths:
                       description: Always false for an admin.
                     catalogGrants:
                       $ref: '#/components/schemas/CatalogGrants'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
     post:
       tags: [Auth]
       summary: Create a user (admin)
@@ -6419,6 +6576,12 @@ paths:
           description: User created
         '400':
           description: Missing/invalid username or invalid role
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '409':
           description: User already exists
         '500':
@@ -6468,6 +6631,12 @@ paths:
           description: User updated
         '400':
           description: Invalid role, `restricted` on an admin, or an invalid catalog name or grant level
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: User not found
         '409':
@@ -6487,6 +6656,12 @@ paths:
       responses:
         '200':
           description: User deleted
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: User not found
         '409':
@@ -6555,6 +6730,12 @@ paths:
           description: The saved policy (version incremented)
         '400':
           description: Validation error
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: Not an admin, or an agent-initiated request
         '404':
@@ -6638,6 +6819,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PendingAction'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'Agent-initiated request. Body: `{"error": "agents may not decide approvals"}`'
         '404':
@@ -6675,6 +6862,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PendingAction'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'Agent-initiated request. Body: `{"error": "agents may not decide approvals"}`'
         '404':
@@ -6773,6 +6966,12 @@ paths:
       responses:
         '200':
           description: The abandoned incident
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: 'Agent-initiated request. Body: `{"error": "agents may not abandon incidents"}`'
         '404':
@@ -6797,6 +6996,12 @@ paths:
       responses:
         '200':
           description: The incident, now executing
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '403':
           description: Agent-initiated request
         '404':
@@ -6912,6 +7117,12 @@ paths:
                     description: Present when more entries match
         '400':
           description: '`since` or `until` is not an ISO-8601 instant or epoch millis. Body: `{"error": ...}`'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: 'The audit log is not enabled. Body: `{"enabled": false, "error": ...}`'
         '500':
@@ -6948,6 +7159,12 @@ paths:
                       type: string
                   windowDays:
                     type: integer
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: The audit log is not enabled
         '500':
@@ -6990,6 +7207,12 @@ paths:
                   acceptingWrites:
                     type: boolean
                     description: '`false` while audited requests are being refused'
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
 
   /api/v1/audit-log/export:
     get:
@@ -7048,6 +7271,12 @@ paths:
             text/csv:
               schema:
                 type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: 'The audit log is not enabled. Body: `{"enabled": false, "error": ...}`'
 
@@ -7094,6 +7323,20 @@ paths:
                           type: string
                         isLegacyFullAccess:
                           type: boolean
+                        inertCapabilities:
+                          type: array
+                          items:
+                            type: string
+                          description: >-
+                            The stored capabilities that carry a scope the platform does not
+                            apply on them (e.g. `job:read:owner=self`). They grant nothing
+                            unless `DATRIS_KEY_INERT_SCOPES=allow`. Empty when none
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '500':
           description: Error
     post:
@@ -7141,7 +7384,22 @@ paths:
                   createdBy:
                     type: string
         '400':
-          description: Missing/invalid label or invalid capability string
+          description: >-
+            Missing/invalid label, or a capability that may not be issued: an invalid
+            string, an unknown resource or action, a repeated scope key, or a scope the
+            platform does not apply on that capability (only `catalog`/`owner` on
+            `pipeline:*` and `tap:*`, `_type` on `secret:*`, `collection` on
+            `search:vector` and `document:upload`, and `owner=self` on `approval:read`
+            are applied). `{"error": "..."}` names the capability and the supported scopes,
+            e.g. "Invalid capability 'job:read:owner=self': scope 'owner' is not applied on
+            job:read. Supported scopes for job:read: none. Grant 'job:read' unscoped or
+            leave it out."
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '409':
           description: A key with this label already exists
         '500':
@@ -7171,6 +7429,12 @@ paths:
                     example: revoked
                   label:
                     type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: Key not found
         '500':
@@ -7204,6 +7468,12 @@ paths:
                     type: string
                   rotatedAt:
                     type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '404':
           description: Key not found
         '500':
@@ -7213,7 +7483,11 @@ paths:
     get:
       tags: [API Keys]
       summary: Capability catalog (admin)
-      description: Admin-only. Every capability resource, its actions, and the scope keys it accepts — drives the Keys UI capability editor.
+      description: >-
+        Admin-only. Every capability resource, its actions, and the scope keys the
+        platform applies on it (`pipeline`, `tap`: catalog, owner; `secret`: _type;
+        `search`, `document`: collection; `approval`: owner, on `approval:read` only;
+        every other resource: none) — drives the Keys UI capability editor.
       responses:
         '200':
           description: Capability catalog
@@ -7237,6 +7511,12 @@ paths:
                           type: array
                           items:
                             type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '500':
           description: Error
 
@@ -7266,6 +7546,12 @@ paths:
                           type: array
                           items:
                             type: string
+        '401':
+          description: >-
+            With user sign-in on and API keys on, no credential (`Authentication
+            required`) or a revoked or unknown API key; `503` when the API key
+            store is unreachable. A signed-in user without the role gets `403`
+            `Insufficient role`.
         '500':
           description: Error
 
@@ -7275,7 +7561,7 @@ paths:
     get:
       tags: [Assistant]
       summary: Initialize the Assistant
-      description: UI mount call — warms the MCP client caches and returns the tool catalog, the workflow reference resource, and the active chat model. The tool catalog is the one the caller's own access allows.
+      description: UI mount call — warms the MCP client caches and returns the tool catalog, the workflow reference resource, and the active chat model. The tool catalog is the one the caller's own access allows. For a signed-in user it follows the user's role (see `/assistant/chat`).
       responses:
         '200':
           description: Assistant bootstrap payload
@@ -7303,7 +7589,10 @@ paths:
         '400':
           description: User-actionable error
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
         '500':
@@ -7317,7 +7606,7 @@ paths:
         Runs the build-mode Assistant agent loop and streams agent-loop events
         (text deltas, tool calls, tool results, errors) as Server-Sent Events.
         The client cancels by disconnecting. Attachments reference files
-        previously staged via `/assistant/attachment`. Tools run with the caller's own access.
+        previously staged via `/assistant/attachment`. Tools run with the caller's own access. For a signed-in user (or the platform acting for one) every tool call is held to the user's role: an admin has every tool; an editor has no secret, raw-configuration, agent-policy, approval or incident tools; a viewer has read-only tools. Every role may call this route.
       requestBody:
         required: true
         content:
@@ -7343,7 +7632,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
 
@@ -7357,7 +7649,7 @@ paths:
         small content sample travel through the chat; the platform substitutes
         the real bytes when the agent calls a file tool with the
         `attachmentId`. Limit 25 MB per file. Accepts the same callers as
-        `/assistant/chat`.
+        `/assistant/chat`, except a viewer session (`403` `Read-only role`).
       requestBody:
         required: true
         content:
@@ -7392,7 +7684,10 @@ paths:
         '400':
           description: Empty file
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
         '413':
@@ -7413,7 +7708,8 @@ paths:
         that grounds answers in the failures and volumes currently on screen.
         With the recovery agent on, open incidents are added to the context,
         only for a caller allowed to read incidents (not a user with scoped
-        catalog access, nor an API key without unscoped `incident:read`). Tools run with the caller's own access.
+        catalog access, nor an API key without unscoped `incident:read`). Among signed-in users only
+        admins hold `incident:read`, so an editor's or viewer's chat is given no incidents. Tools run with the caller's own access. For a signed-in user (or the platform acting for one) every tool call is held to the user's role: an admin has every tool; an editor has no secret, raw-configuration, agent-policy, approval or incident tools; a viewer has read-only tools. Every role may call this route.
         Streams the same SSE event format as `/assistant/chat`.
       requestBody:
         required: true
@@ -7429,7 +7725,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
 
@@ -7444,7 +7743,7 @@ paths:
         discovery/query/search tools; the agent never sees mutating tools. The
         optional `context` object may carry a catalog scope, e.g.
         `{"catalog": "finance"}` (or "Uncataloged"; "All"/empty means
-        unscoped). Tools run with the caller's own access. Streams the same SSE event format as
+        unscoped). Tools run with the caller's own access. For a signed-in user (or the platform acting for one) every tool call is held to the user's role: an admin has every tool; an editor has no secret, raw-configuration, agent-policy, approval or incident tools; a viewer has read-only tools. Every role may call this route. Streams the same SSE event format as
         `/assistant/chat`.
       requestBody:
         required: true
@@ -7460,7 +7759,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
 
@@ -7472,7 +7774,7 @@ paths:
         Agent chat for organizing the inventory — group, move, rename, and
         describe taps and pipelines. Full tool catalog with catalog tools
         prioritized. The optional `context` object is a catalog inventory
-        snapshot that grounds answers in what the user is looking at. Tools run with the caller's own access.
+        snapshot that grounds answers in what the user is looking at. Tools run with the caller's own access. For a signed-in user (or the platform acting for one) every tool call is held to the user's role: an admin has every tool; an editor has no secret, raw-configuration, agent-policy, approval or incident tools; a viewer has read-only tools. Every role may call this route.
         Streams the same SSE event format as `/assistant/chat`.
       requestBody:
         required: true
@@ -7488,7 +7790,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: Refused for this credential (a tap run's platform token)
 
@@ -7522,7 +7827,10 @@ paths:
               schema:
                 type: string
         '401':
-          description: No credential where one is required, or a revoked or unknown API key
+          description: >-
+            No credential where one is required, a revoked or unknown API key,
+            or (on the platform's internal calls) the user the request acts for
+            could not be verified
         '403':
           description: >-
             Refused for this credential: a tap run's platform token; with user
@@ -7594,7 +7902,12 @@ paths:
         and an admin session see the whole catalog with `filtered: false`;
         editor and viewer sessions get their role's tools with
         `filtered: true`. A presented API key takes precedence over the
-        session.
+        session. A restricted user, and an API key limited by `catalog=` or
+        `owner=` on a pipeline or tap capability, never get the table and
+        collection listing tools, `browse_unity_catalog`, `query_postgres`,
+        `query_mongodb` or `query_natural`, even when the key holds their
+        capability: those routes cover the whole installation and answer
+        403.
       responses:
         '200':
           description: Tool names
@@ -7641,7 +7954,7 @@ paths:
       tags: [AI]
       summary: Discover invokable models for a provider
       description: >-
-        Live per-provider model discovery, reflecting what the configured
+        Requires `config:read`. Live per-provider model discovery, reflecting what the configured
         account can actually invoke (unlike the static catalog). Currently
         supports provider=bedrock: the server calls the AWS Bedrock discovery
         APIs (ListFoundationModels + ListInferenceProfiles) with the configured
@@ -8254,7 +8567,12 @@ paths:
             (`DATRIS_UNITY_CATALOG_SEARCH_TIMEOUT_SECONDS`, default 45; reason
             "timed out after Ns"). `limit` applies separately: up to `limit`
             Datris hits plus up to `limit` additional Unity Catalog hits.
-            Without this flag the response is unchanged.
+            Without this flag the response is unchanged. For a caller limited
+            to a catalog or to what it created (a restricted user, or an API
+            key limited by `catalog=` or `owner=`), no Unity Catalog search
+            runs: the `unityCatalog` block lists nothing searched or skipped
+            and no Unity Catalog hits are added, as for a key that can read no
+            Databricks secret.
       responses:
         '200':
           description: Ranked hits
@@ -8307,7 +8625,7 @@ paths:
         `warehouse` field (aliases `httpPath`, `http_path`,
         `DATABRICKS_WAREHOUSE`), else the warehouse of the first Databricks
         pipeline using the secret.
-        Not available to restricted users (403 from the capability check); warehouse listings cannot be limited to a catalog.
+        Not available to restricted users or to API keys limited by `catalog=` or `owner=` (403 capability denied, even when the key holds the capability); warehouse listings cannot be limited to a catalog.
       parameters:
         - in: query
           name: secret

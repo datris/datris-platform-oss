@@ -10,6 +10,9 @@ export interface KeyRow {
   /** Stable per-issue id (audit-log identity). Absent on keys seeded before ids existed. */
   keyId?: string;
   capabilities: string[];
+  /** Stored capabilities carrying a scope the platform does not apply on
+   *  them: they grant nothing (unless DATRIS_KEY_INERT_SCOPES=allow). */
+  inertCapabilities?: string[];
   isLegacyFullAccess: boolean;
   revoked: boolean;
   createdAt?: string;

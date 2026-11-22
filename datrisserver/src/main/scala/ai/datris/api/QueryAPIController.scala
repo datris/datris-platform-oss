@@ -7,14 +7,17 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder}
-import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, PipelineConfig}
 import ai.datris.util.{
     AIUtil,
     APIKeyValidator,
+    CatalogOps,
     DatabricksErrorText,
     DatabricksQueryUtil,
     ObjectStoreQueryUtil,
     PostgresQueryUtil,
+    PostgresSql,
+    PipelineConfigIO,
     MongoDBQueryUtil,
     SecretsRetrieverUtil,
     SnowflakeQueryUtil,
@@ -82,8 +85,11 @@ class QueryAPIController {
                 .orNull
             val limit = QueryAPIController.parseLimit(body.get("limit"), 20)
 
-            val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
-            else Option(body.get("database")).map(_.toString).orNull
+            // The request's `database`; MongoDBQueryUtil resolves the database
+            // the query runs against (the tenant's own in a multi-tenant
+            // install, else this or the default) and refuses one the route
+            // does not read before any client is created.
+            val database = Option(body.get("database")).map(_.toString).orNull
             val results = MongoDBQueryUtil.query(collection, filter, projection, limit, database)
 
             // Parse each JSON string back into an object for proper nesting
@@ -100,6 +106,9 @@ class QueryAPIController {
             case e: QueryAPIController.InvalidLimitException =>
                 logger.warn("queryMongoDB: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
+            case _: MongoDBQueryUtil.DatabaseNotAvailableException =>
+                logger.warn("queryMongoDB: refused a database or collection that is not available for queries")
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(MongoDBQueryUtil.DatabaseNotAvailableMessage))
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
@@ -155,8 +164,11 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
-            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
+            // A scope-limited key's caller SQL is refused first: no pipeline
+            // is read and nothing reaches the warehouse.
+            QueryAPIController.keySqlRefusal(request, sql).foreach(r => return r)
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             QueryAPIController.restrictedSqlRefusal(request, sql).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
@@ -201,8 +213,11 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
-            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
+            // A scope-limited key's caller SQL is refused first: no pipeline
+            // is read and nothing reaches the warehouse.
+            QueryAPIController.keySqlRefusal(request, sql).foreach(r => return r)
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             QueryAPIController.restrictedSqlRefusal(request, sql).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
@@ -245,8 +260,11 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
-            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             val sql = Option(body.get("sql")).map(_.toString)
+            // A scope-limited key's caller SQL is refused first: no pipeline
+            // is read and nothing reaches the warehouse.
+            QueryAPIController.keySqlRefusal(request, sql).foreach(r => return r)
+            QueryAPIController.restrictedPipelineRefusal(request, pipelineName).foreach(r => return r)
             QueryAPIController.restrictedSqlRefusal(request, sql).foreach(r => return r)
             val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
@@ -302,10 +320,7 @@ class QueryAPIController {
             }.getOrElse(100)
 
             // Step 1: Get table columns
-            val columnsSql = "SELECT column_name, data_type FROM information_schema.columns " +
-                "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
-                "AND table_name = '" + table.replace("'", "''") + "' ORDER BY ordinal_position"
-            val columnsResult = PostgresQueryUtil.query(columnsSql, database, 200)
+            val columnsResult = PostgresQueryUtil.queryBound(PostgresSql.ColumnsOfTableSql, Seq(schema, table), database, 200)
             val columnDefs = columnsResult.asScala.map(row =>
                 row.get("column_name").toString + " (" + row.get("data_type").toString + ")"
             ).mkString(", ")
@@ -345,13 +360,26 @@ class QueryAPIController {
     }
 
     @PostMapping(path = Array("/job/kill"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def killJob(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def killJob(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any],
+        request: jakarta.servlet.http.HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /job/kill called")
             APIKeyValidator.validate(apiKey)
 
             val pipelineToken = Option(body.get("pipelineToken")).map(_.toString)
                 .getOrElse(throw new ai.datris.model.DatrisException("'pipelineToken' parameter is required"))
+
+            // A run of a pipeline outside the caller's scope answers exactly
+            // as an unknown token; nothing is cancelled.
+            QueryAPIController
+                .killRefusal(request, pipelineToken, n => PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n))
+                .foreach { refused =>
+                    logger.error("Error: Job not found for pipeline token: " + pipelineToken)
+                    return refused
+                }
 
             GlobalJobContext.killJob(pipelineToken)
 
@@ -405,32 +433,74 @@ class QueryAPIController {
 
 object QueryAPIController {
 
+    /** POST /job/kill, before `GlobalJobContext.killJob`
+      * (plans/stories/scoped-key-read-routes.md): the token is resolved to
+      * its run's pipeline (`readPipeline` gives the stored config; the run's
+      * own config when it is gone). A restricted session, or an API key that
+      * holds a `pipeline:run` capability or is limited for pipelines, must
+      * hold in scope `pipeline:run` (when it holds any `pipeline:run`
+      * capability) and `pipeline:read` ([[ai.datris.auth.CallerVisibility.loadDenial]]).
+      * Outside it the answer is exactly
+      * the unknown-token one (same status and body for a key and a session,
+      * so the route is no oracle). None: kill as today (an unknown token
+      * included, and every other caller, for whom nothing is looked up). */
+    def killRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        pipelineToken: String,
+        readPipeline: String => PipelineConfig
+    ): Option[ResponseEntity[String]] =
+        ai.datris.auth.CapabilityCheck.resolvedKey(request).filter(ai.datris.auth.CallerVisibility.loadChecked).flatMap { rk =>
+            val job = if (pipelineToken == null) null else GlobalJobContext.findJobContext(pipelineToken)
+            if (job == null) None
+            else {
+                val runConfig = Option(job.config)
+                val config = runConfig.flatMap(c => Option(c.name)).flatMap(n => Option(readPipeline(n))).orElse(runConfig).orNull
+                val inScope = config != null &&
+                    ai.datris.auth.CallerVisibility.loadDenial(rk, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)).isEmpty
+                if (inScope) None
+                else
+                    Some(
+                        ResponseEntity
+                            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                            .body[String](errorBody(new DatrisException("Job not found for pipeline token: " + pipelineToken)))
+                    )
+            }
+        }
+
     /** Pipeline-bound queries (objectstore, snowflake, sqlserver,
-      * databricks) for a restricted user's session: the named pipeline must
-      * be in its catalog grants, else the same 404 as a missing pipeline.
-      * None for everyone else (and when allowed). Checked first, so a hidden
-      * pipeline never reveals the rules that follow for an allowed one: a
-      * caller `sql` is refused ([[restrictedSqlRefusal]], the warehouse
-      * routes then run only their server-built preview of the pipeline's
-      * table) and the tap stamp columns are dropped from the result
-      * ([[restrictedRows]], [[restrictedObjectStoreResult]]). */
+      * databricks) for a limited caller ([[ai.datris.auth.CapabilityCheck.isLimited]];
+      * plans/stories/scoped-key-read-routes.md, Part B): the named pipeline
+      * must be one it may read ([[PipelineAPIController.mayRead]] on the
+      * stored pipeline's catalog and owner). A restricted user's session gets
+      * the same 404 as a missing pipeline; a limited API key gets the
+      * capability-denied 403 on `pipeline:read` (shared wording), and a key
+      * naming a pipeline that is not stored gets the route's own answer.
+      * None for everyone else (nothing read) and when allowed. Checked first,
+      * so a hidden pipeline never reveals the rules that follow for an
+      * allowed one: a caller `sql` is refused ([[restrictedSqlRefusal]], the
+      * warehouse routes then run only their server-built preview of the
+      * pipeline's table) and the tap stamp columns are dropped from the
+      * result ([[restrictedRows]], [[restrictedObjectStoreResult]]). */
     private[api] def restrictedPipelineRefusal(
         request: jakarta.servlet.http.HttpServletRequest,
         pipelineName: String
     ): Option[ResponseEntity[String]] =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) None
+        restrictedPipelineRefusal(request, pipelineName, n => ai.datris.util.PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n))
+
+    /** [[restrictedPipelineRefusal]] with the pipeline read given (called
+      * only for a limited caller). */
+    private[api] def restrictedPipelineRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        pipelineName: String,
+        read: String => PipelineConfig
+    ): Option[ResponseEntity[String]] =
+        if (!ai.datris.auth.CapabilityCheck.isLimited(request)) None
         else {
-            val config = ai.datris.util.PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelineName)
-            if (
-                config == null ||
-                !ai.datris.auth.CapabilityCheck.grants(
-                    request,
-                    "pipeline",
-                    "read",
-                    ai.datris.util.CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
-                )
-            ) Some(PipelineAPIController.pipelineNotFound(pipelineName))
-            else None
+            val config = read(pipelineName)
+            if (ai.datris.auth.CapabilityCheck.isRestrictedSession(request))
+                if (PipelineAPIController.mayRead(request, config)) None else Some(PipelineAPIController.pipelineNotFound(pipelineName))
+            else if (config == null) None
+            else PipelineAPIController.keyRefusal(request, "pipeline", "read", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
         }
 
     /** Object-store preview for a restricted user's session: 400
@@ -457,37 +527,90 @@ object QueryAPIController {
     val RestrictedSqlRefusal: String =
         "Custom SQL is not available for this user. Leave `sql` out to preview the pipeline's table."
 
-    /** Warehouse queries (snowflake, sqlserver, databricks) for a restricted
-      * user's session: any non-blank caller `sql` is refused with 403, since
-      * caller SQL can read any table the connection reaches and any column
-      * under any alias. Blank or whitespace `sql` counts as absent (the
-      * server-built preview). None for everyone else, API keys included. */
+    /** Whether the warehouse would run `sql` as caller SQL: exactly the test
+      * the warehouse utils apply (`sql.map(_.trim).filter(_.nonEmpty)`), so
+      * a value is treated as absent only when it would yield the server-built
+      * preview. `String.trim` strips only characters up to U+0020, so a
+      * non-breaking space is caller SQL, as is the `toString` of any
+      * non-string JSON value (the handlers pass `body.get("sql").toString`). */
+    private[api] def callerSqlPresent(sql: Option[String]): Boolean = sql.exists(_.trim.nonEmpty)
+
+    /** Warehouse queries (snowflake, sqlserver, databricks): any caller
+      * `sql` ([[callerSqlPresent]]) is refused with 403, since caller SQL can
+      * read any table the connection reaches and any column under any alias.
+      *   - A restricted user's session: today's `{"error": ...}` body
+      *     ([[RestrictedSqlRefusal]]).
+      *   - An API key limited to a catalog or to what it created
+      *     ([[keySqlRefusal]]): the capability-denied body with the
+      *     install-wide message.
+      * Blank `sql` counts as absent (the server-built preview). None for
+      * everyone else (nothing computed beyond the identity checks). */
     private[api] def restrictedSqlRefusal(
         request: jakarta.servlet.http.HttpServletRequest,
         sql: Option[String]
     ): Option[ResponseEntity[String]] =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || sql.forall(_.trim.isEmpty)) None
-        else Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](jsonError(RestrictedSqlRefusal)))
+        if (ai.datris.auth.CapabilityCheck.isRestrictedSession(request))
+            if (!callerSqlPresent(sql)) None
+            else Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](jsonError(RestrictedSqlRefusal)))
+        else keySqlRefusal(request, sql)
 
-    /** Query result rows for a restricted session: the tap stamp columns
-      * dropped from every row, whatever the tap
-      * ([[ai.datris.auth.HiddenTapScrub.dropTapStampColumns]]). `rows`
-      * itself for everyone else. */
+    /** A caller `sql` from an API key limited to a catalog or to what it
+      * created ([[ai.datris.auth.CallerVisibility.limited]]; plans/stories/scoped-key-read-routes.md,
+      * Part C, lead ruling 6), even when the named pipeline is in scope: the
+      * capability-denied 403 (`error`, `errorKind`, `message`) with
+      * [[ai.datris.auth.CallerVisibility.InstallWideRequestMessage]], naming
+      * nothing from the SQL; the refusal is noted for the audit log under the
+      * route's capability. The handlers call it before anything is read, so
+      * no pipeline is looked up and nothing reaches the warehouse. None for
+      * sessions (see [[restrictedSqlRefusal]]), no identity, every key that is
+      * not limited, and a blank `sql`. */
+    private[api] def keySqlRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        sql: Option[String]
+    ): Option[ResponseEntity[String]] =
+        if (!callerSqlPresent(sql) || ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || !ai.datris.auth.CapabilityCheck.isLimited(request))
+            None
+        else {
+            val required = (Option(ai.datris.auth.RequestPaths.method(request)), Option(ai.datris.auth.RequestPaths.path(request))) match {
+                case (Some(m), Some(p)) =>
+                    ai.datris.auth.CapabilityRoutes.lookup(m, p) match {
+                        case ai.datris.auth.RouteCheck.Require(r, a) => r + ":" + a
+                        case _ => "query"
+                    }
+                case _ => "query"
+            }
+            Some(PipelineAPIController.installWideRefusal(request, "this request", required))
+        }
+
+    /** Whether a pipeline-bound query result loses its tap stamp columns:
+      * the caller is limited for taps
+      * ([[ai.datris.auth.CallerVisibility.limitedTaps]]: a restricted
+      * session, or an API key that does not read every tap). A key limited
+      * for pipelines only reads every tap, so its rows keep the columns
+      * (lead ruling 7, plans/stories/scoped-key-read-routes.md, Part B). */
+    private def dropsTapStamps(request: jakarta.servlet.http.HttpServletRequest): Boolean =
+        ai.datris.auth.CapabilityCheck.isLimitedFor(request, "tap")
+
+    /** Query result rows for a caller limited for taps ([[dropsTapStamps]]):
+      * the tap stamp columns dropped from every row, whatever the tap
+      * ([[ai.datris.auth.HiddenTapScrub.dropTapStampColumns]]); the row count
+      * is unchanged. `rows` itself for everyone else. */
     private[api] def restrictedRows(
         request: jakarta.servlet.http.HttpServletRequest,
         rows: java.util.List[java.util.Map[String, Any]]
     ): java.util.List[java.util.Map[String, Any]] =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) rows
+        if (!dropsTapStamps(request)) rows
         else ai.datris.auth.HiddenTapScrub.dropTapStampColumns(rows)
 
-    /** An object-store preview for a restricted session: the tap stamp
-      * columns dropped from both `columns` and `rows` (path, format and
-      * snapshot kept). `result` itself for everyone else. */
+    /** An object-store preview for a caller limited for taps
+      * ([[dropsTapStamps]]): the tap stamp columns dropped from both
+      * `columns` and `rows` (path, format and snapshot kept). `result`
+      * itself for everyone else. */
     private[api] def restrictedObjectStoreResult(
         request: jakarta.servlet.http.HttpServletRequest,
         result: ObjectStoreQueryUtil.QueryResult
     ): ObjectStoreQueryUtil.QueryResult =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || result == null) result
+        if (!dropsTapStamps(request) || result == null) result
         else
             result.copy(
                 columns = ai.datris.auth.HiddenTapScrub.dropTapStampNames(result.columns),

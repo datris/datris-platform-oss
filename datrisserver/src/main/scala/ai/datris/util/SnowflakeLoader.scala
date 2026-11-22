@@ -14,6 +14,7 @@ import java.nio.file.{Files, Path}
 import java.sql.{Connection, DriverManager, Statement}
 import java.util.{Properties, UUID}
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.util.Try
 
 /** Snowflake SQL destination. Mirrors [[PostgresLoader]] — same create-table /
@@ -26,9 +27,12 @@ import scala.util.Try
  *  Credentials are a Platform-tab secret named by `Database.credentialsSecret`
  *  (resolved by [[CredentialResolver.resolveSnowflake]]); `warehouse`/`role`
  *  are routing knobs on the config. */
-class SnowflakeLoader(jobContext: JobContext) {
+class SnowflakeLoader(initialContext: JobContext) {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SnowflakeLoader])
-    private val config = jobContext.config
+    // The run's context, narrowed by [[prepareTable]] when a column this
+    // run's transformation added is left out of this table.
+    private var jobContext: JobContext = initialContext
+    private def config: PipelineConfig = jobContext.config
     private val statusUtil = jobContext.statusUtil
     private val db = config.destination.database
 
@@ -36,7 +40,6 @@ class SnowflakeLoader(jobContext: JobContext) {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
         statusUtil.info("begin", "Loading the data into Snowflake database: " + db.dbName + ", schema: " + db.schema + ", table: " + db.table)
 
-        var dataFile: Path = null
         try {
             SnowflakeConnectionUtil.withConnection(db, msg => statusUtil.info("processing", msg)) { conn =>
                 if (db.useTransaction)
@@ -44,7 +47,7 @@ class SnowflakeLoader(jobContext: JobContext) {
                 val statement = conn.createStatement()
                 try {
                     dataFile = createStagingFile()
-                    loadData(statement, dataFile)
+                    loadData(statement)
                     if (db.useTransaction)
                         conn.commit()
                 } catch {
@@ -87,11 +90,18 @@ class SnowflakeLoader(jobContext: JobContext) {
         file
     }
 
-    private def loadData(statement: Statement, dataFile: Path): Unit = {
+    /** The local CSV for PUT; replaced when [[prepareTable]] leaves a column
+      * out, because COPY reads the file by position. */
+    private var dataFile: Path = null
+
+    private def loadData(statement: Statement): Unit = {
         statusUtil.info("processing", "Loading data into " + db.table)
 
-        if (!db.manageTableManually)
-            createTableIfUndefined(statement)
+        if (prepareTable(statement).nonEmpty) {
+            Try(Files.deleteIfExists(dataFile))
+            dataFile = null
+            dataFile = createStagingFile()
+        }
 
         // Truncate AFTER create-if-not-exists so first-run pipelines with
         // truncateBeforeWrite=true don't fail against a not-yet-existing table.
@@ -140,25 +150,10 @@ class SnowflakeLoader(jobContext: JobContext) {
             val copied = copyStagedInto(statement, stgRef, "@%" + stgRef, fields)
             statusUtil.info("processing", "Rows copied to staging: " + copied)
 
-            val keyNames = db.keyFields.asScala.toList
-            val keySet = keyNames.map(_.toLowerCase).toSet
-            val colNames = fields.map(_.name)
-            val nonKey = colNames.filterNot(c => keySet.contains(c.toLowerCase))
+            val merge = SnowflakeLoader.mergeSql(targetRef, stgRef, fields.map(_.name), db.keyFields.asScala.toList)
 
-            val onClause = keyNames.map(k => s"t.${ident(k)} = s.${ident(k)}").mkString(" AND ")
-            val insertCols = colNames.map(ident).mkString(", ")
-            val insertVals = colNames.map(c => "s." + ident(c)).mkString(", ")
-
-            val merge = new StringBuilder()
-            merge.append(s"MERGE INTO $targetRef t USING $stgRef s ON $onClause ")
-            if (nonKey.nonEmpty) {
-                val setClause = nonKey.map(c => s"t.${ident(c)} = s.${ident(c)}").mkString(", ")
-                merge.append(s"WHEN MATCHED THEN UPDATE SET $setClause ")
-            }
-            merge.append(s"WHEN NOT MATCHED THEN INSERT ($insertCols) VALUES ($insertVals)")
-
-            statusUtil.info("processing", "Merge command: " + merge.toString())
-            val merged = statement.executeUpdate(merge.toString())
+            statusUtil.info("processing", "Merge command: " + merge)
+            val merged = statement.executeUpdate(merge)
             statusUtil.info("processing", "Rows merged into target: " + merged)
         } finally {
             Try(statement.execute(s"DROP TABLE IF EXISTS $stgRef"))
@@ -178,21 +173,7 @@ class SnowflakeLoader(jobContext: JobContext) {
      *  into the VARIANT; otherwise a straight positional COPY. PURGE clears the
      *  stage afterward. Returns rows loaded. */
     private def copyStagedInto(statement: Statement, tableRef: String, stage: String, fields: Seq[SchemaField]): Long = {
-        val colList = fields.map(f => ident(f.name)).mkString(", ")
-        val hasVariant = fields.exists(f => f.name.equalsIgnoreCase("_json"))
-
-        val fileFormat = "FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '\"' " +
-            "FIELD_DELIMITER = '" + csvDelimiter() + "' EMPTY_FIELD_AS_NULL = TRUE COMPRESSION = AUTO)"
-
-        val copy = if (hasVariant) {
-            val selectList = fields.zipWithIndex.map { case (f, i) =>
-                val pos = "$" + (i + 1)
-                if (f.name.equalsIgnoreCase("_json")) s"PARSE_JSON($pos)" else pos
-            }.mkString(", ")
-            s"COPY INTO $tableRef ($colList) FROM (SELECT $selectList FROM $stage) $fileFormat PURGE = TRUE"
-        } else {
-            s"COPY INTO $tableRef ($colList) FROM $stage $fileFormat PURGE = TRUE"
-        }
+        val copy = SnowflakeLoader.copySql(tableRef, stage, fields, csvDelimiter())
 
         statusUtil.info("processing", "COPY command: " + copy)
         val rs = statement.executeQuery(copy)
@@ -221,25 +202,26 @@ class SnowflakeLoader(jobContext: JobContext) {
         } else destFields.toSeq
     }
 
-    private def createTableIfUndefined(statement: Statement): Unit = {
-        val sql = new StringBuilder()
-        sql.append("CREATE TABLE IF NOT EXISTS " + qualifiedTable() + " (")
-        config.destination.schemaProperties.fields.forEach(field => {
-            sql.append(ident(field.name) + " " + snowflakeType(field) + ", ")
-        })
-        sql.setLength(sql.length - 2)
+    /** Create the table when it is missing, then add any configured column
+      * it lacks. When every non-document field's type passes
+      * [[ColumnTypeText.loadText]] the statements are those earlier versions ran,
+      * in the same order. Otherwise the existing columns are read first and
+      * the run fails before any statement when a stored type that is not safe
+      * would be needed ([[ColumnTypeText.loadProblem]]); else the table is not
+      * created again and only missing columns are added. A column this run's
+      * transformation added is handled by [[TransformedColumns.evolve]]
+      * (left out of this table, names returned lower-cased, instead of
+      * failing the load). Snowflake runs DDL in its own transaction and a
+      * failed statement does not end the open one, so no savepoint is used. */
+    private def createTableIfUndefined(statement: Statement): Set[String] = {
+        val fields = config.destination.schemaProperties.fields.asScala.toList
 
-        if (db.keyFields != null && !db.keyFields.isEmpty) {
-            val keys = db.keyFields.asScala.map(ident).mkString(", ")
-            sql.append(", PRIMARY KEY (" + keys + ")")
+        val create = SnowflakeLoader.createPlan(db, fields)
+        create.schemaSql.foreach(sql => statement.execute(sql))
+        create.tableSql.foreach { sql =>
+            statusUtil.info("processing", "Snowflake create table statement: " + sql)
+            statement.execute(sql)
         }
-        sql.append(")")
-
-        if (db.schema != null && db.schema.nonEmpty)
-            statement.execute("CREATE SCHEMA IF NOT EXISTS " + schemaRef())
-
-        statusUtil.info("processing", "Snowflake create table statement: " + sql.toString())
-        statement.execute(sql.toString())
 
         // Additive schema evolution: add any new columns the table doesn't have yet.
         // Match information_schema on the effective stored names (unquoted
@@ -257,33 +239,64 @@ class SnowflakeLoader(jobContext: JobContext) {
             rs.close()
         }
 
-        config.destination.schemaProperties.fields.forEach(field => {
-            if (!existing.contains(field.name.toLowerCase)) {
-                val alter = s"ALTER TABLE ${qualifiedTable()} ADD COLUMN IF NOT EXISTS ${ident(field.name)} ${snowflakeType(field)}"
-                statusUtil.info("processing", "Schema evolution: " + alter)
-                statement.execute(alter)
-            }
-        })
-    }
-
-    /** Platform type -> Snowflake DDL type. Mirrors the inline mapping in
-     *  PostgresLoader.createTableIfUndefined; `_json` -> VARIANT is the analog of
-     *  Postgres' `_json` -> json. Unknown types pass through (e.g. decimal(p,s),
-     *  which Snowflake accepts as a NUMBER synonym). */
-    private def snowflakeType(field: SchemaField): String = {
-        if (field.name.equalsIgnoreCase("_json")) "VARIANT"
-        else if (field.name.equalsIgnoreCase("_xml")) "VARCHAR"
-        else field.`type`.toLowerCase match {
-            case "string" => "VARCHAR"
-            case "int" | "integer" | "tinyint" |
-                "smallint" | "bigint" => "NUMBER(38,0)"
-            case "float" | "double" => "FLOAT"
-            case "boolean" => "BOOLEAN"
-            case "date" => "DATE"
-            case "timestamp" => "TIMESTAMP_NTZ"
-            case _ => field.`type`
+        SnowflakeLoader.evolvePlan(db, fields, existing.toSet) match {
+            case Left(problem) => throw new DatrisException(problem)
+            case Right(plan) =>
+                plan.statusLine.foreach(line => statusUtil.info("processing", line))
+                TransformedColumns.evolve(
+                    jobContext,
+                    destinationLabel,
+                    TransformedColumns.Snowflake,
+                    ColumnTypeText.missingFields(fields, existing.toSet).zip(plan.addColumns),
+                    existing.toSet,
+                    alter => statement.execute(alter),
+                    alter => TransformedColumns.attempt(statement.getConnection, savepoint = false)(statement.execute(alter)),
+                    () => readColumnTypes(statement)
+                )
         }
     }
+
+    /** The context the load uses: the run's, less any column this run's
+      * transformation added that [[prepareTable]] left out of this table. */
+    private[util] def loadContext: JobContext = jobContext
+
+    /** Create or extend the table, or check a manually managed one against
+      * the columns this run's transformation added; then leave out of this
+      * load every such column the table cannot take. Returns those names,
+      * lower-cased. */
+    private[util] def prepareTable(statement: Statement): Set[String] = {
+        val left =
+            if (!db.manageTableManually) createTableIfUndefined(statement)
+            else TransformedColumns.manualTable(jobContext, destinationLabel, TransformedColumns.Snowflake, () => readColumnTypes(statement))
+        jobContext = TransformedColumns.withoutColumns(jobContext, left)
+        left
+    }
+
+    private def destinationLabel: String = "the Snowflake table " + db.dbName + "." + db.schema + "." + db.table
+
+    /** The table's columns with their types by lower-cased name, read by
+      * position (see [[createTableIfUndefined]]). */
+    private def readColumnTypes(statement: Statement): Either[Throwable, Seq[TransformedColumns.StoreColumn]] =
+        TransformedColumns.attemptRead(statement.getConnection, savepoint = false) {
+            val rs = statement.executeQuery(SnowflakeLoader.columnTypesSql(db))
+            try {
+                val out = ListBuffer[TransformedColumns.StoreColumn]()
+                while (rs.next()) {
+                    val len = rs.getObject(3) match {
+                        case n: Number => Some(n.longValue)
+                        case _ => None
+                    }
+                    out += TransformedColumns.StoreColumn(
+                        rs.getString(1),
+                        rs.getString(2),
+                        len,
+                        TransformedColumns.yesNo(rs.getString(4)),
+                        TransformedColumns.yesNo(rs.getString(5))
+                    )
+                }
+                out.toList
+            } finally rs.close()
+        }
 
     private def csvDelimiter(): String = CsvAttributes.delimiterOf(config)
 
@@ -292,7 +305,6 @@ class SnowflakeLoader(jobContext: JobContext) {
     private def ident(identifier: String): String = SnowflakeConnectionUtil.ident(identifier)
     private def effectiveName(s: String): String = SnowflakeConnectionUtil.effectiveName(s)
     private def sqlLiteral(value: String): String = value.replace("'", "''")
-    private def schemaRef(): String = ident(db.dbName) + "." + ident(db.schema)
     private def qualifiedTable(): String = SnowflakeConnectionUtil.qualifiedTable(db)
 
     private def sendNotification(): Unit = {
@@ -321,5 +333,119 @@ class SnowflakeLoader(jobContext: JobContext) {
 
         NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, jsonNotification, attributes.asScala.toMap)
         statusUtil.info("processing", "notification sent: " + jsonNotification)
+    }
+}
+
+/** The Snowflake load statements, built from the destination config and
+  * schema. Pure, no I/O. Every column, key and table name goes through
+  * [[SnowflakeConnectionUtil.ident]]; column type text comes from
+  * [[snowflakeType]]. */
+object SnowflakeLoader {
+    private def ident(identifier: String): String = SnowflakeConnectionUtil.ident(identifier)
+
+    /** `CREATE TABLE IF NOT EXISTS <db.schema.table> (<col> <type>, ...[, PRIMARY KEY (<keys>)])` */
+    def createTableSql(db: Database, fields: Seq[SchemaField]): String = {
+        val sql = new StringBuilder()
+        sql.append("CREATE TABLE IF NOT EXISTS " + SnowflakeConnectionUtil.qualifiedTable(db) + " (")
+        sql.append(fields.map(field => ident(field.name) + " " + snowflakeType(field)).mkString(", "))
+        if (db.keyFields != null && !db.keyFields.isEmpty) {
+            val keys = db.keyFields.asScala.map(ident).mkString(", ")
+            sql.append(", PRIMARY KEY (" + keys + ")")
+        }
+        sql.append(")")
+        sql.toString()
+    }
+
+    /** The loader's create step: `CREATE SCHEMA IF NOT EXISTS` (when the
+      * schema is set) and [[createTableSql]], or nothing when a field's stored
+      * type has no [[ColumnTypeText.loadText]] ([[ColumnTypeText.create]]). */
+    def createPlan(db: Database, fields: Seq[SchemaField]): ColumnTypeText.CreatePlan =
+        ColumnTypeText.create(
+            fields,
+            if (db.schema != null && db.schema.nonEmpty) Some("CREATE SCHEMA IF NOT EXISTS " + ident(db.dbName) + "." + ident(db.schema)) else None,
+            createTableSql(db, fields)
+        )
+
+    /** The loader's evolve step over the table's existing (lower-cased)
+      * columns ([[ColumnTypeText.evolve]]). */
+    def evolvePlan(db: Database, fields: Seq[SchemaField], existing: Set[String]): Either[String, ColumnTypeText.EvolvePlan] =
+        ColumnTypeText.evolve(fields, existing, f => addColumnSql(db, f))
+
+    /** The table's columns, by position: name, type, character length,
+      * is_nullable, is_identity (Snowflake has no other generated column);
+      * matched on the effective stored names as the loader's column read is. */
+    def columnTypesSql(db: Database): String =
+        s"""SELECT column_name, data_type, character_maximum_length, is_nullable, is_identity FROM ${ident(db.dbName)}.information_schema.columns
+           |WHERE table_schema = '${SnowflakeConnectionUtil.effectiveName(db.schema).replace("'", "''")}' AND table_name = '${SnowflakeConnectionUtil
+                .effectiveName(db.table)
+                .replace("'", "''")}'""".stripMargin
+
+    /** `ALTER TABLE <db.schema.table> ADD COLUMN IF NOT EXISTS <col> <type>` */
+    def addColumnSql(db: Database, field: SchemaField): String =
+        s"ALTER TABLE ${SnowflakeConnectionUtil.qualifiedTable(db)} ADD COLUMN IF NOT EXISTS ${ident(field.name)} ${snowflakeType(field)}"
+
+    /** COPY a staged file into `tableRef`. When a VARIANT column is present
+      * (`_json`), a SELECT-transform COPY PARSE_JSONs the JSON text into the
+      * VARIANT; otherwise a straight positional COPY. PURGE clears the stage
+      * afterward. */
+    def copySql(tableRef: String, stage: String, fields: Seq[SchemaField], delimiter: String): String = {
+        val colList = fields.map(f => ident(f.name)).mkString(", ")
+        val hasVariant = fields.exists(f => f.name.equalsIgnoreCase("_json"))
+
+        val fileFormat = "FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '\"' " +
+            "FIELD_DELIMITER = '" + delimiter + "' EMPTY_FIELD_AS_NULL = TRUE COMPRESSION = AUTO)"
+
+        if (hasVariant) {
+            val selectList = fields.zipWithIndex.map { case (f, i) =>
+                val pos = "$" + (i + 1)
+                if (f.name.equalsIgnoreCase("_json")) s"PARSE_JSON($pos)" else pos
+            }.mkString(", ")
+            s"COPY INTO $tableRef ($colList) FROM (SELECT $selectList FROM $stage) $fileFormat PURGE = TRUE"
+        } else {
+            s"COPY INTO $tableRef ($colList) FROM $stage $fileFormat PURGE = TRUE"
+        }
+    }
+
+    /** MERGE the staging table into the target on `keyFields`; non-key
+      * columns (compared case-insensitively) are overwritten on a match. */
+    def mergeSql(targetRef: String, stagingRef: String, columns: Seq[String], keyFields: Seq[String]): String = {
+        val keySet = keyFields.map(_.toLowerCase).toSet
+        val nonKey = columns.filterNot(c => keySet.contains(c.toLowerCase))
+
+        val onClause = keyFields.map(k => s"t.${ident(k)} = s.${ident(k)}").mkString(" AND ")
+        val insertCols = columns.map(ident).mkString(", ")
+        val insertVals = columns.map(c => "s." + ident(c)).mkString(", ")
+
+        val merge = new StringBuilder()
+        merge.append(s"MERGE INTO $targetRef t USING $stagingRef s ON $onClause ")
+        if (nonKey.nonEmpty) {
+            val setClause = nonKey.map(c => s"t.${ident(c)} = s.${ident(c)}").mkString(", ")
+            merge.append(s"WHEN MATCHED THEN UPDATE SET $setClause ")
+        }
+        merge.append(s"WHEN NOT MATCHED THEN INSERT ($insertCols) VALUES ($insertVals)")
+        merge.toString()
+    }
+
+    /** Platform type -> Snowflake DDL type. Mirrors [[PostgresSql.columnType]];
+     *  `_json` -> VARIANT is the analog of Postgres' `_json` -> json. Any other
+     *  type is passed as written only when it has a [[ColumnTypeText.loadText]] (sent as that text)
+     *  (e.g. decimal(p,s), which Snowflake accepts as a NUMBER synonym);
+     *  every other type text, null included, is a `DatrisException`. */
+    private[util] def snowflakeType(field: SchemaField): String = {
+        if (field.name.equalsIgnoreCase("_json")) "VARIANT"
+        else if (field.name.equalsIgnoreCase("_xml")) "VARCHAR"
+        else {
+            val t = ColumnTypeText.loadTextOrThrow(field)
+            t.toLowerCase(java.util.Locale.ROOT) match {
+                case "string" => "VARCHAR"
+                case "int" | "integer" | "tinyint" |
+                    "smallint" | "bigint" => "NUMBER(38,0)"
+                case "float" | "double" => "FLOAT"
+                case "boolean" => "BOOLEAN"
+                case "date" => "DATE"
+                case "timestamp" => "TIMESTAMP_NTZ"
+                case _ => t
+            }
+        }
     }
 }

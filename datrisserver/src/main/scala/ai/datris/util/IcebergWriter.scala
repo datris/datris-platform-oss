@@ -200,7 +200,8 @@ object IcebergWriter {
         destSchema: StructType,
         statusUtil: StatusUtil,
         pipelineName: String,
-        restCatalog: Option[RestTarget]
+        restCatalog: Option[RestTarget],
+        nullFilled: Seq[String] = Nil
     ): WriteResult = {
         val spark = df.sparkSession
         // The catalog lookups behind format("iceberg") and MERGE read the
@@ -236,14 +237,21 @@ object IcebergWriter {
                 "Iceberg table already exists at " + (if (managed) restCatalog.get.ident.toString else location) + " and writeMode is errorifexists"
             )
 
+        // Rows without a column the table is partitioned by are refused before
+        // the table is created or its schema evolved: the existing table's own
+        // identity partition spec decides, the config's list for a new table.
+        val existing = if (exists) Some(loadChecked(tables, location, restCatalog)) else None
+        refuseMissingPartitionColumns(requiredPartitionColumns(existing, partitionBy), nullFilled, destSchema)
+
         var evolved: Seq[String] = Nil
         val table: Table =
-            if (exists) {
-                val t = loadChecked(tables, location, restCatalog)
-                evolved = evolveSchema(t, destSchema, statusUtil)
-                t
-            } else
-                createTable(tables, location, destSchema, partitionBy, pipelineName, statusUtil, restCatalog)
+            existing match {
+                case Some(t) =>
+                    evolved = evolveSchema(t, destSchema, statusUtil)
+                    t
+                case None =>
+                    createTable(tables, location, destSchema, partitionBy, pipelineName, statusUtil, restCatalog)
+            }
         // Where the table lives: the pipeline's prefix, or (managed) wherever
         // the catalog put it, captured at load/create.
         val tableLocation = if (managed) table.location() else location
@@ -326,6 +334,34 @@ object IcebergWriter {
         }
 
     private val Modes = Seq("append", "overwrite", "merge", "ignore", "errorifexists")
+
+    /** The columns rows may not lack: an existing table's identity partition
+      * source columns (a transform partition such as bucket or day is not
+      * checked), or the config's `partitionBy` for a table about to be created.
+      * A spec that cannot be read falls back to the config's list. */
+    private[util] def requiredPartitionColumns(existing: Option[Table], configured: Seq[String]): Seq[String] =
+        existing match {
+            case None => configured
+            case Some(t) =>
+                scala.util
+                    .Try {
+                        val schema = t.schema()
+                        t.spec().fields().asScala.toList.filter(_.transform().isIdentity).map(f => schema.findColumnName(f.sourceId())).filter(_ != null)
+                    }
+                    .getOrElse(configured)
+        }
+
+    private def refuseMissingPartitionColumns(required: Seq[String], nullFilled: Seq[String], destSchema: StructType): Unit = {
+        def key(n: String): String = Option(n).map(_.trim.toLowerCase).getOrElse("")
+        val wanted = required.filter(n => n != null && n.trim.nonEmpty)
+        if (wanted.isEmpty) return
+        val dest = destSchema.fieldNames.toList
+        val filled = nullFilled.map(key).toSet
+        val nulls = dest.filter(n => filled.contains(key(n)) && wanted.exists(w => key(w) == key(n)))
+        val absent = wanted.filterNot(w => dest.exists(d => key(d) == key(w)))
+        if (nulls.nonEmpty || absent.nonEmpty)
+            throw SparkObjectStoreLoader.requiredColumnRefusal("partition column(s)", nulls, absent, dest.filterNot(n => filled.contains(key(n))), dest)
+    }
 
     /** Name of the Iceberg catalog that `format("iceberg")` path reads/writes
       *  resolve through (IcebergSource registers it on first use). */
@@ -561,7 +597,10 @@ object IcebergWriter {
             )
         if (added.nonEmpty) {
             val update = table.updateSchema()
-            added.foreach(f => update.addColumn(f.name, SparkSchemaUtil.convert(f.dataType)))
+            // addColumn(parent = null, name, type): a top-level column whose
+            // name is taken whole. addColumn(name, type) reads a dot as a
+            // nested path and refuses the name as ambiguous.
+            added.foreach(f => update.addColumn(null, f.name, SparkSchemaUtil.convert(f.dataType)))
             update.commit()
             statusUtil.info("processing", "Iceberg schema evolved: added column(s) " + added.map(_.name).mkString(", "))
         }
@@ -627,5 +666,5 @@ object IcebergWriter {
         }
     }
 
-    private def quote(name: String): String = "`" + name.replace("`", "``") + "`"
+    private[util] def quote(name: String): String = "`" + name.replace("`", "``") + "`"
 }

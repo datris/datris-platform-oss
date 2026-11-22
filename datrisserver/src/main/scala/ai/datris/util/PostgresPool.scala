@@ -27,6 +27,17 @@ object PostgresPool {
     def withConnection[A](jdbcUrl: String, user: String, password: String)(f: Connection => A): A =
         Loan.withResource(dataSource(jdbcUrl, user, password).getConnection)(f)
 
+    /** [[withConnection]], also handing `f` a function that evicts the
+      * connection: when called, the connection is closed instead of going
+      * back to the pool once `f` returns (for a connection whose state could
+      * not be restored). */
+    def withEvictableConnection[A](jdbcUrl: String, user: String, password: String)(f: (Connection, Connection => Unit) => A): A =
+        withEvictableConnectionFrom(dataSource(jdbcUrl, user, password))(f)
+
+    /** [[withEvictableConnection]] on a given pool. */
+    private[util] def withEvictableConnectionFrom[A](ds: HikariDataSource)(f: (Connection, Connection => Unit) => A): A =
+        Loan.withResource(ds.getConnection)(c => f(c, ds.evictConnection(_)))
+
     private def dataSource(jdbcUrl: String, user: String, password: String): HikariDataSource = {
         val ds = pools.computeIfAbsent((jdbcUrl, user), _ => build(jdbcUrl, user, password))
         // Secret rotation: if the cached pool was built with a stale password,

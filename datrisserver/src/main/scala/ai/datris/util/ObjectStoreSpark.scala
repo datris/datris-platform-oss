@@ -119,8 +119,10 @@ object ObjectStoreSpark {
       *  the per-bucket config applied — same rationale as deleteBeforeWrite in
       *  SparkObjectStoreLoader: the global MinIO SDK client only reaches the
       *  built-in MinIO, which is wrong for provider=s3 or
-      *  destinationBucketOverride buckets. */
-    def deleteDestinationData(objectStore: ObjectStore): Unit = {
+      *  destinationBucketOverride buckets. True when data was there and is
+      *  gone, false when there was none; throws when the delete failed or the
+      *  prefix is still there afterwards. */
+    def deleteDestinationData(objectStore: ObjectStore): Boolean = {
         val bucket = resolveBucket(objectStore)
         val prefix = normalizePrefix(objectStore.prefixKey)
         if (prefix.isEmpty)
@@ -133,9 +135,13 @@ object ObjectStoreSpark {
         val fs = path.getFileSystem(spark.sparkContext.hadoopConfiguration)
         if (fs.exists(path)) {
             fs.delete(path, true)
+            if (fs.exists(path))
+                throw new java.io.IOException("object store destination data still present after delete at: s3a://" + bucket + "/" + prefix)
             logger.info("Deleted object store destination data at: s3a://" + bucket + "/" + prefix)
+            true
         } else {
             logger.info("No object store destination data to delete at: s3a://" + bucket + "/" + prefix)
+            false
         }
     }
 

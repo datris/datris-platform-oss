@@ -56,12 +56,17 @@ curl -X POST http://localhost:8080/api/v1/query/postgres \
 
 The endpoint enforces multiple layers of protection:
 
-- **SELECT-only** — only queries starting with `SELECT` are allowed
-- **Read-only connection** — the JDBC connection is set to read-only mode
-- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `CALL`, `EXECUTE`, or `EXEC` are rejected
+- **Read-only transaction** — every query runs inside a transaction that PostgreSQL itself treats as read-only and that is never committed, so a query cannot change data. Each query starts from a clean session.
+- **Time limit** — a query is cancelled after 30 seconds, or after 5 minutes when `limit` is `-1`; a cancelled query returns an error and no rows. Page a large read.
+- **SELECT-only** — only queries starting with `SELECT` (or `WITH`) are allowed
+- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `CALL`, `EXECUTE`, or `EXEC` are rejected, as are queries that call server administration, server file, replication or remote-connection functions, or a small set of other functions; the error names the word. Words are matched anywhere in the query, string literals included. One quoting form, Unicode-escape quoting (`U&`), is not accepted.
 - **No stacked queries** — semicolons are not allowed
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
 - **LIMIT enforcement** — if no `LIMIT` is present in the SQL, one is appended automatically using the request's `limit` value (or the default 100). Pass `limit: -1` to bypass the automatic append entirely — the caller's SQL runs as-is.
+
+A query refused by one of these checks (an empty query, a query that does not start with `SELECT` or `WITH`, a blocked word or function, a semicolon, a comment, `U&` quoting) returns `500 Internal Server Error` with `{"error": "..."}`, the message naming the rule (for example `Only SELECT queries are allowed (WITH/CTE is also permitted)` or `Query contains blocked keyword: DROP`).
+
+Queries run with the platform's own PostgreSQL credentials (the PostgreSQL secret), which pipelines also use to load data. As for any service account, give that secret a role with only the privileges it needs (create and write in the destination schemas) rather than a superuser.
 
 ---
 
@@ -78,7 +83,7 @@ POST /api/v1/query/mongodb
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `collection` | string | Yes | | MongoDB collection name |
-| `database` | string | No | configured MongoDB database | MongoDB database name to query |
+| `database` | string | No | configured MongoDB database | MongoDB database name to query. Ignored on a multi-tenant install, where the tenant's own database is queried. |
 | `filter` | object | No | `{}` | MongoDB query filter |
 | `projection` | object | No | all fields | Fields to include/exclude |
 | `limit` | integer | No | 20 | Maximum documents to return. Pass `-1` for unlimited (tap scripts use this to read every document). Omit for the preview default of 20; any positive value is honored with no cap. |
@@ -111,8 +116,13 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 
 ### Safety
 
-- **Blocked operators** — filters containing `$where`, `$function`, or `$accumulator` are rejected, as these allow arbitrary JavaScript execution
+- **Data collections only** — queries read data collections only: never MongoDB's own system databases, `system.` collections, or the collections in which the platform keeps its own state. Any of these returns `400` with `{"error": "This database or collection is not available for queries."}`.
+- **Blocked operators** — a filter or a projection containing `$where`, `$function`, or `$accumulator`, at any depth (nested documents and arrays included), is rejected, as these allow arbitrary JavaScript execution
+- **Projection** — plain inclusion and exclusion (`1`, `0`, `true`, `false`), `$slice`, `$elemMatch`, `$meta` and aggregation expressions other than the blocked operators are accepted
+- **Limit** — `limit` is applied as given; `-1` returns every matching document (tap scripts use this), so pass a positive `limit` for previews
 - **Standard MongoDB query operators** (`$eq`, `$gt`, `$in`, `$regex`, etc.) are safe and fully supported
+
+A filter or projection holding a blocked operator returns `500 Internal Server Error` with `{"error": "..."}` naming it, for example `MongoDB filter contains blocked operator: $where`; an empty collection name returns `500` too. A system or platform collection returns `400`, as above.
 
 ---
 
@@ -167,7 +177,16 @@ curl -X POST http://localhost:8080/api/v1/query/objectstore \
 
 `snapshotId` and `snapshotTimestamp` identify the Iceberg snapshot that was read; both are `null` for Parquet and ORC pipelines.
 
-If the pipeline exists but no runs have written data yet, the endpoint returns an empty result (`"count": 0`) rather than an error.
+`columns` lists the pipeline's destination schema in its order, then the provenance stamp columns, then any other columns the files hold (for example one whose field was removed from the schema), then partition columns the schema does not name. A column added by a later file is `null` for rows written before it existed, and a schema column no file holds yet is `null` in every row. A column the files hold keeps the files' letter case. Values come back under the types the files hold them in, so changing a field's type does not change what earlier files return.
+
+How the files are read depends on the location:
+
+- **Up to 1,000 data files** (the usual case): the query reads every file's schema first (remembering it for later queries until the file changes), so the result has every column the files hold and only the stamp columns they hold. When files hold one column under different types, the column still comes back as numbers if every type fits one number type exactly (`tinyint`, `smallint`, `int` and `bigint`; `float` and `double`; `int` or `float` with `double`; decimals, at the widest scale, up to 38 digits). Any other mix, such as `int` with `string` or `date` with `timestamp`, comes back as text in every row (dates as `2024-01-02`, timestamps as ISO instants, booleans as `true`/`false`). This is decided from every file, so it does not depend on `limit`.
+- **More than 1,000 data files, or when reading the schemas cannot finish** (a file that is not a readable data file, a file removed during the query, or more than about 10 seconds spent): the query reads the way it always has, from one sampled file's columns and types, plus the schema's columns and the stamp columns the pipeline stamps now (listed even when no file holds them, as `null`). Columns the sampled file lacks are read under the schema's type (a `tinyint` or `smallint` as `int`) and take the schema's letter case; if that read fails, the query returns only the sampled file's columns, and on Parquet, if the files hold one of those under two types, it fails with an error saying so. A value read under a type it does not match can come back wrong with no error: on ORC as `null` or as a converted value (for example 1.5 as 1), on Parquet when a whole number and a date are read as each other (a date as its day count, a number as a date). A file Spark cannot read fails the query only if the read reaches it before `limit` rows are found. Because the schema reading can finish on one call and not on the next (for example on a slow store before its schemas are remembered), the same query can switch between the two ways and return a different set of columns or types from one call to the next.
+
+Empty files are skipped. An Iceberg pipeline returns the table's current columns.
+
+If the pipeline exists but no runs have written data yet, or its location holds no data files, the endpoint returns an empty result (`"count": 0`) rather than an error.
 
 ### Error Cases
 

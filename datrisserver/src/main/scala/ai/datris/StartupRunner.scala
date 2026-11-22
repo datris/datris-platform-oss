@@ -446,6 +446,8 @@ class StartupRunner extends ApplicationRunner {
             mongoDbDatabase,
             mongoDbInternalDatabase
         )
+        // A warning only: such an install keeps working.
+        ai.datris.util.MongoReservedNames.sharedDatabaseWarning(mongoDbConfig).foreach(w => logger.warn(w))
 
         // Tap wall-clock ceilings: a test is bounded by tapScriptTimeoutSeconds,
         // a real or cron run by tapRunTimeoutSeconds. Anything that is not a

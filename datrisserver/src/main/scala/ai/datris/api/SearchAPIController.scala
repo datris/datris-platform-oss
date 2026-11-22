@@ -18,11 +18,15 @@ import scala.collection.JavaConverters._
 object SearchAPIController {
     private val companionLogger: Logger = LoggerFactory.getLogger(classOf[SearchAPIController])
 
-    /** False only for a restricted user's session unless at least one
-      * pipeline names `container` and every pipeline naming it is in its
-      * grants (view or higher). `schema` is the request's pgvector schema.
-      * Everyone else (unrestricted sessions, API keys): true, without
-      * reading configs. */
+    /** False only for a caller limited for pipelines
+      * ([[ai.datris.auth.CallerVisibility.limitedPipelines]]: a restricted
+      * user's session, or an API key whose pipeline read is held to a
+      * `catalog=` / `owner=` scope) unless at least one pipeline names `container` and
+      * every pipeline naming it is one it may read
+      * ([[PipelineAPIController.mayRead]]). `schema` is the request's
+      * pgvector schema. Everyone else (unrestricted sessions, unscoped and
+      * full keys, a key that reads every pipeline but is limited for taps):
+      * true, without reading configs. */
     def containerVisible(
         request: jakarta.servlet.http.HttpServletRequest,
         store: String,
@@ -30,18 +34,22 @@ object SearchAPIController {
         schema: Option[String],
         find: (String, String, Option[String]) => Seq[ai.datris.model.PipelineConfig]
     ): Boolean =
-        !ai.datris.auth.CapabilityCheck.isRestrictedSession(request) || {
+        !ai.datris.auth.CapabilityCheck.isLimitedFor(request, "pipeline") || {
             val namers = find(store, container, schema)
-            namers.nonEmpty && namers.forall(c =>
-                ai.datris.auth.CapabilityCheck.grants(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel))
-            )
+            namers.nonEmpty && namers.forall(c => PipelineAPIController.mayRead(request, c))
         }
 
-    /** The search gate and its allowed writers. Unrestricted sessions and
-      * every API key: `Right(None)`, without calling `readAll`. A restricted
-      * user's session: one `readAll` (nulls dropped); the [[containerVisible]]
-      * rule on it, `Left` the existing 404 when it fails; otherwise
-      * `Right(Some(names))`, the names of every pipeline the session can read
+    /** The search gate and its allowed writers. Callers not limited for
+      * pipelines (unrestricted sessions, unscoped and full keys, no
+      * identity, and a key that reads every pipeline but is limited for
+      * taps, which searches every container and keeps chunks with no
+      * recorded writer): `Right(None)`, without calling `readAll`. A caller
+      * limited for pipelines (a restricted user's session, or a key whose
+      * pipeline read is held to a `catalog=` / `owner=` scope):
+      * one `readAll` (nulls dropped); the [[containerVisible]] rule on it,
+      * `Left` the existing 404 when it fails (for keys too: a container is
+      * a lookup, D2); otherwise `Right(Some(names))`, the names of every
+      * pipeline the caller can read
       * (in any store), plus the previous names of those among them that name
       * this container ([[PipelineAliases.recordNames]]), less any name reused
       * after a rename with a pipeline it may belong to hidden
@@ -53,7 +61,7 @@ object SearchAPIController {
         schema: Option[String],
         readAll: () => Seq[ai.datris.model.PipelineConfig]
     ): Either[ResponseEntity[String], Option[Set[String]]] =
-        if (!ai.datris.auth.CapabilityCheck.isRestrictedSession(request)) Right(None)
+        if (!ai.datris.auth.CapabilityCheck.isLimitedFor(request, "pipeline")) Right(None)
         else {
             val configs = Option(readAll()).getOrElse(Nil).filter(_ != null)
             if (!containerVisible(request, store, container, schema, (s, c, sc) => VectorSearchRegistry.pipelinesForContainer(s, c, configs, sc))) {
@@ -91,7 +99,10 @@ object SearchAPIController {
         hitsFor(request, hits, writers, n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n), id => RunLineageIO.read(id))
 
     /** [[hitsFor]] with the tap reader and the run-lineage reader (by run id)
-      * given. `writers == None`: `hits` itself, neither function called.
+      * given. `writers == None`: `hits` itself, neither function called,
+      * except for a caller limited for taps but not for pipelines (a key
+      * that reads every pipeline, for which [[searchWriters]] gives None):
+      * every hit is kept and only the tap stamp scrub below applies.
       * Both are memoised per call. A tap read that throws counts as a hidden
       * tap, and a run read that throws as no record (both fail closed: the
       * hit loses its tap stamp columns instead of the search failing). */
@@ -103,9 +114,9 @@ object SearchAPIController {
         run: String => Option[ai.datris.model.RunLineage]
     ): java.util.List[java.util.Map[String, Any]] =
         writers match {
-            case None => hits
-            case Some(w) =>
-                val survivors = VectorChunkWriter.keepWrittenBy(hits, w)
+            case None if !tapOnlyLimited(request) => hits
+            case _ =>
+                val survivors = writers.map(w => VectorChunkWriter.keepWrittenBy(hits, w)).getOrElse(hits)
                 val hiddenMemo = scala.collection.mutable.Map[String, Boolean]()
                 val runMemo = scala.collection.mutable.Map[String, Option[ai.datris.model.RunLineage]]()
                 ai.datris.auth.HiddenTapScrub.scrubHits(
@@ -131,6 +142,39 @@ object SearchAPIController {
                             }
                         )
                 )
+        }
+
+    /** A caller limited for taps and not for pipelines: it searches every
+      * container and keeps every chunk, but the tap stamps of chunks fed by
+      * a tap it cannot read still go. */
+    private def tapOnlyLimited(request: jakarta.servlet.http.HttpServletRequest): Boolean =
+        ai.datris.auth.CapabilityCheck.isLimitedFor(request, "tap") && !ai.datris.auth.CapabilityCheck.isLimitedFor(request, "pipeline")
+
+    /** The `search:vector:collection=` check (plans/stories/api-key-inert-scopes.md,
+      * Fix 2): Some(403) when the request's key holds `search:vector` only
+      * under `collection=` scopes and none names this container
+      * ([[ai.datris.auth.CapabilityScopes.collectionName]]: pgvector outside
+      * `public` is `<schema>.<table>`). Runs before any config, store or
+      * secret lookup, so the answer is the same whether or not the container
+      * exists. None for unscoped keys, sessions, legacy keys, a request
+      * with no identity, and a key with no applied `search:vector` (the gate
+      * decided: inert-only under `DATRIS_KEY_INERT_SCOPES=allow`, or log-only). */
+    def collectionScopeRefusal(
+        request: jakarta.servlet.http.HttpServletRequest,
+        store: String,
+        container: String,
+        schema: Option[String]
+    ): Option[ResponseEntity[String]] =
+        try {
+            ai.datris.auth.CapabilityCheck.assertCollectionScope(
+                request,
+                "search",
+                "vector",
+                Seq(ai.datris.auth.CapabilityScopes.collectionNameOpt(store, container, schema))
+            )
+            None
+        } catch {
+            case e: ai.datris.auth.CapabilityDeniedException => Some(PipelineAPIController.capabilityDenied(e))
         }
 
     def containerNotFound(param: String, container: String): ResponseEntity[String] =
@@ -169,6 +213,9 @@ class SearchAPIController {
             // A restricted user searches only containers fed by a pipeline in
             // its catalog grants; any other container is as if it did not exist.
             val schema = if (store == "pgvector") Option(body.get("schema")).map(_.toString) else None
+            // A key scoped to collections searches only those (checked before
+            // any lookup, so a refusal says nothing about what exists).
+            SearchAPIController.collectionScopeRefusal(request, store, container, schema).foreach(r => return r)
             // A restricted user also gets only chunks written by pipelines it
             // can read (a container no config names can hold other catalogs' chunks).
             val writers = SearchAPIController.searchWriters(

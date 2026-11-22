@@ -93,9 +93,11 @@ class AliasRunRecordsSpec extends AnyFunSuite {
         // a name nobody else claims stays shown
         val solo = pg("orders", "Sales", "orders_t")
         assert(CatalogFindAPIController.recordsShown(bobSales, solo :: all, List(solo, salesMktOld))("orders"))
-        // unrestricted sessions and API keys: no rule (null = as before)
+        // unrestricted sessions: no rule (null = as before)
         assert(CatalogFindAPIController.recordsShown(editor, all, all) == null)
-        assert(CatalogFindAPIController.recordsShown(scopedKey, all, List(salesMktOld)) == null)
+        // a catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B): the session's rule
+        val keyRule = CatalogFindAPIController.recordsShown(scopedKey, all, List(salesMktOld))
+        assert(keyRule != null && !keyRule("mkt_old"), "contested: the Marketing pipeline is hidden from the key")
     }
 
     test("lineage: recordsShown follows the same rule; true for unrestricted callers") {
@@ -103,7 +105,8 @@ class AliasRunRecordsSpec extends AnyFunSuite {
         assert(LineageAPIController.recordsShown(bobBoth, "mkt_old", all))
         assert(LineageAPIController.recordsShown(bobSales, "orders", pg("orders", "Sales", "orders_t") :: all))
         assert(LineageAPIController.recordsShown(editor, "mkt_old", all))
-        assert(LineageAPIController.recordsShown(scopedKey, "mkt_old", all))
+        // a catalog-scoped API key is held to its scope (scoped-key-read-routes, Part B)
+        assert(!LineageAPIController.recordsShown(scopedKey, "mkt_old", all))
     }
 
     // ------------------------------------------------------------ lineage graph

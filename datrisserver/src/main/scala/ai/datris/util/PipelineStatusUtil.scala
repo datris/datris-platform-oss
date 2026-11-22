@@ -17,7 +17,7 @@ object PipelineStatusUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     def getPipelineStatusSummary(pipelineName: String, page: Int): java.util.List[PipelineStatusSummary] = {
-        val tableList = NoSQLDbUtil.getPageOfItemsAsJSON(DatrisEnvironment.current.pipelineStatusTableName + "-summary", page - 1, 20, "created_at")
+        val tableList = NoSQLDbUtil.getPageOfItemsAsJSON(DatrisEnvironment.current.pipelineStatusSummaryTableName, page - 1, 20, "created_at")
         val gson = new Gson
         tableList.map(json => {
             val pipelineStatusSummaryTable = gson.fromJson(json, classOf[PipelineStatusSummaryTable])

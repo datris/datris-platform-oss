@@ -6,8 +6,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.{AuditActor, AuditClassifier, AuditEntry, AuditLog}
+import ai.datris.auth.RequestPaths
 import ai.datris.model.DatrisEnvironment
-import com.google.gson.{JsonObject, JsonParser}
+import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -52,8 +53,10 @@ class AuditInterceptor extends HandlerInterceptor {
                     return true
                 }
                 val logReads = Option(DatrisEnvironment.values).exists(_.auditLogLogReads)
-                if (AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads).isDefined) {
-                    logger.warn("Refusing " + request.getMethod + " " + request.getRequestURI + ": audit log not accepting entries (AUDIT_LOG_STRICT)")
+                if (AuditClassifier.classify(RequestPaths.method(request), RequestPaths.path(request), logReads).isDefined) {
+                    logger.warn("Refusing " + ai.datris.util.LogSafe.text(request.getMethod) + " " + ai.datris.util.LogSafe.text(
+                        request.getRequestURI
+                    ) + ": audit log not accepting entries (AUDIT_LOG_STRICT)")
                     val body = new JsonObject()
                     body.addProperty("error", "audit_log_unavailable")
                     body.addProperty(
@@ -78,7 +81,13 @@ class AuditInterceptor extends HandlerInterceptor {
         if (request.getAttribute(AuditLog.RecordedAttr) != null) return
         try {
             val logReads = Option(DatrisEnvironment.values).exists(_.auditLogLogReads)
-            AuditClassifier.classify(request.getMethod, request.getRequestURI, logReads).foreach { route =>
+            val route0 = AuditClassifier.classify(RequestPaths.method(request), RequestPaths.path(request), logReads)
+            val plan = AuditInterceptor.scopeDenialPlan(response.getStatus, route0.isDefined, AuditLog.scopeDenials(request))
+            // A scoped key refused on a route the audit log does not otherwise
+            // record (a read): the same security/denied row a route-level
+            // refusal writes, carrying the target's scope.
+            plan.deniedRow.foreach { case (required, detail) => AuditLog.denied(request, detail, 403, Some(required)) }
+            route0.foreach { route =>
                 val status = response.getStatus
                 val outcome =
                     if (status == 401 || status == 403) "denied"
@@ -88,9 +97,22 @@ class AuditInterceptor extends HandlerInterceptor {
                 val durationMs = start.map(s => (System.nanoTime() - s) / 1000000L)
                 val errorMessage =
                     Option(request.getAttribute(AuditLog.ErrorMessageAttr)).collect { case s: String => s }
+                        .orElse(plan.errorMessage)
                         .orElse(Option(ex).map(e => Option(e.getMessage).getOrElse(e.getClass.getSimpleName).take(500)))
                         .orElse(if (outcome == "success") None else Some("HTTP " + status))
-                val metadata = Option(request.getAttribute(AuditLog.MetadataAttr)).collect { case o: JsonObject => AuditLog.redact(o) }
+                val redacted = Option(request.getAttribute(AuditLog.MetadataAttr)).collect { case o: JsonObject => AuditLog.redact(o) }
+                // Scope denials noted by CapabilityCheck.assertScope (the
+                // target's catalog/owner/_type the 403 body no longer names),
+                // alongside the controller's own metadata.
+                val metadata =
+                    if (plan.scopeDenied.isEmpty) redacted
+                    else {
+                        val o = redacted.getOrElse(new JsonObject())
+                        val arr = new JsonArray()
+                        plan.scopeDenied.foreach(arr.add)
+                        o.add("scopeDenied", arr)
+                        Some(o)
+                    }
                 // MCP session id forwarded by the MCP server — joins this entry
                 // to the Agent Monitor's activity buffer while it still holds it.
                 val withSession = Option(request.getHeader(AuditActor.HeaderAgentSession)).map(_.trim).filter(_.nonEmpty).map { sid =>
@@ -176,6 +198,28 @@ class AuditInterceptor extends HandlerInterceptor {
 
 object AuditInterceptor {
 
+    /** What the scope denials noted on a request add to its audit record.
+      * `scopeDenied`: details for `metadata.scopeDenied` on a classified
+      * route; `errorMessage`: the first detail, used when the route answered
+      * 403 and no controller set [[AuditLog.ErrorMessageAttr]]; `deniedRow`:
+      * `(required, detail)` for one `security/denied` row on a 403 the audit
+      * log would otherwise skip (an unaudited read). */
+    final case class ScopeDenialPlan(scopeDenied: Seq[String], errorMessage: Option[String], deniedRow: Option[(String, String)])
+
+    val NoScopeDenial: ScopeDenialPlan = ScopeDenialPlan(Nil, None, None)
+
+    /** Pure: the plan for a request that answered `status`, whose route the
+      * classifier did (`classified`) or did not record, given the denials
+      * `CapabilityCheck.assertScope` noted, in order. A 200/207 that only
+      * filtered members keeps `scopeDenied` and no `errorMessage`. */
+    def scopeDenialPlan(status: Int, classified: Boolean, denials: Seq[(String, String)]): ScopeDenialPlan = {
+        if (denials.isEmpty) NoScopeDenial
+        else if (classified)
+            ScopeDenialPlan(denials.map(_._2), if (status == 403) Some(denials.head._2) else None, None)
+        else if (status == 403) ScopeDenialPlan(Nil, None, Some(denials.head))
+        else NoScopeDenial
+    }
+
     /** Retry-After on a strict-mode refusal (seconds). */
     val RetryAfterSeconds = "5"
 
@@ -183,7 +227,7 @@ object AuditInterceptor {
 
     /** `GET /api/v1/audit-log/status`, exempt from the strict gate. */
     def isStatusRead(request: HttpServletRequest): Boolean = {
-        val uri = request.getRequestURI
-        "GET".equalsIgnoreCase(request.getMethod) && uri != null && (uri == StatusPath || uri == StatusPath + "/")
+        val uri = RequestPaths.path(request)
+        "GET" == RequestPaths.method(request) && uri != null && (uri == StatusPath || uri == StatusPath + "/")
     }
 }

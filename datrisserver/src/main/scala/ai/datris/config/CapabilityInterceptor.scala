@@ -5,14 +5,22 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.audit.AuditLog
-import ai.datris.auth.{CapabilityRoutes, RouteCheck}
-import ai.datris.model.{ResolvedKey, UserContext}
-import ai.datris.util.APIKeyValidator
+import ai.datris.audit.{AuditActor, AuditLog}
+import ai.datris.auth.{CallerVisibility, CapabilityRoutes, CapabilityScopes, RequestPaths, RouteCheck}
+import ai.datris.model.{Capability, ResolvedKey, UserContext}
+import ai.datris.util.{APIKeyValidator, LogSafe}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
+import org.springframework.web.method.HandlerMethod
 import org.springframework.web.servlet.HandlerInterceptor
+
+/** See [[CapabilityInterceptor.inertOutcome]]. */
+sealed trait InertOutcome
+object InertOutcome {
+    final case class Refused(capabilities: Seq[Capability]) extends InertOutcome
+    final case class UsedUnderOptOut(capabilities: Seq[Capability]) extends InertOutcome
+}
 
 object CapabilityInterceptor {
 
@@ -37,6 +45,42 @@ object CapabilityInterceptor {
       * (legacy full access or scoped) → normal capability check. */
     def denyPresentedButUnresolved(presentedKey: Boolean, resolved: Boolean, rejection: Option[String]): Boolean =
         presentedKey && !resolved && rejection.isDefined
+
+    /** The capability-denied 403 body (keys `error`, `errorKind`, `key`,
+      * `required`, `route`, `message`), JSON-escaped throughout: a label or
+      * capability string with a quote, backslash or control character still
+      * yields valid JSON. `message` None = the generic "does not hold" text. */
+    def deniedBody(label: String, resource: String, action: String, method: String, path: String, message: Option[String]): String = {
+        val o = new com.google.gson.JsonObject
+        o.addProperty("error", "capability denied")
+        o.addProperty("errorKind", "capability_denied")
+        o.addProperty("key", label)
+        o.addProperty("required", resource + ":" + action)
+        o.addProperty("route", method + " " + path)
+        o.addProperty(
+            "message",
+            message.getOrElse(
+                "API key '" + label + "' does not hold capability '" + resource + ":" + action + "'. " +
+                    "This is a permission boundary on the API key, not a problem with the upstream service. " +
+                    "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
+                    "or the operator must use a different key with the required capability."
+            )
+        )
+        o.toString
+    }
+
+    /** What a key's inert capabilities ([[ResolvedKey.inertCapabilities]])
+      * mean for a route requiring (resource, action): None when they play no
+      * part (no inert capability matches, or an applied one does);
+      * `Refused` when only an inert capability matches and the platform fails
+      * closed (the default); `UsedUnderOptOut` when it matches under
+      * `DATRIS_KEY_INERT_SCOPES=allow`. */
+    def inertOutcome(rk: ResolvedKey, resource: String, action: String): Option[InertOutcome] = {
+        val caps = rk.inertMatching(resource, action)
+        if (caps.isEmpty) None
+        else if (CapabilityScopes.refuseInert) Some(InertOutcome.Refused(caps))
+        else Some(InertOutcome.UsedUnderOptOut(caps))
+    }
 
     /** `message` of the 403 a restricted user's session gets on a table or
       * collection listing ([[CapabilityRoutes.UnfilterableForRestricted]]).
@@ -95,13 +139,13 @@ class CapabilityInterceptor extends HandlerInterceptor {
     private def rejectPresentedKey(
         request: HttpServletRequest,
         response: HttpServletResponse,
-        method: String,
-        path: String,
+        logMethod: String,
+        logPath: String,
         required: Option[String]
     ): Boolean = {
         logger.info(
             "capability check: route={} {} required={} outcome=rejected-key",
-            Array[AnyRef](method, path, required.getOrElse("-")): _*
+            Array[AnyRef](logMethod, logPath, required.getOrElse("-")): _*
         )
         val (status, body) = CapabilityInterceptor.rejectionResponse(
             String.valueOf(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr))
@@ -126,8 +170,18 @@ class CapabilityInterceptor extends HandlerInterceptor {
       * never apply there. A restricted user's catalog grants must still hold:
       * when the request carries that anonymous identity and the logged-in
       * session user is restricted, the identity is replaced with the user's
-      * session bundle. Only ever narrows; unrestricted users are unchanged. */
-    private[config] def narrowForRestrictedSession(request: HttpServletRequest): Unit =
+      * session bundle. Only ever narrows; unrestricted users are unchanged.
+      *
+      * A request that carries its own sign-in session always acts as that
+      * session's user: `X-Datris-On-Behalf-Of` is honoured only on the
+      * platform's internal calls, which carry no session (Decision 8).
+      * TenantInterceptor already ignores the header when it finds a valid
+      * session; should it have applied the header anyway (the session lookup
+      * failed there and succeeded in SessionAuthenticator), the carrier's own
+      * identity is restored here first, so the session user is held to its
+      * own grants and is never another user. */
+    private[config] def narrowForRestrictedSession(request: HttpServletRequest): Unit = {
+        dropOnBehalfOfForSession(request)
         request.getAttribute(TenantInterceptor.ResolvedKeyAttr) match {
             case rk: ResolvedKey if rk.label == "anonymous" && rk.isLegacyFullAccess && rk.tenantEnvironment.isEmpty =>
                 attachRestrictedSession(request)
@@ -141,6 +195,19 @@ class CapabilityInterceptor extends HandlerInterceptor {
                 // A presented-but-rejected key is never replaced by the session.
                 if (request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr) == null) attachRestrictedSession(request)
         }
+    }
+
+    private def dropOnBehalfOfForSession(request: HttpServletRequest): Unit =
+        if (UserContext.get().isDefined && request.getAttribute(AuditActor.OnBehalfOfAttr) != null) {
+            request.getAttribute(TenantInterceptor.OnBehalfOfCarrierAttr) match {
+                case carrier: ResolvedKey => request.setAttribute(TenantInterceptor.ResolvedKeyAttr, carrier)
+                // Never keep another user's identity on a session request.
+                case _ => request.removeAttribute(TenantInterceptor.ResolvedKeyAttr)
+            }
+            request.removeAttribute(AuditActor.OnBehalfOfAttr)
+            request.removeAttribute(AuditActor.CarrierKeyLabelAttr)
+            request.removeAttribute(TenantInterceptor.OnBehalfOfCarrierAttr)
+        }
 
     private def attachRestrictedSession(request: HttpServletRequest): Unit =
         UserContext.get().filter(_.isRestricted).foreach { user =>
@@ -148,8 +215,15 @@ class CapabilityInterceptor extends HandlerInterceptor {
         }
 
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
-        val method = request.getMethod
-        val path = request.getRequestURI
+        // The route as the dispatcher matched it (decoded, path parameters
+        // removed; HEAD decided as GET): the same string every access
+        // decision reads (RequestPaths).
+        val method = RequestPaths.method(request)
+        val path = RequestPaths.path(request)
+        // Log lines show the request as the caller sent it (raw method and
+        // still-encoded URI), with control characters neutralised.
+        val logMethod = LogSafe.text(request.getMethod)
+        val logPath = LogSafe.text(request.getRequestURI)
         narrowForRestrictedSession(request)
 
         CapabilityRoutes.lookup(method, path) match {
@@ -161,17 +235,41 @@ class CapabilityInterceptor extends HandlerInterceptor {
                 // classify yet. Authentication failure regardless of mapping:
                 // without this the controller's own validate() threw and the
                 // caller got a 500 with a stack trace instead of a 401.
-                rejectPresentedKey(request, response, method, path, required = None)
+                rejectPresentedKey(request, response, logMethod, logPath, required = None)
+
+            case RouteCheck.Unmapped if handler.isInstanceOf[HandlerMethod] =>
+                // A controller method with no row and no skip pattern. Every
+                // handler mapping has a decision (HandlerMappingDecisionSpec),
+                // so this is a route added without one: only full access
+                // passes (as for `*:*`), and no identity is left to the
+                // controller's own key check, as on mapped routes. Anyone
+                // else is refused in enforce mode and logged as would-deny
+                // in log-only.
+                readResolvedKey(request) match {
+                    case Some(rk) if !rk.isFullAccess =>
+                        if (enforce) {
+                            logger.warn(
+                                "capability check: route={} {} key={} outcome=deny (no capability mapping for this handler)",
+                                Array[AnyRef](logMethod, logPath, LogSafe.text(rk.label)): _*
+                            )
+                            denyCapability(request, response, rk, "*", "*", method, path)
+                            false
+                        } else {
+                            logger.warn(
+                                "capability check: route={} {} key={} outcome=would-deny (log-only; no capability mapping for this handler)",
+                                Array[AnyRef](logMethod, logPath, LogSafe.text(rk.label)): _*
+                            )
+                            true
+                        }
+                    case _ =>
+                        logger.info("capability check: route={} {} outcome=unmapped", logMethod.asInstanceOf[Any], logPath.asInstanceOf[Any])
+                        true
+                }
 
             case RouteCheck.Unmapped =>
-                // No mapping for this route. In log-only mode this is just
-                // an informational log line — it tells us which routes still
-                // need classification. In enforce mode we still let it
-                // through; fail-closed for unmapped routes is a Phase 2+
-                // tightening once the mapping is comprehensive.
-                // INFO during Phase 1 so gaps in the route table are visible
-                // under default Spring log levels; dial to DEBUG once stable.
-                logger.info("capability check: route={} {} outcome=unmapped", method.asInstanceOf[Any], path.asInstanceOf[Any])
+                // Not a controller method (static resources, the not-found
+                // answer): nothing to protect, the request answers as today.
+                logger.info("capability check: route={} {} outcome=unmapped", logMethod.asInstanceOf[Any], logPath.asInstanceOf[Any])
                 true
 
             case RouteCheck.Require(resource, action) =>
@@ -184,7 +282,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         // enforce and log-only modes. Without this the request
                         // fell into the no-key branch below and skipped the
                         // capability check entirely.
-                        rejectPresentedKey(request, response, method, path, required = Some(resource + ":" + action))
+                        rejectPresentedKey(request, response, logMethod, logPath, required = Some(resource + ":" + action))
 
                     case None =>
                         // No ResolvedKey on the request. This happens for
@@ -195,18 +293,18 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         // unauthenticated probes are high-volume noise.
                         logger.debug(
                             "capability check: route={} {} required={}:{} outcome=no-key",
-                            Array[AnyRef](method, path, resource, action): _*
+                            Array[AnyRef](logMethod, logPath, resource, action): _*
                         )
                         true
 
-                    case Some(rk) if rk.restrictedSession && CapabilityRoutes.refusedForRestrictedSession(method, path) =>
+                    case Some(rk) if CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.RestrictedListing) =>
                         // A restricted user's session holds metadata:read, but
                         // raw table/collection listings cannot be narrowed to
                         // its catalogs: refused with the capability-denied body
                         // in both modes (the grants are a hard boundary).
                         logger.info(
                             "capability check: route={} {} required={}:{} key={} outcome=deny (restricted session, unfilterable listing)",
-                            Array[AnyRef](method, path, resource, action, rk.label): _*
+                            Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
                         )
                         denyCapability(
                             request,
@@ -232,26 +330,96 @@ class CapabilityInterceptor extends HandlerInterceptor {
                         // scope.forall on a non-empty scope with an empty
                         // context always fails.
                         val granted = rk.matchesResourceAction(resource, action)
-                        if (granted) {
+                        val inert = CapabilityInterceptor.inertOutcome(rk, resource, action)
+                        if (granted && CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.InstallWide)) {
+                            // A caller limited to a catalog or to what it
+                            // created holds the capability, but the route
+                            // covers the whole installation and has nothing
+                            // to filter (InstallWideForLimited, Decision D3):
+                            // refused in both modes, before the handler runs,
+                            // as the restricted-session listing refusal is.
+                            // Only a caller that holds the capability reaches
+                            // here: one that does not keeps the does-not-hold
+                            // or inert-scope 403 below.
+                            val message = CallerVisibility.InstallWideRequestMessage
+                            logger.info(
+                                "capability check: route={} {} required={}:{} key={} outcome=deny (scope-limited caller, install-wide route)",
+                                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
+                            )
+                            denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
+                            false
+                        } else if (granted) {
                             // INFO during Phase 1 so the rollout is visible.
                             // After enforce mode is on and the route map is
                             // stable, dial this back to DEBUG to cut volume.
                             logger.info(
                                 "capability check: route={} {} required={}:{} key={} legacy={} outcome=grant",
-                                Array[AnyRef](method, path, resource, action, rk.label, java.lang.Boolean.valueOf(rk.isLegacyFullAccess)): _*
+                                Array[AnyRef](
+                                    logMethod,
+                                    logPath,
+                                    resource,
+                                    action,
+                                    LogSafe.text(rk.label),
+                                    java.lang.Boolean.valueOf(rk.isLegacyFullAccess)
+                                ): _*
                             )
+                            inert match {
+                                case Some(InertOutcome.UsedUnderOptOut(caps)) =>
+                                    // DATRIS_KEY_INERT_SCOPES=allow: passed only
+                                    // through a capability whose scope is not applied.
+                                    val required = resource + ":" + action
+                                    val reason = CapabilityScopes.inertUsedMessage(rk.label, required, caps)
+                                    logger.warn(
+                                        "capability check: route={} {} required={} key={} outcome=inert-scope-used ({}=allow): {}",
+                                        Array[AnyRef](
+                                            logMethod,
+                                            logPath,
+                                            required,
+                                            LogSafe.text(rk.label),
+                                            CapabilityScopes.InertScopesEnv,
+                                            caps.map(_.raw).mkString(", ")
+                                        ): _*
+                                    )
+                                    AuditLog.inertScopeUsed(request, required, caps.map(_.raw), reason)
+                                case _ =>
+                            }
                             true
                         } else if (enforce) {
+                            inert match {
+                                case Some(InertOutcome.Refused(caps)) =>
+                                    val required = resource + ":" + action
+                                    val message = CapabilityScopes.inertDenialMessage(rk.label, required, caps)
+                                    logger.info(
+                                        "capability check: route={} {} required={} key={} outcome=deny (inert scope: {})",
+                                        Array[AnyRef](logMethod, logPath, required, LogSafe.text(rk.label), caps.map(_.raw).mkString(", ")): _*
+                                    )
+                                    denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message))
+                                case _ =>
+                                    logger.info(
+                                        "capability check: route={} {} required={}:{} key={} outcome=deny",
+                                        Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
+                                    )
+                                    denyCapability(request, response, rk, resource, action, method, path)
+                            }
+                            false
+                        } else if (CapabilityRoutes.scopeRefusal(rk, method, path).contains(CapabilityRoutes.InstallWide)) {
+                            // Log-only never opens an install-wide route to a
+                            // caller limited to a catalog or to what it
+                            // created (a restricted session included): the
+                            // refusal above holds whether or not the caller
+                            // holds the capability. Enforce mode keeps the
+                            // does-not-hold / inert-scope answers above.
+                            val message = CallerVisibility.InstallWideRequestMessage
                             logger.info(
-                                "capability check: route={} {} required={}:{} key={} outcome=deny",
-                                Array[AnyRef](method, path, resource, action, rk.label): _*
+                                "capability check: route={} {} required={}:{} key={} outcome=deny (log-only; scope-limited caller, install-wide route)",
+                                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
                             )
-                            denyCapability(request, response, rk, resource, action, method, path)
+                            denyCapability(request, response, rk, resource, action, method, path, Some(message), Some(message + " (key '" + rk.label + "')"))
                             false
                         } else {
                             logger.warn(
                                 "capability check: route={} {} required={}:{} key={} outcome=would-deny (log-only)",
-                                Array[AnyRef](method, path, resource, action, rk.label): _*
+                                Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
                             )
                             true
                         }
@@ -271,29 +439,16 @@ class CapabilityInterceptor extends HandlerInterceptor {
         action: String,
         method: String,
         path: String,
-        message: Option[String] = None
+        message: Option[String] = None,
+        auditReason: Option[String] = None
     ): Unit = {
         response.setStatus(HttpServletResponse.SC_FORBIDDEN)
         response.setContentType("application/json")
-        val safeLabel = rk.label.replace("\"", "\\\"")
-        val text = message.map(_.replace("\"", "\\\"")).getOrElse(
-            "API key '" + safeLabel + "' does not hold capability '" + resource + ":" + action + "'. " +
-                "This is a permission boundary on the API key, not a problem with the upstream service. " +
-                "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
-                "or the operator must use a different key with the required capability."
-        )
-        val body =
-            "{\"error\":\"capability denied\"," +
-                "\"errorKind\":\"capability_denied\"," +
-                "\"key\":\"" + safeLabel + "\"," +
-                "\"required\":\"" + resource + ":" + action + "\"," +
-                "\"route\":\"" + method + " " + path + "\"," +
-                "\"message\":\"" + text + "\"}"
-        response.getWriter.write(body)
+        response.getWriter.write(CapabilityInterceptor.deniedBody(rk.label, resource, action, method, path, message))
         response.getWriter.flush()
         AuditLog.denied(
             request,
-            "capability denied for key '" + rk.label + "'",
+            auditReason.getOrElse("capability denied for key '" + rk.label + "'"),
             HttpServletResponse.SC_FORBIDDEN,
             required = Some(resource + ":" + action)
         )

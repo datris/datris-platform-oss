@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.model.ResolvedKey
 import org.springframework.util.AntPathMatcher
 
 /** The result of looking up the capability required by an incoming request. */
@@ -49,6 +50,13 @@ object CapabilityRoutes {
         "/api/v1/keys/**",
         "/api/v1/health/**",
         "/api/v1/version",
+        // Which structured destination kinds are usable here (names of kinds
+        // only, like /health/services); the MCP server and the create wizard
+        // ask it with whatever key or session they hold.
+        "/api/v1/destinations/available",
+        // Callback from the REST-endpoint destination runner, matched by the
+        // run's pipeline token in the body; it presents no key.
+        "/api/v1/restendpoint/callback",
         "/api/v1/mcp/activity",
         // Any valid key or logged-in session may ask which MCP tools it can
         // see; the controller itself rejects requests with neither.
@@ -197,7 +205,8 @@ object CapabilityRoutes {
 
         // Metadata. The raw table/collection listings under /metadata/** cannot
         // be narrowed to a catalog, so restricted sessions are refused them
-        // even though their bundle holds metadata:read (UnfilterableForRestricted).
+        // even though their bundle holds metadata:read (UnfilterableForRestricted),
+        // and so are scope-limited API keys (InstallWideForLimited).
         Route("GET", "/api/v1/metadata/**", "metadata", "read"),
         Route("GET", "/api/v1/vector-stores/available", "metadata", "read"),
         Route("POST", "/api/v1/config/generate-schema", "metadata", "read"),
@@ -205,6 +214,8 @@ object CapabilityRoutes {
         // Config
         Route("POST", "/api/v1/config/upload", "config", "write"),
         Route("GET", "/api/v1/ai/model-catalog", "config", "read"),
+        // Live model discovery for a provider (Configuration tab).
+        Route("GET", "/api/v1/ai/models", "config", "read"),
         // Doctor — operational self-check. Not public: the report names env
         // keys, Vault secret paths and model ids, so it rides config:read.
         Route("GET", "/api/v1/doctor", "config", "read"),
@@ -258,8 +269,9 @@ object CapabilityRoutes {
 
     /** Routes a restricted user's session is refused even though its bundle
       * holds the capability the route requires: raw table/collection and
-      * warehouse listings cannot be narrowed to the granted catalogs. API
-      * keys and unrestricted sessions are unaffected. */
+      * warehouse listings cannot be narrowed to the granted catalogs.
+      * Unrestricted sessions are unaffected; a limited API key is refused
+      * them (and the raw queries) through [[InstallWideForLimited]]. */
     val UnfilterableForRestricted: Seq[(String, String)] = Seq(
         ("GET", "/api/v1/metadata/**"),
         ("GET", "/api/v1/unity-catalog/browse")
@@ -268,16 +280,68 @@ object CapabilityRoutes {
     /** True when `method path` is one of [[UnfilterableForRestricted]]. */
     def refusedForRestrictedSession(method: String, path: String): Boolean =
         method != null && path != null &&
-            UnfilterableForRestricted.exists { case (m, p) => m.equalsIgnoreCase(method) && matcher.`match`(p, path) }
+            UnfilterableForRestricted.exists { case (m, p) => m.equalsIgnoreCase(RequestPaths.method(method)) && matcher.`match`(p, path) }
+
+    /** Install-wide routes with nothing to filter, refused to every caller
+      * limited to a catalog or to what it created ([[CallerVisibility.limited]]:
+      * a restricted session, or an API key carrying `catalog=` / `owner=` on a
+      * pipeline or tap capability without unscoped read), even when the
+      * capability was granted explicitly (plans/stories/scoped-key-read-routes.md,
+      * Part C, Decision D3): the listings in [[UnfilterableForRestricted]] and
+      * the raw Postgres, MongoDB and natural-language queries, which can read
+      * any table or collection the connection reaches. */
+    val InstallWideForLimited: Seq[(String, String)] = UnfilterableForRestricted ++ Seq(
+        ("POST", "/api/v1/query/postgres"),
+        ("POST", "/api/v1/query/mongodb"),
+        ("POST", "/api/v1/query/natural")
+    )
+
+    /** True when `method path` is one of [[InstallWideForLimited]]. */
+    def refusedForLimited(method: String, path: String): Boolean =
+        method != null && path != null &&
+            InstallWideForLimited.exists { case (m, p) => m.equalsIgnoreCase(RequestPaths.method(method)) && matcher.`match`(p, path) }
+
+    /** Why a caller is refused a route whose capability it may hold. */
+    sealed trait ScopeRefusal
+
+    /** A restricted session on a table or collection listing
+      * ([[refusedForRestrictedSession]]): refused whether or not it holds
+      * the capability, with the listing message. */
+    case object RestrictedListing extends ScopeRefusal
+
+    /** A limited caller ([[CallerVisibility.limited]]) on an
+      * [[InstallWideForLimited]] route: refused when it holds the route
+      * capability (a caller that does not hold it keeps the does-not-hold
+      * or inert-scope answer). */
+    case object InstallWide extends ScopeRefusal
+
+    /** The one decision the capability gate (`CapabilityInterceptor`) and the
+      * MCP tool list ([[MCPToolRoutes.allowedTools]]) both apply, so a tool is
+      * hidden exactly when the gate refuses its route. None for a null
+      * identity, a route outside both lists, and every caller that is not
+      * limited (nothing is computed for them beyond the route match). */
+    def scopeRefusal(rk: ResolvedKey, method: String, path: String): Option[ScopeRefusal] =
+        if (rk == null) None
+        else if (rk.restrictedSession && refusedForRestrictedSession(method, path)) Some(RestrictedListing)
+        else if (refusedForLimited(method, path) && CallerVisibility.limited(rk)) Some(InstallWide)
+        else None
 
     /** Every `resource:action` pair the table grants — the vocabulary the
       * agent policy is allowed to use. */
     lazy val allActionKeys: Set[String] = routes.map(r => r.resource + ":" + r.action).toSet
 
+    /** The capability `method path` requires. `path` is the matched path
+      * ([[RequestPaths.path]]); `method` is decided as [[RequestPaths.method]]
+      * (HEAD as GET). OPTIONS is [[RouteCheck.Skip]]: the dispatcher answers
+      * it (CORS preflight, or the `Allow` header) without running a
+      * controller method, and no controller maps it (HandlerMappingDecisionSpec). */
     def lookup(method: String, path: String): RouteCheck = {
+        if (path == null) return RouteCheck.Unmapped
         if (skipPatterns.exists(p => matcher.`match`(p, path))) return RouteCheck.Skip
+        val m = RequestPaths.method(method)
+        if (m == "OPTIONS") return RouteCheck.Skip
 
-        routes.find(r => r.method.equalsIgnoreCase(method) && matcher.`match`(r.pattern, path)) match {
+        routes.find(r => r.method.equalsIgnoreCase(m) && matcher.`match`(r.pattern, path)) match {
             case Some(r) => RouteCheck.Require(r.resource, r.action)
             case None => RouteCheck.Unmapped
         }

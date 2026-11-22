@@ -68,7 +68,11 @@ object LineageService {
       * since. `tags` come straight from the tap/pipeline definition.
       * `format` is the objectstore dataset's effective file format (iceberg,
       * parquet, orc) — a label only, never part of the id; absent on every
-      * other node type so their JSON is unchanged. */
+      * other node type so their JSON is unchanged. `owner` is the stored
+      * tap's or pipeline's `createdByKeyLabel`, kept so a caller's
+      * `owner=self` scope is judged on the stored item
+      * (plans/stories/scoped-key-read-routes.md, Part B); it is never
+      * written to the node's JSON. */
     case class Node(
         id: String,
         nodeType: String,
@@ -77,7 +81,8 @@ object LineageService {
         tags: List[String] = Nil,
         historical: Boolean = false,
         authority: Option[String] = None,
-        format: Option[String] = None
+        format: Option[String] = None,
+        owner: Option[String] = None
     ) {
         def toJson: JsonObject = {
             val o = new JsonObject()
@@ -284,7 +289,7 @@ object LineageService {
 
         taps.filter(_ != null).foreach { t =>
             val tapId = "tap:" + t.name
-            addNode(Node(tapId, "tap", t.name, Option(t.catalog), tagsOf(t.tags)))
+            addNode(Node(tapId, "tap", t.name, Option(t.catalog), tagsOf(t.tags), owner = Option(t.createdByKeyLabel)))
             val source = TapRunner.declaredSource(t)
             addNode(Node("source:" + source, "source", source))
             edges += edge("source:" + source, tapId)
@@ -299,7 +304,7 @@ object LineageService {
 
         live.foreach { p =>
             val pipelineId = "pipeline:" + p.name
-            addNode(Node(pipelineId, "pipeline", p.name, Option(p.catalog), tagsOf(p.tags)))
+            addNode(Node(pipelineId, "pipeline", p.name, Option(p.catalog), tagsOf(p.tags), owner = Option(p.createdByKeyLabel)))
             datasets(p).foreach { ds =>
                 addNode(Node(ds.id, "dataset", ds.name, Option(p.catalog), authority = authority.get(ds.id), format = ds.format))
                 edges += edge(pipelineId, ds.id)
@@ -476,15 +481,59 @@ object LineageService {
       * failing `keep` are dropped; then source and dataset nodes left with no
       * edge to a kept pipeline, tap or catalog node; then every edge with a
       * dropped endpoint. A source or dataset shared with hidden items survives
-      * with only its visible edges. `keep` = everything is the identity. */
-    def visibleTo(g: Graph, keep: Node => Boolean): Graph = {
+      * with only its visible edges. `keep` = everything is the identity.
+      * `anchors` are the node types whose kept nodes hold a source or dataset
+      * in the graph: by default pipeline, tap and catalog (a restricted
+      * session, whose granted catalog means every pipeline in it is
+      * readable); an API key passes pipeline and tap only, since a catalog
+      * node it keeps can also link datasets of pipelines it cannot read. */
+    def visibleTo(g: Graph, keep: Node => Boolean, anchors: Set[String] = Set("pipeline", "tap", "catalog")): Graph = {
         val gated = Set("pipeline", "tap", "catalog")
         val keptGated = g.nodes.filter(n => gated.contains(n.nodeType) && keep(n)).map(_.id).toSet
+        val keptAnchors = g.nodes.filter(n => anchors.contains(n.nodeType) && keptGated.contains(n.id)).map(_.id).toSet
         def linkedToKept(id: String): Boolean =
-            g.edges.exists(e => (e.from == id && keptGated.contains(e.to)) || (e.to == id && keptGated.contains(e.from)))
+            g.edges.exists(e => (e.from == id && keptAnchors.contains(e.to)) || (e.to == id && keptAnchors.contains(e.from)))
         val nodes = g.nodes.filter(n => if (gated.contains(n.nodeType)) keptGated.contains(n.id) else linkedToKept(n.id))
         val ids = nodes.map(_.id).toSet
-        Graph(nodes, g.edges.filter(e => ids.contains(e.from) && ids.contains(e.to)))
+        val base = Graph(nodes, g.edges.filter(e => ids.contains(e.from) && ids.contains(e.to)))
+        if (anchors.contains("catalog")) base else withoutDroppedWriters(g, base)
+    }
+
+    /** For a graph anchored by pipelines and taps only (an API key's,
+      * [[visibleTo]]), what a kept shared dataset still says about the
+      * pipelines dropped from `kept`: a `dataset -> catalog:X` edge stays
+      * only when a kept pipeline of catalog X writes that dataset; a catalog
+      * node left with no edge goes; a kept dataset's `catalog` comes from a
+      * kept writer, and its `authority` (decided over every writer) is
+      * omitted when any writer was dropped. `kept` itself when nothing
+      * changes. Pure. */
+    private def withoutDroppedWriters(g: Graph, kept: Graph): Graph = {
+        val keptPipelineCatalog: Map[String, Option[String]] =
+            kept.nodes.filter(_.nodeType == "pipeline").map(n => n.id -> n.catalog.filter(_.nonEmpty)).toMap
+        val nodeType: Map[String, String] = kept.nodes.map(n => n.id -> n.nodeType).toMap
+        def writers(graph: Graph, dataset: String): List[String] =
+            graph.edges.filter(e => e.to == dataset && e.from.startsWith("pipeline:")).map(_.from).distinct
+        val catalogName: Map[String, String] = kept.nodes.filter(_.nodeType == "catalog").map(n => n.id -> n.name).toMap
+        val edges = kept.edges.filter { e =>
+            if (nodeType.get(e.from).contains("dataset") && nodeType.get(e.to).contains("catalog"))
+                writers(kept, e.from).exists(w => keptPipelineCatalog.get(w).flatten == catalogName.get(e.to))
+            else true
+        }
+        val linked = edges.flatMap(e => Seq(e.from, e.to)).toSet
+        val nodes = kept.nodes.filter(n => n.nodeType != "catalog" || linked.contains(n.id)).map { n =>
+            if (n.nodeType != "dataset") n
+            else {
+                val all = writers(g, n.id)
+                val keptWriters = all.filter(keptPipelineCatalog.contains)
+                val catalog =
+                    if (keptWriters.isEmpty || keptWriters.exists(w => keptPipelineCatalog(w) == n.catalog)) n.catalog
+                    else keptPipelineCatalog(keptWriters.head)
+                val authority = if (keptWriters.size < all.size) None else n.authority
+                if (catalog == n.catalog && authority == n.authority) n else n.copy(catalog = catalog, authority = authority)
+            }
+        }
+        if (edges.size == kept.edges.size && nodes.size == kept.nodes.size && nodes.zip(kept.nodes).forall { case (a, b) => a eq b }) kept
+        else Graph(nodes, edges)
     }
 
     /** The recorded-run filter of a caller-filtered [[neighborhood]]: a run
@@ -518,7 +567,7 @@ object LineageService {
             pipelineName,
             taps,
             () =>
-                try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusTableName + "-summary", "created_at", now - FreshnessWindowMs, MaxRows).flatMap {
+                try NoSQLDbUtil.getItemsSinceAsJSON(env.pipelineStatusSummaryTableName, "created_at", now - FreshnessWindowMs, MaxRows).flatMap {
                         json =>
                             try Some(gson.fromJson(json, classOf[PipelineStatusSummaryTable]))
                             catch { case _: Exception => None }

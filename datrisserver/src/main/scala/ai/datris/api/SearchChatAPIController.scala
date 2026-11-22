@@ -139,9 +139,8 @@ class SearchChatAPIController {
                 } else None
             } else None
 
-        val maxIterations: Int =
-            if (req.has("maxIterations") && !req.get("maxIterations").isJsonNull) req.get("maxIterations").getAsInt
-            else 50
+        // A request may lower the iteration budget, never raise it past the default.
+        val maxIterations: Int = ChatCaller.maxIterations(req)
         val maxTokensPerCall: Int = 32000
 
         val env = DatrisEnvironment.current
@@ -162,7 +161,11 @@ class SearchChatAPIController {
         // Catalog-scoped user access: a restricted session user gets the
         // catalog-access block and no wording about the unassigned group.
         val accessBlock = identity.user.flatMap(CatalogAccessPrompt.block)
-        val systemPrompt = buildSearchSystemPrompt(env.environment, accessBlock)
+        // An API key limited to a catalog or to what it created has no raw
+        // query or listing tools (CapabilityRoutes.InstallWideForLimited) and
+        // its warehouse queries refuse `sql`: give it the limited access paths.
+        val keyLimited = SearchChatAPIController.keyLimited(identity)
+        val systemPrompt = buildSearchSystemPrompt(env.environment, accessBlock, keyLimited)
 
         // Prepend the catalog scope (if any) as a leading user message, mirroring
         // the dashboard-snapshot injection in OpsChatAPIController.
@@ -275,11 +278,12 @@ class SearchChatAPIController {
         sb.toString
     }
 
-    private def buildSearchSystemPrompt(tenantEnv: String, accessBlock: Option[String] = None): String = {
+    private[api] def buildSearchSystemPrompt(tenantEnv: String, accessBlock: Option[String] = None, keyLimited: Boolean = false): String = {
         // The uncataloged wording and the raw-query paths apply only to
-        // unrestricted users; a restricted user sees only granted catalogs and
-        // the server refuses free-form SQL, MongoDB and metadata for them.
-        val unrestricted = accessBlock.isEmpty
+        // unrestricted callers; a restricted user sees only granted catalogs,
+        // and the server refuses free-form SQL, MongoDB and metadata to them
+        // and to an API key limited to a catalog or to what it created.
+        val unrestricted = accessBlock.isEmpty && !keyLimited
         val sb = new StringBuilder
         sb.append("# Datris Search Assistant\n\n")
         sb.append("You are the conversational Search assistant for tenant `").append(tenantEnv).append("`. ")
@@ -361,4 +365,15 @@ class SearchChatAPIController {
         )
         sb.toString
     }
+}
+
+object SearchChatAPIController {
+
+    /** An own-key caller whose key is limited to a catalog or to what it
+      * created ([[ai.datris.auth.CallerVisibility.limited]]): it has no raw
+      * query or listing tools and its warehouse queries refuse `sql`, so its
+      * prompt gives the limited access paths. False for every user (a
+      * restricted user gets them through the catalog-access block). */
+    private[api] def keyLimited(identity: ai.datris.auth.ChatIdentity): Boolean =
+        identity != null && identity.user.isEmpty && identity.key.exists(ai.datris.auth.CallerVisibility.limited)
 }

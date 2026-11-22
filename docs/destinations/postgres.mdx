@@ -18,6 +18,8 @@ Connection credentials are retrieved from Vault using the secret name specified 
 | `username` | Database user                            |
 | `password` | Database password                        |
 
+The same credentials serve the read-back queries (`query_postgres`, `query_natural` and `POST /api/v1/query/postgres`), which run in read-only transactions. As for any service account, give this role only the privileges it needs (create and write in the destination schemas) rather than a superuser.
+
 ## Table Management
 
 When `manageTableManually` is set to `false` (the default), the pipeline auto-creates the target table if it does not exist. The table schema is derived from the pipeline's destination schema if one is defined, otherwise it falls back to the source schema. Types are mapped using the table below.
@@ -40,7 +42,7 @@ When auto-creating tables, source schema types are mapped to PostgreSQL types as
 
 \* Matched on the field **name**, not its declared type: a field named `_json` or `_xml` (declared `string`, as the JSON and XML ingestion modes produce) always lands as the document column shown, whatever type it declares.
 
-All other types (`int`, `bigint`, `boolean`, `date`, `timestamp`, `decimal(p,s)`, `varchar(n)`, `char(n)`) are passed through to PostgreSQL as-is.
+All other types (`int`, `bigint`, `boolean`, `date`, `timestamp`, `decimal(p,s)`, `varchar(n)`, `char(n)`) are passed to PostgreSQL as written. A `tinyint` or `double` column added to an existing table (schema evolution) is created as `int2` or `float8`, as in the table above. A stored type that is not one of the accepted forms (see [Schemas](/schemas)) is never sent: while the table and that column already exist the load continues and the run notes the field; when the table or the column would have to be created, the run fails before any statement with a message naming the field. A stored type with tabs or line breaks around the numbers or after the closing parenthesis is sent with them removed. Change the type to an accepted form and save the pipeline.
 
 ## Truncate Before Write
 
@@ -100,15 +102,17 @@ Connection credentials are configured globally in `application.yaml` via `secret
 
 | Field                 | Required | Default  | Description                                      |
 |-----------------------|----------|----------|--------------------------------------------------|
-| `dbName`              | yes      |          | Target database name                             |
-| `schema`              | yes      |          | Target schema. The literal placeholder `SCHEMA_NAME` is replaced with `public` when the pipeline is saved (likewise `DATABASE_NAME` in `dbName` becomes the configured Postgres database); any other value is used as-is |
-| `table`               | yes      |          | Target table name                                |
+| `dbName`              | yes      |          | Target database name. Letters, digits and `_` only, at most 63 bytes. Ignored when the platform Postgres connection URL already names a database (the table is then created there), and in multi-tenant installs (the tenant database is used) |
+| `schema`              | yes      |          | Target schema. The literal placeholder `SCHEMA_NAME` is replaced with `public` when the pipeline is saved (likewise `DATABASE_NAME` in `dbName` becomes the configured Postgres database); any other value is used as-is. Letters, digits and `_` only, at most 63 bytes |
+| `table`               | yes      |          | Target table name. Letters, digits and `_` only, at most 63 bytes |
 | `usePostgres`         | yes      | `false`  | Must be `true` to enable PostgreSQL destination  |
 | `manageTableManually` | no       | `false`  | If `true`, skip auto-creation of the table       |
 | `truncateBeforeWrite` | no       | `false`  | Truncate the table before loading                |
 | `keyFields`           | no       |          | Array of column names for the natural key. Sets a `PRIMARY KEY` constraint on auto-created tables AND switches the load strategy to upsert (`INSERT ... ON CONFLICT DO UPDATE`) when `truncateBeforeWrite` is `false`. See [Primary Key and Upsert](#primary-key-and-upsert). |
 | `useTransaction`      | no       | `true`   | Wrap the COPY in a database transaction          |
-| `options`             | no       |          | Array of additional COPY option strings          |
+| `options`             | no       |          | Array of additional COPY option strings (no `;`) |
+
+These rules apply to every pipeline type, including an unstructured pipeline that carries a `destination.database` section, and to version restore and catalog restore. A save that keeps exactly the names the saved pipeline already has is not refused by them. Deleting a pipeline (or resetting its data) drops its table only when its database, schema and table names meet them; otherwise the table is kept and the delete response's `warnings` says so ([Delete a Pipeline](/api-reference/pipeline-api#delete-a-pipeline)).
 
 ## Querying from Datris
 

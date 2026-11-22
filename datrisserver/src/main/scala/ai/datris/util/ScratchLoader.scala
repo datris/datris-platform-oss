@@ -94,8 +94,10 @@ object ScratchLoader {
       * `s3a://<env>-data/_scratch/<pipeline>/` and nothing else. The prefix is
       * built by ScratchPaths.prefix (which already refuses blank / traversing
       * segments) and re-asserted here in the same spirit as the empty-prefixKey
-      * guard in ObjectStoreSpark.deleteDestinationData. */
-    def deleteScratchData(pipeline: String): Unit = {
+      * guard in ObjectStoreSpark.deleteDestinationData. True when data was
+      * there and is gone, false when there was none; throws when the delete
+      * failed or the folder is still there afterwards. */
+    def deleteScratchData(pipeline: String): Boolean = {
         val prefix = ScratchPaths.prefix(pipeline)
         if (!prefix.startsWith(ScratchPaths.Root) || prefix.length <= ScratchPaths.Root.length + 1)
             throw new IllegalStateException("refusing to delete scratch data: computed prefix '" + prefix + "' is not under " + ScratchPaths.Root)
@@ -104,9 +106,13 @@ object ScratchLoader {
         val fs = path.getFileSystem(hadoopConfiguration(rootUri))
         if (fs.exists(path)) {
             fs.delete(path, true)
+            if (fs.exists(path)) throw new java.io.IOException("scratch data still present after delete at: " + path)
             logger.info("Deleted scratch data at: " + path)
-        } else
+            true
+        } else {
             logger.info("No scratch data to delete at: " + path)
+            false
+        }
     }
 }
 

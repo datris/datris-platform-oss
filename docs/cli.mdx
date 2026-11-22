@@ -285,7 +285,7 @@ datris delete my_pipeline --keep-data
 | `--keep-data` | Delete only the configuration; keep the destination data |
 | `--json` | Return raw JSON |
 
-Without options, deleting a pipeline also deletes its destination data. With `--keep-data` the configuration is deleted and the table, collection or files stay where they are: the CLI prints `deleted (data kept)` and one `kept:` line per table, collection or prefix kept. No pipeline manages the kept data afterwards. For a pipeline that writes to a vector store, `--keep-data` is refused: the server's error is printed, nothing is deleted, and the command exits with status 1. Any warnings the server returns (for example, a Unity Catalog table an admin still has to drop) are printed after the success line, one per line, prefixed with `⚠`.
+Without options, deleting a pipeline also deletes its destination data. With `--keep-data` the configuration is deleted and the table, collection or files stay where they are: the CLI prints `deleted (data kept)` and one `kept:` line per table, collection or prefix kept. No pipeline manages the kept data afterwards. For a pipeline that writes to a vector store, `--keep-data` is refused: the server's error is printed, nothing is deleted, and the command exits with status 1. Any warnings the server returns (for example, a Unity Catalog table an admin still has to drop, or a table, collection or files the store could not remove) are printed after the success line, one per line, prefixed with `⚠`. A table, collection or files that could not be removed do not fail the command: the configuration is still deleted, and the warning says what to remove in the store.
 
 ---
 

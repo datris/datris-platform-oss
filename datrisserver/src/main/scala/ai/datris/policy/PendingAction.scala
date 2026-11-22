@@ -49,7 +49,11 @@ case class PendingAction(
     replayConsumedAt: Option[Instant] = None,
     executedAt: Option[Instant] = None,
     resultStatus: Option[Int] = None,
-    resultBody: Option[String] = None
+    resultBody: Option[String] = None,
+    // How `bodyHash` was computed: PendingAction.CurrentHashVersion on
+    // actions queued by this server version; absent on documents stored
+    // earlier (their hash is recomputed the earlier way to find them).
+    hashVersion: Option[Int] = None
 ) {
 
     def isPending: Boolean = state == PendingAction.Pending
@@ -123,6 +127,7 @@ case class PendingAction(
         executedAt.foreach(x => d.put("executedAt", x.toString))
         resultStatus.foreach(s => d.put("resultStatus", s: java.lang.Integer))
         resultBody.foreach(d.put("resultBody", _))
+        hashVersion.foreach(v => d.put("hashVersion", v: java.lang.Integer))
         d
     }
 }
@@ -148,10 +153,34 @@ object PendingAction {
         b.map("%02x".format(_)).mkString
     }
 
+    /** The earlier request hash: the fields joined with line breaks. Kept
+      * only to find actions stored without a `hashVersion`; field contents can
+      * imitate its separator, so it is never used for new actions. */
     def hashOf(actorLabel: String, method: String, path: String, query: Option[String], body: Option[String]): String = {
         val md = MessageDigest.getInstance("SHA-256")
         val s = actorLabel + "\n" + method + "\n" + path + "\n" + query.getOrElse("") + "\n" + body.getOrElse("")
         md.digest(s.getBytes("UTF-8")).map("%02x".format(_)).mkString
+    }
+
+    /** The `hashVersion` of actions queued by this server version. */
+    val CurrentHashVersion = 2
+
+    /** The request hash of [[CurrentHashVersion]]: each field is written as a
+      * presence byte, then (when present) its UTF-8 byte length as four bytes
+      * and its bytes, so no field content can imitate a field boundary. An
+      * absent query or body differs from an empty one. */
+    def delimitedHashOf(actorLabel: String, method: String, path: String, query: Option[String], body: Option[String]): String = {
+        val md = MessageDigest.getInstance("SHA-256")
+        def field(v: Option[String]): Unit = v match {
+            case None => md.update(0.toByte)
+            case Some(x) =>
+                val b = x.getBytes("UTF-8")
+                md.update(1.toByte)
+                md.update(java.nio.ByteBuffer.allocate(4).putInt(b.length).array())
+                md.update(b)
+        }
+        Seq(Option(actorLabel), Option(method), Option(path), query, body).foreach(field)
+        md.digest().map("%02x".format(_)).mkString
     }
 
     private def opt(d: Document, k: String): Option[String] = Option(d.getString(k)).filter(_.nonEmpty)
@@ -198,7 +227,8 @@ object PendingAction {
             replayConsumedAt = optInstant(d, "replayConsumedAt"),
             executedAt = optInstant(d, "executedAt"),
             resultStatus = optInt(d, "resultStatus"),
-            resultBody = opt(d, "resultBody")
+            resultBody = opt(d, "resultBody"),
+            hashVersion = optInt(d, "hashVersion")
         )
     }
 }
@@ -232,6 +262,9 @@ object PendingActionIO {
             coll.createIndex(new Document("actor.label", 1))
             coll.createIndex(new Document("bodyHash", 1))
             coll.createIndex(new Document("createdAtDate", -1))
+            // Serves the earlier-hash branch of `pendingCandidates`: an actor's
+            // pending actions stored without a hashVersion.
+            coll.createIndex(new Document("actor.label", 1).append("state", 1).append("hashVersion", 1))
             indexed += table
         } catch {
             case e: Exception => logger.warn("Could not ensure pending-action indexes on " + table + ": " + e.getMessage)
@@ -251,6 +284,22 @@ object PendingActionIO {
             Filters.eq("actor.label", actorLabel),
             Filters.eq("state", PendingAction.Pending)
         )).first()).map(PendingAction.fromDocument).filter(!_.isExpired())
+
+    /** The filter of [[pendingCandidates]]: the actor's pending actions whose
+      * stored hash is `hash`, or that were stored without a `hashVersion`
+      * (hashed the earlier way). Two indexed branches: `bodyHash`, and
+      * (`actor.label`, `state`, `hashVersion`). */
+    def candidatesFilter(hash: String, actorLabel: String): Bson =
+        Filters.or(
+            Filters.and(Filters.eq("bodyHash", hash), Filters.eq("actor.label", actorLabel), Filters.eq("state", PendingAction.Pending)),
+            Filters.and(Filters.eq("actor.label", actorLabel), Filters.eq("state", PendingAction.Pending), Filters.eq("hashVersion", null))
+        )
+
+    /** One query, no limit: the actions [[candidatesFilter]] selects. Once no
+      * document of the actor lacks a hashVersion, it returns at most the
+      * duplicate itself. Expiry is decided by the caller. */
+    def pendingCandidates(hash: String, actorLabel: String): List[PendingAction] =
+        collection().find(candidatesFilter(hash, actorLabel)).asScala.map(PendingAction.fromDocument).toList
 
     def countPending(actorLabel: String): Long =
         collection().countDocuments(Filters.and(Filters.eq("actor.label", actorLabel), Filters.eq("state", PendingAction.Pending)))

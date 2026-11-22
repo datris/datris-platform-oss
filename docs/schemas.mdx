@@ -57,11 +57,13 @@ These types are supported by the server but are never auto-generated. Use them w
 | `varchar(n)` | Variable-length text with maximum length `n` |
 | `char(n)` | Fixed-length text of exactly `n` characters |
 
+Each type is written exactly in one of these forms, in any letter case: a plain type name, `decimal(p)` or `decimal(p,s)` (each number 1 to 4 digits), `varchar(n)` or `char(n)` (1 to 9 digits), or `varchar(max)`. Spaces are allowed inside the parentheses and after the closing `)`, as in `decimal(10, 2)`; not before the type name, between the name and `(`, or after a plain type name, and no tabs or line breaks. Other type text in the source or destination schema is refused with `400` (`Invalid field type passed`, naming the field) when the pipeline is saved or a version is restored. This applies to unstructured pipelines too. On structured and semi-structured pipelines the save validator also refuses `integer`, which this rule alone accepts, so `integer` can be saved only on an unstructured pipeline, as before. A missing type is refused with the same `400`. A field whose name and type the stored pipeline already has can be saved again unchanged.
+
 Refer to [data-types](/ingestion/data-types) for type mappings to PostgreSQL and Spark.
 
 ## Column Naming Rules
 
-Column names in pipeline `schemaProperties.fields` must match `[A-Za-z0-9_]+` — letters, digits, and underscores only. Spaces, parentheses, percent signs, hyphens, and other punctuation are rejected by the pipeline validator at registration time. Names are also case-insensitive for duplicate detection: `Foo` and `foo` collide.
+Column names in pipeline `schemaProperties.fields` must match `[A-Za-z0-9_]+` — letters, digits, and underscores only. Spaces, parentheses, percent signs, hyphens, and other punctuation are rejected by the pipeline validator at registration time. The one exception is a column the saved pipeline already has under exactly that name, such as one [schema evolution](#what-a-new-column-name-may-hold) added from a file header: saving the pipeline again keeps it. Names are also case-insensitive for duplicate detection: `Foo` and `foo` collide.
 
 Recommended convention: lowercase snake_case (e.g. `customer_id`, `eps_estimate`).
 
@@ -158,7 +160,23 @@ Each schema change increments a `schemaVersion` counter in the pipeline config, 
 
 - **New columns in the CSV header** that are not in the stored schema → automatically added as `string` type
 
-If the destination schema already declares the new column (for example `admit_date` as `date`), the column joins the source schema only; the destination keeps its single declared entry and type, and the run status notes that it was kept as declared. A destination schema that already lists a column twice is repaired on the next run (the first entry and its type are kept). Object store destinations read files by column position, so when such a declared column arrives, the source schema and the destination schema must list the same columns in the same order; otherwise the run fails before writing and names both lists, and you reorder the source or destination schema.
+If the destination schema already declares the new column (for example `admit_date` as `date`), the column joins the source schema only; the destination keeps its single declared entry and type, and the run status notes that it was kept as declared. A destination schema that already lists a column twice is repaired on the next run (the first entry and its type are kept). On an object store destination, when such a declared column arrives, the source schema and the destination schema must list the same columns in the same order; otherwise the run fails before writing and names both lists, and you reorder the source or destination schema.
+
+### What a new column name may hold
+
+A new column keeps the header cell exactly as written (lower-cased), and every destination quotes it, so names with spaces, hyphens, dots, quotes or non-ASCII letters are added and load like any other on PostgreSQL, SQL Server, Snowflake and object store destinations (Parquet, ORC and Iceberg). Two exceptions: an object store writing ORC refuses a new name holding a backtick (see below), and on Databricks a Delta table may refuse a column name holding a space or any of `, ; { } ( ) =` unless column mapping is enabled; if it does, the load fails and the column stays in the pipeline schema until you remove it. Tap records written as JSON objects work the same way: each key becomes one header cell, quoted when it holds the delimiter or a quote. A key that itself begins and ends with a double quote (for example `"abc"`, quotes included) now keeps those quotes in its column name; earlier versions dropped them and stored the column as `abc`. If a tap pipeline already has such a column, rename the key in the tap script to the stored name (`abc`), or expect the next run to add a new column under the quoted name.
+
+A new column is refused when its name:
+
+- holds NUL or another control character (tab, line break and so on);
+- equals an existing column, or another new column in the same header, once surrounding spaces and letter case are ignored;
+- is longer than the destination allows: PostgreSQL 63 bytes (UTF-8), SQL Server 128 characters, Snowflake and Databricks 255 characters. Object store, MongoDB, scratch, Kafka, ActiveMQ and REST destinations have no limit;
+- on PostgreSQL, equals the first 63 bytes of another column's name;
+- on an object store writing ORC files, holds a backtick (ORC files cannot keep it in a column name).
+
+A refused column fails the run before anything is written, with an error that names the pipeline and the header cell (control characters shown as `\uXXXX`) and its position among the new columns. The stored schema is left unchanged, so a corrected file loads normally. These rules apply only to new columns: a header made of columns already in the schema loads as before, whatever their names.
+
+A pipeline keeps such a column when it is saved again: a field name the saved pipeline already has, exactly as written and in the same schema, is accepted, so you can edit anything else (write mode, catalog, other fields) and save. A new or renamed field you write into a saved schema still follows the plain-name rule above (`[A-Za-z0-9_]+`), and a partition field always does. A save that moves the pipeline to another destination (another database engine, another object-store file format, or an added destination) keeps such a name only when the new destination could take it as a new header cell: no control character, within the new destination's length limit, and no backtick on ORC; otherwise the save is refused with that check's message. To move an evolved column to a plain name, change the header cell in the files you send to that name and save the field under it in both the source and the destination schema (or let the next file add it). The destination gets a new column under the plain name; on SQL destinations, Parquet and ORC the old column keeps the rows already loaded and you can remove its field from both schemas. An Iceberg table refuses a load whose schema leaves out one of its columns, so on Iceberg keep the old field in the schema.
 
 ### New columns and field protection
 
@@ -166,7 +184,7 @@ A new column is added without [field protection](/transformation/field-protectio
 
 ### What does NOT trigger evolution
 
-- **Missing columns** — if a CSV is missing a non-key column from the schema, the missing values are filled with empty strings (existing behavior). Key fields must always be present.
+- **Missing columns** — if a CSV is missing a column of the schema, the file still loads and that column is null in the new rows, on PostgreSQL, Snowflake, Databricks, SQL Server and object store (Parquet, ORC and Iceberg) destinations; the run status lists the missing columns. Kafka, ActiveMQ and REST endpoint destinations send each row without the missing column. A file that lacks a column the destination cannot do without fails before anything is written, with a message naming the column: a database `keyFields` column, an Iceberg `merge` key (`destination.objectStore.keyFields`), or a `partitionBy` column.
 - **Column renames** — treated as a removal + addition. The old column gets empty values, and the new column is added.
 - **Type changes** — new columns default to `string`. Changing an existing column's type requires manual pipeline update.
 - **JSON/XML data** — these use a single `_json` or `_xml` field, so column-level evolution does not apply.

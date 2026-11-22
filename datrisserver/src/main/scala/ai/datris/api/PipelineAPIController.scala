@@ -17,7 +17,6 @@ import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 
 import java.sql.DriverManager
-import java.util.Properties
 import scala.collection.JavaConverters._
 
 @RestController
@@ -231,8 +230,9 @@ class PipelineAPIController {
       * preservation and authority check, versioned write, pull-table init and
       * the CodeGen save hook. Shared with the catalog restore
       * (`CatalogAPIController`) so a restored pipeline is saved exactly as a
-      * UI save would be. Left is the refusal response (400); a
-      * `ValidationException` or any other failure is thrown. */
+      * UI save would be; a pipeline version restore runs the same path
+      * through [[restorePipelineInternal]]. Left is the refusal response
+      * (400); a `ValidationException` or any other failure is thrown. */
     def savePipelineInternal(
         config: PipelineConfig,
         changeNote: String,
@@ -246,6 +246,39 @@ class PipelineAPIController {
         config: PipelineConfig,
         changeNote: String,
         request: HttpServletRequest
+    ): Either[ResponseEntity[String], (PipelineConfig, String)] =
+        savePipelineCore(config, changeNote, request, None)
+
+    /** `POST /api/v1/pipeline/version/restore` after the version lookup:
+      * `candidate` ([[EntityVersionAPIController.pipelineRestoreCandidate]])
+      * is saved through the same path as `POST /pipeline`, so a version the
+      * platform would refuse on save today is refused with the same answer.
+      * `live` is the ONE stored-config read the restore decision uses (null
+      * when the pipeline was deleted); `hidden` is the version 404 a hidden
+      * history answers. Left is the refusal; a `ValidationException` or any
+      * other failure is thrown. */
+    private[api] def restorePipelineInternal(
+        candidate: PipelineConfig,
+        live: PipelineConfig,
+        version: Int,
+        hidden: => ResponseEntity[String],
+        request: HttpServletRequest
+    ): Either[ResponseEntity[String], PipelineConfig] =
+        savePipelineCore(candidate, null, request, Some(PipelineAPIController.RestoreOf(live, version, () => hidden))).right.map(_._1)
+
+    /** The save path. `restore` None is `POST /pipeline`; Some is a version
+      * restore, which differs in four places only: (a) the guard is always
+      * taken, decided on `restore.live` by
+      * [[EntityVersionAPIController.restoreGuardDecision]]; (b) no owner
+      * stamp and no preservation of omitted fields (the candidate already
+      * carries the live owner, and the snapshot is taken verbatim); (c) the
+      * version note is `restored from version N`; (d) the re-check under the
+      * lock is [[EntityVersionAPIController.restoreRecheck]]. */
+    private def savePipelineCore(
+        config: PipelineConfig,
+        changeNote: String,
+        request: HttpServletRequest,
+        restore: Option[PipelineAPIController.RestoreOf]
     ): Either[ResponseEntity[String], (PipelineConfig, String)] = {
         // Callers who may not see or write every pipeline (scoped API keys,
         // scoped catalog access): the stored config of this name is read
@@ -255,19 +288,35 @@ class PipelineAPIController {
         // cannot turn a refused save into a create. Everyone else reads
         // nothing here.
         val table = DatrisEnvironment.current.pipelineTableName
-        val guarded = config != null && PipelineAPIController.saveGuardNeeded(request)
-        val guardStored: PipelineConfig = if (guarded) PipelineConfigIO.read(table, config.name) else null
+        // A version restore is always guarded and decided on the live config
+        // it has already read (it reads nothing more here).
+        val guarded = restore.isDefined || config != null && PipelineAPIController.saveGuardNeeded(request)
+        val guardStored: PipelineConfig =
+            if (restore.isDefined) restore.get.live
+            else if (guarded) PipelineConfigIO.read(table, config.name)
+            else null
         val scoped =
             if (!guarded) config
             else
-                PipelineAPIController.saveGuardDecision(request, config, guardStored, () => PipelineConfigIO.readAll(table)) match {
+                (restore match {
+                    case Some(r) =>
+                        EntityVersionAPIController.restoreGuardDecision(request, config, guardStored, () => PipelineConfigIO.readAll(table), r.hidden())
+                    case None => PipelineAPIController.saveGuardDecision(request, config, guardStored, () => PipelineConfigIO.readAll(table))
+                }) match {
                     case Left(refused) =>
                         logger.warn("POST /pipeline " + config.name + " rejected: HTTP " + refused.getStatusCode.value)
                         return Left(refused)
                     case Right(c) => c
                 }
         val withDefaults = PipelineValidatorUtil.applyDefaults(scoped)
-        PipelineValidatorUtil.validate(withDefaults)
+        // The stored config of this name, read at most once: by the validator
+        // only when a rule needs it (an object store's existing-pipeline
+        // rules, a field name that is not plain), and again below as
+        // `existing`. A guarded save and a version restore use the config
+        // they have already read (a restore: the live one).
+        lazy val storedOfName: PipelineConfig =
+            if (guarded) guardStored else PipelineConfigIO.read(table, withDefaults.name)
+        PipelineValidatorUtil.validate(withDefaults, () => storedOfName)
 
         // Postgres is install-time optional (POSTGRES_ENABLED=0 skips the
         // bundled container), so a postgres destination can be selected in a
@@ -296,22 +345,25 @@ class PipelineAPIController {
         // match resources this key created. Null when no key is present
         // (auth disabled or public endpoint) — that resource will not
         // match `owner=self` for anyone, which is intended.
+        // A restore keeps the owner the candidate carries (the live one).
         val tagged = ResolvedKeyAccess.keyLabel(request) match {
-            case Some(label) => modifiedConfig.copy(createdByKeyLabel = label)
-            case None => modifiedConfig
+            case Some(label) if restore.isEmpty => modifiedConfig.copy(createdByKeyLabel = label)
+            case _ => modifiedConfig
         }
 
         // Definition-edit write → mints a new immutable version snapshot.
         val existing =
             if (guarded && tagged.name == config.name) guardStored
+            else if (!guarded && tagged.name == withDefaults.name) storedOfName
             else PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tagged.name)
         // Tags/provenance preservation: clients rebuild the body from
         // scratch, so a body that omits these entirely must not wipe them
         // on an unrelated edit. An explicit empty list / stamp=false in the
         // body still clears/disables.
         // `previousNames` is server-maintained: always the stored value.
+        // A restore takes the snapshot verbatim: nothing omitted is kept.
         val preserved = PipelineAliases.carriedOver(
-            if (existing != null)
+            if (existing != null && restore.isEmpty)
                 tagged.copy(
                     tags = if (tagged.tags == null) existing.tags else tagged.tags,
                     provenance = if (tagged.provenance == null) existing.provenance else tagged.provenance,
@@ -347,6 +399,29 @@ class PipelineAPIController {
                 logger.warn("POST /pipeline " + preserved.name + " rejected: pipeline configs unreadable for the vector container check")
                 return Left(refused)
             case Right(o) => o
+        }
+        // A new or changed destination.database block must pass the
+        // validator's database rules (and the Postgres 63-byte limit) on
+        // every pipeline type, so an unstructured pipeline's block is checked
+        // too. Every caller; a stored config with the same block keeps it.
+        PipelineAPIController.databaseNameRefusal(preserved, existing).foreach { refused =>
+            logger.warn("POST /pipeline " + preserved.name + " rejected: destination.database name")
+            return Left(refused)
+        }
+        // A new or changed source or destination field type must be exactly
+        // one of the documented forms (ColumnTypeText.safe), on every pipeline
+        // type, so an unstructured pipeline's schema is checked too. Every
+        // caller; a stored field with the same name and type keeps it.
+        PipelineAPIController.columnTypeRefusal(preserved, existing).foreach { refused =>
+            logger.warn("POST /pipeline " + preserved.name + " rejected: schema field type")
+            return Left(refused)
+        }
+        // A new or changed pgvector schema or table must be one Postgres can
+        // address as a single quoted identifier, and the table must be named.
+        // Every caller; a stored config with the same names keeps them.
+        PipelineAPIController.vectorTableNameRefusal(preserved, existing).foreach { refused =>
+            logger.warn("POST /pipeline " + preserved.name + " rejected: pgvector schema or table name")
+            return Left(refused)
         }
         // One vector container per pipeline: refuse a new or changed
         // container another pipeline already names. Runs before the
@@ -393,7 +468,8 @@ class PipelineAPIController {
                 }
         }
         PipelineAPIController.authorityRefusal(request, preserved, others).foreach(refused => return Left(refused))
-        val note = if (changeNote != null && changeNote.nonEmpty) changeNote
+        val note = if (restore.isDefined) "restored from version " + restore.get.version
+        else if (changeNote != null && changeNote.nonEmpty) changeNote
         else if (existing != null) "updated" else "created"
         // A new pipeline must not inherit Unity Catalog sync state left by
         // an earlier pipeline of the same name (deleted out of band).
@@ -411,7 +487,11 @@ class PipelineAPIController {
             else
                 CatalogOps.withCatalogLock {
                     val fresh = PipelineConfigIO.read(table, config.name)
-                    PipelineAPIController.saveRecheck(request, config, guardStored, fresh, () => PipelineConfigIO.readAll(table)).foreach { refused =>
+                    (restore match {
+                        case Some(r) =>
+                            EntityVersionAPIController.restoreRecheck(request, config, guardStored, fresh, () => PipelineConfigIO.readAll(table), r.hidden())
+                        case None => PipelineAPIController.saveRecheck(request, config, guardStored, fresh, () => PipelineConfigIO.readAll(table))
+                    }).foreach { refused =>
                         logger.warn("POST /pipeline " + config.name + " rejected at write: HTTP " + refused.getStatusCode.value)
                         return Left(refused)
                     }
@@ -519,7 +599,7 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
-            CapabilityCheck.assertVisible(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+            CapabilityCheck.assertVisibleToWrite(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
             if (PipelineScripts.instructionOf(config, kind).isEmpty)
                 return ResponseEntity
                     .status(HttpStatus.BAD_REQUEST)
@@ -590,7 +670,7 @@ class PipelineAPIController {
                 return ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
-            CapabilityCheck.assertVisible(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+            CapabilityCheck.assertVisibleToWrite(request, "pipeline", "update", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
             val response = PipelineAPIController.pullCodegenScriptWith(PipelineScripts, name, kind, ResolvedKeyAccess.keyLabel(request).orNull, config)
             if (response.getStatusCode.is2xxSuccessful) PipelineAPIController.auditCodegenScript(request, "pull", name, kind, "success", None)
             else PipelineAPIController.auditCodegenScript(request, "pull", name, kind, "failure", Some(String.valueOf(response.getBody)))
@@ -875,7 +955,7 @@ class PipelineAPIController {
         // delete pipelines it created. Loaded resource provides the
         // `createdByKeyLabel` we compare against the caller's label.
         if (checkScope)
-            CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+            CapabilityCheck.assertVisibleToWrite(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
 
         // By default the data is deleted with the config, so no table,
         // collection or files are left with no pipeline to own them. Only an
@@ -905,11 +985,13 @@ class PipelineAPIController {
 
         // Unity Catalog state, read before anything is deleted: a table
         // committed through the REST catalog is not dropped by Datris.
-        val ucPrevious = unityCatalogStateForDelete(config)
+        val (ucPrevious, ucReadFailure) = unityCatalogStateForDelete(config)
         val warnings = Seq.newBuilder[String]
         // A managed commit's doc always survives (the table lives on in Unity
         // Catalog and a recreated pipeline continues it).
         var ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, dataDeleted = true, adviceGiven = false)
+        // Whether any destination data was removed (for the config row's 500).
+        var dataRemoved = false
 
         // Clean up destination data
         if (deleteDataBool && config.destination != null) {
@@ -918,7 +1000,10 @@ class PipelineAPIController {
             // A table or collection another pipeline also writes (including a
             // pgvector / Postgres table the other kind names) is kept and reported.
             val sharedStructured = SharedDatasets.sharedOnDelete(config, otherConfigs, dsEnv)
-            val objectStoreDataDeleted = cleanupDestinationData(config, sharedVector.map(_._1).toSet, sharedStructured.map(_._1).toSet)
+            val cleanup =
+                cleanupDestinationData(config, sharedVector.map(_._1).toSet, sharedStructured.map(_._1).toSet, dsEnv.tenantDatabase)
+            val objectStoreDataDeleted = cleanup.objectStoreDataDeleted
+            dataRemoved = cleanup.steps.exists(_._2 == DestinationDrop.Removed)
             sharedVector.foreach { case (k, sharers) =>
                 logger.warn(
                     "Skipped vector data delete for pipeline '" + pipeline + "': " + VectorContainers.label(VectorContainers.displayKey(k, config)) +
@@ -932,6 +1017,9 @@ class PipelineAPIController {
                 )
             }
             warnings ++= PipelineAPIController.vectorDeleteWarnings(request, config, otherConfigs)
+            warnings ++= PipelineAPIController.blankVectorTableDeleteWarning(config)
+            warnings ++= PipelineAPIController.postgresNameDeleteWarning(config, dsEnv)
+            warnings ++= PipelineAPIController.mongoReservedDeleteWarning(config)
             warnings ++= PipelineAPIController.structuredDeleteWarnings(request, config, otherConfigs, dsEnv)
             UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
                 warnings += advice
@@ -939,6 +1027,15 @@ class PipelineAPIController {
                 logger.warn("Pipeline delete: " + pipeline + ": " + advice)
                 auditUnityCatalogDelete(request, pipeline, advice)
             }
+            // A vector container the store could not remove: after every
+            // existing warning, in store order, naming the class as configured.
+            cleanup.vectorFailures.foreach { case (k, reason) =>
+                warnings += VectorStoreDrop.warning(VectorContainers.displayKey(k, config), reason, deleteConfigBool)
+            }
+            // Every other table, collection, prefix or folder kept because it
+            // overlaps another pipeline's, or that could not be removed: after
+            // the vector failures, in destination order.
+            warnings ++= PipelineAPIController.cleanupWarnings(cleanup, deleteConfigBool)
             // Wipe document-tap ledgers/staged files for any tap targeting this
             // pipeline. The ledger records "already-processed URIs"; leaving it
             // intact after the destination is emptied would cause the next tap
@@ -946,10 +1043,17 @@ class PipelineAPIController {
             // A data-only reset that kept a shared vector container keeps the
             // ledgers too: the chunks are still there, and a re-ingest would
             // duplicate them in a container that cannot be cleaned per pipeline.
-            if (PipelineAPIController.clearTapLedgersForPlan(plan, sharedVector.nonEmpty))
-                cleanupDocumentTapLedgers(pipeline)
-            else
-                logger.warn("Pipeline reset: " + pipeline + ": document-tap ledgers kept because a shared vector container was kept")
+            // So does a reset whose vector drop or any other data removal
+            // failed (the rows are still there; the scratch folder does not count).
+            if (PipelineAPIController.clearTapLedgersForPlan(plan, sharedVector.nonEmpty || cleanup.dataLeft)) {
+                cleanupDocumentTapLedgers(pipeline) match {
+                    case DestinationDrop.Failed(reason) => warnings += PipelineAPIController.ledgerCleanupWarning(reason, deleteConfigBool)
+                    case _ =>
+                }
+            } else
+                logger.warn(
+                    "Pipeline reset: " + pipeline + ": document-tap ledgers kept because a vector container was kept or destination data could not be removed"
+                )
         }
 
         // Keep-data delete: no destination data is touched and no other
@@ -961,11 +1065,15 @@ class PipelineAPIController {
         val kept =
             if (!plan.keepData) None
             else {
-                if (config.destination != null) cleanupScratchData(config)
+                val scratch = if (config.destination != null) cleanupScratchData(config) else DestinationDrop.NotSent
                 UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, dataDeleted = false, configDeleted = true).foreach { advice =>
                     warnings += advice
                     logger.warn("Pipeline delete: " + pipeline + ": " + advice)
                     auditUnityCatalogDelete(request, pipeline, advice)
+                }
+                scratch match {
+                    case DestinationDrop.Failed(reason) => warnings += DestinationDrop.warning(PipelineAPIController.ScratchLabel, reason, configDeleted = true)
+                    case _ =>
                 }
                 // Only a committed table's state survives; an uncommitted
                 // (created-only) or register-mode doc goes, as on any delete.
@@ -980,13 +1088,25 @@ class PipelineAPIController {
 
         // Delete the json configuration
         if (deleteConfigBool) {
-            NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
+            // A failure here is a 500; after the data was removed it says so.
+            PipelineAPIController.deleteConfigRow(
+                dataRemoved = dataRemoved,
+                () => NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
+            )
             // Hard-delete all definition-version snapshots for this pipeline
             // (snapshots pin no scripts; the stored CodeGen scripts are removed below).
+            // A failure is reported (no detail) and does not stop the delete.
+            def sideFailure(label: String, kind: String, ex: Exception): Unit =
+                DestinationDrop.classify(kind, ex) match {
+                    case DestinationDrop.Failed(reason) => warnings += PipelineAPIController.platformCleanupWarning(label, reason, configDeleted = true)
+                    case _ =>
+                }
             try {
                 EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.pipelineVersionTableName, pipeline)
             } catch {
-                case ex: Exception => logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
+                case ex: Exception =>
+                    logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
+                    sideFailure(PipelineAPIController.HistoryLabel, "mongodb", ex)
             }
             // Stored CodeGen scripts (objects under pipeline-scripts/<pipeline>/
             // and their index records). Non-fatal, as for tap scripts. A
@@ -994,31 +1114,40 @@ class PipelineAPIController {
             // and named in a warning.
             try warnings ++= PipelineScripts.deleteAll(pipeline)
             catch {
-                case ex: Exception => logger.warn("CodeGen script cleanup failed for " + pipeline + ": " + ex.getMessage)
+                case ex: Exception =>
+                    logger.warn("CodeGen script cleanup failed for " + pipeline + ": " + ex.getMessage)
+                    sideFailure(PipelineAPIController.ScriptsLabel, "objectstore", ex)
             }
             // Unity Catalog sync state for this pipeline (<env>-uc-sync).
             // Kept while the catalog-committed table's files still exist, so
             // a pipeline recreated at the same name and prefix keeps the
             // guard against a path write forking the catalog's history, and
             // always for a catalogMode managed commit (keepStateOnDelete).
+            // An unreadable state is not deleted (it may guard a managed
+            // commit) and is reported.
             if (ucPrevious != null && !ucTableFilesKept) {
                 try UnityCatalogSyncIO.delete(pipeline)
                 catch {
-                    case ex: Exception => logger.warn("Unity Catalog state cleanup failed for " + pipeline + ": " + ex.getMessage)
+                    case ex: Exception =>
+                        logger.warn("Unity Catalog state cleanup failed for " + pipeline + ": " + ex.getMessage)
+                        sideFailure(PipelineAPIController.UnityCatalogStateLabel, "mongodb", ex)
                 }
             }
+            ucReadFailure.foreach(ex => sideFailure(PipelineAPIController.UnityCatalogStateLabel, "mongodb", ex))
         }
         (warnings.result(), kept)
     }
 
     /** The pipeline's Unity Catalog sync state, or null (none, or unreadable:
-      * the delete goes ahead without the advice). */
-    private def unityCatalogStateForDelete(config: PipelineConfig): ai.datris.model.UnityCatalogSyncState =
-        try UnityCatalogSyncIO.read(config.name)
-        catch {
+      * the delete goes ahead without the advice), with the read failure. */
+    private def unityCatalogStateForDelete(config: PipelineConfig): (ai.datris.model.UnityCatalogSyncState, Option[Exception]) =
+        try {
+            val state: ai.datris.model.UnityCatalogSyncState = UnityCatalogSyncIO.read(config.name)
+            (state, None)
+        } catch {
             case ex: Exception =>
                 logger.warn("Could not read Unity Catalog state for pipeline " + config.name + " on delete: " + ex.getMessage)
-                null
+                (null, Some(ex))
         }
 
     private def auditUnityCatalogDelete(request: HttpServletRequest, pipeline: String, advice: String): Unit =
@@ -1047,8 +1176,13 @@ class PipelineAPIController {
      * wiped so the next tap run re-ingests every document from source.
      * Swallows individual MinIO delete errors — the ledger row is authoritative,
      * so a missing staged file shouldn't block the rest of the cleanup.
+     * Returns Removed when every affected tap's ledger was cleared, NotSent
+     * when no document tap targets the pipeline, and the classified failure
+     * when the taps could not be read or a ledger could not be cleared (the
+     * other taps' ledgers are still cleared). Never throws; tap names go to
+     * the log only.
      */
-    private def cleanupDocumentTapLedgers(pipelineName: String): Unit = {
+    private def cleanupDocumentTapLedgers(pipelineName: String): DestinationDrop.Outcome = {
         try {
             val env = DatrisEnvironment.current
             val ledgerTable = env.tapLedgerTableName
@@ -1058,83 +1192,101 @@ class PipelineAPIController {
                 t != null && "document" == t.tapType &&
                     t.targetPipeline != null && t.targetPipeline == pipelineName
             )
-            if (affected.isEmpty) return
+            if (affected.isEmpty) return DestinationDrop.NotSent
+            var failure: Option[DestinationDrop.Outcome] = None
             affected.foreach { tap =>
-                val entries = TapDocumentLedgerIO.readByTap(ledgerTable, tap.name)
-                entries.foreach { e =>
-                    if (e.stagedPath != null && e.stagedPath.nonEmpty) {
-                        try { ObjectStoreUtil.deleteBucketObject(bucket, e.stagedPath) }
-                        catch { case ex: Exception => logger.warn("Failed to delete staged doc " + e.stagedPath + ": " + ex.getMessage) }
+                try {
+                    val entries = TapDocumentLedgerIO.readByTap(ledgerTable, tap.name)
+                    entries.foreach { e =>
+                        if (e.stagedPath != null && e.stagedPath.nonEmpty) {
+                            try { ObjectStoreUtil.deleteBucketObject(bucket, e.stagedPath) }
+                            catch { case ex: Exception => logger.warn("Failed to delete staged doc " + e.stagedPath + ": " + ex.getMessage) }
+                        }
                     }
+                    TapDocumentLedgerIO.deleteByTap(ledgerTable, tap.name)
+                    logger.info(
+                        "Cleared document tap ledger for tap '" + tap.name + "' (" + entries.size + " entries) after pipeline data delete: " + pipelineName
+                    )
+                } catch {
+                    case e: Exception =>
+                        logger.warn("Failed to clear the document tap ledger of tap '" + tap.name + "' for pipeline '" + pipelineName + "': " + e.getMessage)
+                        if (failure.isEmpty) failure = Some(DestinationDrop.classify("mongodb", e))
                 }
-                TapDocumentLedgerIO.deleteByTap(ledgerTable, tap.name)
-                logger.info("Cleared document tap ledger for tap '" + tap.name + "' (" + entries.size + " entries) after pipeline data delete: " + pipelineName)
             }
+            failure.getOrElse(DestinationDrop.Removed)
         } catch {
             case e: Exception =>
                 logger.warn("Failed to clean up document tap ledgers for pipeline '" + pipelineName + "': " + e.getMessage)
+                DestinationDrop.classify("mongodb", e)
         }
     }
 
-    /** Returns true when the object-store destination's files were deleted
-      * (false when there is none, the prefix is shared, or the delete failed). */
-    private def cleanupDestinationData(
+    /** Drops the destination data. `objectStoreDataDeleted` is true when the
+      * object-store destination's files were deleted or were already absent
+      * (false when there is none, the prefix is shared, or the delete
+      * failed); `vectorFailures` holds each qdrant / weaviate / milvus /
+      * chroma container (identity key) that could not be removed, with its
+      * closed-set reason, in store order; `steps` every other removal with its
+      * outcome, in destination order; `keptPrefixes` the object-store prefix
+      * kept because another pipeline's prefix overlaps it. Never throws for a
+      * store failure: each removal is a DestinationDrop step. */
+    private[api] def cleanupDestinationData(
         config: PipelineConfig,
         keepVector: Set[VectorContainers.Key],
-        keepStructured: Set[SharedDatasets.Key]
-    ): Boolean = {
+        keepStructured: Set[SharedDatasets.Key],
+        tenantDatabase: Option[String]
+    ): PipelineAPIController.DestinationCleanup = {
         val dest = config.destination
-        var objectStoreDataDeleted = false
+        val vectorFailures = Seq.newBuilder[(VectorContainers.Key, String)]
+        val keptPrefixes = Seq.newBuilder[String]
         // A vector container another pipeline also names is kept.
         def dropVector(store: String, name: String, schema: Option[String] = None): Boolean =
             !VectorContainers.key(store, name, schema).exists(keepVector.contains)
         // A table or collection another pipeline also writes is kept. The
         // keys are this config's own, at most one per destination kind.
         def dropStructured(kind: String): Boolean = !keepStructured.exists(_.kind == kind)
+        // Labels from the config's own keys, as the Kept lines use.
+        val ownKeys = SharedDatasets.keysOf(config, PipelineAPIController.keepDatasetEnv().copy(tenantDatabase = tenantDatabase))
+        def labelOf(kind: String, fallback: String): String = ownKeys.find(_.kind == kind).map(SharedDatasets.label).getOrElse(fallback)
+        def step(kind: String, fallback: String)(run: => DestinationDrop.Outcome): DestinationDrop.Step =
+            DestinationDrop.Step(labelOf(kind, fallback), countsAsData = true, () => run, kind)
+        val structured = Seq.newBuilder[DestinationDrop.Step]
 
-        // PostgreSQL — DROP TABLE
-        if (dest.database != null && dest.database.usePostgres && dropStructured("postgres")) {
-            try {
+        // PostgreSQL — DROP TABLE. Never for a database, schema or table name
+        // that fails the naming rule (DatabaseDestinationNames.postgresDropProblem):
+        // no connection, no drop; postgresNameDeleteWarning reports it.
+        val pgDropProblem =
+            if (dest.database != null && dest.database.usePostgres) DatabaseDestinationNames.postgresDropProblem(dest.database, tenantDatabase)
+            else None
+        pgDropProblem.foreach(p => logger.warn("Skipped PostgreSQL table drop for pipeline '" + config.name + "': " + p))
+        if (dest.database != null && dest.database.usePostgres && pgDropProblem.isEmpty && dropStructured("postgres")) {
+            structured += step("postgres", "postgres table of this pipeline") {
                 val secrets = SecretsRetrieverUtil.postgresSecrets()
                 Class.forName("org.postgresql.Driver")
-                val properties = new Properties()
-                properties.setProperty("user", secrets.username)
-                properties.setProperty("password", secrets.password)
-                val pgDbName = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment else dest.database.dbName
-                val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
-                val jdbcUrl = if (afterProtocol.contains("/")) secrets.jdbcUrl else secrets.jdbcUrl + "/" + pgDbName
-                val conn = DriverManager.getConnection(jdbcUrl, properties)
+                val pgDbName = tenantDatabase.getOrElse(dest.database.dbName)
+                val jdbcUrl = PostgresSql.jdbcUrl(secrets.jdbcUrl, pgDbName)
+                val conn = DriverManager.getConnection(jdbcUrl, DestinationDrop.jdbcProperties(secrets.username, secrets.password))
                 try {
                     val schema = if (dest.database.schema != null) dest.database.schema else "public"
-                    val stmt = conn.createStatement()
-                    stmt.execute("DROP TABLE IF EXISTS \"" + schema + "\".\"" + dest.database.table + "\" CASCADE")
-                    stmt.close()
-                    logger.info("Dropped PostgreSQL table: " + schema + "." + dest.database.table)
+                    val o = DestinationDrop.execute("postgres", conn, PostgresSql.dropTable(schema, dest.database.table))
+                    if (o == DestinationDrop.Removed) logger.info("Dropped PostgreSQL table: " + schema + "." + dest.database.table)
+                    o
                 } finally {
-                    conn.close()
+                    scala.util.Try(conn.close())
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop PostgreSQL table: " + e.getMessage)
             }
         }
 
         // MongoDB — drop collection
         if (dest.database != null && dest.database.useMongoDB && dropStructured("mongodb")) {
-            try {
-                val secrets = SecretsRetrieverUtil.mongoDbSecrets()
-                val connString = new com.mongodb.ConnectionString(secrets.connectionString)
-                val settings = com.mongodb.MongoClientSettings.builder().applyConnectionString(connString).build()
-                val client = com.mongodb.client.MongoClients.create(settings)
-                try {
-                    val dbName = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
-                    else if (dest.database.dbName != null) dest.database.dbName else "datris"
-                    client.getDatabase(dbName).getCollection(dest.database.table).drop()
-                    logger.info("Dropped MongoDB collection: " + dbName + "." + dest.database.table)
-                } finally {
-                    client.close()
+            // Never in a reserved database or collection: no client, no drop;
+            // mongoReservedDeleteWarning reports it.
+            structured += step("mongodb", "mongodb collection of this pipeline") {
+                if (PipelineAPIController.dropMongoDestination(dest.database)) DestinationDrop.Removed
+                else {
+                    logger.warn("Skipped MongoDB collection drop for pipeline '" + config.name + "': not a pipeline destination")
+                    DestinationDrop.NotSent
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop MongoDB collection: " + e.getMessage)
             }
         }
 
@@ -1142,18 +1294,13 @@ class PipelineAPIController {
         // pipeline's own credentialsSecret/warehouse/role (the loader role owns
         // the tables it created, so it is allowed to drop them).
         if (dest.database != null && dest.database.useSnowflake && dropStructured("snowflake")) {
-            try {
-                SnowflakeConnectionUtil.withConnection(dest.database) { conn =>
-                    val stmt = conn.createStatement()
-                    try {
-                        stmt.execute("DROP TABLE IF EXISTS " + SnowflakeConnectionUtil.qualifiedTable(dest.database))
+            structured += step("snowflake", "snowflake table of this pipeline") {
+                SnowflakeConnectionUtil.withConnection(dest.database, timeoutSeconds = Some(DestinationDrop.TimeoutSeconds)) { conn =>
+                    val o = DestinationDrop.execute("snowflake", conn, "DROP TABLE IF EXISTS " + SnowflakeConnectionUtil.qualifiedTable(dest.database))
+                    if (o == DestinationDrop.Removed)
                         logger.info("Dropped Snowflake table: " + dest.database.dbName + "." + dest.database.schema + "." + dest.database.table)
-                    } finally {
-                        stmt.close()
-                    }
+                    o
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop Snowflake table: " + e.getMessage)
             }
         }
 
@@ -1161,20 +1308,19 @@ class PipelineAPIController {
         // pipeline's own credentialsSecret (the loader login created the table,
         // so it owns it and may drop it).
         if (dest.database != null && dest.database.useSqlServer && dropStructured("sqlserver")) {
-            try {
-                SqlServerConnectionUtil.withConnection(dest.database) { conn =>
-                    val stmt = conn.createStatement()
-                    try {
-                        stmt.execute("DROP TABLE IF EXISTS " + SqlServerConnectionUtil.qualifiedTable(dest.database))
+            structured += step("sqlserver", "sqlserver table of this pipeline") {
+                SqlServerConnectionUtil.withConnection(
+                    dest.database,
+                    timeoutSeconds = Some(DestinationDrop.TimeoutSeconds),
+                    socketTimeoutSeconds = Some(DestinationDrop.SocketTimeoutSeconds)
+                ) { conn =>
+                    val o = DestinationDrop.execute("sqlserver", conn, "DROP TABLE IF EXISTS " + SqlServerConnectionUtil.qualifiedTable(dest.database))
+                    if (o == DestinationDrop.Removed)
                         logger.info(
                             "Dropped SQL Server table: " + dest.database.dbName + "." + SqlServerConnectionUtil.schemaName(dest.database) + "." + dest.database.table
                         )
-                    } finally {
-                        stmt.close()
-                    }
+                    o
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop SQL Server table: " + e.getMessage)
             }
         }
 
@@ -1183,182 +1329,69 @@ class PipelineAPIController {
         // owns the tables it created, so it is allowed to drop them). The
         // shared datris_staging volume is left alone — other pipelines use it.
         if (dest.database != null && dest.database.useDatabricks && dropStructured("databricks")) {
-            try {
-                DatabricksConnectionUtil.withConnection(dest.database, pipelineName = config.name) { conn =>
-                    val stmt = conn.createStatement()
-                    try {
-                        stmt.execute("DROP TABLE IF EXISTS " + DatabricksConnectionUtil.qualifiedTable(dest.database))
+            structured += step("databricks", "databricks table of this pipeline") {
+                // A stopped warehouse may take minutes to start: the connection
+                // waits up to DatabricksWarehouseStartSeconds for it, then the
+                // drop statement has TimeoutSeconds.
+                DatabricksConnectionUtil.withConnection(
+                    dest.database,
+                    pipelineName = config.name,
+                    timeoutSeconds = Some(DestinationDrop.TimeoutSeconds),
+                    warehouseStartSeconds = Some(DestinationDrop.DatabricksWarehouseStartSeconds)
+                ) { conn =>
+                    val o =
+                        DestinationDrop.execute("databricks", conn, "DROP TABLE IF EXISTS " + DatabricksConnectionUtil.qualifiedTable(dest.database))
+                    if (o == DestinationDrop.Removed)
                         logger.info("Dropped Databricks table: " + dest.database.dbName + "." + dest.database.schema + "." + dest.database.table)
-                    } finally {
-                        stmt.close()
-                    }
+                    o
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop Databricks table: " + e.getMessage)
             }
         }
 
-        // pgvector — DROP TABLE
-        if (dest.pgvector != null && dropVector("pgvector", dest.pgvector.tableName, Option(dest.pgvector.schemaName)) && dropStructured("pgvector")) {
-            try {
-                val secretName = DatrisEnvironment.current.pgvectorSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val jdbcUrl = secretMap.get("jdbcUrl")
-                    val username = secretMap.get("username")
-                    val password = secretMap.get("password")
-                    if (jdbcUrl != null) {
-                        val pgvJdbcUrl = if (DatrisEnvironment.current.multiTenant) {
-                            jdbcUrl.replaceFirst("/[^/]*$", "/" + DatrisEnvironment.current.environment)
-                        } else jdbcUrl
+        // pgvector — DROP TABLE. Never for a null or blank table name: no
+        // shared-table guard has a key for it, so the table may be another
+        // pipeline's (the delete warns instead, blankVectorTableDeleteWarning).
+        // No pgvector secret, or one without a jdbcUrl, is "not configured".
+        if (
+            dest.pgvector != null && !DestinationTargets.blankVectorTableName(config) &&
+            dropVector("pgvector", dest.pgvector.tableName, Option(dest.pgvector.schemaName)) && dropStructured("pgvector")
+        ) {
+            structured += step("pgvector", "pgvector table of this pipeline") {
+                val env = DatrisEnvironment.current
+                val secretName = env.pgvectorSecretName
+                val secret = if (secretName == null || secretName.trim.isEmpty) None else SecretsUtil.getSecretMap(secretName)
+                val tenant = if (env.multiTenant) Option(env.environment) else None
+                DestinationDrop.pgvectorJdbc(secret, tenant) match {
+                    case Left(o) =>
+                        logger.warn("Skipped pgvector table drop for pipeline '" + config.name + "': no pgvector secret or no jdbcUrl in it")
+                        o
+                    case Right((pgvJdbcUrl, properties)) =>
                         Class.forName("org.postgresql.Driver")
-                        val properties = new Properties()
-                        properties.setProperty("user", username)
-                        properties.setProperty("password", password)
                         val conn = DriverManager.getConnection(pgvJdbcUrl, properties)
                         try {
-                            val schema = if (dest.pgvector.schemaName != null) dest.pgvector.schemaName else "public"
-                            val stmt = conn.createStatement()
-                            stmt.execute("DROP TABLE IF EXISTS \"" + schema + "\".\"" + dest.pgvector.tableName + "\" CASCADE")
-                            stmt.close()
-                            logger.info("Dropped pgvector table: " + schema + "." + dest.pgvector.tableName)
+                            val schema = PGVectorSql.schemaOf(dest.pgvector)
+                            val table = PGVectorSql.tableOf(dest.pgvector)
+                            val o = DestinationDrop.execute("pgvector", conn, PGVectorSql.dropTable(schema, table))
+                            if (o == DestinationDrop.Removed) logger.info("Dropped pgvector table: " + schema + "." + table)
+                            o
                         } finally {
-                            conn.close()
+                            scala.util.Try(conn.close())
                         }
-                    }
                 }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop pgvector table: " + e.getMessage)
             }
         }
+        val structuredResults = DestinationDrop.runAll(structured.result())
 
-        // Qdrant — delete collection
-        if (dest.qdrant != null && dropVector("qdrant", dest.qdrant.collectionName)) {
-            try {
-                val secretName = DatrisEnvironment.current.qdrantSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val host = Option(secretMap.get("host")).getOrElse("")
-                    if (host.nonEmpty) {
-                        val grpcPort = Option(secretMap.get("port")).map(_.toInt).getOrElse(6334)
-                        val restPort = grpcPort - 1
-                        val url = "http://" + host + ":" + restPort + "/collections/" + dest.qdrant.collectionName
-                        val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
-                        connection.setRequestMethod("DELETE")
-                        connection.setConnectTimeout(5000)
-                        connection.setReadTimeout(5000)
-                        val apiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
-                        apiKey.foreach(k => connection.setRequestProperty("api-key", k))
-                        try {
-                            connection.getResponseCode
-                            logger.info("Deleted Qdrant collection: " + dest.qdrant.collectionName)
-                        } finally {
-                            connection.disconnect()
-                        }
-                    }
-                }
-            } catch {
-                case e: Exception => logger.warn("Failed to delete Qdrant collection: " + e.getMessage)
-            }
-        }
-
-        // Weaviate — delete class
-        if (dest.weaviate != null && dropVector("weaviate", dest.weaviate.className)) {
-            try {
-                val secretName = DatrisEnvironment.current.weaviateSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val host = Option(secretMap.get("host")).getOrElse("")
-                    if (host.nonEmpty) {
-                        val port = Option(secretMap.get("port")).getOrElse("8079")
-                        val scheme = Option(secretMap.get("scheme")).getOrElse("http")
-                        val url = scheme + "://" + host + ":" + port + "/v1/schema/" + dest.weaviate.className
-                        val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
-                        connection.setRequestMethod("DELETE")
-                        connection.setConnectTimeout(5000)
-                        connection.setReadTimeout(5000)
-                        val apiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
-                        apiKey.foreach(k => connection.setRequestProperty("Authorization", "Bearer " + k))
-                        try {
-                            connection.getResponseCode
-                            logger.info("Deleted Weaviate class: " + dest.weaviate.className)
-                        } finally {
-                            connection.disconnect()
-                        }
-                    }
-                }
-            } catch {
-                case e: Exception => logger.warn("Failed to delete Weaviate class: " + e.getMessage)
-            }
-        }
-
-        // Milvus — drop collection
-        if (dest.milvus != null && dropVector("milvus", dest.milvus.collectionName)) {
-            try {
-                val secretName = DatrisEnvironment.current.milvusSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val host = Option(secretMap.get("host")).getOrElse("")
-                    if (host.nonEmpty) {
-                        val port = Option(secretMap.get("port")).getOrElse("19530")
-                        val url = "http://" + host + ":" + port + "/v2/vectordb/collections/drop"
-                        val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
-                        connection.setRequestMethod("POST")
-                        connection.setDoOutput(true)
-                        connection.setConnectTimeout(5000)
-                        connection.setReadTimeout(5000)
-                        connection.setRequestProperty("Content-Type", "application/json")
-                        val apiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
-                        apiKey.foreach(k => connection.setRequestProperty("Authorization", "Bearer " + k))
-                        try {
-                            val payload = "{\"collectionName\": \"" + dest.milvus.collectionName + "\"}"
-                            val os = connection.getOutputStream
-                            os.write(payload.getBytes)
-                            os.close()
-                            connection.getResponseCode
-                            logger.info("Dropped Milvus collection: " + dest.milvus.collectionName)
-                        } finally {
-                            connection.disconnect()
-                        }
-                    }
-                }
-            } catch {
-                case e: Exception => logger.warn("Failed to drop Milvus collection: " + e.getMessage)
-            }
-        }
-
-        // Chroma — delete collection
-        if (dest.chroma != null && dropVector("chroma", dest.chroma.collectionName)) {
-            try {
-                val secretName = DatrisEnvironment.current.chromaSecretName
-                val secret = SecretsUtil.getSecretMap(secretName)
-                if (secret.isDefined) {
-                    val secretMap = secret.get
-                    val host = Option(secretMap.get("host")).getOrElse("")
-                    if (host.nonEmpty) {
-                        val port = Option(secretMap.get("port")).getOrElse("8000")
-                        val url =
-                            "http://" + host + ":" + port + "/api/v2/tenants/default_tenant/databases/default_database/collections/" + dest.chroma.collectionName
-                        val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
-                        connection.setRequestMethod("DELETE")
-                        connection.setConnectTimeout(5000)
-                        connection.setReadTimeout(5000)
-                        try {
-                            connection.getResponseCode
-                            logger.info("Deleted Chroma collection: " + dest.chroma.collectionName)
-                        } finally {
-                            connection.disconnect()
-                        }
-                    }
-                }
-            } catch {
-                case e: Exception => logger.warn("Failed to delete Chroma collection: " + e.getMessage)
-            }
-        }
+        // Qdrant, Weaviate, Milvus, Chroma — one bounded call each
+        // (dropVectorContainers); the store secret is read here, a read
+        // failure kept apart from an absent secret.
+        vectorFailures ++= PipelineAPIController.dropVectorContainers(
+            config,
+            keepVector,
+            // The environment's secret for each store, the one the save's
+            // existence probe reads too (DestinationProbe.vectorStoreSecretName).
+            store => scala.util.Try(DestinationProbe.vectorStoreSecretName(store)).flatMap(name => SecretsUtil.tryGetSecretMap(name))
+        )
 
         // Object Store — recursively delete s3a://<bucket>/<prefixKey> through
         // the Hadoop FileSystem with per-bucket config applied (same route as
@@ -1367,49 +1400,77 @@ class PipelineAPIController {
         // to be unique across pipelines, so refuse to delete when another
         // pipeline's objectStore destination shares or nests with this prefix —
         // a blind prefix delete would take out data a live pipeline still reads.
+        // That prefix is kept and reported (no pipeline names). S3A keeps its
+        // own timeouts and retries here.
+        val files = Seq.newBuilder[DestinationDrop.Step]
+        var objectStoreStep: Option[DestinationDrop.Step] = None
         if (dest.objectStore != null) {
-            try {
-                val sharedWith = pipelinesSharingObjectStorePrefix(config)
-                if (sharedWith.nonEmpty) {
-                    logger.warn(
-                        "Skipped object store data delete for pipeline '" + config.name + "': prefixKey '" +
-                            dest.objectStore.prefixKey + "' overlaps with pipeline(s): " + sharedWith.mkString(", ")
-                    )
-                } else {
-                    // Deletes only s3a://<bucket>/<prefixKey>. A catalogMode
-                    // managed table lives where Unity Catalog put it (e.g.
-                    // __unitystorage), never under prefixKey, so it is never
-                    // touched here (UnityCatalogDeleteAdvice says so).
-                    ObjectStoreSpark.deleteDestinationData(dest.objectStore)
-                    objectStoreDataDeleted = true
-                }
-            } catch {
-                case e: Exception => logger.warn("Failed to delete object store data: " + e.getMessage)
-            }
+            val label = labelOf("objectstore", "object-store prefix of this pipeline")
+            val s = DestinationDrop.Step(
+                label,
+                countsAsData = true,
+                () => {
+                    // An empty prefixKey is never deleted (it would be the whole
+                    // bucket) and, as before, is not reported.
+                    if (ObjectStoreSpark.normalizePrefix(dest.objectStore.prefixKey).isEmpty) {
+                        logger.info("Skipped object store data delete for pipeline '" + config.name + "': prefixKey is empty")
+                        DestinationDrop.NotSent
+                    } else {
+                        val sharedWith = pipelinesSharingObjectStorePrefix(config)
+                        if (sharedWith.nonEmpty) {
+                            logger.warn(
+                                "Skipped object store data delete for pipeline '" + config.name + "': prefixKey '" +
+                                    dest.objectStore.prefixKey + "' overlaps with pipeline(s): " + sharedWith.mkString(", ")
+                            )
+                            keptPrefixes += label
+                            DestinationDrop.NotSent
+                        } else {
+                            // Deletes only s3a://<bucket>/<prefixKey>. A catalogMode
+                            // managed table lives where Unity Catalog put it (e.g.
+                            // __unitystorage), never under prefixKey, so it is never
+                            // touched here (UnityCatalogDeleteAdvice says so).
+                            if (ObjectStoreSpark.deleteDestinationData(dest.objectStore)) DestinationDrop.Removed else DestinationDrop.Absent
+                        }
+                    }
+                },
+                "objectstore"
+            )
+            objectStoreStep = Some(s)
+            files += s
         }
 
-        cleanupScratchData(config)
-        objectStoreDataDeleted
+        // Scratch: platform working storage; its failure warns but does not
+        // keep the document-tap ledgers.
+        if (dest.scratch != null)
+            files += DestinationDrop.Step(PipelineAPIController.ScratchLabel, countsAsData = false, () => cleanupScratchData(config), "scratch")
+        val fileResults = DestinationDrop.runAll(files.result())
+
+        val objectStoreDataDeleted = objectStoreStep.exists(s =>
+            fileResults.exists { case (st, o) => (st eq s) && (o == DestinationDrop.Removed || o == DestinationDrop.Absent) }
+        )
+        PipelineAPIController.DestinationCleanup(objectStoreDataDeleted, vectorFailures.result(), structuredResults ++ fileResults, keptPrefixes.result())
     }
 
     /** Scratch — recursively delete `_scratch/<pipeline>/` from <env>-data and
-      * nothing else (no-op without a scratch destination). The prefix comes
+      * nothing else (NotSent without a scratch destination). The prefix comes
       * from ScratchPaths.prefix, which refuses a blank or path-traversing
       * pipeline segment; asserted here too before the recursive delete. Run
       * by every delete that deletes the data, and by a keep-data delete.
-      * Never throws. */
-    private def cleanupScratchData(config: PipelineConfig): Unit = {
+      * Never throws: a failure is classified (detail logged). */
+    private def cleanupScratchData(config: PipelineConfig): DestinationDrop.Outcome = {
         val dest = config.destination
         if (dest != null && dest.scratch != null) {
             try {
                 val prefix = ScratchPaths.prefix(config.name)
                 if (!prefix.startsWith(ScratchPaths.Root) || prefix == ScratchPaths.Root)
                     throw new IllegalStateException("refusing to delete scratch data: prefix '" + prefix + "' is not under " + ScratchPaths.Root)
-                ScratchLoader.deleteScratchData(config.name)
+                if (ScratchLoader.deleteScratchData(config.name)) DestinationDrop.Removed else DestinationDrop.Absent
             } catch {
-                case e: Exception => logger.warn("Failed to delete scratch data for pipeline '" + config.name + "': " + e.getMessage)
+                case e: Exception =>
+                    logger.warn("Failed to delete scratch data for pipeline '" + config.name + "': " + e.getMessage)
+                    DestinationDrop.classify("scratch", e)
             }
-        }
+        } else DestinationDrop.NotSent
     }
 
     /** Names of other pipelines whose objectStore destination would be hit by a
@@ -1497,20 +1558,74 @@ object PipelineAPIController {
         CapabilityCheck.isRestrictedSession(request) &&
             (config == null || !CapabilityCheck.grants(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)))
 
-    /** For a restricted user's session only: 404 ([[pipelineNotFound]]) when
-      * `name` is missing or outside the grants, 403 when visible but `action`
-      * is not granted. None for everyone else. */
+    /** The refusal for a pipeline named in a request: a restricted user's
+      * session gets 404 ([[pipelineNotFound]]) when `name` is missing or
+      * outside the grants, 403 when visible but `action` is not granted; an
+      * API key whose scope refuses `action` on the stored pipeline gets the
+      * capability-denied 403 (plans/stories/scoped-key-read-routes.md). The
+      * stored config is read only for those callers; None for everyone else
+      * and for a key naming a missing pipeline (the route answers as today). */
     def restrictedRefusal(request: HttpServletRequest, name: String, action: String): Option[ResponseEntity[String]] =
-        if (!CapabilityCheck.isRestrictedSession(request)) None
+        if (!CapabilityCheck.isRestrictedSession(request) && !CapabilityCheck.keyScopeApplies(request, "pipeline", action)) None
         else refusalFor(request, name, PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name), action)
 
     /** Pure core of [[restrictedRefusal]] on the loaded config (null = missing). */
     def refusalFor(request: HttpServletRequest, name: String, config: PipelineConfig, action: String): Option[ResponseEntity[String]] =
-        if (!CapabilityCheck.isRestrictedSession(request)) None
+        if (!CapabilityCheck.isRestrictedSession(request))
+            if (config == null) None
+            else keyRefusal(request, "pipeline", action, CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
         else if (hiddenConfig(request, config, "read")) Some(pipelineNotFound(name))
         else if (hiddenConfig(request, config, action))
             Some(capabilityDenied(new DatrisException("capability denied: your catalog grant does not allow pipeline:" + action + " on " + name)))
         else None
+
+    /** The 403 (capability-denied body: `error`, `errorKind`, `message`)
+      * for a route that covers the whole installation and has nothing to
+      * filter (plans/stories/scoped-key-read-routes.md, rows 7 and 10), for a
+      * caller limited to a catalog or owner ([[CapabilityCheck.isLimited]]).
+      * `what` says what the route does; the message names nothing else. A
+      * key's refusal is noted for the audit log under `required`. */
+    def installWideRefusal(request: HttpServletRequest, what: String, required: String): ResponseEntity[String] = {
+        val message = ai.datris.auth.CallerVisibility.installWideMessage(what)
+        if (!CapabilityCheck.isRestrictedSession(request))
+            ai.datris.audit.AuditLog.noteScopeDenial(request, required, message + " (key '" + CapabilityCheck.resolvedKey(request).map(_.label).orNull + "')")
+        capabilityDenied(new DatrisException(message))
+    }
+
+    /** [[ai.datris.auth.CallerVisibility.storedWriteDenial]] for the
+      * request's API key as a response: the capability-denied 403 through
+      * [[CapabilityCheck.assertScope]] on the action it names (shared
+      * wording, denial noted for the audit log), or None. Always None for
+      * sessions and no identity. */
+    def storedWriteRefusal(
+        request: HttpServletRequest,
+        resource: String,
+        context: Map[String, String],
+        accepted: Seq[String],
+        named: String
+    ): Option[ResponseEntity[String]] =
+        CapabilityCheck.resolvedKey(request).filter(!_.restrictedSession).flatMap { rk =>
+            ai.datris.auth.CallerVisibility.storedWriteDenial(rk, resource, context, accepted, named).map { action =>
+                try {
+                    CapabilityCheck.assertScope(request, resource, action, context)
+                    capabilityDenied(new CapabilityDeniedException("capability denied"))
+                } catch {
+                    case e: CapabilityDeniedException => capabilityDenied(e)
+                }
+            }
+        }
+
+    /** An API key's scope refusal on one item as a response: the
+      * capability-denied 403 of [[CapabilityCheck.assertKeyScope]] (shared
+      * wording, denial noted for the audit log), or None. Always None for
+      * sessions and no identity. */
+    def keyRefusal(request: HttpServletRequest, resource: String, action: String, context: Map[String, String]): Option[ResponseEntity[String]] =
+        try {
+            CapabilityCheck.assertKeyScope(request, resource, action, context)
+            None
+        } catch {
+            case e: CapabilityDeniedException => Some(capabilityDenied(e))
+        }
 
     /** The names of `colliding` for the caller, only when every one is
       * visible to it ([[visiblePipelines]]); None otherwise, so a message
@@ -1530,8 +1645,8 @@ object PipelineAPIController {
             ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"" + text.replace("\"", "'") + "\"}")
         }
 
-    /** POST /pipeline (and version restore): 400 `{"error": ...}` when the
-      * candidate names a vector container that it did not already name in
+    /** POST /pipeline (and version restore, which saves through the same
+      * path): 400 `{"error": ...}` when the candidate names a vector container that it did not already name in
       * `stored` (same name, or null) and another pipeline in `others` names.
       * One container belongs to one pipeline. */
     def vectorContainerRefusal(
@@ -1545,6 +1660,135 @@ object PipelineAPIController {
             body.addProperty("error", VectorContainers.refusalMessage(VectorContainers.displayKey(k, candidate), visibleNamesOf(request, colliding)))
             ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](body.toString)
         }
+
+    /** POST /pipeline (every caller: sessions, API keys, auth off, MCP, CLI,
+      * catalog restore) and pipeline version restore: 400 `{"error": ...}`
+      * for a new or changed pgvector schema or table that can never be
+      * right. `DestinationTargets.BlankVectorTableRefusal` for a null or
+      * blank table, then `DestinationTargets.UnsafeVectorTableRefusal` for a
+      * double quote or NUL in either name or an empty schema. Skipped when
+      * `stored` (the stored config of this name, the live one for a restore;
+      * null when there is none) has exactly the same schema and table
+      * (`DestinationTargets.sameVectorTableNames`, nulls included): such a
+      * pipeline keeps working with its table. None for a null candidate or a
+      * non-pgvector config. No request, no I/O. Restricted sessions also get
+      * their own branch in [[existingDestinationRefusal]]. */
+    def vectorTableNameRefusal(candidate: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] = {
+        if (candidate == null || candidate.destination == null || candidate.destination.pgvector == null) return None
+        if (DestinationTargets.sameVectorTableNames(candidate, stored)) return None
+        val text =
+            if (DestinationTargets.blankVectorTableName(candidate)) Some(DestinationTargets.BlankVectorTableRefusal)
+            else if (DestinationTargets.unsafeVectorTableName(candidate)) Some(DestinationTargets.UnsafeVectorTableRefusal)
+            else None
+        text.map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
+    }
+
+    /** POST /pipeline (every caller and entry point) and pipeline version
+      * restore: 400 `{"error": ...}` with the save validator's message
+      * ([[DatabaseDestinationNames.problem]]) for a `destination.database`
+      * block that fails the validator's database rules or the Postgres
+      * 63-byte limit, on every pipeline type. Skipped when `stored` (the
+      * stored config of this name, the live one for a restore; null when
+      * there is none) has the identical block
+      * ([[DatabaseDestinationNames.same]]): such a pipeline keeps working
+      * with it. None for a null candidate or one without a block. No
+      * request, no I/O.
+      *
+      * First, the MongoDB destination rule
+      * ([[MongoReservedNames.destinationProblem]], refused with
+      * [[MongoReservedNames.DestinationRefusal]]): a protected collection is
+      * refused even for an unchanged block; a destination that is not the
+      * stored one may not be in the internal database unless it is the
+      * install's data database. */
+    def databaseNameRefusal(candidate: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] = {
+        if (candidate == null || candidate.destination == null || candidate.destination.database == null) return None
+        val storedBlock = Option(stored).flatMap(s => Option(s.destination)).map(_.database).orNull
+        MongoReservedNames.destinationProblem(candidate.destination.database, DatrisEnvironment.current, storedBlock).foreach { t =>
+            return Some(ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
+        }
+        if (DatabaseDestinationNames.same(candidate, stored)) return None
+        DatabaseDestinationNames
+            .problem(candidate.destination.database)
+            .map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
+    }
+
+    /** POST /pipeline (every caller and entry point) and pipeline version
+      * restore: 400 `{"error": ...}` with [[ColumnTypeText.changedProblem]]'s
+      * text for the first source or destination field whose type is not
+      * exactly one of the documented forms ([[ColumnTypeText.safe]]), on
+      * every pipeline type. A field that `stored` (the stored config of this
+      * name, the live one for a restore; null when there is none) has under
+      * the same name in the same schema with the same type is kept. None for
+      * a null candidate. No request, no I/O. */
+    def columnTypeRefusal(candidate: PipelineConfig, stored: PipelineConfig): Option[ResponseEntity[String]] =
+        ColumnTypeText
+            .changedProblem(candidate, stored)
+            .map(t => ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(t)))
+
+    /** DELETE /pipeline with data (and reset): the one warning line for a
+      * MongoDB destination whose collection is protected
+      * ([[MongoReservedNames.protectedProblem]]): its collection is left
+      * alone (no client is created). None for every other config. */
+    def mongoReservedDeleteWarning(config: PipelineConfig): Option[String] = {
+        val db = Option(config).flatMap(c => Option(c.destination)).flatMap(d => Option(d.database)).orNull
+        MongoReservedNames
+            .protectedProblem(db, DatrisEnvironment.current)
+            .map(_ => "The MongoDB collection was not dropped because its database or collection is not a pipeline destination.")
+    }
+
+    /** Test seam for [[dropMongoDestination]]: when set, it supplies the
+      * client instead of one built from the MongoDB secret. */
+    @volatile private[api] var mongoDropClientOverride: () => com.mongodb.client.MongoClient = null
+
+    /** DELETE /pipeline with data (and reset): drops `db`'s collection from
+      * the delete database ([[MongoReservedNames.deleteDatabase]]). Never for a
+      * reserved database or collection ([[mongoReservedDeleteWarning]] reports
+      * it): no client is created. True when dropped. */
+    private[api] def dropMongoDestination(db: ai.datris.model.Database): Boolean = {
+        if (db == null || !db.useMongoDB) return false
+        val env = DatrisEnvironment.current
+        if (MongoReservedNames.protectedProblem(db, env).isDefined) return false
+        val factory = mongoDropClientOverride
+        val client =
+            if (factory != null) factory()
+            else {
+                val secrets = SecretsRetrieverUtil.mongoDbSecrets()
+                // Bounded as the destination probe's client (30 s).
+                com.mongodb.client.MongoClients.create(DestinationDrop.mongoSettings(secrets.connectionString))
+            }
+        try {
+            val dbName = MongoReservedNames.deleteDatabase(db, env)
+            client.getDatabase(dbName).getCollection(db.table).drop()
+            auditLogger.info("Dropped MongoDB collection: " + dbName + "." + db.table)
+            true
+        } finally scala.util.Try(client.close())
+    }
+
+    /** DELETE /pipeline with data (and reset): the one warning line for a
+      * Postgres destination whose effective database, schema or table fails
+      * [[DatabaseDestinationNames.postgresDropProblem]] (the tenant database
+      * from `env` replaces `dbName`). No connection is made and no table is
+      * dropped for such a config. None for every other config. */
+    def postgresNameDeleteWarning(config: PipelineConfig, env: SharedDatasets.Env): Option[String] = {
+        val db = Option(config).flatMap(c => Option(c.destination)).flatMap(d => Option(d.database)).orNull
+        if (db == null || !db.usePostgres) None
+        else
+            DatabaseDestinationNames.postgresDropProblem(db, env.tenantDatabase).map { p =>
+                // One line, whatever the stored name holds.
+                val reason = p.map(c => if (Character.isISOControl(c)) ' ' else c)
+                "The PostgreSQL table was not dropped because its name does not meet the naming rule (" + reason +
+                    "); drop it in PostgreSQL if it is no longer needed."
+            }
+    }
+
+    /** DELETE /pipeline with data: the one warning line for a pgvector
+      * destination whose `tableName` is null or blank. No table is dropped
+      * for such a config (no shared-table guard can protect it). None for
+      * every other config. */
+    def blankVectorTableDeleteWarning(config: PipelineConfig): Option[String] =
+        if (DestinationTargets.blankVectorTableName(config))
+            Some("The pgvector table was not dropped because this pipeline has no table name; drop it in PostgreSQL if it is no longer needed.")
+        else None
 
     /** POST /pipeline: the other configs for the authority and vector
       * container checks. A failed read is `Nil` (fail-open, as before)
@@ -1596,6 +1840,145 @@ object PipelineAPIController {
     def clearTapLedgersOnDelete(deleteConfig: Boolean, keptSharedVector: Boolean): Boolean =
         deleteConfig || !keptSharedVector
 
+    /** Drops the config's qdrant, weaviate, milvus and chroma containers,
+      * in that order, through [[VectorStoreDrop.drop]], skipping a container
+      * in `keepVector` (shared with another pipeline). `secretOf(store)` is
+      * the store secret read: Success(None) is an absent secret ("not
+      * configured"), Failure a read that failed ("could not be reached"),
+      * so a secret-store outage is not reported as a missing store. Only a
+      * real removal is logged as one. Returns each container (identity key)
+      * that could not be removed, with its closed-set reason, in store
+      * order; Removed, Absent and NotSent are not failures. Never throws.
+      * `log(level, message)` receives every line (level info, warn or
+      * debug); `deadlineMs` bounds each drop. */
+    private[api] def dropVectorContainers(
+        config: PipelineConfig,
+        keepVector: Set[VectorContainers.Key],
+        secretOf: String => scala.util.Try[Option[java.util.Map[String, String]]],
+        log: (String, String) => Unit = defaultVectorDropLog,
+        deadlineMs: Long = VectorStoreDrop.TotalDeadlineMs
+    ): Seq[(VectorContainers.Key, String)] = {
+        val dest = if (config == null) null else config.destination
+        if (dest == null) return Nil
+        val failures = Seq.newBuilder[(VectorContainers.Key, String)]
+        def drop(store: String, kind: String, name: String): Unit =
+            if (!VectorContainers.key(store, name, None).exists(keepVector.contains)) {
+                val outcome =
+                    (try secretOf(store)
+                    catch { case scala.util.control.NonFatal(e) => scala.util.Failure(e) }) match {
+                        case scala.util.Failure(e) =>
+                            log("warn", "Could not read the " + kind + " secret on delete: " + e.getMessage)
+                            VectorStoreDrop.Failed(VectorStoreDrop.Unreachable)
+                        case scala.util.Success(secret) => VectorStoreDrop.drop(store, secret.orNull, name, deadlineMs)
+                    }
+                outcome match {
+                    case VectorStoreDrop.Removed => log("info", (if (store == "milvus") "Dropped " else "Deleted ") + kind + ": " + name)
+                    case VectorStoreDrop.Absent => log("info", kind + " " + name + " was already absent")
+                    case VectorStoreDrop.NotSent => log("debug", "No " + kind + " drop for pipeline '" + config.name + "': no name")
+                    case VectorStoreDrop.Failed(reason) =>
+                        log("warn", "Failed to delete " + kind + " " + name + " for pipeline '" + config.name + "': " + reason)
+                        VectorContainers.key(store, name, None).foreach(k => failures += (k -> reason))
+                }
+            }
+        if (dest.qdrant != null) drop("qdrant", "Qdrant collection", dest.qdrant.collectionName)
+        if (dest.weaviate != null) drop("weaviate", "Weaviate class", dest.weaviate.className)
+        if (dest.milvus != null) drop("milvus", "Milvus collection", dest.milvus.collectionName)
+        if (dest.chroma != null) drop("chroma", "Chroma collection", dest.chroma.collectionName)
+        failures.result()
+    }
+
+    private val vectorDropLogger: Logger = LoggerFactory.getLogger(classOf[PipelineAPIController])
+
+    private[api] val defaultVectorDropLog: (String, String) => Unit = (level, message) =>
+        level match {
+            case "warn" => vectorDropLogger.warn(message)
+            case "debug" => vectorDropLogger.debug(message)
+            case _ => vectorDropLogger.info(message)
+        }
+
+    /** What [[PipelineAPIController.cleanupDestinationData]] did: whether the
+      * object-store files were deleted, the vector containers (identity
+      * keys, store order) that could not be removed, with their reasons,
+      * every other removal with its outcome (destination order), and the
+      * labels of object-store prefixes kept because another pipeline's prefix
+      * overlaps them. */
+    case class DestinationCleanup(
+        objectStoreDataDeleted: Boolean,
+        vectorFailures: Seq[(VectorContainers.Key, String)],
+        steps: Seq[(DestinationDrop.Step, DestinationDrop.Outcome)] = Nil,
+        keptPrefixes: Seq[String] = Nil
+    ) {
+
+        /** Destination data is still there: a vector container or a data step
+          * (not the scratch folder) could not be removed. */
+        def dataLeft: Boolean =
+            vectorFailures.nonEmpty || steps.exists {
+                case (s, DestinationDrop.Failed(_)) => s.countsAsData
+                case _ => false
+            }
+    }
+
+    /** The label of the scratch folder's removal. */
+    val ScratchLabel = "scratch folder of this pipeline"
+
+    /** Labels of the config-store cleanups of a full delete. */
+    val HistoryLabel = "stored history of this pipeline"
+    val ScriptsLabel = "stored CodeGen scripts of this pipeline"
+    val UnityCatalogStateLabel = "Unity Catalog sync state of this pipeline"
+
+    /** The delete warnings for a cleanup: a Kept line per kept overlapping
+      * object-store prefix (no pipeline names), then one line per failed
+      * step, in step order. Vector failures are added by the delete itself. */
+    def cleanupWarnings(cleanup: DestinationCleanup, configDeleted: Boolean): Seq[String] =
+        cleanup.keptPrefixes.map(SharedDatasets.keptOnDeleteMessage(_, None)) ++
+            cleanup.steps.collect { case (s, DestinationDrop.Failed(reason)) => DestinationDrop.warning(s.label, reason, configDeleted) }
+
+    /** The warning for document-tap ledgers that could not be cleared. Names
+      * no tap. */
+    def ledgerCleanupWarning(reason: String, configDeleted: Boolean): String =
+        if (configDeleted)
+            // Ledgers are keyed by tap, not pipeline: a later delete of a
+            // pipeline of this name does not clear the ledger of a surviving tap.
+            "Could not remove the document-tap ledgers of this pipeline: " + reason + ". " +
+                "A document tap that still feeds a pipeline of this name will skip the documents it already loaded; " +
+                "clear the ledger of that tap (DELETE /api/v1/tap/ledger?name=<tap>) before loading again."
+        else platformCleanupWarning("the document-tap ledgers of this pipeline", reason, configDeleted)
+
+    /** The warning for platform-internal state of the pipeline (document-tap
+      * ledgers, stored history, CodeGen scripts, Unity Catalog sync state)
+      * that could not be removed: what was left, and that deleting a pipeline
+      * of this name again (or running the reset again) retries it. Nothing for
+      * the user to remove in a store. */
+    def platformCleanupWarning(label: String, reason: String, configDeleted: Boolean): String =
+        "Could not remove " + label + ": " + reason + ". " +
+            (if (configDeleted)
+                 "It is left in the platform storage and is removed the next time a pipeline of this name is deleted. " +
+                     "A new pipeline created with this name will see it until then."
+             else "Run the reset again to retry.")
+
+    /** The text of a config row delete that failed after the destination
+      * data was removed. */
+    val ConfigRowAfterDataMessage: String =
+        "The pipeline's destination data was already removed; the configuration could not be deleted. Run the delete again."
+
+    /** The text of a config row delete that failed when no destination
+      * data was removed. */
+    val ConfigRowMessage: String = "The pipeline configuration could not be deleted. Run the delete again."
+
+    /** Deletes the config row with `delete`. A failure propagates (500)
+      * without the store's error text (that goes to the log): when some
+      * destination data was removed (`dataRemoved`) it says so. */
+    def deleteConfigRow(dataRemoved: Boolean, delete: () => Unit): Unit =
+        try delete()
+        catch {
+            case e: Exception =>
+                auditLogger.warn("Pipeline delete: the configuration row could not be deleted" + (if (dataRemoved) " after the data was removed"
+                                                                                                  else "") + ": " + e)
+                val out = new DatrisException(if (dataRemoved) ConfigRowAfterDataMessage else ConfigRowMessage)
+                out.initCause(e)
+                throw out
+        }
+
     /** [[clearTapLedgersOnDelete]] for a delete plan: never for a keep-data
       * delete (the ledgers mirror the kept data; clearing them would
       * re-ingest into it). */
@@ -1622,7 +2005,7 @@ object PipelineAPIController {
       * `404`, a scope miss `403`, exactly as before), then [[keepDataRefusal]].
       * None = go ahead. */
     def deleteRefusal(request: HttpServletRequest, config: PipelineConfig, plan: PipelineDeletePlan.Plan): Option[ResponseEntity[String]] = {
-        try CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
+        try CapabilityCheck.assertVisibleToWrite(request, "pipeline", "delete", CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel))
         catch {
             case _: ResourceHiddenException => return Some(pipelineNotFound(config.name))
             case e: CapabilityDeniedException => return Some(capabilityDenied(e))
@@ -1692,13 +2075,14 @@ object PipelineAPIController {
     /** Whether [[overwriteRefusal]] can refuse this caller at all, so the
       * stored config is read only then: an API key (or session) that holds
       * none of `actions` unscoped, and not a restricted user's session
-      * (those get their 404/403 from `catalogForSave` / `pipelineHidden`).
+      * (those get their 404/403 from `catalogForSave` /
+      * `EntityVersionAPIController.versionRefusal`).
       * False for no key, full keys and unrestricted sessions. */
     def overwriteCheckNeeded(request: HttpServletRequest, actions: Seq[String]): Boolean =
         CapabilityCheck.resolvedKey(request).isDefined && !CapabilityCheck.isRestrictedSession(request) &&
             !actions.exists(a => CapabilityCheck.grants(request, "pipeline", a, Map.empty))
 
-    /** POST /pipeline and version restore, API keys: 403 (capability-denied
+    /** POST /pipeline and version restore (its guard decision), API keys: 403 (capability-denied
       * shape) when a pipeline of that name exists and the key's scope
       * (`catalog=`, `owner=self`) grants none of `actions` on it, so a
       * scoped key cannot overwrite or restore a pipeline outside its scope.
@@ -1737,8 +2121,8 @@ object PipelineAPIController {
     def limitedVisibility(request: HttpServletRequest): Boolean =
         !CapabilityCheck.grants(request, "pipeline", "read", Map.empty)
 
-    /** POST /pipeline (and version restore), limited-visibility callers
-      * only: 400 `{"error": ...}` when the candidate adds a dataset (not
+    /** POST /pipeline (and version restore, which saves through the same
+      * path), limited-visibility callers only: 400 `{"error": ...}` when the candidate adds a dataset (not
       * already written by `stored`) that a pipeline hidden from the caller
       * writes. The text is the same whatever `authoritative` says and never
       * names a pipeline or catalog. None for everyone else. */
@@ -1801,8 +2185,13 @@ object PipelineAPIController {
       * A pgvector table is checked on its own path after those probes
       * (`DestinationTargets.vectorTablesToProbe`, with `vectorTableExists`):
       * 400 `UnsafeVectorTableRefusal` first for a changed pgvector table whose
-      * schema or name is not a plain quoted identifier, then the same 400 /
-      * 500 / 429 answers as above.
+      * schema or name holds a double quote or NUL (or an empty schema), and
+      * `BlankVectorTableRefusal` for a null or blank table, then the same 400 /
+      * 500 / 429 answers as above. Every caller already gets those two
+      * refusals from [[vectorTableNameRefusal]], which runs first on the save
+      * path; this branch adds that a stored config the caller cannot see
+      * grandfathers nothing. The pgvector SQL itself escapes every name
+      * (`PGVectorSql`).
       *
       * This six-argument form is the spec seam for the probe alone: it skips
       * the Unity Catalog state check and the pgvector table probe. Production
@@ -1816,7 +2205,7 @@ object PipelineAPIController {
         env: SharedDatasets.Env,
         exists: DestinationTargets.Target => Boolean
     ): Option[ResponseEntity[String]] =
-        existingDestinationRefusal(request, candidate, stored, others, env, exists, _ => false, DestinationProbe.DefaultDeadline, _ => false)
+        existingDestinationRefusal(request, candidate, stored, others, env, exists, _ => false, DestinationProbe.DefaultDeadline, _ => false, _ => false)
 
     /** [[existingDestinationRefusal]] with the Unity Catalog state check
       * given, under `DestinationProbe.DefaultDeadline`. */
@@ -1864,7 +2253,8 @@ object PipelineAPIController {
     /** [[existingDestinationRefusal]] with the pgvector table probe given
       * (`vectorTableExists`, for `DestinationTargets.vectorTablesToProbe`
       * targets); it runs after `exists`'s targets, under the same deadline
-      * and the same per-caller slots. */
+      * and the same per-caller slots. Qdrant, weaviate, milvus and chroma
+      * containers are probed with `DestinationProbe.vectorContainerExists`. */
     def existingDestinationRefusal(
         request: HttpServletRequest,
         candidate: PipelineConfig,
@@ -1875,6 +2265,44 @@ object PipelineAPIController {
         catalogCommitted: String => Boolean,
         deadline: scala.concurrent.duration.FiniteDuration,
         vectorTableExists: DestinationTargets.Target => Boolean
+    ): Option[ResponseEntity[String]] =
+        existingDestinationRefusal(
+            request,
+            candidate,
+            stored,
+            others,
+            env,
+            exists,
+            catalogCommitted,
+            deadline,
+            vectorTableExists,
+            (t: DestinationTargets.VectorContainerTarget) => DestinationProbe.vectorContainerExists(t)
+        )
+
+    /** [[existingDestinationRefusal]] with the qdrant / weaviate / milvus /
+      * chroma container probe given too (`vectorContainerExists`, for
+      * `DestinationTargets.vectorContainersToProbe` targets).
+      *
+      * Before any probe, a new or changed container name that is not plain
+      * (a character outside letters, digits, `.`, `_`, `-`, or `.` / `..`)
+      * is refused with 400 `UnsafeVectorContainerRefusal`, and a null or
+      * blank name the visible stored config does not carry with 400
+      * `BlankVectorContainerRefusal` (a blank name has no container). Then
+      * each fresh container no visible pipeline names is probed after the
+      * pgvector tables, under the same deadline and slots: exists -> 400
+      * `ExistsRefusal` naming the caller's own container as written, any
+      * failure -> 500 `ProbeUnavailable`. */
+    def existingDestinationRefusal(
+        request: HttpServletRequest,
+        candidate: PipelineConfig,
+        stored: PipelineConfig,
+        others: Seq[PipelineConfig],
+        env: SharedDatasets.Env,
+        exists: DestinationTargets.Target => Boolean,
+        catalogCommitted: String => Boolean,
+        deadline: scala.concurrent.duration.FiniteDuration,
+        vectorTableExists: DestinationTargets.Target => Boolean,
+        vectorContainerExists: DestinationTargets.VectorContainerTarget => Boolean
     ): Option[ResponseEntity[String]] = {
         if (!CapabilityCheck.isRestrictedSession(request) || candidate == null) return None
         val deadlineAt = System.nanoTime() + deadline.toNanos
@@ -1905,6 +2333,13 @@ object PipelineAPIController {
         // the visible stored config carries the identical schema and table.
         if (DestinationTargets.blankVectorTableName(candidate) && !DestinationTargets.sameVectorTableNames(candidate, keptFrom))
             return badRequest(DestinationTargets.BlankVectorTableRefusal)
+        // Qdrant, weaviate, milvus, chroma: a new or changed name must be
+        // plain, and a blank name has no container (refused unless the
+        // visible stored config carries the identical one).
+        if (DestinationTargets.unsafeFreshVectorContainerName(candidate, keptFrom))
+            return badRequest(DestinationTargets.UnsafeVectorContainerRefusal)
+        if (DestinationTargets.newBlankVectorContainerName(candidate, keptFrom))
+            return badRequest(DestinationTargets.BlankVectorContainerRefusal)
         val candidateTarget = DestinationTargets.targetsOf(candidate, env).find(_.key.family == "objectstore")
         def iceberg(c: PipelineConfig): Boolean =
             c != null && c.destination != null && c.destination.objectStore != null &&
@@ -1956,6 +2391,34 @@ object PipelineAPIController {
             found match {
                 case Left(_) => return unavailable
                 case Right(true) => return badRequest(DestinationTargets.ExistsRefusal(SharedDatasets.label(t.key)))
+                case Right(false) =>
+            }
+        }
+        // Qdrant, weaviate, milvus and chroma containers, after the pgvector
+        // tables: the store is asked with the platform's store secret.
+        val containers = DestinationTargets.vectorContainersToProbe(candidate, keptFrom, visible).iterator
+        while (containers.hasNext) {
+            val t = containers.next()
+            val found =
+                try Right(bounded("destination probe (" + t.key.store + ")")(vectorContainerExists(t)))
+                catch {
+                    case _: DestinationProbe.TooManyChecks =>
+                        auditLogger.warn(
+                            "Destination existence probe for pipeline " + candidate.name + " (" + t.key.store +
+                                ") not started: the caller's other checks are still running"
+                        )
+                        return Some(tooManyChecks)
+                    case scala.util.control.NonFatal(e) =>
+                        auditLogger.warn(
+                            "Destination existence probe failed for pipeline " + candidate.name + " (" + t.key.store + "): " +
+                                Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                        )
+                        Left(e)
+                }
+            found match {
+                case Left(_) => return unavailable
+                case Right(true) =>
+                    return badRequest(DestinationTargets.ExistsRefusal(VectorContainers.label(VectorContainers.displayKey(t.key, candidate))))
                 case Right(false) =>
             }
         }
@@ -2079,11 +2542,80 @@ object PipelineAPIController {
       * unrestricted sessions and auth-off installs: they read nothing before
       * the write and take no lock. */
     def saveGuardNeeded(request: HttpServletRequest): Boolean =
-        overwriteCheckNeeded(request, SaveOverwriteActions) || limitedVisibility(request) || CapabilityCheck.isRestrictedSession(request)
+        overwriteCheckNeeded(request, SaveOverwriteActions) || limitedVisibility(request) || CapabilityCheck.isRestrictedSession(request) ||
+            CapabilityCheck.keyScopeApplies(request, "pipeline", "create")
+
+    /** POST /pipeline, API keys (plans/stories/scoped-key-read-routes.md,
+      * Design 4): the pipeline as it would be saved must be in the key's
+      * scope, `pipeline:create` for a new name and `pipeline:create` or
+      * `pipeline:update` over a stored one, on its target catalog (the body's,
+      * so a blank catalog is no catalog: keys get no defaulting) and the
+      * stored owner (the caller's label for a new name). The 403 names the
+      * action attempted (`create` for a new name, `update` over a stored
+      * one). None for sessions, no identity, full keys and keys whose create
+      * is unscoped. `newOwner`: the owner a new pipeline will have when it
+      * is not the caller (a deleted pipeline re-created by version restore
+      * keeps the version's owner); None = the caller's label, as on
+      * `POST /pipeline`. */
+    def keyTargetRefusal(
+        request: HttpServletRequest,
+        config: PipelineConfig,
+        stored: PipelineConfig,
+        newOwner: Option[String] = None
+    ): Option[ResponseEntity[String]] =
+        CapabilityCheck.resolvedKey(request) match {
+            case Some(rk) if config != null && !rk.restrictedSession =>
+                val owner = if (stored != null) stored.createdByKeyLabel else newOwner.getOrElse(rk.label)
+                val ctx = CatalogOps.scopeContext(config.catalog, owner)
+                val acceptable = if (stored != null) SaveOverwriteActions else Seq("create")
+                val attempted = if (stored != null) "update" else "create"
+                if (!acceptable.exists(a => ai.datris.auth.CallerVisibility.keyOutOfScope(rk, "pipeline", a, ctx))) None
+                else if (acceptable.exists(a => rk.grants("pipeline", a, ctx))) None
+                else
+                    try {
+                        CapabilityCheck.assertScope(request, "pipeline", attempted, ctx)
+                        None
+                    } catch {
+                        case e: CapabilityDeniedException => Some(capabilityDenied(e))
+                    }
+            case _ => None
+        }
+
+    /** Version restore of a DELETED pipeline (owner decision): the restore
+      * re-creates the pipeline, so the caller needs what `POST /pipeline`
+      * needs to create it: `pipeline:create` held at all (the capability
+      * `POST /pipeline`'s route gate requires; the restore route requires
+      * only `pipeline:update`), and in scope on the pipeline as re-created
+      * ([[keyTargetRefusal]], the save guard's new-pipeline rule). The context
+      * is the one the re-created pipeline will have: the version's catalog
+      * and the version's owner (a restore keeps it; `POST /pipeline` would
+      * stamp the caller). A key is refused 403 on `create` through
+      * `CapabilityCheck.assertScope` (shared wording). None for full access,
+      * unrestricted sessions (every role bundle holding `pipeline:update`
+      * holds `pipeline:create`), restricted sessions (the restore hides a
+      * deleted pipeline's history from them first), no identity and a null
+      * request. Reads nothing. Same shape as
+      * [[TapAPIController.recreateRefusal]]. */
+    def recreateRefusal(request: HttpServletRequest, config: PipelineConfig): Option[ResponseEntity[String]] =
+        CapabilityCheck.resolvedKey(request) match {
+            case Some(rk) if config != null && !rk.restrictedSession && !ai.datris.auth.CallerVisibility.holdsAny(rk, "pipeline", "create") =>
+                val ctx = CatalogOps.scopeContext(config.catalog, config.createdByKeyLabel)
+                try {
+                    CapabilityCheck.assertScope(request, "pipeline", "create", ctx)
+                    Some(capabilityDenied(new CapabilityDeniedException("capability denied")))
+                } catch {
+                    case e: CapabilityDeniedException => Some(capabilityDenied(e))
+                }
+            case _ => keyTargetRefusal(request, config, null, Some(if (config == null) null else config.createdByKeyLabel))
+        }
 
     /** POST /pipeline for a [[saveGuardNeeded]] caller, decided from ONE
       * stored-config read (`stored`, the config named `config.name` or null):
-      * the scope check on `stored` ([[overwriteRefusal]], 403), then for a
+      * the scope check on `stored` ([[overwriteRefusal]], 403), for an API
+      * key a stored config it cannot read (403 on `pipeline:read`, naming
+      * nothing of it) and the pipeline as it would be saved outside its
+      * scope ([[keyTargetRefusal]], 403; plans/stories/scoped-key-read-routes.md),
+      * then for a
       * null `stored` the previous-name check ([[hiddenAliasSaveRefusal]];
       * `readAll` is called only then, and a failure is
       * [[aliasCheckUnavailable]], 500), then the restricted-session catalog
@@ -2096,6 +2628,16 @@ object PipelineAPIController {
         readAll: () => Seq[PipelineConfig]
     ): Either[ResponseEntity[String], PipelineConfig] = {
         overwriteRefusal(request, stored, SaveOverwriteActions).foreach(refused => return Left(refused))
+        // API keys (scoped-key-read-routes, Design 4): a stored pipeline the
+        // key cannot read is never overwritten (the read refusal, naming
+        // nothing of it), and the pipeline as it would be saved must be in
+        // the key's scope (no move or create outside it).
+        if (stored != null && !CapabilityCheck.isRestrictedSession(request))
+            CapabilityCheck.resolvedKey(request).foreach { rk =>
+                if (ai.datris.auth.CallerVisibility.keyOutOfScope(rk, "pipeline", "read", CatalogOps.scopeContext(stored.catalog, stored.createdByKeyLabel)))
+                    return Left(readScopeDenied(request, stored))
+            }
+        keyTargetRefusal(request, config, stored).foreach(refused => return Left(refused))
         if (stored == null && config.name != null && limitedVisibility(request)) {
             val all =
                 try readAll()
@@ -2142,8 +2684,21 @@ object PipelineAPIController {
             .contentType(MediaType.APPLICATION_JSON)
             .body[String](ApiErrors.errorBody("Pipeline '" + name + "' changed while it was being saved; nothing was saved. Try again."))
 
+    /** 409 when the pipeline changed while a version restore was being
+      * checked: nothing was restored. */
+    def restoreConflict(name: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody("Pipeline '" + name + "' changed while it was being restored; nothing was restored. Try again."))
+
+    /** A version restore through the save path: the live config the restore
+      * decided on (null when deleted), the version restored and the 404 a
+      * hidden history answers. */
+    case class RestoreOf(live: PipelineConfig, version: Int, hidden: () => ResponseEntity[String])
+
     /** The capability-denied 403 for `pipeline:read` on `hidden`'s scope. */
-    private def readScopeDenied(request: HttpServletRequest, hidden: PipelineConfig): ResponseEntity[String] =
+    private[api] def readScopeDenied(request: HttpServletRequest, hidden: PipelineConfig): ResponseEntity[String] =
         try {
             CapabilityCheck.assertScope(request, "pipeline", "read", CatalogOps.scopeContext(hidden.catalog, hidden.createdByKeyLabel))
             capabilityDenied(new CapabilityDeniedException("capability denied"))
@@ -2162,7 +2717,16 @@ object PipelineAPIController {
     /** GET /pipelines: the configs the caller may read (per-item scope
       * check on catalog + owner); nulls dropped. */
     def visiblePipelines(request: HttpServletRequest, configs: Seq[PipelineConfig]): Seq[PipelineConfig] =
-        configs.filter(c => c != null && CapabilityCheck.grants(request, "pipeline", "read", CatalogOps.scopeContext(c.catalog, c.createdByKeyLabel)))
+        configs.filter(c => mayRead(request, c))
+
+    /** The one per-item read rule for a STORED pipeline: the caller's grants
+      * or key scope allow `pipeline:read` on its catalog and owner
+      * (`createdByKeyLabel`), never on request input. False for null (a
+      * pipeline that is not stored). The record routes apply it only for a
+      * limited caller ([[CapabilityCheck.isLimited]];
+      * plans/stories/scoped-key-read-routes.md, Part B). */
+    def mayRead(request: HttpServletRequest, c: PipelineConfig): Boolean =
+        c != null && ai.datris.auth.CallerVisibility.mayReadStored(CapabilityCheck.resolvedKey(request), "pipeline", c.catalog, c.createdByKeyLabel)
 
     /** POST /pipeline catalog rules for a restricted user's session (no-op
       * for everyone else). `existing` is the stored config of the same name,
@@ -2227,7 +2791,7 @@ object PipelineAPIController {
     ): Option[ResponseEntity[String]] = {
         if (old == null) return Some(pipelineNotFound(name))
         refusalFor(request, name, old, "delete").foreach(r => return Some(r))
-        try CapabilityCheck.assertVisible(request, "pipeline", "delete", CatalogOps.scopeContext(old.catalog, old.createdByKeyLabel))
+        try CapabilityCheck.assertVisibleToWrite(request, "pipeline", "delete", CatalogOps.scopeContext(old.catalog, old.createdByKeyLabel))
         catch {
             case _: ResourceHiddenException => return Some(pipelineNotFound(name))
             case e: CapabilityDeniedException => return Some(capabilityDenied(e))
