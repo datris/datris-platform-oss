@@ -2137,7 +2137,7 @@ paths:
       tags: [Pipelines]
       summary: Rename a catalog
       description: |
-        Relabels every tap and pipeline whose `catalog` equals `name` to `newName`, each through a versioned write (one new definition version per member, with a change note naming the rename and the actor). Every hidden placeholder of the catalog (a `__catalog__*` tap whose `catalog` field is `name`, or whose name suffix is `name` when that field is empty) is removed, and `__catalog__<newName>` is created with `catalog=newName`. A member already moved out of `name` by a concurrent change is listed under `failed` ("no longer in catalog"), and placeholders are left untouched when no member moved. A rename never merges: if `newName` already exists (any tap or pipeline carries it, or it has a placeholder; matched case-sensitively) the request is refused with 409 and nothing changes. To combine catalogs, move their items. Not transactional: members that fail are listed under `failed` and the rest still move (207). API keys whose capabilities are scoped `catalog=<name>` are listed under `affectedKeys`; their scopes are not rewritten. Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:update`; each member is also checked against the key's owner and catalog scopes. If any member is refused by scope, placeholders are left untouched (`placeholder: skipped`); for a catalog with only a placeholder, the placeholder is scope-checked (403 on denial). Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
+        Relabels every tap and pipeline whose `catalog` equals `name` to `newName`, each through a versioned write (one new definition version per member, with a change note naming the rename and the actor). Every hidden placeholder of the catalog (a `__catalog__*` tap whose `catalog` field is `name`, or whose name suffix is `name` when that field is empty) is removed, and `__catalog__<newName>` is created with `catalog=newName`. A member already moved out of `name` by a concurrent change is listed under `failed` ("no longer in catalog"), and placeholders are left untouched when no member moved. A rename never merges: if `newName` already exists (any tap or pipeline carries it, or it has a placeholder; matched case-sensitively) the request is refused with 409 and nothing changes. To combine catalogs, move their items. Not transactional: members that fail are listed under `failed` and the rest still move (207). API keys whose capabilities are scoped `catalog=<name>` are listed under `affectedKeys`; their scopes are not rewritten. Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:update`; each member is also checked against the key's owner and catalog scopes where it is now, and, for an API key, `create` or `update` in scope (`tap:` or `pipeline:` by member type) under `newName`. The scope check is all or nothing: if any member (or, for a catalog with only a placeholder, the placeholder) is refused, the request answers 403 and nothing changes, so a key limited to one catalog cannot rename it. The 403 names the first refused member only when the key may read it. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -2173,7 +2173,7 @@ paths:
         '400':
           description: Reserved or blank catalog name, missing or invalid `newName`, or `newName` equal to `name`
         '403':
-          description: 'The catalog holds only its placeholder and the key''s scope does not cover it, or a restricted user holds `view`/`edit` but not `own` on it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+          description: 'A member or placeholder the caller may not move, or (API key) may not write under `newName`: nothing is renamed. Or a restricted user holds `view`/`edit` but not `own` on the catalog. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
           description: No tap, pipeline or placeholder carries this catalog, or (restricted user) the catalog is not in the user's grants
         '409':
@@ -2193,7 +2193,7 @@ paths:
       tags: [Pipelines]
       summary: Delete a catalog (detach or cascade)
       description: |
-        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop, a vector container, table or collection kept because another pipeline still names it (it is dropped with the last one), or a vector collection or class, table, collection or object-store files the store could not remove (the pipeline is still listed under `deleted`); warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
+        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes. Detach is all or nothing on scope: an API key also needs `create`, `update` or `delete` in scope (`tap:` or `pipeline:` by member type) on each member in Uncataloged, and if any member (or, for a catalog with only a placeholder, the placeholder) is refused the request answers 403 and nothing changes, so a key limited to one catalog cannot detach it; the 403 names the first refused member only when the key may read it. Cascade keeps a per-member result: refused members are listed under `failed` and the placeholder is left untouched. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop, a vector container, table or collection kept because another pipeline still names it (it is dropped with the last one), or a vector collection or class, table, collection or object-store files the store could not remove (the pipeline is still listed under `deleted`); warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -2230,7 +2230,7 @@ paths:
         '400':
           description: Reserved or blank catalog name, unknown mode, or cascade without a matching `confirm`
         '403':
-          description: 'The catalog holds only its placeholder and the key''s scope does not cover it, or the caller is a restricted user (only admins and unrestricted users delete catalogs). Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+          description: 'Detach: a member or placeholder the caller may not move, or (API key) may not write in Uncataloged; nothing is detached. Cascade: the catalog holds only its placeholder and the key''s scope does not cover it. Either mode: the caller is a restricted user (only admins and unrestricted users delete catalogs). Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
           description: No tap, pipeline or placeholder carries this catalog, or (restricted user) the catalog is not in the user's grants
         '409':
@@ -2416,7 +2416,7 @@ paths:
       tags: [Pipelines]
       summary: Cancel a catalog's ordered enable
       description: |
-        The test, run or load wait in progress finishes (a running tap script is not killed); every tap not yet started is marked `cancelled` (a tap already enabled whose run had not started reads `enabled; run cancelled`). Requires `tap:run`, checked against the key's catalog scope and the job starter as owner; 403 otherwise.
+        The test, run or load wait in progress finishes (a running tap script is not killed); every tap not yet started is marked `cancelled` (a tap already enabled whose run had not started reads `enabled; run cancelled`). Requires `tap:run`, and for an API key `tap:read` as well, each checked against the key's catalog scope and the job starter as owner; 403 otherwise. A key that may not read the catalog's taps gets the same 403 whether or not a job is running.
       parameters:
         - name: name
           in: path
@@ -2426,8 +2426,10 @@ paths:
       responses:
         '200':
           description: 'Cancel requested: `{"cancelled": true, "jobId": ...}`'
+        '403':
+          description: 'The key lacks `tap:run` or `tap:read` in scope on the catalog''s taps (the same answer whether or not a job is running), or a restricted user holds only `view` on the catalog. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
-          description: No job is running for this catalog
+          description: No job is running for this catalog, or (restricted user) the catalog is not in the user's grants
         '500':
           description: Error
 

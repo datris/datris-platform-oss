@@ -74,10 +74,15 @@ import scala.collection.mutable
   *
   * Capability gate: `CapabilityRoutes` maps PUT to pipeline:update and DELETE
   * to pipeline:delete; each member is additionally scope-checked (owner and
-  * catalog) with its own resource type, and refused members land in
-  * `failed`. When any member is refused the `__catalog__` placeholders are
-  * left untouched; a placeholder-only catalog checks the placeholder itself
-  * (403 on denial). Cascade skips its pipeline phase if a tap delete failed. */
+  * catalog) with its own resource type. Rename and detach move members, so
+  * they are all or nothing on scope (`CatalogAPIController.moveRefusal`): a
+  * member the caller may not move, or, for an API key, may not write where
+  * it lands, refuses the whole operation with 403 before anything is
+  * written. Cascade delete keeps the per-member result: refused members land
+  * in `failed`, and when any member is refused the `__catalog__`
+  * placeholders are left untouched. A placeholder-only catalog checks the
+  * placeholder itself (403 on denial). Cascade skips its pipeline phase if a
+  * tap delete failed. */
 @RestController
 @RequestMapping(Array("/api/v1"))
 class CatalogAPIController {
@@ -134,7 +139,11 @@ class CatalogAPIController {
 
                 val actor = VersionActor.resolve(request)
                 val note = "catalog renamed " + name + " → " + newName + " by " + actor
-                placeholderScopeDenial(request, "update", name, members, oldPlaceholders).foreach(r => return r)
+                // All or nothing: every member (or, for a placeholder-only
+                // catalog, every placeholder) must be the caller's to move,
+                // and for an API key in scope where it lands, before anything
+                // is written.
+                CatalogAPIController.moveRefusal(request, "update", name, newName, members, oldPlaceholders).foreach(r => return r)
                 val denied = mutable.ArrayBuffer.empty[String]
                 val tapResult = CatalogOps.execute(members.taps.map(_.name)) { n =>
                     trackDenied(denied, n) {
@@ -266,7 +275,10 @@ class CatalogAPIController {
                 if (members.isEmpty && placeholders.isEmpty)
                     return notFound(name)
 
-                placeholderScopeDenial(request, "delete", name, members, placeholders).foreach(r => return r)
+                // Detach moves every member to Uncataloged: all or nothing, as
+                // rename. Cascade keeps its per-member result.
+                if (m == "detach") CatalogAPIController.moveRefusal(request, "delete", name, null, members, placeholders).foreach(r => return r)
+                else placeholderScopeDenial(request, "delete", name, members, placeholders).foreach(r => return r)
                 val actor = VersionActor.resolve(request)
                 val denied = mutable.ArrayBuffer.empty[String]
                 val (tapResult, pipelineResult) =
@@ -542,8 +554,9 @@ class CatalogAPIController {
     }
 
     /** Cancel the catalog's ordered enable. The in-flight test, run or load
-      * wait finishes; taps not yet started are `cancelled`. 404 when no job
-      * is running. */
+      * wait finishes; taps not yet started are `cancelled`. An API key needs
+      * `tap:run` and `tap:read` on the catalog's taps (403 otherwise, job or
+      * not); 404 when no job is running. */
     @DeleteMapping(path = Array("/catalog/{name}/enable-ordered"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def cancelEnableOrdered(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
@@ -1284,6 +1297,79 @@ object CatalogAPIController {
         CapabilityCheck.assertWriteReadable(request, resource, action, ctx)
     }
 
+    /** The per-member decision of a catalog move (rename: `update`, the new
+      * name; detach: `delete`, `toCatalog` null): [[assertMemberWrite]] on
+      * the member where it is, then, for an API key (never a signed-in
+      * session), the member as it would be stored, (`toCatalog`, `owner`),
+      * through the rule `POST /tap` and `POST /pipeline` apply to the item as
+      * saved: when the key's scope can refuse `create` or `update` there
+      * ([[ai.datris.auth.CallerVisibility.keyOutOfScope]]) and neither is
+      * granted there, refused on `update`. So a key moves an item only where
+      * it may also write it, the same answer moving that one item gives. A
+      * detach also accepts `delete` granted where the item lands, so a key
+      * limited to what it created keeps detaching its own items whether or
+      * not it holds `create` or `update`. Throws [[CapabilityDeniedException]]
+      * (shared wording, audit note). */
+    def assertMemberMove(request: HttpServletRequest, resource: String, action: String, fromCatalog: String, toCatalog: String, owner: String): Unit = {
+        assertMemberWrite(request, resource, action, fromCatalog, owner)
+        assertKeyMoveTarget(request, resource, action, toCatalog, owner)
+    }
+
+    /** The destination half of [[assertMemberMove]]: for an API key (no
+      * session), `create` or `update` (or the operation's own `action`) on
+      * (`toCatalog`, `owner`) when its scope can refuse them, refused on
+      * `update` (shared wording). */
+    private def assertKeyMoveTarget(request: HttpServletRequest, resource: String, action: String, toCatalog: String, owner: String): Unit =
+        CapabilityCheck.resolvedKey(request).filter(rk => !rk.restrictedSession && !rk.label.startsWith("session:")).foreach { rk =>
+            val ctx = CatalogOps.scopeContext(toCatalog, owner)
+            val accepted = (ai.datris.auth.CallerVisibility.TapWriteActions :+ action).distinct
+            if (accepted.exists(a => ai.datris.auth.CallerVisibility.keyOutOfScope(rk, resource, a, ctx)) && !accepted.exists(a => rk.grants(resource, a, ctx)))
+                CapabilityCheck.assertScope(request, resource, "update", ctx)
+        }
+
+    /** The all-or-nothing pre-flight of a catalog rename (`update`,
+      * `toCatalog` = the new name) and detach (`delete`, `toCatalog` null),
+      * before anything is written: every member tap, then every member
+      * pipeline, through [[assertMemberMove]]; for a catalog with no members,
+      * every placeholder (tap scope on the placeholder where it is, then the
+      * same destination check). Some(403) on the first refusal; its message
+      * names the refused member only when the caller may read it, otherwise
+      * it is the shared scope-denial text alone. None: the whole move is
+      * allowed. Pure apart from the audit note of the refusal. */
+    def moveRefusal(
+        request: HttpServletRequest,
+        action: String,
+        fromCatalog: String,
+        toCatalog: String,
+        members: CatalogOps.Members,
+        placeholders: Seq[TapConfig]
+    ): Option[ResponseEntity[String]] = {
+        def forbidden(message: String): Option[ResponseEntity[String]] =
+            Some(ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON).body[String](CatalogOps.capabilityDeniedBody(message)))
+        def check(resource: String, name: String, owner: String): Option[ResponseEntity[String]] =
+            try {
+                assertMemberMove(request, resource, action, fromCatalog, toCatalog, owner)
+                None
+            } catch {
+                case e: CapabilityDeniedException =>
+                    val readable = CapabilityCheck.grants(request, resource, "read", CatalogOps.scopeContext(fromCatalog, owner))
+                    forbidden(if (readable) e.getMessage + " (" + resource + " '" + name + "')" else e.getMessage)
+            }
+        if (members.isEmpty)
+            placeholders.view.flatMap { ph =>
+                try {
+                    CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(fromCatalog, ph.createdByKeyLabel))
+                    assertKeyMoveTarget(request, "tap", action, toCatalog, ph.createdByKeyLabel)
+                    None
+                } catch {
+                    case e: CapabilityDeniedException => forbidden(e.getMessage)
+                }
+            }.headOption
+        else
+            members.taps.view.flatMap(t => check("tap", t.name, t.createdByKeyLabel)).headOption
+                .orElse(members.pipelines.view.flatMap(p => check("pipeline", p.name, p.createdByKeyLabel)).headOption)
+    }
+
     /** The per-member decision of a catalog restore before an archived item
       * is written into catalog `target` as `caller`
       * ([[CatalogArchive.restoreScopeChecks]]): `create` in the target, and
@@ -1484,11 +1570,16 @@ object CatalogAPIController {
     /** 403 when the caller's key may not `tap:<action>` the catalog's
       * ordered-enable job: catalog scope = the catalog, owner scope = whoever
       * started the job (absent when there is none). Route capability alone
-      * would let a `catalog=A` key read or cancel catalog B's job. */
+      * would let a `catalog=A` key read or cancel catalog B's job. For an
+      * action other than `read` (cancel: `run`) an API key must also read
+      * the catalog's taps ([[CapabilityCheck.assertWriteReadable]]), so a
+      * key that cannot gets the same 403 whether or not a job is running. */
     def enableJobScopeDenial(request: HttpServletRequest, action: String, catalog: String): Option[ResponseEntity[String]] = {
         val owner = CatalogEnableJob.status(catalog).map(_.startedBy).orNull
         try {
-            CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(catalog, owner))
+            val ctx = CatalogOps.scopeContext(catalog, owner)
+            CapabilityCheck.assertScope(request, "tap", action, ctx)
+            CapabilityCheck.assertWriteReadable(request, "tap", action, ctx)
             None
         } catch {
             case e: CapabilityDeniedException =>

@@ -287,6 +287,25 @@ class CatalogMoveScopeSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(CatalogAPIController.moveRefusal(r, "delete", "Sales", null, mine, Nil).isEmpty)
     }
 
+    test("bullet 2: a key limited to what it created that holds delete but no create or update detaches a catalog of only its own items as today") {
+        val caps = Seq("pipeline:delete:owner=self", "tap:delete:owner=self", "pipeline:read:owner=self", "tap:read:owner=self")
+        val r = req(key("own-deleter", caps: _*), "DELETE")
+        val mine = CatalogOps.Members(Seq(tap("t_mine", "Sales", "own-deleter")), Seq(pg("p_mine", "Sales", "own-deleter")))
+        assert(todayEveryMemberPasses(r, "delete", "Sales", mine))
+        assert(CatalogAPIController.moveRefusal(r, "delete", "Sales", null, mine, Nil).isEmpty)
+        assert(CatalogAPIController.moveRefusal(r, "delete", "Sales", null, CatalogOps.Members(Nil, Nil), Seq(placeholder("Sales", "own-deleter"))).isEmpty)
+    }
+
+    test("parity: the destination rule is the one a single-item save applies to the item as saved (write in scope where it lands)") {
+        // write scope covers both names, read only the source: a single-item move is allowed, and so is the rename
+        val caps =
+            Seq("tap:create:catalog=Sales", "tap:update:catalog=Sales", "tap:create:catalog=Sales2", "tap:update:catalog=Sales2", "tap:read:catalog=Sales")
+        val k = key("writes-both", caps: _*)
+        val stored = tap("t_orders", "Sales", "someone")
+        assert(TapAPIController.saveGuardDecision(req(k, "POST", "/api/v1/tap"), stored.copy(catalog = "Sales2"), stored).isRight)
+        assert(CatalogAPIController.moveRefusal(req(k), "update", "Sales", "Sales2", CatalogOps.Members(Seq(stored), Nil), Nil).isEmpty)
+    }
+
     test("bullet 2: cascade delete keeps today's per-member result: the source-only key deletes every member; a mixed catalog is partial") {
         // the source-only detach key passes the per-member delete rule on every member (cascade works as before)
         val k = key("sales-detacher", detachSalesCaps: _*)
