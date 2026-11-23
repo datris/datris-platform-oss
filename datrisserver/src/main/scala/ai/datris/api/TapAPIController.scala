@@ -509,13 +509,20 @@ object TapAPIController {
     def mayWriteStoredTap(request: HttpServletRequest, tap: TapConfig): Boolean =
         CapabilityCheck.resolvedKey(request) match {
             case None => true
-            case Some(rk) =>
-                val ctx = CatalogOps.scopeContext(tap.catalog, tap.createdByKeyLabel)
-                if (rk.restrictedSession) rk.grants("tap", "update", ctx)
-                else
-                    ai.datris.auth.CallerVisibility.TapWriteActions.exists(a => rk.grants("tap", a, ctx)) &&
-                    ai.datris.auth.CallerVisibility.storedWriteDenial(rk, "tap", ctx, ai.datris.auth.CallerVisibility.TapWriteActions, "update").isEmpty
+            case Some(rk) => identityMayWriteStoredTap(rk, tap)
         }
+
+    /** The identity core of [[mayWriteStoredTap]]: whether `rk` may write
+      * `tap` as stored (its catalog and owner). Also decides whether a tap may
+      * be handed to `rk` as its new owner ([[TapOwnerChange.decide]], with
+      * `tap` carrying the new owner). Pure. */
+    def identityMayWriteStoredTap(rk: ai.datris.model.ResolvedKey, tap: TapConfig): Boolean = {
+        val ctx = CatalogOps.scopeContext(tap.catalog, tap.createdByKeyLabel)
+        if (rk.restrictedSession) rk.grants("tap", "update", ctx)
+        else
+            ai.datris.auth.CallerVisibility.TapWriteActions.exists(a => rk.grants("tap", a, ctx)) &&
+            ai.datris.auth.CallerVisibility.storedWriteDenial(rk, "tap", ctx, ai.datris.auth.CallerVisibility.TapWriteActions, "update").isEmpty
+    }
 
     /** True when the route gate let `request` through only because
       * `CAPABILITY_ENFORCEMENT=log-only` (it noted a would-deny,
@@ -735,6 +742,49 @@ object TapAPIController {
             .status(HttpStatus.CONFLICT)
             .contentType(MediaType.APPLICATION_JSON)
             .body[String](ApiErrors.errorBody("Tap '" + name + "' changed while it was being restored; nothing was restored. Try again."))
+
+    /** The store reads and the write of `POST /tap/owner`, so specs can drive
+      * the route without Mongo or Vault. `writeVersioned` is never called by
+      * this route: changing a tap's owner writes no tap version.
+      * [[ProductionOwnerChangeIO]] makes the live calls. */
+    private[datris] case class TapOwnerChangeIO(
+        readTap: String => TapConfig,
+        write: TapConfig => Unit,
+        findUser: String => Option[ai.datris.model.User],
+        keyByLabel: String => Option[ai.datris.model.ResolvedKey],
+        readPipeline: String => PipelineConfig,
+        secretOwner: String => Option[Option[String]],
+        writeVersioned: (TapConfig, String, String) => TapConfig
+    )
+
+    private[datris] lazy val ProductionOwnerChangeIO: TapOwnerChangeIO = TapOwnerChangeIO(
+        readTap = n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n),
+        write = t => { TapConfigIO.write(t); () },
+        findUser = n => UserStore.find(n),
+        keyByLabel = l => APIKeyValidator.resolveByLabel(l),
+        readPipeline = readPipelineForSave,
+        secretOwner = n => liveSecretOwner(n),
+        writeVersioned = (t, note, actor) => TapConfigIO.writeVersioned(t, note, actor)
+    )
+
+    /** The one refusal of `POST /tap/owner` for a caller that is neither an
+      * administrator session nor a full-access API key. Names nothing. */
+    val OwnerChangeRefusal = "Changing a tap's owner needs an administrator or a full-access API key"
+
+    /** Whether the caller of `POST /tap/owner` may change a tap's owner: an
+      * administrator session or a full-access key (a scoped wildcard is
+      * not), or no identity at all (user sign-in and API keys both off, as on
+      * every route of such an install). Reads nothing. */
+    def mayChangeTapOwner(request: HttpServletRequest): Boolean =
+        CapabilityCheck.resolvedKey(request).forall(_.isFullAccess)
+
+    /** 409 when the tap moved to another catalog or was pointed at another
+      * pipeline while its owner was being changed: nothing was changed. */
+    def ownerChangeConflict(name: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody("Tap '" + name + "' changed while its owner was being changed; nothing was changed. Try again."))
 
     /** POST /tap catalog rules for a restricted user's session (no-op for
       * everyone else); see [[RestrictedCatalogRules.catalogForSave]]. */
@@ -2127,6 +2177,122 @@ class TapAPIController {
     private def actorLabel(request: HttpServletRequest): String =
         ResolvedKeyAccess.keyLabel(request).orNull
 
+    /** Hand an existing tap to another user or API key, keeping its versions,
+      * incremental state, ledger, run history, schedule and script. Body
+      * `{"name": "<tap>", "user": "<username>"}` or `{"name": "<tap>", "key":
+      * "<key label>"}`. Administrators and full-access API keys only. Only
+      * the tap's owner changes: no tap version is written and the tap's
+      * update time is left as it was. A run in progress finishes as it
+      * started; the next run reads the new owner. */
+    @PostMapping(path = Array("/tap/owner"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    @ai.datris.config.RequiresRole(Array("admin"))
+    def changeTapOwner(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, String],
+        request: HttpServletRequest
+    ): ResponseEntity[String] =
+        try {
+            APIKeyValidator.validate(apiKey)
+            changeTapOwnerWith(body, request, TapAPIController.ProductionOwnerChangeIO)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+
+    /** `POST /tap/owner` after key validation, over `io`. The caller check
+      * comes first and reads nothing; then the tap and the new owner are read
+      * and the change decided ([[TapOwnerChange]]); then, under the catalog
+      * lock, the tap is read again and written with only its owner changed. A
+      * store failure is an error and writes nothing. */
+    private[datris] def changeTapOwnerWith(
+        body: java.util.Map[String, String],
+        request: HttpServletRequest,
+        io: TapAPIController.TapOwnerChangeIO
+    ): ResponseEntity[String] = {
+        def answer(status: HttpStatus, message: String): ResponseEntity[String] =
+            ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(message))
+
+        if (!TapAPIController.mayChangeTapOwner(request)) {
+            ai.datris.audit.AuditLog.denied(request, TapAPIController.OwnerChangeRefusal, HttpStatus.FORBIDDEN.value)
+            return answer(HttpStatus.FORBIDDEN, TapAPIController.OwnerChangeRefusal)
+        }
+        try {
+            def field(k: String): String = if (body == null) null else body.get(k)
+            val name = Option(field("name")).filter(_.trim.nonEmpty).orNull
+            if (name == null) return answer(HttpStatus.BAD_REQUEST, "name is required: the tap whose owner to change")
+
+            val tap = io.readTap(name)
+            if (tap == null) return TapAPIController.tapNotFound(name)
+            if (TapOwnerScopeScan.placeholder(tap))
+                return answer(HttpStatus.BAD_REQUEST, "'" + name + "' holds a catalog's place and has no owner to change")
+
+            val (newLabel, resolution) = TapOwnerChange.newOwner(field("user"), field("key"), io.findUser, io.keyByLabel) match {
+                case Left(reason) => return answer(HttpStatus.BAD_REQUEST, reason)
+                case Right(owner) => owner
+            }
+
+            def done(previous: String, changed: Boolean, warnings: List[String]): ResponseEntity[String] = {
+                val md = new com.google.gson.JsonObject
+                md.addProperty("from", previous)
+                md.addProperty("to", newLabel)
+                md.addProperty("changed", changed)
+                ai.datris.audit.AuditLog.record(request, "tap", "owner-change", "tap", name, metadata = md)
+                val out = new com.google.gson.JsonObject
+                out.addProperty("name", name)
+                out.addProperty("owner", newLabel)
+                out.addProperty("previousOwner", previous)
+                out.addProperty("changed", changed)
+                val ws = new com.google.gson.JsonArray
+                warnings.foreach(w => ws.add(w))
+                out.add("warnings", ws)
+                ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body[String](out.toString)
+            }
+
+            if (tap.createdByKeyLabel == newLabel) return done(tap.createdByKeyLabel, changed = false, Nil)
+
+            val decidesOnTarget = resolution match {
+                case ai.datris.auth.TapPrincipal.Resolved(rk) => rk != null && !rk.isFullAccess
+                case _ => false
+            }
+            val storedTarget =
+                if (decidesOnTarget && tap.targetPipeline != null && tap.targetPipeline.trim.nonEmpty) io.readPipeline(tap.targetPipeline)
+                else null
+            val warnings = TapOwnerChange.decide(tap, newLabel, resolution, storedTarget, io.secretOwner) match {
+                case TapOwnerChange.Refused(reason) => return answer(HttpStatus.CONFLICT, reason)
+                case TapOwnerChange.Accepted(w) => w
+            }
+
+            // Re-read and write under the lock a rename, a catalog restore and
+            // a version restore hold, so a move or repoint since the decision
+            // is seen before anything is written. Only the owner changes.
+            val previous: Either[ResponseEntity[String], Option[String]] = CatalogOps.withCatalogLock {
+                val fresh = io.readTap(name)
+                if (fresh == null) Left(TapAPIController.tapNotFound(name))
+                else if (fresh.catalog != tap.catalog || fresh.targetPipeline != tap.targetPipeline) Left(TapAPIController.ownerChangeConflict(name))
+                else if (fresh.createdByKeyLabel == newLabel) Right(None)
+                else {
+                    io.write(fresh.copy(createdByKeyLabel = newLabel))
+                    Right(Some(fresh.createdByKeyLabel))
+                }
+            }
+            previous match {
+                case Left(refused) => refused
+                case Right(None) => done(newLabel, changed = false, warnings)
+                case Right(Some(from)) =>
+                    logger.info(
+                        "Tap owner changed: tap " + LogSafe.text(name) + " from " + LogSafe.text(String.valueOf(from)) + " to " +
+                            LogSafe.text(newLabel) + " by " + LogSafe.text(String.valueOf(ai.datris.audit.AuditActor.resolve(request).label))
+                    )
+                    done(from, changed = true, warnings)
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
+
     @PostMapping(path = Array("/tap/cron"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def generateCron(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
@@ -2849,8 +3015,9 @@ class TapAPIController {
 
                 // Save test run status when not pushing to pipeline
                 if (mode != "run") {
-                    // Status churn: plain write, no version minted.
-                    TapConfigIO.write(TapAPIController.stampTestResult(tapConfig, result, TapAPIController.nowStamp()))
+                    // Status churn: plain write, no version minted; the stored
+                    // owner is kept (an owner changed during the test stays).
+                    TapConfigIO.writeRunState(TapAPIController.stampTestResult(tapConfig, result, TapAPIController.nowStamp()))
                 }
 
                 val gson = new Gson

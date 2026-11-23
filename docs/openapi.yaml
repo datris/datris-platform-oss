@@ -1221,7 +1221,12 @@ components:
         createdByKeyLabel:
           type: string
           readOnly: true
-          description: Label of the API key that created the tap; stamped by the server and used for owner-scoped capability checks
+          description: >-
+            The tap's owner: the label of the API key that created it, or
+            session:<username> for a signed-in user. Stamped by the server,
+            ignored in a save body, and used for owner-scoped capability
+            checks. Only an administrator can change it, with
+            POST /api/v1/tap/owner.
         version:
           type: integer
           readOnly: true
@@ -6007,6 +6012,87 @@ paths:
                   cronExpression:
                     type: string
                     example: 0 0 16 ? * MON-FRI
+
+  /api/v1/tap/owner:
+    post:
+      tags: [Taps]
+      summary: Change a tap's owner
+      description: >-
+        Hands an existing tap to another user or API key. Only the owner
+        changes: the tap keeps its versions, incremental-sync state, ledger,
+        run history, schedule and script; no tap version is written and its
+        update time is kept. Administrators (a signed-in admin, or an API key
+        with unscoped full access) only; every other caller gets 403 and
+        nothing is read. From the change on, keys limited to what they
+        created (owner=self) reach the tap through the new owner: the new
+        owning key may read and update it, the previous owning key may not.
+        A run or test in progress finishes as it started; the next run reads
+        the new owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              description: Exactly one of user or key.
+              properties:
+                name:
+                  type: string
+                  description: The tap.
+                  example: stock-prices-tap
+                user:
+                  type: string
+                  description: A username; the tap is stored as owned by session:<username>.
+                  example: ed
+                key:
+                  type: string
+                  description: >-
+                    An issued API key's label. Revoked and unknown keys, the
+                    platform's own identities (anonymous, recovery-agent,
+                    system, agent) and labels starting session: or tap: are
+                    refused; ui is accepted when it is an issued key.
+                  example: sales-agent
+      responses:
+        '200':
+          description: The owner was changed, or already was the one named (changed false, nothing written)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  owner:
+                    type: string
+                    example: sales-agent
+                  previousOwner:
+                    type: string
+                    nullable: true
+                    example: session:ada
+                  changed:
+                    type: boolean
+                  warnings:
+                    type: array
+                    description: >-
+                      Findings datris doctor reports that do not decide the
+                      change (a target pipeline that does not exist, callback
+                      reads the new owner's access narrows, a tap secret
+                      outside the new owner's tap access), in the doctor
+                      rows' words.
+                    items:
+                      type: string
+        '400':
+          description: Both or neither of user and key; unknown user; unknown, revoked or reserved key; a catalog placeholder
+        '403':
+          description: The caller is not an administrator or a full-access API key
+        '404':
+          description: No such tap
+        '409':
+          description: >-
+            The new owner could not edit the tap where it is or may not load
+            into its target pipeline; or the tap was moved or repointed while
+            the change was being checked. Nothing was changed.
 
   /api/v1/tap/ledger:
     get:

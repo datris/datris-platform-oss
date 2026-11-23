@@ -182,12 +182,14 @@ object TapOwnerScopeReport {
             if (owner == null) return
             owner match {
                 case Unresolved =>
-                    if (firstToday(OwnerUnresolvedAction + "|" + tap.name)) {
+                    // Keyed by owner too: a tap handed to another owner that
+                    // is also gone is reported again the same day.
+                    if (firstToday(OwnerUnresolvedAction + "|" + tap.name + "|" + tap.createdByKeyLabel)) {
                         logger.warn(
                             "Tap " + q(tap.name) + " fed pipeline " + q(tap.targetPipeline) + " on a scheduled run; its owner " +
                                 q(String.valueOf(tap.createdByKeyLabel)) + " no longer exists (a revoked key or a deleted user). " +
                                 "In the next release such a tap's scheduled runs feed nothing and its callback reads stay in its own catalog; " +
-                                "to keep it feeding, recreate the tap as a current user or key." + Doctor
+                                "to keep it feeding, have an administrator change the tap's owner (POST /api/v1/tap/owner) to a current user or key." + Doctor
                         )
                         AuditLog.system(
                             "tap",
@@ -200,13 +202,18 @@ object TapOwnerScopeReport {
                     }
                 case Resolved(rk) if rk != null && CallerVisibility.limited(rk) =>
                     val target = readPipeline(tap.targetPipeline)
-                    if (TapOwnerScopeScan.feedOutsideOwner(owner, target) && firstToday(FeedOutsideOwnerAction + "|" + tap.name)) {
+                    // Keyed by owner too: a tap handed to another owner that
+                    // also may not load into the target is reported again the same day.
+                    if (
+                        TapOwnerScopeScan.feedOutsideOwner(owner, target) &&
+                        firstToday(FeedOutsideOwnerAction + "|" + tap.name + "|" + tap.createdByKeyLabel)
+                    ) {
                         logger.warn(
                             "Tap " + q(tap.name) + " fed pipeline " + q(tap.targetPipeline) + " on a scheduled run; its owner " +
                                 q(tap.createdByKeyLabel) + " may not load into that pipeline. " +
                                 "In the next release this tap's scheduled runs will not feed it; to keep it feeding, give the owning user " +
-                                "edit on that pipeline's catalog, point the tap at a pipeline its owner may load into, or recreate the tap " +
-                                "as a user or key that may load into it." + Doctor
+                                "edit on that pipeline's catalog, point the tap at a pipeline its owner may load into, or have an administrator " +
+                                "change the tap's owner (POST /api/v1/tap/owner) to a user or key that may load into it." + Doctor
                         )
                         AuditLog.system(
                             "tap",

@@ -144,6 +144,10 @@ object CapabilityRoutes {
         Route("DELETE", "/api/v1/tap", "tap", "delete"),
         Route("POST", "/api/v1/tap/run", "tap", "run"),
         Route("POST", "/api/v1/tap/cron", "tap", "update"),
+        // Changing a tap's owner: an administrator or full-access key only.
+        // The method is role-gated to admin and the handler refuses every
+        // caller that is not full access, before reading anything.
+        Route("POST", "/api/v1/tap/owner", "tap", "update"),
         Route("POST", "/api/v1/tap/script", "tap", "update"),
         Route("POST", "/api/v1/tap/test", "tap", "run"),
         Route("POST", "/api/v1/tap/generate", "tap", "create"),

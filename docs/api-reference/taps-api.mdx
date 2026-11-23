@@ -141,6 +141,75 @@ Only the tap's own script file is deleted (on built-in storage the object the pl
 
 `warnings` is empty when the script file was deleted. Each kept file gives one warning: the text above for a file that is not the tap's own or is still used by another tap (also when the list of taps could not be read), or a message naming a repository file that was edited since its recorded commit, could not be checked, or whose delete could not be confirmed. Deleting a catalog with its items reports the same warnings per tap.
 
+## Change Owner
+
+```
+POST /api/v1/tap/owner
+Content-Type: application/json
+```
+
+Hands an existing tap to another user or API key. The tap keeps its versions, incremental-sync state, document ledger, run history, schedule, enabled state and script; only its owner changes. A tap's owner is otherwise set when it is created and kept on every later save: an owner named in the body of `POST /api/v1/tap`, a version restore or a catalog restore is ignored.
+
+Only an administrator (a signed-in admin, or an API key with full access: unscoped `*:*` or a legacy key) may change a tap's owner. Every other caller, including a key holding `tap:update` or a wildcard limited to a catalog or to what it created, gets `403` `Changing a tap's owner needs an administrator or a full-access API key`, and nothing about the tap is read.
+
+**Body:** the tap and exactly one of `user` or `key`.
+```json
+{
+  "name": "stock-prices-tap",
+  "key": "sales-agent"
+}
+```
+```json
+{
+  "name": "stock-prices-tap",
+  "user": "ed"
+}
+```
+
+- `user` names a user; the tap is stored as owned by `session:<username>`.
+- `key` names an issued API key by its label. A revoked or unknown key is refused. The platform's own identities (`anonymous`, `recovery-agent`, `system`, `agent`) and labels starting `session:` or `tap:` cannot be named; `ui` can, when it is an issued key.
+
+With an API key that has full access:
+```bash
+curl -s -X POST http://localhost:8080/api/v1/tap/owner \
+  -H "x-api-key: $DATRIS_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "stock-prices-tap", "key": "sales-agent"}'
+```
+
+With [user authentication](/user-auth) on and API keys off, sign in as an admin and send the `datris-session` cookie your sign-in set:
+```bash
+curl -s -X POST http://localhost:8080/api/v1/tap/owner \
+  -b "datris-session=$DATRIS_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "stock-prices-tap", "user": "ed"}'
+```
+
+**Response:**
+```json
+{
+  "name": "stock-prices-tap",
+  "owner": "sales-agent",
+  "previousOwner": "session:ada",
+  "changed": true,
+  "warnings": []
+}
+```
+
+`changed` is `false`, and nothing is written, when the tap already has that owner.
+
+**Who may own the tap.** An administrator, a user with no catalog limits who may edit taps, or a key with full access can always be the owner. Any other new owner is refused with `409` and a message saying what to do, and nothing changes, when:
+- it could not edit the tap where it is: it cannot see the tap's catalog, or may not change taps (a viewer, a read-only key); or
+- it may not load into the tap's target pipeline.
+
+Grant the new owner what it lacks, point the tap at a pipeline it may load into, or pick another owner. Findings that `datris doctor` reports but that do not decide this change are returned in `warnings`, in the words of the [`tap.owner_scope` and `tap.references` rows](/doctor#the-checks), and the owner is still changed: a target pipeline that does not exist yet, callback reads the new owner's access narrows, and a tap secret outside the new owner's tap access.
+
+**Other answers.** `400` when the body names both or neither of `user` and `key`, an unknown user, an unknown, revoked or reserved key, or a catalog placeholder. `404` (`Tap: <name> not found`) for a missing tap. `409` (`Tap '<name>' changed while its owner was being changed; nothing was changed. Try again.`) when the tap was moved to another catalog or pointed at another pipeline while the change was being checked.
+
+**What changes at once.** The owner decides which keys limited to what they created (`owner=self`) reach the tap: from the change on, the new owning key may read and update the tap and the previous owning key may not. The owner also shows in data lineage and in `datris doctor`'s tap rows (which may take up to 15 seconds to catch up). Nothing else a tap does changes in this release (see [Who a tap runs as](/taps#who-a-tap-runs-as)).
+
+**What does not change.** No tap version is written and the tap's update time is kept, so its version history, last editor and schedule are as they were. A run or test in progress finishes as it started and does not put the previous owner back; the next run reads the new owner. Each change is recorded in the [audit log](/audit-log#what-is-recorded) as `tap` / `owner-change` with the previous and new owner, and in the server log.
+
 ## Brainstorm (AI Chat)
 
 ```

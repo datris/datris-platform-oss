@@ -76,7 +76,9 @@ object AuditClassifier {
       * action: a pipeline rename is checked as `pipeline:delete` (it needs
       * own) but deletes nothing, so its row reads `pipeline / rename`. */
     private val actionOverrides: Seq[(String, String, String)] = Seq(
-        ("POST", "/api/v1/pipelines/*/rename", "rename")
+        ("POST", "/api/v1/pipelines/*/rename", "rename"),
+        // Checked as tap:update; the row reads tap / owner-change.
+        ("POST", "/api/v1/tap/owner", "owner-change")
     )
 
     /** Capability-mapped routes whose object is not the capability

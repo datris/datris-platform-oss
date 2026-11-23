@@ -684,6 +684,9 @@ class ScopedKeyInstallWideSpec extends AnyFunSuite with BeforeAndAfterEach {
         ("DELETE", "/api/v1/tap") -> PerItem,
         ("POST", "/api/v1/tap/run") -> PerItem,
         ("POST", "/api/v1/tap/cron") -> NoData,
+        ("POST", "/api/v1/tap/owner") -> Allowed(
+            "the handler refuses every caller that is not an administrator or full-access key, before reading anything (plans/stories/tap-change-owner.md, O1)"
+        ),
         ("POST", "/api/v1/tap/script") -> PerItem,
         ("POST", "/api/v1/tap/test") -> PerItem,
         ("POST", "/api/v1/tap/generate") -> PerItem,

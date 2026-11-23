@@ -195,4 +195,43 @@ class TapOwnerScopeReportSpec extends AnyFunSuite with BeforeAndAfterEach {
         assertNamesOwnerChange(lines.head)
         assert(audit.synchronized(audit.toList).count(e => e.resourceName.contains(name) && e.action == "owner-unresolved") == 1)
     }
+
+    // Story: Change a tap's owner. A tap handed to another owner that is
+    // also ineligible is reported again the same day for the new owner; the
+    // same tap and owner is still reported once a day.
+
+    test("a tap handed to another owner that also may not load into the target is reported again the same day") {
+        val name = "handed-outside-" + System.nanoTime()
+        val otherKey = ScopeDenialFixtures.key("other-sales-agent", "pipeline:read:catalog=Sales", "pipeline:run:catalog=Sales", "tap:read:catalog=Sales")
+        val resolve: String => ai.datris.auth.TapPrincipal.Resolution = {
+            case "other-sales-agent" => ai.datris.auth.TapPrincipal.Resolved(otherKey)
+            case _ => ai.datris.auth.TapPrincipal.Resolved(salesKey)
+        }
+        val (_, warns) = withWarns {
+            TapOwnerScopeReport.feedReport(tap(name, "finance-ledger"), resolve, n => pipelines.get(n).orNull)
+            TapOwnerScopeReport.feedReport(tap(name, "finance-ledger"), resolve, n => pipelines.get(n).orNull)
+            TapOwnerScopeReport.feedReport(tap(name, "finance-ledger", "other-sales-agent"), resolve, n => pipelines.get(n).orNull)
+            TapOwnerScopeReport.feedReport(tap(name, "finance-ledger", "other-sales-agent"), resolve, n => pipelines.get(n).orNull)
+        }
+        val lines = warns.filter(_.contains(name))
+        assert(lines.size == 2, warns.mkString("\n"))
+        assert(lines.head.contains("'sales-agent'") && lines(1).contains("'other-sales-agent'"), lines.mkString("\n"))
+        val rows = audit.synchronized(audit.toList).filter(e => e.resourceName.contains(name) && e.action == "feed-outside-owner-scope")
+        assert(rows.size == 2, rows.toString)
+    }
+
+    test("a tap handed to another owner that also no longer exists is reported again the same day") {
+        val name = "handed-unresolved-" + System.nanoTime()
+        val gone: String => ai.datris.auth.TapPrincipal.Resolution = _ => ai.datris.auth.TapPrincipal.Unresolved
+        val (_, warns) = withWarns {
+            TapOwnerScopeReport.feedReport(tap(name, "sales-orders", "gone-agent"), gone, n => pipelines.get(n).orNull)
+            TapOwnerScopeReport.feedReport(tap(name, "sales-orders", "gone-agent"), gone, n => pipelines.get(n).orNull)
+            TapOwnerScopeReport.feedReport(tap(name, "sales-orders", "also-gone-agent"), gone, n => pipelines.get(n).orNull)
+        }
+        val lines = warns.filter(_.contains(name))
+        assert(lines.size == 2, warns.mkString("\n"))
+        assert(lines.head.contains("'gone-agent'") && lines(1).contains("'also-gone-agent'"), lines.mkString("\n"))
+        val rows = audit.synchronized(audit.toList).filter(e => e.resourceName.contains(name) && e.action == "owner-unresolved")
+        assert(rows.size == 2, rows.toString)
+    }
 }

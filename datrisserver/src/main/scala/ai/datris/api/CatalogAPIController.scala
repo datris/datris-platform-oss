@@ -1657,8 +1657,9 @@ object CatalogAPIController {
         override def test(tap: TapConfig): TapScriptResult = {
             val result = TapRunner.run(tap, mode = "test", testLimit = TapAPIController.resolveTestLimit("test", null))
             try {
-                // Status churn: plain write, no version minted (as POST /tap/run).
-                TapConfigIO.write(TapAPIController.stampTestResult(tap, result, TapAPIController.nowStamp()))
+                // Status churn: plain write, no version minted (as POST /tap/run);
+                // the stored owner is kept (an owner changed during the test stays).
+                TapConfigIO.writeRunState(TapAPIController.stampTestResult(tap, result, TapAPIController.nowStamp()))
                 // This test returns no preview, so nothing is held: a failed test
                 // drops any preview held for a later reuseLastTest request (and a
                 // passing one is followed by the enable's versioned save, which

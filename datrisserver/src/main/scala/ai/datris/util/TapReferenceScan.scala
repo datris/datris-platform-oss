@@ -151,10 +151,7 @@ object TapReferenceScan {
                 case Some(secret) =>
                     val checked: Try[Boolean] = principal(t.createdByKeyLabel).flatMap {
                         case Resolved(rk) if TapReferenceRules.scopedTapRead(rk) =>
-                            ownerOf(secret).map {
-                                case Some(owner) => !rk.grants("tap", "read", CatalogOps.scopeContext(t.catalog, owner.orNull))
-                                case None => false
-                            }
+                            ownerOf(secret).map(o => secretOutsideOwner(rk, t.catalog, () => o))
                         case _ => Success(false)
                     }
                     checked match {
@@ -170,6 +167,17 @@ object TapReferenceScan {
         val review = Option(reviewKeys).getOrElse(Nil).filter(l => l != null && l.nonEmpty).distinct.map(l => Finding(ReviewWithoutUpdate, l))
         Result(outside ++ notOwn ++ shared ++ secretFindings ++ review, unreadable.toList)
     }
+
+    /** The [[SecretOutsideOwner]] rule for one tap in `catalog` owned by
+      * `rk`: `rk`'s tap read is scoped and does not cover the tap's secret,
+      * whose owner `secretOwner` reads (outer None: no such secret). The
+      * secret is read only when `rk`'s tap read is scoped; a throw
+      * propagates. */
+    def secretOutsideOwner(rk: ai.datris.model.ResolvedKey, catalog: String, secretOwner: () => Option[Option[String]]): Boolean =
+        rk != null && TapReferenceRules.scopedTapRead(rk) && (secretOwner() match {
+            case Some(owner) => !rk.grants("tap", "read", CatalogOps.scopeContext(catalog, owner.orNull))
+            case None => false
+        })
 
     /** Scan every stored tap. Listing the taps throws (the doctor check turns
       * that into a "could not check" warning). Other reads, each at most once

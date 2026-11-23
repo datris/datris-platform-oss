@@ -39,6 +39,34 @@ object TapConfigIO {
         NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapTableName, "name", tapConfig.name, "value", json)
     }
 
+    /** `toWrite` with `live`'s owner (`createdByKeyLabel`) when `live` is
+      * non-null and its owner differs; otherwise `toWrite` itself. Nothing
+      * else is taken from `live`. Pure. */
+    def keepLiveOwner(toWrite: TapConfig, live: TapConfig): TapConfig =
+        if (toWrite == null || live == null || live.createdByKeyLabel == toWrite.createdByKeyLabel) toWrite
+        else toWrite.copy(createdByKeyLabel = live.createdByKeyLabel)
+
+    /** A run or test status write. A run or test holds the tap as it was when
+      * it started; when an administrator changed the tap's owner meanwhile
+      * (`POST /api/v1/tap/owner`), the status write keeps the stored owner
+      * rather than putting the previous one back. The tap is re-read by name
+      * (`read`), its owner kept ([[keepLiveOwner]]) and the result written
+      * (`write`). A re-read that fails, or finds no tap, writes `tap` as given,
+      * as before. */
+    def writeRunStateWith(tap: TapConfig, read: String => TapConfig, write: TapConfig => Unit): Unit = {
+        val live =
+            if (tap == null || tap.name == null) null
+            else
+                try read(tap.name)
+                catch { case scala.util.control.NonFatal(_) => null }
+        write(keepLiveOwner(tap, live))
+    }
+
+    /** [[writeRunStateWith]] over the live tap store: used by
+      * `TapRunner.ProductionEffects.writeTap` and the test-stamp writes. */
+    def writeRunState(tap: TapConfig): Unit =
+        writeRunStateWith(tap, n => read(DatrisEnvironment.current.tapTableName, n), t => write(t))
+
     /** Definition-edit write: persists the live config AND appends an immutable
       * snapshot to `<env>-tap-version`. Use ONLY from create/update controller
       * paths — NOT from TapRunner status churn (that must stay on plain `write`,

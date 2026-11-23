@@ -71,7 +71,9 @@ object TapRunner {
     }
 
     object ProductionEffects extends Effects {
-        override def writeTap(tap: TapConfig): Unit = TapConfigIO.write(tap)
+        // A run writes the tap it was handed at its start; the stored owner is
+        // kept, so an owner changed during the run is not put back.
+        override def writeTap(tap: TapConfig): Unit = TapConfigIO.writeRunState(tap)
         override def readState(tapName: String): String = TapStateIO.readStateJson(tapName)
         override def commitState(state: TapState): Unit = TapStateIO.write(state)
         override def writeRunLog(log: TapRunLog): Unit = {

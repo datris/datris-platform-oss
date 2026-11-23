@@ -594,13 +594,14 @@ object DoctorService {
                     groups.mkString("; ") + (if (also.isEmpty) "" else "; also " + also) + (if (names) "" else TapOwnerScopeCheck.NamesHidden)
             }
             val fix =
-                "A tap's owner is the user or API key that created it and is kept on every later save. " +
-                    "Owner may not feed the target: grant the owning user edit on the target pipeline's catalog, or point the tap at a pipeline its owner may load into; " +
-                    "for a key-owned tap, recreate the tap (delete it and save it again) as a user or key that may load into the target. " +
+                "A tap's owner is the user or API key that created it and is kept on every later save until an administrator changes it. " +
+                    "Owner may not feed the target: grant the owning user edit on the target pipeline's catalog, or point the tap at a pipeline its owner may load into, " +
+                    "or have an administrator change the tap's owner (POST /api/v1/tap/owner) to a user or key that may load into the target. " +
                     "Target pipeline missing: create the pipeline before the tap. " +
-                    "Owner no longer exists: recreate the tap as a current user or key. " +
+                    "Owner no longer exists: have an administrator change the tap's owner (POST /api/v1/tap/owner) to a current user or key. " +
                     "Reads held to the owner's access: give the owning user (and the last editor) access to what the script reads; " +
-                    "API keys cannot be edited, so for a key that is limited or lacks a read the script makes, recreate the tap as a user or key that holds those reads." +
+                    "API keys cannot be edited, so for a key that is limited or lacks a read the script makes, have an administrator change the tap's owner " +
+                    "(POST /api/v1/tap/owner) to a user or key that holds those reads." +
                     (if (unreadable.isEmpty) "" else " " + unreadableFix)
             warn(detail(names = true), fix).copy(namelessDetail = detail(names = false))
         }
@@ -680,8 +681,8 @@ object DoctorService {
                     "path prefix the code repository used before, record that earlier prefix on the code repository settings (earlierPathPrefixes); " +
                     "otherwise move the tap's script to built-in storage and back. Script shared across catalogs or owners: give each tap its own copy, " +
                     "on built-in storage by storing the script again under that tap's name, in a code repository by moving the tap's script to built-in " +
-                    "storage and back. Secret outside the owner's access: use a tap secret the owner may read, or recreate the " +
-                    "tap as a user or key whose tap access covers the secret. Review without tap update: use a user or key that holds tap update " +
+                    "storage and back. Secret outside the owner's access: use a tap secret the owner may read, or have an administrator change the " +
+                    "tap's owner (POST /api/v1/tap/owner) to a user or key whose tap access covers the secret. Review without tap update: use a user or key that holds tap update " +
                     "on the tap (API keys cannot be edited; issue a new key)." +
                     (if (unreadable.isEmpty) "" else " " + unreadableFix)
             warn(detail(names = true), fix).copy(namelessDetail = detail(names = false))
