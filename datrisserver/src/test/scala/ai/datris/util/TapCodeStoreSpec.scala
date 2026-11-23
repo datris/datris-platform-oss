@@ -885,31 +885,93 @@ class TapCodeStoreSpec extends AnyFunSuite {
         }
     }
 
-    test("a refused repository request reports the status code and a fixed hint, none of the response text") {
+    /** The fixed hint each refused status shows. */
+    private val RefusedHints = Seq(
+        401 -> "Token was rejected. It may be expired or revoked — update the repo token secret.",
+        403 -> "Token lacks access. Fine-grained tokens may be disabled by org policy, or the token is missing Contents read/write on this repo.",
+        404 -> "Repository or path not found — check the repo name, or the token cannot see this repository.",
+        500 -> ""
+    )
+
+    /** The errors every repository call gives for a refused response
+      * `(status, body)`; a read's 404 is no such file, so it has none. */
+    private def refusedErrors(cfg: CodeRepoConfig, status: Int, body: String): Seq[(String, ai.datris.model.DatrisException)] =
+        withResponses((status, body), (status, body)) {
+            Seq(
+                "validation" -> intercept[ai.datris.model.DatrisException](GithubClient.repoInfo(cfg)),
+                "branch listing" -> intercept[ai.datris.model.DatrisException](GithubClient.listBranches(cfg)),
+                "branch lookup for 'main'" -> intercept[ai.datris.model.DatrisException](GithubClient.branchHeadSha(cfg))
+            ) ++ (if (status == 404) Nil
+                  else Seq("read of 'taps/orders.py'" -> intercept[ai.datris.model.DatrisException](GithubClient.getFile(cfg, "taps/orders.py", Sha40))))
+        }
+
+    private def refusedMessage(context: String, status: Int, reason: String, hint: String): String =
+        ("Code repository " + context + " failed (HTTP " + status + "). " + reason + " " + hint).trim
+
+    test("a refused repository request shows the status code, the repository's short reason and the fixed hint, and nothing else from the response") {
         val cfg = repoCfg("taps/")
-        val cases = Seq(
-            401 -> "Token was rejected.",
-            403 -> "Token lacks access.",
-            404 -> "Repository or path not found",
-            500 -> "failed (HTTP 500)."
-        )
-        for ((status, phrase) <- cases; body <- Seq("{\"message\": \"" + ResponseText + "\"}", ResponseText, "[\"" + ResponseText + "\"]")) {
-            withResponses((status, body), (status, body)) {
-                val errors = Seq(
-                    intercept[ai.datris.model.DatrisException](GithubClient.repoInfo(cfg)),
-                    intercept[ai.datris.model.DatrisException](GithubClient.listBranches(cfg)),
-                    intercept[ai.datris.model.DatrisException](GithubClient.branchHeadSha(cfg))
-                ) ++ (if (status == 404) Nil else Seq(intercept[ai.datris.model.DatrisException](GithubClient.getFile(cfg, "taps/orders.py", Sha40))))
-                errors.foreach { e =>
-                    assert(e.getMessage.contains("(HTTP " + status + ")") && e.getMessage.contains(phrase), e.getMessage)
-                    assert(!messages(e).contains(ResponseText), e.getMessage)
-                }
+        for ((status, hint) <- RefusedHints; reason <- Seq("Bad credentials", "Not Found")) {
+            val body = "{\"message\": \"" + reason + "\", \"documentation_url\": \"" + ResponseText + "\", \"errors\": [\"" + ResponseText + "\"]}"
+            for ((context, e) <- refusedErrors(cfg, status, body)) {
+                assert(e.getMessage == refusedMessage(context, status, reason, hint), e.getMessage)
+                assert(!messages(e).contains(ResponseText), e.getMessage)
             }
         }
-        // the hint is still chosen from the response
-        withResponses((403, "{\"message\": \"API rate limit exceeded " + ResponseText + "\"}")) {
+        // the hint is still chosen from the response's reason
+        withResponses((403, "{\"message\": \"API rate limit exceeded for 10.0.0.1.\", \"documentation_url\": \"" + ResponseText + "\"}")) {
             val e = intercept[ai.datris.model.DatrisException](GithubClient.branchHeadSha(cfg))
-            assert(e.getMessage == "Code repository branch lookup for 'main' failed (HTTP 403). GitHub rate limit exceeded. Retry later.", e.getMessage)
+            assert(
+                e.getMessage == "Code repository branch lookup for 'main' failed (HTTP 403). API rate limit exceeded for 10.0.0.1. GitHub rate limit exceeded. Retry later.",
+                e.getMessage
+            )
+        }
+        withResponses((403, "{\"message\": \"Resource protected by organization SAML enforcement.\"}")) {
+            val e = intercept[ai.datris.model.DatrisException](GithubClient.branchHeadSha(cfg))
+            assert(
+                e.getMessage.endsWith("enforcement. The organization enforces SSO — authorize the token for this organization in GitHub settings."),
+                e.getMessage
+            )
+        }
+    }
+
+    test("a refused repository request shows at most 200 characters of the repository's reason") {
+        val cfg = repoCfg("taps/")
+        val long = "x" * 200 + ResponseText
+        for ((status, hint) <- RefusedHints; (context, e) <- refusedErrors(cfg, status, "{\"message\": \"" + long + "\"}")) {
+            assert(e.getMessage == refusedMessage(context, status, "x" * 200, hint), e.getMessage)
+            assert(!messages(e).contains(ResponseText), e.getMessage)
+        }
+    }
+
+    test("a refused repository request shows the repository's reason as one line with no control characters") {
+        val cfg = repoCfg("taps/")
+        // JSON escapes: LF, CR LF + tab, line separator, paragraph separator, BEL, NEL
+        val bs = "\\"
+        val multiLine =
+            "Bad" + bs + "ncredentials" + bs + "r" + bs + "n" + bs + "tfor" + bs + "u2028this" + bs + "u2029token" + bs + "u0007now" + bs + "u0085ok"
+        for ((status, hint) <- RefusedHints; (context, e) <- refusedErrors(cfg, status, "{\"message\": \"" + multiLine + "\"}")) {
+            assert(e.getMessage == refusedMessage(context, status, "Bad credentials for this token now ok", hint), e.getMessage)
+            assert(!e.getMessage.exists(c => Character.isISOControl(c) || c.toInt == 0x2028 || c.toInt == 0x2029), e.getMessage)
+        }
+    }
+
+    test("a refused repository response with no string message shows none of the response text") {
+        val cfg = repoCfg("taps/")
+        val bodies = Seq(
+            "{\"message\": {\"text\": \"" + ResponseText + "\"}, \"documentation_url\": \"" + ResponseText + "\"}",
+            "{\"message\": [\"" + ResponseText + "\"]}",
+            "{\"message\": 7, \"error\": \"" + ResponseText + "\"}",
+            "{\"error\": \"" + ResponseText + "\"}",
+            "[{\"message\": \"" + ResponseText + "\"}]",
+            "[\"" + ResponseText + "\"]",
+            ResponseText,
+            "<html>" + ResponseText + "</html>",
+            "{\"message\": \"" + ResponseText,
+            ""
+        )
+        for ((status, hint) <- RefusedHints; body <- bodies; (context, e) <- refusedErrors(cfg, status, body)) {
+            assert(e.getMessage == refusedMessage(context, status, "", hint), body + ": " + e.getMessage)
+            assert(!messages(e).contains(ResponseText), e.getMessage)
         }
     }
 

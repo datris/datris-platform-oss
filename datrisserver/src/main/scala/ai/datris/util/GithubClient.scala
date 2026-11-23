@@ -134,13 +134,46 @@ object GithubClient {
         try f
         catch { case e: Exception if scala.util.control.NonFatal(e) => throw unreadable(status, context) }
 
+    /** The most characters of the repository's `message` an error shows. */
+    private val MaxReasonShown = 200
+
+    /** The string `message` field of a JSON object body, uncut; empty for
+      * any other body shape (not JSON, an array, a non-string `message`).
+      * No other part of the body is ever used. */
+    private def messageField(body: String): String =
+        try {
+            val element = JsonParser.parseString(body)
+            if (!element.isJsonObject) ""
+            else
+                Option(element.getAsJsonObject.get("message"))
+                    .filter(e => e.isJsonPrimitive && e.getAsJsonPrimitive.isString)
+                    .map(_.getAsString)
+                    .getOrElse("")
+        } catch { case e: Exception if scala.util.control.NonFatal(e) => "" }
+
+    /** The repository's reason as an error shows it: one line (control
+      * characters and line/paragraph separators removed, runs of whitespace
+      * collapsed) and at most [[MaxReasonShown]] characters. */
+    private def shownReason(raw: String): String = {
+        val oneLine = raw
+            .map(c => if (Character.isISOControl(c) || c.toInt == 0x2028 || c.toInt == 0x2029) ' ' else c)
+            .replaceAll("\\s+", " ")
+            .trim
+        if (oneLine.length <= MaxReasonShown) oneLine
+        else {
+            val cut = oneLine.take(MaxReasonShown)
+            (if (Character.isHighSurrogate(cut.last)) cut.dropRight(1) else cut).trim
+        }
+    }
+
     /** Maps GitHub's 4xx flavors onto messages the UI can show verbatim: the
-      * context, the status code and a fixed hint. The response text is used
-      * only to pick the hint, never copied into the message. */
+      * context, the status code, the repository's short reason ([[shownReason]])
+      * and a fixed hint. Nothing else from the response is copied into the
+      * message. */
     private def fail(status: Int, body: String, context: String): Nothing = {
-        val detail =
-            try { Option(parse(body).get("message")).map(_.getAsString).getOrElse("") }
-            catch { case _: Exception => "" }
+        // the hint is picked from the whole message, as before; only the
+        // bounded one-line reason is shown
+        val detail = messageField(body)
         val hint = status match {
             case 401 => "Token was rejected. It may be expired or revoked — update the repo token secret."
             case 403 if detail.toLowerCase.contains("rate limit") => "GitHub rate limit exceeded. Retry later."
@@ -150,7 +183,7 @@ object GithubClient {
             case 404 => "Repository or path not found — check the repo name, or the token cannot see this repository."
             case _ => ""
         }
-        throw new DatrisException(("Code repository " + context + " failed (HTTP " + status + "). " + hint).trim)
+        throw new DatrisException(("Code repository " + context + " failed (HTTP " + status + "). " + shownReason(detail) + " " + hint).trim)
     }
 
     /** GET /repos/{repo} — used by save-time validation and Test connection.
