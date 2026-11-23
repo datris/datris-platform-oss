@@ -47,6 +47,12 @@ import java.util.concurrent.atomic.AtomicInteger
   *    the tap's own file (as read just before the write) is failed with the
   *    rule S4 message and nothing is written for it. Every other caller is
   *    unchanged.
+  *  - Catalog restore, a file another tap also runs from: for a held caller,
+  *    a tap it would write whose live copy holds its own repository
+  *    reference at its own file is a clash (held wording, one rule S2 audit
+  *    row) when another stored tap runs from the same file; at the write,
+  *    the file it would be written to is judged the same way. Every other
+  *    caller is unchanged.
   *  - Catalog cascade delete: one tap listing serves every tap delete of the
   *    cascade, read at most once (a failed read stays failed, so each delete
   *    keeps its file), and taps already deleted in the cascade no longer count
@@ -56,7 +62,7 @@ import java.util.concurrent.atomic.AtomicInteger
   * {{{
   * object CatalogAPIController {
   *   private[api] def restoreTargetClashes(plan: CatalogArchive.RepoScriptPlan, cfg: CodeRepoConfig, liveTaps: Seq[TapConfig],
-  *                                         held: Boolean = false): Seq[String]
+  *                                         held: Boolean = false, request: HttpServletRequest = null): Seq[String]
   *   private[api] def restoreNotOwnClashes(request: HttpServletRequest, plan: CatalogArchive.RepoScriptPlan, cfg: CodeRepoConfig,
   *                                         liveTaps: Seq[TapConfig]): Seq[String]
   *   def restoreNotOwnMessage(tapName: String): String
@@ -65,6 +71,8 @@ import java.util.concurrent.atomic.AtomicInteger
   *                                        repoCfg: Option[CodeRepoConfig]): (Seq[(String, String)], Seq[String])
   *   private[api] def restoreWriteNotOwn(heldStrict: Boolean, repoCfg: Option[CodeRepoConfig], tap: String,
   *                                       prior: TapConfig): Option[String]
+  *   private[api] def restoreWriteSharedFile(request: HttpServletRequest, heldStrict: Boolean, repoCfg: Option[CodeRepoConfig],
+  *                                           tap: String, prior: TapConfig, liveTaps: Seq[TapConfig]): Option[String]
   *   private[api] def cascadeListing(read: () => Seq[TapConfig]): (() => Seq[TapConfig], String => Unit)
   * }
   * }}}
@@ -305,6 +313,81 @@ class CatalogScriptOwnershipSpec extends AnyFunSuite with BeforeAndAfterEach {
         attrs.put(ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr, java.lang.Boolean.TRUE)
         assert(!CatalogAPIController.heldStrictlyToOwnScriptFile(r))
         assert(!CatalogAPIController.heldStrictlyToOwnScriptFile(null))
+    }
+
+    // ================================================================ restore, a file another tap also runs from
+
+    private def s2Rows(name: String): List[AuditEntry] =
+        refusedRows(name).filter(_.metadata.exists(m => m.get("rule").getAsString == "S2"))
+
+    test("restore S2: a held caller's tap whose own file another stored tap also runs from is a clash with the held wording and one audit row") {
+        for (rk <- held; spelled <- Seq(identity[String] _, (p: String) => p.replaceFirst("/", "//"))) {
+            audit.clear()
+            val mine = inCatalog(repo("orders", Prefix + "orders.py"), "Sales").copy(createdByKeyLabel = rk.label)
+            val live = Seq(mine, inCatalog(repo("copy", spelled(Prefix + "orders.py")), "Finance"))
+            val (denied, clashes) = preflight(rk, Seq("orders"), live, "orders")
+            assert(denied.isEmpty, rk.label + ": " + denied)
+            assert(
+                clashes.size == 1 && clashes.head.contains("'orders'") && clashes.head.contains("cannot be written by this restore"),
+                rk.label + ": " + clashes
+            )
+            assert(!clashes.head.contains("copy") && !clashes.head.contains("another tap"), clashes.head)
+            val rows = s2Rows("orders")
+            assert(rows.size == 1, rk.label + ": " + audit)
+            val md = rows.head.metadata.get
+            assert(md.get("site").getAsString == "catalog-restore" && md.get("enforced").getAsBoolean && rows.head.outcome == "denied", md.toString)
+        }
+    }
+
+    test("restore S2: a held caller's tap that is the only one using its own file, or that it may not write, raises no such clash") {
+        for (rk <- held) {
+            val sole = Seq(inCatalog(repo("orders", Prefix + "orders.py"), "Sales").copy(createdByKeyLabel = rk.label), repo("other", Prefix + "other.py"))
+            val (denied, clashes) = preflight(rk, Seq("orders"), sole, "orders")
+            assert(denied.isEmpty && clashes.isEmpty, rk.label + ": " + denied + " " + clashes)
+        }
+        // a tap the caller may not write is reported only as refused
+        val live = Seq(inCatalog(repo("finance-tap", Prefix + "finance-tap.py"), "Finance"), repo("copy", Prefix + "finance-tap.py"))
+        val (denied, clashes) = preflight(salesKey, Seq("finance-tap"), live, "finance-tap")
+        assert(denied.map(_._1) == Seq("finance-tap") && clashes.isEmpty, denied.toString + " " + clashes)
+        assert(s2Rows("orders").isEmpty && s2Rows("finance-tap").isEmpty, audit.toString)
+    }
+
+    test("restore S2: unchanged for callers not held, and under log-only mode, when the tap's own file is shared") {
+        val live = Seq(inCatalog(repo("orders", Prefix + "orders.py"), "Sales"), repo("copy", Prefix + "orders.py"))
+        for (rk <- Seq(admin, editor, fullKey, pipelineOnly))
+            assert(preflight(rk, Seq("orders"), live, "orders")._2.isEmpty, rk.label)
+        val (r, attrs) = ScopeDenialFixtures.request(salesKey, "POST", "/api/v1/catalog/Sales/restore")
+        attrs.put(ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr, java.lang.Boolean.TRUE)
+        assert(CatalogAPIController.restoreTapPreflight(r, "Sales", salesKey.label, Seq("orders"), live, plan("orders"), Some(cfg))._2.isEmpty)
+        assert(s2Rows("orders").isEmpty, audit.toString)
+    }
+
+    test("restore write: a held caller's tap whose file another stored tap runs from is refused at the write, with one audit row") {
+        val others = Seq(repo("copy", Prefix + "orders.py"))
+        // over its own reference, and with none (the file it would be written to)
+        for (prior <- Seq(repo("orders", Prefix + "orders.py"), builtIn("orders"), null)) {
+            audit.clear()
+            val msg = CatalogAPIController.restoreWriteSharedFile(req(salesKey), heldStrict = true, Some(cfg), "orders", prior, others)
+            assert(
+                msg.exists(m => m.contains("'orders'") && m.contains("cannot be written by this restore") && !m.contains("copy")),
+                String.valueOf(prior) + ": " + msg
+            )
+            assert(s2Rows("orders").size == 1, audit.toString)
+        }
+    }
+
+    test("restore write: unchanged for a file no other tap runs from, for a caller not held, and with no repository") {
+        val prior = repo("orders", Prefix + "orders.py")
+        assert(
+            CatalogAPIController.restoreWriteSharedFile(req(salesKey), heldStrict = true, Some(cfg), "orders", prior, Seq(prior, repo("x", Prefix + "x.py"))).isEmpty
+        )
+        assert(
+            CatalogAPIController.restoreWriteSharedFile(req(admin), heldStrict = false, Some(cfg), "orders", prior, Seq(repo("copy", Prefix + "orders.py"))).isEmpty
+        )
+        assert(
+            CatalogAPIController.restoreWriteSharedFile(req(salesKey), heldStrict = true, None, "orders", prior, Seq(repo("copy", Prefix + "orders.py"))).isEmpty
+        )
+        assert(s2Rows("orders").isEmpty, audit.toString)
     }
 
     // ================================================================ cascade delete listing

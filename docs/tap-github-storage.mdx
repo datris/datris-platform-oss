@@ -117,6 +117,17 @@ runs its script from that file, the move is refused with `409` and nothing is wr
 tap's script is never replaced. The same holds for a script stored for a new tap name: pick another
 name, or move the other tap first.
 
+A tap that already stores its script at its own path keeps storing it there, even while another tap
+also runs from that file, for an administrator, an editor without catalog limits or an unrestricted
+API key. A user limited to catalogs, or an API key whose tap access is limited (it cannot read every
+tap, or its `tap:update` is limited to a catalog or to what it created), is refused that upload, with
+nothing written, when another tap's current script is the same file in any spelling of its path: the
+answer is the one above (`403` naming `tap:read` for a key limited to a catalog or to what it
+created, `404` for a user limited to catalogs, the `409` for a key that reads every tap), and the
+refusal is recorded in the audit log. When the list of taps cannot be read, such an upload answers
+`503` and nothing is written. To keep editing such a tap, an administrator gives it its own file
+(move the other tap's script to built-in storage and back, or store a copy for it under its own name).
+
 ## Which file a tap owns
 
 Deleting a tap, removing its old script versions, and the first script stored under a tap name
@@ -179,7 +190,11 @@ The same restore by a user limited to catalogs or a key whose tap access is limi
 the upload rule above: when a restored tap's live copy is stored in the repository at a file that is
 not its own, the restore lists that tap as a clash, naming only the tap and asking an administrator
 to move its script to the tap's own path, records the refusal in the audit log, and restores
-nothing. Other callers' restores are unchanged.
+nothing. Such a restore is refused the same way, with the held wording above and an audit row, when a
+restored tap's live copy is stored at its own file and another tap also runs its script from that
+file. A tap the caller may not write at all is not judged by these checks: it is listed under
+`failed` with its scope refusal and the rest of the archive is restored. Other callers' restores are
+unchanged.
 
 ## Pipeline scripts
 
@@ -282,5 +297,5 @@ removes that script the same way: an edited file is kept and named in the save r
 | New taps still land in built-in storage | **Enable repository storage** isn't checked and saved |
 | Scheduled runs keep working while GitHub is down | Expected — runs read the pinned commit from the local cache |
 | Tap delete warns that the script file "was left in place" | The tap's script file is not one it alone owns: another tap uses it, it was placed by hand, or it is under an unrecorded earlier path prefix (see [Which file a tap owns](#which-file-a-tap-owns)) |
-| Storing a tap's script or moving it to GitHub returns `409` saying another tap runs its script from that file | Another tap runs its script from `<path prefix><tap-name>.py`; use another tap name |
+| Storing a tap's script or moving it to GitHub returns `409` saying another tap runs its script from that file | Another tap runs its script from `<path prefix><tap-name>.py`; use another tap name. For a user or key with limited tap access the same refusal also applies to a tap that already stores its script there; an administrator gives each tap its own file |
 | Pipeline save warns that a script "changed in the code repository" | The script file was edited in GitHub — pull the edit, or regenerate with `overwrite=true` (see [Pipeline scripts](#pipeline-scripts)) |

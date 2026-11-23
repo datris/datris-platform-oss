@@ -667,7 +667,9 @@ object TapAPIController {
       * an unrestricted caller; for a limited caller the answer the script
       * reference rule gives ([[referenceRefused]]), naming nothing of the
       * other tap. Reads the repository configuration and the tap listing only
-      * for such a write. */
+      * for such a write. A write over this tap's own repository reference is
+      * judged here for no caller; for a caller held to its own tap's script
+      * file see [[sharedFileUploadRefusal]]. */
     private[api] def uploadTargetRefusal(
         request: HttpServletRequest,
         tapName: String,
@@ -680,22 +682,89 @@ object TapAPIController {
         if (store == null || store.storage != "github" || writesOverOwnReference) None
         else {
             val target = io.repoConfig().flatMap(cfg => scala.util.Try(GithubCodeStore.scriptRepoPath(tapName, cfg)).toOption)
-            target.filter(p => TapScriptOwnership.uploadTargetTaken(tapName, p, io.allTaps())).map { _ =>
-                if (CapabilityCheck.isLimited(request))
-                    referenceRefused(request, TapConfig(name = tapName, description = null, targetPipeline = null))
-                else
-                    ResponseEntity
-                        .status(HttpStatus.CONFLICT)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .body[String](
-                            ApiErrors.errorBody(
-                                "The script of tap '" + tapName + "' cannot be stored at its code repository path: another tap runs its script " +
-                                    "from that file, and storing it would replace that script. Use another tap name."
-                            )
-                        )
+            target.filter(p => TapScriptOwnership.uploadTargetTaken(tapName, p, io.allTaps())).map(_ => targetTakenAnswer(request, tapName))
+        }
+    }
+
+    /** The answer of a rule S2 refusal: for a limited caller the answer the
+      * script reference rule gives ([[referenceRefused]]), naming nothing of
+      * the other tap; for any other caller (one that may read every tap) a
+      * 409 saying another tap runs its script from the file. */
+    private def targetTakenAnswer(request: HttpServletRequest, tapName: String): ResponseEntity[String] =
+        if (CapabilityCheck.isLimited(request))
+            referenceRefused(request, TapConfig(name = tapName, description = null, targetPipeline = null))
+        else
+            ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body[String](
+                    ApiErrors.errorBody(
+                        "The script of tap '" + tapName + "' cannot be stored at its code repository path: another tap runs its script " +
+                            "from that file, and storing it would replace that script. Use another tap name."
+                    )
+                )
+
+    /** Rule S2 for a caller held to its own tap's script file
+      * ([[heldToOwnScriptFile]]) when the stored repository tap `existing`
+      * already has a repository reference that `store` writes over: Some when
+      * that stored path (the file the store writes), normalised, is also the
+      * current repository script of a stored tap of another name
+      * ([[TapScriptOwnership.uploadTargetTaken]]). Then nothing may be
+      * written: the answer [[uploadTargetRefusal]] gives the same caller,
+      * with one log line and one audit row
+      * ([[TapOwnerScopeReport.scriptStoreRefused]], rule S2, site "script").
+      * When the tap listing cannot be read, the 503 of [[tapListingUndecided]]
+      * and nothing is written. Never for any other caller, and never when the
+      * route gate passed the request only under log-only capability mode
+      * ([[passedGateOnlyInLogOnly]]). Reads the tap listing only for such a
+      * write. */
+    private[api] def sharedFileUploadRefusal(
+        request: HttpServletRequest,
+        tapName: String,
+        store: TapCodeStore,
+        existing: TapConfig,
+        io: TapScriptUploadIO
+    ): Option[ResponseEntity[String]] = {
+        val writesAtStoredPath = store != null && store.storage == "github" && existing != null && existing.scriptStorage == "github" &&
+            existing.scriptRepoPath != null && existing.scriptRepoPath.nonEmpty
+        if (!writesAtStoredPath || !heldToOwnScriptFile(request) || passedGateOnlyInLogOnly(request)) None
+        else {
+            val taps = scala.util.Try(io.allTaps()) match {
+                case scala.util.Success(t) => t
+                case scala.util.Failure(e) =>
+                    uploadLogger.warn(
+                        "Script upload for tap '" + LogSafe.text(tapName) + "' not written: the tap list could not be read (" +
+                            LogSafe.text(e.getClass.getSimpleName) + ")"
+                    )
+                    return Some(tapListingUndecided(tapName))
+            }
+            if (!TapScriptOwnership.uploadTargetTaken(tapName, existing.scriptRepoPath, taps)) None
+            else {
+                TapOwnerScopeReport.scriptStoreRefused(
+                    request,
+                    tapName,
+                    "S2",
+                    "script",
+                    "a script upload by a caller whose tap access is limited to a catalog or to what it created was refused: the tap's code repository " +
+                        "script file is also the current script of another tap"
+                )
+                Some(targetTakenAnswer(request, tapName))
             }
         }
     }
+
+    /** The 503 a held caller ([[heldToOwnScriptFile]]) gets when the tap
+      * listing cannot be read, so whether another tap runs from the file
+      * cannot be decided: nothing is written. Names only the caller's own tap. */
+    private[api] def tapListingUndecided(tapName: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.SERVICE_UNAVAILABLE)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody(tapListingUndecidedMessage(tapName)))
+
+    /** The answer of [[tapListingUndecided]]. */
+    def tapListingUndecidedMessage(tapName: String): String =
+        "The list of taps could not be read, so the script of tap '" + tapName + "' was not written. Try again later."
 
     /** Rule S4 for a caller held to its own tap's script file
       * ([[heldToOwnScriptFile]]): Some when `store` would write the script of
@@ -2153,7 +2222,8 @@ class TapAPIController {
 
     /** The script upload after key validation, over `io`'s store reads and
       * writes. Rule S2 ([[TapAPIController.uploadTargetRefusal]]) and, for a
-      * caller held to its own tap's script file, rule S4 ([[TapAPIController.notOwnUploadRefusal]]) are
+      * caller held to its own tap's script file, rule S4 ([[TapAPIController.notOwnUploadRefusal]])
+      * and rule S2 over its own reference ([[TapAPIController.sharedFileUploadRefusal]]) are
       * decided before anything is written; otherwise rules S4 and S5 are
       * reported after the script was stored ([[TapAPIController.reportScriptStore]]). */
     private[datris] def storeScriptWith(
@@ -2199,6 +2269,10 @@ class TapAPIController {
             // Rule S4 for a caller held to its own tap's script file: a stored repository tap whose
             // stored path is not its own file is not written through.
             TapAPIController.notOwnUploadRefusal(request, tapName, store, existing, io).foreach(return _)
+            // Rule S2 for a caller held to its own tap's script file: its own
+            // repository reference is not written while another stored tap
+            // runs from the same file.
+            TapAPIController.sharedFileUploadRefusal(request, tapName, store, existing, io).foreach(return _)
 
             // The editor sends the commit sha it opened against so a concurrent
             // external commit to the same file is a conflict, not an overwrite.

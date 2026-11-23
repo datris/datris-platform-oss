@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.{AuditEntry, AuditLog}
-import ai.datris.auth.ScopeDenialFixtures
+import ai.datris.auth.{CapabilityCheck, ScopeDenialFixtures}
 import ai.datris.model._
 import ai.datris.util.InMemoryUserDb.grants
 import ai.datris.util.{APIKeyValidator, CodeStore, ScriptRef, StoredScript, TapCodeStore, TapScriptOwnership}
@@ -599,6 +599,109 @@ class TapScriptStoreOwnFileSpec extends AnyFunSuite with BeforeAndAfterEach {
         val (r, _) = withWarns(uploadAs(logOnlyReq(salesKey, "/api/v1/tap/script"), failing, name))
         assert(status(r) == 200, r.toString)
         assert(w.repo.writes.toList == List(name -> path), w.repo.writes.toString)
+    }
+
+    // ================================================================ S2 for held callers over their own reference
+    //
+    // A caller held to its own tap's script file is refused, nothing
+    // written, when the file its upload would write (the tap's stored
+    // repository path) is also the current script of another stored tap,
+    // in any spelling. The answer is the one the S2 refusal gives the same
+    // caller; the audit row is rule S2 with `enforced: true`. Unrestricted
+    // callers keep uploading to a shared file.
+
+    private def heldOwners: Seq[(ResolvedKey, String)] = limitedOwners :+ (scopedUpdater -> "session:ada")
+
+    test("S2: a held caller's upload to its own file that another stored tap also runs from writes nothing and is refused, in any spelling") {
+        for ((rk, owner) <- heldOwners; spelled <- Seq(identity[String] _, (p: String) => p.replaceFirst("/", "//"))) {
+            audit.clear()
+            val name = uniq("shared-own")
+            val other = uniq("copy")
+            val own = Prefix + name + ".py"
+            val w = new World(Seq(repoTap(name, own, owner = owner), repoTap(other, spelled(own), catalog = "Finance")))
+            val (r, warns) = withWarns(upload(rk, w, name))
+            w.nothingWritten()
+            if (CapabilityCheck.isLimited(req(rk, "/api/v1/tap/script"))) {
+                val expected = ruleThreeAnswer(rk, name)
+                if (rk == rita) assert(status(r) == 404, r.toString)
+                else assert(status(r) == status(expected) && r.getBody == expected.getBody, rk.label + ": " + r)
+                assert(!r.getBody.contains(other) && !r.getBody.contains("Finance") && !r.getBody.contains("another tap"), r.getBody)
+            } else {
+                // a key that reads every tap gets the answer every caller that may read every tap gets
+                assert(status(r) == 409 && r.getBody.contains("another tap runs its script"), rk.label + ": " + r)
+                assert(!r.getBody.contains(other), r.getBody)
+            }
+            assert(warns.count(_.contains(name)) == 1, warns.mkString("\n"))
+            val rows = deniedRows(name)
+            assert(rows.size == 1, rk.label + ": " + reportRows(name))
+            val md = rows.head.metadata.getOrElse(fail("no metadata"))
+            assert(md.get("rule").getAsString == "S2" && md.get("site").getAsString == "script" && md.get("enforced").getAsBoolean, md.toString)
+        }
+    }
+
+    test("S2: a held caller whose tap is the only one using its own file still uploads to it") {
+        for ((rk, owner) <- heldOwners) {
+            val name = uniq("sole-own")
+            val own = Prefix + name + ".py"
+            val w = new World(Seq(
+                repoTap(name, own, owner = owner),
+                repoTap(uniq("other"), Prefix + "other.py"),
+                builtInTap(uniq("b"), "tap-scripts/x_1a2b3c4d.py")
+            ))
+            val (r, _) = withWarns(upload(rk, w, name))
+            assert(status(r) == 200, rk.label + ": " + r)
+            assert(w.repo.writes.toList == List(name -> own), w.repo.writes.toString)
+            assert(deniedRows(name).isEmpty, reportRows(name).toString)
+        }
+    }
+
+    test("S2: callers not held, and a held caller under log-only mode, still upload to a file another tap also runs from") {
+        val callers = Seq(
+            req(admin, "/api/v1/tap/script"),
+            req(fullKey, "/api/v1/tap/script"),
+            req(editor, "/api/v1/tap/script"),
+            req(pipelineOnly, "/api/v1/tap/script"),
+            ScopeDenialFixtures.request(null, "POST", "/api/v1/tap/script")._1,
+            logOnlyReq(salesKey, "/api/v1/tap/script")
+        )
+        for (r <- callers) {
+            val name = uniq("shared-free")
+            val own = Prefix + name + ".py"
+            val w = new World(Seq(repoTap(name, own), repoTap(uniq("copy"), own)))
+            val (resp, _) = withWarns(uploadAs(r, w.io, name))
+            assert(status(resp) == 200, resp.toString)
+            assert(w.repo.writes.toList == List(name -> own), w.repo.writes.toString)
+            assert(deniedRows(name).isEmpty, reportRows(name).toString)
+        }
+    }
+
+    test("S2: a held caller's upload over its own reference writes nothing and is a 503 when the tap list cannot be read") {
+        for ((rk, owner) <- heldOwners) {
+            val name = uniq("unlisted-own")
+            val w = new World(Seq(repoTap(name, Prefix + name + ".py", owner = owner)))
+            val failing = w.io.copy(allTaps = () => throw new IllegalStateException("db password=s3cr3t unreachable"))
+            val (r, _) = withWarns(uploadAs(req(rk, "/api/v1/tap/script"), failing, name))
+            assert(status(r) == 503, rk.label + ": " + r)
+            assert(JsonParser.parseString(r.getBody).getAsJsonObject.get("error").getAsString == TapAPIController.tapListingUndecidedMessage(name), r.getBody)
+            assert(!r.getBody.contains("s3cr3t"), r.getBody)
+            w.nothingWritten()
+        }
+        // an unrestricted caller's upload over its own reference reads no tap list and goes ahead
+        val name = uniq("unlisted-free")
+        val w = new World(Seq(repoTap(name, Prefix + name + ".py")))
+        val failing = w.io.copy(allTaps = () => throw new IllegalStateException("down"))
+        assert(status(uploadAs(req(admin, "/api/v1/tap/script"), failing, name)) == 200)
+    }
+
+    test("S2: a held caller's upload of a tap whose stored path is not its own file is answered by the own-file rule, not this one") {
+        val name = uniq("hand-shared")
+        val path = Prefix + "lib/shared.py"
+        val w = new World(Seq(repoTap(name, path), repoTap(uniq("copy"), path)))
+        val (r, _) = withWarns(upload(salesKey, w, name))
+        assert(status(r) == 409, r.toString)
+        assert(JsonParser.parseString(r.getBody).getAsJsonObject.get("error").getAsString == TapAPIController.notOwnUploadMessage(name), r.getBody)
+        w.nothingWritten()
+        assert(deniedRows(name).map(_.metadata.get.get("rule").getAsString) == List("S4"), reportRows(name).toString)
     }
 
     // ================================================================ built-in scripts written under another name

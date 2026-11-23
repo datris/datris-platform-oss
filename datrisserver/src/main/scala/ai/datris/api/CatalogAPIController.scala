@@ -774,7 +774,7 @@ class CatalogAPIController {
                                     base.copy(lastTestRunScriptId = null)
                                 case Some(script) =>
                                     val live = TapConfigIO.read(DatrisEnvironment.current.tapTableName, n)
-                                    val stored = storeRestoredScript(store, repoCfg, repoPlan, n, script, live, actor, heldStrict)
+                                    val stored = storeRestoredScript(store, repoCfg, repoPlan, n, script, live, actor, heldStrict, request, taps)
                                     base.copy(
                                         scriptStorage = stored.storage,
                                         scriptPath = stored.scriptPath,
@@ -1088,7 +1088,9 @@ class CatalogAPIController {
         script: String,
         live: TapConfig,
         actor: String,
-        heldStrict: Boolean
+        heldStrict: Boolean,
+        request: HttpServletRequest,
+        liveTaps: Seq[TapConfig]
     ): StoredScript =
         repoCfg match {
             case Some(cfg) if plan.reuse.contains(tap) =>
@@ -1103,8 +1105,12 @@ class CatalogAPIController {
                 val prior = if (live != null && TapCodeStore.forTap(live).storage == store.storage) live else null
                 // Judged again on the tap as read now: the listing the clash
                 // check used skips a tap that could not be read.
-                if (store.storage == GithubCodeStore.storage)
+                if (store.storage == GithubCodeStore.storage) {
                     CatalogAPIController.restoreWriteNotOwn(heldStrict, repoCfg, tap, prior).foreach(msg => throw new DatrisException(msg))
+                    CatalogAPIController
+                        .restoreWriteSharedFile(request, heldStrict, repoCfg, tap, prior, liveTaps)
+                        .foreach(msg => throw new DatrisException(msg))
+                }
                 store.storeScript(tap, script, prior, actor)
         }
 
@@ -1326,32 +1332,64 @@ object CatalogAPIController {
       * only the restored tap and its own file; for a caller held to its own
       * tap's script file (`held`, [[TapAPIController.heldToOwnScriptFile]])
       * it says only that the file cannot be written by this restore, not why.
-      * `liveTaps`: every stored tap. */
+      * For a caller held to its own tap's script file outside log-only mode
+      * (`request`, [[heldStrictlyToOwnScriptFile]]) a tap whose live copy
+      * holds its own repository reference at its own file is judged too, on
+      * that stored path: a clash with the held wording and one audit row
+      * (rule S2, site "catalog-restore") when another stored tap runs from
+      * the same file. `liveTaps`: every stored tap. */
     private[api] def restoreTargetClashes(
         plan: CatalogArchive.RepoScriptPlan,
         cfg: CodeRepoConfig,
         liveTaps: Seq[TapConfig],
-        held: Boolean = false
+        held: Boolean = false,
+        request: HttpServletRequest = null
     ): Seq[String] = {
         val taps = Option(liveTaps).getOrElse(Nil).filter(_ != null)
         plan.write.toSeq.sorted.flatMap { tap =>
             val live = taps.find(_.name == tap)
-            val writesOverOwnReference =
-                live.exists(l => l.scriptStorage == "github" && l.scriptRepoPath != null && l.scriptRepoPath.nonEmpty)
-            if (writesOverOwnReference) None
-            else {
-                val path = scala.util.Try(GithubCodeStore.scriptRepoPath(tap, cfg)).toOption
-                path.filter(p => TapScriptOwnership.uploadTargetTaken(tap, p, taps)).map { p =>
-                    if (held)
-                        "tap '" + tap + "': script file '" + p + "' in the code repository (branch " + cfg.branch +
-                            ") cannot be written by this restore. Ask an administrator."
-                    else
-                        "tap '" + tap + "': script file '" + p + "' in the code repository (branch " + cfg.branch +
-                            ") is the script another tap runs from and would be replaced"
-                }
+            live.filter(l => l.scriptStorage == "github" && l.scriptRepoPath != null && l.scriptRepoPath.nonEmpty) match {
+                case Some(own) =>
+                    // Its own reference is written over: judged only for a
+                    // caller held to its own tap's script file, on a stored
+                    // path that is its own file (any other path is a rule S4
+                    // clash, [[restoreNotOwnClashes]]).
+                    if (!heldStrictlyToOwnScriptFile(request) || storedNotOwn(tap, own, cfg)) None
+                    else if (!TapScriptOwnership.uploadTargetTaken(tap, own.scriptRepoPath, taps)) None
+                    else {
+                        sharedFileRestoreRefused(request, tap)
+                        Some(restoreTargetHeldMessage(tap, own.scriptRepoPath, cfg))
+                    }
+                case None =>
+                    val path = scala.util.Try(GithubCodeStore.scriptRepoPath(tap, cfg)).toOption
+                    path.filter(p => TapScriptOwnership.uploadTargetTaken(tap, p, taps)).map { p =>
+                        if (held) restoreTargetHeldMessage(tap, p, cfg)
+                        else
+                            "tap '" + tap + "': script file '" + p + "' in the code repository (branch " + cfg.branch +
+                                ") is the script another tap runs from and would be replaced"
+                    }
             }
         }
     }
+
+    /** The clash of [[restoreTargetClashes]] for a caller held to its own
+      * tap's script file: says only that the file cannot be written. */
+    private def restoreTargetHeldMessage(tap: String, path: String, cfg: CodeRepoConfig): String =
+        "tap '" + tap + "': script file '" + path + "' in the code repository (branch " + cfg.branch +
+            ") cannot be written by this restore. Ask an administrator."
+
+    /** The audit row of a rule S2 refusal at a catalog restore for a caller
+      * held to its own tap's script file. */
+    private def sharedFileRestoreRefused(request: HttpServletRequest, tap: String): Unit =
+        TapOwnerScopeReport.scriptStoreRefused(
+            request,
+            tap,
+            "S2",
+            "catalog-restore",
+            "a catalog restore by a caller whose tap access is limited to a catalog or to what it created was refused: " +
+                "the tap's code repository script file is also the current script of another tap",
+            "The restore was refused and nothing was written."
+        )
 
     /** Rule S4 at a catalog restore onto a code repository, for a caller held
       * to its own tap's script file ([[TapAPIController.heldToOwnScriptFile]])
@@ -1432,7 +1470,7 @@ object CatalogAPIController {
         val clashes = repoCfg.toSeq.flatMap { cfg =>
             // Rule S2: a restored script never replaces, with no reference
             // of that tap behind it, the file another stored tap runs from.
-            restoreTargetClashes(writable, cfg, taps, TapAPIController.heldToOwnScriptFile(request)) ++
+            restoreTargetClashes(writable, cfg, taps, TapAPIController.heldToOwnScriptFile(request), request) ++
                 // Rule S4 for a caller held to its own tap's script file: a
                 // live repository tap whose stored file is not its own is
                 // not written through.
@@ -1450,6 +1488,36 @@ object CatalogAPIController {
       * written. None for every other caller and every other `prior`. */
     private[api] def restoreWriteNotOwn(heldStrict: Boolean, repoCfg: Option[CodeRepoConfig], tap: String, prior: TapConfig): Option[String] =
         if (heldStrict && storedNotOwn(tap, prior, repoCfg.orNull)) Some(restoreNotOwnMessage(tap)) else None
+
+    /** At the moment a restored tap script is written through the code
+      * repository store with `prior` (the tap as read just before the write):
+      * for a caller held to its own tap's script file (`heldStrict`) whose
+      * write would land on a file (`prior`'s stored repository path, else
+      * `<prefix><tap>.py`) that is, normalised, the current repository script
+      * of a tap of another name in `liveTaps`, Some(the held clash wording of
+      * [[restoreTargetClashes]]) with one audit row (rule S2, site
+      * "catalog-restore"), and that member is not written. None for every
+      * other caller and every other file. */
+    private[api] def restoreWriteSharedFile(
+        request: HttpServletRequest,
+        heldStrict: Boolean,
+        repoCfg: Option[CodeRepoConfig],
+        tap: String,
+        prior: TapConfig,
+        liveTaps: Seq[TapConfig]
+    ): Option[String] =
+        if (!heldStrict) None
+        else
+            repoCfg.flatMap { cfg =>
+                val path =
+                    if (prior != null && prior.scriptStorage == "github" && prior.scriptRepoPath != null && prior.scriptRepoPath.nonEmpty)
+                        Some(prior.scriptRepoPath)
+                    else scala.util.Try(GithubCodeStore.scriptRepoPath(tap, cfg)).toOption
+                path.filter(p => TapScriptOwnership.uploadTargetTaken(tap, p, Option(liveTaps).getOrElse(Nil))).map { p =>
+                    sharedFileRestoreRefused(request, tap)
+                    restoreTargetHeldMessage(tap, p, cfg)
+                }
+            }
 
     /** The clash of [[restoreNotOwnClashes]]: names only the restored tap. */
     def restoreNotOwnMessage(tapName: String): String =
