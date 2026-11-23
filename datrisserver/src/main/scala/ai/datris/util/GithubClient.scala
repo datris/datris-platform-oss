@@ -123,7 +123,20 @@ object GithubClient {
 
     private def parse(body: String): JsonObject = JsonParser.parseString(body).getAsJsonObject
 
-    /** Maps GitHub's 4xx flavors onto messages the UI can show verbatim. */
+    /** The fixed error for a response that could not be read as expected:
+      * the context and status code only, never the response text. */
+    private def unreadable(status: Int, context: String): DatrisException =
+        new DatrisException("Code repository " + context + " failed (HTTP " + status + "): the response could not be read.")
+
+    /** `f` over the response; any failure reading it is [[unreadable]] (no
+      * cause attached, so no part of the response is carried). */
+    private def read[T](status: Int, context: String)(f: => T): T =
+        try f
+        catch { case e: Exception if scala.util.control.NonFatal(e) => throw unreadable(status, context) }
+
+    /** Maps GitHub's 4xx flavors onto messages the UI can show verbatim: the
+      * context, the status code and a fixed hint. The response text is used
+      * only to pick the hint, never copied into the message. */
     private def fail(status: Int, body: String, context: String): Nothing = {
         val detail =
             try { Option(parse(body).get("message")).map(_.getAsString).getOrElse("") }
@@ -137,7 +150,7 @@ object GithubClient {
             case 404 => "Repository or path not found — check the repo name, or the token cannot see this repository."
             case _ => ""
         }
-        throw new DatrisException(("Code repository " + context + " failed (HTTP " + status + "). " + detail + " " + hint).trim)
+        throw new DatrisException(("Code repository " + context + " failed (HTTP " + status + "). " + hint).trim)
     }
 
     /** GET /repos/{repo} — used by save-time validation and Test connection.
@@ -146,17 +159,21 @@ object GithubClient {
     def repoInfo(config: CodeRepoConfig): (String, Boolean) = {
         val (status, body) = execute(new HttpGet(apiBase(config) + "/repos/" + config.repo), config)
         if (status != 200) fail(status, body, "validation")
-        val json = parse(body)
-        val defaultBranch = Option(json.get("default_branch")).map(_.getAsString).getOrElse("main")
-        val canPush = Option(json.getAsJsonObject("permissions")).exists(p => Option(p.get("push")).exists(_.getAsBoolean))
-        (defaultBranch, canPush)
+        read(status, "validation") {
+            val json = parse(body)
+            val defaultBranch = Option(json.get("default_branch")).map(_.getAsString).getOrElse("main")
+            val canPush = Option(json.getAsJsonObject("permissions")).exists(p => Option(p.get("push")).exists(_.getAsBoolean))
+            (defaultBranch, canPush)
+        }
     }
 
     def listBranches(config: CodeRepoConfig): List[String] = {
         val (status, body) = execute(new HttpGet(apiBase(config) + "/repos/" + config.repo + "/branches?per_page=100"), config)
         if (status != 200) fail(status, body, "branch listing")
-        val arr = JsonParser.parseString(body).getAsJsonArray
-        (0 until arr.size()).map(i => arr.get(i).getAsJsonObject.get("name").getAsString).toList
+        read(status, "branch listing") {
+            val arr = JsonParser.parseString(body).getAsJsonArray
+            (0 until arr.size()).map(i => arr.get(i).getAsJsonObject.get("name").getAsString).toList
+        }
     }
 
     /** Resolve the configured branch to its current head commit sha. */
@@ -166,20 +183,36 @@ object GithubClient {
             config
         )
         if (status != 200) fail(status, body, "branch lookup for '" + config.branch + "'")
-        parse(body).getAsJsonObject("commit").get("sha").getAsString
+        read(status, "branch lookup for '" + config.branch + "'")(parse(body).getAsJsonObject("commit").get("sha").getAsString)
     }
 
     /** Read a file at a ref (commit sha or branch). None if it doesn't exist
-      * at that ref. `commitShaForPin` is what the caller records as the pin —
-      * pass the resolved head when reading a branch. */
+      * at that ref, and None when the response is not a single file (a JSON
+      * array, or an object whose `type` is not `file` or that has no string
+      * `content` and `sha`). A body that is not JSON, or content that is not
+      * base64, is the fixed [[unreadable]] error. `commitShaForPin` is what
+      * the caller records as the pin — pass the resolved head when reading a
+      * branch. */
     def getFile(config: CodeRepoConfig, path: String, ref: String): Option[RepoFile] = {
         val (status, body) = execute(new HttpGet(contentsUrl(config, path) + "?ref=" + java.net.URLEncoder.encode(ref, "UTF-8")), config)
         if (status == 404) return None
-        if (status != 200) fail(status, body, "read of '" + path + "'")
-        val json = parse(body)
-        val encoded = json.get("content").getAsString.replaceAll("\\s", "")
-        val content = new String(Base64.getDecoder.decode(encoded), StandardCharsets.UTF_8)
-        Some(RepoFile(content, json.get("sha").getAsString, ref))
+        val context = "read of '" + path + "'"
+        if (status != 200) fail(status, body, context)
+        val element = read(status, context)(JsonParser.parseString(body))
+        def stringField(o: JsonObject, name: String): Option[String] =
+            Option(o.get(name)).filter(e => e.isJsonPrimitive && e.getAsJsonPrimitive.isString).map(_.getAsString)
+        val file =
+            if (!element.isJsonObject) None
+            else {
+                val json = element.getAsJsonObject
+                val isFile = Option(json.get("type")).forall(t => t.isJsonPrimitive && t.getAsJsonPrimitive.isString && t.getAsString == "file")
+                if (!isFile) None
+                else for (encoded <- stringField(json, "content"); sha <- stringField(json, "sha")) yield (encoded, sha)
+            }
+        file.map { case (encoded, sha) =>
+            val content = read(status, context)(new String(Base64.getDecoder.decode(encoded.replaceAll("\\s", "")), StandardCharsets.UTF_8))
+            RepoFile(content, sha, ref)
+        }
     }
 
     /** Create or update a file; returns the new commit sha.
@@ -220,7 +253,7 @@ object GithubClient {
                 "'" + path + "' changed in the repository since this tap was loaded. Pull the latest script, reapply your edits, and save again."
             )
         if (status != 200 && status != 201) fail(status, body, "write of '" + path + "'")
-        parse(body).getAsJsonObject("commit").get("sha").getAsString
+        read(status, "write of '" + path + "'")(parse(body).getAsJsonObject("commit").get("sha").getAsString)
     }
 
     /** Commit a file removal. No-op if the file is already absent. Refuses a

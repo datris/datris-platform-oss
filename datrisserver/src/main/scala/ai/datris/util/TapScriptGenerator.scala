@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException}
+import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException, ValidationException}
 import com.google.gson.Gson
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -447,7 +447,10 @@ object TapScriptGenerator {
     /**
      * Store a script (user-provided or AI-generated) in MinIO under
      * `keyPrefix` (`tap-scripts/` for taps, `pipeline-scripts/<pipeline>/`
-     * for pipeline CodeGen scripts). Returns the object key.
+     * for pipeline CodeGen scripts). Returns the object key. A name whose key
+     * would have an empty, `.` or `..` segment after `keyPrefix`
+     * ([[ScriptPaths.tapNameRefusal]]) is refused with a
+     * [[ValidationException]] (answered as 400) before anything is written.
      */
     def storeScript(
         tapName: String,
@@ -464,6 +467,7 @@ object TapScriptGenerator {
         // user has no way to recover without regenerating. Cleanup happens on
         // tap delete (deleteTap → deleteScript on the current scriptPath);
         // orphaned older versions are tiny .py files and accumulate slowly.
+        ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
         val env = DatrisEnvironment.current.environment
         val bucketName = env + "-config"
         val uuid = UUID.randomUUID().toString.substring(0, 8)
@@ -472,11 +476,6 @@ object TapScriptGenerator {
         Option(objects).getOrElse(ObjectStoreUtil).writeBucketObject(bucketName, key, script)
         key
     }
-
-    /**
-     * Delete a script from MinIO.
-     */
-    def deleteScript(scriptPath: String): Unit = deleteScriptUnder(scriptPath, null, null)
 
     /**
      * Delete the tap `tapName`'s script objects `paths` that are under the

@@ -800,4 +800,166 @@ class TapCodeStoreSpec extends AnyFunSuite {
         val e2 = intercept[ai.datris.model.DatrisException](tapStore.readScript(ref))
         assert(e2.getMessage == tapText, "a store with no message (the tap store) uses the tap text")
     }
+
+    // --- repository responses that are not a single file ---------------------
+
+    /** Text placed in every fake response below; no error message may contain it. */
+    private val ResponseText = "resp-text-5e1d9"
+
+    /** Installs a transport answering every GET with `get` and every other
+      * request with `other`; restores the previous one afterwards. */
+    private def withResponses[T](get: (Int, String), other: (Int, String) = (200, "{\"commit\": {\"sha\": \"" + Sha40 + "\"}}"))(f: => T): T = {
+        val saved = GithubClient.transport
+        GithubClient.transport = (request, _) => if (request.getMethod == "GET") get else other
+        try f
+        finally GithubClient.transport = saved
+    }
+
+    /** Every message of `e` and its causes, joined. */
+    private def messages(e: Throwable): String =
+        Iterator.iterate(e)(_.getCause).takeWhile(_ != null).map(x => String.valueOf(x.getMessage)).mkString(" | ")
+
+    /** Responses that are JSON but not a single file. */
+    private val NotAFile = Seq(
+        "[{\"type\": \"file\", \"name\": \"" + ResponseText + ".py\", \"content\": \"cHJpbnQoMSk=\", \"sha\": \"" + ResponseText + "\"}]",
+        "[]",
+        "{\"type\": \"dir\", \"name\": \"" + ResponseText + "\", \"sha\": \"" + ResponseText + "\"}",
+        "{\"type\": \"symlink\", \"target\": \"" + ResponseText + "\", \"content\": \"cHJpbnQoMSk=\", \"sha\": \"" + ResponseText + "\"}",
+        "{\"type\": \"submodule\", \"submodule_git_url\": \"" + ResponseText + "\", \"sha\": \"" + ResponseText + "\"}",
+        "{\"type\": 7, \"content\": \"cHJpbnQoMSk=\", \"sha\": \"" + ResponseText + "\"}",
+        "{\"content\": {\"x\": \"" + ResponseText + "\"}, \"sha\": \"" + ResponseText + "\"}",
+        "{\"sha\": \"" + ResponseText + "\"}",
+        "\"" + ResponseText + "\"",
+        "null"
+    )
+
+    /** Bodies that cannot be read as the expected JSON. */
+    private val Unreadable = Seq(
+        "{\"content\": \"" + ResponseText,
+        ResponseText + " <html>",
+        "{\"type\": \"file\", \"content\": \"" + ResponseText + "!!\", \"sha\": \"" + ResponseText + "\"}"
+    )
+
+    test("a repository read whose response is not a single file is no such file, the same as a missing file") {
+        val cfg = repoCfg("taps/")
+        for (body <- NotAFile)
+            withResponses((200, body)) {
+                assert(GithubClient.getFile(cfg, "taps/orders.py", Sha40).isEmpty, body)
+            }
+        withResponses((404, "{\"message\": \"" + ResponseText + "\"}")) {
+            assert(GithubClient.getFile(cfg, "taps/orders.py", Sha40).isEmpty)
+        }
+        // a single file reads as before, with or without its type
+        for (body <- Seq("{\"content\": \"cHJpbnQoMSk=\\n\", \"sha\": \"blob1\"}", "{\"type\": \"file\", \"content\": \"cHJpbnQoMSk=\", \"sha\": \"blob1\"}"))
+            withResponses((200, body)) {
+                assert(GithubClient.getFile(cfg, "taps/orders.py", Sha40).contains(RepoFile("print(1)", "blob1", Sha40)), body)
+            }
+    }
+
+    test("a repository response that cannot be read is a fixed error carrying the status code and none of the response text") {
+        val cfg = repoCfg("taps/")
+        for (body <- Unreadable)
+            withResponses((200, body)) {
+                val e = intercept[ai.datris.model.DatrisException](GithubClient.getFile(cfg, "taps/orders.py", Sha40))
+                assert(e.getMessage == "Code repository read of 'taps/orders.py' failed (HTTP 200): the response could not be read.", e.getMessage)
+                assert(e.getCause == null)
+            }
+        for (body <- Unreadable ++ NotAFile.filter(_ != "null")) {
+            withResponses((200, body), (200, body)) {
+                val calls: Seq[(String, () => Any)] = Seq(
+                    "validation" -> (() => GithubClient.repoInfo(cfg)),
+                    "branch listing" -> (() => GithubClient.listBranches(cfg)),
+                    "branch lookup" -> (() => GithubClient.branchHeadSha(cfg)),
+                    "write" -> (() => GithubClient.putFile(cfg, "taps/orders.py", "print(1)", "m", null))
+                )
+                for ((name, call) <- calls) {
+                    val outcome =
+                        try { call(); None }
+                        catch { case e: Exception => Some(e) }
+                    outcome.foreach { e =>
+                        assert(!messages(e).contains(ResponseText), name + " " + body + ": " + messages(e))
+                        assert(e.getCause == null, name + " " + body)
+                    }
+                }
+            }
+        }
+    }
+
+    test("a refused repository request reports the status code and a fixed hint, none of the response text") {
+        val cfg = repoCfg("taps/")
+        val cases = Seq(
+            401 -> "Token was rejected.",
+            403 -> "Token lacks access.",
+            404 -> "Repository or path not found",
+            500 -> "failed (HTTP 500)."
+        )
+        for ((status, phrase) <- cases; body <- Seq("{\"message\": \"" + ResponseText + "\"}", ResponseText, "[\"" + ResponseText + "\"]")) {
+            withResponses((status, body), (status, body)) {
+                val errors = Seq(
+                    intercept[ai.datris.model.DatrisException](GithubClient.repoInfo(cfg)),
+                    intercept[ai.datris.model.DatrisException](GithubClient.listBranches(cfg)),
+                    intercept[ai.datris.model.DatrisException](GithubClient.branchHeadSha(cfg))
+                ) ++ (if (status == 404) Nil else Seq(intercept[ai.datris.model.DatrisException](GithubClient.getFile(cfg, "taps/orders.py", Sha40))))
+                errors.foreach { e =>
+                    assert(e.getMessage.contains("(HTTP " + status + ")") && e.getMessage.contains(phrase), e.getMessage)
+                    assert(!messages(e).contains(ResponseText), e.getMessage)
+                }
+            }
+        }
+        // the hint is still chosen from the response
+        withResponses((403, "{\"message\": \"API rate limit exceeded " + ResponseText + "\"}")) {
+            val e = intercept[ai.datris.model.DatrisException](GithubClient.branchHeadSha(cfg))
+            assert(e.getMessage == "Code repository branch lookup for 'main' failed (HTTP 403). GitHub rate limit exceeded. Retry later.", e.getMessage)
+        }
+    }
+
+    test("the repository script store's reads, existence checks and delete warnings carry none of the response text") {
+        val cfg = repoCfg("taps/")
+        val store = new GithubScriptStore(n => ScriptFamily.Tap(n), null, () => Some(cfg))
+        val ref = ScriptRef("orders", "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = Sha40)
+        withCacheDir { _ =>
+            for (body <- NotAFile)
+                withResponses((200, body)) {
+                    assert(store.readScript(ref).isEmpty, body)
+                    assert(!store.scriptExists(ref), body)
+                }
+            for (body <- Unreadable) {
+                withResponses((200, body)) {
+                    val e = intercept[ai.datris.model.DatrisException](store.readScript(ref))
+                    assert(!messages(e).contains(ResponseText), messages(e))
+                    assert(e.getMessage.contains("(HTTP 200): the response could not be read."), e.getMessage)
+                    val warning = store.deleteUnlessEdited(ref)
+                    assert(warning.isDefined && !warning.get.contains(ResponseText), warning.toString)
+                }
+            }
+            withResponses((500, ResponseText), (500, ResponseText)) {
+                val warning = store.deleteUnlessEdited(ref)
+                assert(warning.isDefined && !warning.get.contains(ResponseText), warning.toString)
+            }
+        }
+    }
+
+    // --- one tap-name rule on every path that stores a tap script ------------
+
+    test("storing a built-in script refuses a tap name with an empty, '.' or '..' segment with the upload route's 400, writing nothing") {
+        TenantContext.set(SpecEnv.testEnv)
+        try {
+            val objects = new MemObjects
+            for (name <- RefusedTapNames) {
+                val e = intercept[ai.datris.model.ValidationException](TapScriptGenerator.storeScript(name, "print(1)", null, objects = objects))
+                assert(Some(e.getMessage) == ScriptPaths.tapNameRefusal(name), name)
+                assert(ai.datris.api.ApiErrors.classify(e) == (400 -> ai.datris.api.ApiErrors.errorBody(e.getMessage)), name)
+            }
+            assert(objects.objects.isEmpty, "nothing written: " + objects.objects.keys)
+            for (name <- AcceptedTapNames :+ "tap" :+ "") {
+                val key = TapScriptGenerator.storeScript(name, "print(1)", "tap-scripts/old_1.py", objects = objects)
+                assert(key.matches(java.util.regex.Pattern.quote("tap-scripts/" + name + "_") + "[0-9a-f]{8}\\.py"), key)
+                assert(objects.objects.get((SpecEnv.testEnv.environment + "-config", key)).contains("print(1)"), key)
+            }
+            // a pipeline CodeGen script is stored under its prefix as before
+            assert(
+                TapScriptGenerator.storeScript("dataQuality", "x", null, "pipeline-scripts/orders/", objects).startsWith("pipeline-scripts/orders/dataQuality_")
+            )
+        } finally TenantContext.clear()
+    }
 }
