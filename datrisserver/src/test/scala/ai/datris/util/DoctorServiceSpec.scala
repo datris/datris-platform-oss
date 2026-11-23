@@ -491,6 +491,8 @@ class DoctorServiceSpec extends AnyFunSuite {
             "staging.area",
             "staging.orphans",
             "tap.secret_scope",
+            // plans/stories/tap-runs-hold-owner-scope.md: position pinned by the tap.owner_scope tests below.
+            "tap.owner_scope",
             "keys.inert_scopes",
             "ai.sample_values",
             "codegen.isolation",
@@ -1159,5 +1161,115 @@ class DoctorServiceSpec extends AnyFunSuite {
         val r = DoctorService.runOne(inertCheck(p))
         assert(r.id == "keys.inert_scopes" && r.status == "error", r.toString)
         assert(r.detail.contains("vault down"), r.detail)
+    }
+    // tap.owner_scope — plans/stories/tap-runs-hold-owner-scope.md, Acceptance
+    // bullet 3 (`DoctorServiceSpec`). Report-only release: nothing is refused
+    // yet, so the check is `warn` at most, never `error` (an error would turn
+    // `datris doctor` into exit 2 and is reserved for the enforcing release).
+    // Pinned (does not exist at 4f38ae31): `class TapOwnerScopeCheck(probes)`,
+    // id "tap.owner_scope", startupSafe = true, registered in
+    // DoctorService.checks immediately after tap.secret_scope, reading
+    // `Probes.tapOwnerScopeScan(): TapOwnerScopeScan.Result` (default
+    // TapOwnerScopeScan.Result.empty; LiveProbes overrides it with liveScan()).
+    // Detail per finding: `tap -> pipeline (owner label)`.
+
+    private def ownerScopeProbes(scan: => TapOwnerScopeScan.Result): FakeProbes =
+        new FakeProbes() {
+            override def tapOwnerScopeScan(): TapOwnerScopeScan.Result = scan
+        }
+
+    private def ownerScopeCheck(p: FakeProbes): Check = {
+        val all = DoctorService.checks(p, slots, "1.62.0", Map.empty)
+        all.find(_.id == "tap.owner_scope").getOrElse(fail("no tap.owner_scope check in " + all.map(_.id)))
+    }
+
+    private def ownerFinding(group: String, tap: String, pipeline: String, owner: String) =
+        TapOwnerScopeScan.Finding(group, tap, pipeline, owner)
+
+    private val ownerFindings = List(
+        ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "rita-finance", "finance-ledger", "session:rita"),
+        ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "key-finance", "finance-ledger", "sales-agent"),
+        ownerFinding(TapOwnerScopeScan.TargetMissing, "rita-early", "not-created-yet", "session:rita"),
+        ownerFinding(TapOwnerScopeScan.OwnerUnresolved, "orphan", "sales-orders", "gone-agent"),
+        ownerFinding(TapOwnerScopeScan.ReadsNarrowed, "rita-reads", "sales-orders", "session:rita")
+    )
+
+    test("tap.owner_scope is ok with nothing to report") {
+        val byDefault = ownerScopeCheck(new FakeProbes()).run()
+        assert(byDefault.status == "ok", "the Probes default has nothing to report: " + byDefault)
+        val empty = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(Nil, Nil))).run()
+        assert(empty.status == "ok", empty.toString)
+        assert(empty.remediation.isEmpty, empty.toString)
+    }
+
+    test("tap.owner_scope warns naming each tap and what will stop") {
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings, Nil))).run()
+        assert(r.status == "warn" && r.severity == "warn", r.toString)
+        for (f <- ownerFindings)
+            assert(r.detail.contains(f.tap + " -> " + f.pipeline + " (" + f.owner + ")"), "names " + f + ": " + r.detail)
+        val text = r.detail + " " + r.remediation
+        assert(text.contains("next release"), "says what stops in the next release: " + text)
+        assert(text.contains("since the upgrade"), "says reads are known only for taps run since the upgrade: " + text)
+        assert(r.remediation.nonEmpty, r.toString)
+        // a tap that is fine is not named
+        assert(!r.detail.contains("rita-sales"), r.detail)
+    }
+
+    test("tap.owner_scope never reports error") {
+        val inputs = Seq(
+            TapOwnerScopeScan.Result(Nil, Nil),
+            TapOwnerScopeScan.Result(ownerFindings, Nil),
+            TapOwnerScopeScan.Result(Nil, List("t-flaky")),
+            TapOwnerScopeScan.Result(ownerFindings, List("t-flaky")),
+            TapOwnerScopeScan.Result((1 to 300).toList.map(i => ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "t" + i, "p" + i, "session:u" + i)), Nil)
+        )
+        for (in <- inputs) {
+            val r = DoctorService.runOne(ownerScopeCheck(ownerScopeProbes(in)))
+            assert(r.status != "error" && r.severity != "error", in.toString + " -> " + r)
+        }
+        val failing = DoctorService.runOne(ownerScopeCheck(ownerScopeProbes(throw new RuntimeException("mongo down"))))
+        assert(failing.status != "error" && failing.severity != "error", "a failed scan is not an error row: " + failing)
+    }
+
+    test("tap.owner_scope warns that it could not check when a store read fails") {
+        // the scan itself throws (taps cannot be listed): warn, never "nothing to report", never an error row
+        val thrown = DoctorService.runOne(ownerScopeCheck(ownerScopeProbes(throw new RuntimeException("mongo down"))))
+        assert(thrown.status == "warn", thrown.toString)
+        assert(thrown.detail.contains("could not"), thrown.detail)
+        // some taps could not be checked (an owner or pipeline read failed)
+        val partial = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(Nil, List("t-flaky", "t-broken")))).run()
+        assert(partial.status == "warn", partial.toString)
+        assert(partial.detail.contains("could not") && partial.detail.contains("t-flaky") && partial.detail.contains("t-broken"), partial.detail)
+        // findings and unreadable taps together: both are named
+        val both = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings.take(1), List("t-flaky")))).run()
+        assert(both.status == "warn", both.toString)
+        assert(both.detail.contains("rita-finance") && both.detail.contains("t-flaky"), both.detail)
+    }
+
+    test("tap.owner_scope is startup-safe and in the full report") {
+        val p = ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings, Nil))
+        assert(ownerScopeCheck(p).startupSafe)
+        val fullIds = DoctorService.run("full", Set.empty, Map.empty, p, slots, "1.62.0").checks.map(_.id)
+        assert(fullIds.contains("tap.owner_scope"), fullIds.toString)
+        assert(fullIds.indexOf("tap.owner_scope") == fullIds.indexOf("tap.secret_scope") + 1, "registered right after tap.secret_scope: " + fullIds)
+        val quickIds = DoctorService.run("quick", Set.empty, Map.empty, p, slots, "1.62.0").checks.map(_.id)
+        assert(quickIds.contains("tap.owner_scope"), quickIds.toString)
+        val startup = DoctorService.runStartup(p, slots, "1.62.0")
+        assert(startup.find(_.id == "tap.owner_scope").exists(_.status == "warn"), "one DOCTOR tap.owner_scope line at start: " + startup)
+        // the other checks keep their order around it
+        assert(fullIds.filterNot(_ == "tap.owner_scope") == DoctorService.run("full", Set.empty, Map.empty, new FakeProbes(), slots, "1.62.0").checks.map(_.id)
+            .filterNot(_ == "tap.owner_scope"))
+    }
+
+    // PROPOSED, for the lead to confirm: the story does not bound the detail.
+    // Modelled on ai.sample_values ("naming up to five pipelines"): the row
+    // stays readable when many taps are affected and still gives the total.
+    test("tap.owner_scope (proposed bound): many affected taps give a bounded detail that still states how many") {
+        val many = (1 to 500).toList.map(i => ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "tap-number-" + i, "pipeline-number-" + i, "session:user-" + i))
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(many, Nil))).run()
+        assert(r.status == "warn", r.toString)
+        assert(r.detail.length < 4000, "detail is " + r.detail.length + " chars")
+        assert(r.detail.contains("500"), "states the total: " + r.detail.take(300))
+        assert(r.detail.contains("tap-number-1 -> pipeline-number-1 (session:user-1)"), "names the first ones: " + r.detail.take(300))
     }
 }
