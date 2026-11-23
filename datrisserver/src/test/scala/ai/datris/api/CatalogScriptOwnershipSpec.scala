@@ -37,6 +37,16 @@ import java.util.concurrent.atomic.AtomicInteger
   *    row; the restore refuses as for any other clash. Every other caller's
   *    restore is unchanged, and so is one where the live path is the tap's
   *    own file.
+  *  - Catalog restore: the per-member tap scope check runs before the
+  *    script checks, and the script checks judge only taps the caller would
+  *    actually write. A tap the caller may not write is reported only as
+  *    refused, raises no script clash and no audit row of rule S4, and the
+  *    other taps of the restore proceed.
+  *  - Catalog restore, at the write: a held caller's tap whose script would
+  *    be written through the code repository over a stored path that is not
+  *    the tap's own file (as read just before the write) is failed with the
+  *    rule S4 message and nothing is written for it. Every other caller is
+  *    unchanged.
   *  - Catalog cascade delete: one tap listing serves every tap delete of the
   *    cascade, read at most once (a failed read stays failed, so each delete
   *    keeps its file), and taps already deleted in the cascade no longer count
@@ -50,6 +60,11 @@ import java.util.concurrent.atomic.AtomicInteger
   *   private[api] def restoreNotOwnClashes(request: HttpServletRequest, plan: CatalogArchive.RepoScriptPlan, cfg: CodeRepoConfig,
   *                                         liveTaps: Seq[TapConfig]): Seq[String]
   *   def restoreNotOwnMessage(tapName: String): String
+  *   private[api] def restoreTapPreflight(request: HttpServletRequest, target: String, caller: String, archivedTaps: Seq[String],
+  *                                        liveTaps: Seq[TapConfig], plan: CatalogArchive.RepoScriptPlan,
+  *                                        repoCfg: Option[CodeRepoConfig]): (Seq[(String, String)], Seq[String])
+  *   private[api] def restoreWriteNotOwn(heldStrict: Boolean, repoCfg: Option[CodeRepoConfig], tap: String,
+  *                                       prior: TapConfig): Option[String]
   *   private[api] def cascadeListing(read: () => Seq[TapConfig]): (() => Seq[TapConfig], String => Unit)
   * }
   * }}}
@@ -208,6 +223,88 @@ class CatalogScriptOwnershipSpec extends AnyFunSuite with BeforeAndAfterEach {
             assert(CatalogAPIController.restoreNotOwnClashes(req(rk), plan(), cfg, Seq(repo("orders", handPlaced))).isEmpty, rk.label)
         }
         assert(refusedRows("orders").isEmpty)
+    }
+
+    // ================================================================ restore, scope check before the script checks
+
+    private def inCatalog(t: TapConfig, catalog: String): TapConfig = t.copy(catalog = catalog)
+
+    private def preflight(rk: ResolvedKey, archived: Seq[String], live: Seq[TapConfig], write: String*) =
+        CatalogAPIController.restoreTapPreflight(req(rk), "Sales", rk.label, archived, live, plan(write: _*), Some(cfg))
+
+    test("restore: a held caller's tap it may not write raises no rule S4 clash and no audit row, and the allowed tap is judged as before") {
+        val live = Seq(inCatalog(repo("finance-tap", handPlaced), "Finance"), inCatalog(repo("orders", Prefix + "orders.py"), "Sales"))
+        val (denied, clashes) = preflight(salesKey, Seq("finance-tap", "orders"), live, "finance-tap", "orders")
+        assert(denied.map(_._1) == Seq("finance-tap"), denied.toString)
+        assert(clashes.isEmpty, clashes.toString)
+        assert(refusedRows("finance-tap").isEmpty, audit.toString)
+        // the same refusal as the member check on its own
+        val alone = CatalogAPIController.restoreMemberDenial(req(salesKey), "tap", "Sales", salesKey.label, Some(("Finance", null)))
+        assert(alone.isDefined && denied.head._2 == alone.get, denied.toString)
+    }
+
+    test("restore: a held caller's tap it may not write raises no clash on a file another stored tap runs from") {
+        val live = Seq(inCatalog(builtIn("finance-tap"), "Finance"), repo("hand", Prefix + "finance-tap.py"), inCatalog(builtIn("orders"), "Sales"))
+        val (denied, clashes) = preflight(salesKey, Seq("finance-tap", "orders"), live, "finance-tap", "orders")
+        assert(denied.map(_._1) == Seq("finance-tap") && clashes.isEmpty, denied.toString + " " + clashes)
+    }
+
+    test("restore: a held caller's allowed tap whose live repository path is not its own file is still a rule S4 clash with one audit row") {
+        val live = Seq(inCatalog(repo("orders", handPlaced), "Sales"))
+        val (denied, clashes) = preflight(salesKey, Seq("orders"), live, "orders")
+        assert(denied.isEmpty, denied.toString)
+        assert(clashes == Seq(CatalogAPIController.restoreNotOwnMessage("orders")), clashes.toString)
+        assert(refusedRows("orders").size == 1)
+    }
+
+    test("restore: an allowed tap whose file another stored tap runs from is still a clash, for every caller") {
+        val live = Seq(inCatalog(builtIn("orders"), "Sales"), repo("hand", Prefix + "orders.py"))
+        for (rk <- Seq(salesKey, fullKey)) {
+            val (denied, clashes) = preflight(rk, Seq("orders"), live, "orders")
+            assert(denied.isEmpty && clashes.size == 1 && clashes.head.contains(Prefix + "orders.py"), rk.label + ": " + clashes)
+        }
+    }
+
+    test("restore: unchanged for an unrestricted caller, and no script clashes without a code repository") {
+        val live = Seq(inCatalog(repo("finance-tap", handPlaced), "Finance"))
+        val (denied, clashes) = preflight(fullKey, Seq("finance-tap"), live, "finance-tap")
+        assert(denied.isEmpty && clashes.isEmpty, denied.toString + " " + clashes)
+        val (_, none) = CatalogAPIController.restoreTapPreflight(
+            req(salesKey),
+            "Sales",
+            salesKey.label,
+            Seq("orders"),
+            Seq(inCatalog(repo("orders", handPlaced), "Sales")),
+            plan("orders"),
+            None
+        )
+        assert(none.isEmpty && refusedRows("orders").isEmpty)
+    }
+
+    // ================================================================ restore, at the write
+
+    test("restore write: a held caller's tap whose stored repository path is not its own file is refused with the rule S4 message") {
+        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(cfg), "orders", repo("orders", handPlaced)) ==
+            Some(CatalogAPIController.restoreNotOwnMessage("orders")))
+        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(cfg), "orders", repo("orders", "elsewhere/orders.py")).isDefined)
+    }
+
+    test("restore write: unchanged for its own file, no repository reference, or a caller not held") {
+        val withEarlier = cfg.copy(earlierPathPrefixes = new java.util.ArrayList[String](java.util.Arrays.asList("old-taps/")))
+        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(cfg), "orders", repo("orders", Prefix + "orders.py")).isEmpty)
+        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(withEarlier), "orders", repo("orders", "old-taps/orders.py")).isEmpty)
+        for (prior <- Seq(null, builtIn("orders"), repo("orders", "")))
+            assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = true, Some(cfg), "orders", prior).isEmpty, String.valueOf(prior))
+        assert(CatalogAPIController.restoreWriteNotOwn(heldStrict = false, Some(cfg), "orders", repo("orders", handPlaced)).isEmpty)
+    }
+
+    test("restore write: the held predicate is the one the clash check uses, with the log-only exemption") {
+        assert(held.forall(rk => CatalogAPIController.heldStrictlyToOwnScriptFile(req(rk))))
+        assert(Seq(admin, editor, fullKey, pipelineOnly).forall(rk => !CatalogAPIController.heldStrictlyToOwnScriptFile(req(rk))))
+        val (r, attrs) = ScopeDenialFixtures.request(salesKey, "POST", "/api/v1/catalog/Sales/restore")
+        attrs.put(ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr, java.lang.Boolean.TRUE)
+        assert(!CatalogAPIController.heldStrictlyToOwnScriptFile(r))
+        assert(!CatalogAPIController.heldStrictlyToOwnScriptFile(null))
     }
 
     // ================================================================ cascade delete listing
