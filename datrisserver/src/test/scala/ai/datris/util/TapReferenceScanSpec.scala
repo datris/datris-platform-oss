@@ -119,6 +119,62 @@ class TapReferenceScanSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(names(r, TapReferenceScan.OutsideArea).toSet == outside.indices.map("out-" + _).toSet, r.toString)
     }
 
+    test("scan: the built-in forms with an empty or dot segment are listed as outside the area") {
+        val outside = Seq("tap-scripts//o_1.py", "tap-scripts/o_1.py/", "tap-scripts/./o_1.py", "./tap-scripts/o_1.py")
+        val r = scan(outside.zipWithIndex.map { case (p, i) => tap("sp-" + i, "Sales", "session:ada", p) }.toList)
+        assert(names(r, TapReferenceScan.OutsideArea).toSet == outside.indices.map("sp-" + _).toSet, r.toString)
+    }
+
+    private def repoTap(name: String, path: String) =
+        TapConfig(
+            name = name,
+            description = "d",
+            targetPipeline = "p",
+            catalog = "Sales",
+            createdByKeyLabel = "session:ada",
+            scriptStorage = "github",
+            scriptRepoPath = path,
+            scriptCommitSha = "abc123"
+        )
+
+    test("scan: a tap stored in a code repository whose path is outside the current repository tap path is listed; the settings are read once") {
+        val reads = new AtomicInteger(0)
+        val taps = List(
+            repoTap("repo-in", "datris-taps/repo-in.py"),
+            repoTap("repo-old-prefix", "old-taps/repo-old-prefix.py"),
+            repoTap("repo-pipelines", "datris-taps/pipelines/p/transformation.py"),
+            repoTap("repo-doubled", "datris-taps//repo-doubled.py"),
+            tap("builtin-in", "Sales", "session:ada", "tap-scripts/b_1.py")
+        )
+        val r = TapReferenceScan.scan(taps, resolve, n => secretOwners.get(n), Nil, () => { reads.incrementAndGet(); "datris-taps/" })
+        assert(names(r, TapReferenceScan.OutsideArea) == List("repo-old-prefix", "repo-pipelines", "repo-doubled"), r.toString)
+        assert(reads.get == 1, reads.get.toString)
+        assert(r.unreadable.isEmpty, r.toString)
+    }
+
+    test("scan: the repository settings are not read when no tap is stored in a repository; a failed read lists the repository taps as unreadable") {
+        val reads = new AtomicInteger(0)
+        TapReferenceScan.scan(
+            List(tap("b", "Sales", "session:ada", "tap-scripts/b_1.py")),
+            resolve,
+            n => secretOwners.get(n),
+            Nil,
+            () => {
+                reads.incrementAndGet(); "datris-taps/"
+            }
+        )
+        assert(reads.get == 0)
+        val r = TapReferenceScan.scan(
+            List(repoTap("repo-a", "datris-taps/repo-a.py"), tap("out", "Sales", "session:ada", "uploads/x.py")),
+            resolve,
+            n => secretOwners.get(n),
+            Nil,
+            () => throw new IllegalStateException("mongo down")
+        )
+        assert(r.unreadable == List("repo-a"), r.toString)
+        assert(names(r, TapReferenceScan.OutsideArea) == List("out"), r.toString)
+    }
+
     test("scan: one script shared by taps of different catalogs or owners lists each of them; sharing within one catalog and owner is not listed") {
         val shared = "tap-scripts/shared_44444444.py"
         val r = scan(

@@ -81,29 +81,58 @@ object TapOwnerScopeReport {
 
     private val queue = new ArrayBlockingQueue[Runnable](QueueCapacity)
 
-    private val worker: Thread = {
-        val t = new Thread(() => work(), "tap-owner-report")
-        t.setDaemon(true)
-        t.start()
-        t
-    }
+    /** The report thread: started on the first offer, and started again by a
+      * later offer when it is found dead. Null until then. */
+    @volatile private var worker: Thread = null
 
-    private def work(): Unit =
-        while (true) {
-            val task =
-                try queue.take()
-                catch { case _: InterruptedException => null }
-            if (task != null) safe("report thread")(task.run())
+    /** The current report thread (specs). */
+    private[util] def workerThread: Thread = worker
+
+    /** Start the report thread unless one is alive. A failed start is logged
+      * and leaves the report to a later offer; never throws. */
+    private def ensureWorker(): Unit =
+        try {
+            val w = worker
+            if (w == null || !w.isAlive) synchronized {
+                val again = worker
+                if (again == null || !again.isAlive) {
+                    val t = new Thread(() => work(), "tap-owner-report")
+                    t.setDaemon(true)
+                    t.start()
+                    worker = t
+                }
+            }
+        } catch {
+            case e: Throwable => logger.warn("Tap owner access report thread could not be started: " + e)
         }
 
-    /** Offer `task` to the report thread; false (dropped) when the queue is
-      * full. Never blocks, never throws. */
+    /** Runs each queued report; a report that throws anything is logged and
+      * the next one runs. Ends only when the thread is interrupted
+      * (shutdown). */
+    private def work(): Unit =
+        while (!Thread.currentThread().isInterrupted) {
+            val task =
+                try queue.take()
+                catch { case _: InterruptedException => return }
+            try task.run()
+            catch {
+                case _: InterruptedException => return
+                case e: Throwable => logger.warn("Tap owner access report failed; later reports still run: " + e)
+            }
+        }
+
+    /** Offer `task` to the report thread (started or replaced first when
+      * needed); false (dropped) when the queue is full. Never blocks, never
+      * throws. */
     private[util] def enqueue(task: Runnable): Boolean =
-        try queue.offer(task)
-        catch { case e: Throwable if scala.util.control.NonFatal(e) => false }
+        try {
+            ensureWorker()
+            queue.offer(task)
+        } catch { case e: Throwable if scala.util.control.NonFatal(e) => false }
 
     /** Specs: wait until every report queued before this call has run. */
     private[util] def awaitIdle(timeoutMs: Long = 10000L): Boolean = {
+        ensureWorker()
         val done = new CountDownLatch(1)
         queue.offer(() => done.countDown(), timeoutMs, TimeUnit.MILLISECONDS) && done.await(timeoutMs, TimeUnit.MILLISECONDS)
     }
@@ -270,7 +299,7 @@ object TapOwnerScopeReport {
             if (!firstToday(ReferenceWouldBeRefusedAction + "|" + rule + "|" + tapName)) return
             val label = CapabilityCheck.resolvedKey(request).map(_.label).orNull
             logger.warn(
-                "Tap " + q(tapName) + ": " + reason + " (" + site + " by " + q(String.valueOf(label)) + "). " +
+                "Tap " + q(LogSafe.text(tapName)) + ": " + reason + " (" + site + " by " + q(LogSafe.text(label)) + "). " +
                     "A later release refuses this (script reference and secret rule " + rule + ")." + ReferencesDoctor
             )
             if (AuditLog.enabled) {
@@ -295,20 +324,45 @@ object TapOwnerScopeReport {
         }
 
     /** `POST /tap/review` by an identity holding no `tap:update` (rule 4):
-      * the label is recorded in [[TapReviewAccessLog]] and one WARN line is
-      * written at most once per label and tap a UTC day. `tapName` may be
-      * null (a review naming no tap). Never throws. */
+      * the label is recorded in [[TapReviewAccessLog]] for the current
+      * environment; one WARN line is written at most once per label and tap
+      * a UTC day; and one `tap/reference-would-be-refused` audit row (rule
+      * `4`, site `review`, `enforced: false`, outcome `warning`) at most once
+      * per label and environment a UTC day, through [[AuditLog.submit]] so
+      * the request's own audit entry is kept. `tapName` may be null (a review
+      * naming no tap). Never throws. */
     def reviewWithoutUpdate(request: HttpServletRequest, tapName: String): Unit =
         safe("review") {
             val label = CapabilityCheck.resolvedKey(request).map(_.label).orNull
             if (label == null) return
-            TapReviewAccessLog.record(label)
-            val tap = Option(tapName).filter(_.trim.nonEmpty).getOrElse("(no tap named)")
-            if (firstToday("review-without-update|" + label + "|" + tap))
+            val env = Option(ai.datris.model.DatrisEnvironment.current).map(e => String.valueOf(e.environment)).getOrElse("null")
+            TapReviewAccessLog.record(label, env)
+            val named = Option(tapName).filter(_.trim.nonEmpty)
+            val tap = named.getOrElse("(no tap named)")
+            if (firstToday("review-without-update|" + env + "|" + label + "|" + tap))
                 logger.warn(
-                    "Tap review of " + q(tap) + " by " + q(label) + ", which holds no tap update. A later release requires tap update " +
-                        "for review; use a user or key that may update the tap." + ReferencesDoctor
+                    "Tap review of " + q(LogSafe.text(tap)) + " by " + q(LogSafe.text(label)) + ", which holds no tap update. " +
+                        "A later release requires tap update for review; use a user or key that may update the tap." + ReferencesDoctor
                 )
+            if (AuditLog.enabled && firstToday("review-without-update-audit|" + env + "|" + label)) {
+                val md = new JsonObject()
+                md.addProperty("rule", "4")
+                md.addProperty("site", "review")
+                md.addProperty("enforced", false)
+                AuditLog.submit(
+                    AuditEntry(
+                        ts = Instant.now(),
+                        actor = AuditActor.resolve(request),
+                        category = "tap",
+                        action = ReferenceWouldBeRefusedAction,
+                        resourceType = Some("tap"),
+                        resourceName = named,
+                        outcome = "warning",
+                        request = Option(request).map(AuditLog.requestInfo),
+                        metadata = Some(md)
+                    )
+                )
+            }
         }
 
     // ------------------------------------------------------------ rule 6: script upload

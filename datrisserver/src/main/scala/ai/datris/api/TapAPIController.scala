@@ -517,6 +517,15 @@ object TapAPIController {
                     ai.datris.auth.CallerVisibility.storedWriteDenial(rk, "tap", ctx, ai.datris.auth.CallerVisibility.TapWriteActions, "update").isEmpty
         }
 
+    /** True when the route gate let `request` through only because
+      * `CAPABILITY_ENFORCEMENT=log-only` (it noted a would-deny,
+      * [[ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr]]).
+      * Log-only refuses nothing, so generate, fix and optimize then change
+      * the stored tap as v1.61.0 did instead of applying
+      * [[mayWriteStoredTap]]; review (whose gate is tap read) does not ask. */
+    private[api] def passedGateOnlyInLogOnly(request: HttpServletRequest): Boolean =
+        request != null && request.getAttribute(ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr) != null
+
     /** The store reads, writes, secret reads and model calls of the review,
       * generate, fix and optimize routes, so specs can drive them without
       * Mongo, Vault, a script store or a model. [[ProductionAiIO]] makes the
@@ -1767,16 +1776,20 @@ class TapAPIController {
       * responses, and MCP create_tap hands any body with `error` to the agent.
       * A caller who may not update the stored tap
       * ([[TapAPIController.mayWriteStoredTap]], asked first) never changes it:
-      * [[TapAPIController.StoredTapLeftUnchanged]] is returned instead. */
+      * [[TapAPIController.StoredTapLeftUnchanged]] is returned instead,
+      * except when `logOnlyAsBefore` (generate, fix and optimize, for a
+      * request the route gate passed only under log-only): then the tap is
+      * changed as on v1.61.0. */
     private def repointUnlessGated(
         existing: TapConfig,
         newScriptPath: String,
         request: HttpServletRequest,
         note: String,
-        io: TapAPIController.TapAiIO
+        io: TapAPIController.TapAiIO,
+        logOnlyAsBefore: Boolean = false
     ): Option[String] =
-        if (!TapAPIController.mayWriteStoredTap(request, existing)) {
-            logger.info("Not repointing tap '" + existing.name + "': the caller may not update it")
+        if (!logOnlyAsBefore && !TapAPIController.mayWriteStoredTap(request, existing)) {
+            logger.info("Not repointing tap '" + LogSafe.text(existing.name) + "': the caller may not update it")
             Some(TapAPIController.StoredTapLeftUnchanged)
         } else TapCronGate.checkAiRepoint(existing, newScriptPath) match {
             case None =>
@@ -1995,11 +2008,14 @@ class TapAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
-            val tapName = Option(body.get("tapName")).getOrElse("tap-" + System.currentTimeMillis())
+            // The name a missing tapName stands for, made once per request so
+            // the logged name is the one used.
+            val fallbackName = "tap-" + System.currentTimeMillis()
+            val tapName = Option(body.get("tapName")).getOrElse(fallbackName)
             val tapType = Option(body.get("tapType")).getOrElse("structured")
             logger.info("API endpoint POST /tap/generate called, tapName: " + tapName + ", tapType: " + tapType)
             APIKeyValidator.validate(apiKey)
-            generateScriptWith(body, request, TapAPIController.ProductionAiIO)
+            generateScriptWith(body, request, TapAPIController.ProductionAiIO, fallbackName)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -2009,17 +2025,19 @@ class TapAPIController {
 
     /** `POST /tap/generate` after key validation, every store, secret and
       * model call through `io`. A request naming no tap (missing or blank
-      * `tapName`) reads and writes no stored tap; the model still gets the
-      * `tap-<millis>` name a missing one stands for. */
+      * `tapName`) reads and writes no stored tap and is not reported; the
+      * model still gets the name a missing one stands for (`fallbackName`,
+      * `tap-<millis>` made here when not given). */
     private[api] def generateScriptWith(
         body: java.util.Map[String, String],
         request: HttpServletRequest,
-        io: TapAPIController.TapAiIO
+        io: TapAPIController.TapAiIO,
+        fallbackName: String = null
     ): ResponseEntity[String] = {
         try {
             val description = body.get("description")
             val named = TapAPIController.namesTap(body.get("tapName"))
-            val tapName = Option(body.get("tapName")).getOrElse("tap-" + System.currentTimeMillis())
+            val tapName = Option(body.get("tapName")).getOrElse(Option(fallbackName).getOrElse("tap-" + System.currentTimeMillis()))
             val oldScriptPath = body.get("oldScriptPath")
             val secretName = body.get("secretName")
             val tapType = Option(body.get("tapType")).getOrElse("structured")
@@ -2046,10 +2064,21 @@ class TapAPIController {
 
             // Update scriptPath in MongoDB if tap already exists
             val existing = if (named) io.readTap(tapName) else null
-            val gateMsg = if (existing != null) repointUnlessGated(existing, result.scriptPath, request, TapScriptStoreVersioning.ScriptGenerated, io) else None
+            val gateMsg =
+                if (existing != null)
+                    repointUnlessGated(
+                        existing,
+                        result.scriptPath,
+                        request,
+                        TapScriptStoreVersioning.ScriptGenerated,
+                        io,
+                        TapAPIController.passedGateOnlyInLogOnly(request)
+                    )
+                else None
 
-            // Report only (rule 7): a secret the caller's tap read does not cover.
-            if (secretName != null && secretName.trim.nonEmpty) {
+            // Report only (rule 7): a secret the caller's tap read does not
+            // cover. Not for a request naming no tap (its name is made up).
+            if (named && secretName != null && secretName.trim.nonEmpty) {
                 val candidate = TapConfig(
                     name = tapName,
                     description = "",
@@ -2164,7 +2193,16 @@ class TapAPIController {
             // Update scriptPath in MongoDB if tap already exists
             val existingTap = if (named) io.readTap(tapName) else null
             val gateMsg =
-                if (existingTap != null) repointUnlessGated(existingTap, result.scriptPath, request, TapScriptStoreVersioning.ScriptFixed, io) else None
+                if (existingTap != null)
+                    repointUnlessGated(
+                        existingTap,
+                        result.scriptPath,
+                        request,
+                        TapScriptStoreVersioning.ScriptFixed,
+                        io,
+                        TapAPIController.passedGateOnlyInLogOnly(request)
+                    )
+                else None
 
             val gson = new Gson
             val response = new java.util.HashMap[String, Any]()
@@ -2310,7 +2348,14 @@ class TapAPIController {
             val existingTap = if (named) io.readTap(tapName) else null
             val gateMsg =
                 if (existingTap != null && opt.scriptPath != null && opt.scriptPath != oldScriptPath)
-                    repointUnlessGated(existingTap, opt.scriptPath, request, TapScriptStoreVersioning.ScriptOptimized, io)
+                    repointUnlessGated(
+                        existingTap,
+                        opt.scriptPath,
+                        request,
+                        TapScriptStoreVersioning.ScriptOptimized,
+                        io,
+                        TapAPIController.passedGateOnlyInLogOnly(request)
+                    )
                 else None
 
             val gson = new Gson

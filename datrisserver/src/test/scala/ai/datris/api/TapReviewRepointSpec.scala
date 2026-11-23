@@ -5,7 +5,9 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.audit.{AuditEntry, AuditLog}
 import ai.datris.auth.{CapabilityRoutes, RouteCheck, ScopeDenialFixtures}
+import ai.datris.config.CapabilityInterceptor
 import ai.datris.model._
 import ai.datris.util.{APIKeyValidator, SecretNames, TapCronGate, TapFixResult, TapGenerateResult, TapOptimizeResult, TapReviewResult, TapReviewAccessLog}
 import ai.datris.util.InMemoryUserDb.grants
@@ -13,7 +15,9 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import com.google.gson.{JsonObject, JsonParser}
-import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
+import org.mockito.ArgumentMatchers.anyInt
+import org.mockito.Mockito.{doAnswer, mock, when}
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 import org.slf4j.LoggerFactory
@@ -96,15 +100,21 @@ class TapReviewRepointSpec extends AnyFunSuite with BeforeAndAfterEach {
     private var savedValues: DatrisEnvironment = _
     private var savedScope: Option[String] = None
 
+    /** Audit rows (the audit log is on in `env`; this sink keeps every row in memory). */
+    private val audit = mutable.ArrayBuffer[AuditEntry]()
+
     override def beforeEach(): Unit = {
         savedValues = DatrisEnvironment.values
         DatrisEnvironment.init(env)
         ScopeDenialFixtures.install(env)
         savedScope = sys.props.get(SecretNames.TapScopeProperty)
         sys.props(SecretNames.TapScopeProperty) = "tap"
+        audit.clear()
+        AuditLog.sinkOverride = (e: AuditEntry) => audit.synchronized { audit += e; () }
     }
 
     override def afterEach(): Unit = {
+        AuditLog.sinkOverride = null
         ScopeDenialFixtures.install(savedValues)
         savedScope match {
             case Some(v) => sys.props(SecretNames.TapScopeProperty) = v
@@ -254,10 +264,16 @@ class TapReviewRepointSpec extends AnyFunSuite with BeforeAndAfterEach {
         s
     }
 
-    private def call(route: String, rk: ResolvedKey, w: World, tapName: Option[String] = Some("sales-tap")): ResponseEntity[String] = {
+    private def call(
+        route: String,
+        rk: ResolvedKey,
+        w: World,
+        tapName: Option[String] = Some("sales-tap"),
+        request: HttpServletRequest = null
+    ): ResponseEntity[String] = {
         val c = new TapAPIController()
         val b = body(route, tapName)
-        val r = req(rk, "/api/v1/tap/" + route)
+        val r = Option(request).getOrElse(req(rk, "/api/v1/tap/" + route))
         route match {
             case "generate" => c.generateScriptWith(strings(b), r, w.io)
             case "fix" => c.fixScriptWith(strings(b), r, w.io)
@@ -309,9 +325,9 @@ class TapReviewRepointSpec extends AnyFunSuite with BeforeAndAfterEach {
       * whose note names the route. */
     private def who(rk: ResolvedKey): String = Option(rk).map(_.label).getOrElse("(no identity)")
 
-    private def assertChangedAsToday(route: String, rk: ResolvedKey): Unit = {
+    private def assertChangedAsToday(route: String, rk: ResolvedKey, request: HttpServletRequest = null): Unit = {
         val w = new World()
-        val r = call(route, rk, w)
+        val r = call(route, rk, w, request = request)
         assert(r.getStatusCode.value == 200, route + " " + who(rk) + ": " + r.getBody)
         assert(json(r) == todayBody(route, newPath("sales-tap")), route + " " + who(rk) + ": " + r.getBody)
         assert(w.versioned.size == 1 && w.plainWrites.isEmpty, route + " " + who(rk) + ": " + w.versioned)
@@ -322,9 +338,9 @@ class TapReviewRepointSpec extends AnyFunSuite with BeforeAndAfterEach {
     }
 
     /** Rule 1 for a caller who may read but not update the stored tap. */
-    private def assertLeftUnchanged(route: String, rk: ResolvedKey): Unit = {
+    private def assertLeftUnchanged(route: String, rk: ResolvedKey, request: HttpServletRequest = null): Unit = {
         val w = new World()
-        val r = call(route, rk, w)
+        val r = call(route, rk, w, request = request)
         assert(r.getStatusCode.value == 200, route + " " + who(rk) + ": " + r.getBody)
         assert(json(r) == withError(todayBody(route, newPath("sales-tap")), Rule1Message), route + " " + who(rk) + ": " + r.getBody)
         w.untouched("sales-tap", salesTap)
@@ -555,5 +571,111 @@ class TapReviewRepointSpec extends AnyFunSuite with BeforeAndAfterEach {
         for (i <- 1 to (TapReviewAccessLog.MaxLabels + 50)) TapReviewAccessLog.record("bounded-" + i)
         assert(TapReviewAccessLog.labels().size <= TapReviewAccessLog.MaxLabels)
         assert(TapReviewAccessLog.since != null)
+    }
+
+    private def reviewRows(label: String): List[AuditEntry] =
+        audit.synchronized(audit.toList).filter(e => e.action == "reference-would-be-refused" && e.actor.label == label)
+
+    test("rule 4: a review without tap update also writes one durable audit row per caller a UTC day, keeping the request's own audit entry") {
+        val k = key("rule4-audit-" + System.nanoTime(), "tap:read")
+        val (r1, attrs) = ScopeDenialFixtures.request(k, "POST", "/api/v1/tap/review")
+        call("review", k, new World(), request = r1)
+        val other = salesTap.copy(name = "other-tap")
+        call("review", k, new World(Seq(other)), tapName = Some("other-tap"))
+        call("review", k, new World(), tapName = None)
+        val rows = reviewRows(k.label)
+        assert(rows.size == 1, rows.toString)
+        val row = rows.head
+        assert(row.category == "tap" && row.outcome == "warning" && row.resourceType.contains("tap") && row.resourceName.contains("sales-tap"), row.toString)
+        val md = row.metadata.getOrElse(fail("no metadata"))
+        assert(md.get("rule").getAsString == "4" && md.get("site").getAsString == "review" && !md.get("enforced").getAsBoolean, md.toString)
+        assert(!attrs.contains(AuditLog.RecordedAttr), "the request's own audit entry is kept")
+    }
+
+    test("rule 4: callers holding tap update write no review audit row") {
+        val k = key("rule4-updater-row-" + System.nanoTime(), "tap:read", "tap:update")
+        call("review", k, new World())
+        call("review", editor, new World())
+        assert(reviewRows(k.label).isEmpty && reviewRows(editor.label).isEmpty)
+    }
+
+    test("rule 4: the review access log is kept per environment, as the doctor row that reads it is") {
+        val label = "rule4-env-" + System.nanoTime()
+        TapReviewAccessLog.record(label, "env-a")
+        assert(TapReviewAccessLog.labels("env-a").contains(label))
+        assert(!TapReviewAccessLog.labels("env-b").contains(label))
+        assert(!TapReviewAccessLog.labels().contains(label), "the current environment ('" + env.environment + "') does not list it")
+    }
+
+    // ================================================================ CAPABILITY_ENFORCEMENT=log-only
+
+    /** An interceptor running as under CAPABILITY_ENFORCEMENT=log-only (its
+      * `enforce` flag is read once from the environment at construction). */
+    private def interceptor(logOnly: Boolean): CapabilityInterceptor = {
+        val i = new CapabilityInterceptor()
+        val f = classOf[CapabilityInterceptor].getDeclaredFields
+            .find(f => f.getType == java.lang.Boolean.TYPE && f.getName.toLowerCase.contains("enforce"))
+            .getOrElse(fail("CapabilityInterceptor has no boolean 'enforce' field"))
+        f.setAccessible(true)
+        f.setBoolean(i, !logOnly)
+        i
+    }
+
+    /** The route gate on `request`: whether the handler runs. */
+    private def gate(i: CapabilityInterceptor, request: HttpServletRequest): Boolean = {
+        val resp = mock(classOf[HttpServletResponse])
+        when(resp.getWriter).thenReturn(new java.io.PrintWriter(new java.io.StringWriter()))
+        doAnswer(_ => null).when(resp).setStatus(anyInt())
+        i.preHandle(request, resp, null)
+    }
+
+    /** Callers without the generate, fix and optimize gates' capability (tap create; tap update). */
+    private val belowGate = Seq(readOnlyKey, reportingKey, plainReadKey, viewer)
+
+    test("log-only: generate, fix and optimize change the stored tap as on v1.61.0 for a caller the route gate passed only because of log-only") {
+        val lo = interceptor(logOnly = true)
+        for (route <- Seq("generate", "fix", "optimize"); rk <- belowGate) {
+            val (r, attrs) = ScopeDenialFixtures.request(rk, "POST", "/api/v1/tap/" + route)
+            assert(gate(lo, r), route + " " + rk.label + ": log-only lets it through")
+            assert(attrs.contains(CapabilityInterceptor.LogOnlyWouldDenyAttr), route + " " + rk.label + ": the gate noted the would-deny")
+            assertChangedAsToday(route, rk, r)
+        }
+    }
+
+    test("enforce: the same callers are refused at the generate, fix and optimize gates, and a request the gate did not pass under log-only keeps rule 1") {
+        val en = interceptor(logOnly = false)
+        for (route <- Seq("generate", "fix", "optimize"); rk <- belowGate) {
+            val (r, attrs) = ScopeDenialFixtures.request(rk, "POST", "/api/v1/tap/" + route)
+            assert(!gate(en, r), route + " " + rk.label + ": refused in enforce mode")
+            assert(!attrs.contains(CapabilityInterceptor.LogOnlyWouldDenyAttr))
+            assertLeftUnchanged(route, rk)
+        }
+    }
+
+    test("log-only: a request the gate granted is not marked, and is answered as in enforce mode") {
+        val lo = interceptor(logOnly = true)
+        val granted = Seq("generate" -> ragKey) ++ (for (route <- Seq("generate", "fix", "optimize"); rk <- Seq(editor, salesKey)) yield route -> rk)
+        for ((route, rk) <- granted) {
+            val (r, attrs) = ScopeDenialFixtures.request(rk, "POST", "/api/v1/tap/" + route)
+            assert(gate(lo, r), route + " " + rk.label)
+            assert(!attrs.contains(CapabilityInterceptor.LogOnlyWouldDenyAttr), route + " " + rk.label)
+            assertChangedAsToday(route, rk, r)
+        }
+        assert(!TapAPIController.passedGateOnlyInLogOnly(req(editor, "/api/v1/tap/fix")))
+        assert(!TapAPIController.passedGateOnlyInLogOnly(null))
+    }
+
+    test("log-only: review is unchanged in both modes: a caller who may read but not update the tap still leaves it unchanged") {
+        for (logOnly <- Seq(true, false); rk <- Seq(readOnlyKey, reportingKey, plainReadKey, viewer)) {
+            val (r, attrs) = ScopeDenialFixtures.request(rk, "POST", "/api/v1/tap/review")
+            assert(gate(interceptor(logOnly), r), rk.label + ": review's gate is tap read, which it holds")
+            assert(!attrs.contains(CapabilityInterceptor.LogOnlyWouldDenyAttr))
+            assertLeftUnchanged("review", rk, r)
+        }
+        // a review request the gate passed only under log-only is still held to rule 1
+        val noTapRead = key("no-tap-read-" + System.nanoTime(), "pipeline:read")
+        val (r, attrs) = ScopeDenialFixtures.request(noTapRead, "POST", "/api/v1/tap/review")
+        assert(gate(interceptor(logOnly = true), r) && attrs.contains(CapabilityInterceptor.LogOnlyWouldDenyAttr))
+        assertLeftUnchanged("review", noTapRead, r)
     }
 }

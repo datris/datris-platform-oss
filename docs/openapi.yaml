@@ -5085,11 +5085,13 @@ paths:
         to a catalog or to what it created, a new or changed `scriptPath` or
         `scriptRepoPath` must be a tap script (an object under `tap-scripts/`, or
         a file under the code repository's path prefix outside its `pipelines/`
-        folder, with no `..` step) and must not be the current script of a tap
-        the caller cannot see. Otherwise the save is refused before anything is
-        read or written: 404 `{"error":"Tap: <name> not found"}` for such a user,
-        403 naming `tap:read` for a key. A reference left as stored, or left
-        out, is never refused.
+        folder, with no empty, `.` or `..` path segment) and must not be the
+        current script of a tap the caller cannot see, however the path is
+        written. Otherwise nothing is saved: 404
+        `{"error":"Tap: <name> not found"}` for such a user, 403 naming
+        `tap:read` for a key. A reference left as stored, or left out, is never
+        refused by this rule. A later release applies the tap script area to
+        every caller's references.
       parameters:
         - name: changeNote
           in: query

@@ -472,6 +472,35 @@ class TapFeedOwnerReportSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(ownerRows(t.name).map(_.action) == List("feed-outside-owner-scope"), "the report follows once the lookup answers: " + ownerRows(t.name))
     }
 
+    test("a report that throws an Error does not stop the reports after it, and the report thread keeps running") {
+        assert(TapOwnerScopeReport.awaitIdle())
+        val before = TapOwnerScopeReport.workerThread
+        assert(before != null && before.isAlive)
+        class ReportBoom extends Error("report failed")
+        assert(TapOwnerScopeReport.enqueue(() => throw new ReportBoom))
+        assert(TapOwnerScopeReport.enqueue(() => throw new LinkageError("a class failed to load")))
+        assert(TapOwnerScopeReport.enqueue(() => throw new IllegalStateException("store down")))
+        val later = new java.util.concurrent.CountDownLatch(1)
+        assert(TapOwnerScopeReport.enqueue(() => later.countDown()))
+        assert(later.await(10, java.util.concurrent.TimeUnit.SECONDS), "the report queued after the failures ran")
+        assert(TapOwnerScopeReport.workerThread eq before, "the same report thread ran it")
+        assert(before.isAlive)
+    }
+
+    test("a report thread that has ended is replaced by the next report offered") {
+        assert(TapOwnerScopeReport.awaitIdle())
+        val old = TapOwnerScopeReport.workerThread
+        old.interrupt()
+        old.join(10000)
+        assert(!old.isAlive, "an interrupt (shutdown) ends the report thread")
+        val ran = new java.util.concurrent.CountDownLatch(1)
+        assert(TapOwnerScopeReport.enqueue(() => ran.countDown()))
+        assert(ran.await(10, java.util.concurrent.TimeUnit.SECONDS), "the report offered after it ended ran")
+        val now = TapOwnerScopeReport.workerThread
+        assert((now ne old) && now.isAlive && now.isDaemon, String.valueOf(now))
+        assert(TapOwnerScopeReport.awaitIdle())
+    }
+
     test("a full report queue drops the report without throwing, and the run is unchanged") {
         val entered = new java.util.concurrent.CountDownLatch(1)
         val release = new java.util.concurrent.CountDownLatch(1)

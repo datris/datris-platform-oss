@@ -232,15 +232,41 @@ class TapReferenceRulesSpec extends AnyFunSuite with BeforeAndAfterEach {
         "/tap-scripts/" + name + "_1a2b3c4d.py",
         "TAP-SCRIPTS/" + name + "_1a2b3c4d.py",
         "Tap-Scripts/" + name + "_1a2b3c4d.py",
-        "tap-scripts" // the area itself is not a script
+        "tap-scripts", // the area itself is not a script
+        // an empty or dot segment: another spelling the store's client may resolve to a different object
+        "tap-scripts/" + name + "_1a2b3c4d.py/",
+        "tap-scripts//" + name + "_1a2b3c4d.py",
+        "tap-scripts/sub//" + name + "_1a2b3c4d.py",
+        "tap-scripts/./" + name + "_1a2b3c4d.py",
+        "./tap-scripts/" + name + "_1a2b3c4d.py",
+        "tap-scripts/sub/./" + name + "_1a2b3c4d.py",
+        "tap-scripts/."
     )
 
     private def outsideRepoForms(name: String): Seq[String] = Seq(
         RepoPrefix + "pipelines/sales-orders/transformation.py",
         RepoPrefix + "../" + name + ".py",
         "/" + RepoPrefix + name + ".py",
-        "elsewhere/" + name + ".py"
+        "elsewhere/" + name + ".py",
+        // an empty or dot segment, after the prefix or anywhere in the path
+        RepoPrefix + name + ".py/",
+        RepoPrefix + "/" + name + ".py",
+        RepoPrefix + "sub//" + name + ".py",
+        "datris-taps//" + name + ".py",
+        RepoPrefix + "./" + name + ".py",
+        RepoPrefix + "sub/./" + name + ".py",
+        "./" + RepoPrefix + name + ".py",
+        RepoPrefix + "/pipelines/sales-orders/transformation.py",
+        RepoPrefix + "./pipelines/sales-orders/transformation.py"
     )
+
+    /** Other spellings of the stored reference `p`: a trailing slash, a
+      * doubled slash, a dot segment. */
+    private def otherSpellings(p: String): Seq[String] = {
+        val i = p.lastIndexOf('/')
+        val (dir, file) = (p.substring(0, i), p.substring(i + 1))
+        Seq(p + "/", dir + "//" + file, dir + "/./" + file, "./" + p, p.replaceFirst("/", "//"))
+    }
 
     private val Sites3 = Seq(TapReferenceRules.Save, TapReferenceRules.Test, TapReferenceRules.Restore)
 
@@ -288,6 +314,92 @@ class TapReferenceRulesSpec extends AnyFunSuite with BeforeAndAfterEach {
         for (rk <- Seq(rita, salesKey); site <- Sites3) {
             val fs = judge(rk, site, newRepoTap("new-tap", financeRepoTap.scriptRepoPath), null)
             assert(rule3At(site, fs), rk.label + " " + site + " repo: " + fs)
+        }
+    }
+
+    test("rule 3: another spelling of a hidden tap's current script (an empty or dot segment) is an enforced finding on save and test, reported on restore") {
+        for (rk <- limited; site <- Sites3; p <- otherSpellings(hiddenScriptFor(rk))) {
+            val fs = judge(rk, site, newTap("new-tap", p), null)
+            assert(rule3At(site, fs), rk.label + " " + site + " '" + p + "': " + fs)
+            hiddenNamesFor(rk).foreach(h => assert(!fs.exists(_.reason.contains(h)), rk.label + ": " + fs))
+        }
+        for (rk <- Seq(rita, salesKey); site <- Sites3; p <- otherSpellings(financeRepoTap.scriptRepoPath)) {
+            val fs = judge(rk, site, newRepoTap("new-tap", p), null)
+            assert(rule3At(site, fs), rk.label + " " + site + " repo '" + p + "': " + fs)
+        }
+    }
+
+    test("rule 3: a hidden tap whose stored reference is written in another spelling is matched by the plain spelling of the same file") {
+        val oddBuiltIn = financeTap.copy(name = "finance-odd", scriptPath = "tap-scripts//finance-odd_5e5e5e5e.py/")
+        val oddRepo = financeRepoTap.copy(name = "finance-odd-repo", scriptRepoPath = "datris-taps//finance-odd-repo.py")
+        val lookups = Lookups(() => allTaps ++ Seq(oddBuiltIn, oddRepo), n => secretOwners.get(n), () => RepoPrefix)
+        for (rk <- Seq(rita, salesKey); site <- Sites3) {
+            val a = TapReferenceRules.judge(Some(rk), site, newTap("new-tap", "tap-scripts/finance-odd_5e5e5e5e.py"), null, lookups)
+            assert(rule3At(site, a), rk.label + " " + site + ": " + a)
+            val b = TapReferenceRules.judge(Some(rk), site, newRepoTap("new-tap", RepoPrefix + "finance-odd-repo.py"), null, lookups)
+            assert(rule3At(site, b), rk.label + " " + site + " repo: " + b)
+        }
+        assert(TapReferenceRules.normalizedRef("tap-scripts//a_1.py/") == "tap-scripts/a_1.py")
+        assert(TapReferenceRules.normalizedRef("/datris-taps/./a.py") == "datris-taps/a.py")
+        assert(TapReferenceRules.normalizedRef("datris-taps/x/../a.py") == "datris-taps/a.py")
+    }
+
+    test("rule 3: the references the tap script stores write themselves are inside the area, for every prefix form") {
+        // built-in: <tap-scripts/><tap name>_<uuid>.py, whatever the tap name holds
+        for (name <- Seq("new-tap", "sales.orders", "Sales_Orders", "tap", "50%-off", "a b"))
+            assert(TapReferenceRules.builtInInArea("tap-scripts/" + name + "_1a2b3c4d.py"), name)
+        // repository: <normalized prefix><tap name>.py
+        for (
+            (prefix, name) <- Seq(
+                "" -> "new-tap",
+                "taps/" -> "new-tap",
+                "taps" -> "new-tap",
+                "org/team/taps/" -> "sales.orders",
+                RepoPrefix -> "50%-off"
+            )
+        ) {
+            val path = TapReferenceRules.normalizePrefix(prefix) + name + ".py"
+            assert(TapReferenceRules.repoInArea(path, prefix), prefix + " " + path)
+            for (rk <- limited; site <- EnforcedSites) {
+                val lk = Lookups(() => allTaps, n => secretOwners.get(n), () => TapReferenceRules.normalizePrefix(prefix))
+                val fs = TapReferenceRules.judge(Some(rk), site, newRepoTap(name, path), null, lk)
+                assert(enforced(fs).isEmpty, rk.label + " " + site + " '" + path + "': " + fs)
+            }
+        }
+        for (rk <- limited; site <- EnforcedSites)
+            assert(enforced(judge(rk, site, newTap("50%-off", "tap-scripts/50%-off_1a2b3c4d.py"), null)).isEmpty, rk.label)
+    }
+
+    test("rule 3: a percent sequence in a reference reaches each store as literal characters, so it names that file and no other") {
+        // Built-in store: the MinIO client builds the object URL with S3Escaper.encodePath and
+        // HttpUrl.Builder.addEncodedPathSegments (MinioAsyncClient / S3Base.buildUrl).
+        def minioPath(key: String): java.util.List[String] =
+            new okhttp3.HttpUrl.Builder()
+                .scheme("http")
+                .host("minio")
+                .addPathSegment("test-config")
+                .addEncodedPathSegments(io.minio.S3Escaper.encodePath(key))
+                .build()
+                .pathSegments()
+        for (seq <- Seq("%2e%2e", "%2E%2E", "%2e", "%2f", "%2F", "%252e")) {
+            val key = "tap-scripts/" + seq + "/x_1.py"
+            assert(minioPath(key).asScala.toList == List("test-config", "tap-scripts", seq, "x_1.py"), key + " -> " + minioPath(key))
+        }
+        assert(minioPath("tap-scripts/a%2fb_1.py").asScala.toList == List("test-config", "tap-scripts", "a%2fb_1.py"))
+        // ... whereas a dot segment is resolved by the client: why such a reference is outside the area
+        assert(minioPath("tap-scripts/../uploads/x.csv").asScala.toList == List("test-config", "uploads", "x.csv"))
+        // Repository store: GithubClient escapes each segment, so a percent sign is sent as %25
+        val cfg = CodeRepoConfig(repo = "o/r", authSecretName = "s")
+        val base = "https://api.github.com/repos/o/r/contents/"
+        assert(ai.datris.util.GithubClient.contentsUrl(cfg, RepoPrefix + "%2e%2e/x.py") == base + "datris-taps/%252e%252e/x.py")
+        assert(ai.datris.util.GithubClient.contentsUrl(cfg, RepoPrefix + "a%2fb.py") == base + "datris-taps/a%252fb.py")
+        // the rule judges such a reference as written: a file of that name, inside the area unless it is a hidden tap's
+        for (rk <- limited) {
+            assert(enforced(judge(rk, TapReferenceRules.Save, newTap("new-tap", "tap-scripts/%2e%2e%2fnew-tap_1.py"), null)).isEmpty, rk.label)
+            val hiddenLiteral = financeTap.copy(name = "finance-pct", scriptPath = "tap-scripts/finance%2dpct_1.py")
+            val lk = Lookups(() => allTaps :+ hiddenLiteral, n => secretOwners.get(n), () => RepoPrefix)
+            val fs = TapReferenceRules.judge(Some(rk), TapReferenceRules.Save, newTap("new-tap", hiddenLiteral.scriptPath), null, lk)
+            assert(enforced(fs).nonEmpty, rk.label + ": the literal reference of a hidden tap is refused: " + fs)
         }
     }
 
@@ -602,12 +714,27 @@ class TapReferenceRulesSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
-    test("unchanged: the recovery agent's tap revert (no caller identity) is checked as on v1.61.0, whatever the reference") {
-        val s = new Store()
-        val candidate = EntityVersionAPIController.tapRestoreCandidate("sales-tap", salesTap.copy(scriptPath = "uploads/legacy/old.py"), salesTap)
-        val out = new TapAPIController().checkTapRevert(candidate, salesTap, 3, s.io)
-        assert(out.isRight && out.right.get.scriptPath == "uploads/legacy/old.py", out.toString)
-        assert(s.writes.isEmpty, "the revert check writes nothing")
+    test("unchanged: the recovery agent's tap revert (no caller identity) is checked as on v1.61.0, whatever the reference, with no new read") {
+        for (snapPath <- Seq("uploads/legacy/old.py", "tap-scripts//old_1.py")) {
+            val s = new Store()
+            val reads = mutable.Buffer[String]()
+            val io = s.io.copy(
+                readTap = n => { reads += "readTap"; s.io.readTap(n) },
+                readPipeline = n => { reads += "readPipeline"; s.io.readPipeline(n) },
+                secretType = n => { reads += "secretType"; s.io.secretType(n) },
+                loadAll = () => { reads += "loadAll"; s.io.loadAll() },
+                secretOwner = n => { reads += "secretOwner"; s.io.secretOwner(n) },
+                repoPathPrefix = () => { reads += "repoPathPrefix"; s.io.repoPathPrefix() }
+            )
+            val candidate =
+                EntityVersionAPIController.tapRestoreCandidate("sales-tap", salesTap.copy(scriptPath = snapPath, secretName = "ada-weather"), salesTap)
+            val out = new TapAPIController().checkTapRevert(candidate, salesTap, 3, io)
+            assert(out.isRight && out.right.get.scriptPath == snapPath, out.toString)
+            assert(s.writes.isEmpty, "the revert check writes nothing")
+            // v1.61.0's reads: the secret's type, the script existence check, the tap and pipeline list once, the script once
+            assert(reads.toList == List("secretType", "loadAll"), reads.toString)
+            assert(s.scriptChecks.get == 1 && s.scriptReads.get == 1, s.scriptChecks.get + "/" + s.scriptReads.get)
+        }
     }
 
     // ================================================================ the companion: test, run, generate sites and the reports
@@ -643,6 +770,111 @@ class TapReferenceRulesSpec extends AnyFunSuite with BeforeAndAfterEach {
             assert(t.isDefined && saved.isLeft, rk.label)
             assert(t.get.getStatusCode == saved.left.get.getStatusCode && t.get.getBody == saved.left.get.getBody, rk.label + ": " + t.get.getBody)
         }
+    }
+
+    test("rule 3 at POST /tap/test and POST /tap: every outside form, and another spelling of a hidden tap's script, gets the same refusal at both") {
+        for (rk <- limited) {
+            val forms = outsideForms("test-tap").map(p => newTap("test-tap", p)) ++
+                outsideRepoForms("test-tap").map(p => newRepoTap("test-tap", p)) ++
+                otherSpellings(hiddenScriptFor(rk)).map(p => newTap("test-tap", p))
+            for (candidate <- forms) {
+                val (t, _) = refusal(rk, TapReferenceRules.Test, candidate, null)
+                val store = new Store()
+                val saved = save(rk, store, candidate)
+                assert(t.isDefined && saved.isLeft, rk.label + " " + candidate.scriptPath + " " + candidate.scriptRepoPath)
+                assert(t.get.getStatusCode == saved.left.get.getStatusCode && t.get.getBody == saved.left.get.getBody, rk.label + ": " + t.get.getBody)
+                assertRefusal(rk, "test-tap", t.get, hiddenNamesFor(rk))
+                store.nothingDone()
+            }
+        }
+    }
+
+    test("rule 3 at version restore: an outside form or another spelling of a hidden tap's script is restored as before, with the rule 3 report") {
+        for (rk <- Seq(rita, salesKey); snapPath <- Seq("tap-scripts//x_1.py", "tap-scripts/./x_1.py", financeTap.scriptPath + "/")) {
+            val live = salesTap.copy(name = "restore-sp-" + System.nanoTime())
+            val s = new Store(allTaps :+ live)
+            val out = restore(rk, s, snapPath, live)
+            assert(out.isRight && s.writes.size == 1 && s.writes.head.scriptPath == snapPath, rk.label + " '" + snapPath + "': " + out)
+            val rule3 = rowsFor(live.name).filter(_.metadata.exists(md => md.get("rule").getAsString == "3"))
+            assert(rule3.size == 1 && !rule3.head.metadata.get.get("enforced").getAsBoolean, rowsFor(live.name).toString)
+        }
+    }
+
+    // ================================================================ rule 6 for taps stored in a code repository
+
+    private class CountedPrefix(prefix: String = RepoPrefix) {
+        val prefixReads = new AtomicInteger(0)
+        val lookups: Lookups = Lookups(() => allTaps, n => secretOwners.get(n), () => { prefixReads.incrementAndGet(); prefix })
+    }
+
+    test(
+        "rule 6: a repository reference outside the current path prefix is reported where the prefix was already read for rule 3 (a limited caller's version restore)"
+    ) {
+        val c = new CountedPrefix()
+        val stored = newRepoTap("repo-tap", RepoPrefix + "repo-tap.py")
+        val fs = TapReferenceRules.judge(Some(salesKey), TapReferenceRules.Restore, stored.copy(scriptRepoPath = "old-prefix/repo-tap.py"), stored, c.lookups)
+        assert(reported(fs, 3) && reported(fs, 6) && enforced(fs).isEmpty, fs.toString)
+        assert(c.prefixReads.get == 1, c.prefixReads.get.toString)
+    }
+
+    test("rule 6: no repository settings read is added for it: an unrestricted save, an unchanged reference and every run read none") {
+        val stored = newRepoTap("repo-tap", "old-prefix/repo-tap.py")
+        for (rk <- unrestricted) {
+            val c = new CountedPrefix()
+            judge(rk, TapReferenceRules.Save, stored.copy(description = "x"), stored, new Counted)
+            TapReferenceRules.judge(Option(rk), TapReferenceRules.Save, newRepoTap("n", "elsewhere/n.py"), null, c.lookups)
+            TapReferenceRules.judge(Option(rk), TapReferenceRules.Run, stored, stored, c.lookups)
+            assert(c.prefixReads.get == 0, String.valueOf(rk))
+        }
+        for (rk <- limited) {
+            val c = new CountedPrefix()
+            TapReferenceRules.judge(Some(rk), TapReferenceRules.Save, stored.copy(description = "x"), stored, c.lookups)
+            val run = TapReferenceRules.judge(Some(rk), TapReferenceRules.Run, stored, stored, c.lookups)
+            assert(c.prefixReads.get == 0 && !reported(run, 6), rk.label + ": " + run)
+        }
+    }
+
+    // ================================================================ generate naming no tap
+
+    private def generateIO(seen: mutable.Buffer[String]): TapAPIController.TapAiIO = TapAPIController.TapAiIO(
+        readTap = _ => fail("no stored tap is read"),
+        readScript = _ => None,
+        write = _ => fail("no write"),
+        writeVersioned = (_, _, _) => fail("no write"),
+        secretType = _ => Some(Some(SecretNames.TapScopeTap)),
+        secretOwner = nm => secretOwners.get(nm),
+        generate = (_, nm, _, _, _) => {
+            seen += nm
+            TapGenerateResult("def fetch():\n    return []", new java.util.ArrayList[String](), "tap-scripts/" + nm + "_1a2b3c4d.py")
+        },
+        fix = (_, _, _, _, _, _, _) => fail("not called"),
+        review = (_, _, _, _, _, _, _) => fail("not called"),
+        optimize = (_, _, _, _, _, _, _) => fail("not called")
+    )
+
+    test("rule 7 at POST /tap/generate: a request naming no tap is not reported, so it cannot repeat the report under a new name each time") {
+        for (blank <- Seq(None, Some(""), Some("   "))) {
+            val seen = mutable.Buffer[String]()
+            val b = new java.util.HashMap[String, String]()
+            b.put("description", "fetch the weather")
+            blank.foreach(b.put("tapName", _))
+            b.put("secretName", "ada-weather")
+            val before = audit.synchronized(audit.toList).count(_.action == "reference-would-be-refused")
+            val (r, warns) = withWarns(new TapAPIController().generateScriptWith(b, req(builder, "/api/v1/tap/generate")._1, generateIO(seen)))
+            assert(r.getStatusCode.value == 200, r.getBody)
+            assert(!warns.exists(_.contains("access does not cover")), warns.mkString("\n"))
+            assert(audit.synchronized(audit.toList).count(_.action == "reference-would-be-refused") == before)
+            assert(seen.size == 1, seen.toString)
+        }
+    }
+
+    test("POST /tap/generate: the name a missing tapName stands for is made once per request, and the model gets the name the route logged") {
+        val seen = mutable.Buffer[String]()
+        val b = new java.util.HashMap[String, String]()
+        b.put("description", "fetch the weather")
+        val r = new TapAPIController().generateScriptWith(b, req(builder, "/api/v1/tap/generate")._1, generateIO(seen), "tap-1700000000000")
+        assert(r.getStatusCode.value == 200, r.getBody)
+        assert(seen.toList == List("tap-1700000000000"), seen.toString)
     }
 
     /** One WARN line naming the tap and one `reference-would-be-refused` row, the request's own audit entry kept. */

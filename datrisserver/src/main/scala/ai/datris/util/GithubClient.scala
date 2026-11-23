@@ -50,7 +50,9 @@ object GithubClient {
     private def apiBase(config: CodeRepoConfig): String =
         Option(config.apiBaseUrl).filter(_.nonEmpty).getOrElse("https://api.github.com").stripSuffix("/")
 
-    private def contentsUrl(config: CodeRepoConfig, path: String): String =
+    /** The contents-API URL of `path`: empty segments dropped, each other
+      * segment URL-encoded (a `%` is sent as `%25`). */
+    private[datris] def contentsUrl(config: CodeRepoConfig, path: String): String =
         apiBase(config) + "/repos/" + config.repo + "/contents/" +
             path.split("/").filter(_.nonEmpty).map(seg => java.net.URLEncoder.encode(seg, "UTF-8").replace("+", "%20")).mkString("/")
 

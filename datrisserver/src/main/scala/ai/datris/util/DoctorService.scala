@@ -639,7 +639,7 @@ object DoctorService {
         val startupSafe = true
 
         private val unreadableFix =
-            "Check that MongoDB and Vault are reachable and the server can read the users, the API key metadata and the tap secrets, then rerun doctor."
+            "Check that MongoDB and Vault are reachable and the server can read the users, the API key metadata, the tap secrets and the code repository settings, then rerun doctor."
 
         def run(): CheckResult = {
             val result =
@@ -655,7 +655,7 @@ object DoctorService {
             def unreadableText(names: Boolean) =
                 if (unreadable.isEmpty) ""
                 else
-                    "could not check " + unreadable.size + " tap(s) (an owner or secret read failed)" +
+                    "could not check " + unreadable.size + " tap(s) (an owner, secret or code repository settings read failed)" +
                         (if (names) ": " + TapOwnerScopeCheck.named(unreadable) else "")
             if (findings.isEmpty)
                 return warn(unreadableText(names = true), unreadableFix).copy(namelessDetail = unreadableText(names = false) + TapReferencesCheck.NamesHidden)
@@ -674,7 +674,7 @@ object DoctorService {
             }
             val fix =
                 "Script outside the tap script area: store the script again from the tap editor or through the script upload, which keeps it " +
-                    "under tap-scripts/, then save the tap. Script shared across catalogs or owners: give each tap its own copy by storing the " +
+                    "under tap-scripts/ (or under the code repository's current path prefix), then save the tap. Script shared across catalogs or owners: give each tap its own copy by storing the " +
                     "script again under that tap's name. Secret outside the owner's access: use a tap secret the owner may read, or recreate the " +
                     "tap as a user or key whose tap access covers the secret. Review without tap update: use a user or key that holds tap update " +
                     "on the tap (API keys cannot be edited; issue a new key)." +

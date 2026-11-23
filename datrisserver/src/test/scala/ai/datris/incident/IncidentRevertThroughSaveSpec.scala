@@ -274,6 +274,10 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
                 onLoadAll()
                 (taps.synchronized(taps.values.toList), pipelines)
             },
+            // The script reference and secret rules' reads: the revert has no
+            // caller, so it must never make them (recorded so a spec can say so).
+            secretOwner = n => { record("secretOwner:" + n); None },
+            repoPathPrefix = () => { record("repoPathPrefix"); "" },
             writeVersioned = (t, note, actor) => {
                 writeAttempts += 1
                 val held = catalogLockHeld()
@@ -574,6 +578,20 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
         assert(w.actor == "recovery-agent", w.actor)
     }
 
+    /** The store reads the revert made before the script reference rules,
+      * for a tap with a tap secret and a built-in script, in order: the live
+      * tap the revert decides on; the save checks (the secret's type, the
+      * script's existence, the tap and pipeline list once, the script for
+      * dependency inference); the live tap again under the catalog lock. */
+    private val RevertReads: List[String] = List(
+        "readTap:prices",
+        "secretType:weather",
+        "scriptExists:tap-scripts/prices_pre.py",
+        "loadAll",
+        "readScript:tap-scripts/prices_pre.py",
+        "readTap:prices"
+    )
+
     private def errorText(body: String): String = JsonParser.parseString(body).getAsJsonObject.get("error").getAsString
 
     // ================================================================ Acceptance 1 (D2)
@@ -679,6 +697,19 @@ class IncidentRevertThroughSaveSpec extends AnyFunSuite with BeforeAndAfterEach 
             assert(w.updatedAt != null && w.updatedAt != pre.updatedAt, "updatedAt is the revert time: " + w.updatedAt)
             assert(w.inferredDependsOn == jl(), "re-derived from the pre-agent script: " + w.inferredDependsOn)
             assert(c.steps.forall(s => !c.stepText(s).contains("would not")), c.summaries)
+        }
+    }
+
+    test("the revert makes no store read it did not make before the script reference rules (secret owner, repository settings, a second list)") {
+        val withSecret = pre.copy(secretName = "weather")
+        val store = new TapStore(Seq(withSecret), Map(("prices", 3) -> withSecret), secretTypes = Map("weather" -> Some("tap")), scripts = scripts)
+        scenario(store) { c =>
+            IncidentRunner.runIncident(c.id)
+            assert(c.reverted, c.summaries)
+            val calls = store.calls.toList
+            assert(!calls.exists(x => x.startsWith("secretOwner") || x == "repoPathPrefix"), calls)
+            assert(calls.count(_ == "loadAll") == 1, calls)
+            assert(calls == RevertReads, calls)
         }
     }
 

@@ -24,10 +24,19 @@ import scala.util.Try
   * the stored one (the save carries it over) and is unchanged.
   *
   * The tap script area: on built-in storage an object key under
-  * `tap-scripts/` exactly (same case, no leading `/`, no `..` step, not the
-  * area itself); in a code repository a path under the repository's path
-  * prefix, not under its `pipelines/` folder, with no `..` step and nothing
-  * that starts with `/` after the prefix.
+  * `tap-scripts/` exactly (same case, not the area itself); in a code
+  * repository a path under the repository's path prefix, not under its
+  * `pipelines/` folder. In both, a reference with an empty, `.` or `..`
+  * segment (split keeping trailing empties, so a leading, trailing or
+  * doubled `/` is an empty segment) is outside the area; for a repository
+  * path that holds for the whole path and for the part after the prefix.
+  * Both store clients send a `%` in a reference escaped (`%25`), so a
+  * percent sequence names a file of that literal name and is judged as
+  * written ([[TapReferenceRulesSpec]] pins the encoders).
+  *
+  * A candidate is compared with other taps' current scripts in
+  * [[normalizedRef]] form, for both storage kinds, so two spellings of one
+  * file compare equal.
   *
   * Rules and where they apply:
   *  - 3: a limited caller's new or changed reference must be in the tap
@@ -39,9 +48,11 @@ import scala.util.Try
   *  - 5: a limited caller's new or changed built-in reference names neither
   *    this tap (`tap-scripts/<tap>_...`) nor a tap it may read, and is not the
   *    current script of a tap it may read. Reported (save, test, restore).
-  *  - 6: any caller: the built-in reference used (the candidate's, or the
-  *    stored one it keeps) is outside the tap script area. Reported (save,
-  *    test, restore, run).
+  *  - 6: any caller: the reference used (the candidate's, or the stored one
+  *    it keeps) is outside the tap script area. Reported (save, test,
+  *    restore, run); a repository reference only when the repository path
+  *    prefix was read for rule 3 (never at a run: the `tap.references`
+  *    doctor row lists those taps).
   *  - 7: save and generate naming a secret that the caller's tap read does
   *    not cover (`tap:read` on the tap's catalog with the secret's owner as
   *    owner), for a caller whose tap read is scoped. Reported.
@@ -77,11 +88,29 @@ object TapReferenceRules {
 
     private def nonEmpty(s: String): Option[String] = Option(s).filter(_.nonEmpty)
 
-    private def hasParentStep(p: String): Boolean = p.split("/", -1).contains("..")
+    /** True when every `/`-separated segment of `p` (trailing empties kept)
+      * is non-empty and neither `.` nor `..`. */
+    private[api] def plainSegments(p: String): Boolean =
+        p != null && p.nonEmpty && p.split("/", -1).forall(seg => seg.nonEmpty && seg != "." && seg != "..")
+
+    /** `p` as the stores' clients resolve it: empty and `.` segments
+      * dropped, each `..` removing the segment before it, the rest joined
+      * with single slashes (no leading or trailing slash). Null for null. */
+    def normalizedRef(p: String): String =
+        if (p == null) null
+        else {
+            val out = scala.collection.mutable.ArrayBuffer[String]()
+            p.split("/", -1).foreach {
+                case "" | "." => ()
+                case ".." => if (out.nonEmpty) out.remove(out.size - 1)
+                case seg => out += seg
+            }
+            out.mkString("/")
+        }
 
     /** True when `p` is an object key inside the built-in tap script area. */
     def builtInInArea(p: String): Boolean =
-        p != null && p.startsWith(TapArea) && p.length > TapArea.length && !hasParentStep(p)
+        p != null && p.startsWith(TapArea) && p.length > TapArea.length && plainSegments(p)
 
     /** `prefix` as the repository store writes it: "" or ending in `/`. */
     def normalizePrefix(prefix: String): String = {
@@ -95,7 +124,7 @@ object TapReferenceRules {
         val pre = normalizePrefix(prefix)
         p != null && p.startsWith(pre) && {
             val rest = p.substring(pre.length)
-            rest.nonEmpty && !rest.startsWith("/") && !hasParentStep(p) && !rest.startsWith("pipelines/")
+            plainSegments(rest) && plainSegments(p) && !rest.startsWith("pipelines/")
         }
     }
 
@@ -140,7 +169,15 @@ object TapReferenceRules {
         val carries = nonEmpty(candidate.scriptPath).isEmpty && nonEmpty(candidate.scriptRepoPath).isEmpty
         lazy val taps: Seq[TapConfig] =
             Option(lookups.allTaps()).getOrElse(Nil).filter(t => t != null && !CatalogOps.Placeholder.is(t.name))
-        lazy val prefix: String = Option(lookups.repoPathPrefix()).getOrElse("")
+        // Read only when rule 3 needs it; rule 6 judges a repository script
+        // only once it has been read (no read of the repository
+        // configuration is added for rule 6 alone).
+        var prefixRead = false
+        lazy val prefix: String = {
+            val p = Option(lookups.repoPathPrefix()).getOrElse("")
+            prefixRead = true
+            p
+        }
         val owners = scala.collection.mutable.HashMap[String, Option[Option[String]]]()
         def ownerOf(secret: String): Option[Option[String]] = owners.getOrElseUpdate(secret, lookups.secretOwner(secret))
         val out = scala.collection.mutable.ListBuffer[Finding]()
@@ -153,10 +190,11 @@ object TapReferenceRules {
                 val mode3 = if (site == Restore) Reported else Enforced
                 def outsideArea(): Boolean = changedPath.exists(p => !builtInInArea(p)) || changedRepo.exists(p => !repoInArea(p, prefix))
                 val outside = if (mode3 == Enforced) outsideArea() else Try(outsideArea()).getOrElse(false)
+                def sameRef(stored: String, p: String): Boolean = nonEmpty(stored).exists(s => normalizedRef(s) == normalizedRef(p))
                 def hiddenScript(): Boolean =
                     taps.exists { t =>
                         !mayRead(rk, t) &&
-                        (changedPath.exists(p => nonEmpty(t.scriptPath).contains(p)) || changedRepo.exists(p => nonEmpty(t.scriptRepoPath).contains(p)))
+                        (changedPath.exists(p => sameRef(t.scriptPath, p)) || changedRepo.exists(p => sameRef(t.scriptRepoPath, p)))
                     }
                 val hidden =
                     if (outside) false
@@ -176,10 +214,13 @@ object TapReferenceRules {
             }
         }
 
-        // Rule 6: the built-in script used is outside the tap script area.
+        // Rule 6: the script used is outside the tap script area (a
+        // repository script only when the path prefix has been read above).
         if (sets || site == Run) {
-            val used = if (carries && site != Restore) effectiveBuiltIn(stored) else effectiveBuiltIn(candidate)
-            if (used.exists(p => !builtInInArea(p)) && !out.exists(_.mode == Enforced))
+            val source = if (carries && site != Restore) stored else candidate
+            val builtInOutside = effectiveBuiltIn(source).exists(p => !builtInInArea(p))
+            val repoOutside = prefixRead && effectiveRepo(source).exists(p => !repoInArea(p, prefix))
+            if ((builtInOutside || repoOutside) && !out.exists(_.mode == Enforced))
                 out += Finding(6, Reported, "a script outside the tap script area")
         }
 
