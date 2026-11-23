@@ -60,6 +60,12 @@ object TapRunner {
             tapFeed: TapFeedInfo,
             configOverride: PipelineConfig
         ): String
+
+        /** The tap owner's identity, for the feed report of a scheduled run
+          * ([[TapOwnerScopeReport.afterScheduledFeed]]). Report only: the run
+          * never waits on or fails by it. A null owner is full access with no
+          * store read. May throw. */
+        def resolveOwner(label: String): ai.datris.auth.TapPrincipal.Resolution = ai.datris.auth.TapPrincipal.resolve(label)
     }
 
     object ProductionEffects extends Effects {
@@ -175,7 +181,8 @@ object TapRunner {
                         lastRunRecordCount = 0,
                         lastRunError = result.error,
                         lastRunTrigger = trigger,
-                        lastRunRetrySafe = true
+                        lastRunRetrySafe = true,
+                        lastRunUsedCallback = result.usedCallback
                     )
                     fx.writeTap(failedConfig)
                 }
@@ -217,7 +224,8 @@ object TapRunner {
                             lastRunRecordCount = 0,
                             lastRunError = missingMsg,
                             lastRunTrigger = trigger,
-                            lastRunRetrySafe = false
+                            lastRunRetrySafe = false,
+                            lastRunUsedCallback = result.usedCallback
                         )
                         fx.writeTap(failedConfig)
                     }
@@ -252,6 +260,7 @@ object TapRunner {
                         lastRunError = null,
                         lastRunTrigger = trigger,
                         lastRunRetrySafe = false,
+                        lastRunUsedCallback = result.usedCallback,
                         retryCount = 0
                     )
                     fx.writeTap(noRecordsConfig)
@@ -303,6 +312,7 @@ object TapRunner {
                     lastRunColumns = result.columns,
                     lastRunTrigger = trigger,
                     lastRunRetrySafe = false,
+                    lastRunUsedCallback = result.usedCallback,
                     retryCount = 0
                 )
                 fx.writeTap(successConfig)
@@ -329,6 +339,11 @@ object TapRunner {
                 scriptCommitSha = tapConfig.scriptCommitSha,
                 queuedMs = result.queuedMs
             )
+            // Report only (plans/stories/tap-runs-hold-owner-scope.md, rules 3
+            // and 4): after a scheduled run's feed was handed off and the run
+            // is stamped and logged. Never throws; the run's result is as before.
+            if (push && trigger == "cron" && tokensOut != null)
+                TapOwnerScopeReport.afterScheduledFeed(tapConfig, fx.resolveOwner, fx.readPipeline)
             result.copy(publisherToken = pubOut, pipelineTokens = tokensOut)
         } catch {
             case e: Exception =>
@@ -344,7 +359,8 @@ object TapRunner {
                         lastRunRecordCount = 0,
                         lastRunError = e.getMessage,
                         lastRunTrigger = trigger,
-                        lastRunRetrySafe = !feedStarted
+                        lastRunRetrySafe = !feedStarted,
+                        lastRunUsedCallback = scriptResult != null && scriptResult.usedCallback
                     )
                     fx.writeTap(failedConfig)
                 }

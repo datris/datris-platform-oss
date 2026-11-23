@@ -184,6 +184,10 @@ Tap scripts can query data already stored in the Datris platform. The following 
 
 Calls to the platform are authenticated for you. When [API keys](/api-keys) are required, the platform attaches `DATRIS_PLATFORM_TOKEN` as `x-api-key` to any `requests` or `urllib` call whose host is `DATRIS_PLATFORM_HOST` — and only that host, so it never reaches a third-party API. The token is read-only (queries, search, metadata) and reads platform data and nothing else (the chat endpoints refuse it), scoped to the one run, and shows up in the [audit log](/audit-log) as the tap itself. If your script uses a different HTTP client, send the header yourself: `{"x-api-key": os.environ["DATRIS_PLATFORM_TOKEN"]}`. A tap never needs a platform credential in its secret.
 
+#### Who a tap runs as
+
+A tap's owner is the user or API key that created it; it is kept on every later save. Today a tap's callback reads cover the whole installation and its scheduled runs feed its target pipeline whatever its owner may access. The next release holds a tap to its owner's access: a test or manual run reads only what the person or key running it may read; a scheduled run reads only what both the owner and the person or key that last edited the tap may read, and feeds its target pipeline only when the owner may load into it; and a tap whose owner no longer exists (a revoked key or a deleted user) reads only its own catalog and feeds nothing. A tap that both was created and was last edited by an administrator, a key with full access, or a user or key that is not limited to catalogs is not affected. Nothing changes in this release: run `datris doctor` to see the taps this will affect, listed under [`tap.owner_scope`](/doctor#the-checks) with what to change. The server log and, when it is on, the [audit log](/audit-log#what-is-recorded) also name such a tap the first time each day it runs that way.
+
 Both default to `datris`, but they are set separately (`postgres.database` and `mongodb.database`), so they may differ. Always use the variable that matches the backend you are querying.
 
 Scripts can call the Datris API directly using these:

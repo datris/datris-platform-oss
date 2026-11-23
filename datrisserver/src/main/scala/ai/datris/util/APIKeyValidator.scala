@@ -274,13 +274,25 @@ object APIKeyValidator {
       * outage). Not cached: callers use it for one decision, not per request.
       * With multi-tenant routing every key is legacy full access labelled
       * with its environment, as [[resolveKey]] answers it. */
-    def resolveByLabel(label: String): Option[ResolvedKey] = {
+    def resolveByLabel(label: String): Option[ResolvedKey] = labelResolver()(label)
+
+    /** [[resolveByLabel]] for several labels from one read of the key store
+      * and one of its metadata, each made on first need and kept for the
+      * function's life (a failed read is kept too: every later call throws
+      * it, never answering None for an outage). For one scan, not to be
+      * held across requests. */
+    def labelResolver(): String => Option[ResolvedKey] = {
         val o = resolveByLabelOverride
-        if (o != null) return o(label)
-        if (label == null || label.isEmpty) return None
+        if (o != null) return o
         if (DatrisEnvironment.values.multiTenant)
-            return Some(ResolvedKey(Some(label), label, Seq(Capability.FullAccess), isLegacyFullAccess = true))
-        resolveLabelAgainst(label, readKeysMap(), readMetadataMap())
+            return label =>
+                if (label == null || label.isEmpty) None
+                else Some(ResolvedKey(Some(label), label, Seq(Capability.FullAccess), isLegacyFullAccess = true))
+        lazy val keys: Try[Map[String, String]] = Try(readKeysMap())
+        lazy val metadata: Try[Map[String, String]] = Try(readMetadataMap())
+        label =>
+            if (label == null || label.isEmpty) None
+            else resolveLabelAgainst(label, keys.get, metadata.get)
     }
 
     /** Pure core of [[resolveByLabel]]: the same answer [[resolveAgainst]]

@@ -94,6 +94,7 @@ object CatalogArchive {
             lastRunColumns = null,
             lastRunTrigger = null,
             lastRunRetrySafe = false,
+            lastRunUsedCallback = false,
             lastTestRunStatus = null,
             lastTestRunTime = null,
             lastTestRunRecordCount = 0,

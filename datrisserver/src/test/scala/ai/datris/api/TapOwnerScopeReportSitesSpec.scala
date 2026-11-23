@@ -326,6 +326,20 @@ class TapOwnerScopeReportSitesSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(!EntityVersionAPIController.tapRestoreCandidate("t", snap.copy(lastRunUsedCallback = true), liveQuiet).lastRunUsedCallback)
     }
 
+    test("a save keeps the stored lastRunUsedCallback whatever the body says; a new tap starts false") {
+        // run-stamped like lastTestRunStatus: a client echoing an older copy neither sets nor clears it
+        for (stored <- Seq(true, false)) {
+            val existing = body("stamped-tap", "sales-orders").copy(createdByKeyLabel = "root", createdAt = "2026-11-01", lastRunUsedCallback = stored)
+            val store = new Store(Seq(existing))
+            val (out, _) = save(fullKey, store, body("stamped-tap", "sales-orders").copy(description = "changed", lastRunUsedCallback = !stored))
+            assert(out.isRight && store.writes.size == 1, out.toString)
+            assert(store.writes.head.lastRunUsedCallback == stored, "stored " + stored + ": " + store.writes.head)
+        }
+        val fresh = new Store()
+        val (out, _) = save(fullKey, fresh, body("fresh-tap", "sales-orders").copy(lastRunUsedCallback = true))
+        assert(out.isRight && !fresh.writes.head.lastRunUsedCallback, fresh.writes.toString)
+    }
+
     test("a catalog export clears lastRunUsedCallback, like the other run stamps") {
         assert(!CatalogArchive.stripTapForExport(sample.copy(lastRunUsedCallback = true)).lastRunUsedCallback)
     }

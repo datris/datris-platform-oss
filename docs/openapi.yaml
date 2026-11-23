@@ -1236,6 +1236,10 @@ components:
           type: boolean
           readOnly: true
           description: True only when the last failed run provably fed nothing downstream (the script errored before any pipeline submission), so an automatic re-run cannot double-write
+        lastRunUsedCallback:
+          type: boolean
+          readOnly: true
+          description: True when the script of the last real run read platform data through the tap callback during that run. Server-stamped; ignored in a save body. Reported by the `tap.owner_scope` self-check only. False on taps not run since the field was introduced
         retryCount:
           type: integer
           readOnly: true

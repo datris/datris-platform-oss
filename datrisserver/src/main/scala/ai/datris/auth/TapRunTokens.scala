@@ -37,7 +37,13 @@ object TapRunTokens {
         "tap:read"
     ).map(Capability.parse)
 
-    case class TapRunToken(tapName: String, tenantEnvironment: Option[String], expiresAtMs: Long)
+    case class TapRunToken(tapName: String, tenantEnvironment: Option[String], expiresAtMs: Long) {
+
+        /** Set when a request presented this token while it was live
+          * ([[lookup]]). Read once, by [[revoke]], when the run ends. It
+          * changes nothing about the identity the token resolves to. */
+        @volatile private[auth] var used: Boolean = false
+    }
 
     private val tokens = new ConcurrentHashMap[String, TapRunToken]()
     private val random = new SecureRandom()
@@ -54,15 +60,22 @@ object TapRunTokens {
         token
     }
 
-    def revoke(token: String): Unit =
-        if (token != null) tokens.remove(token)
+    /** Remove the token. True when a request presented it on the callback
+      * while it was live (the run read platform data); false for null, an
+      * unknown, expired or already revoked token. */
+    def revoke(token: String): Boolean =
+        if (token == null) false
+        else Option(tokens.remove(token)).exists(_.used)
 
-    /** The run behind a token, if it is live. */
+    /** The run behind a token, if it is live. Every callback request reaches
+      * the token here (APIKeyValidator.validate, resolveKey through
+      * [[resolve]]), so a live hit marks it used. */
     def lookup(token: String): Option[TapRunToken] = {
         if (token == null || !token.startsWith("trt_")) return None
         Option(tokens.get(token)).filter { t =>
             val live = t.expiresAtMs > System.currentTimeMillis()
             if (!live) tokens.remove(token)
+            else t.used = true
             live
         }
     }

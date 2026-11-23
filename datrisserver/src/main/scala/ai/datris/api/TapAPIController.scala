@@ -257,6 +257,38 @@ object TapAPIController {
                 case _ => None
             }
 
+    /** Report only (plans/stories/tap-runs-hold-owner-scope.md, rule 1):
+      * called by `POST /tap/test` and `POST /tap/run` (every mode) right after
+      * the run, before the response is built. One WARN line and one
+      * `tap/reads-narrowed` audit row when the caller is limited and the
+      * script read platform data through the callback. Reads nothing, never
+      * marks the request as audited, never throws. */
+    def reportCallerReads(request: HttpServletRequest, tap: TapConfig, result: TapScriptResult): Unit =
+        TapOwnerScopeReport.callerReads(request, tap, result)
+
+    /** Report only (rule 6): called by `POST /tap/script` after the script
+      * was stored, with the stored tap. One WARN line when the save-time
+      * target rule ([[targetPipelineRefusal]]) would refuse the stored target
+      * for the caller. Never throws. */
+    def reportScriptTarget(request: HttpServletRequest, tap: TapConfig, readPipeline: String => PipelineConfig): Unit =
+        TapOwnerScopeReport.scriptTarget(request, tap, readPipeline)
+
+    /** `read` answering each name from at most one call (a throw is not kept). */
+    private[api] def readOnce(read: String => PipelineConfig): String => PipelineConfig = {
+        val held = new java.util.concurrent.ConcurrentHashMap[String, Option[PipelineConfig]]()
+        n =>
+            if (n == null) read(n)
+            else {
+                val hit = held.get(n)
+                if (hit != null) hit.orNull
+                else {
+                    val p = Option(read(n))
+                    held.put(n, p)
+                    p.orNull
+                }
+            }
+    }
+
     /** POST /tap (`saveTapInternal`), every caller, decided on `stored` (the
       * tap of that name, or null). A restricted session: the catalog rules
       * ([[catalogForSave]]) as before. An API key
@@ -1144,8 +1176,17 @@ class TapAPIController {
         // The tap feeds its target pipeline: that pipeline must be one the
         // caller may load into (restricted session: hidden/missing -> pipeline
         // 404; pipeline-limited key: 403).
-        if (versionRestore.isEmpty) TapAPIController.targetPipelineRefusal(request, scoped).foreach(r => return Left(r))
-        saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden, io, revertCheck)
+        if (versionRestore.isEmpty) {
+            // The save's own pipeline read, shared with the report below so the
+            // report adds no read.
+            val readTarget = TapAPIController.readOnce(io.readPipeline)
+            TapAPIController.targetPipelineRefusal(request, scoped, readTarget).foreach(r => return Left(r))
+            val saved = saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden, io, revertCheck)
+            // Report only (rule 5): a key whose loads are checked saved a tap
+            // whose target does not exist yet. The save's answer is unchanged.
+            if (saved.isRight) TapOwnerScopeReport.saveTarget(request, scoped, readTarget)
+            saved
+        } else saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden, io, revertCheck)
     }
 
     private def saveTapScoped(
@@ -1340,7 +1381,9 @@ class TapAPIController {
                 // the run endpoint in mode=test). Clients echo stale copies in the
                 // save body; never let a body promote a tap to "tested".
                 lastTestRunStatus = existing.lastTestRunStatus,
-                lastTestRunScriptId = existing.lastTestRunScriptId
+                lastTestRunScriptId = existing.lastTestRunScriptId,
+                // Run-stamped by TapRunner; a body never sets or clears it.
+                lastRunUsedCallback = existing.lastRunUsedCallback
             )
         else
             tapConfigWithScript.copy(
@@ -1348,6 +1391,8 @@ class TapAPIController {
                 updatedAt = now,
                 createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull,
                 lastTestRunStatus = null,
+                // A new tap has not run.
+                lastRunUsedCallback = false,
                 // A restored tap keeps its archived stamp (bytes-identical on
                 // built-in storage, null otherwise); the status stays null so
                 // the gate still wants a fresh test before a schedule runs.
@@ -1677,6 +1722,8 @@ class TapAPIController {
                     case Some(msg) =>
                         logger.info("POST /tap/script: not repointing scheduled tap '" + tapName + "' at untested script: " + msg)
                 }
+                // Report only (rule 6): the stored target and this caller.
+                TapAPIController.reportScriptTarget(request, existing, TapAPIController.readPipelineForSave)
             }
 
             val gson = new Gson
@@ -2037,6 +2084,7 @@ class TapAPIController {
             val testStartMs = System.currentTimeMillis()
             val result = TapRunner.run(tapConfig, mode = "test", testLimit = testLimitInt)
             val testDurationMs = System.currentTimeMillis() - testStartMs
+            TapAPIController.reportCallerReads(request, tapConfig, result)
             val gson = new Gson
             // Preview off the staged file (Phase 4): the first testPreviewSize(testLimit)
             // records plus `recordsTruncated` when there were more. The staged
@@ -2212,6 +2260,7 @@ class TapAPIController {
                 val testedScriptId: Option[String] = if (mode != "run") TapScriptIdentity.of(tapConfig) else None
 
                 val result = TapRunner.run(tapConfig, mode = mode, testLimit = effectiveTestLimit, params = params)
+                TapAPIController.reportCallerReads(request, tapConfig, result)
 
                 // Save test run status when not pushing to pipeline
                 if (mode != "run") {

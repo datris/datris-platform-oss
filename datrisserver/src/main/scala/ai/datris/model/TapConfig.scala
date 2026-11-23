@@ -87,7 +87,14 @@ case class TapConfig(
     // Server-stamped from the stored script (TapDependencies.infer): the
     // same-catalog taps whose pipelines' tables the script queries. Incoming
     // bodies are ignored, like `lastTestRun*`.
-    inferredDependsOn: java.util.List[String] = null
+    inferredDependsOn: java.util.List[String] = null,
+    // Server-stamped by each real run (TapRunner, beside lastRunRetrySafe):
+    // true when that run's script presented its per-run token on the platform
+    // callback (TapRunTokens). Read by the tap.owner_scope doctor check only;
+    // changes nothing about a run. Kept as stored on a save (bodies are
+    // ignored, like `lastTestRun*`), kept on a version restore, cleared on
+    // catalog export. Absent on taps not run since the upgrade → false.
+    lastRunUsedCallback: Boolean = false
 ) {
 
     /** True when this tap is a user-hosted HTTP endpoint rather than a

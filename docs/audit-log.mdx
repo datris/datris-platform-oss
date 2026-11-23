@@ -63,7 +63,7 @@ With the audit log on: writes, runs, deletes, logins, key and user management, a
 | Category | Actions |
 |---|---|
 | `pipeline` | create, update, delete, version restore, destination type changes; `purge-source` (system event) when a [protected](/transformation/field-protection) run deletes its raw ingest object(s), with outcome `warning` if a delete failed |
-| `tap` | create, update, delete, run (manual and scheduled), script and state changes |
+| `tap` | create, update, delete, run (manual and scheduled), script and state changes; with outcome `warning`, at most once per tap a day and changing nothing about the run: `feed-outside-owner-scope` (system event) when a scheduled run fed a pipeline its owner may not load into, `owner-unresolved` (system event) when a scheduled run fed a pipeline and the tap's owner no longer exists, and `reads-narrowed` when a test or manual run by a user or key limited to catalogs read platform data through the tap callback, each naming the pipeline and the owner or caller (see [Who a tap runs as](/taps#who-a-tap-runs-as)) |
 | `secret` | read, write, delete |
 | `config` | AI provider, embedding, and platform configuration changes |
 | `job` | kill |

@@ -158,6 +158,11 @@ object DoctorService {
           * Throws when the metadata cannot be read. */
         def apiKeyCapabilities(): List[(String, Seq[String])] = Nil
 
+        /** The tap owner access scan ([[TapOwnerScopeScan.liveScan]]): taps
+          * that will read or feed less once held to their owner's access.
+          * Throws when it cannot run. The default has nothing to report. */
+        def tapOwnerScopeScan(): TapOwnerScopeScan.Result = TapOwnerScopeScan.Result.empty
+
         /** True when any source field in any pipeline carries `protect`.
           * Throws when the pipeline configs cannot be read. */
         def anyPipelineProtects(): Boolean
@@ -521,6 +526,78 @@ object DoctorService {
                     fix + " Then remove " + SecretNames.TapScopeEnv + "=any." + alsoFix
                 )
         }
+    }
+
+    /** Taps that will read or feed less once taps are held to their owner's
+      * access (plans/stories/tap-runs-hold-owner-scope.md). Report-only
+      * release: `warn` at most, never `error`; a scan that throws is a warn
+      * saying the check could not run. The detail names up to
+      * [[TapOwnerScopeCheck.PerGroup]] taps per group and states each
+      * group's total. */
+    class TapOwnerScopeCheck(probes: Probes) extends Check {
+        val id = "tap.owner_scope"
+        val startupSafe = true
+
+        private val unreadableFix = "Check that MongoDB and Vault are reachable and the server can read the users and the API key metadata, then rerun doctor."
+
+        def run(): CheckResult = {
+            val result =
+                try probes.tapOwnerScopeScan()
+                catch {
+                    case e: Exception =>
+                        return warn("could not check tap owner access: " + e.getMessage, unreadableFix)
+                }
+            val findings = Option(result).map(_.findings).getOrElse(Nil)
+            val unreadable = Option(result).map(_.unreadable).getOrElse(Nil)
+            if (findings.isEmpty && unreadable.isEmpty) return ok("no tap reads or feeds beyond its owner's access")
+            val unreadableText =
+                if (unreadable.isEmpty) ""
+                else
+                    "could not check " + unreadable.size + " tap(s) (an owner, editor or pipeline read failed): " +
+                        TapOwnerScopeCheck.named(unreadable)
+            if (findings.isEmpty) return warn(unreadableText, unreadableFix)
+            val groups = TapOwnerScopeCheck.Groups.flatMap { case (group, what) =>
+                val in = findings.filter(_.group == group)
+                if (in.isEmpty) None
+                else {
+                    val list =
+                        in.map(f => f.tap + " -> " + Option(f.pipeline).filter(_.nonEmpty).getOrElse("(no target)") + " (" + String.valueOf(f.owner) + ")")
+                    Some(what + " (" + in.size + "): " + TapOwnerScopeCheck.named(list))
+                }
+            }
+            val taps = findings.map(_.tap).distinct.size
+            val detail = taps + " tap(s) will read or feed less in the next release, which holds each tap to its owner's access " +
+                "(nothing changes in this release; callback reads are known only for taps run since the upgrade). " +
+                groups.mkString("; ") + (if (unreadableText.isEmpty) "" else "; also " + unreadableText)
+            val fix =
+                "A tap's owner is the user or API key that created it and is kept on every later save. " +
+                    "Owner may not feed the target: grant the owning user edit on the target pipeline's catalog, or point the tap at a pipeline its owner may load into; " +
+                    "for a key-owned tap, recreate the tap (delete it and save it again) as a user or key that may load into the target. " +
+                    "Target pipeline missing: create the pipeline before the tap. " +
+                    "Owner no longer exists: recreate the tap as a current user or key. " +
+                    "Reads beyond the owner's access: give the owner (and the last editor) read on what the script reads, or recreate the tap as an identity that has it." +
+                    (if (unreadableText.isEmpty) "" else " " + unreadableFix)
+            warn(detail, fix)
+        }
+    }
+
+    object TapOwnerScopeCheck {
+
+        /** Taps named per group (and unreadable taps named) before "and N more". */
+        val PerGroup = 10
+
+        /** Report order, with what stops for each group in the next release. */
+        val Groups: Seq[(String, String)] = Seq(
+            TapOwnerScopeScan.FeedOutsideOwner -> "scheduled runs will stop feeding a pipeline the owner may not load into",
+            TapOwnerScopeScan.TargetMissing ->
+                "the target pipeline does not exist; a save by a key whose loads are checked will be refused until it does, and scheduled runs will feed it only if the owner may load into it",
+            TapOwnerScopeScan.OwnerUnresolved -> "the owner no longer exists; scheduled runs will feed nothing and callback reads will stay in the tap's own catalog",
+            TapOwnerScopeScan.ReadsNarrowed ->
+                "the script reads through the callback; its reads will be held to the owner's access narrowed by the last editor's, and reads outside it refused"
+        )
+
+        private[util] def named(items: List[String]): String =
+            items.take(PerGroup).mkString(", ") + (if (items.size > PerGroup) " and " + (items.size - PerGroup) + " more" else "")
     }
 
     /** (label, raw capability strings) for each entry of an
@@ -980,6 +1057,7 @@ object DoctorService {
             new StagingAreaCheck(probes, StagingArea.payloadBudgetMB),
             new StagingOrphansCheck(probes),
             new TapSecretScopeCheck(probes),
+            new TapOwnerScopeCheck(probes),
             new KeyInertScopesCheck(probes),
             new CodeGenIsolationCheck(probes, startup),
             new RunnerConcurrencyCheck(probes),
@@ -1156,6 +1234,41 @@ object DoctorService {
         def tapSecretRefs(): List[(String, String, Option[String])] = tapSecretScan().refs
 
         override def tapSecretScan(): TapSecretScopeScan.Result = TapSecretScopeScan.liveScan()
+
+        /** Longest a doctor run (startup included) waits for the tap owner scan. */
+        val TapOwnerScanTimeoutMs = 15000L
+
+        private val tapOwnerScanRunning = new java.util.concurrent.atomic.AtomicBoolean(false)
+
+        /** [[TapOwnerScopeScan.liveScan]] on its own daemon thread, waited for
+          * at most [[TapOwnerScanTimeoutMs]]; past that (a slow store) or
+          * while an earlier scan is still running, it throws and the check
+          * says it could not check. So a slow key or user store never holds
+          * startup or a doctor call longer than that, and scans never pile up. */
+        override def tapOwnerScopeScan(): TapOwnerScopeScan.Result = {
+            if (!tapOwnerScanRunning.compareAndSet(false, true))
+                throw new IllegalStateException("an earlier tap owner scan is still running")
+            val env = DatrisEnvironment.current
+            val task = new java.util.concurrent.FutureTask[TapOwnerScopeScan.Result](() => {
+                ai.datris.model.TenantContext.set(env)
+                try TapOwnerScopeScan.liveScan()
+                finally {
+                    ai.datris.model.TenantContext.clear()
+                    tapOwnerScanRunning.set(false)
+                }
+            })
+            val thread = new Thread(task, "doctor-tap-owner-scan")
+            thread.setDaemon(true)
+            try thread.start()
+            catch { case e: Throwable => tapOwnerScanRunning.set(false); throw e }
+            try task.get(TapOwnerScanTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            catch {
+                case _: java.util.concurrent.TimeoutException =>
+                    throw new IllegalStateException("the scan did not finish within " + (TapOwnerScanTimeoutMs / 1000) + " s")
+                case e: java.util.concurrent.ExecutionException if e.getCause != null =>
+                    throw new IllegalStateException(e.getCause.getMessage, e.getCause)
+            }
+        }
 
         override def apiKeyCapabilities(): List[(String, Seq[String])] = {
             val name = DatrisEnvironment.values.environment + "/api-key-metadata"
