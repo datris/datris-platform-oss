@@ -575,7 +575,7 @@ Tap workflow (for step 3 Option B):
   4. Preview the schema and create the pipeline (new pipeline only): call propose_pipeline_schema(tap, destination), present the fields as a table and ask the user to confirm the types, ask the one DQ / transformation / protection question, then call create_pipeline with schema_fields and update_tap with target_pipeline (and cron_expression, if the user described a schedule). propose_pipeline_schema uses the rows from the tap's last successful test and runs the tap again only when none are held or a higher limit asks for more. Only a result whose `status` is `schema_proposal` is a proposal; anything else (a failed test, no rows, an error) means no schema and no table were shown to the user, so tell the user what failed in one or two plain sentences with the tool's stated next step, and do not ask the types question, do not call `ask_user` about types and do not mention a table. If propose_pipeline_schema reports the server is too old, fall back to content_text on create_pipeline.
   5. Run: call run_tap to execute and push data to the pipeline.
      After `run_tap` returns, READ the response's `persisted` field BEFORE doing anything else:
-       - `persisted: true` → records were handed to the pipeline, but the load is async. You MUST call `get_pipeline_status(publisher_token=response.publisherToken)` and poll (re-call every few seconds) until `rollup.allDone` is true (an answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that). Only THEN query the destination or report completion to the user. Reporting success before the poll finishes is a bug — the destination will appear empty. Read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failures.
+       - `persisted: true` → records were handed to the pipeline, but the load is async. You MUST call `get_pipeline_status(publisher_token=response.publisherToken)` and poll (re-call every few seconds) until `rollup.allDone` is true. Only THEN query the destination or report completion to the user. An answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that. Reporting success before the poll finishes is a bug — the destination will appear empty. Read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failures.
        - `persisted: false` → records did NOT land in the destination. Read `persistedReason` and tell the user exactly why: `no_target_pipeline` (call update_tap to set one, then re-run), `test_mode` (you ran it in test mode — or mcp-server/datris are out of sync; flag it and stop), `run_error` (show the `error` string), `no_records` (source returned nothing).
      Note: `run_tap` does NOT return the records themselves (only `recordCount`). If you need to preview what the script produces, use `test_tap`.
   6. Schedule: if the user described any recurrence (nightly, daily, every morning, market open, etc.), set `cron_expression` — on `create_tap` if you're creating the tap now, or via `update_tap` if the tap already exists. The platform runs the scheduler; once set, the tap fires automatically and shows up in `get_tap_logs` exactly like manual runs. NEVER substitute external schedulers (shell cron, Airflow DAGs invoking the CLI, "run this every night at 9pm" shell snippets) — see the SCHEDULING RULE.
@@ -1564,7 +1564,7 @@ Because of this, a tap NEVER needs the platform's own database credentials. Do n
 
 ### What to do based on the response
 
-**`persisted: true`** — load is in flight. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll every few seconds until `rollup.allDone` is true (an answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that). Then read `rollup.status`:
+**`persisted: true`** — load is in flight. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll every few seconds until `rollup.allDone` is true. Then read `rollup.status`. An answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that. What `rollup.status` says:
   - `success` — every job landed cleanly. Report counts.
   - `warning` — some jobs landed, some had non-fatal issues. Read `rollup.jobs[].lastError` for the affected ones.
   - `error` — at least one job failed. Read `rollup.jobs[].lastError` for `processName` and `description`. When a destination write fails, `processName` is that destination's loader (for example `PostgresLoader`, `SnowflakeLoader`) and `description` is the destination's own error message — act on that destination, not on the pipeline as a whole.
@@ -1682,15 +1682,20 @@ async def read_resource(ctx: ServerRequestContext | None,
 # What is listed, by what the platform answered:
 #   - the list (`filtered: true` + `tools`)    -> exactly that list;
 #   - unfiltered (`filtered: false`)            -> the full catalog;
-#   - 404 (a platform older than the endpoint) -> the full catalog;
+#   - 404 (a platform older than the endpoint) -> the full catalog when the
+#     platform has not answered for the key/user in this process or its last
+#     answer was "no filtering"; otherwise it is treated as could not be asked,
+#     so a 404 never widens a narrowed list or a refusal;
 #   - refused (401, 403)                        -> no tools; this replaces the
 #                                                  last good list for the key/user;
 #   - could not be asked (connection error, timeout, 5xx, any other status,
-#     a body that is not the expected JSON)     -> what the platform last said
+#     a body that is not the expected JSON, a `tools` that is not a list of
+#     strings)                                  -> what the platform last said
 #     for the key/user however old (never wider than that), or the full
 #     catalog when it has not answered for the key/user in this process.
 # Visibility is UX; the REST layer decides every call. An answer is reused
-# for 60 seconds; a refusal or a failure to ask is re-asked after 10 seconds.
+# for 60 seconds; a refusal or a failure to ask is re-asked after 10 seconds,
+# counted from when the request returned.
 _allowed_tools_cache: dict[tuple[str, str], dict] = {}
 _allowed_tools_lock = threading.Lock()
 _ALLOWED_TOOLS_TTL = 60.0
@@ -1729,13 +1734,11 @@ def _error_detail(body: str) -> str:
     return (body or "")[:120]
 
 
-def _classify_allowed_tools(status: int | None, body: str):
-    """('answer', set|None) for a usable answer (None: no filtering),
-    ('refused', detail) or ('unreachable', detail)."""
+def _classify_allowed_tools_unchecked(status: int | None, body: str):
     if status is None:
-        return "unreachable", body[:120]
+        return "unreachable", str(body)[:120]
     if status == 404:
-        return "answer", None
+        return "not_found", None
     if status in (401, 403):
         return "refused", f"HTTP {status}: {_error_detail(body)}"
     if status != 200:
@@ -1744,45 +1747,70 @@ def _classify_allowed_tools(status: int | None, body: str):
         data = json.loads(body)
     except (ValueError, TypeError) as e:
         return "unreachable", f"unreadable answer: {e}"[:120]
-    if isinstance(data, dict) and data.get("filtered") is True and isinstance(data.get("tools"), list):
-        return "answer", set(data["tools"])
+    if isinstance(data, dict) and data.get("filtered") is True:
+        tools = data.get("tools")
+        if isinstance(tools, list) and all(isinstance(t, str) for t in tools):
+            return "answer", set(tools)
+        return "unreachable", "unexpected answer shape"
     if isinstance(data, dict) and data.get("filtered") is False:
         return "answer", None
     return "unreachable", "unexpected answer shape"
+
+
+def _classify_allowed_tools(status: int | None, body: str):
+    """('answer', set|None) for a usable answer (None: no filtering),
+    ('not_found', None) for a 404, ('refused', detail) or
+    ('unreachable', detail). Never raises, whatever the body."""
+    try:
+        return _classify_allowed_tools_unchecked(status, body)
+    except Exception as e:  # noqa: BLE001 - any body shape is "could not be asked"
+        return "unreachable", f"unexpected answer shape: {type(e).__name__}"[:120]
 
 
 def _allowed_tool_names() -> set | None:
     """Return the set of tool names this session's key may see, or None for
     'no filtering' (the full catalog). See the table above for each answer."""
     key = _allowed_tools_cache_key(_effective_api_key(), _session_on_behalf_of.get())
-    now = time.time()
     with _allowed_tools_lock:
         cached = _allowed_tools_cache.get(key)
-        if cached and now - cached["checked_at"] < cached["ttl"]:
+        if cached and time.time() - cached["checked_at"] < cached["ttl"]:
             return cached["served"]
-        last_good = cached["last_good"] if cached else _NO_GOOD_ANSWER
     kind, value = _classify_allowed_tools(*_fetch_allowed_tools())
-    if kind == "answer":
-        served, ttl, last_good = value, _ALLOWED_TOOLS_TTL, value
-    elif kind == "refused":
-        # The refusal is now the last thing the platform said: a later
-        # failure to ask must not widen it back to an older list.
-        served, ttl, last_good = set(), _ALLOWED_TOOLS_FAILURE_TTL, set()
-        print(f"mcp/tools: the platform refused this key ({value}); no tools are offered", file=sys.stderr)
-    elif last_good is not _NO_GOOD_ANSWER:
-        served, ttl = last_good, _ALLOWED_TOOLS_FAILURE_TTL
-        if last_good is not None and not last_good:
-            print(f"mcp/tools: could not ask the platform which tools to offer ({value}); "
-                  "no tools are offered: its last answer for this key allowed none", file=sys.stderr)
-        else:
-            print(f"mcp/tools: could not ask the platform which tools to offer ({value}); "
-                  "serving the last list it gave", file=sys.stderr)
-    else:
-        served, ttl = None, _ALLOWED_TOOLS_FAILURE_TTL
-        print(f"mcp/tools: could not ask the platform which tools to offer ({value}) and it has not answered yet; "
-              "serving the full catalog until it does (every call is still checked by the platform)", file=sys.stderr)
+    message = None
     with _allowed_tools_lock:
+        # Re-read under the lock: another listing for this key/user may have
+        # written while this request was in flight, and its answer is newer
+        # than the one read above.
+        now = time.time()
+        cached = _allowed_tools_cache.get(key)
+        last_good = cached["last_good"] if cached else _NO_GOOD_ANSWER
+        if kind == "not_found":
+            if last_good is _NO_GOOD_ANSWER or last_good is None:
+                kind = "answer"
+            else:
+                kind, value = "unreachable", "HTTP 404 after an earlier answer"
+        if kind == "answer":
+            served, ttl, last_good = value, _ALLOWED_TOOLS_TTL, value
+        elif kind == "refused":
+            # The refusal is now the last thing the platform said: a later
+            # failure to ask must not widen it back to an older list.
+            served, ttl, last_good = set(), _ALLOWED_TOOLS_FAILURE_TTL, set()
+            message = f"mcp/tools: the platform refused this key ({value}); no tools are offered"
+        elif last_good is not _NO_GOOD_ANSWER:
+            served, ttl = last_good, _ALLOWED_TOOLS_FAILURE_TTL
+            if last_good is not None and not last_good:
+                message = (f"mcp/tools: could not ask the platform which tools to offer ({value}); "
+                           "no tools are offered: its last answer for this key allowed none")
+            else:
+                message = (f"mcp/tools: could not ask the platform which tools to offer ({value}); "
+                           "serving the last list it gave")
+        else:
+            served, ttl = None, _ALLOWED_TOOLS_FAILURE_TTL
+            message = (f"mcp/tools: could not ask the platform which tools to offer ({value}) and it has not answered yet; "
+                       "serving the full catalog until it does (every call is still checked by the platform)")
         _allowed_tools_cache[key] = {"checked_at": now, "ttl": ttl, "served": served, "last_good": last_good}
+    if message:
+        print(message, file=sys.stderr)
     return served
 
 
@@ -3195,7 +3223,7 @@ def _base_tools():
                 "If the tap script doesn't yet read a particular param, update the script by calling `create_tap` again with the same `name` and a revised `script` (create_tap upserts and replaces the existing script). That's the right shape for parameterized runs.\n"
                 "\n"
                 "REQUIRED next steps based on the response:\n"
-                "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true (an answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that). Then read `rollup.status` (`success`/`warning`/`error`) and `rollup.jobs[].lastError`. Do not report completion or query the destination before that. For a Live Read (`scratch`) pipeline (nothing landed), read the rows off the rollup's `resultPreview` and `resultTruncated`; call `get_pipeline_result` only when `resultTruncated` is true.\n"
+                "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true. Then read `rollup.status` (`success`/`warning`/`error`) and `rollup.jobs[].lastError`. An answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that. Do not report completion or query the destination before that. For a Live Read (`scratch`) pipeline (nothing landed), read the rows off the rollup's `resultPreview` and `resultTruncated`; call `get_pipeline_result` only when `resultTruncated` is true.\n"
                 "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
                 "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
                 "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"

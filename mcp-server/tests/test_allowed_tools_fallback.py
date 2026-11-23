@@ -5,14 +5,19 @@ list is never wider than what the server said.
   - `{"filtered": true, "tools": [...]}`  -> exactly that set;
   - `{"filtered": false, ...}`            -> the full catalogue (full-access
                                              identity or keys-off install);
-  - HTTP 404 (a platform older than the endpoint) -> the full catalogue;
+  - HTTP 404 (a platform older than the endpoint) -> the full catalogue when
+    nothing has been remembered for the key and user in this process, or the
+    remembered answer is "no filtering"; otherwise it counts as could not be
+    asked and the remembered answer is kept;
   - refused (401, 403) -> no tools at once, replacing any earlier list for
     the same key and on-behalf-of user, with a stderr line saying so;
   - could not be asked (5xx, a connection error or timeout, a body that is
-    not the expected JSON) -> what the platform last said for the same key
+    not the expected JSON, a `tools` that is not a list of strings) -> what the platform last said for the same key
     and user, however old; the full catalogue when it has not answered for
     them in this process (as before), said on stderr.
-A refusal or a failure to ask is re-asked after 10 seconds.
+A refusal or a failure to ask is re-asked 10 seconds after the request
+returned, and two listings at once for one key never restore an answer older
+than the one the other wrote.
 
 The REST layer stays the boundary: `call_tool` is unchanged and a tool that
 is not listed is still dispatched and decided by REST.
@@ -79,14 +84,20 @@ class _Platform:
     def __init__(self):
         self.answer = (200, json.dumps({"filtered": True, "tools": ["get_pipeline"]}))
         self.fetches = 0
+        # Runs inside each request, before it answers (a slow request, or
+        # another listing finishing meanwhile).
+        self.during = None
 
     def get(self, url, *a, **kw):
         if not str(url).endswith(TOOLS_PATH):
             raise AssertionError(f"unexpected request in a tool-listing test: {url}")
         self.fetches += 1
-        if isinstance(self.answer, BaseException):
-            raise self.answer
-        status, body = self.answer
+        answer = self.answer  # this request's reply, fixed when it is sent
+        if self.during is not None:
+            self.during()
+        if isinstance(answer, BaseException):
+            raise answer
+        status, body = answer
         return _Resp(status, body)
 
 
@@ -137,6 +148,11 @@ UNREACHABLE = [
     pytest.param((200, json.dumps({"filtered": True})), id="filtered-without-tools"),
     pytest.param((200, json.dumps(["get_pipeline"])), id="unexpected-shape"),
     pytest.param((200, '{"filtered": true, "tools": ['), id="malformed-json"),
+    pytest.param((200, json.dumps({"filtered": True, "tools": [1, 2]})), id="tools-not-strings"),
+    pytest.param((200, json.dumps({"filtered": True, "tools": [{"name": "get_pipeline"}]})), id="tools-of-objects"),
+    pytest.param((200, json.dumps({"filtered": True, "tools": [["get_pipeline"]]})), id="tools-of-lists"),
+    pytest.param((200, json.dumps({"filtered": True, "tools": "get_pipeline"})), id="tools-a-string"),
+    pytest.param((200, json.dumps({"filtered": True, "tools": None})), id="tools-null"),
 ]
 
 FAILURES = REFUSALS + UNREACHABLE
@@ -167,6 +183,72 @@ def test_not_found_from_an_older_platform_keeps_the_full_catalogue(env):
     platform.answer = (404, json.dumps({"timestamp": "2026-01-01T00:00:00.000+00:00", "status": 404,
                                         "error": "Not Found", "path": TOOLS_PATH}))
     assert _listed() == _full()
+
+
+NOT_FOUND = (404, '{"error":"Not Found"}')
+
+
+def test_not_found_after_a_narrowed_list_keeps_the_narrowed_list(env, capsys):
+    platform, clock = env
+    platform.answer = _filtered("get_pipeline")
+    assert _listed() == {"get_pipeline"}
+    clock.now += 61
+    platform.answer = NOT_FOUND
+    assert _listed() == {"get_pipeline"}
+    err = capsys.readouterr().err.lower()
+    assert "could not ask" in err and "full catalog" not in err, err
+    clock.now += 11
+    assert _listed() == {"get_pipeline"}
+    assert platform.fetches == 3
+
+
+def test_not_found_after_a_refusal_still_lists_no_tools(env):
+    platform, clock = env
+    platform.answer = (401, '{"error":"API key is revoked or invalid"}')
+    assert _listed() == set()
+    clock.now += 11
+    platform.answer = NOT_FOUND
+    assert _listed() == set()
+    clock.now += 11
+    assert _listed() == set()
+
+
+def test_not_found_after_an_unfiltered_answer_lists_the_full_catalogue(env):
+    platform, clock = env
+    platform.answer = (200, json.dumps({"filtered": False, "tools": []}))
+    assert _listed() == _full()
+    clock.now += 61
+    platform.answer = NOT_FOUND
+    assert _listed() == _full()
+
+
+def test_not_found_after_a_failure_with_nothing_remembered_lists_the_full_catalogue(env):
+    platform, clock = env
+    platform.answer = (500, '{"error":"Internal error"}')
+    assert _listed() == _full()
+    clock.now += 11
+    platform.answer = NOT_FOUND
+    assert _listed() == _full()
+    clock.now += 61
+    platform.answer = _filtered("get_pipeline")
+    assert _listed() == {"get_pipeline"}
+    clock.now += 61
+    platform.answer = NOT_FOUND
+    assert _listed() == {"get_pipeline"}
+
+
+ODD_BODIES = [None, b"\xff\xfe", "", "null", "0", "[]", '"x"', '{"filtered": "yes"}', '{"filtered": true, "tools": {}}',
+              '{"filtered": true, "tools": [null]}', '{"filtered": true, "tools": [1.5, true]}',
+              '{"filtered": true, "tools": [{"a": [1]}]}', '{"filtered": true, "tools": ["a", ["b"]]}']
+
+
+@pytest.mark.parametrize("body", ODD_BODIES)
+@pytest.mark.parametrize("status", [200, 404, 401, 500, None])
+def test_classification_never_raises_for_any_body(status, body):
+    kind, _ = server._classify_allowed_tools(status, body)
+    assert kind in ("answer", "not_found", "refused", "unreachable")
+    if status == 200:
+        assert kind == "unreachable", body
 
 
 # --- the server could not answer ---------------------------------------------
@@ -310,6 +392,62 @@ def test_a_refusal_is_cached_for_ten_seconds(env):
     platform.answer = _filtered("get_pipeline")
     assert _listed() == {"get_pipeline"}
     assert platform.fetches == 2
+
+
+@pytest.mark.parametrize("failure", FAILURES)
+def test_a_slow_failure_is_cached_from_when_the_request_returned(env, failure):
+    platform, clock = env
+
+    def slow():
+        clock.now += 15  # the request takes its full timeout
+
+    platform.during = slow
+    platform.answer = failure
+    first = _listed()
+    assert _listed() == first
+    assert _listed() == first
+    assert platform.fetches == 1, "three listings in a row must make one request"
+
+
+def test_a_could_not_ask_finishing_after_a_concurrent_refusal_keeps_the_refusal(env):
+    platform, clock = env
+    platform.answer = _filtered("get_pipeline", "delete_pipeline")
+    assert _listed() == {"get_pipeline", "delete_pipeline"}
+    clock.now += 61
+
+    def other_listing_is_refused():
+        # A second listing for the same key and user runs to completion while
+        # the first request is still in flight, and is refused.
+        platform.during = None
+        platform.answer = (401, '{"error":"API key is revoked or invalid"}')
+        assert server._allowed_tool_names() == set()
+
+    platform.during = other_listing_is_refused
+    platform.answer = requests.ConnectionError("connection refused")
+    assert _listed() == set()
+    assert platform.fetches == 3
+    clock.now += 11
+    platform.answer = requests.ConnectionError("connection refused")
+    assert _listed() == set()
+
+
+def test_a_could_not_ask_finishing_after_a_concurrent_answer_keeps_that_answer(env):
+    platform, clock = env
+    platform.answer = _filtered("get_pipeline", "delete_pipeline")
+    assert _listed() == {"get_pipeline", "delete_pipeline"}
+    clock.now += 61
+
+    def other_listing_answers():
+        platform.during = None
+        platform.answer = _filtered("get_pipeline")
+        assert server._allowed_tool_names() == {"get_pipeline"}
+
+    platform.during = other_listing_answers
+    platform.answer = requests.ConnectionError("connection refused")
+    assert _listed() == {"get_pipeline"}
+    clock.now += 61
+    platform.answer = requests.ConnectionError("connection refused")
+    assert _listed() == {"get_pipeline"}
 
 
 def test_recovery_after_a_failure_serves_the_new_answer(env):

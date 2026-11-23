@@ -483,6 +483,23 @@ class LimitedCallerIncidentTextSpec extends AnyFunSuite with BeforeAndAfterEach 
         }
     }
 
+    test("D1: a visible pipeline's previous name that a hidden tap now carries is replaced") {
+        // the visible orders was once named hr_sync, the name the hidden HR tap carries now
+        val renamedVisible = orders.copy(previousNames = java.util.Arrays.asList("hr_sync", "orders_legacy"))
+        val hiddenTapNow = tap("hr_sync", "HR", "hr_payroll")
+        val stored = IncidentsAPIController.StoredItems(Seq(renamedVisible, ordersEu, hrPayroll, pay), taps :+ hiddenTapNow)
+        val inc = namingVisible.copy(steps =
+            List(IncidentStep(t0, "diagnose", "the hr_sync tap sent 0 rows; hr_sync retries; orders_legacy and orders fine"))
+        )
+        for ((who, rk) <- limited) {
+            val o = IncidentsAPIController.shownIncident(req(rk), inc, readPipeline, readTap, run = noRuns, items = () => stored).toPublicJson
+            assert(str(steps(o).head, "summary") == "the [hidden] tap sent 0 rows; [hidden] retries; orders_legacy and orders fine", who + ": " + o)
+            val names = IncidentsAPIController.nameScrubberFor(rk, stored)
+            assert(names("hr_sync failed") == "[hidden] failed", who)
+            assert(names("orders_legacy ran") == "orders_legacy ran", who)
+        }
+    }
+
     test("D1: through the incident seams, a visible name holding a dot is never cut by a hidden name") {
         val hr = pipe("hr", "HR")
         val hrEu = pipe("hr.eu", "Sales", owner = "own")

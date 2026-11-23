@@ -236,9 +236,9 @@ The MCP server asks the platform which tools a session's key (and, for an in-pla
 - **The platform answers with the list:** exactly those tools are listed. A full-access key, or an install with API keys off, gets every tool.
 - **The platform refuses the key or the user** (a revoked or unknown key, a user who no longer exists, or a key that may not ask): no tools are listed, straight away, and any list the key had before is dropped. The MCP server's log says the platform refused the key.
 - **The platform cannot be asked** (it is restarting or unreachable, or answers with an error or something unreadable): the list the platform last gave for that key and user is kept, however long the outage lasts. If the platform has not answered for that key since the MCP server started, every tool is listed until it does, and the log says so; calls made meanwhile are still checked by the platform and fail while it is down.
-- **The platform is older than the tool-list check:** every tool is listed, as before.
+- **The platform is older than the tool-list check:** every tool is listed, as before. If the same key and user were already given a narrower list, or refused, since the MCP server started, a "not found" answer (for example from a proxy in front of a restarting platform) counts as the platform not being asked, and that earlier answer is kept.
 
-A refusal or a failed lookup is tried again after 10 seconds; an answer is reused for a minute. A client that fetched its tool list while the platform was down sees the right list the next time it asks for the tool list (reconnecting does that).
+A refusal or a failed lookup is tried again 10 seconds after it came back; an answer is reused for a minute. A client that fetched its tool list while the platform was down sees the right list the next time it asks for the tool list (reconnecting does that).
 
 ### Tools for a key limited to a catalog or to what it created
 

@@ -66,6 +66,8 @@ class AgentLoopFatalToolErrorSpec extends AnyFunSuite {
         val events = ListBuffer.empty[LoopEvent]
         val toolCalls = ListBuffer.empty[String]
         var modelCalls = 0
+        // The messages each model call received, in call order.
+        val modelInputs = ListBuffer.empty[List[(String, List[AIContentBlock])]]
 
         def run(): List[LoopEvent] = {
             AgentLoop.run(
@@ -88,13 +90,35 @@ class AgentLoopFatalToolErrorSpec extends AnyFunSuite {
                         case Throws(e) => throw e
                     }
                 },
-                callModel = (_: List[(String, List[AIContentBlock])], s: AIStreamEvent => Unit) => {
+                callModel = (msgs: List[(String, List[AIContentBlock])], s: AIStreamEvent => Unit) => {
+                    modelInputs += msgs
                     val f = model(math.min(modelCalls, model.size - 1))
                     modelCalls += 1
                     f(s)
                 }
             )
             events.toList
+        }
+    }
+
+    /** Messages a model can be given: they open with the user, roles
+      * alternate, and every assistant turn that asks for tools is followed by
+      * one user turn holding exactly one result per tool use, in order, with
+      * the same ids. The last message is the user's turn. */
+    private def assertWellFormed(msgs: List[(String, List[AIContentBlock])]): Unit = {
+        assert(msgs.nonEmpty, msgs)
+        assert(msgs.head._1 == "user", msgs)
+        assert(msgs.last._1 == "user", msgs)
+        msgs.zip(msgs.tail).foreach {
+            case ((r1, _), (r2, _)) => assert(r1 != r2, "roles must alternate: " + msgs)
+        }
+        msgs.zip(msgs.tail).foreach {
+            case (("assistant", blocks), (_, next)) =>
+                val useIds = blocks.collect { case u: AIContentBlock.ToolUseBlock => u.id }
+                val resultIds = next.collect { case r: AIContentBlock.ToolResultBlock => r.toolUseId }
+                assert(resultIds == useIds, msgs)
+                if (useIds.nonEmpty) assert(next.size == useIds.size, msgs)
+            case _ => ()
         }
     }
 
@@ -266,6 +290,50 @@ class AgentLoopFatalToolErrorSpec extends AnyFunSuite {
                 assert(evs.last == LoopEvent.Done)
                 assert(evs.exists { case LoopEvent.ToolResult(_, "list_pipelines", _, true) => true; case _ => false }, evs)
             }
+    }
+
+    test("a batch of three tool calls with one ordinary failure sends the model one user message with the three results in order") {
+        val h = new Harness(
+            model = List(
+                wantsTools(toolUse("t1", "list_pipelines"), toolUse("t2", "get_pipeline"), toolUse("t3", "list_taps")),
+                answers("Two worked, one did not.")
+            ),
+            tools = List(Ok(okBody), Fails("""{"error":"Pipeline not found"}"""), Ok(okBody))
+        )
+        val evs = h.run()
+        assert(h.modelCalls == 2)
+        assert(evs.last == LoopEvent.Done)
+        val sent = h.modelInputs(1)
+        assertWellFormed(sent)
+        val (role, blocks) = sent.last
+        assert(role == "user", sent)
+        assert(blocks.size == 3, blocks)
+        val results = blocks.collect { case r: AIContentBlock.ToolResultBlock => r }
+        assert(results.size == 3, blocks)
+        assert(results.map(_.toolUseId) == List("t1", "t2", "t3"), results)
+        assert(results.map(_.isError) == List(false, true, false), results)
+        assert(results(1).content.contains("Pipeline not found"), results)
+        assert(sent.init.last._1 == "assistant", sent)
+        assert(sent.init.last._2.collect { case u: AIContentBlock.ToolUseBlock => u.id } == List("t1", "t2", "t3"), sent)
+    }
+
+    test("a run ended by an unverified user makes no further model call, and every model call it made was given well-formed messages") {
+        val h = new Harness(
+            model = List(
+                wantsTools(toolUse("t1", "list_pipelines")),
+                wantsTools(toolUse("t2", "get_pipeline"), toolUse("t3", "list_taps")),
+                answers("should not be reached")
+            ),
+            tools = List(Ok(okBody), Fails(TenantInterceptor.UnverifiedUserBody), Ok(okBody))
+        )
+        val evs = h.run()
+        assert(h.modelCalls == 2)
+        assert(h.modelInputs.size == 2)
+        assertEndsWithErrorResultThen(evs, "get_pipeline", UnverifiedSentence)
+        h.modelInputs.foreach(assertWellFormed)
+        val last = h.modelInputs.last
+        assert(last.map(_._1) == List("user", "assistant", "user"), last)
+        assert(last.last._2.collect { case r: AIContentBlock.ToolResultBlock => (r.toolUseId, r.isError) } == List(("t1", false)), last)
     }
 
     test("other tool failures do not count toward the two user-store failures") {

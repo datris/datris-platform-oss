@@ -254,7 +254,7 @@ object IncidentsAPIController {
       * those pipelines ([[ai.datris.util.PipelineAliases.previousNamesOf]]),
       * are replaced. Kept whole: the current name of every pipeline and tap
       * it may read, and a readable pipeline's previous names except any a
-      * hidden pipeline now carries (a contested name fails closed, as
+      * hidden pipeline or a hidden tap now carries (a contested name fails closed, as
       * [[ai.datris.util.PipelineAliases.shownRecordNames]] does). So a
       * visible name is never replaced or cut, and a hidden pipeline's
       * current name is never shown. A kept name that a hidden one differs
@@ -266,7 +266,7 @@ object IncidentsAPIController {
         val ts = Option(items).map(_.taps).getOrElse(Nil).filter(t => t != null && t.name != null && t.name.nonEmpty)
         val (shownP, hiddenP) = ps.partition(p => pipelineReadable(rk, p))
         val (shownT, hiddenT) = ts.partition(t => CallerVisibility.mayReadStored(Some(rk), "tap", t.catalog, t.createdByKeyLabel))
-        val hiddenCurrent = hiddenP.map(_.name).toSet
+        val hiddenCurrent = hiddenP.map(_.name).toSet ++ hiddenT.map(_.name)
         val kept = shownP.map(_.name).toSet ++ shownT.map(_.name) ++ (shownP.flatMap(PipelineAliases.previousNamesOf).toSet -- hiddenCurrent)
         val hiddenPipelineNames = hiddenP.flatMap(p => p.name +: PipelineAliases.previousNamesOf(p)).toSet
         new HiddenTapScrub.NameScrubber(hiddenT.map(_.name).toSet -- kept, hiddenPipelineNames -- kept, kept)
