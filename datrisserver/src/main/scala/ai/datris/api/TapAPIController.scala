@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder, JsonElement, JsonNull, JsonParser}
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, ResourceHiddenException, VersionActor}
-import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion, PipelineConfig}
+import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion, PipelineConfig, ValidationException}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -72,9 +72,10 @@ object TapAPIController {
       * `response.rollup` itself and no reader is called. A limited caller
       * (restricted session, catalog- or owner-scoped key) gets what
       * `GET /pipeline/status` with that token shows it
-      * ([[PipelineStatusAPIController.restrictedViewWith]]): None when the
-      * run touches a pipeline it may not read, else the scrubbed rollup
-      * (hidden tap names `[hidden]`, preview rows stripped). */
+      * ([[PipelineStatusAPIController.restrictedViewWith]]): the jobs of
+      * pipelines it may read, the rollup recomputed from them when a job
+      * was dropped, and scrubbed (hidden tap names `[hidden]`, preview rows
+      * stripped); None when no job of the run is on a pipeline it may read. */
     def shownRollup(
         request: HttpServletRequest,
         response: ai.datris.model.PipelineStatusResponse,
@@ -97,8 +98,8 @@ object TapAPIController {
       * scope): one `readAll`, then only logs whose `tapName` names a stored
       * tap it may read ([[mayRead]]); a log with a null or missing
       * `tapName`, or naming a tap no longer stored, is hidden. Everyone
-      * else: `logs` itself, `readAll` not called. The route caps the rows it
-      * reads before this filter; the response carries no count. */
+      * else: `logs` itself, `readAll` not called. The response carries no
+      * count; the route reads through [[visibleTapLogsPage]]. */
     def visibleTapLogs(request: HttpServletRequest, logs: Seq[JsonElement], readAll: () => Seq[TapConfig]): Seq[JsonElement] =
         if (!CapabilityCheck.isLimited(request)) logs
         else {
@@ -109,6 +110,28 @@ object TapAPIController {
                     o.has("tapName") && o.get("tapName").isJsonPrimitive && names.contains(o.get("tapName").getAsString)
                 }
             }
+        }
+
+    /** Most run-log rows GET /tap/logs/all reads in one request. */
+    val MaxTapLogRows = 5000
+
+    /** GET /tap/logs/all: the newest `maxItems` run logs the caller sees,
+      * `read(n)` reading the `n` newest run-log values in the window. A
+      * caller that is not limited: `read(maxItems)` itself, `readAll` not
+      * called. A limited caller ([[CapabilityCheck.isLimited]]): one read of
+      * up to five times `maxItems` (at most [[MaxTapLogRows]]), then
+      * [[visibleTapLogs]], cut to `maxItems`; past that bound the list is
+      * short. */
+    def visibleTapLogsPage(
+        request: HttpServletRequest,
+        maxItems: Int,
+        read: Int => Seq[JsonElement],
+        readAll: () => Seq[TapConfig]
+    ): Seq[JsonElement] =
+        if (!CapabilityCheck.isLimited(request)) read(maxItems)
+        else {
+            val n = math.min(5L * math.max(0, maxItems), MaxTapLogRows.toLong).toInt
+            visibleTapLogs(request, read(math.max(n, maxItems)), readAll).take(math.max(0, maxItems))
         }
 
     /** Scope check on a loaded tap, mapped to a response: None when allowed,
@@ -234,6 +257,38 @@ object TapAPIController {
                 case _ => None
             }
 
+    /** Report only (plans/stories/tap-runs-hold-owner-scope.md, rule 1):
+      * called by `POST /tap/test` and `POST /tap/run` (every mode) right after
+      * the run, before the response is built. One WARN line and one
+      * `tap/reads-narrowed` audit row when the caller is limited and the
+      * script read platform data through the callback. Reads nothing, never
+      * marks the request as audited, never throws. */
+    def reportCallerReads(request: HttpServletRequest, tap: TapConfig, result: TapScriptResult): Unit =
+        TapOwnerScopeReport.callerReads(request, tap, result)
+
+    /** Report only (rule 6): called by `POST /tap/script` after the script
+      * was stored, with the stored tap. One WARN line when the save-time
+      * target rule ([[targetPipelineRefusal]]) would refuse the stored target
+      * for the caller. Never throws. */
+    def reportScriptTarget(request: HttpServletRequest, tap: TapConfig, readPipeline: String => PipelineConfig): Unit =
+        TapOwnerScopeReport.scriptTarget(request, tap, readPipeline)
+
+    /** `read` answering each name from at most one call (a throw is not kept). */
+    private[api] def readOnce(read: String => PipelineConfig): String => PipelineConfig = {
+        val held = new java.util.concurrent.ConcurrentHashMap[String, Option[PipelineConfig]]()
+        n =>
+            if (n == null) read(n)
+            else {
+                val hit = held.get(n)
+                if (hit != null) hit.orNull
+                else {
+                    val p = Option(read(n))
+                    held.put(n, p)
+                    p.orNull
+                }
+            }
+    }
+
     /** POST /tap (`saveTapInternal`), every caller, decided on `stored` (the
       * tap of that name, or null). A restricted session: the catalog rules
       * ([[catalogForSave]]) as before. An API key
@@ -339,7 +394,7 @@ object TapAPIController {
       * safe path (the run refuses it), else its `createdByKeyLabel`. A
       * failed secret-store read throws, so the test is refused (500) rather
       * than run as if the secret did not exist. */
-    private[api] def liveSecretOwner(name: String): Option[Option[String]] = {
+    private[datris] def liveSecretOwner(name: String): Option[Option[String]] = {
         val path = DatrisEnvironment.current.environment + "/" + name
         if (!SecretNames.isSafePath(path)) None
         else SecretsUtil.tryGetSecretMap(path).get.map(m => Option(m.get("createdByKeyLabel")).filter(_.nonEmpty))
@@ -362,29 +417,486 @@ object TapAPIController {
       * (`saveTapCore`) makes, so specs can drive every save check on a save
       * and on a version restore without Mongo, Vault or a script store.
       * [[ProductionSaveIO]] is what `POST /tap`, the catalog restore and the
-      * version restore use. `scriptExists` and `readScript` may throw; the
-      * core handles that as before. */
-    private[api] case class TapSaveIO(
+      * version restore use; the recovery agent's tap revert uses it too.
+      * `scriptExists` and `readScript` may throw; the core handles that as
+      * before. `secretOwner` and `repoPathPrefix` serve the script
+      * reference and secret rules ([[referenceRefusal]]) only. */
+    private[datris] case class TapSaveIO(
         readTap: String => TapConfig,
         readPipeline: String => PipelineConfig,
         secretType: String => Option[Option[String]],
         scriptExists: TapConfig => Boolean,
         readScript: TapConfig => Option[String],
         loadAll: () => (Seq[TapConfig], Seq[PipelineConfig]),
-        writeVersioned: (TapConfig, String, String) => TapConfig
+        writeVersioned: (TapConfig, String, String) => TapConfig,
+        secretOwner: String => Option[Option[String]] = n => TapAPIController.liveSecretOwner(n),
+        repoPathPrefix: () => String = () => TapAPIController.liveRepoPathPrefix()
+    )
+
+    /** The enabled code repository's path prefix as the repository store
+      * writes it ("" or ending in `/`); "" when none is enabled. */
+    private[datris] def liveRepoPathPrefix(): String =
+        CodeRepoConfigIO.readEnabled().map(c => TapReferenceRules.normalizePrefix(c.pathPrefix)).getOrElse("")
+
+    /** `f` answering from at most one call; a throw is not kept. */
+    private[api] def once[T](f: () => T): () => T = {
+        val held = new java.util.concurrent.atomic.AtomicReference[Option[T]](None)
+        () =>
+            held.get match {
+                case Some(v) => v
+                case None =>
+                    val v = f()
+                    held.set(Some(v))
+                    v
+            }
+    }
+
+    /** The script reference and secret rules at `site`
+      * ([[TapReferenceRules.judge]] for the request's caller): Some(refusal)
+      * for the first enforced finding, the answer `POST /tap/test` gives a
+      * tap the caller may not use (a restricted session: the 404 of the tap
+      * named in `candidate`; an API key: the shared 403 on `tap:read` through
+      * `CapabilityCheck.assertScope`), the same for every reason and naming
+      * nothing of another tap; nothing is reported then. Otherwise None, and
+      * each reported finding is logged and audited
+      * ([[TapOwnerScopeReport.referenceWouldBeRefused]]). A report never
+      * throws; a lookup an enforced check needs that fails is thrown. */
+    def referenceRefusal(
+        request: HttpServletRequest,
+        site: String,
+        candidate: TapConfig,
+        stored: TapConfig,
+        lookups: TapReferenceRules.Lookups
+    ): Option[ResponseEntity[String]] = {
+        val caller = CapabilityCheck.resolvedKey(request)
+        val findings = TapReferenceRules.judge(caller, site, candidate, stored, lookups)
+        if (findings.exists(_.mode == TapReferenceRules.Enforced)) Some(referenceRefused(request, candidate))
+        else {
+            findings.foreach(f => TapOwnerScopeReport.referenceWouldBeRefused(request, candidate.name, f.rule, site, f.reason))
+            None
+        }
+    }
+
+    private[api] def referenceRefused(request: HttpServletRequest, candidate: TapConfig): ResponseEntity[String] =
+        if (CapabilityCheck.isRestrictedSession(request)) tapNotFound(Option(candidate.name).getOrElse(""))
+        else
+            try {
+                CapabilityCheck.assertScope(request, "tap", "read", Map.empty)
+                PipelineAPIController.capabilityDenied(
+                    new CapabilityDeniedException(
+                        CapabilityCheck.resolvedKey(request).map(rk => CapabilityCheck.scopeDenialMessage(rk, "tap", "read")).getOrElse("capability denied")
+                    )
+                )
+            } catch {
+                case e: CapabilityDeniedException => PipelineAPIController.capabilityDenied(e)
+            }
+
+    /** Rule 2 of plans/stories/tap-save-references-in-scope.md: a request
+      * names a tap only with a `tapName` that is not missing, null or blank. */
+    private[api] def namesTap(tapName: String): Boolean = tapName != null && tapName.trim.nonEmpty
+
+    /** The `error` a review, generate, fix or optimize response carries when
+      * the caller may not update the stored tap, which is left unchanged. */
+    val StoredTapLeftUnchanged = "The stored tap was left unchanged: this caller may not update it"
+
+    /** Whether the review, generate, fix and optimize routes may change the
+      * stored `tap`: no identity, yes; a restricted session, when its grants
+      * allow `tap:update` on the tap (what [[scopeRefusal]] with `update`
+      * checks); any other identity, when it holds `tap:create` or
+      * `tap:update` granting on the tap's catalog and owner and the stored
+      * tap write rule ([[storedTapWriteRefusal]]) does not refuse it. Pure:
+      * notes no denial. */
+    def mayWriteStoredTap(request: HttpServletRequest, tap: TapConfig): Boolean =
+        CapabilityCheck.resolvedKey(request) match {
+            case None => true
+            case Some(rk) => identityMayWriteStoredTap(rk, tap)
+        }
+
+    /** The identity core of [[mayWriteStoredTap]]: whether `rk` may write
+      * `tap` as stored (its catalog and owner). Also decides whether a tap may
+      * be handed to `rk` as its new owner ([[TapOwnerChange.decide]], with
+      * `tap` carrying the new owner). Pure. */
+    def identityMayWriteStoredTap(rk: ai.datris.model.ResolvedKey, tap: TapConfig): Boolean = {
+        val ctx = CatalogOps.scopeContext(tap.catalog, tap.createdByKeyLabel)
+        if (rk.restrictedSession) rk.grants("tap", "update", ctx)
+        else
+            ai.datris.auth.CallerVisibility.TapWriteActions.exists(a => rk.grants("tap", a, ctx)) &&
+            ai.datris.auth.CallerVisibility.storedWriteDenial(rk, "tap", ctx, ai.datris.auth.CallerVisibility.TapWriteActions, "update").isEmpty
+    }
+
+    /** True when the route gate let `request` through only because
+      * `CAPABILITY_ENFORCEMENT=log-only` (it noted a would-deny,
+      * [[ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr]]).
+      * Log-only refuses nothing, so review, generate, fix and optimize then
+      * change the stored tap as v1.61.0 did instead of applying
+      * [[mayWriteStoredTap]]. A caller that holds the route's capability
+      * (for review, tap read) is not marked, so rule 1 holds for it in both
+      * modes. */
+    private[api] def passedGateOnlyInLogOnly(request: HttpServletRequest): Boolean =
+        request != null && request.getAttribute(ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr) != null
+
+    /** `existing` (the request's audit metadata attribute: a JsonObject, or
+      * anything else = none) with every key of `added` set; other keys are
+      * kept, as `PipelineAPIController.renameAuditMetadata` does. */
+    private[api] def mergedAuditMetadata(existing: Any, added: com.google.gson.JsonObject): com.google.gson.JsonObject = {
+        val m = existing match {
+            case o: com.google.gson.JsonObject => o
+            case _ => new com.google.gson.JsonObject
+        }
+        added.entrySet().forEach(e => m.add(e.getKey, e.getValue))
+        m
+    }
+
+    /** Whether the caller of `request` is held to its own tap's script file
+      * (rule S4 enforced at the script upload and the catalog restore):
+      * [[ai.datris.auth.CallerVisibility.heldToOwnTapScriptFile]] on the
+      * request's identity. False with no identity (auth off) and for a null
+      * request. The log-only exemption ([[passedGateOnlyInLogOnly]]) is
+      * applied by each site on top of this. */
+    private[api] def heldToOwnScriptFile(request: HttpServletRequest): Boolean =
+        request != null && CapabilityCheck.resolvedKey(request).exists(ai.datris.auth.CallerVisibility.heldToOwnTapScriptFile)
+
+    /** The 503 a held caller ([[heldToOwnScriptFile]]) gets when the stored
+      * tap is a repository tap and the code repository settings cannot be
+      * read, so whether its stored file is its own cannot be decided: nothing
+      * is written. Names only the caller's own tap. */
+    private[api] def ownScriptFileUndecided(tapName: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.SERVICE_UNAVAILABLE)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody(ownScriptFileUndecidedMessage(tapName)))
+
+    /** The answer of [[ownScriptFileUndecided]]. */
+    def ownScriptFileUndecidedMessage(tapName: String): String =
+        "The code repository settings could not be read, so the script of tap '" + tapName + "' was not written. Try again later."
+
+    /** The store reads, writes, secret reads and model calls of the review,
+      * generate, fix and optimize routes, so specs can drive them without
+      * Mongo, Vault, a script store or a model. [[ProductionAiIO]] makes the
+      * same calls the routes made inline. */
+    private[api] case class TapAiIO(
+        readTap: String => TapConfig,
+        readScript: TapConfig => Option[String],
+        write: TapConfig => Unit,
+        writeVersioned: (TapConfig, String, String) => TapConfig,
+        secretType: String => Option[Option[String]],
+        secretOwner: String => Option[Option[String]],
+        generate: (String, String, String, String, String) => TapGenerateResult,
+        fix: (String, String, String, String, String, String, List[ai.datris.model.IterationRecord]) => TapFixResult,
+        review: (String, String, Int, Long, String, String, List[ai.datris.model.IterationRecord]) => TapReviewResult,
+        optimize: (String, String, Int, Long, String, String, List[ai.datris.model.IterationRecord]) => TapOptimizeResult
+    )
+
+    private[api] lazy val ProductionAiIO: TapAiIO = TapAiIO(
+        readTap = n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n),
+        readScript = t => TapCodeStore.forTap(t).readScript(t),
+        write = t => { TapConfigIO.write(t); () },
+        writeVersioned = (t, note, actor) => TapConfigIO.writeVersioned(t, note, actor),
+        secretType = n => liveSecretType(n),
+        secretOwner = n => liveSecretOwner(n),
+        generate = (description, tapName, oldScriptPath, secretName, tapType) =>
+            TapScriptGenerator.generate(description, tapName, oldScriptPath, secretName, tapType),
+        fix = (tapName, script, diagnosis, logs, error, oldScriptPath, prior) =>
+            TapScriptFixer.fix(tapName, script, diagnosis, logs, error, oldScriptPath, prior),
+        review = (tapName, script, recordCount, durationMs, logs, oldScriptPath, prior) =>
+            TapScriptReviewer.review(tapName, script, recordCount, durationMs, logs, oldScriptPath, prior),
+        optimize = (tapName, script, recordCount, durationMs, logs, oldScriptPath, prior) =>
+            TapScriptOptimizer.optimize(tapName, script, recordCount, durationMs, logs, oldScriptPath, prior)
     )
 
     /** The production store wiring of [[TapSaveIO]]: the same calls the save
       * path made inline. */
-    private[api] lazy val ProductionSaveIO: TapSaveIO = TapSaveIO(
+    private[datris] lazy val ProductionSaveIO: TapSaveIO = TapSaveIO(
         readTap = n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n),
         readPipeline = readPipelineForSave,
         secretType = n => liveSecretType(n),
         scriptExists = t => TapCodeStore.forTap(t).scriptExists(t),
         readScript = t => TapCodeStore.forTap(t).readScript(t),
         loadAll = () => loadAllForDependencies(),
-        writeVersioned = (t, note, actor) => TapConfigIO.writeVersioned(t, note, actor)
+        writeVersioned = (t, note, actor) => TapConfigIO.writeVersioned(t, note, actor),
+        secretOwner = n => liveSecretOwner(n),
+        repoPathPrefix = () => liveRepoPathPrefix()
     )
+
+    /** The store reads and writes of the script upload (`POST /tap/script`)
+      * and the storage move (`POST /tap/migrate-storage`), so specs can drive
+      * them without Mongo or a script store. `storeFor(requested storage or
+      * null, stored tap or null)` is the store written, resolved as the routes
+      * always have: the requested storage, else the stored tap's, else the
+      * tenant default. `allTaps` and `repoConfig` (the enabled code repository
+      * configuration) serve the script ownership rules
+      * ([[TapScriptOwnership]]) only. [[ProductionUploadIO]] makes the calls
+      * the routes made inline. */
+    private[datris] case class TapScriptUploadIO(
+        readTap: String => TapConfig,
+        allTaps: () => Seq[TapConfig],
+        repoConfig: () => Option[ai.datris.model.CodeRepoConfig],
+        storeFor: (String, TapConfig) => TapCodeStore,
+        write: TapConfig => Unit,
+        writeVersioned: (TapConfig, String, String) => TapConfig,
+        loadAll: () => (Seq[TapConfig], Seq[PipelineConfig]),
+        readPipeline: String => PipelineConfig
+    ) {
+
+        /** This IO with `allTaps` and `repoConfig` each read at most once. */
+        def memoised: TapScriptUploadIO = copy(allTaps = once(allTaps), repoConfig = once(repoConfig))
+
+        /** The script of a stored tap, from the store it records. */
+        def readScript(t: TapConfig): Option[String] = storeFor(null, t).readScript(t)
+    }
+
+    private[datris] lazy val ProductionUploadIO: TapScriptUploadIO = TapScriptUploadIO(
+        readTap = n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n),
+        allTaps = () => readableTaps("Script upload target check"),
+        repoConfig = () => CodeRepoConfigIO.readEnabled(),
+        storeFor = (storage, existing) =>
+            if (storage != null && storage.nonEmpty) TapCodeStore.forStorage(storage)
+            else if (existing != null) TapCodeStore.forTap(existing)
+            else TapCodeStore.forStorage(null),
+        write = t => { TapConfigIO.write(t); () },
+        writeVersioned = (t, note, actor) => TapConfigIO.writeVersioned(t, note, actor),
+        loadAll = () => loadAllForDependencies(),
+        readPipeline = readPipelineForSave
+    )
+
+    /** The refusal of rule S2 (plans/stories/tap-script-store-writes-and-deletes-in-scope.md):
+      * Some when writing `tapName`'s script with `store` would put it, with
+      * no repository reference of this tap to write over (`prior` null or not
+      * a repository reference), at a repository path that a stored tap of
+      * another name currently runs from. Then nothing may be written: 409 for
+      * an unrestricted caller; for a limited caller the answer the script
+      * reference rule gives ([[referenceRefused]]), naming nothing of the
+      * other tap. Reads the repository configuration and the tap listing only
+      * for such a write. A write over this tap's own repository reference is
+      * judged here for no caller; for a caller held to its own tap's script
+      * file see [[sharedFileUploadRefusal]]. */
+    private[api] def uploadTargetRefusal(
+        request: HttpServletRequest,
+        tapName: String,
+        store: TapCodeStore,
+        prior: TapConfig,
+        io: TapScriptUploadIO
+    ): Option[ResponseEntity[String]] = {
+        val writesOverOwnReference =
+            prior != null && prior.scriptStorage == "github" && prior.scriptRepoPath != null && prior.scriptRepoPath.nonEmpty
+        if (store == null || store.storage != "github" || writesOverOwnReference) None
+        else {
+            val target = io.repoConfig().flatMap(cfg => scala.util.Try(GithubCodeStore.scriptRepoPath(tapName, cfg)).toOption)
+            target.filter(p => TapScriptOwnership.uploadTargetTaken(tapName, p, io.allTaps())).map(_ => targetTakenAnswer(request, tapName))
+        }
+    }
+
+    /** The answer of a rule S2 refusal: for a limited caller the answer the
+      * script reference rule gives ([[referenceRefused]]), naming nothing of
+      * the other tap; for any other caller (one that may read every tap) a
+      * 409 saying another tap runs its script from the file. */
+    private def targetTakenAnswer(request: HttpServletRequest, tapName: String): ResponseEntity[String] =
+        if (CapabilityCheck.isLimited(request))
+            referenceRefused(request, TapConfig(name = tapName, description = null, targetPipeline = null))
+        else
+            ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body[String](
+                    ApiErrors.errorBody(
+                        "The script of tap '" + tapName + "' cannot be stored at its code repository path: another tap runs its script " +
+                            "from that file, and storing it would replace that script. Use another tap name."
+                    )
+                )
+
+    /** Rule S2 for a caller held to its own tap's script file
+      * ([[heldToOwnScriptFile]]) when the stored repository tap `existing`
+      * already has a repository reference that `store` writes over: Some when
+      * that stored path (the file the store writes), normalised, is also the
+      * current repository script of a stored tap of another name
+      * ([[TapScriptOwnership.uploadTargetTaken]]). Then nothing may be
+      * written: the answer [[uploadTargetRefusal]] gives the same caller,
+      * with one log line and one audit row
+      * ([[TapOwnerScopeReport.scriptStoreRefused]], rule S2, site "script").
+      * When the tap listing cannot be read, the 503 of [[tapListingUndecided]]
+      * and nothing is written. Never for any other caller, and never when the
+      * route gate passed the request only under log-only capability mode
+      * ([[passedGateOnlyInLogOnly]]). Reads the tap listing only for such a
+      * write. */
+    private[api] def sharedFileUploadRefusal(
+        request: HttpServletRequest,
+        tapName: String,
+        store: TapCodeStore,
+        existing: TapConfig,
+        io: TapScriptUploadIO
+    ): Option[ResponseEntity[String]] = {
+        val writesAtStoredPath = store != null && store.storage == "github" && existing != null && existing.scriptStorage == "github" &&
+            existing.scriptRepoPath != null && existing.scriptRepoPath.nonEmpty
+        if (!writesAtStoredPath || !heldToOwnScriptFile(request) || passedGateOnlyInLogOnly(request)) None
+        else {
+            val taps = scala.util.Try(io.allTaps()) match {
+                case scala.util.Success(t) => t
+                case scala.util.Failure(e) =>
+                    uploadLogger.warn(
+                        "Script upload for tap '" + LogSafe.text(tapName) + "' not written: the tap list could not be read (" +
+                            LogSafe.text(e.getClass.getSimpleName) + ")"
+                    )
+                    return Some(tapListingUndecided(tapName))
+            }
+            if (!TapScriptOwnership.uploadTargetTaken(tapName, existing.scriptRepoPath, taps)) None
+            else {
+                TapOwnerScopeReport.scriptStoreRefused(
+                    request,
+                    tapName,
+                    "S2",
+                    "script",
+                    "a script upload by a caller whose tap access is limited to a catalog or to what it created was refused: the tap's code repository " +
+                        "script file is also the current script of another tap"
+                )
+                Some(targetTakenAnswer(request, tapName))
+            }
+        }
+    }
+
+    /** The 503 a held caller ([[heldToOwnScriptFile]]) gets when the tap
+      * listing cannot be read, so whether another tap runs from the file
+      * cannot be decided: nothing is written. Names only the caller's own tap. */
+    private[api] def tapListingUndecided(tapName: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.SERVICE_UNAVAILABLE)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody(tapListingUndecidedMessage(tapName)))
+
+    /** The answer of [[tapListingUndecided]]. */
+    def tapListingUndecidedMessage(tapName: String): String =
+        "The list of taps could not be read, so the script of tap '" + tapName + "' was not written. Try again later."
+
+    /** Rule S4 for a caller held to its own tap's script file
+      * ([[heldToOwnScriptFile]]): Some when `store` would write the script of
+      * the stored repository tap `existing` at its stored path and that path
+      * is not the tap's own file ([[TapScriptOwnership.ownRepo]] under the
+      * current or a recorded earlier prefix). Then nothing may be written:
+      * 409 telling the caller to ask an administrator to move the script to
+      * the tap's own path, naming no path and no other tap, with one log line
+      * and one audit row ([[TapOwnerScopeReport.scriptStoreRefused]]). When
+      * the repository configuration cannot be read, the answer is the 503 of
+      * [[ownScriptFileUndecided]] and nothing is written. Never for any other
+      * caller (reported after the write, as before), and never when the route
+      * gate passed the request only under log-only capability mode
+      * ([[passedGateOnlyInLogOnly]]), which refuses nothing. Reads the
+      * repository configuration only for such a write. */
+    private[api] def notOwnUploadRefusal(
+        request: HttpServletRequest,
+        tapName: String,
+        store: TapCodeStore,
+        existing: TapConfig,
+        io: TapScriptUploadIO
+    ): Option[ResponseEntity[String]] = {
+        val writesAtStoredPath = store != null && store.storage == "github" && existing != null && existing.scriptStorage == "github" &&
+            existing.scriptRepoPath != null && existing.scriptRepoPath.nonEmpty
+        if (!writesAtStoredPath || !heldToOwnScriptFile(request) || passedGateOnlyInLogOnly(request)) None
+        else {
+            val cfg = scala.util.Try(io.repoConfig()) match {
+                case scala.util.Success(c) => c
+                case scala.util.Failure(e) =>
+                    uploadLogger.warn(
+                        "Script upload for tap '" + LogSafe.text(tapName) + "' not written: the code repository settings could not be read (" +
+                            LogSafe.text(e.getClass.getSimpleName) + ")"
+                    )
+                    return Some(ownScriptFileUndecided(tapName))
+            }
+            val notOwn = cfg.exists(c => !TapScriptOwnership.ownRepo(tapName, existing.scriptRepoPath, TapScriptOwnership.prefixesOf(c)))
+            if (!notOwn) None
+            else {
+                TapOwnerScopeReport.scriptStoreRefused(
+                    request,
+                    tapName,
+                    "S4",
+                    "script",
+                    "a script upload by a caller whose tap access is limited to a catalog or to what it created was refused: the tap's stored code repository path " +
+                        "is not the tap's own script file"
+                )
+                Some(
+                    ResponseEntity
+                        .status(HttpStatus.CONFLICT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body[String](ApiErrors.errorBody(notOwnUploadMessage(tapName)))
+                )
+            }
+        }
+    }
+
+    /** The answer of [[notOwnUploadRefusal]]: names only the caller's own tap. */
+    def notOwnUploadMessage(tapName: String): String =
+        "The script of tap '" + tapName + "' is stored in the code repository at a file that is not this tap's own script file, " +
+            "so it cannot be updated by a user or key whose tap access is limited to a catalog or to what it created; nothing was written. " +
+            "Ask an administrator to move the script to the tap's own path (for example by moving it to built-in storage and back)."
+
+    /** Rules S4 and S5, reported only: after the script upload stored a
+      * script for `tapName`. S4: a stored repository tap whose stored path is
+      * not its own file was written at that path (`existing` the stored tap).
+      * S5: a script stored under a name with no stored tap by an API key
+      * holding no tap create. Never throws; reads the repository
+      * configuration only for S4. */
+    private[api] def reportScriptStore(
+        request: HttpServletRequest,
+        tapName: String,
+        existing: TapConfig,
+        stored: StoredScript,
+        io: TapScriptUploadIO
+    ): Unit =
+        try {
+            if (existing != null) {
+                val repoWrite = stored != null && stored.storage == "github" && existing.scriptStorage == "github" &&
+                    existing.scriptRepoPath != null && existing.scriptRepoPath.nonEmpty && stored.scriptRepoPath == existing.scriptRepoPath
+                if (repoWrite) {
+                    val own = io.repoConfig().exists(cfg => TapScriptOwnership.ownRepo(tapName, existing.scriptRepoPath, TapScriptOwnership.prefixesOf(cfg)))
+                    if (!own)
+                        TapOwnerScopeReport.scriptStoreWouldChange(
+                            request,
+                            tapName,
+                            "S4",
+                            "script",
+                            "a script was stored at the tap's stored code repository path, which is not the tap's own script file",
+                            "A later release stores this tap's next script upload at its own path and points the tap at it; the earlier file is " +
+                                "left in place. In this release such an upload goes ahead for an unrestricted caller and is refused for a user or key " +
+                                "limited to a catalog or to what it created; `datris doctor` lists such taps under tap.references (reported once a day)."
+                        )
+                }
+            } else
+                CapabilityCheck.resolvedKey(request).foreach { rk =>
+                    if (!rk.restrictedSession && !ai.datris.auth.CallerVisibility.holdsAny(rk, "tap", "create"))
+                        TapOwnerScopeReport.scriptStoreWouldChange(
+                            request,
+                            tapName,
+                            "S5",
+                            "script",
+                            "a script was stored under a name with no stored tap by a caller that holds no tap create",
+                            "A later release refuses this for such a caller; store scripts as a user or key that may create the tap. " +
+                                "Nothing is refused in this release (reported once a day)."
+                        )
+                }
+        } catch {
+            case e: Exception if scala.util.control.NonFatal(e) =>
+                uploadLogger.debug("Script store report skipped for '" + LogSafe.text(tapName) + "': " + e.getMessage)
+        }
+
+    private val uploadLogger: Logger = LoggerFactory.getLogger("ai.datris.api.TapAPIController")
+
+    /** The script step of a tap delete (rule S1): the tap's script file is
+      * deleted, unless it was hand-edited (`deleteUnlessEdited`), only when
+      * it is the tap's own file, or a built-in script written under a name no
+      * stored tap has, and no other stored tap uses it
+      * ([[TapScriptOwnership.deletePlan]]); otherwise it is left in place and
+      * the one warning [[TapScriptOwnership.KeptWarning]] is returned. A tap
+      * with no script reference deletes nothing and warns nothing. */
+    private[datris] def deleteTapScript(existing: TapConfig, store: TapCodeStore, lookups: TapScriptOwnership.Lookups): Seq[String] =
+        if (existing == null) Nil
+        else {
+            val ref = ScriptRef.of(existing)
+            val path = if (ref.storage == "github") ref.scriptRepoPath else ref.scriptPath
+            if (path == null || path.isEmpty) Nil
+            else
+                TapScriptOwnership.deletePlan(ref, lookups) match {
+                    case TapScriptOwnership.Keep => Seq(TapScriptOwnership.KeptWarning)
+                    case TapScriptOwnership.Delete => store.deleteUnlessEdited(existing).toSeq
+                }
+        }
 
     /** A tap version restore through the save path: the live tap the
       * restore decided on (null when deleted) and the version restored. */
@@ -397,6 +909,49 @@ object TapAPIController {
             .status(HttpStatus.CONFLICT)
             .contentType(MediaType.APPLICATION_JSON)
             .body[String](ApiErrors.errorBody("Tap '" + name + "' changed while it was being restored; nothing was restored. Try again."))
+
+    /** The store reads and the write of `POST /tap/owner`, so specs can drive
+      * the route without Mongo or Vault. `writeVersioned` is never called by
+      * this route: changing a tap's owner writes no tap version.
+      * [[ProductionOwnerChangeIO]] makes the live calls. */
+    private[datris] case class TapOwnerChangeIO(
+        readTap: String => TapConfig,
+        write: TapConfig => Unit,
+        findUser: String => Option[ai.datris.model.User],
+        keyByLabel: String => Option[ai.datris.model.ResolvedKey],
+        readPipeline: String => PipelineConfig,
+        secretOwner: String => Option[Option[String]],
+        writeVersioned: (TapConfig, String, String) => TapConfig
+    )
+
+    private[datris] lazy val ProductionOwnerChangeIO: TapOwnerChangeIO = TapOwnerChangeIO(
+        readTap = n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n),
+        write = t => { TapConfigIO.write(t); () },
+        findUser = n => UserStore.find(n),
+        keyByLabel = l => APIKeyValidator.resolveByLabel(l),
+        readPipeline = readPipelineForSave,
+        secretOwner = n => liveSecretOwner(n),
+        writeVersioned = (t, note, actor) => TapConfigIO.writeVersioned(t, note, actor)
+    )
+
+    /** The one refusal of `POST /tap/owner` for a caller that is neither an
+      * administrator session nor a full-access API key. Names nothing. */
+    val OwnerChangeRefusal = "Changing a tap's owner needs an administrator or a full-access API key"
+
+    /** Whether the caller of `POST /tap/owner` may change a tap's owner: an
+      * administrator session or a full-access key (a scoped wildcard is
+      * not), or no identity at all (user sign-in and API keys both off, as on
+      * every route of such an install). Reads nothing. */
+    def mayChangeTapOwner(request: HttpServletRequest): Boolean =
+        CapabilityCheck.resolvedKey(request).forall(_.isFullAccess)
+
+    /** 409 when the tap moved to another catalog or was pointed at another
+      * pipeline while its owner was being changed: nothing was changed. */
+    def ownerChangeConflict(name: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody("Tap '" + name + "' changed while its owner was being changed; nothing was changed. Try again."))
 
     /** POST /tap catalog rules for a restricted user's session (no-op for
       * everyone else); see [[RestrictedCatalogRules.catalogForSave]]. */
@@ -497,15 +1052,22 @@ object TapAPIController {
       * block a tap save. */
     private[datris] def loadAllForDependencies(): (Seq[TapConfig], Seq[PipelineConfig]) = {
         val env = DatrisEnvironment.current
-        val taps = NoSQLDbUtil.getItemsKeysByKeyName(env.tapTableName, "name").flatMap { n =>
-            try Option(TapConfigIO.read(env.tapTableName, n))
-            catch { case e: Exception => depLogger.warn("Dependency check: skipping unreadable tap '" + n + "': " + e.getMessage); None }
-        }
+        val taps = readableTaps("Dependency check")
         val pipelines = NoSQLDbUtil.getItemsKeysByKeyName(env.pipelineTableName, "name").flatMap { n =>
             try Option(PipelineConfigIO.read(env.pipelineTableName, n))
             catch { case e: Exception => depLogger.warn("Dependency check: skipping unreadable pipeline '" + n + "': " + e.getMessage); None }
         }
         (taps, pipelines)
+    }
+
+    /** Every stored tap of the current environment, skipping (with a WARN
+      * line naming `what`) any document that fails to parse. */
+    private[datris] def readableTaps(what: String): Seq[TapConfig] = {
+        val env = DatrisEnvironment.current
+        NoSQLDbUtil.getItemsKeysByKeyName(env.tapTableName, "name").flatMap { n =>
+            try Option(TapConfigIO.read(env.tapTableName, n))
+            catch { case e: Exception => depLogger.warn(what + ": skipping unreadable tap '" + n + "': " + e.getMessage); None }
+        }
     }
 
     /** Lazy backfill for taps saved before dependencies existed: when
@@ -854,38 +1416,42 @@ class TapAPIController {
             val sinceMs: Long = if (since != null) since.longValue() else System.currentTimeMillis() - 30L * 86400000L
             val maxItems: Int = {
                 val raw = if (limit != null) limit.intValue() else 2000
-                if (raw <= 0) 2000 else math.min(raw, 5000)
+                if (raw <= 0) 2000 else math.min(raw, TapAPIController.MaxTapLogRows)
             }
             logger.info("API endpoint GET /tap/logs/all called since=" + sinceMs + " limit=" + maxItems)
-
-            val rows = NoSQLDbUtil.getItemsSinceAsJSON(
-                DatrisEnvironment.current.tapLogTableName,
-                "created_at",
-                sinceMs,
-                maxItems
-            )
 
             // Mongo rows have shape {"key": ..., "value": {...TapRunLog...}, "created_at": ...}.
             // Unwrap to just the embedded TapRunLog values so the response is a flat
             // array of run logs the UI can iterate. No pipeline-rollup enrichment
             // here — that's only needed by the per-tap detail view; this endpoint
             // exists to feed the Ops activity dashboard's tile/chart aggregation.
-            val parser = new JsonParser()
-            val values = rows.flatMap { json =>
-                try {
-                    val el = parser.parse(json)
-                    if (el.isJsonObject && el.getAsJsonObject.has("value")) Some(el.getAsJsonObject.get("value")) else None
-                } catch {
-                    case e: Exception =>
-                        // skip malformed row, don't fail the whole request
-                        logger.debug("Skipping malformed tap run log row", e)
-                        None
+            def read(n: Int): Seq[JsonElement] = {
+                val rows = NoSQLDbUtil.getItemsSinceAsJSON(
+                    DatrisEnvironment.current.tapLogTableName,
+                    "created_at",
+                    sinceMs,
+                    n
+                )
+                val parser = new JsonParser()
+                rows.flatMap { json =>
+                    try {
+                        val el = parser.parse(json)
+                        if (el.isJsonObject && el.getAsJsonObject.has("value")) Some(el.getAsJsonObject.get("value")) else None
+                    } catch {
+                        case e: Exception =>
+                            // skip malformed row, don't fail the whole request
+                            logger.debug("Skipping malformed tap run log row", e)
+                            None
+                    }
                 }
             }
             // A limited caller (restricted user, catalog- or owner-scoped key)
-            // sees run logs of the taps it may read only.
+            // sees run logs of the taps it may read only, read further back
+            // (bounded) so its list is filled.
             val out = new com.google.gson.JsonArray()
-            TapAPIController.visibleTapLogs(request, values, () => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)).foreach(out.add)
+            TapAPIController
+                .visibleTapLogsPage(request, maxItems, read, () => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName))
+                .foreach(out.add)
             new ResponseEntity[String](out.toString, HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -1035,6 +1601,27 @@ class TapAPIController {
     ): Either[ResponseEntity[String], TapConfig] =
         saveTapCore(candidate, null, request, restored = false, Some(TapAPIController.RestoreOf(live, version)), () => hidden, io)
 
+    /** The recovery agent's tap revert (`IncidentRunner`), checked like a
+      * version restore of `version` over `live` (the stored tap the revert
+      * decided on, never null): every save check of [[restoreTapInternal]]
+      * runs on `candidate` with no caller identity, except the
+      * test-before-cron gate (the pre-agent script is the one that was
+      * scheduled before the agent acted). Nothing is written: Right is the
+      * config the save path would write (`updatedAt` and `inferredDependsOn`
+      * stamped; the live tap's test state and stamp, which the caller
+      * replaces); Left is the refusal a save of it gets. Store failures are
+      * thrown. The caller writes, under the catalog lock, through the same
+      * `io`. */
+    private[datris] def checkTapRevert(
+        candidate: TapConfig,
+        live: TapConfig,
+        version: Int,
+        io: TapAPIController.TapSaveIO
+    ): Either[ResponseEntity[String], TapConfig] = {
+        if (live == null) throw new DatrisException("tap " + candidate.name + " no longer exists")
+        saveTapCore(candidate, null, null, restored = false, Some(TapAPIController.RestoreOf(live, version)), () => null, io, revertCheck = true)
+    }
+
     /** The save path. `versionRestore` None is `POST /tap` and the catalog
       * restore (`restored`), unchanged. Some is a tap version restore, which
       * differs in four places only: (a) the guard is always taken, decided on
@@ -1047,7 +1634,12 @@ class TapAPIController {
       * ([[EntityVersionAPIController.tapRestoreRecheck]]) and the write run
       * under `CatalogOps.withCatalogLock`. `hidden` is used only when
       * `versionRestore` is Some. Every store read and the write go through
-      * `io` ([[TapAPIController.ProductionSaveIO]] outside specs). */
+      * `io` ([[TapAPIController.ProductionSaveIO]] outside specs).
+      * `revertCheck` ([[checkTapRevert]], with `versionRestore` Some): no
+      * caller identity, so no scope guard; no test-before-cron gate; a script
+      * that cannot be read for dependency inference keeps the candidate's
+      * `inferredDependsOn`; nothing is written and the checked config is
+      * returned. */
     private def saveTapCore(
         tapConfig: TapConfig,
         changeNote: String,
@@ -1055,10 +1647,29 @@ class TapAPIController {
         restored: Boolean,
         versionRestore: Option[TapAPIController.RestoreOf],
         hidden: () => ResponseEntity[String],
-        io: TapAPIController.TapSaveIO
+        io: TapAPIController.TapSaveIO,
+        revertCheck: Boolean = false
     ): Either[ResponseEntity[String], TapConfig] = {
         if (tapConfig.name == null || tapConfig.name.isEmpty)
             throw new DatrisException("Tap name is required")
+
+        // The stored tap as the guard reads it, shared with the script
+        // reference rule below (one read for both); and the tap and pipeline
+        // listing, shared by that rule and the dependency step.
+        val storedOnce = TapAPIController.once(() => io.readTap(tapConfig.name))
+        val loadOnce = TapAPIController.once(io.loadAll)
+        val coreIO = io.copy(loadAll = loadOnce)
+        val lookups = TapReferenceRules.Lookups(() => loadOnce()._1, io.secretOwner, io.repoPathPrefix)
+        // Script reference and secret rules: rule 3 refuses a limited caller's
+        // save (never a version restore), before anything is validated or
+        // read; every other finding is only reported. The stored tap is
+        // needed only for a limited caller sending a reference (the guard
+        // already read it for every such caller).
+        def referenceCheck(site: String, candidate: TapConfig, stored: => TapConfig): Option[ResponseEntity[String]] = {
+            val needsStored = TapReferenceRules.limited(CapabilityCheck.resolvedKey(request).orNull) &&
+                ((candidate.scriptPath != null && candidate.scriptPath.nonEmpty) || (candidate.scriptRepoPath != null && candidate.scriptRepoPath.nonEmpty))
+            TapAPIController.referenceRefusal(request, site, candidate, if (needsStored) stored else null, lookups)
+        }
 
         // Restricted users: default a blank catalog and refuse targets
         // outside their grants; scoped API keys: no overwrite of a tap outside
@@ -1066,9 +1677,10 @@ class TapAPIController {
         // Both before anything is validated or written.
         // A version restore is always guarded, on the live tap it has already
         // read (it reads nothing more here); its guard holds the target
-        // pipeline rule too.
+        // pipeline rule too. The recovery agent's revert has no caller.
         val scoped =
-            if (versionRestore.isDefined)
+            if (revertCheck) tapConfig
+            else if (versionRestore.isDefined)
                 EntityVersionAPIController.tapRestoreGuardDecision(
                     request,
                     tapConfig,
@@ -1081,15 +1693,32 @@ class TapAPIController {
                 }
             else if (!TapAPIController.saveGuardNeeded(request)) tapConfig
             else
-                TapAPIController.saveGuardDecision(request, tapConfig, io.readTap(tapConfig.name)) match {
+                TapAPIController.saveGuardDecision(request, tapConfig, storedOnce()) match {
                     case Left(refused) => return Left(refused)
                     case Right(c) => c
                 }
         // The tap feeds its target pipeline: that pipeline must be one the
         // caller may load into (restricted session: hidden/missing -> pipeline
         // 404; pipeline-limited key: 403).
-        if (versionRestore.isEmpty) TapAPIController.targetPipelineRefusal(request, scoped).foreach(r => return Left(r))
-        saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden, io)
+        if (versionRestore.isEmpty) {
+            // The save's own pipeline read, shared with the report below so the
+            // report adds no read.
+            val readTarget = TapAPIController.readOnce(io.readPipeline)
+            TapAPIController.targetPipelineRefusal(request, scoped, readTarget).foreach(r => return Left(r))
+            if (!revertCheck) referenceCheck(TapReferenceRules.Save, scoped, storedOnce()).foreach(r => return Left(r))
+            val saved = saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden, coreIO, revertCheck)
+            // Report only (rule 5): a key whose loads are checked saved a tap
+            // whose target does not exist yet. The save's answer is unchanged.
+            if (saved.isRight) TapOwnerScopeReport.saveTarget(request, scoped, readTarget)
+            saved
+        } else {
+            // A version restore is never refused by the reference rules in
+            // this release: rule 3 is reported there, like rules 5 to 8.
+            if (!revertCheck)
+                try referenceCheck(TapReferenceRules.Restore, scoped, versionRestore.get.live)
+                catch { case e: Exception => logger.debug("Tap reference report skipped (restore): " + e.getMessage) }
+            saveTapScoped(scoped, changeNote, request, restored, versionRestore, hidden, coreIO, revertCheck)
+        }
     }
 
     private def saveTapScoped(
@@ -1099,7 +1728,8 @@ class TapAPIController {
         restored: Boolean,
         versionRestore: Option[TapAPIController.RestoreOf],
         hidden: () => ResponseEntity[String],
-        io: TapAPIController.TapSaveIO
+        io: TapAPIController.TapSaveIO,
+        revertCheck: Boolean
     ): Either[ResponseEntity[String], TapConfig] = {
         // A tap may never reference a server-managed secret (field-protection
         // keys, API-key stores): its fields would be injected into the script.
@@ -1283,7 +1913,9 @@ class TapAPIController {
                 // the run endpoint in mode=test). Clients echo stale copies in the
                 // save body; never let a body promote a tap to "tested".
                 lastTestRunStatus = existing.lastTestRunStatus,
-                lastTestRunScriptId = existing.lastTestRunScriptId
+                lastTestRunScriptId = existing.lastTestRunScriptId,
+                // Run-stamped by TapRunner; a body never sets or clears it.
+                lastRunUsedCallback = existing.lastRunUsedCallback
             )
         else
             tapConfigWithScript.copy(
@@ -1291,6 +1923,8 @@ class TapAPIController {
                 updatedAt = now,
                 createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull,
                 lastTestRunStatus = null,
+                // A new tap has not run.
+                lastRunUsedCallback = false,
                 // A restored tap keeps its archived stamp (bytes-identical on
                 // built-in storage, null otherwise); the status stays null so
                 // the gate still wants a fresh test before a schedule runs.
@@ -1327,7 +1961,8 @@ class TapAPIController {
                         None
                 }
         val stamped =
-            if (readFailed.get) deduped.copy(inferredDependsOn = if (existing != null) existing.inferredDependsOn else null)
+            if (readFailed.get && revertCheck) deduped
+            else if (readFailed.get) deduped.copy(inferredDependsOn = if (existing != null) existing.inferredDependsOn else null)
             else
                 TapAPIController.stampInferredDependsOn(
                     deduped,
@@ -1351,7 +1986,9 @@ class TapAPIController {
         // the STORED tap only. Refused saves persist nothing and mint no version.
         // A catalog restore writes the tap disabled, so nothing can fire; the
         // gate applies on the save that enables it.
-        val gate = if (restored && !configToSave.enabled) None else TapCronGate.check(existing, configToSave)
+        // The recovery agent's revert puts back the script that was
+        // scheduled before the agent acted: never refused by the gate.
+        val gate = if (revertCheck || (restored && !configToSave.enabled)) None else TapCronGate.check(existing, configToSave)
         gate match {
             case Some(msg) =>
                 return Left(ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}"))
@@ -1363,7 +2000,9 @@ class TapAPIController {
         // A save that changes nothing (e.g. the config write that follows a
         // script store, which already versioned the new script) mints no
         // version and leaves the stored tap as it is.
-        // A version restore always mints a version.
+        // A version restore always mints a version. The revert's check writes
+        // nothing: its caller writes the checked config.
+        if (revertCheck) return Right(stamped)
         if (versionRestore.isEmpty && existing != null && TapScriptStoreVersioning.sameDefinition(existing, stamped)) return Right(existing)
         val note = if (versionRestore.isDefined) "restored from version " + versionRestore.get.version
         else if (changeNote != null && changeNote.nonEmpty) changeNote
@@ -1425,12 +2064,25 @@ class TapAPIController {
       * is only for `__catalog__` placeholders, which are catalog bookkeeping
       * already authorised by the catalog route's capability gate. Returns
       * warnings for the caller: a repository script file kept because it was
-      * hand-edited since its recorded commit (or could not be checked).
+      * hand-edited since its recorded commit (or could not be checked), or a
+      * script file kept because it is not a file this tap alone owns
+      * ([[TapAPIController.deleteTapScript]]). `allTaps` is the tap listing
+      * the script ownership rules read (null: the live listing, read at
+      * most once and only when needed); the catalog cascade passes one
+      * listing to every call. A listing that cannot be read keeps the file,
+      * with the warning; the tap is still deleted.
       * None when no tap of that name exists (the leftover run log, versions
       * and sync state are still cleaned up, as before); the route maps it to
       * 404, the catalog callers tolerate it. */
-    def deleteTapInternal(name: String, request: HttpServletRequest, checkScope: Boolean = true): Option[Seq[String]] = {
+    def deleteTapInternal(
+        name: String,
+        request: HttpServletRequest,
+        checkScope: Boolean = true,
+        allTaps: () => Seq[TapConfig] = null
+    ): Option[Seq[String]] = {
         val warnings = Seq.newBuilder[String]
+        val listing: () => Seq[TapConfig] = TapAPIController.once(Option(allTaps).getOrElse(() => TapConfigIO.listing()))
+        val lookups = TapScriptOwnership.Lookups(listing, TapAPIController.once(() => CodeRepoConfigIO.readEnabled()))
         // Delete script from MinIO if it exists
         val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
         if (existing != null) {
@@ -1438,12 +2090,15 @@ class TapAPIController {
             // taps they created. Loaded resource carries createdByKeyLabel.
             if (checkScope)
                 CapabilityCheck.assertVisibleToWrite(request, "tap", "delete", CatalogOps.scopeContext(existing.catalog, existing.createdByKeyLabel))
-            // For repo-backed taps this commits a file removal (history is
+            // Only the tap's own script file (or a built-in script written
+            // under a name no stored tap has), used by no other stored tap, is
+            // deleted; any other file is left in place with a warning. For
+            // repo-backed taps the delete commits a file removal (history is
             // preserved — that's the point of the repo), unless the file was
             // hand-edited at branch head since the recorded commit: then it is
             // kept and named in a warning. Non-fatal: a dead repo connection
             // must not block deleting the tap itself.
-            try TapCodeStore.forTap(existing).deleteUnlessEdited(existing).foreach(warnings += _)
+            try warnings ++= TapAPIController.deleteTapScript(existing, TapCodeStore.forTap(existing), lookups)
             catch { case e: Exception => logger.warn("Tap script cleanup failed for '" + name + "': " + e.getMessage) }
         }
 
@@ -1482,11 +2137,18 @@ class TapAPIController {
 
         // Definition versions: hard-delete every snapshot for this tap AND
         // GC the script objects they pinned (now that we have the index to
-        // do it cleanly). deleteScript is idempotent, so re-deleting the
-        // current scriptPath removed above is harmless.
+        // do it cleanly). Only script objects no stored tap references that
+        // are the tap's own, or were written under a name no stored tap has,
+        // are deleted (the same listing as above); any other reference is
+        // left in place.
         try {
-            EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.tapVersionTableName, name)
-                .foreach(TapScriptGenerator.deleteScript)
+            TapScriptGenerator.deleteTapScripts(
+                name,
+                EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.tapVersionTableName, name),
+                // the script step above already answered for the current reference
+                alreadyReported = Option(existing).filter(e => TapCodeStore.forTap(e) == MinioCodeStore).flatMap(e => Option(e.scriptPath)).toSet,
+                allTaps = listing
+            )
         } catch {
             case ex: Exception => logger.warn("Tap version cleanup failed for " + name + ": " + ex.getMessage)
         }
@@ -1508,16 +2170,32 @@ class TapAPIController {
       * returned to the caller either way (the wizard needs the bytes to show).
       * Callers put the message under `error` in an otherwise-200 body: the
       * wizard reads only script/scriptPath/packages/changes from these
-      * responses, and MCP create_tap hands any body with `error` to the agent. */
-    private def repointUnlessGated(existing: TapConfig, newScriptPath: String, request: HttpServletRequest, note: String): Option[String] =
-        TapCronGate.checkAiRepoint(existing, newScriptPath) match {
+      * responses, and MCP create_tap hands any body with `error` to the agent.
+      * A caller who may not update the stored tap
+      * ([[TapAPIController.mayWriteStoredTap]], asked first) never changes it:
+      * [[TapAPIController.StoredTapLeftUnchanged]] is returned instead,
+      * except when `logOnlyAsBefore` (review, generate, fix and optimize, for
+      * a request the route gate passed only under log-only): then the tap is
+      * changed as on v1.61.0. */
+    private def repointUnlessGated(
+        existing: TapConfig,
+        newScriptPath: String,
+        request: HttpServletRequest,
+        note: String,
+        io: TapAPIController.TapAiIO,
+        logOnlyAsBefore: Boolean = false
+    ): Option[String] =
+        if (!logOnlyAsBefore && !TapAPIController.mayWriteStoredTap(request, existing)) {
+            logger.info("Not repointing tap '" + LogSafe.text(existing.name) + "': the caller may not update it")
+            Some(TapAPIController.StoredTapLeftUnchanged)
+        } else TapCronGate.checkAiRepoint(existing, newScriptPath) match {
             case None =>
                 // Same rule as the store lane: new bytes on an existing tap are a
                 // definition edit and land as a new version.
                 val repointed = existing.copy(scriptPath = newScriptPath)
-                TapScriptStoreVersioning.decide(existing, repointed, incidentHeader(request), t => TapScriptIdentity.of(t), note) match {
-                    case Some(n) => TapConfigIO.writeVersioned(repointed, n, VersionActor.resolve(request))
-                    case None => TapConfigIO.write(repointed)
+                TapScriptStoreVersioning.decide(existing, repointed, incidentHeader(request), t => TapScriptIdentity.of(t, io.readScript), note) match {
+                    case Some(n) => io.writeVersioned(repointed, n, VersionActor.resolve(request))
+                    case None => io.write(repointed)
                 }
                 None
             case Some(msg) =>
@@ -1532,26 +2210,50 @@ class TapAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
+            logger.info("API endpoint POST /tap/script called, tapName: " + body.get("tapName"))
+            APIKeyValidator.validate(apiKey)
+            storeScriptWith(body, request, TapAPIController.ProductionUploadIO)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
+
+    /** The script upload after key validation, over `io`'s store reads and
+      * writes. Rule S2 ([[TapAPIController.uploadTargetRefusal]]) and, for a
+      * caller held to its own tap's script file, rule S4 ([[TapAPIController.notOwnUploadRefusal]])
+      * and rule S2 over its own reference ([[TapAPIController.sharedFileUploadRefusal]]) are
+      * decided before anything is written; otherwise rules S4 and S5 are
+      * reported after the script was stored ([[TapAPIController.reportScriptStore]]). */
+    private[datris] def storeScriptWith(
+        body: java.util.Map[String, String],
+        request: HttpServletRequest,
+        uploadIO: TapAPIController.TapScriptUploadIO
+    ): ResponseEntity[String] = {
+        val io = uploadIO.memoised
+        try {
             val tapName = body.get("tapName")
             val script = body.get("script")
             val requestedStorage = body.get("storage")
             val baseCommitSha = body.get("baseCommitSha")
-            logger.info("API endpoint POST /tap/script called, tapName: " + tapName)
-            APIKeyValidator.validate(apiKey)
 
             if (tapName == null || tapName.isEmpty)
                 throw new DatrisException("tapName is required")
             if (script == null || script.isEmpty)
                 throw new DatrisException("script is required")
+            // Every caller, before anything is read or written: a name whose
+            // script path would have an empty, `.` or `..` segment is a 400.
+            ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
-            TapAPIController.restrictedRefusal(request, tapName, "update").foreach(return _)
-            val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+            TapAPIController.restrictedRefusal(request, tapName, "update", io.readTap).foreach(return _)
+            val existing = io.readTap(tapName)
 
             // Test-before-cron, evaluated BEFORE any bytes are written: a script
             // edit on a SCHEDULED tap is refused up front, so nothing is committed
             // to the repo (or MinIO) that the tap will not be repointed at. The
             // remedy clears the cron first, after which the store is allowed.
-            TapCronGate.checkScriptStore(existing, script, t => TapCodeStore.forTap(t).readScript(t)) match {
+            TapCronGate.checkScriptStore(existing, script, t => io.readScript(t)) match {
                 case Some(msg) =>
                     return ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")
                 case None =>
@@ -1559,10 +2261,18 @@ class TapAPIController {
 
             // Backend resolution: explicit request > the tap's current backend
             // (existing taps never switch silently) > tenant default.
-            val store =
-                if (requestedStorage != null && requestedStorage.nonEmpty) TapCodeStore.forStorage(requestedStorage)
-                else if (existing != null) TapCodeStore.forTap(existing)
-                else TapCodeStore.forStorage(null)
+            val store = io.storeFor(requestedStorage, existing)
+
+            // Rule S2: a write with no repository reference of this tap behind
+            // it never replaces the file another stored tap runs from.
+            TapAPIController.uploadTargetRefusal(request, tapName, store, existing, io).foreach(return _)
+            // Rule S4 for a caller held to its own tap's script file: a stored repository tap whose
+            // stored path is not its own file is not written through.
+            TapAPIController.notOwnUploadRefusal(request, tapName, store, existing, io).foreach(return _)
+            // Rule S2 for a caller held to its own tap's script file: its own
+            // repository reference is not written while another stored tap
+            // runs from the same file.
+            TapAPIController.sharedFileUploadRefusal(request, tapName, store, existing, io).foreach(return _)
 
             // The editor sends the commit sha it opened against so a concurrent
             // external commit to the same file is a conflict, not an overwrite.
@@ -1571,6 +2281,7 @@ class TapAPIController {
                     existing.copy(scriptCommitSha = baseCommitSha)
                 else existing
             val stored = store.storeScript(tapName, script, prior, actorLabel(request))
+            TapAPIController.reportScriptStore(request, tapName, existing, stored, io)
 
             if (existing != null) {
                 val repointed = existing.copy(
@@ -1579,6 +2290,7 @@ class TapAPIController {
                     scriptRepoPath = stored.scriptRepoPath,
                     scriptCommitSha = stored.scriptCommitSha
                 )
+                val identity: TapConfig => Option[String] = t => TapScriptIdentity.of(t, x => io.readScript(x))
                 // Belt and braces behind checkScriptStore above: never repoint a
                 // SCHEDULED tap at untested bytes (the scheduler would fire them
                 // before the gated save ever runs). The new reference is still
@@ -1587,7 +2299,7 @@ class TapAPIController {
                 // tap; the stamp moves onto the new reference so the scheduled
                 // tap is repointed and stays green.
                 val (gateBase, toStore) =
-                    TapCronGate.carryRehearsedStamp(existing, script, repointed, t => TapScriptIdentity.of(t)) match {
+                    TapCronGate.carryRehearsedStamp(existing, script, repointed, identity) match {
                         case Some(carried) => (existing.copy(lastTestRunScriptId = carried.lastTestRunScriptId), carried)
                         case None => (existing, repointed)
                     }
@@ -1596,7 +2308,7 @@ class TapAPIController {
                         // Re-derive the dependency stamp from the new bytes.
                         val stamped =
                             try {
-                                val (taps, pipelines) = TapAPIController.loadAllForDependencies()
+                                val (taps, pipelines) = io.loadAll()
                                 TapAPIController.stampInferredDependsOn(toStore, Some(script), pipelines, taps)
                             } catch {
                                 case e: Exception =>
@@ -1608,13 +2320,15 @@ class TapAPIController {
                         // (and the incident, when the recovery agent did).
                         // An identical re-store or a stamp-only move stays a
                         // plain write.
-                        TapScriptStoreVersioning.decide(existing, stamped, incidentHeader(request), t => TapScriptIdentity.of(t)) match {
-                            case Some(note) => TapConfigIO.writeVersioned(stamped, note, VersionActor.resolve(request))
-                            case None => TapConfigIO.write(stamped)
+                        TapScriptStoreVersioning.decide(existing, stamped, incidentHeader(request), identity) match {
+                            case Some(note) => io.writeVersioned(stamped, note, VersionActor.resolve(request))
+                            case None => io.write(stamped)
                         }
                     case Some(msg) =>
                         logger.info("POST /tap/script: not repointing scheduled tap '" + tapName + "' at untested script: " + msg)
                 }
+                // Report only (rule 6): the stored target and this caller.
+                TapAPIController.reportScriptTarget(request, existing, io.readPipeline)
             }
 
             val gson = new Gson
@@ -1633,12 +2347,139 @@ class TapAPIController {
         }
     }
 
-    /** The incident id the recovery executor tags its calls with, if any. */
+    /** The incident id the recovery executor tags its calls with, if any
+      * (only from the platform's own callers: AuditActor.incidentOf). */
     private def incidentHeader(request: HttpServletRequest): Option[String] =
-        Option(request).flatMap(r => Option(r.getHeader(ai.datris.audit.AuditActor.HeaderIncident))).map(_.trim).filter(_.nonEmpty).map(_.take(64))
+        ai.datris.audit.AuditActor.incidentOf(request)
 
     private def actorLabel(request: HttpServletRequest): String =
         ResolvedKeyAccess.keyLabel(request).orNull
+
+    /** Hand an existing tap to another user or API key, keeping its versions,
+      * incremental state, ledger, run history, schedule and script. Body
+      * `{"name": "<tap>", "user": "<username>"}` or `{"name": "<tap>", "key":
+      * "<key label>"}`. Administrators and full-access API keys only. Only
+      * the tap's owner changes: no tap version is written and the tap's
+      * update time is left as it was. A run in progress finishes as it
+      * started; the next run reads the new owner. */
+    @PostMapping(path = Array("/tap/owner"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    @ai.datris.config.RequiresRole(Array("admin"))
+    def changeTapOwner(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, String],
+        request: HttpServletRequest
+    ): ResponseEntity[String] =
+        try {
+            APIKeyValidator.validate(apiKey)
+            changeTapOwnerWith(body, request, TapAPIController.ProductionOwnerChangeIO)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+
+    /** `POST /tap/owner` after key validation, over `io`. The caller check
+      * comes first and reads nothing; then the tap and the new owner are read
+      * and the change decided ([[TapOwnerChange]]); then, under the catalog
+      * lock, the tap is read again and written with only its owner changed. A
+      * store failure is an error and writes nothing. */
+    private[datris] def changeTapOwnerWith(
+        body: java.util.Map[String, String],
+        request: HttpServletRequest,
+        io: TapAPIController.TapOwnerChangeIO
+    ): ResponseEntity[String] = {
+        def answer(status: HttpStatus, message: String): ResponseEntity[String] =
+            ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(message))
+
+        if (!TapAPIController.mayChangeTapOwner(request)) {
+            ai.datris.audit.AuditLog.denied(request, TapAPIController.OwnerChangeRefusal, HttpStatus.FORBIDDEN.value)
+            return answer(HttpStatus.FORBIDDEN, TapAPIController.OwnerChangeRefusal)
+        }
+        try {
+            def field(k: String): String = if (body == null) null else body.get(k)
+            val name = Option(field("name")).filter(_.trim.nonEmpty).orNull
+            if (name == null) return answer(HttpStatus.BAD_REQUEST, "name is required: the tap whose owner to change")
+
+            val tap = io.readTap(name)
+            if (tap == null) return TapAPIController.tapNotFound(name)
+            if (TapOwnerScopeScan.placeholder(tap))
+                return answer(HttpStatus.BAD_REQUEST, "'" + name + "' holds a catalog's place and has no owner to change")
+
+            val (newLabel, resolution) = TapOwnerChange.newOwner(field("user"), field("key"), io.findUser, io.keyByLabel) match {
+                case Left(reason) => return answer(HttpStatus.BAD_REQUEST, reason)
+                case Right(owner) => owner
+            }
+
+            // Only a change writes the owner-change audit row. Asking for the
+            // owner the tap already has writes no row of its own: the
+            // request's ordinary audit entry carries `changed: false`, merged
+            // into the metadata already on the request (an approved replay's
+            // approval trail is kept), so it never reads as a change.
+            def done(previous: String, changed: Boolean, warnings: List[String]): ResponseEntity[String] = {
+                val md = new com.google.gson.JsonObject
+                md.addProperty("from", previous)
+                md.addProperty("to", newLabel)
+                md.addProperty("changed", changed)
+                if (changed) ai.datris.audit.AuditLog.record(request, "tap", "owner-change", "tap", name, metadata = md)
+                else
+                    request.setAttribute(
+                        ai.datris.audit.AuditLog.MetadataAttr,
+                        TapAPIController.mergedAuditMetadata(request.getAttribute(ai.datris.audit.AuditLog.MetadataAttr), md)
+                    )
+                val out = new com.google.gson.JsonObject
+                out.addProperty("name", name)
+                out.addProperty("owner", newLabel)
+                out.addProperty("previousOwner", previous)
+                out.addProperty("changed", changed)
+                val ws = new com.google.gson.JsonArray
+                warnings.foreach(w => ws.add(w))
+                out.add("warnings", ws)
+                ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body[String](out.toString)
+            }
+
+            if (tap.createdByKeyLabel == newLabel) return done(tap.createdByKeyLabel, changed = false, Nil)
+
+            val decidesOnTarget = resolution match {
+                case ai.datris.auth.TapPrincipal.Resolved(rk) => rk != null && !rk.isFullAccess
+                case _ => false
+            }
+            val storedTarget =
+                if (decidesOnTarget && tap.targetPipeline != null && tap.targetPipeline.trim.nonEmpty) io.readPipeline(tap.targetPipeline)
+                else null
+            val warnings = TapOwnerChange.decide(tap, newLabel, resolution, storedTarget, io.secretOwner) match {
+                case TapOwnerChange.Refused(reason) => return answer(HttpStatus.CONFLICT, reason)
+                case TapOwnerChange.Accepted(w) => w
+            }
+
+            // Re-read and write under the lock a rename, a catalog restore and
+            // a version restore hold, so a move or repoint since the decision
+            // is seen before anything is written. Only the owner changes.
+            val previous: Either[ResponseEntity[String], Option[String]] = CatalogOps.withCatalogLock {
+                val fresh = io.readTap(name)
+                if (fresh == null) Left(TapAPIController.tapNotFound(name))
+                else if (fresh.catalog != tap.catalog || fresh.targetPipeline != tap.targetPipeline) Left(TapAPIController.ownerChangeConflict(name))
+                else if (fresh.createdByKeyLabel == newLabel) Right(None)
+                else {
+                    io.write(fresh.copy(createdByKeyLabel = newLabel))
+                    Right(Some(fresh.createdByKeyLabel))
+                }
+            }
+            previous match {
+                case Left(refused) => refused
+                case Right(None) => done(newLabel, changed = false, warnings)
+                case Right(Some(from)) =>
+                    logger.info(
+                        "Tap owner changed: tap " + LogSafe.text(name) + " from " + LogSafe.text(String.valueOf(from)) + " to " +
+                            LogSafe.text(newLabel) + " by " + LogSafe.text(String.valueOf(ai.datris.audit.AuditActor.resolve(request).label))
+                    )
+                    done(from, changed = true, warnings)
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
 
     @PostMapping(path = Array("/tap/cron"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def generateCron(
@@ -1724,15 +2565,46 @@ class TapAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
-            val description = body.get("description")
-            val tapName = Option(body.get("tapName")).getOrElse("tap-" + System.currentTimeMillis())
-            val oldScriptPath = body.get("oldScriptPath")
-            val secretName = body.get("secretName")
+            // The name a missing tapName stands for, made once per request so
+            // the logged name is the one used.
+            val fallbackName = "tap-" + System.currentTimeMillis()
+            val tapName = Option(body.get("tapName")).getOrElse(fallbackName)
             val tapType = Option(body.get("tapType")).getOrElse("structured")
             logger.info("API endpoint POST /tap/generate called, tapName: " + tapName + ", tapType: " + tapType)
             APIKeyValidator.validate(apiKey)
+            generateScriptWith(body, request, TapAPIController.ProductionAiIO, fallbackName)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
+
+    /** `POST /tap/generate` after key validation, every store, secret and
+      * model call through `io`. A request naming no tap (missing or blank
+      * `tapName`) reads and writes no stored tap and is not reported; the
+      * model still gets the name a missing one stands for (`fallbackName`,
+      * `tap-<millis>` made here when not given). A named tap whose script
+      * path would have an empty, `.` or `..` segment
+      * ([[ScriptPaths.tapNameRefusal]]) is a `400`, before any model or store
+      * call. */
+    private[api] def generateScriptWith(
+        body: java.util.Map[String, String],
+        request: HttpServletRequest,
+        io: TapAPIController.TapAiIO,
+        fallbackName: String = null
+    ): ResponseEntity[String] = {
+        try {
+            val description = body.get("description")
+            val named = TapAPIController.namesTap(body.get("tapName"))
+            val tapName = Option(body.get("tapName")).getOrElse(Option(fallbackName).getOrElse("tap-" + System.currentTimeMillis()))
+            val oldScriptPath = body.get("oldScriptPath")
+            val secretName = body.get("secretName")
+            val tapType = Option(body.get("tapType")).getOrElse("structured")
             // Generating for an existing tap repoints it: same visibility as an update.
-            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
+            if (named) TapAPIController.restrictedRefusalIfExists(request, tapName, "update", io.readTap).foreach(return _)
+            // The tap-name rule of `POST /tap/script`, before any model or store call.
+            if (named) ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
             if (description == null || description.isEmpty)
                 throw new DatrisException("Description is required")
@@ -1742,7 +2614,7 @@ class TapAPIController {
             // here — a platform secret's field names are not disclosed.
             if (secretName != null && secretName.trim.nonEmpty) {
                 val probe = TapConfig(name = tapName, description = "", targetPipeline = "", secretName = secretName)
-                TapAPIController.tapSecretSaveProblem(probe, TapAPIController.liveSecretType, SecretNames.tapScopeEnforced) match {
+                TapAPIController.tapSecretSaveProblem(probe, io.secretType, SecretNames.tapScopeEnforced) match {
                     case Some(msg) =>
                         return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
                             .body[String]("{\"error\": " + new Gson().toJson(msg) + "}")
@@ -1750,11 +2622,42 @@ class TapAPIController {
                 }
             }
 
-            val result = TapScriptGenerator.generate(description, tapName, oldScriptPath, secretName, tapType)
+            val result = io.generate(description, tapName, oldScriptPath, secretName, tapType)
 
             // Update scriptPath in MongoDB if tap already exists
-            val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
-            val gateMsg = if (existing != null) repointUnlessGated(existing, result.scriptPath, request, TapScriptStoreVersioning.ScriptGenerated) else None
+            val existing = if (named) io.readTap(tapName) else null
+            val gateMsg =
+                if (existing != null)
+                    repointUnlessGated(
+                        existing,
+                        result.scriptPath,
+                        request,
+                        TapScriptStoreVersioning.ScriptGenerated,
+                        io,
+                        TapAPIController.passedGateOnlyInLogOnly(request)
+                    )
+                else None
+
+            // Report only (rule 7): a secret the caller's tap read does not
+            // cover. Not for a request naming no tap (its name is made up).
+            if (named && secretName != null && secretName.trim.nonEmpty) {
+                val candidate = TapConfig(
+                    name = tapName,
+                    description = "",
+                    targetPipeline = "",
+                    secretName = secretName,
+                    catalog = Option(existing).map(_.catalog).orNull
+                )
+                try
+                    TapAPIController.referenceRefusal(
+                        request,
+                        TapReferenceRules.Generate,
+                        candidate,
+                        existing,
+                        TapReferenceRules.Lookups(() => Nil, io.secretOwner, () => "")
+                    )
+                catch { case e: Exception => logger.debug("Tap reference report skipped (generate): " + e.getMessage) }
+            }
 
             val gson = new Gson
             val response = new java.util.HashMap[String, Any]()
@@ -1807,7 +2710,34 @@ class TapAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
+            // Parsed as before key validation, so a malformed body fails as before.
             val tapName = body.get("tapName")
+            val priorIterationsJson = Option(body.get("priorIterations")).getOrElse("[]")
+            val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
+            logger.info("API endpoint POST /tap/fix called, tapName: " + tapName +
+                ", priorIterations: " + priorIterations.size)
+            APIKeyValidator.validate(apiKey)
+            fixScriptWith(body, request, TapAPIController.ProductionAiIO)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
+
+    /** `POST /tap/fix` after key validation, every store and model call
+      * through `io`. A request naming no tap reads and writes no stored tap.
+      * A named tap whose script path would have an empty, `.` or `..` segment
+      * ([[ScriptPaths.tapNameRefusal]]) is a `400`, before any model or store
+      * call. */
+    private[api] def fixScriptWith(
+        body: java.util.Map[String, String],
+        request: HttpServletRequest,
+        io: TapAPIController.TapAiIO
+    ): ResponseEntity[String] = {
+        try {
+            val tapName = body.get("tapName")
+            val named = TapAPIController.namesTap(tapName)
             val script = body.get("script")
             val diagnosis = body.get("diagnosis")
             val logs = Option(body.get("logs")).getOrElse("")
@@ -1815,22 +2745,31 @@ class TapAPIController {
             val oldScriptPath = body.get("oldScriptPath")
             val priorIterationsJson = Option(body.get("priorIterations")).getOrElse("[]")
             val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
-            logger.info("API endpoint POST /tap/fix called, tapName: " + tapName +
-                ", priorIterations: " + priorIterations.size)
-            APIKeyValidator.validate(apiKey)
             // Fixing an existing tap repoints it: same visibility as an update.
-            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
+            if (named) TapAPIController.restrictedRefusalIfExists(request, tapName, "update", io.readTap).foreach(return _)
+            // The tap-name rule of `POST /tap/script`, before any model or store call.
+            if (named) ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
             if (script == null || script.isEmpty)
                 throw new DatrisException("Script is required")
             if (diagnosis == null || diagnosis.isEmpty)
                 throw new DatrisException("Diagnosis is required")
 
-            val result = TapScriptFixer.fix(tapName, script, diagnosis, logs, error, oldScriptPath, priorIterations)
+            val result = io.fix(tapName, script, diagnosis, logs, error, oldScriptPath, priorIterations)
 
             // Update scriptPath in MongoDB if tap already exists
-            val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, Option(tapName).getOrElse(""))
-            val gateMsg = if (existingTap != null) repointUnlessGated(existingTap, result.scriptPath, request, TapScriptStoreVersioning.ScriptFixed) else None
+            val existingTap = if (named) io.readTap(tapName) else null
+            val gateMsg =
+                if (existingTap != null)
+                    repointUnlessGated(
+                        existingTap,
+                        result.scriptPath,
+                        request,
+                        TapScriptStoreVersioning.ScriptFixed,
+                        io,
+                        TapAPIController.passedGateOnlyInLogOnly(request)
+                    )
+                else None
 
             val gson = new Gson
             val response = new java.util.HashMap[String, Any]()
@@ -1853,7 +2792,38 @@ class TapAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
+            // Parsed as before key validation, so a malformed body fails as before.
             val tapName = Option(body.get("tapName")).map(_.toString).getOrElse("tap")
+            val recordCount = Option(body.get("recordCount")).map(_.toString.toDouble.toInt).getOrElse(0)
+            Option(body.get("durationMs")).map(_.toString.toDouble.toLong)
+            val priorIterations = IterationHistoryPromptBuilder.parseFromJson(Option(body.get("priorIterations")).map(_.toString).getOrElse("[]"))
+            logger.info(s"API endpoint POST /tap/review called, tapName: $tapName, recordCount: $recordCount, " +
+                s"priorIterations: ${priorIterations.size}")
+            APIKeyValidator.validate(apiKey)
+            reviewScriptWith(body, request, TapAPIController.ProductionAiIO)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
+
+    /** `POST /tap/review` after key validation, every store and model call
+      * through `io`. A request naming no tap reads and writes no stored tap;
+      * the model still gets the name `tap` a missing one stands for. Report
+      * only (rule 4): a review by an identity holding no `tap:update`. A
+      * named tap whose script path would have an empty, `.` or `..` segment
+      * ([[ScriptPaths.tapNameRefusal]]) is a `400`, before any model or store
+      * call, whether or not the model would change the script. */
+    private[api] def reviewScriptWith(
+        body: java.util.Map[String, Object],
+        request: HttpServletRequest,
+        io: TapAPIController.TapAiIO
+    ): ResponseEntity[String] = {
+        try {
+            val bodyName = Option(body.get("tapName")).map(_.toString)
+            val named = bodyName.exists(TapAPIController.namesTap)
+            val tapName = bodyName.getOrElse("tap")
             val script = Option(body.get("script")).map(_.toString).getOrElse("")
             val recordCount = Option(body.get("recordCount")).map(_.toString.toDouble.toInt).getOrElse(0)
             val durationMs = Option(body.get("durationMs")).map(_.toString.toDouble.toLong).getOrElse(0L)
@@ -1861,22 +2831,31 @@ class TapAPIController {
             val oldScriptPath = Option(body.get("oldScriptPath")).map(_.toString).orNull
             val priorIterationsJson = Option(body.get("priorIterations")).map(_.toString).getOrElse("[]")
             val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
-            logger.info(s"API endpoint POST /tap/review called, tapName: $tapName, recordCount: $recordCount, " +
-                s"priorIterations: ${priorIterations.size}")
-            APIKeyValidator.validate(apiKey)
-            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
+            if (named) TapAPIController.restrictedRefusalIfExists(request, tapName, "update", io.readTap).foreach(return _)
+            // The tap-name rule of `POST /tap/script`, before any model or store call.
+            if (named) ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")
 
-            val result = TapScriptReviewer.review(tapName, script, recordCount, durationMs, logs, oldScriptPath, priorIterations)
+            if (TapReferenceRules.reviewWouldBeRefused(CapabilityCheck.resolvedKey(request)))
+                TapOwnerScopeReport.reviewWithoutUpdate(request, if (named) tapName else null)
+
+            val result = io.review(tapName, script, recordCount, durationMs, logs, oldScriptPath, priorIterations)
 
             // Persist the new scriptPath onto the TapConfig if the tap already exists.
             val gateMsg =
-                if (result.rewritten) {
-                    val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+                if (result.rewritten && named) {
+                    val existingTap = io.readTap(tapName)
                     if (existingTap != null && result.scriptPath != null && result.scriptPath != oldScriptPath)
-                        repointUnlessGated(existingTap, result.scriptPath, request, TapScriptStoreVersioning.ScriptReviewed)
+                        repointUnlessGated(
+                            existingTap,
+                            result.scriptPath,
+                            request,
+                            TapScriptStoreVersioning.ScriptReviewed,
+                            io,
+                            TapAPIController.passedGateOnlyInLogOnly(request)
+                        )
                     else None
                 } else None
 
@@ -1903,7 +2882,37 @@ class TapAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
+            // Parsed as before key validation, so a malformed body fails as before.
             val tapName = Option(body.get("tapName")).map(_.toString).getOrElse("tap")
+            val recordCount = Option(body.get("recordCount")).map(_.toString.toDouble.toInt).getOrElse(0)
+            val durationMs = Option(body.get("durationMs")).map(_.toString.toDouble.toLong).getOrElse(0L)
+            val priorIterations = IterationHistoryPromptBuilder.parseFromJson(Option(body.get("priorIterations")).map(_.toString).getOrElse("[]"))
+            logger.info(s"API endpoint POST /tap/optimize called, tapName: $tapName, recordCount: $recordCount, " +
+                s"durationMs: $durationMs, priorIterations: ${priorIterations.size}")
+            APIKeyValidator.validate(apiKey)
+            optimizeScriptWith(body, request, TapAPIController.ProductionAiIO)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
+
+    /** `POST /tap/optimize` after key validation, every store and model call
+      * through `io`. A request naming no tap reads and writes no stored tap;
+      * the model still gets the name `tap` a missing one stands for. A named
+      * tap whose script path would have an empty, `.` or `..` segment
+      * ([[ScriptPaths.tapNameRefusal]]) is a `400`, before any model or store
+      * call, whether or not the model would change the script. */
+    private[api] def optimizeScriptWith(
+        body: java.util.Map[String, Object],
+        request: HttpServletRequest,
+        io: TapAPIController.TapAiIO
+    ): ResponseEntity[String] = {
+        try {
+            val bodyName = Option(body.get("tapName")).map(_.toString)
+            val named = bodyName.exists(TapAPIController.namesTap)
+            val tapName = bodyName.getOrElse("tap")
             val script = Option(body.get("script")).map(_.toString).getOrElse("")
             val recordCount = Option(body.get("recordCount")).map(_.toString.toDouble.toInt).getOrElse(0)
             val durationMs = Option(body.get("durationMs")).map(_.toString.toDouble.toLong).getOrElse(0L)
@@ -1911,20 +2920,26 @@ class TapAPIController {
             val oldScriptPath = Option(body.get("oldScriptPath")).map(_.toString).orNull
             val priorIterationsJson = Option(body.get("priorIterations")).map(_.toString).getOrElse("[]")
             val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
-            logger.info(s"API endpoint POST /tap/optimize called, tapName: $tapName, recordCount: $recordCount, " +
-                s"durationMs: $durationMs, priorIterations: ${priorIterations.size}")
-            APIKeyValidator.validate(apiKey)
-            TapAPIController.restrictedRefusalIfExists(request, tapName, "update").foreach(return _)
+            if (named) TapAPIController.restrictedRefusalIfExists(request, tapName, "update", io.readTap).foreach(return _)
+            // The tap-name rule of `POST /tap/script`, before any model or store call.
+            if (named) ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")
 
-            val opt = TapScriptOptimizer.optimize(tapName, script, recordCount, durationMs, logs, oldScriptPath, priorIterations)
+            val opt = io.optimize(tapName, script, recordCount, durationMs, logs, oldScriptPath, priorIterations)
 
-            val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+            val existingTap = if (named) io.readTap(tapName) else null
             val gateMsg =
                 if (existingTap != null && opt.scriptPath != null && opt.scriptPath != oldScriptPath)
-                    repointUnlessGated(existingTap, opt.scriptPath, request, TapScriptStoreVersioning.ScriptOptimized)
+                    repointUnlessGated(
+                        existingTap,
+                        opt.scriptPath,
+                        request,
+                        TapScriptStoreVersioning.ScriptOptimized,
+                        io,
+                        TapAPIController.passedGateOnlyInLogOnly(request)
+                    )
                 else None
 
             val gson = new Gson
@@ -1954,8 +2969,31 @@ class TapAPIController {
             APIKeyValidator.validate(apiKey)
             // A tap outside the caller's scope, or a secret it may not use,
             // is refused before anything runs.
-            TapAPIController.testRefusal(request, tapConfig, n => TapConfigIO.read(DatrisEnvironment.current.tapTableName, n), TapAPIController.liveSecretOwner)
+            // One read of the stored tap, shared by the test check and the
+            // script reference rule.
+            val readStored: String => TapConfig = {
+                val held = scala.collection.mutable.HashMap[String, Option[TapConfig]]()
+                n => held.getOrElseUpdate(n, Option(TapConfigIO.read(DatrisEnvironment.current.tapTableName, n))).orNull
+            }
+            TapAPIController.testRefusal(request, tapConfig, readStored, TapAPIController.liveSecretOwner)
                 .foreach(return _)
+            // Script reference rule: a limited caller's new or changed
+            // reference outside the tap script area, or naming a hidden tap's
+            // script, is refused with the answer above; the rest is reported.
+            if (tapConfig != null) {
+                val hasRef = (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
+                    (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
+                val stored =
+                    if (hasRef && tapConfig.name != null && tapConfig.name.nonEmpty && TapReferenceRules.limited(CapabilityCheck.resolvedKey(request).orNull))
+                        readStored(tapConfig.name)
+                    else null
+                val lookups = TapReferenceRules.Lookups(
+                    TapAPIController.once(() => TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)),
+                    TapAPIController.liveSecretOwner,
+                    TapAPIController.once(() => TapAPIController.liveRepoPathPrefix())
+                )
+                TapAPIController.referenceRefusal(request, TapReferenceRules.Test, tapConfig, stored, lookups).foreach(return _)
+            }
 
             // HTTP taps have no script — a test run is just a call with testLimit set.
             val hasTestScriptRef =
@@ -1974,6 +3012,7 @@ class TapAPIController {
             val testStartMs = System.currentTimeMillis()
             val result = TapRunner.run(tapConfig, mode = "test", testLimit = testLimitInt)
             val testDurationMs = System.currentTimeMillis() - testStartMs
+            TapAPIController.reportCallerReads(request, tapConfig, result)
             val gson = new Gson
             // Preview off the staged file (Phase 4): the first testPreviewSize(testLimit)
             // records plus `recordsTruncated` when there were more. The staged
@@ -2076,6 +3115,17 @@ class TapAPIController {
             // Every mode other than test feeds the target pipeline.
             if (mode != "test") TapAPIController.targetPipelineRefusal(request, tapConfig).foreach(return _)
 
+            // Report only: the script reference and secret rules never refuse a run.
+            try
+                TapAPIController.referenceRefusal(
+                    request,
+                    TapReferenceRules.Run,
+                    tapConfig,
+                    tapConfig,
+                    TapReferenceRules.Lookups(() => Nil, TapAPIController.liveSecretOwner, () => "")
+                )
+            catch { case e: Exception => logger.debug("Tap reference report skipped (run): " + e.getMessage) }
+
             // Optional per-run params. Stringify each value so the script sees
             // env vars regardless of whether the agent sent {start_date: "2026-05-01"}
             // or {limit: 1000}. Nested objects/arrays get JSON-encoded so a script
@@ -2149,11 +3199,13 @@ class TapAPIController {
                 val testedScriptId: Option[String] = if (mode != "run") TapScriptIdentity.of(tapConfig) else None
 
                 val result = TapRunner.run(tapConfig, mode = mode, testLimit = effectiveTestLimit, params = params)
+                TapAPIController.reportCallerReads(request, tapConfig, result)
 
                 // Save test run status when not pushing to pipeline
                 if (mode != "run") {
-                    // Status churn: plain write, no version minted.
-                    TapConfigIO.write(TapAPIController.stampTestResult(tapConfig, result, TapAPIController.nowStamp()))
+                    // Status churn: plain write, no version minted; the stored
+                    // owner is kept (an owner changed during the test stays).
+                    TapConfigIO.writeRunState(TapAPIController.stampTestResult(tapConfig, result, TapAPIController.nowStamp()))
                 }
 
                 val gson = new Gson

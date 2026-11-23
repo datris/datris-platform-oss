@@ -3,10 +3,11 @@
 # Keep this file as small as possible — only set values that genuinely differ
 # from the bundled defaults in localhost mode. Anything else inherits.
 #
-# To toggle auth / multi-tenancy / api-keys, do NOT add them here — set
-# USE_USER_AUTH / USE_API_KEYS / MULTI_TENANT in your .env instead. They
-# flow through docker-compose.yml as USEUSERAUTH / USEAPIKEYS / MULTITENANT
-# env vars and Spring's relaxed binding overrides the YAML at runtime.
+# To toggle auth / api-keys, do NOT add them here — set USE_USER_AUTH /
+# USE_API_KEYS in your .env instead. They flow through docker-compose.yml as
+# USEUSERAUTH / USEAPIKEYS env vars and Spring's relaxed binding overrides the
+# YAML at runtime. (Multi-tenant mode is retired; the server refuses to start
+# when MULTI_TENANT is on.)
 
 spring:
   data:

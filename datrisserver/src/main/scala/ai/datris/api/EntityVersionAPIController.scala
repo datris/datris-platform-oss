@@ -407,6 +407,7 @@ object EntityVersionAPIController {
                 lastRunColumns = live.lastRunColumns,
                 lastRunTrigger = live.lastRunTrigger,
                 lastRunRetrySafe = live.lastRunRetrySafe,
+                lastRunUsedCallback = live.lastRunUsedCallback,
                 retryCount = live.retryCount,
                 lastTestRunStatus = live.lastTestRunStatus,
                 lastTestRunTime = live.lastTestRunTime,

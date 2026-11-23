@@ -9,10 +9,10 @@ The agent policy is the boundary between agents being useful and agents being sa
 | Mode | What happens when an agent tries it |
 |------|-------------------------------------|
 | **Auto** | It runs, exactly as today. |
-| **Approve** | It does **not** run. The request is parked, the agent is told it is waiting for approval, and a person approves or rejects it under **Activity → Approvals**. On approval the platform performs the original request on the approver's behalf. |
+| **Approve** | It does **not** run. The request is parked, the agent is told it is waiting for approval, and a person approves or rejects it under **Activity → Approvals**. On approval the platform performs the original request; with API keys on, it runs with the requesting agent's own access, never more. |
 | **Deny** | It is refused with a clear error the agent can read. |
 
-Anything you have not set is **Auto**, so turning the feature on changes nothing until you set a rule. People using the Datris UI are never gated — they are the approvers.
+Anything you have not set is **Auto**, so turning the feature on changes nothing until you set a rule. People using the Datris UI are never gated, and administrators decide the approvals.
 
 This is infrastructure, not a system prompt. An agent cannot talk its way past it, and it applies to every client — the in-platform Assistant, Claude Desktop, Cursor, the CLI, or any script holding an API key.
 
@@ -63,13 +63,27 @@ An override can also carry a [recovery mode](/incidents) for that resource (the 
 
 ## Approvals
 
+Approving or rejecting a pending action is for administrators: an editor's or viewer's session is refused. When API keys are turned off, editors can decide approvals too.
+
 When an agent's request hits an **Approve** rule, the agent receives a `pending_approval` response with an approval id instead of a result. The Assistant will tell you plainly that the action is waiting, and it can poll for the decision. The request itself — method, path and body, with secret-looking values masked — is shown on the approval card so you see exactly what will run.
 
-Approve, and the platform performs the original request, attributed to you. The audit log then holds two linked entries: the agent's queued request (with the reason it gave, if any) and your approval executing it. Reject, and the agent is told so on its next poll. Approvals not decided within the configured time (24 hours by default) expire on their own.
+Approve, and the platform performs the original request, attributed to you (with user sign-in off, to the Datris UI's own key). The audit log then holds two linked entries: the agent's queued request (with the reason it gave, if any) and your approval executing it, which names the agent as the original requester.
+
+With API keys on, your approval decides *whether* the action runs; what the action may touch is still decided by the agent's own access. The approved request runs with what the requesting API key may do now, or, for an in-platform chat acting for a signed-in user, with what that user may do now, and anything it creates belongs to the requester, so an agent whose key can only see what it created can see it. When the request reaches beyond that access (for example, a key that may delete pipelines in one catalog asks to delete a pipeline in another), the approval ends **failed** with the same refusal the agent would have got without the policy, and nothing is changed. This holds with user sign-in on or off. If you are a user limited to some catalogs, your approval instead runs within your own catalogs, as before, and anything it creates belongs to you.
+
+Two cases keep the earlier behaviour. A request made under the Datris UI's own key without a signed-in user (with user sign-in off, that is how the in-platform chats call the platform) runs with that key's access (held to your own catalogs if you are a user limited to some), and what it creates belongs to you, or to that key when no one is signed in. With API keys off the API is open to every caller, so an approved action runs with full access as before, held to your own catalogs if you are a user limited to some; what it creates belongs to you when user sign-in is on, and to the shared anonymous identity of the open API when it is off.
+
+With API keys on, an approval also ends **failed**, before anything runs, when the requester no longer exists: the requesting key was revoked or replaced by a new key under the same name, or the user whose chat asked for it was deleted. If the platform cannot check the requester or the approval at that moment (its key, user or approval store is unavailable), nothing runs and the approval ends **failed** with a message saying the requester could not be checked. A failed approval cannot be approved again; the agent has to request the action again. Reject, and the agent is told so on its next poll. Approvals not decided within the configured time (24 hours by default) expire on their own.
 
 An approval executes what was proposed, not what the agent would propose now: if the pipeline or tap changed in the meantime, the approval is refused as stale and the agent has to propose again.
 
 Some requests cannot be parked — file uploads, and bodies over 256 KB. If such an action is set to **Approve**, the agent is told to ask you to do it in the UI instead.
+
+The approval record in the database holds only a hash of the one-time value that lets the platform perform the approved request, and that hash is removed when the value is used or the approval otherwise finishes.
+
+**Upgrade note (approved actions run with the requester's access).** An approved action now runs with the requester's own access. A request for something beyond that access ends as failed instead of running. With API keys on this includes approvals already waiting when you upgrade, and one whose requesting key was revoked or replaced ends **failed** without running. Requests within the requester's access run as before. Items created through an approval now belong to the requester instead of the approver, and tap scripts saved through an approval now show the requester as their author. Approvals by a user limited to some catalogs run within that user's own catalogs as before, and what they create belongs to that user; only the check that the requester still exists is new for them. Requests made under the Datris UI's own key, and every approval with API keys off, are unchanged. An approval requested before a change to the install's authentication settings (API keys or user sign-in turned on or off) may end **failed** after the change; ask the agent to request it again.
+
+**Upgrade note (approvals).** When more than one server instance shares a database, stop every instance of the earlier version before starting the new one: an approval that an earlier-version instance is performing at the moment a new instance starts ends as failed, and the agent has to propose the action again.
 
 ## For agents
 

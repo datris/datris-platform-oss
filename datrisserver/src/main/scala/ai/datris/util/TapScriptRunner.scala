@@ -41,7 +41,11 @@ case class TapScriptResult(
     newState: String = null,
     // Milliseconds this run waited for a free datris-tap-runner slot (the runner
     // answered busy). 0 when it never waited, and always 0 in-process.
-    queuedMs: Long = 0
+    queuedMs: Long = 0,
+    // True when the script presented its per-run platform token on the
+    // callback during the run (TapRunTokens.revoke). Stamped on the tap as
+    // lastRunUsedCallback by real runs; changes nothing else.
+    usedCallback: Boolean = false
 )
 
 object TapScriptRunner {
@@ -993,9 +997,13 @@ object TapScriptRunner {
         val hook = executeOverride
         if (hook != null) return hook(tapConfig, scriptContent, mode)
         val tapToken = "tap-" + java.util.UUID.randomUUID().toString
-        val result = StagingArea.withToken(tapToken)(runScriptStaged(tapConfig, scriptContent, testLimit, params, previousState, mode))
+        // What revoking the run's platform token answered: whether the script
+        // presented it on the callback during the run.
+        var usedCallback = false
+        val result =
+            StagingArea.withToken(tapToken)(runScriptStaged(tapConfig, scriptContent, testLimit, params, previousState, mode, used => usedCallback = used))
         if (result.error != null) StagingArea.delete(tapToken)
-        result
+        if (usedCallback) result.copy(usedCallback = true) else result
     }
 
     private def runScriptStaged(
@@ -1004,7 +1012,8 @@ object TapScriptRunner {
         testLimit: Int,
         params: Map[String, String],
         previousState: String,
-        mode: String
+        mode: String,
+        usedCallback: Boolean => Unit
     ): TapScriptResult = {
         // Which ceiling this execution runs under, and the knob that raises it.
         val timeout = timeoutFor(mode)
@@ -1277,7 +1286,7 @@ object TapScriptRunner {
                 val masked = if (secretValuesForMasking.nonEmpty) maskSecrets(e.getMessage, secretValuesForMasking) else e.getMessage
                 TapScriptResult(null, 0, masked, queuedMs = queuedMs)
         } finally {
-            ai.datris.auth.TapRunTokens.revoke(platformToken)
+            usedCallback(ai.datris.auth.TapRunTokens.revoke(platformToken))
             Files.deleteIfExists(scriptFile)
             Files.deleteIfExists(wrapperFile)
             venvDir.foreach(deleteRecursively)

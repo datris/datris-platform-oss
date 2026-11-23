@@ -436,7 +436,9 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         assert(CatalogAPIController.enableOrderedRefusal(null, members, failPipeline).isEmpty, "the enable job and schedulers run with no request")
         // tap save, /tap/run mode=run and tap version restore all call this seam
         val tapSrc = source("src/main/scala/ai/datris/api/TapAPIController.scala")
-        assert(methodBody(tapSrc, "def saveTapCore(").contains("TapAPIController.targetPipelineRefusal(request, scoped)"))
+        // the save passes its own pipeline read (io.readPipeline, through readOnce): plans/stories/tap-runs-hold-owner-scope.md
+        assert(methodBody(tapSrc, "def saveTapCore(").contains("TapAPIController.readOnce(io.readPipeline)"))
+        assert(methodBody(tapSrc, "def saveTapCore(").contains("TapAPIController.targetPipelineRefusal(request, scoped, readTarget)"))
         assert(methodBody(tapSrc, "def runTap(").contains("if (mode != \"test\") TapAPIController.targetPipelineRefusal(request, tapConfig)"))
         assert(methodBody(source("src/main/scala/ai/datris/api/EntityVersionAPIController.scala"), "def tapRestoreGuardDecision(").contains(
             "TapAPIController.targetPipelineRefusal("
@@ -491,11 +493,15 @@ class ScopedKeyWriteScopeReviewSpec extends AnyFunSuite {
         assert(methodBody(source("src/main/scala/ai/datris/api/TapAPIController.scala"), "def deleteTapInternal(").contains(
             "assertVisibleToWrite(request, \"tap\", \"delete\""
         ))
-        // per-member decision: one helper at all six member sites, restore through restoreMemberDenial
-        // (behaviour: "catalog per-member rule" below)
+        // per-member decision: assertMemberWrite at the cascade-delete member sites and enable-in-order,
+        // assertMemberMove (the same source rule plus the destination) at the rename and detach member sites,
+        // restore through restoreMemberDenial (behaviour: "catalog per-member rule" below)
         val catSrc = source("src/main/scala/ai/datris/api/CatalogAPIController.scala")
-        assert(catSrc.split("CatalogAPIController.assertMemberWrite\\(request").length - 1 == 7, "rename x2, detach x2, delete x2, enable-in-order")
-        assert(catSrc.contains("CatalogAPIController.restoreMemberDenial(request, resource, name, caller, live)"))
+        assert(catSrc.split("CatalogAPIController.assertMemberWrite\\(request").length - 1 == 3, "cascade delete x2, enable-in-order")
+        assert(catSrc.split("CatalogAPIController.assertMemberMove\\(request").length - 1 == 4, "rename x2, detach x2")
+        assert(methodBody(catSrc, "def restoreCatalog(").contains("CatalogAPIController.restoreChecks("))
+        assert(methodBody(catSrc, "def restoreChecks(").contains("restoreMemberDenial(request, \"pipeline\", target, caller, live)"))
+        assert(methodBody(catSrc, "def restoreTapPreflight(").contains("restoreMemberDenial(request, \"tap\", target, caller,"))
         assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"update\""))
         assert(!source("src/main/scala/ai/datris/api/PipelineAPIController.scala").contains("CapabilityCheck.assertVisible(request, \"pipeline\", \"delete\""))
     }

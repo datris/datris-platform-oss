@@ -13,7 +13,7 @@ import org.bson.json.{JsonMode, JsonWriterSettings}
 
 import scala.collection.JavaConverters._
 
-class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
+class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility with SessionDateFieldWrites {
 
     private val jsonSettings = JsonWriterSettings.builder().outputMode(JsonMode.RELAXED).build()
 
@@ -126,6 +126,19 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
             .toList
     }
 
+    override def getNewestItemByKeyAsJSON(tableName: String, keyName: String, key: String, sortField: String, fields: Seq[String]): Option[String] = {
+        val collection = database.getCollection(tableName)
+        val projection = new Document("_id", 0)
+        fields.foreach(f => projection.append(f, 1))
+        Option(
+            collection.find(Filters.eq(keyName, key))
+                .sort(new Document(sortField, -1))
+                .limit(1)
+                .projection(projection)
+                .first()
+        ).map(_.toJson(jsonSettings))
+    }
+
     override def getAllItemsAsJSON(tableName: String): List[String] = {
         val collection = database.getCollection(tableName)
         collection.find()
@@ -143,6 +156,33 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
     ): List[String] = {
         val collection = database.getCollection(tableName)
         var query = collection.find()
+        if (sortField != null)
+            query = query.sort(new Document(sortField, if (sortDescending) -1 else 1))
+        query.skip(pageNbr * maxPageSize)
+            .limit(maxPageSize)
+            .asScala
+            .map(doc => doc.toJson(jsonSettings))
+            .toList
+    }
+
+    /** One query: `field` `$in` `values` (sorted, so the query is the same
+      * for the same set), sorted on `sortField`, skip `pageNbr` *
+      * `maxPageSize`, limit `maxPageSize`. A query document is limited to
+      * 16 MiB, so `values` must fit well inside it (about 60,000 names of
+      * 255 bytes); a larger set is refused by the server and the read
+      * throws. No query for an empty set. */
+    override def getPageOfItemsWhereInAsJSON(
+        tableName: String,
+        field: String,
+        values: Set[String],
+        pageNbr: Int,
+        maxPageSize: Int,
+        sortField: String = null,
+        sortDescending: Boolean = true
+    ): List[String] = {
+        if (values == null || values.isEmpty) return Nil
+        val collection = database.getCollection(tableName)
+        var query = collection.find(Filters.in(field, values.toSeq.sorted.asJava))
         if (sortField != null)
             query = query.sort(new Document(sortField, if (sortDescending) -1 else 1))
         query.skip(pageNbr * maxPageSize)
@@ -226,12 +266,27 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         collection.insertOne(doc)
     }
 
-    /** Upsert a session-style document with a BSON Date field. Used to slide TTL on session renew. */
-    def upsertWithDateField(tableName: String, keyName: String, key: String, json: String, dateFieldName: String, dateValueEpochMillis: Long): Unit = {
+    /** Replace the one document whose `keyName` equals `key` with `json` plus a
+      * BSON Date field, without inserting when none matches. The document keeps
+      * its `_id`; fields absent from `json` are removed. True when a document
+      * matched. Used by SessionStore (renew, and the rewrite of a session
+      * stored in the earlier shape). */
+    def replaceWithDateField(tableName: String, keyName: String, key: String, json: String, dateFieldName: String, dateValueEpochMillis: Long): Boolean = {
         val collection = database.getCollection(tableName)
         val doc = Document.parse(json)
         doc.put(dateFieldName, new java.util.Date(dateValueEpochMillis))
-        collection.replaceOne(Filters.eq(keyName, key), doc, new ReplaceOptions().upsert(true))
+        collection.replaceOne(Filters.eq(keyName, key), doc).getMatchedCount > 0
+    }
+
+    /** Create a unique index on `fieldName` over the documents that have the
+      * field (a partial index), so documents without it never conflict.
+      * Idempotent: Mongo accepts re-creation of an identical index. */
+    def ensureUniqueIndexWhereExists(tableName: String, fieldName: String): Unit = {
+        val collection = database.getCollection(tableName)
+        val options = new com.mongodb.client.model.IndexOptions()
+            .unique(true)
+            .partialFilterExpression(Filters.exists(fieldName, true))
+        collection.createIndex(new Document(fieldName, 1), options)
     }
 
     private def buildKeyFilter(keyName: String, key: String, sortKeyName: String, sortKeyValue: Number): org.bson.conversions.Bson = {
@@ -262,6 +317,16 @@ object MongoDBUtil {
             new Document(keyField, new Document("$eq", value)): org.bson.conversions.Bson
         }
         if (clauses.size == 1) clauses.head else Filters.and(clauses.asJava)
+    }
+
+    /** The Mongo error code (and code name, when the server sent one) of a
+      * failure, for a log line: `" (code N[ NAME])"`, or "" when the failure
+      * is not a Mongo one. Never the driver's message text. */
+    def mongoErrorCode(e: Throwable): String = e match {
+        case c: com.mongodb.MongoCommandException =>
+            " (code " + c.getErrorCode + Option(c.getErrorCodeName).filter(_.nonEmpty).map(" " + _).getOrElse("") + ")"
+        case m: com.mongodb.MongoException => " (code " + m.getCode + ")"
+        case _ => ""
     }
 }
 

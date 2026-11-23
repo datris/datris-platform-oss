@@ -29,5 +29,11 @@ case class CodeRepoConfig(
     commitMessageTemplate: String = "tap({name}): {action} via Datris",
     enabled: Boolean = false,
     createdAt: String = null,
-    updatedAt: String = null
+    updatedAt: String = null,
+    // Path prefixes this repository used before `pathPrefix`: a tap stored
+    // under one of them is treated exactly as one under the current prefix
+    // (its <prefix><tapName>.py is its own script file). A save that changes
+    // `pathPrefix` records the previous one; a configuration stored before
+    // this field existed reads it as null (no earlier prefixes).
+    earlierPathPrefixes: java.util.List[String] = new java.util.ArrayList[String]()
 )

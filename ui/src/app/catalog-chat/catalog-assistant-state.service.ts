@@ -4,6 +4,7 @@ import { ChatMessage, AssistantEvent } from '../assistant.service';
 import { CatalogAssistantService } from './catalog-assistant.service';
 import { CatalogChatContextService } from './catalog-chat-context.service';
 import { handleRetryEvent } from '../shared/chat-retry';
+import { settleUnrunToolCards } from '../shared/chat-stream-end';
 
 export interface ToolCard {
   kind: 'tool';
@@ -215,6 +216,7 @@ export class CatalogAssistantStateService {
       case 'error':
         turn.errorMessage = evt.message;
         turn.done = true;
+        settleUnrunToolCards(turn.segments);
         break;
       case 'secret_request':
         // Curation mode never surfaces the credentials form — the catalog

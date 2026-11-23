@@ -301,6 +301,8 @@ class StartupRunner extends ApplicationRunner {
 
     @Override
     def run(args: ApplicationArguments): Unit = {
+        // Multi-tenant mode is retired: stop before anything reads or writes a store.
+        ai.datris.util.MultiTenantRetired.refuseIfOn(multiTenant)
         ai.datris.util.TapScriptRunner.assertIsolationConfig()
         if (!ai.datris.util.TapScriptRunner.useTapRunner)
             ai.datris.util.TapScriptRunner.warnInProcess("startup")
@@ -328,6 +330,14 @@ class StartupRunner extends ApplicationRunner {
         // when enforced). Never blocks boot.
         try ai.datris.util.TapSecretScopeScan.logAtStartup()
         catch { case scala.util.control.NonFatal(e) => logger.warn("Tap secret scope scan failed (continuing): " + e.getMessage) }
+        // Approval records keep only a hash of their one-time replay token;
+        // remove the clear token field earlier versions stored. Idempotent,
+        // runs whether or not the agent policy is on, never blocks boot.
+        try ai.datris.policy.PendingActionIO.removeClearReplayTokens()
+        catch {
+            case scala.util.control.NonFatal(e) =>
+                logger.warn("Approval token cleanup failed (continuing): " + e.getClass.getSimpleName + ai.datris.util.MongoDBUtil.mongoErrorCode(e))
+        }
         if (useAgentPolicy)
             logger.info(
                 "Agent policy enabled: collections=" + environment + "-agent-policy, " + environment + "-pending-action; approvals replay to port " + serverPort
@@ -362,7 +372,7 @@ class StartupRunner extends ApplicationRunner {
         ai.datris.audit.AuditLog.system("system", "start", metadata = md)
     }
 
-    /** Idempotent: ensure the user-session TTL index exists, then
+    /** Idempotent: ensure the user-session indexes (TTL, tokenHash) exist, then
       * [[StartupRunner.bootstrapUsers]]. Runs regardless of `useUserAuth` so
       * flipping the flag later is a clean toggle — no provisioning step needed. */
     private def initUserAuth(): Unit = {
@@ -392,8 +402,6 @@ class StartupRunner extends ApplicationRunner {
             DatrisEnvironment.init(env.copy(oidcEnabled = false))
             return
         }
-        if (env.multiTenant)
-            logger.warn("OIDC single sign-on is not verified with MULTI_TENANT=true; it signs people in to the default tenant's user store")
         ai.datris.auth.OidcLogin.configProblem(env.oidcIssuer, env.oidcClientId, env.oidcRedirectUri, env.oidcSecretName) match {
             case Some(problem) => off(problem)
             case None =>

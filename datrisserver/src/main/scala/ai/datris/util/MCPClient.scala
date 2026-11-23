@@ -88,16 +88,27 @@ object MCPClient {
 
     /** Fetch `tools/list` from the MCP server. Each tool is a JsonObject with
       * `name`, `description`, `inputSchema`. Cached ~60s per api key and on-behalf-of user. */
-    def listTools(apiKey: String): List[JsonObject] = {
-        val key = cacheKey(apiKey, toolsSuffix(UserContext.get().map(_.username)))
-        Option(toolsCache.get(key)).filter(_.expiresAt > now()).map(_.value) match {
+    def listTools(apiKey: String): List[JsonObject] =
+        cachedTools(cacheKey(apiKey, toolsSuffix(UserContext.get().map(_.username))), () => doListTools(apiKey), now())
+
+    /** Most milliseconds an empty tool list is reused. The MCP server answers
+      * an empty list when the platform refused the key or user (or allows no
+      * tools); a short reuse lets a chat get its tools back soon after the
+      * refusal or a blip clears instead of a minute later. */
+    private[util] val emptyToolsTtlMillis: Long = 5 * 1000L
+
+    /** The tool list for cache entry `key` at `nowMillis`: a cached list
+      * while it is fresh (60s, or [[emptyToolsTtlMillis]] for an empty one),
+      * otherwise `fetch()`, cached. A fetch that throws is not cached. */
+    private[util] def cachedTools(key: String, fetch: () => List[JsonObject], nowMillis: Long): List[JsonObject] =
+        Option(toolsCache.get(key)).filter(_.expiresAt > nowMillis).map(_.value) match {
             case Some(cached) => cached
             case None =>
-                val tools = doListTools(apiKey)
-                toolsCache.put(key, CachedEntry(tools, now() + ttlMillis))
+                val tools = fetch()
+                val ttl = if (tools.isEmpty) emptyToolsTtlMillis else ttlMillis
+                toolsCache.put(key, CachedEntry(tools, nowMillis + ttl))
                 tools
         }
-    }
 
     /** Fetch `resources/list`. Each resource has `uri`, `name`, `description`, `mimeType`. */
     def listResources(apiKey: String): List[JsonObject] = {

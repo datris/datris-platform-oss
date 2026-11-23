@@ -9,7 +9,7 @@ import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, VersionActor}
 import ai.datris.build.sbt.BuildInfo
-import ai.datris.model.{CodeGenScript, DatrisEnvironment, DatrisException, PipelineConfig, PipelineStatusRollup, TapConfig}
+import ai.datris.model.{CodeGenScript, CodeRepoConfig, DatrisEnvironment, DatrisException, PipelineConfig, PipelineStatusRollup, TapConfig}
 import ai.datris.util.{
     APIKeyValidator,
     CatalogArchive,
@@ -30,7 +30,9 @@ import ai.datris.util.{
     TapCodeStore,
     TapConfigIO,
     TapDependencies,
+    TapOwnerScopeReport,
     TapRunner,
+    TapScriptOwnership,
     TapScriptResult,
     TapState,
     TapStateIO,
@@ -74,10 +76,15 @@ import scala.collection.mutable
   *
   * Capability gate: `CapabilityRoutes` maps PUT to pipeline:update and DELETE
   * to pipeline:delete; each member is additionally scope-checked (owner and
-  * catalog) with its own resource type, and refused members land in
-  * `failed`. When any member is refused the `__catalog__` placeholders are
-  * left untouched; a placeholder-only catalog checks the placeholder itself
-  * (403 on denial). Cascade skips its pipeline phase if a tap delete failed. */
+  * catalog) with its own resource type. Rename and detach move members, so
+  * they are all or nothing on scope (`CatalogAPIController.moveRefusal`): a
+  * member the caller may not move, or, for an API key, may not write where
+  * it lands, refuses the whole operation with 403 before anything is
+  * written. Cascade delete keeps the per-member result: refused members land
+  * in `failed`, and when any member is refused the `__catalog__`
+  * placeholders are left untouched. A placeholder-only catalog checks the
+  * placeholder itself (403 on denial). Cascade skips its pipeline phase if a
+  * tap delete failed. */
 @RestController
 @RequestMapping(Array("/api/v1"))
 class CatalogAPIController {
@@ -134,19 +141,23 @@ class CatalogAPIController {
 
                 val actor = VersionActor.resolve(request)
                 val note = "catalog renamed " + name + " → " + newName + " by " + actor
-                placeholderScopeDenial(request, "update", name, members, oldPlaceholders).foreach(r => return r)
+                // All or nothing: every member (or, for a placeholder-only
+                // catalog, every placeholder) must be the caller's to move,
+                // and for an API key in scope where it lands, before anything
+                // is written.
+                CatalogAPIController.moveRefusal(request, "update", name, newName, members, oldPlaceholders).foreach(r => return r)
                 val denied = mutable.ArrayBuffer.empty[String]
                 val tapResult = CatalogOps.execute(members.taps.map(_.name)) { n =>
                     trackDenied(denied, n) {
                         val live = readTap(n, name)
-                        CatalogAPIController.assertMemberWrite(request, "tap", "update", live.catalog, live.createdByKeyLabel)
+                        CatalogAPIController.assertMemberMove(request, "tap", "update", live.catalog, newName, live.createdByKeyLabel)
                         TapConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
                     }
                 }
                 val pipelineResult = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                     trackDenied(denied, n) {
                         val live = readPipeline(n, name)
-                        CatalogAPIController.assertMemberWrite(request, "pipeline", "update", live.catalog, live.createdByKeyLabel)
+                        CatalogAPIController.assertMemberMove(request, "pipeline", "update", live.catalog, newName, live.createdByKeyLabel)
                         PipelineConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
                     }
                 }
@@ -266,7 +277,10 @@ class CatalogAPIController {
                 if (members.isEmpty && placeholders.isEmpty)
                     return notFound(name)
 
-                placeholderScopeDenial(request, "delete", name, members, placeholders).foreach(r => return r)
+                // Detach moves every member to Uncataloged: all or nothing, as
+                // rename. Cascade keeps its per-member result.
+                if (m == "detach") CatalogAPIController.moveRefusal(request, "delete", name, null, members, placeholders).foreach(r => return r)
+                else placeholderScopeDenial(request, "delete", name, members, placeholders).foreach(r => return r)
                 val actor = VersionActor.resolve(request)
                 val denied = mutable.ArrayBuffer.empty[String]
                 val (tapResult, pipelineResult) =
@@ -275,14 +289,14 @@ class CatalogAPIController {
                         val t = CatalogOps.execute(members.taps.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readTap(n, name)
-                                CatalogAPIController.assertMemberWrite(request, "tap", "delete", live.catalog, live.createdByKeyLabel)
+                                CatalogAPIController.assertMemberMove(request, "tap", "delete", live.catalog, null, live.createdByKeyLabel)
                                 TapConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
                             }
                         }
                         val p = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readPipeline(n, name)
-                                CatalogAPIController.assertMemberWrite(request, "pipeline", "delete", live.catalog, live.createdByKeyLabel)
+                                CatalogAPIController.assertMemberMove(request, "pipeline", "delete", live.catalog, null, live.createdByKeyLabel)
                                 PipelineConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
                             }
                         }
@@ -294,12 +308,19 @@ class CatalogAPIController {
                         val tapController = new TapAPIController
                         val pipelineController = new PipelineAPIController
                         // deleteTapInternal's warnings (a hand-edited repository
-                        // script kept) become {tap, message} warnings.
+                        // script kept, or a script file this tap does not
+                        // alone own) become {tap, message} warnings. One tap
+                        // listing, read at most once (a failed read is kept
+                        // too, so each delete keeps its file), serves every tap
+                        // delete; taps deleted so far no longer count as using a file.
+                        val (remaining, markDeleted) = CatalogAPIController.cascadeListing(() => TapConfigIO.listing())
                         val t = CatalogOps.executeCollecting(members.taps.map(_.name)) { n =>
                             trackDenied(denied, n) {
                                 val live = readTap(n, name)
                                 CatalogAPIController.assertMemberWrite(request, "tap", "delete", live.catalog, live.createdByKeyLabel)
-                                tapController.deleteTapInternal(n, request, checkScope = false).getOrElse(Nil)
+                                val out = tapController.deleteTapInternal(n, request, checkScope = false, allTaps = remaining).getOrElse(Nil)
+                                markDeleted(n)
+                                out
                             }
                         }
                         // A surviving tap must not be left pointing at a deleted
@@ -542,7 +563,9 @@ class CatalogAPIController {
     }
 
     /** Cancel the catalog's ordered enable. The in-flight test, run or load
-      * wait finishes; taps not yet started are `cancelled`. 404 when no job
+      * wait finishes; taps not yet started are `cancelled`. Needs `tap:run`
+      * on the catalog's taps, and for a key limited to a catalog or to what
+      * it created `tap:read` too (403 otherwise, job or not); 404 when no job
       * is running. */
     @DeleteMapping(path = Array("/catalog/{name}/enable-ordered"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def cancelEnableOrdered(
@@ -650,6 +673,8 @@ class CatalogAPIController {
                 // Tap scripts go to the tenant default store; a repository
                 // target is checked at branch head before anything is written.
                 val store = TapCodeStore.forStorage(null)
+                // Settings that cannot be read end the restore with a 500
+                // before anything is written, for every caller.
                 val repoCfg = if (store eq GithubCodeStore) CodeRepoConfigIO.readEnabled() else None
                 val pythonTaps = contents.taps.filterNot(_.isHttp).map(_.name).toSet
                 val scripts = contents.scripts.filter { case (n, _) => pythonTaps.contains(n) }
@@ -671,32 +696,37 @@ class CatalogAPIController {
                         )
                     case None => CatalogArchive.RepoScriptPlan(Nil, Set.empty, scripts.keySet, Set.empty, Set.empty)
                 }
-                val allClashes = nameClashes ++ repoPlan.clashes
-                if (allClashes.nonEmpty)
-                    return conflict(
-                        "The archive cannot be restored as '" + name + "': these names already exist on this install. " +
-                            "A restore never merges or replaces items outside the target catalog.",
-                        allClashes
-                    )
+                val caller = ResolvedKeyAccess.keyLabel(request).orNull
+                // 0. Scope-check every member before anything is written: a
+                //    refused member lands in `failed` and nothing of it (not
+                //    even its validation schema) is written. The script
+                //    checks judge only taps this caller would actually write.
+                val (pipelineDenied, tapDenied) = CatalogAPIController.restoreChecks(
+                    request,
+                    name,
+                    caller,
+                    nameClashes ++ repoPlan.clashes,
+                    contents.pipelines.map(p => p.name -> pipelines.find(_.name == p.name).map(l => (l.catalog, l.createdByKeyLabel))),
+                    contents.taps.map(_.name),
+                    taps,
+                    repoPlan,
+                    repoCfg
+                ) match {
+                    case Left(allClashes) =>
+                        return conflict(
+                            "The archive cannot be restored as '" + name + "': these names already exist on this install. " +
+                                "A restore never merges or replaces items outside the target catalog.",
+                            allClashes
+                        )
+                    case Right(denied) => denied
+                }
 
                 val preexistingTaps = taps.map(_.name).toSet.intersect(manifest.taps.toSet)
                 val actor = VersionActor.resolve(request)
                 val note = "restored from catalog archive " + Option(manifest.catalog).getOrElse("?") + " by " + actor
-                val caller = ResolvedKeyAccess.keyLabel(request).orNull
                 val warnings = mutable.ArrayBuffer.empty[String]
                 val skipped = mutable.ArrayBuffer.empty[String]
 
-                // 0. Scope-check every member before anything is written: a
-                //    refused member lands in `failed` and nothing of it (not
-                //    even its validation schema) is written.
-                def denial(resource: String, live: Option[(String, String)]): Option[String] =
-                    CatalogAPIController.restoreMemberDenial(request, resource, name, caller, live)
-                val pipelineDenied = contents.pipelines.flatMap { p =>
-                    denial("pipeline", pipelines.find(_.name == p.name).map(l => (l.catalog, l.createdByKeyLabel))).map(p.name -> _)
-                }
-                val tapDenied = contents.taps.flatMap { t =>
-                    denial("tap", taps.find(_.name == t.name).map(l => (l.catalog, l.createdByKeyLabel))).map(t.name -> _)
-                }
                 val allowedPipelines = contents.pipelines.filterNot(p => pipelineDenied.exists(_._1 == p.name))
                 val allowedTaps = contents.taps.filterNot(t => tapDenied.exists(_._1 == t.name))
 
@@ -733,6 +763,7 @@ class CatalogAPIController {
                 // 3. Taps: script first (tenant default store), then the config,
                 //    disabled, with run status cleared.
                 val tapController = new TapAPIController
+                val heldStrict = CatalogAPIController.heldStrictlyToOwnScriptFile(request)
                 val tapResult = CatalogOps.execute(allowedTaps.map(_.name)) { n =>
                     val archived = contents.taps.find(_.name == n).get
                     val base = CatalogArchive.stripTapForExport(archived).copy(enabled = false, catalog = name)
@@ -745,7 +776,8 @@ class CatalogAPIController {
                                     base.copy(lastTestRunScriptId = null)
                                 case Some(script) =>
                                     val live = TapConfigIO.read(DatrisEnvironment.current.tapTableName, n)
-                                    val stored = storeRestoredScript(store, repoCfg, repoPlan, n, script, live, actor)
+                                    val stored =
+                                        CatalogAPIController.storeRestoredScript(store, repoCfg, repoPlan, n, script, live, actor, heldStrict, request, taps)
                                     base.copy(
                                         scriptStorage = stored.storage,
                                         scriptPath = stored.scriptPath,
@@ -1048,32 +1080,6 @@ class CatalogAPIController {
         }
     }
 
-    /** Store one restored tap script through the tenant default store. On a
-      * code repository a file already identical at branch head is pinned
-      * without a new commit. */
-    private def storeRestoredScript(
-        store: TapCodeStore,
-        repoCfg: Option[ai.datris.model.CodeRepoConfig],
-        plan: CatalogArchive.RepoScriptPlan,
-        tap: String,
-        script: String,
-        live: TapConfig,
-        actor: String
-    ): StoredScript =
-        repoCfg match {
-            case Some(cfg) if plan.reuse.contains(tap) =>
-                val path = GithubCodeStore.scriptRepoPath(tap, cfg)
-                val head = GithubClient.branchHeadSha(cfg)
-                GithubClient.getFile(cfg, path, head) match {
-                    case Some(_) => StoredScript(GithubCodeStore.storage, scriptRepoPath = path, scriptCommitSha = head)
-                    case None => throw new DatrisException("script file '" + path + "' disappeared from the code repository during restore")
-                }
-            case _ =>
-                // A live tap on another backend is not a prior for this store.
-                val prior = if (live != null && TapCodeStore.forTap(live).storage == store.storage) live else null
-                store.storeScript(tap, script, prior, actor)
-        }
-
     /** Check one secret name against this install, gated by the caller's
       * secret read scope (see CatalogArchive.secretCheck). Also returns the
       * stored fields when the caller may read them. */
@@ -1270,6 +1276,314 @@ class CatalogAPIController {
 
 object CatalogAPIController {
 
+    /** The tap listing a cascade delete hands to every tap delete: `read`
+      * is called at most once for the whole cascade (a failed read is kept,
+      * so every later delete sees it fail and keeps its file), and a tap
+      * marked deleted no longer counts as using a file. Returns the listing
+      * each delete reads and the call that marks a tap deleted. */
+    private[api] def cascadeListing(read: () => Seq[TapConfig]): (() => Seq[TapConfig], String => Unit) = {
+        val once = TapAPIController.once(() => scala.util.Try(read()))
+        val deleted = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
+        (() => once().get.filter(t => t != null && !deleted.contains(t.name)), n => { deleted.add(n); () })
+    }
+
+    /** Rule S2 at a catalog restore onto a code repository: for each tap the
+      * restore would commit (`plan.write`) whose live copy holds no
+      * repository reference of its own to write over (missing, on built-in
+      * storage, or with no repository path), one clash when its file
+      * (`<prefix><tap>.py`) is, in any spelling, the current repository
+      * script of a stored tap of another name
+      * ([[TapScriptOwnership.uploadTargetTaken]]). The restore then refuses
+      * as for any other clash, before anything is written. A clash names
+      * only the restored tap and its own file; for a caller held to its own
+      * tap's script file (`held`, [[TapAPIController.heldToOwnScriptFile]])
+      * it says only that the file cannot be written by this restore, not why.
+      * For a caller held to its own tap's script file outside log-only mode
+      * (`request`, [[heldStrictlyToOwnScriptFile]]) a tap whose live copy
+      * holds its own repository reference at its own file is judged too, on
+      * that stored path: a clash with the held wording and one audit row
+      * (rule S2, site "catalog-restore") when another stored tap runs from
+      * the same file. `liveTaps`: every stored tap. */
+    private[api] def restoreTargetClashes(
+        plan: CatalogArchive.RepoScriptPlan,
+        cfg: CodeRepoConfig,
+        liveTaps: Seq[TapConfig],
+        held: Boolean = false,
+        request: HttpServletRequest = null
+    ): Seq[String] = {
+        val taps = Option(liveTaps).getOrElse(Nil).filter(_ != null)
+        plan.write.toSeq.sorted.flatMap { tap =>
+            val live = taps.find(_.name == tap)
+            live.filter(l => l.scriptStorage == "github" && l.scriptRepoPath != null && l.scriptRepoPath.nonEmpty) match {
+                case Some(own) =>
+                    // Its own reference is written over: judged only for a
+                    // caller held to its own tap's script file, on a stored
+                    // path that is its own file (any other path is a rule S4
+                    // clash, [[restoreNotOwnClashes]]).
+                    if (!heldStrictlyToOwnScriptFile(request) || storedNotOwn(tap, own, cfg)) None
+                    else if (!TapScriptOwnership.uploadTargetTaken(tap, own.scriptRepoPath, taps)) None
+                    else {
+                        sharedFileRestoreRefused(request, tap)
+                        Some(restoreTargetHeldMessage(tap, own.scriptRepoPath, cfg))
+                    }
+                case None =>
+                    val path = scala.util.Try(GithubCodeStore.scriptRepoPath(tap, cfg)).toOption
+                    path.filter(p => TapScriptOwnership.uploadTargetTaken(tap, p, taps)).map { p =>
+                        if (held) restoreTargetHeldMessage(tap, p, cfg)
+                        else
+                            "tap '" + tap + "': script file '" + p + "' in the code repository (branch " + cfg.branch +
+                                ") is the script another tap runs from and would be replaced"
+                    }
+            }
+        }
+    }
+
+    /** The clash of [[restoreTargetClashes]] for a caller held to its own
+      * tap's script file: says only that the file cannot be written. */
+    private def restoreTargetHeldMessage(tap: String, path: String, cfg: CodeRepoConfig): String =
+        "tap '" + tap + "': script file '" + path + "' in the code repository (branch " + cfg.branch +
+            ") cannot be written by this restore. Ask an administrator."
+
+    /** What the log line of a catalog restore script refusal says happened
+      * next: before anything is written the whole restore is refused; at
+      * the moment of writing only that tap is left out. */
+    private val RestoreRefusedLater = "The restore was refused and nothing was written."
+    private val RestoreWriteRefusedLater = "This tap was not written; the rest of the restore went ahead."
+
+    /** The audit row of a rule S2 refusal at a catalog restore for a caller
+      * held to its own tap's script file. `later`: what happened next. */
+    private def sharedFileRestoreRefused(request: HttpServletRequest, tap: String, later: String = RestoreRefusedLater): Unit =
+        TapOwnerScopeReport.scriptStoreRefused(
+            request,
+            tap,
+            "S2",
+            "catalog-restore",
+            "a catalog restore by a caller whose tap access is limited to a catalog or to what it created was refused: " +
+                "the tap's code repository script file is also the current script of another tap",
+            later
+        )
+
+    /** The audit row of a rule S4 refusal at a catalog restore for a caller
+      * held to its own tap's script file. `later`: what happened next. */
+    private def notOwnRestoreRefused(request: HttpServletRequest, tap: String, later: String): Unit =
+        TapOwnerScopeReport.scriptStoreRefused(
+            request,
+            tap,
+            "S4",
+            "catalog-restore",
+            "a catalog restore by a caller whose tap access is limited to a catalog or to what it created was refused: " +
+                "the tap's stored code repository path is not the tap's own script file",
+            later
+        )
+
+    /** Rule S4 at a catalog restore onto a code repository, for a caller held
+      * to its own tap's script file ([[TapAPIController.heldToOwnScriptFile]])
+      * that the route gate did not pass only under log-only capability mode:
+      * for each tap the restore would commit (`plan.write`) whose live copy
+      * is a repository tap with a stored path that is not the tap's own file
+      * ([[TapScriptOwnership.ownRepo]] under the current or a recorded
+      * earlier prefix), one clash naming only that tap
+      * ([[restoreNotOwnMessage]]) and one audit row
+      * ([[TapOwnerScopeReport.scriptStoreRefused]], rule S4, site
+      * "catalog-restore"). The restore then refuses as for any other clash, before
+      * anything is written. Empty for every other caller. `liveTaps`: every
+      * stored tap. */
+    private[api] def restoreNotOwnClashes(
+        request: HttpServletRequest,
+        plan: CatalogArchive.RepoScriptPlan,
+        cfg: CodeRepoConfig,
+        liveTaps: Seq[TapConfig]
+    ): Seq[String] =
+        if (!heldStrictlyToOwnScriptFile(request)) Nil
+        else {
+            val taps = Option(liveTaps).getOrElse(Nil).filter(_ != null)
+            plan.write.toSeq.sorted.flatMap { tap =>
+                taps
+                    .find(_.name == tap)
+                    .filter(l => storedNotOwn(tap, l, cfg))
+                    .map { _ =>
+                        notOwnRestoreRefused(request, tap, RestoreRefusedLater)
+                        restoreNotOwnMessage(tap)
+                    }
+            }
+        }
+
+    /** A caller held to its own tap's script file
+      * ([[TapAPIController.heldToOwnScriptFile]]) whose request the route
+      * gate did not pass only under log-only capability mode. */
+    private[api] def heldStrictlyToOwnScriptFile(request: HttpServletRequest): Boolean =
+        TapAPIController.heldToOwnScriptFile(request) && !TapAPIController.passedGateOnlyInLogOnly(request)
+
+    /** `live` is a repository tap whose stored path is not `tap`'s own file
+      * under the current or a recorded earlier prefix of `cfg`. */
+    private def storedNotOwn(tap: String, live: TapConfig, cfg: CodeRepoConfig): Boolean =
+        live != null && live.scriptStorage == "github" && live.scriptRepoPath != null && live.scriptRepoPath.nonEmpty &&
+            !TapScriptOwnership.ownRepo(tap, live.scriptRepoPath, TapScriptOwnership.prefixesOf(cfg))
+
+    /** The script checks of a catalog restore for the taps the caller would
+      * actually write, after the per-member tap scope check: returns
+      * (refused taps as (name, refusal message), script clashes). Each
+      * archived tap (`archivedTaps`) goes once through [[restoreMemberDenial]]
+      * (`tap`, into `target` as `caller`); a refused tap is left out of the
+      * repository write set before [[restoreTargetClashes]] (every caller;
+      * the held wording for a caller held to its own tap's script file) and
+      * [[restoreNotOwnClashes]] (rule S4) judge it, so it is reported only
+      * as refused and the rest of the restore proceeds. No repository
+      * (`repoCfg` None): no script clashes. `liveTaps`: every stored tap. */
+    private[api] def restoreTapPreflight(
+        request: HttpServletRequest,
+        target: String,
+        caller: String,
+        archivedTaps: Seq[String],
+        liveTaps: Seq[TapConfig],
+        plan: CatalogArchive.RepoScriptPlan,
+        repoCfg: Option[CodeRepoConfig]
+    ): (Seq[(String, String)], Seq[String]) = {
+        val taps = Option(liveTaps).getOrElse(Nil).filter(_ != null)
+        val denied = archivedTaps.flatMap { n =>
+            restoreMemberDenial(request, "tap", target, caller, taps.find(_.name == n).map(l => (l.catalog, l.createdByKeyLabel))).map(n -> _)
+        }
+        val writable = plan.copy(write = plan.write -- denied.map(_._1))
+        val clashes = repoCfg.toSeq.flatMap { cfg =>
+            // Rule S2: a restored script never replaces, with no reference
+            // of that tap behind it, the file another stored tap runs from.
+            restoreTargetClashes(writable, cfg, taps, TapAPIController.heldToOwnScriptFile(request), request) ++
+                // Rule S4 for a caller held to its own tap's script file: a
+                // live repository tap whose stored file is not its own is
+                // not written through.
+                restoreNotOwnClashes(request, writable, cfg, taps)
+        }
+        (denied, clashes)
+    }
+
+    /** Every check a catalog restore makes before anything is written.
+      * Left(clashes) refuses the restore; Right((refused pipelines, refused
+      * taps)), each as (name, refusal message), lets it proceed without
+      * them. `earlyClashes` (names that already exist, repository files
+      * that differ at branch head) refuse first, before any member scope
+      * check, so such a restore notes no scope denial. Then each archived
+      * pipeline (`archivedPipelines`: name and the live copy's (catalog,
+      * owner)) goes once through [[restoreMemberDenial]], then the taps
+      * through [[restoreTapPreflight]], so scope denials are noted on the
+      * request pipelines first; a script clash of a tap the caller would
+      * write refuses the restore. */
+    private[api] def restoreChecks(
+        request: HttpServletRequest,
+        target: String,
+        caller: String,
+        earlyClashes: Seq[String],
+        archivedPipelines: Seq[(String, Option[(String, String)])],
+        archivedTaps: Seq[String],
+        liveTaps: Seq[TapConfig],
+        plan: CatalogArchive.RepoScriptPlan,
+        repoCfg: Option[CodeRepoConfig]
+    ): Either[Seq[String], (Seq[(String, String)], Seq[(String, String)])] =
+        if (earlyClashes.nonEmpty) Left(earlyClashes)
+        else {
+            val pipelineDenied = archivedPipelines.flatMap { case (n, live) =>
+                restoreMemberDenial(request, "pipeline", target, caller, live).map(n -> _)
+            }
+            val (tapDenied, scriptClashes) = restoreTapPreflight(request, target, caller, archivedTaps, liveTaps, plan, repoCfg)
+            if (scriptClashes.nonEmpty) Left(scriptClashes) else Right((pipelineDenied, tapDenied))
+        }
+
+    /** Store one restored tap script through `store` (the tenant default
+      * store). On a code repository a file already identical at branch head
+      * is pinned without a new commit. A tap script a caller held to its own
+      * tap's script file (`heldStrict`) may not write through the code
+      * repository ([[restoreWriteNotOwn]], [[restoreWriteSharedFile]]) is
+      * not written: a [[DatrisException]] fails that tap only. `live`: the
+      * tap as read just before the write. `liveTaps`: every stored tap. */
+    private[api] def storeRestoredScript(
+        store: TapCodeStore,
+        repoCfg: Option[CodeRepoConfig],
+        plan: CatalogArchive.RepoScriptPlan,
+        tap: String,
+        script: String,
+        live: TapConfig,
+        actor: String,
+        heldStrict: Boolean,
+        request: HttpServletRequest,
+        liveTaps: Seq[TapConfig]
+    ): StoredScript =
+        repoCfg match {
+            case Some(cfg) if plan.reuse.contains(tap) =>
+                val path = GithubCodeStore.scriptRepoPath(tap, cfg)
+                val head = GithubClient.branchHeadSha(cfg)
+                GithubClient.getFile(cfg, path, head) match {
+                    case Some(_) => StoredScript(GithubCodeStore.storage, scriptRepoPath = path, scriptCommitSha = head)
+                    case None => throw new DatrisException("script file '" + path + "' disappeared from the code repository during restore")
+                }
+            case _ =>
+                // A live tap on another backend is not a prior for this store.
+                val prior = if (live != null && TapCodeStore.forTap(live).storage == store.storage) live else null
+                // Judged again on the tap as read now: the listing the clash
+                // check used skips a tap that could not be read.
+                if (store.storage == GithubCodeStore.storage) {
+                    restoreWriteNotOwn(request, heldStrict, repoCfg, tap, prior).foreach(msg => throw new DatrisException(msg))
+                    restoreWriteSharedFile(request, heldStrict, repoCfg, tap, prior, liveTaps).foreach(msg => throw new DatrisException(msg))
+                }
+                store.storeScript(tap, script, prior, actor)
+        }
+
+    /** At the moment a restored tap script is written through the code
+      * repository store with `prior` (the tap as read just before the write)
+      * as the reference it replaces: for a caller held to its own tap's
+      * script file (`heldStrict`, [[heldStrictlyToOwnScriptFile]]) whose
+      * `prior` is a repository tap with a stored path that is not the tap's
+      * own file, Some([[restoreNotOwnMessage]]) with one audit row (rule S4,
+      * site "catalog-restore"), and that member is not written while the
+      * rest of the restore goes ahead. None for every other caller and every
+      * other `prior`. */
+    private[api] def restoreWriteNotOwn(
+        request: HttpServletRequest,
+        heldStrict: Boolean,
+        repoCfg: Option[CodeRepoConfig],
+        tap: String,
+        prior: TapConfig
+    ): Option[String] =
+        if (heldStrict && storedNotOwn(tap, prior, repoCfg.orNull)) {
+            notOwnRestoreRefused(request, tap, RestoreWriteRefusedLater)
+            Some(restoreNotOwnMessage(tap))
+        } else None
+
+    /** At the moment a restored tap script is written through the code
+      * repository store with `prior` (the tap as read just before the write):
+      * for a caller held to its own tap's script file (`heldStrict`) whose
+      * write would land on a file (`prior`'s stored repository path, else
+      * `<prefix><tap>.py`) that is, normalised, the current repository script
+      * of a tap of another name in `liveTaps`, Some(the held clash wording of
+      * [[restoreTargetClashes]]) with one audit row (rule S2, site
+      * "catalog-restore"), and that member is not written while the rest of
+      * the restore goes ahead. None for every other caller and every other
+      * file. */
+    private[api] def restoreWriteSharedFile(
+        request: HttpServletRequest,
+        heldStrict: Boolean,
+        repoCfg: Option[CodeRepoConfig],
+        tap: String,
+        prior: TapConfig,
+        liveTaps: Seq[TapConfig]
+    ): Option[String] =
+        if (!heldStrict) None
+        else
+            repoCfg.flatMap { cfg =>
+                val path =
+                    if (prior != null && prior.scriptStorage == "github" && prior.scriptRepoPath != null && prior.scriptRepoPath.nonEmpty)
+                        Some(prior.scriptRepoPath)
+                    else scala.util.Try(GithubCodeStore.scriptRepoPath(tap, cfg)).toOption
+                path.filter(p => TapScriptOwnership.uploadTargetTaken(tap, p, Option(liveTaps).getOrElse(Nil))).map { p =>
+                    sharedFileRestoreRefused(request, tap, RestoreWriteRefusedLater)
+                    restoreTargetHeldMessage(tap, p, cfg)
+                }
+            }
+
+    /** The clash of [[restoreNotOwnClashes]]: names only the restored tap. */
+    def restoreNotOwnMessage(tapName: String): String =
+        "tap '" + tapName + "': its script is stored in the code repository at a file that is not this tap's own script file, " +
+            "so it cannot be restored by a user or key whose tap access is limited to a catalog or to what it created. " +
+            "Ask an administrator to move the script to the tap's own path (for example by moving it to built-in storage and back)."
+
     /** The per-member decision of catalog rename (`update`), detach and
       * cascade delete (`delete`), before a member is written or deleted:
       * `<resource>:<action>` on the member's (catalog, owner)
@@ -1282,6 +1596,81 @@ object CatalogAPIController {
         val ctx = CatalogOps.scopeContext(catalog, owner)
         CapabilityCheck.assertScope(request, resource, action, ctx)
         CapabilityCheck.assertWriteReadable(request, resource, action, ctx)
+    }
+
+    /** The per-member decision of a catalog move (rename: `update`, the new
+      * name; detach: `delete`, `toCatalog` null): [[assertMemberWrite]] on
+      * the member where it is, then, for an API key (never a signed-in
+      * session), the member as it would be stored, (`toCatalog`, `owner`),
+      * through the rule `POST /tap` and `POST /pipeline` apply to the item as
+      * saved: when the key's scope can refuse `create` or `update` there
+      * ([[ai.datris.auth.CallerVisibility.keyOutOfScope]]) and neither is
+      * granted there, refused on `update`. So a key moves an item only where
+      * it may also write it, the same answer moving that one item gives. A
+      * detach also accepts `delete` granted where the item lands, so a key
+      * limited to what it created keeps detaching its own items whether or
+      * not it holds `create` or `update`. Throws [[CapabilityDeniedException]]
+      * (shared wording, audit note). */
+    def assertMemberMove(request: HttpServletRequest, resource: String, action: String, fromCatalog: String, toCatalog: String, owner: String): Unit = {
+        assertMemberWrite(request, resource, action, fromCatalog, owner)
+        assertKeyMoveTarget(request, resource, action, toCatalog, owner)
+    }
+
+    /** The destination half of [[assertMemberMove]]: for an API key (no
+      * session), `create` or `update` (or the operation's own `action`) on
+      * (`toCatalog`, `owner`) when its scope can refuse them, refused on
+      * `update` (shared wording). */
+    private def assertKeyMoveTarget(request: HttpServletRequest, resource: String, action: String, toCatalog: String, owner: String): Unit =
+        CapabilityCheck.resolvedKey(request).filter(rk => !rk.restrictedSession && !rk.label.startsWith("session:")).foreach { rk =>
+            val ctx = CatalogOps.scopeContext(toCatalog, owner)
+            val accepted = (ai.datris.auth.CallerVisibility.TapWriteActions :+ action).distinct
+            if (accepted.exists(a => ai.datris.auth.CallerVisibility.keyOutOfScope(rk, resource, a, ctx)) && !accepted.exists(a => rk.grants(resource, a, ctx)))
+                CapabilityCheck.assertScope(request, resource, "update", ctx)
+        }
+
+    /** The all-or-nothing pre-flight of a catalog rename (`update`,
+      * `toCatalog` = the new name) and detach (`delete`, `toCatalog` null),
+      * before anything is written: every member tap, then every member
+      * pipeline, through [[assertMemberMove]]; for a catalog with no members,
+      * every placeholder (tap scope on the placeholder where it is, then, for
+      * a rename only, the same destination check). Some(403) on the first refusal; its message
+      * names the refused member only when the caller may read it, otherwise
+      * it is the shared scope-denial text alone. None: the whole move is
+      * allowed. Pure apart from the audit note of the refusal. */
+    def moveRefusal(
+        request: HttpServletRequest,
+        action: String,
+        fromCatalog: String,
+        toCatalog: String,
+        members: CatalogOps.Members,
+        placeholders: Seq[TapConfig]
+    ): Option[ResponseEntity[String]] = {
+        def forbidden(message: String): Option[ResponseEntity[String]] =
+            Some(ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON).body[String](CatalogOps.capabilityDeniedBody(message)))
+        def check(resource: String, name: String, owner: String): Option[ResponseEntity[String]] =
+            try {
+                assertMemberMove(request, resource, action, fromCatalog, toCatalog, owner)
+                None
+            } catch {
+                case e: CapabilityDeniedException =>
+                    val readable = CapabilityCheck.grants(request, resource, "read", CatalogOps.scopeContext(fromCatalog, owner))
+                    forbidden(if (readable) e.getMessage + " (" + resource + " '" + name + "')" else e.getMessage)
+            }
+        if (members.isEmpty)
+            placeholders.view.flatMap { ph =>
+                try {
+                    CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(fromCatalog, ph.createdByKeyLabel))
+                    // A placeholder is bookkeeping, not an item: a detach lands
+                    // nothing anywhere, so only a rename checks where it goes.
+                    if (toCatalog != null) assertKeyMoveTarget(request, "tap", action, toCatalog, ph.createdByKeyLabel)
+                    None
+                } catch {
+                    case e: CapabilityDeniedException => forbidden(e.getMessage)
+                }
+            }.headOption
+        else
+            members.taps.view.flatMap(t => check("tap", t.name, t.createdByKeyLabel)).headOption
+                .orElse(members.pipelines.view.flatMap(p => check("pipeline", p.name, p.createdByKeyLabel)).headOption)
     }
 
     /** The per-member decision of a catalog restore before an archived item
@@ -1484,11 +1873,17 @@ object CatalogAPIController {
     /** 403 when the caller's key may not `tap:<action>` the catalog's
       * ordered-enable job: catalog scope = the catalog, owner scope = whoever
       * started the job (absent when there is none). Route capability alone
-      * would let a `catalog=A` key read or cancel catalog B's job. */
+      * would let a `catalog=A` key read or cancel catalog B's job. For an
+      * action other than `read` (cancel: `run`) a key limited to a catalog
+      * or to what it created must also read the catalog's taps
+      * ([[CapabilityCheck.assertWriteReadable]]), so such a key that cannot
+      * gets the same 403 to a cancel whether or not a job is running. */
     def enableJobScopeDenial(request: HttpServletRequest, action: String, catalog: String): Option[ResponseEntity[String]] = {
         val owner = CatalogEnableJob.status(catalog).map(_.startedBy).orNull
         try {
-            CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(catalog, owner))
+            val ctx = CatalogOps.scopeContext(catalog, owner)
+            CapabilityCheck.assertScope(request, "tap", action, ctx)
+            CapabilityCheck.assertWriteReadable(request, "tap", action, ctx)
             None
         } catch {
             case e: CapabilityDeniedException =>
@@ -1552,8 +1947,9 @@ object CatalogAPIController {
         override def test(tap: TapConfig): TapScriptResult = {
             val result = TapRunner.run(tap, mode = "test", testLimit = TapAPIController.resolveTestLimit("test", null))
             try {
-                // Status churn: plain write, no version minted (as POST /tap/run).
-                TapConfigIO.write(TapAPIController.stampTestResult(tap, result, TapAPIController.nowStamp()))
+                // Status churn: plain write, no version minted (as POST /tap/run);
+                // the stored owner is kept (an owner changed during the test stays).
+                TapConfigIO.writeRunState(TapAPIController.stampTestResult(tap, result, TapAPIController.nowStamp()))
                 // This test returns no preview, so nothing is held: a failed test
                 // drops any preview held for a later reuseLastTest request (and a
                 // passing one is followed by the enable's versioned save, which

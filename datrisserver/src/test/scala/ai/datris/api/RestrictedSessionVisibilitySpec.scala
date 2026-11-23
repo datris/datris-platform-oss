@@ -288,7 +288,11 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(!EntityVersionAPIController.hiddenFromRestricted(req(editor), "pipeline", "update", None))
     }
 
-    test("pipeline status drops other catalogs' runs and 404s a token that touches a hidden pipeline") {
+    // plans/stories/limited-caller-read-leaks.md (pinned edit, D2 (a)): was
+    // "... and 404s a token that touches a hidden pipeline"; a hidden
+    // pipeline's events now read as missing (no 404), so a token's answer
+    // does not tell whether a hidden run exists.
+    test("pipeline status drops other catalogs' runs and events, and a token's hidden events read as missing") {
         def summary(p: String) = PipelineStatusSummary("t", 0L, 0L, p, "tok-" + p, "proc", "s", "e", "1s", "success")
         def event(p: String) = PipelineStatus(0, "t", p, "proc", "pub", "tok", "f", "end", "ok", "", 0L)
         val visible = Set("orders")
@@ -299,11 +303,32 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         }
         assert(PipelineStatusAPIController.filterFor(visible, java.util.Arrays.asList(event("orders"))).isRight)
         PipelineStatusAPIController.filterFor(visible, java.util.Arrays.asList(event("orders"), event("payroll"))) match {
-            case Left(r) => assert(r.getStatusCode.value == 404, r.getBody)
-            case other => fail("a hidden pipeline's events must be 404, got " + other)
+            case Right(l: java.util.List[_]) =>
+                assert(l.asScala.map(_.asInstanceOf[PipelineStatus].pipeline) == Seq("orders"), l)
+            case other => fail("a hidden pipeline's events must read as missing, got " + other)
+        }
+        PipelineStatusAPIController.filterFor(visible, java.util.Arrays.asList(event("payroll"))) match {
+            case Right(l: java.util.List[_]) => assert(l.isEmpty, l)
+            case other => fail("a token whose events are all hidden must read as a token with none, got " + other)
         }
         val rollup = PipelineStatusResponse(null, java.util.Arrays.asList(event("payroll")))
-        assert(PipelineStatusAPIController.filterFor(visible, rollup).isLeft)
+        PipelineStatusAPIController.filterFor(visible, rollup) match {
+            case Right(r: PipelineStatusResponse) => assert(r.rollup == null && r.events.isEmpty, r)
+            case other => fail("a response whose events are all hidden must read as one with no events, got " + other)
+        }
+        // a rollup spanning a visible and a hidden job keeps the visible job, recomputed from it
+        def job(p: String, status: String) = PipelineJobRollup("tok-" + p, p, "f", status, "s", "l", "1s", null)
+        val mixed = PipelineStatusResponse(
+            PipelineStatusRollup(allDone = false, status = "error", jobs = java.util.Arrays.asList(job("orders", "success"), job("payroll", "error"))),
+            java.util.Arrays.asList(event("orders"), event("payroll"))
+        )
+        PipelineStatusAPIController.filterFor(visible, mixed) match {
+            case Right(r: PipelineStatusResponse) =>
+                assert(r.rollup.jobs.asScala.map(_.pipeline) == Seq("orders"), r)
+                assert(r.rollup.allDone && r.rollup.status == "success", r.rollup)
+                assert(r.events.asScala.map(_.pipeline) == Seq("orders"), r.events)
+            case other => fail("the visible job must remain, got " + other)
+        }
         // Unrestricted: data passes through untouched.
         val data = java.util.Arrays.asList(summary("payroll"))
         val editor = APIKeyValidator.resolveFromSession(User("ed", "h", User.RoleEditor, null, null, null))
@@ -580,10 +605,9 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
         assert(ProvenanceAPIController.provenanceRefusal(req(editor), "run-1", resolved(None), read).isEmpty)
     }
 
-    test("config/generate-schema and pipeline/profile routes resolve to metadata:read, which the restricted bundle holds") {
+    test("pipeline/profile and the other metadata routes resolve to metadata:read, which the restricted bundle holds") {
         val bob = restrictedSession(grants("Sales" -> "edit"))
         Seq(
-            "POST" -> "/api/v1/config/generate-schema",
             "POST" -> "/api/v1/pipeline/profile",
             "GET" -> "/api/v1/vector-stores/available",
             "GET" -> "/api/v1/lineage",
@@ -596,7 +620,17 @@ class RestrictedSessionVisibilitySpec extends AnyFunSuite with BeforeAndAfterEac
             assert(!CapabilityRoutes.refusedForRestrictedSession(m, p), s"$m $p is not an unfilterable listing")
         }
         assert(bob.matchesResourceAction("metadata", "read"), "restricted bundle holds metadata:read")
-        val (cont, status, body) = intercept(req(bob, method = "POST", path = "/api/v1/config/generate-schema"))
-        assert(cont, s"restricted session passes the capability gate: $status $body")
+    }
+
+    test("config/generate-schema needs pipeline:update: a restricted session with an edit grant passes the gate, one with only view grants does not") {
+        val path = "/api/v1/config/generate-schema"
+        assert(CapabilityRoutes.lookup("POST", path) == RouteCheck.Require("pipeline", "update"))
+        assert(!CapabilityRoutes.refusedForRestrictedSession("POST", path), "not an unfilterable listing")
+        val bob = restrictedSession(grants("Sales" -> "edit"))
+        val (cont, status, body) = intercept(req(bob, method = "POST", path = path))
+        assert(cont, s"restricted session with an edit grant passes the capability gate: $status $body")
+        val viewer = restrictedSession(grants("Sales" -> "view"))
+        val (vCont, vStatus, vBody) = intercept(req(viewer, method = "POST", path = path))
+        assert(!vCont && vStatus == 403, s"restricted session with only a view grant is refused: $vStatus $vBody")
     }
 }

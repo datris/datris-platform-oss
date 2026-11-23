@@ -9,6 +9,8 @@ import ai.datris.model.AIConfig
 import ai.datris.util.DoctorService._
 import org.scalatest.funsuite.AnyFunSuite
 
+import scala.collection.JavaConverters._
+
 /** Each doctor check against a fake probe: the rule that fires, the status it
   * fires at, and the remediation text an operator will actually see. */
 class DoctorServiceSpec extends AnyFunSuite {
@@ -491,6 +493,10 @@ class DoctorServiceSpec extends AnyFunSuite {
             "staging.area",
             "staging.orphans",
             "tap.secret_scope",
+            // plans/stories/tap-runs-hold-owner-scope.md: position pinned by the tap.owner_scope tests below.
+            "tap.owner_scope",
+            // plans/stories/tap-save-references-in-scope.md: position pinned in TapReferenceScanSpec.
+            "tap.references",
             "keys.inert_scopes",
             "ai.sample_values",
             "codegen.isolation",
@@ -1159,5 +1165,298 @@ class DoctorServiceSpec extends AnyFunSuite {
         val r = DoctorService.runOne(inertCheck(p))
         assert(r.id == "keys.inert_scopes" && r.status == "error", r.toString)
         assert(r.detail.contains("vault down"), r.detail)
+    }
+    // tap.owner_scope — plans/stories/tap-runs-hold-owner-scope.md, Acceptance
+    // bullet 3 (`DoctorServiceSpec`). Report-only release: nothing is refused
+    // yet, so the check is `warn` at most, never `error` (an error would turn
+    // `datris doctor` into exit 2 and is reserved for the enforcing release).
+    // Pinned (does not exist at 4f38ae31): `class TapOwnerScopeCheck(probes)`,
+    // id "tap.owner_scope", startupSafe = true, registered in
+    // DoctorService.checks immediately after tap.secret_scope, reading
+    // `Probes.tapOwnerScopeScan(): TapOwnerScopeScan.Result` (default
+    // TapOwnerScopeScan.Result.empty; LiveProbes overrides it with liveScan()).
+    // Detail per finding: `tap -> pipeline (owner label)`.
+
+    private def ownerScopeProbes(scan: => TapOwnerScopeScan.Result): FakeProbes =
+        new FakeProbes() {
+            override def tapOwnerScopeScan(): TapOwnerScopeScan.Result = scan
+        }
+
+    private def ownerScopeCheck(p: FakeProbes): Check = {
+        val all = DoctorService.checks(p, slots, "1.62.0", Map.empty)
+        all.find(_.id == "tap.owner_scope").getOrElse(fail("no tap.owner_scope check in " + all.map(_.id)))
+    }
+
+    private def ownerFinding(group: String, tap: String, pipeline: String, owner: String) =
+        TapOwnerScopeScan.Finding(group, tap, pipeline, owner)
+
+    private val ownerFindings = List(
+        ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "rita-finance", "finance-ledger", "session:rita"),
+        ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "key-finance", "finance-ledger", "sales-agent"),
+        ownerFinding(TapOwnerScopeScan.TargetMissing, "rita-early", "not-created-yet", "session:rita"),
+        ownerFinding(TapOwnerScopeScan.OwnerUnresolved, "orphan", "sales-orders", "gone-agent"),
+        ownerFinding(TapOwnerScopeScan.ReadsNarrowed, "rita-reads", "sales-orders", "session:rita")
+    )
+
+    test("tap.owner_scope is ok with nothing to report") {
+        val byDefault = ownerScopeCheck(new FakeProbes()).run()
+        assert(byDefault.status == "ok", "the Probes default has nothing to report: " + byDefault)
+        val empty = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(Nil, Nil))).run()
+        assert(empty.status == "ok", empty.toString)
+        assert(empty.remediation.isEmpty, empty.toString)
+    }
+
+    test("tap.owner_scope warns naming each tap and what will stop") {
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings, Nil))).run()
+        assert(r.status == "warn" && r.severity == "warn", r.toString)
+        for (f <- ownerFindings)
+            assert(r.detail.contains(f.tap + " -> " + f.pipeline + " (" + f.owner + ")"), "names " + f + ": " + r.detail)
+        val text = r.detail + " " + r.remediation
+        assert(text.contains("next release"), "says what stops in the next release: " + text)
+        assert(text.contains("since the upgrade"), "says reads are known only for taps run since the upgrade: " + text)
+        assert(r.remediation.nonEmpty, r.toString)
+        // a tap that is fine is not named
+        assert(!r.detail.contains("rita-sales"), r.detail)
+    }
+
+    test("tap.owner_scope never reports error") {
+        val inputs = Seq(
+            TapOwnerScopeScan.Result(Nil, Nil),
+            TapOwnerScopeScan.Result(ownerFindings, Nil),
+            TapOwnerScopeScan.Result(Nil, List("t-flaky")),
+            TapOwnerScopeScan.Result(ownerFindings, List("t-flaky")),
+            TapOwnerScopeScan.Result((1 to 300).toList.map(i => ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "t" + i, "p" + i, "session:u" + i)), Nil)
+        )
+        for (in <- inputs) {
+            val r = DoctorService.runOne(ownerScopeCheck(ownerScopeProbes(in)))
+            assert(r.status != "error" && r.severity != "error", in.toString + " -> " + r)
+        }
+        val failing = DoctorService.runOne(ownerScopeCheck(ownerScopeProbes(throw new RuntimeException("mongo down"))))
+        assert(failing.status != "error" && failing.severity != "error", "a failed scan is not an error row: " + failing)
+    }
+
+    test("tap.owner_scope warns that it could not check when a store read fails") {
+        // the scan itself throws (taps cannot be listed): warn, never "nothing to report", never an error row
+        val thrown = DoctorService.runOne(ownerScopeCheck(ownerScopeProbes(throw new RuntimeException("mongo down"))))
+        assert(thrown.status == "warn", thrown.toString)
+        assert(thrown.detail.contains("could not"), thrown.detail)
+        // some taps could not be checked (an owner or pipeline read failed)
+        val partial = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(Nil, List("t-flaky", "t-broken")))).run()
+        assert(partial.status == "warn", partial.toString)
+        assert(partial.detail.contains("could not") && partial.detail.contains("t-flaky") && partial.detail.contains("t-broken"), partial.detail)
+        // findings and unreadable taps together: both are named
+        val both = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings.take(1), List("t-flaky")))).run()
+        assert(both.status == "warn", both.toString)
+        assert(both.detail.contains("rita-finance") && both.detail.contains("t-flaky"), both.detail)
+    }
+
+    test("tap.owner_scope is startup-safe and in the full report") {
+        val p = ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings, Nil))
+        assert(ownerScopeCheck(p).startupSafe)
+        val fullIds = DoctorService.run("full", Set.empty, Map.empty, p, slots, "1.62.0").checks.map(_.id)
+        assert(fullIds.contains("tap.owner_scope"), fullIds.toString)
+        assert(fullIds.indexOf("tap.owner_scope") == fullIds.indexOf("tap.secret_scope") + 1, "registered right after tap.secret_scope: " + fullIds)
+        val quickIds = DoctorService.run("quick", Set.empty, Map.empty, p, slots, "1.62.0").checks.map(_.id)
+        assert(quickIds.contains("tap.owner_scope"), quickIds.toString)
+        val startup = DoctorService.runStartup(p, slots, "1.62.0")
+        assert(startup.find(_.id == "tap.owner_scope").exists(_.status == "warn"), "one DOCTOR tap.owner_scope line at start: " + startup)
+        // the other checks keep their order around it
+        assert(fullIds.filterNot(_ == "tap.owner_scope") == DoctorService.run("full", Set.empty, Map.empty, new FakeProbes(), slots, "1.62.0").checks.map(_.id)
+            .filterNot(_ == "tap.owner_scope"))
+    }
+
+    // PROPOSED, for the lead to confirm: the story does not bound the detail.
+    // Modelled on ai.sample_values ("naming up to five pipelines"): the row
+    // stays readable when many taps are affected and still gives the total.
+    test("tap.owner_scope (proposed bound): many affected taps give a bounded detail that still states how many") {
+        val many = (1 to 500).toList.map(i => ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "tap-number-" + i, "pipeline-number-" + i, "session:user-" + i))
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(many, Nil))).run()
+        assert(r.status == "warn", r.toString)
+        assert(r.detail.length < 4000, "detail is " + r.detail.length + " chars")
+        assert(r.detail.contains("500"), "states the total: " + r.detail.take(300))
+        assert(r.detail.contains("tap-number-1 -> pipeline-number-1 (session:user-1)"), "names the first ones: " + r.detail.take(300))
+    }
+
+    // tap.owner_scope review follow-ups: what the row shows a caller that does not
+    // see the whole installation, the reason words, and the shared in-flight scan.
+
+    test("tap.owner_scope carries a counts-only detail naming no tap, pipeline, user or key") {
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings, List("t-flaky")))).run()
+        assert(r.namelessDetail != null, r.toString)
+        for (f <- ownerFindings; name <- Seq(f.tap, f.pipeline, f.owner)) assert(!r.namelessDetail.contains(name), name + " in " + r.namelessDetail)
+        assert(!r.namelessDetail.contains("t-flaky"), r.namelessDetail)
+        assert(r.namelessDetail.contains("(2)") && r.namelessDetail.contains("(1)"), "counts per group: " + r.namelessDetail)
+        assert(r.namelessDetail.contains("could not check 1 tap(s)"), r.namelessDetail)
+        assert(r.namelessDetail.contains("next release"), r.namelessDetail)
+        val onlyUnreadable = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(Nil, List("t-flaky")))).run()
+        assert(onlyUnreadable.namelessDetail != null && !onlyUnreadable.namelessDetail.contains("t-flaky"), onlyUnreadable.toString)
+        // the report keeps the named detail unless asked for the nameless one
+        val report = Report("full", Map.empty, Seq(r, CheckResult("other.check", "warn", "warn", "names other things", "")))
+        assert(report.checks.head.detail.contains("rita-finance"))
+        val nameless = report.withoutNames
+        assert(nameless.checks.head.detail == r.namelessDetail && nameless.checks.head.status == r.status && nameless.checks.head.remediation == r.remediation)
+        assert(nameless.checks(1).detail == "names other things", "a row without a nameless detail is unchanged")
+        assert(!nameless.toJson.contains("namelessDetail") && !report.toJson.contains("namelessDetail"), "never serialized")
+    }
+
+    test("tap.owner_scope names why a tap's reads narrow") {
+        val f = TapOwnerScopeScan.Finding(TapOwnerScopeScan.ReadsNarrowed, "monitor-reads", "sales-orders", "monitor", "its owner cannot query data")
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(List(f), Nil))).run()
+        assert(r.detail.contains("monitor-reads -> sales-orders (monitor) its owner cannot query data"), r.detail)
+        assert(!r.namelessDetail.contains("cannot query data"), "the reason names no identity but stays with the names: " + r.namelessDetail)
+    }
+
+    private def latch() = new java.util.concurrent.CountDownLatch(1)
+    private def await(l: java.util.concurrent.CountDownLatch): Boolean = l.await(10, java.util.concurrent.TimeUnit.SECONDS)
+
+    test("SharedRun: two overlapping calls share one run and get the same result") {
+        val waiting = new java.util.concurrent.CountDownLatch(2)
+        val release = latch()
+        val runs = new java.util.concurrent.atomic.AtomicInteger(0)
+        val shared = new SharedRun[TapOwnerScopeScan.Result]("spec-shared-run", 10000L, () => waiting.countDown())
+        val result = TapOwnerScopeScan.Result(ownerFindings, Nil)
+        val body = () => { runs.incrementAndGet(); await(release); result }
+        val answers = new java.util.concurrent.ConcurrentLinkedQueue[AnyRef]()
+        val callers = (1 to 2).map(_ =>
+            new Thread(() =>
+                answers.add(try shared.get("env", body)
+                catch { case e: Exception => e })
+            )
+        )
+        callers.foreach(_.start())
+        assert(await(waiting), "both callers are waiting")
+        release.countDown()
+        callers.foreach(_.join(10000))
+        assert(runs.get == 1, "one scan for both: " + runs.get)
+        assert(answers.size == 2 && answers.asScala.forall(_ eq result), answers.toString)
+        // the run has ended, so the next call starts a new one
+        assert(shared.get("env", () => { runs.incrementAndGet(); TapOwnerScopeScan.Result.empty }) == TapOwnerScopeScan.Result.empty)
+        assert(runs.get == 2)
+    }
+
+    test("SharedRun: a caller waits at most the time limit, and a caller joining a running scan has the same limit") {
+        val release = latch()
+        val started = latch()
+        val shared = new SharedRun[String]("spec-shared-run-limit", 20L)
+        val slow = () => { started.countDown(); await(release); "late" }
+        val first = intercept[IllegalStateException](shared.get("env", slow))
+        assert(first.getMessage == "the scan did not finish within 20 ms", first.getMessage)
+        assert(await(started))
+        val second = intercept[IllegalStateException](shared.get("env", () => "never runs: the slow scan is still in flight"))
+        assert(second.getMessage == "the scan did not finish within 20 ms", second.getMessage)
+        release.countDown()
+    }
+
+    test("SharedRun: a failing run is rethrown to its caller with its message, and the next call runs again") {
+        val shared = new SharedRun[String]("spec-shared-run-fail", 10000L)
+        val e = intercept[IllegalStateException](shared.get("env", () => throw new RuntimeException("mongo down")))
+        assert(e.getMessage == "mongo down")
+        assert(shared.get("env", () => "ok") == "ok")
+        assert(SharedRun.limitText(15000L) == "15 s" && SharedRun.limitText(20L) == "20 ms")
+    }
+
+    test("LiveProbes waits 15 s at most for the tap owner scan") {
+        assert(LiveProbes.TapOwnerScanTimeoutMs == 15000L)
+    }
+
+    // Story: Change a tap's owner (plans/stories/tap-change-owner.md),
+    // Acceptance bullet 6 (`DoctorServiceSpec`): both tap rows name the
+    // administrator's owner change as the remedy instead of recreating the
+    // tap. Widening the owner stays a remedy. Row ids, statuses and details
+    // do not change.
+
+    private val ChangeOwnerAction = "POST /api/v1/tap/owner"
+
+    private def assertNamesOwnerChange(fix: String): Unit = {
+        assert(fix.contains("change the tap's owner"), "names the change-owner action: " + fix)
+        assert(fix.contains(ChangeOwnerAction), "names the route: " + fix)
+        assert(fix.contains("administrator"), "says an administrator does it: " + fix)
+        assert(!fix.toLowerCase.contains("recreate"), "no longer says recreate: " + fix)
+        assert(!fix.contains("delete it and save it again"), "no longer says delete and save again: " + fix)
+    }
+
+    test("tap.owner_scope: the fix names the owner change, not recreating the tap; id, status and detail unchanged") {
+        val f = ownerFinding(TapOwnerScopeScan.FeedOutsideOwner, "rita-finance", "finance-ledger", "session:rita")
+        val r = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(List(f), Nil))).run()
+        assert(r.id == "tap.owner_scope" && r.status == "warn" && r.severity == "warn", r.toString)
+        assert(
+            r.detail == "1 tap(s) will read or feed less in the next release, which holds each tap to its owner's access " +
+                "(nothing changes in this release; callback reads are known only for taps run since the upgrade). " +
+                TapOwnerScopeCheck.Groups.toMap.apply(TapOwnerScopeScan.FeedOutsideOwner) + " (1): rita-finance -> finance-ledger (session:rita)",
+            r.detail
+        )
+        assertNamesOwnerChange(r.remediation)
+        // widening the owner stays a remedy
+        assert(r.remediation.contains("grant the owning user edit on the target pipeline's catalog"), r.remediation)
+        assert(r.remediation.contains("point the tap at a pipeline its owner may load into"), r.remediation)
+        // every finding group gets the same fix text
+        val all = ownerScopeCheck(ownerScopeProbes(TapOwnerScopeScan.Result(ownerFindings, Nil))).run()
+        assertNamesOwnerChange(all.remediation)
+        assert(all.status == "warn")
+    }
+
+    test("tap.references: the fix names the owner change, not recreating the tap; id, status and detail unchanged") {
+        val p = new FakeProbes() {
+            override def tapReferenceScan(): TapReferenceScan.Result =
+                TapReferenceScan.Result(List(TapReferenceScan.Finding(TapReferenceScan.SecretOutsideOwner, "builder-weather")), Nil)
+        }
+        val all = DoctorService.checks(p, slots, "1.62.0", Map.empty)
+        val r = all.find(_.id == "tap.references").getOrElse(fail("no tap.references check in " + all.map(_.id))).run()
+        assert(r.id == "tap.references" && r.status == "warn" && r.severity == "warn", r.toString)
+        assert(
+            r.detail == "1 finding(s) that the next release refuses or changes (nothing is refused in this release): " +
+                TapReferencesCheck.Groups.toMap.apply(TapReferenceScan.SecretOutsideOwner) + " (1): builder-weather",
+            r.detail
+        )
+        assertNamesOwnerChange(r.remediation)
+        // using a secret the owner may read stays a remedy
+        assert(r.remediation.contains("use a tap secret the owner may read"), r.remediation)
+    }
+    // Story: A tap's script upload and delete act only on that tap's own
+    // script file (plans/stories/tap-script-store-writes-and-deletes-in-scope.md),
+    // the not-own group of tap.references: its text says what happens now
+    // (a delete leaves the file; an upload by a user or key limited to a
+    // catalog or to what it created is refused) and what the next release
+    // changes, the detail says which refusal this release already makes, and
+    // the remedy records the earlier prefix or moves the script to built-in
+    // storage and back, never "store the script again" for such a tap.
+
+    private def referencesRow(findings: List[TapReferenceScan.Finding]): CheckResult = {
+        val p = new FakeProbes() {
+            override def tapReferenceScan(): TapReferenceScan.Result = TapReferenceScan.Result(findings, Nil)
+        }
+        val all = DoctorService.checks(p, slots, "1.62.0", Map.empty)
+        all.find(_.id == "tap.references").getOrElse(fail("no tap.references check in " + all.map(_.id))).run()
+    }
+
+    test("tap.references: the not-own group says a delete leaves the file, a limited upload is refused now, and what the next release changes") {
+        val text = TapReferencesCheck.Groups.toMap.apply(TapReferenceScan.NotOwnScript)
+        assert(text.contains("deleting such a tap now leaves the file in place"), text)
+        assert(text.contains("a script upload for it by a user or key limited to a catalog or to what it created is now refused"), text)
+        assert(text.contains("in the next release the tap's next script upload is stored at its own path"), text)
+        val r = referencesRow(List(TapReferenceScan.Finding(TapReferenceScan.NotOwnScript, "hand-placed-tap")))
+        assert(r.id == "tap.references" && r.status == "warn" && r.severity == "warn", r.toString)
+        assert(
+            r.detail == "1 finding(s) that the next release refuses or changes (in this release only a script upload by a user or key limited to a " +
+                "catalog or to what it created, for a tap whose script file is not its own, is refused): " + text + " (1): hand-placed-tap",
+            r.detail
+        )
+        assert(!r.namelessDetail.contains("hand-placed-tap"), r.namelessDetail)
+    }
+
+    test("tap.references: without a not-own finding the detail still says nothing is refused in this release") {
+        val r = referencesRow(List(TapReferenceScan.Finding(TapReferenceScan.OutsideArea, "outside-tap")))
+        assert(r.detail.startsWith("1 finding(s) that the next release refuses or changes (nothing is refused in this release): "), r.detail)
+    }
+
+    test("tap.references: the not-own remedy records the earlier prefix or moves the script to built-in storage and back") {
+        val r = referencesRow(List(TapReferenceScan.Finding(TapReferenceScan.NotOwnScript, "hand-placed-tap")))
+        val fix = r.remediation
+        val start = fix.indexOf("Script file not the tap's own:")
+        assert(start >= 0, fix)
+        val sentence = fix.substring(start, fix.indexOf("Script shared", start))
+        assert(sentence.contains("record that earlier prefix on the code repository settings (earlierPathPrefixes)"), sentence)
+        assert(sentence.contains("otherwise move the tap's script to built-in storage and back"), sentence)
+        assert(!sentence.contains("store the script again"), sentence)
     }
 }

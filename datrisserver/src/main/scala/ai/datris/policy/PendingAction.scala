@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.AuditActorInfo
 import ai.datris.model.DatrisEnvironment
-import ai.datris.util.{LogRedactUtil, MongoDBUtil, NoSQLDbUtil}
+import ai.datris.util.{LogRedactUtil, MongoDBUtil, NoSQLDbUtil, NoSQLDbUtility, TokenHash}
 import com.google.gson.{JsonObject, JsonParser}
 import com.mongodb.client.model.{Filters, IndexOptions, Sorts, Updates}
 import org.bson.Document
@@ -22,7 +22,9 @@ import scala.collection.mutable
 
 /** An agent request the policy parked for a human. Holds everything needed
   * to replay it verbatim once approved: method, path, query, content type,
-  * body. Never holds a replay token in its public JSON. */
+  * body. Once approved it holds the SHA-256 hash of its one-time replay
+  * token (`replayTokenHash`, never the token itself), removed again when the
+  * token is used. Neither the token nor its hash is in its public JSON. */
 case class PendingAction(
     id: String,
     action: String,
@@ -45,7 +47,7 @@ case class PendingAction(
     decidedBy: Option[String] = None,
     decidedAt: Option[Instant] = None,
     decisionNote: Option[String] = None,
-    replayToken: Option[String] = None,
+    replayTokenHash: Option[String] = None,
     replayConsumedAt: Option[Instant] = None,
     executedAt: Option[Instant] = None,
     resultStatus: Option[Int] = None,
@@ -122,7 +124,7 @@ case class PendingAction(
         decidedBy.foreach(d.put("decidedBy", _))
         decidedAt.foreach(x => d.put("decidedAt", x.toString))
         decisionNote.foreach(d.put("decisionNote", _))
-        replayToken.foreach(d.put("replayToken", _))
+        replayTokenHash.foreach(d.put("replayTokenHash", _))
         replayConsumedAt.foreach(x => d.put("replayConsumedAt", x.toString))
         executedAt.foreach(x => d.put("executedAt", x.toString))
         resultStatus.foreach(s => d.put("resultStatus", s: java.lang.Integer))
@@ -223,7 +225,7 @@ object PendingAction {
             decidedBy = opt(d, "decidedBy"),
             decidedAt = optInstant(d, "decidedAt"),
             decisionNote = opt(d, "decisionNote"),
-            replayToken = opt(d, "replayToken"),
+            replayTokenHash = opt(d, "replayTokenHash"),
             replayConsumedAt = optInstant(d, "replayConsumedAt"),
             executedAt = optInstant(d, "executedAt"),
             resultStatus = optInt(d, "resultStatus"),
@@ -241,8 +243,14 @@ object PendingActionIO {
     private val indexed = mutable.Set[String]()
     val MaxListLimit = 500
 
+    /** Spec seam: the config store (null = the package NoSQLDbUtil), the same
+      * pattern as SessionStore.dbOverride. */
+    @volatile private[datris] var dbOverride: NoSQLDbUtility = null
+
+    private def db: NoSQLDbUtility = Option(dbOverride).getOrElse(NoSQLDbUtil)
+
     private def collection(): com.mongodb.client.MongoCollection[Document] =
-        NoSQLDbUtil match {
+        db match {
             case m: MongoDBUtil =>
                 val table = DatrisEnvironment.current.pendingActionTableName
                 val coll = m.collection(table)
@@ -328,9 +336,24 @@ object PendingActionIO {
         r.getModifiedCount == 1
     }
 
+    /** Conditional finish of an approved action: moves it from approved to
+      * `to` (executed or failed) only when it is still approved, and in the
+      * same update removes the replay token hash, so a finished record holds
+      * none whether or not the replay used the token. Returns true when this
+      * call made the change. */
+    def finish(id: String, to: String, sets: (String, Any)*): Boolean = {
+        val updates = (Updates.set("state", to) +: sets.map { case (k, v) => Updates.set(k, v) }) :+ Updates.unset("replayTokenHash")
+        val r = collection().updateOne(Filters.and(Filters.eq("_id", id), Filters.eq("state", PendingAction.Approved)), Updates.combine(updates.asJava))
+        r.getModifiedCount == 1
+    }
+
     /** Single-use consumption of an approval's replay token: succeeds only
-      * for an approved action whose token matches and has not been used.
-      * Returns the action so the interceptor can attribute the replay. */
+      * for an approved action that holds the token's hash and has not been
+      * used. Matches on the hash, never on the presented value, and in the
+      * same update marks the action used and removes the hash. Returns the
+      * action so the interceptor can attribute the replay. A record that holds
+      * no hash (one approved by an earlier version, which stored the token
+      * itself) is not accepted. */
     def consumeReplay(id: String, token: String): Option[PendingAction] = {
         if (id == null || id.isEmpty || token == null || token.isEmpty) return None
         val coll = collection()
@@ -338,13 +361,35 @@ object PendingActionIO {
             Filters.and(
                 Filters.eq("_id", id),
                 Filters.eq("state", PendingAction.Approved),
-                Filters.eq("replayToken", token),
+                Filters.eq("replayTokenHash", TokenHash.sha256Hex(token)),
                 Filters.exists("replayConsumedAt", false)
             ),
-            Updates.set("replayConsumedAt", Instant.now().toString)
+            Updates.combine(
+                Updates.set("replayConsumedAt", Instant.now().toString),
+                Updates.unset("replayTokenHash")
+            )
         )
         if (r.getModifiedCount == 1) Option(coll.find(Filters.eq("_id", id)).first()).map(PendingAction.fromDocument) else None
     }
+
+    /** Field in which earlier versions stored the replay token itself. */
+    private val ClearReplayTokenField = "replayToken"
+
+    /** Startup cleanup: removes the clear replay token field that earlier
+      * versions stored from every record, and changes nothing else. Such a
+      * token is never accepted (see [[consumeReplay]]). Idempotent; returns
+      * the number of records changed. Without the MongoDB config store there
+      * are no approvals and it does nothing. Does not create the collection.
+      * Covers this install's own approvals collection only. */
+    def removeClearReplayTokens(): Long =
+        db match {
+            case m: MongoDBUtil =>
+                val coll = m.collection(DatrisEnvironment.current.pendingActionTableName)
+                val n = coll.updateMany(Filters.exists(ClearReplayTokenField), Updates.unset(ClearReplayTokenField)).getModifiedCount
+                if (n > 0) logger.info("Removed the stored one-time approval token from " + n + " approval record(s) written by an earlier version")
+                n
+            case _ => 0L
+        }
 
     def set(id: String, sets: (String, Any)*): Unit = {
         if (sets.isEmpty) return

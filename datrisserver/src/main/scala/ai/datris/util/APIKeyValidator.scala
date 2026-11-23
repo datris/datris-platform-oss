@@ -263,6 +263,95 @@ object APIKeyValidator {
         }
     }
 
+    /** Test seam for [[resolveByLabel]]: when set, answers in place of the
+      * secret store (None = unknown or revoked; a throw = store unavailable). */
+    @volatile private[datris] var resolveByLabelOverride: String => Option[ResolvedKey] = null
+
+    /** The key currently issued under `label`, as [[resolveKey]] would
+      * resolve its value: None when no key has that label or it is revoked;
+      * a key with no metadata is legacy full access. Throws when the key
+      * store or its metadata cannot be read (never answers None for an
+      * outage). Not cached: callers use it for one decision, not per request.
+      * With multi-tenant routing every key is legacy full access labelled
+      * with its environment, as [[resolveKey]] answers it. */
+    def resolveByLabel(label: String): Option[ResolvedKey] = labelResolver()(label)
+
+    /** [[resolveByLabel]] for several labels from one read of the key store
+      * and one of its metadata, each made on first need and kept for the
+      * function's life (a failed read is kept too: every later call throws
+      * it, never answering None for an outage). For one scan, not to be
+      * held across requests. */
+    def labelResolver(): String => Option[ResolvedKey] = {
+        val o = resolveByLabelOverride
+        if (o != null) return o
+        val d = keyDirectory()
+        label => d.byLabel(label)
+    }
+
+    /** The issued keys for one scan: [[byLabel]] is [[resolveByLabel]];
+      * [[all]] is every key that resolves (not revoked), sorted by label. */
+    trait KeyDirectory {
+        def byLabel(label: String): Option[ResolvedKey]
+        def all(): List[ResolvedKey]
+    }
+
+    /** [[KeyDirectory]] over one read of the key store and one of its
+      * metadata (each on first need, a failed read kept, as
+      * [[labelResolver]]). With [[resolveByLabelOverride]] set, `byLabel` is
+      * the override and `all` throws (the keys cannot be listed). With
+      * multi-tenant routing every key is legacy full access, so `all` is
+      * empty (no key narrows anything). */
+    def keyDirectory(): KeyDirectory = {
+        val o = resolveByLabelOverride
+        if (o != null)
+            return new KeyDirectory {
+                def byLabel(label: String): Option[ResolvedKey] = o(label)
+                def all(): List[ResolvedKey] = throw new IllegalStateException("the keys cannot be listed")
+            }
+        if (DatrisEnvironment.values.multiTenant)
+            return new KeyDirectory {
+                def byLabel(label: String): Option[ResolvedKey] =
+                    if (label == null || label.isEmpty) None
+                    else Some(ResolvedKey(Some(label), label, Seq(Capability.FullAccess), isLegacyFullAccess = true))
+                def all(): List[ResolvedKey] = Nil
+            }
+        directoryOver(() => readKeysMap(), () => readMetadataMap())
+    }
+
+    /** Pure core of [[keyDirectory]]: `readKeys` and `readMetadata` are each
+      * called at most once, on first need; a failure is kept, so every later
+      * call throws it again and a store failure is never answered as an
+      * unknown key. */
+    private[util] def directoryOver(readKeys: () => Map[String, String], readMetadata: () => Map[String, String]): KeyDirectory = {
+        lazy val keys: Try[Map[String, String]] = Try(readKeys())
+        lazy val metadata: Try[Map[String, String]] = Try(readMetadata())
+        new KeyDirectory {
+            def byLabel(label: String): Option[ResolvedKey] =
+                if (label == null || label.isEmpty) None
+                else resolveLabelAgainst(label, keys.get, metadata.get)
+            def all(): List[ResolvedKey] = {
+                val k = keys.get
+                k.keys.toList.sorted.flatMap(l => resolveLabelAgainst(l, k, metadata.get))
+            }
+        }
+    }
+
+    /** Pure core of [[resolveByLabel]]: the same answer [[resolveAgainst]]
+      * gives for the value stored under `label`. */
+    private[util] def resolveLabelAgainst(label: String, keys: Map[String, String], metadata: => Map[String, String]): Option[ResolvedKey] =
+        if (!keys.contains(label)) None
+        else
+            metadata.get(label) match {
+                case Some(json) =>
+                    val (revoked, capabilities, keyId) = parseMetadata(label, json)
+                    if (revoked) None
+                    else {
+                        val (applied, inert) = CapabilityScopes.partition(capabilities)
+                        Some(ResolvedKey(None, label, applied, isLegacyFullAccess = false, keyId = keyId, inertCapabilities = inert))
+                    }
+                case None => Some(ResolvedKey(None, label, Seq(Capability.FullAccess), isLegacyFullAccess = true))
+            }
+
     /** Clear the resolution cache. Call after a key's metadata changes or
       * it is revoked so the next request picks up the new state immediately
       * rather than waiting for the TTL. */

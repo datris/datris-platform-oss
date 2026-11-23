@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.{AuditActor, AuditLog}
 import ai.datris.model.{DatrisEnvironment, ResolvedKey, TenantContext, User}
-import ai.datris.policy.PolicyReplay
+import ai.datris.policy.{PendingAction, ReplayAuthority}
 import ai.datris.util.{APIKeyValidator, LogSafe, RevokedKeyException, UserStore}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
@@ -43,47 +43,184 @@ object TenantInterceptor {
       * ignored on such a request). */
     val OnBehalfOfCarrierAttr: String = "ai.datris.onBehalfOfCarrier"
 
+    /** `errorKind` of [[UnverifiedUserBody]]. */
+    final val UnverifiedUserErrorKind: String = "acting_user_unverified"
+
+    /** `errorKind` of [[UserStoreUnavailableBody]]. */
+    final val UserStoreUnavailableErrorKind: String = "user_store_unavailable"
+
     /** Body of the 401 a trusted carrier gets when the on-behalf-of user is
       * unknown or was deleted. Names neither the user nor the carrier, and is
       * not the capability-denied body: the identity, not a permission, failed. */
     val UnverifiedUserBody: String =
-        "{\"error\":\"The user this request acts for could not be verified\",\"errorKind\":\"acting_user_unverified\"}"
+        "{\"error\":\"The user this request acts for could not be verified\",\"errorKind\":\"" + UnverifiedUserErrorKind + "\"}"
 
     /** Body of the 503 a trusted carrier gets when the user store could not
       * be read to resolve the on-behalf-of user. */
     val UserStoreUnavailableBody: String =
-        "{\"error\":\"The user this request acts for could not be checked: the user store is unavailable\",\"errorKind\":\"user_store_unavailable\"}"
+        "{\"error\":\"The user this request acts for could not be checked: the user store is unavailable\",\"errorKind\":\"" + UserStoreUnavailableErrorKind + "\"}"
 
     /** The identity a trusted carrier (`ui`, or the keys-off identity) gets
       * acting on behalf of `user`. Pure: reads no thread-local and no store.
-      *   - an admin (`user.role == User.RoleAdmin`, exactly), or an approval
-      *     replay for a user who is not restricted: the carrier's own bundle,
-      *     relabelled `session:<user>` (attribution only);
+      *   - an admin (`user.role == User.RoleAdmin`, exactly): the carrier's
+      *     own bundle, relabelled `session:<user>` (attribution only);
       *   - anyone else: the user's session bundle
       *     (`APIKeyValidator.resolveFromSession`: the role bundle, or the
       *     catalog-grant bundle for a restricted user), kept only where the
       *     carrier itself grants it, with `restrictedSession` as the bundle
-      *     has it. This only ever narrows. */
-    def onBehalfOfIdentity(carrier: ResolvedKey, user: User, approvalReplay: Boolean): ResolvedKey =
-        if (user.role == User.RoleAdmin || (approvalReplay && !user.isRestricted))
-            carrier.copy(label = "session:" + user.username)
-        else {
-            val bundle = APIKeyValidator.resolveFromSession(user)
-            // Narrow only: a capability the carrier itself could not
-            // exercise under the same scope is dropped.
-            val narrowed =
-                if (carrier.isLegacyFullAccess) bundle.capabilities
-                else bundle.capabilities.filter(c => carrier.grants(c.resource, c.action, c.scope))
-            carrier.copy(
-                label = bundle.label,
-                capabilities = narrowed,
-                isLegacyFullAccess = false,
-                restrictedSession = bundle.restrictedSession,
-                // The session bundle holds only applied scopes; the carrier
-                // key's inert ones are not its own.
-                inertCapabilities = Nil
-            )
+      *     has it. This only ever narrows.
+      * `approvalReplay` no longer changes the result (kept for existing
+      * callers): a verified replay gets [[replayIdentity]] instead. */
+    def onBehalfOfIdentity(carrier: ResolvedKey, user: User, approvalReplay: Boolean = false): ResolvedKey =
+        if (user.role == User.RoleAdmin) carrier.copy(label = "session:" + user.username)
+        else narrowTo(carrier, APIKeyValidator.resolveFromSession(user))
+
+    /** The approver's identity for an approval replay, used where the
+      * replay does not run with its requester's (API keys off, the
+      * platform's own key as the requester, or a restricted approver:
+      * [[replayIdentity]]): with no approver named (user sign-in off)
+      * the carrier itself; an admin or an approver who is not restricted
+      * the carrier's bundle relabelled `session:<approver>`; a restricted
+      * approver their own narrowed bundle. */
+    private[config] def approverIdentity(carrier: ResolvedKey, approver: Option[User]): ResolvedKey =
+        approver match {
+            case None => carrier
+            case Some(u) if u.role == User.RoleAdmin || !u.isRestricted => carrier.copy(label = "session:" + u.username)
+            case Some(u) => onBehalfOfIdentity(carrier, u)
         }
+
+    /** The carrier `rk` acting for the user whose session bundle is
+      * `bundle`: the bundle's capabilities, kept only where `rk` itself
+      * grants them under the same scope, with the bundle's label. Only ever
+      * narrows. */
+    private def narrowTo(rk: ResolvedKey, bundle: ResolvedKey): ResolvedKey = {
+        val narrowed =
+            if (rk.isLegacyFullAccess) bundle.capabilities
+            else bundle.capabilities.filter(c => rk.grants(c.resource, c.action, c.scope))
+        rk.copy(
+            label = bundle.label,
+            capabilities = narrowed,
+            isLegacyFullAccess = false,
+            restrictedSession = bundle.restrictedSession,
+            // The session bundle holds only applied scopes; the key's inert
+            // ones are not the bundle's.
+            inertCapabilities = Nil
+        )
+    }
+
+    /** Body of the 401 a verified approval replay gets when the key that
+      * requested the action was revoked (or re-issued under its label) since. */
+    val RequesterKeyInvalidBody: String =
+        "{\"error\":\"The key that requested this action is no longer valid, so the approved action was not carried out\",\"errorKind\":\"requester_key_invalid\"}"
+
+    /** Body of the 401 a verified approval replay gets when the user whose
+      * chat requested the action no longer exists. */
+    val RequesterUserGoneBody: String =
+        "{\"error\":\"The user whose chat requested this action no longer exists, so the approved action was not carried out\",\"errorKind\":\"requester_user_gone\"}"
+
+    /** Body of the 503 a verified approval replay gets when the key store or
+      * the user store could not be read to check its requester. */
+    val RequesterUncheckedBody: String =
+        "{\"error\":\"The requester of this action could not be checked right now, so the approved action was not carried out. " +
+            "Try again later: the agent can request the action again and it can then be approved\",\"errorKind\":\"requester_unchecked\"}"
+
+    /** True when both sides hold a key id and they differ: the label now
+      * names a different key. A side with no id (queued before key ids were
+      * recorded, or a key issued before they existed) matches on the label. */
+    private[config] def otherKey(queued: Option[String], current: Option[String]): Boolean =
+        (queued, current) match {
+            case (Some(q), Some(c)) => q != c
+            case _ => false
+        }
+
+    /** The identity the verified replay of `pa` runs with: the requester's
+      * current access, never more.
+      *   - API keys off: [[approverIdentity]], as before (the API is open);
+      *   - a chat (actor `assistant`, or a `user`): that user's on-behalf-of
+      *     identity through the presenting carrier ([[onBehalfOfIdentity]]);
+      *     a user that no longer exists refuses 401;
+      *   - the platform's own `ui` key as the requester: [[approverIdentity]],
+      *     as before;
+      *   - any other key: the key now issued under the label
+      *     (`APIKeyValidator.resolveByLabel`), refused 401 when it is gone,
+      *     revoked or a different key ([[otherKey]]);
+      *   - a store that cannot be read refuses 503: nothing runs.
+      * `approver` is None when no person is named (user sign-in off). For a
+      * chat or a key approved by a restricted user (limited to some
+      * catalogs), the requester is checked as above and the replay then runs
+      * with that approver's own identity ([[approverIdentity]]: their
+      * narrowed session bundle, which owns what the replay creates), as
+      * before. Otherwise the result is the requester's identity unchanged,
+      * so the rules for keys apply exactly as on a direct call by that key
+      * and what the replay creates is the requester's. */
+    private[config] def replayIdentity(
+        pa: PendingAction,
+        carrier: ResolvedKey,
+        approver: Option[User],
+        useApiKeys: Boolean,
+        lookupKey: String => Option[ResolvedKey],
+        lookupUser: String => Option[User]
+    ): Either[(Int, String, String), ResolvedKey] = {
+        if (!useApiKeys) return Right(approverIdentity(carrier, approver))
+        val actor = pa.actor
+        val chat = actor.actorType == "assistant" || actor.actorType == "user"
+        val label = actor.keyLabel.getOrElse(actor.label)
+        if (!chat && label == AuditActor.UiKeyLabel) return Right(approverIdentity(carrier, approver))
+        val requester: Either[(Int, String, String), ResolvedKey] =
+            try
+                if (chat)
+                    actor.username.flatMap(lookupUser) match {
+                        case Some(u) => Right(onBehalfOfIdentity(carrier, u))
+                        case None => Left((HttpServletResponse.SC_UNAUTHORIZED, RequesterUserGoneBody, "approval requester user no longer exists"))
+                    }
+                else
+                    lookupKey(label) match {
+                        case Some(rk) if !otherKey(actor.keyId, rk.keyId) => Right(rk)
+                        case _ => Left((HttpServletResponse.SC_UNAUTHORIZED, RequesterKeyInvalidBody, "approval requester key is no longer valid"))
+                    }
+            catch {
+                case e: Exception =>
+                    Left((
+                        HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                        RequesterUncheckedBody,
+                        "approval requester could not be checked: " + LogSafe.text(String.valueOf(e.getMessage)).take(200)
+                    ))
+            }
+        if (approver.exists(_.isRestricted)) requester.map(_ => approverIdentity(carrier, approver))
+        else requester
+    }
+
+    /** Request attribute TenantInterceptor sets on a request it verified as
+      * the replay of an approved action ([[ReplayAuthority]]) and gave the
+      * requester's identity: a [[VerifiedReplay]]. PolicyInterceptor uses
+      * the one-time token only on a request that holds this record for that
+      * approval, so the check that set the identity and the use of the token
+      * cannot disagree. */
+    val ReplayVerifiedAttr: String = "ai.datris.policy.replayVerified"
+
+    /** The approval a request was verified as, the key that presented it,
+      * the person who approved it (None when user sign-in is off), and the
+      * requester's label as the approval records it (`originalActor`). */
+    final case class VerifiedReplay(approvalId: String, carrier: ResolvedKey, approver: Option[User], originalActor: Option[String] = None)
+
+    def verifiedReplay(request: HttpServletRequest): Option[VerifiedReplay] =
+        if (request == null) None else Option(request.getAttribute(ReplayVerifiedAttr)).collect { case v: VerifiedReplay => v }
+
+    /** Must PolicyInterceptor find a [[VerifiedReplay]] before it uses an
+      * approval token on this request? Yes for a request the platform's own
+      * carrier presented: the `ui` key with API keys on, or, with keys off, a
+      * request naming a user to act for. Those are the requests whose
+      * identity depends on the verification. (With keys off and no user
+      * named, the request already has the open API's full access.) */
+    def replayNeedsVerification(request: HttpServletRequest): Boolean = {
+        val env = DatrisEnvironment.values
+        val keysOn = env != null && env.useApiKeys
+        val presenting = verifiedReplay(request).map(_.carrier.label)
+            .orElse(Option(request.getAttribute(AuditActor.CarrierKeyLabelAttr)).collect { case l: String => l })
+            .orElse(ai.datris.auth.ResolvedKeyAccess.fromRequest(request).map(_.label))
+        if (keysOn) presenting.contains(AuditActor.UiKeyLabel)
+        else Option(request.getHeader(AuditActor.HeaderOnBehalfOf)).exists(_.trim.nonEmpty)
+    }
 
     /** What applyOnBehalfOf decided: the identity to attach, or a refusal
       * (status, body, audit reason) answered before any handler runs. */
@@ -146,6 +283,7 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
                 applyOnBehalfOf(request, resolved) match {
                     case TenantInterceptor.Act(identity) =>
                         request.setAttribute(TenantInterceptor.ResolvedKeyAttr, identity)
+                        noteIgnoredIncident(request)
                         None
                     case r: TenantInterceptor.RefuseOnBehalf => Some(r)
                 }
@@ -170,6 +308,24 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
         }
     }
 
+    /** An incident header from a key the platform does not trust with it
+      * (AuditActor.trustsIncident) is ignored by every reader
+      * (AuditActor.incidentOf); the attempt is recorded once, as a
+      * `security` / `spoofed-incident` event naming the presenting key. The
+      * claimed id is kept as `claimedIncident`, never as `incidentId`, so the
+      * event is not part of that incident's ledger. The request itself goes
+      * on and gets its normal audit row. */
+    private def noteIgnoredIncident(request: HttpServletRequest): Unit =
+        AuditActor.ignoredIncident(request).foreach { claimed =>
+            val label = ai.datris.auth.ResolvedKeyAccess.keyLabel(request).getOrElse(AuditActor.Anonymous)
+            logger.warn("Ignoring " + AuditActor.HeaderIncident + " from key '" + LogSafe.text(label) + "': only the platform's own callers may send it")
+            val md = new com.google.gson.JsonObject()
+            md.addProperty("claimedIncident", claimed)
+            val alreadyRecorded = request.getAttribute(AuditLog.RecordedAttr) != null
+            AuditLog.record(request, "security", "spoofed-incident", "key", label, outcome = "denied", httpStatus = 200, metadata = md)
+            if (!alreadyRecorded) request.removeAttribute(AuditLog.RecordedAttr)
+        }
+
     /** The in-platform chats reach REST through the MCP server with the
       * reserved `ui` key, on behalf of the human whose chat it is; the
       * approval replay (PolicyReplay) and the Configuration chat's loopback
@@ -185,24 +341,42 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
       *     read fails) refuses the request: 401 [[TenantInterceptor.UnverifiedUserBody]]
       *     or 503 [[TenantInterceptor.UserStoreUnavailableBody]], never the
       *     carrier's own identity (Decision 7);
+      *   - the replay of an approved action (PolicyReplay: the header names
+      *     the approver) that [[ReplayAuthority]] verifies runs with the
+      *     requester's current access ([[TenantInterceptor.replayIdentity]]);
+      *     approved by a restricted user it runs, once the requester is
+      *     checked, with that approver's own identity; a requester that no longer
+      *     exists is refused 401 and an unreadable key, user or approval
+      *     store 503 before anything runs or the token is used. The same
+      *     holds for a replay that names no approver (user sign-in off, or
+      *     no person behind the approve call), whether or not the header is
+      *     sent. An approval header that does not verify grants nothing: the
+      *     request is handled as if it carried none;
       *   - otherwise the identity is [[TenantInterceptor.onBehalfOfIdentity]]:
       *     an admin keeps the carrier's bundle relabelled `session:<user>`;
       *     every other user is narrowed to their own session bundle (role
       *     bundle, or catalog grants for a restricted user), so a chat acting
-      *     for them can do what their role allows and no more. An approval
-      *     replay (`X-Datris-Approval` present) for a user who is not
-      *     restricted keeps the carrier's bundle: the agent's key was already
-      *     allowed the action and a human approved it.
-      * Version history, owner tagging and the audit log attribute the action
-      * to the person either way.
+      *     for them can do what their role allows and no more.
+      * The audit log attributes the action to the person (for a replay, the
+      * approver, with the requester as `originalActor`); owner tagging uses
+      * the identity's label (for a replay, the requester's; the restricted
+      * approver's when that approver approved it).
       *
       * Any other key sending the header is ignored — and the attempt is
       * itself recorded as a security event. */
     private def applyOnBehalfOf(request: HttpServletRequest, resolved: ResolvedKey): TenantInterceptor.OnBehalf = {
         val header = Option(request.getHeader(AuditActor.HeaderOnBehalfOf)).map(_.trim).filter(_.nonEmpty)
-        if (header.isEmpty) return TenantInterceptor.Act(resolved)
         val env = DatrisEnvironment.values
-        if (!AuditActor.trustsOnBehalfOf(resolved.label, env.useApiKeys)) {
+        val trusted = AuditActor.trustsOnBehalfOf(resolved.label, env.useApiKeys)
+        if (header.isEmpty || (trusted && !env.useUserAuth)) {
+            // No person is named (none sent, or user sign-in is off and the
+            // name is not used). The platform's own carrier may still be
+            // presenting the replay of an approved action: it then runs with
+            // the requester's access, as when a person is named.
+            if (trusted) replayOf(request, resolved, None, env).foreach(return _)
+            return TenantInterceptor.Act(resolved)
+        }
+        if (!trusted) {
             logger.warn(
                 "Ignoring " + AuditActor.HeaderOnBehalfOf + " from key '" + LogSafe.text(resolved.label) + "' — only the ui key may act on behalf of a user"
             )
@@ -218,22 +392,22 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
             request.removeAttribute(AuditLog.RecordedAttr)
             return TenantInterceptor.Act(resolved)
         }
-        if (!env.useUserAuth) return TenantInterceptor.Act(resolved)
         if (carriesOwnSession(request)) {
             logger.warn("Ignoring " + AuditActor.HeaderOnBehalfOf + " on a request that carries its own sign-in session")
             return TenantInterceptor.Act(resolved)
         }
-        val approvalReplay = request.getHeader(PolicyReplay.HeaderApproval) != null
         // The audit row for a refusal carries the carrier's label and the
         // claimed name (truncated); the response body names neither.
         val names = Seq("carrierKey" -> resolved.label, "claimedUser" -> header.get.take(64))
         try {
             UserStore.find(header.get) match {
                 case Some(user) =>
-                    request.setAttribute(AuditActor.OnBehalfOfAttr, user)
-                    request.setAttribute(AuditActor.CarrierKeyLabelAttr, resolved.label)
-                    request.setAttribute(TenantInterceptor.OnBehalfOfCarrierAttr, resolved)
-                    TenantInterceptor.Act(TenantInterceptor.onBehalfOfIdentity(resolved, user, approvalReplay))
+                    replayOf(request, resolved, Some(user), env).getOrElse {
+                        request.setAttribute(AuditActor.OnBehalfOfAttr, user)
+                        request.setAttribute(AuditActor.CarrierKeyLabelAttr, resolved.label)
+                        request.setAttribute(TenantInterceptor.OnBehalfOfCarrierAttr, resolved)
+                        TenantInterceptor.Act(TenantInterceptor.onBehalfOfIdentity(resolved, user))
+                    }
                 case None =>
                     logger.info(AuditActor.HeaderOnBehalfOf + " names a user that does not exist; request refused")
                     TenantInterceptor.RefuseOnBehalf(
@@ -252,6 +426,50 @@ class TenantInterceptor extends AsyncHandlerInterceptor {
                     "user store unavailable; on-behalf-of user could not be checked",
                     names
                 )
+        }
+    }
+
+    /** The platform's own carrier `resolved` presenting a request for
+      * `approver` (None: no person named): Some(identity or refusal) when it
+      * is the verified replay of an approved action, or when the approval
+      * store could not be read to tell (503, nothing runs); None when it is
+      * not a replay (the request is handled as if it carried no approval).
+      * A verified replay is recorded on the request
+      * ([[TenantInterceptor.ReplayVerifiedAttr]]). */
+    private def replayOf(
+        request: HttpServletRequest,
+        resolved: ResolvedKey,
+        approver: Option[User],
+        env: DatrisEnvironment
+    ): Option[TenantInterceptor.OnBehalf] = {
+        val names = Seq("carrierKey" -> resolved.label) ++ approver.map(u => "claimedUser" -> u.username.take(64))
+        ReplayAuthority.verify(request, PolicyInterceptor.store) match {
+            case ReplayAuthority.NotReplay => None
+            case ReplayAuthority.Unchecked =>
+                Some(TenantInterceptor.RefuseOnBehalf(
+                    HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                    TenantInterceptor.RequesterUncheckedBody,
+                    "approval could not be checked: the approval store is unavailable",
+                    names
+                ))
+            case ReplayAuthority.Replay(pa) =>
+                val decided = TenantInterceptor.replayIdentity(pa, resolved, approver, env.useApiKeys, APIKeyValidator.resolveByLabel, UserStore.find)
+                Some(decided match {
+                    case Right(rk) =>
+                        approver.foreach { u =>
+                            request.setAttribute(AuditActor.OnBehalfOfAttr, u)
+                            request.setAttribute(AuditActor.CarrierKeyLabelAttr, resolved.label)
+                            request.setAttribute(TenantInterceptor.OnBehalfOfCarrierAttr, resolved)
+                        }
+                        request.setAttribute(
+                            TenantInterceptor.ReplayVerifiedAttr,
+                            TenantInterceptor.VerifiedReplay(pa.id, resolved, approver, originalActor = Some(pa.actor.label))
+                        )
+                        TenantInterceptor.Act(rk)
+                    case Left((status, body, reason)) =>
+                        logger.info("Approval " + pa.id + " replay refused: " + reason)
+                        TenantInterceptor.RefuseOnBehalf(status, body, reason, names ++ Seq("approvalId" -> pa.id, "originalActor" -> pa.actor.label))
+                })
         }
     }
 

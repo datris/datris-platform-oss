@@ -9,8 +9,8 @@ This page covers the client-side configuration for Anthropic's Claude products t
 
 The MCP server is a transparent forwarder — it has no API key of its own. When auth is enabled, the client sends an `x-api-key` header on every session and the MCP server forwards that key to the Datris REST API on every tool call.
 
-- **Single-tenant OSS with `USE_API_KEYS=false`** (default): no key needed. The snippets below work as-is.
-- **Single-tenant OSS with `USE_API_KEYS=true`**: append `--header x-api-key:<your-key>` to the `args` array. Issue and rotate keys from **Configuration → API-Keys** in the UI — the value shown when you create a key is what your client sends.
+- **With `USE_API_KEYS=false`** (default): no key needed. The snippets below work as-is.
+- **With `USE_API_KEYS=true`**: append `--header x-api-key:<your-key>` to the `args` array. Issue and rotate keys from **Configuration → API-Keys** in the UI — the value shown when you create a key is what your client sends.
 
 The Configuration UI's **Connect Your Agent** panel pre-generates these snippets — paste your API key into the field there and the `--header` flag gets added automatically.
 

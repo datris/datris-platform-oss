@@ -50,11 +50,63 @@ object PipelineStatusUtil {
         }).sortWith(_.createdAt > _.createdAt).asJava
     }
 
-    private def deriveStatusFromEvents(pipelineToken: String): Option[(String, Long)] = {
+    /** Rows per page of the summary table ([[getPipelineStatusSummary]],
+      * [[getVisiblePipelineStatusSummary]]). */
+    val SummaryPageSize = 20
+
+    /** Store field of a summary row's pipeline name. */
+    val SummaryPipelineField = "json.pipeline"
+
+    /** Page `page` (1-based, [[SummaryPageSize]] rows, newest first) of the
+      * summary rows filed under one of `pipelines`, for a caller that may
+      * see only those: one store query whose filter keeps those names, with
+      * the sort, skip and limit [[getPipelineStatusSummary]] uses, so page
+      * N is rows [20(N-1), 20N) of the rows the caller may see and every
+      * one of them is reachable. Each row returned is brought up to date as
+      * [[getPipelineStatusSummary]] does (a row still `processing` is
+      * checked against its events, one read per such row returned). No
+      * store read for an empty set. */
+    def getVisiblePipelineStatusSummary(
+        pipelines: Set[String],
+        page: Int,
+        db: NoSQLDbUtility = NoSQLDbUtil
+    ): java.util.List[PipelineStatusSummary] = {
+        if (pipelines == null || pipelines.isEmpty) return new java.util.ArrayList[PipelineStatusSummary]()
+        val tableList = db.getPageOfItemsWhereInAsJSON(
+            DatrisEnvironment.current.pipelineStatusSummaryTableName,
+            SummaryPipelineField,
+            pipelines,
+            page - 1,
+            SummaryPageSize,
+            "created_at"
+        )
+        val gson = new Gson
+        tableList.map(json => currentSummary(gson.fromJson(json, classOf[PipelineStatusSummaryTable]).json, db)).sortWith(_.createdAt > _.createdAt).asJava
+    }
+
+    /** A summary row as [[getPipelineStatusSummary]] shows it: a row still
+      * `processing` takes its status from its events when they hold a
+      * terminal one, else its elapsed time (and `error` once timed out). */
+    private def currentSummary(pipelineStatusSummary: PipelineStatusSummary, db: NoSQLDbUtility): PipelineStatusSummary =
+        if (pipelineStatusSummary.status.compareToIgnoreCase("processing") == 0) {
+            deriveStatusFromEvents(pipelineStatusSummary.pipelineToken, db) match {
+                case Some((terminalStatus, latestEventMillis)) =>
+                    val (elapsed, _) = ElapsedTimeUtil.getElapsedTime(latestEventMillis - pipelineStatusSummary.createdAt)
+                    pipelineStatusSummary.copy(totalTime = elapsed, status = terminalStatus)
+                case None =>
+                    val nowInMillis = new Timestamp(new Date().getTime).getTime
+                    val (elapsed, timedout) = ElapsedTimeUtil.getElapsedTime(nowInMillis - pipelineStatusSummary.createdAt)
+                    val totalTime = if (timedout) "timed out" else elapsed
+                    if (timedout) pipelineStatusSummary.copy(totalTime = totalTime, status = "error")
+                    else pipelineStatusSummary.copy(totalTime = totalTime)
+            }
+        } else pipelineStatusSummary
+
+    private def deriveStatusFromEvents(pipelineToken: String, db: NoSQLDbUtility = NoSQLDbUtil): Option[(String, Long)] = {
         if (pipelineToken == null || pipelineToken.isEmpty)
             return None
 
-        val tableList = NoSQLDbUtil.queryJSONItemsByKey(DatrisEnvironment.current.pipelineStatusTableName, "pipeline_token", pipelineToken)
+        val tableList = db.queryJSONItemsByKey(DatrisEnvironment.current.pipelineStatusTableName, "pipeline_token", pipelineToken)
         if (tableList == null || tableList.isEmpty)
             return None
 
@@ -188,6 +240,13 @@ object PipelineStatusUtil {
                 .map { case (_, rows) => classifyJob(rows) }
                 .sortBy(_.startedAt)
 
+        PipelineStatusResponse(rollup = rollupOf(jobs), events = events)
+    }
+
+    /** The aggregate rollup of `jobs` (each already classified): all done
+      * when every job is terminal; status error, warning, success or
+      * processing as the jobs decide; no jobs reads not done, processing. */
+    def rollupOf(jobs: List[PipelineJobRollup]): PipelineStatusRollup = {
         val terminalStates = Set("success", "warning", "error", "timed_out")
         val allDone = jobs.nonEmpty && jobs.forall(j => terminalStates.contains(j.status))
 
@@ -198,10 +257,7 @@ object PipelineStatusUtil {
             else if (jobs.forall(_.status == "success")) "success"
             else "processing"
 
-        PipelineStatusResponse(
-            rollup = PipelineStatusRollup(allDone = allDone, status = aggStatus, jobs = jobs.asJava),
-            events = events
-        )
+        PipelineStatusRollup(allDone = allDone, status = aggStatus, jobs = jobs.asJava)
     }
 
     def getPipelineStatusByPublisherWithRollup(publisherToken: String): PipelineStatusResponse =

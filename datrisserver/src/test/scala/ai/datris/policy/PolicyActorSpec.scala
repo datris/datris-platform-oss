@@ -59,4 +59,14 @@ class PolicyActorSpec extends AnyFunSuite {
         assert(!PolicyActor.isAgent(req(Some(key("tap:prices")))))
         assert(!PolicyActor.isAgent(req(Some(key("tap:prices")), agentSession = true)))
     }
+
+    test("the replay of an approved action whose one-time token was used is never an agent, whatever key it runs with") {
+        for (k <- Seq(Some(key("research-agent")), Some(key("session:todd")), Some(key(AuditActor.UiKeyLabel)), None); agentSession <- Seq(false, true)) {
+            val r = req(k, agentSession = agentSession)
+            when(r.getAttribute(AuditActor.ApprovalReplayAttr)).thenAnswer(_ => "pa_1")
+            assert(!PolicyActor.isAgent(r), s"$k agentSession=$agentSession")
+        }
+        // without the used token the same agent key is an agent
+        assert(PolicyActor.isAgent(req(Some(key("research-agent")))))
+    }
 }

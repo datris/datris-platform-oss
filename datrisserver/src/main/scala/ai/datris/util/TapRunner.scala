@@ -60,10 +60,20 @@ object TapRunner {
             tapFeed: TapFeedInfo,
             configOverride: PipelineConfig
         ): String
+
+        /** The tap owner's identity, for the feed report of a scheduled run.
+          * Called on the report's own thread, never on the run's:
+          * [[TapOwnerScopeReport.afterScheduledFeed]] only queues the report,
+          * so the run neither waits on nor fails by this lookup. A null owner
+          * is full access with no store read. May throw (the report is then
+          * skipped for that tap for the rest of the UTC day). */
+        def resolveOwner(label: String): ai.datris.auth.TapPrincipal.Resolution = ai.datris.auth.TapPrincipal.resolve(label)
     }
 
     object ProductionEffects extends Effects {
-        override def writeTap(tap: TapConfig): Unit = TapConfigIO.write(tap)
+        // A run writes the tap it was handed at its start; the stored owner is
+        // kept, so an owner changed during the run is not put back.
+        override def writeTap(tap: TapConfig): Unit = TapConfigIO.writeRunState(tap)
         override def readState(tapName: String): String = TapStateIO.readStateJson(tapName)
         override def commitState(state: TapState): Unit = TapStateIO.write(state)
         override def writeRunLog(log: TapRunLog): Unit = {
@@ -175,7 +185,8 @@ object TapRunner {
                         lastRunRecordCount = 0,
                         lastRunError = result.error,
                         lastRunTrigger = trigger,
-                        lastRunRetrySafe = true
+                        lastRunRetrySafe = true,
+                        lastRunUsedCallback = result.usedCallback
                     )
                     fx.writeTap(failedConfig)
                 }
@@ -217,7 +228,8 @@ object TapRunner {
                             lastRunRecordCount = 0,
                             lastRunError = missingMsg,
                             lastRunTrigger = trigger,
-                            lastRunRetrySafe = false
+                            lastRunRetrySafe = false,
+                            lastRunUsedCallback = result.usedCallback
                         )
                         fx.writeTap(failedConfig)
                     }
@@ -252,6 +264,7 @@ object TapRunner {
                         lastRunError = null,
                         lastRunTrigger = trigger,
                         lastRunRetrySafe = false,
+                        lastRunUsedCallback = result.usedCallback,
                         retryCount = 0
                     )
                     fx.writeTap(noRecordsConfig)
@@ -303,6 +316,7 @@ object TapRunner {
                     lastRunColumns = result.columns,
                     lastRunTrigger = trigger,
                     lastRunRetrySafe = false,
+                    lastRunUsedCallback = result.usedCallback,
                     retryCount = 0
                 )
                 fx.writeTap(successConfig)
@@ -329,6 +343,13 @@ object TapRunner {
                 scriptCommitSha = tapConfig.scriptCommitSha,
                 queuedMs = result.queuedMs
             )
+            // Report only (plans/stories/tap-runs-hold-owner-scope.md, rules 3
+            // and 4): after a scheduled run's feed was handed off and the run
+            // is stamped and logged, the report is offered to its own thread's
+            // queue (dropped when full); nothing is read here. Never throws; the
+            // run's result is as before.
+            if (push && trigger == "cron" && tokensOut != null)
+                TapOwnerScopeReport.afterScheduledFeed(tapConfig, fx.resolveOwner, fx.readPipeline)
             result.copy(publisherToken = pubOut, pipelineTokens = tokensOut)
         } catch {
             case e: Exception =>
@@ -344,7 +365,8 @@ object TapRunner {
                         lastRunRecordCount = 0,
                         lastRunError = e.getMessage,
                         lastRunTrigger = trigger,
-                        lastRunRetrySafe = !feedStarted
+                        lastRunRetrySafe = !feedStarted,
+                        lastRunUsedCallback = scriptResult != null && scriptResult.usedCallback
                     )
                     fx.writeTap(failedConfig)
                 }

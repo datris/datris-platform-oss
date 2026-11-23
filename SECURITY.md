@@ -55,7 +55,10 @@ laptop, wrong for anything shared. Turn both on for production.
   login.
 - **Sessions**: successful login issues an opaque, `SecureRandom`-generated token
   stored in a `datris-session` cookie (`HttpOnly`, `SameSite=Strict`, 8-hour TTL).
-  Sessions live in MongoDB with a TTL index that auto-purges expired tokens. The
+  Sessions live in MongoDB with a TTL index that auto-purges expired sessions; the
+  database stores a SHA-256 hash of each token, not the cookie value (a session
+  created by an earlier version is converted to that form when it is next used,
+  and one never used again expires on its usual schedule). The
   cookie's `Secure` flag is off by default because TLS is terminated at the
   reverse proxy; set `SESSION_COOKIE_SECURE=true` in the `datris` service
   environment when that proxy serves HTTPS, and keep it in front in production.
@@ -65,9 +68,6 @@ laptop, wrong for anything shared. Turn both on for production.
   editor; sensitive operations such as user management, API keys, the audit log,
   and agent policy require admin. When `USE_USER_AUTH` is off, role enforcement
   is a no-op and API callers are limited only by their key's capabilities.
-- **Multi-tenancy**: when enabled, tenants are isolated at the **database level**
-  (separate Postgres databases, separate object-store buckets). This is
-  infrastructure isolation that sits beneath the user/role model above.
 - **MFA, password complexity, account lockout**: not implemented for local
   accounts. Passwords have a minimum length only (5 characters); SSO users get
   whatever their identity provider enforces.

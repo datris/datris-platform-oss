@@ -80,6 +80,18 @@ class AuditClassifierSpec extends AnyFunSuite {
         assert(c("delete", "/api/v1/keys/x").contains(AuditRoute("key", "revoke", "key")))
     }
 
+    // Story: Change a tap's owner (plans/stories/tap-change-owner.md). The
+    // route is checked as tap:update, but its row reads tap / owner-change, so
+    // a refused or failed call reads the same as the controller's success row.
+    test("changing a tap's owner is classified as tap owner-change, not as a tap update") {
+        assert(c("POST", "/api/v1/tap/owner").contains(AuditRoute("tap", "owner-change", "tap")))
+        assert(c("post", "/api/v1/tap/owner").contains(AuditRoute("tap", "owner-change", "tap")))
+        // unchanged neighbours
+        assert(c("POST", "/api/v1/tap").contains(AuditRoute("tap", "create", "tap")))
+        assert(c("POST", "/api/v1/tap/cron").contains(AuditRoute("tap", "update", "tap")))
+        assert(c("POST", "/api/v1/tap/version/restore").contains(AuditRoute("tap", "update", "tap")))
+    }
+
     // Story: OIDC single sign-on 1 (plans/stories/oidc-sso-login.md). The SSO
     // callback is a GET, and GETs are dropped unless logReads is on, yet every
     // SSO sign-in (success or refusal) must reach the audit log as auth/login.

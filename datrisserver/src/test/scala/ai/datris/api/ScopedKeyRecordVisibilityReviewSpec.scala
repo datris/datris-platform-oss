@@ -273,7 +273,9 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
     test("finding 2: GET /tap/logs embeds a run's rollup exactly as GET /pipeline/status shows it to a limited caller, and null when it may not read the run") {
         def rollupOf(r: HttpServletRequest, resp: PipelineStatusResponse): Option[PipelineStatusRollup] =
             PipelineStatusAPIController.restrictedViewWith(r, resp, pipelines, taps, _ => None) match {
-                case Right(x: PipelineStatusResponse) => Option(x.rollup)
+                // limited-caller-read-leaks (pinned edit, D2 (a)): a hidden run now reads as an
+                // empty rollup on /pipeline/status; /tap/logs embeds null for it, as for no jobs
+                case Right(x: PipelineStatusResponse) => Option(x.rollup).filter(ro => ro.jobs != null && !ro.jobs.isEmpty)
                 case _ => None
             }
         val cases: Seq[(String, HttpServletRequest, PipelineStatusResponse, Boolean)] = Seq(
@@ -530,24 +532,30 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             incident("inc-4", "tap", "t_hr")
         )
         val r = req(ownKey("incident:read"), uri = "/api/v1/incidents")
-        val listed = IncidentsAPIController.listedJson(r, incs, readPipeline, readTap).asScala.map(_.getAsJsonObject.get("id").getAsString).toList
+        val listed = IncidentsAPIController.listedJson(r, incs, readPipeline, readTap, items = IncidentsAPIController.NoItems).asScala.map(
+            _.getAsJsonObject.get("id").getAsString
+        ).toList
         assert(listed == List("inc-1", "inc-3"), listed)
         for (i <- incs) {
-            val g = IncidentsAPIController.getResponse(r, i.id, Some(i), readPipeline, readTap)
+            val g = IncidentsAPIController.getResponse(r, i.id, Some(i), readPipeline, readTap, items = IncidentsAPIController.NoItems)
             val e = IncidentsAPIController.evidenceResponse(r, i.id, Some(i), readPipeline, readTap)
             if (listed.contains(i.id)) assert(status(g) == 200 && status(e) == 200, i.id)
             else for (x <- Seq(g, e)) assert(status(x) == 404 && x.getBody == "{\"error\":\"no incident " + i.id + "\"}", i.id + ": " + x.getBody)
         }
         // unknown id: the same 404 for everyone
-        assert(IncidentsAPIController.getResponse(r, "inc-9", None, readPipeline, readTap).getBody == "{\"error\":\"no incident inc-9\"}")
+        assert(
+            IncidentsAPIController.getResponse(r, "inc-9", None, readPipeline, readTap, items = IncidentsAPIController.NoItems).getBody == "{\"error\":\"no incident inc-9\"}"
+        )
         // unchanged callers: every incident, as stored, no reader called
         for ((name, rr) <- unchanged) {
-            assert(IncidentsAPIController.listedJson(rr, incs, failReadPipeline, failReadTap).size == 4, name)
-            val g = IncidentsAPIController.getResponse(rr, "inc-2", Some(incs(1)), failReadPipeline, failReadTap)
+            assert(IncidentsAPIController.listedJson(rr, incs, failReadPipeline, failReadTap, items = IncidentsAPIController.NoItems).size == 4, name)
+            val g = IncidentsAPIController.getResponse(rr, "inc-2", Some(incs(1)), failReadPipeline, failReadTap, items = IncidentsAPIController.NoItems)
             assert(status(g) == 200 && g.getBody == gson.toJson(incs(1).toPublicJson), name)
         }
         val src = source("datrisserver/src/main/scala/ai/datris/api/IncidentsAPIController.scala")
-        assert(methodBody(src, "def list(").contains("listedJson("))
+        // limited-caller-read-leaks (pinned edit, D3): the list route reads through listedFor,
+        // which lists through listedJson for a caller that is not limited (LimitedPagingSpec)
+        assert(methodBody(src, "def list(").contains("listedFor("))
         assert(methodBody(src, "def get(").contains("getResponse("))
         assert(methodBody(src, "def evidence(").contains("evidenceResponse("))
     }
@@ -598,7 +606,7 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
         val stored = e.toString
         val inc = incident("inc-1", "pipeline", "shared_a", e)
         val r = req(ownKey("incident:read"))
-        val shown = IncidentsAPIController.shownIncident(r, inc, readPipeline, readTap)
+        val shown = IncidentsAPIController.shownIncident(r, inc, readPipeline, readTap, items = IncidentsAPIController.NoItems)
         val b = shown.evidence.get.getAsJsonObject("blastRadius")
         assert(b.getAsJsonArray("downstreamPipelines").asScala.map(_.getAsString).toList == List("own_p", HiddenTapScrub.Placeholder), b)
         val dsets = b.getAsJsonArray("downstreamDatasets").asScala.map(_.getAsJsonObject.get("coords").getAsString).toList
@@ -615,14 +623,15 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
         // nothing stored is altered
         assert(inc.evidence.get.toString == stored)
         // through the get route's seam, the same
-        val body = IncidentsAPIController.getResponse(r, "inc-1", Some(inc), readPipeline, readTap).getBody
+        val body = IncidentsAPIController.getResponse(r, "inc-1", Some(inc), readPipeline, readTap, items = IncidentsAPIController.NoItems).getBody
         assert(!body.contains("payroll") && !body.contains("hr_db_secret"), body)
         // a dataset no downstream pipeline writes cannot be attributed: the whole list is one [hidden] entry
         val unattributed = IncidentsAPIController.shownIncident(
             r,
             incident("inc-1", "pipeline", "shared_a", evidenceWith(Seq("own_p", "payroll"), Seq(kc(ownP), ("postgres", "datris.public.historical_t")))),
             readPipeline,
-            readTap
+            readTap,
+            items = IncidentsAPIController.NoItems
         )
         val ud = unattributed.evidence.get.getAsJsonObject("blastRadius").getAsJsonArray("downstreamDatasets")
         assert(ud.size == 1 && ud.get(0).getAsJsonObject.get("coords").getAsString == HiddenTapScrub.Placeholder, ud)
@@ -631,16 +640,18 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             r,
             incident("inc-1", "pipeline", "shared_a", evidenceWith(Seq("own_p"), Seq(kc(ownP), ("postgres", "x.y.z")))),
             readPipeline,
-            readTap
+            readTap,
+            items = IncidentsAPIController.NoItems
         )
         val cb = clean.evidence.get.getAsJsonObject("blastRadius")
         assert(cb.getAsJsonArray("ucTables").get(0).getAsString == "main.hr.payroll" && cb.getAsJsonArray("downstreamDatasets").size == 2, cb)
         assert(!cb.has("agentsThatQueriedLast7d") && !cb.has("secretName"))
         // the list filter applies the same scrub
-        val listed = IncidentsAPIController.visibleIncidents(r, List(inc), readPipeline, readTap)
+        val listed = IncidentsAPIController.visibleIncidents(r, List(inc), readPipeline, readTap, items = IncidentsAPIController.NoItems)
         assert(listed.size == 1 && !gson.toJson(listed.head.toPublicJson).contains("payroll"))
         // unchanged callers: the incident itself
-        for ((name, rr) <- unchanged) assert(IncidentsAPIController.shownIncident(rr, inc, failReadPipeline, failReadTap) eq inc, name)
+        for ((name, rr) <- unchanged)
+            assert(IncidentsAPIController.shownIncident(rr, inc, failReadPipeline, failReadTap, items = IncidentsAPIController.NoItems) eq inc, name)
     }
 
     test("finding 7: a tap incident whose target pipeline the caller cannot read loses the profiles, diff and checks computed from that pipeline's rows") {
@@ -656,7 +667,7 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
         val r = req(pipelineOnly("incident:read"))
         val hrTap = incident("inc-5", "tap", "t_hr", evidenceWith(Nil, Nil, withDiffAndChecks))
         val stored = hrTap.evidence.get.toString
-        val shown = IncidentsAPIController.shownIncident(r, hrTap, readPipeline, readTap)
+        val shown = IncidentsAPIController.shownIncident(r, hrTap, readPipeline, readTap, items = IncidentsAPIController.NoItems)
         Seq("baseline", "candidate", "real", "diff", "checks").foreach(k => assert(!shown.evidence.get.has(k), k))
         val body = gson.toJson(shown.toPublicJson)
         Seq("salary", "-42.00", "maxRecordDeltaPct").foreach(x => assert(!body.contains(x), x + ": " + body))
@@ -668,7 +679,8 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             r,
             incident("inc-7", "tap", "t_gone_target", evidenceWith(Nil, Nil, withDiffAndChecks)),
             readPipeline,
-            n => if (n == "t_gone_target") gone else readTap(n)
+            n => if (n == "t_gone_target") gone else readTap(n),
+            items = IncidentsAPIController.NoItems
         )
         Seq("baseline", "candidate", "real", "diff", "checks").foreach(k => assert(!goneShown.evidence.get.has(k), k))
         // its own tap's target is readable: everything stays (review round 2: the profiles name the runs they
@@ -678,12 +690,19 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             incident("inc-6", "tap", "t_own", evidenceWith(Nil, Nil, e => { withDiffAndChecks(e); withRunIds(e, "run-own") })),
             readPipeline,
             readTap,
-            ownRuns
+            ownRuns,
+            items = IncidentsAPIController.NoItems
         )
         Seq("baseline", "candidate", "real", "diff", "checks").foreach(k => assert(ownTap.evidence.get.has(k), k))
         // a pipeline incident on a visible pipeline keeps them too
         val ownPipe =
-            IncidentsAPIController.shownIncident(r, incident("inc-8", "pipeline", "own_p", evidenceWith(Nil, Nil, withDiffAndChecks)), readPipeline, readTap)
+            IncidentsAPIController.shownIncident(
+                r,
+                incident("inc-8", "pipeline", "own_p", evidenceWith(Nil, Nil, withDiffAndChecks)),
+                readPipeline,
+                readTap,
+                items = IncidentsAPIController.NoItems
+            )
         Seq("baseline", "diff", "checks").foreach(k => assert(ownPipe.evidence.get.has(k), k))
     }
 
@@ -785,7 +804,8 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             incident("inc-1", "pipeline", "orders", evidenceWith(Nil, Nil, prof(_, "run-orders-hr"))),
             readPipeline,
             readTap,
-            ownRuns
+            ownRuns,
+            items = IncidentsAPIController.NoItems
         )
         Seq("baseline", "candidate", "real").foreach { k =>
             val p = hrFed.evidence.get.getAsJsonObject(k)
@@ -799,7 +819,8 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             incident("inc-1", "pipeline", "orders", evidenceWith(Nil, Nil, prof(_, "run-orders-upload"))),
             readPipeline,
             readTap,
-            ownRuns
+            ownRuns,
+            items = IncidentsAPIController.NoItems
         )
         assert(upload.evidence.get.getAsJsonObject("baseline").has("scriptSha"))
         // a run that cannot be established: removed (fail closed)
@@ -808,7 +829,8 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             incident("inc-1", "pipeline", "orders", evidenceWith(Nil, Nil, prof(_, "run-missing"))),
             readPipeline,
             readTap,
-            ownRuns
+            ownRuns,
+            items = IncidentsAPIController.NoItems
         )
         assert(!unknown.evidence.get.getAsJsonObject("baseline").has("scriptSha"))
         // the owner=self key's own pipeline fed by its own tap keeps them
@@ -817,22 +839,38 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             incident("inc-1", "pipeline", "own_p", evidenceWith(Nil, Nil, prof(_, "run-own"))),
             readPipeline,
             readTap,
-            ownRuns
+            ownRuns,
+            items = IncidentsAPIController.NoItems
         )
         assert(own.evidence.get.getAsJsonObject("real").get("scriptSha").getAsString == "hr-sha")
         // unchanged callers: as stored, no reader called
         for ((name, rr) <- unchanged) {
             val i = incident("inc-1", "pipeline", "orders", evidenceWith(Nil, Nil, prof(_, "run-orders-hr")))
-            assert(IncidentsAPIController.shownIncident(rr, i, failReadPipeline, failReadTap, _ => fail("run read")) eq i, name)
+            assert(
+                IncidentsAPIController.shownIncident(rr, i, failReadPipeline, failReadTap, _ => fail("run read"), items = IncidentsAPIController.NoItems) eq i,
+                name
+            )
         }
     }
 
     test("round 2, finding 4: lastDownstreamRunAt goes when a downstream pipeline is hidden and stays otherwise") {
         val r = req(ownKey("incident:read"))
         val hidden =
-            IncidentsAPIController.shownIncident(r, incident("inc-1", "pipeline", "own_p", evidenceWith(Seq("own_p", "payroll"), Nil)), readPipeline, readTap)
+            IncidentsAPIController.shownIncident(
+                r,
+                incident("inc-1", "pipeline", "own_p", evidenceWith(Seq("own_p", "payroll"), Nil)),
+                readPipeline,
+                readTap,
+                items = IncidentsAPIController.NoItems
+            )
         assert(!hidden.evidence.get.getAsJsonObject("blastRadius").has("lastDownstreamRunAt"))
-        val visible = IncidentsAPIController.shownIncident(r, incident("inc-1", "pipeline", "own_p", evidenceWith(Seq("own_p"), Nil)), readPipeline, readTap)
+        val visible = IncidentsAPIController.shownIncident(
+            r,
+            incident("inc-1", "pipeline", "own_p", evidenceWith(Seq("own_p"), Nil)),
+            readPipeline,
+            readTap,
+            items = IncidentsAPIController.NoItems
+        )
         assert(visible.evidence.get.getAsJsonObject("blastRadius").get("lastDownstreamRunAt").getAsString == "2026-11-18T09:00:00Z")
     }
 
@@ -844,7 +882,8 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             incident("inc-6", "tap", "t_own", evidenceWith(Nil, Nil, e => withRunIds(e, "run-payroll"))),
             readPipeline,
             readTap,
-            ownRuns
+            ownRuns,
+            items = IncidentsAPIController.NoItems
         )
         Seq("baseline", "candidate", "real").foreach(k => assert(!retargeted.evidence.get.has(k), k))
         // t_hr targets payroll today, but the profiles describe own_p's runs: kept
@@ -853,7 +892,8 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             incident("inc-5", "tap", "t_hr", evidenceWith(Nil, Nil, e => withRunIds(e, "run-own"))),
             readPipeline,
             readTap,
-            ownRuns
+            ownRuns,
+            items = IncidentsAPIController.NoItems
         )
         Seq("baseline", "candidate", "real").foreach(k => assert(fromOwn.evidence.get.has(k), k))
         // the tap's own last run (`tap:<name>@<time>`) describes the tap: kept
@@ -862,7 +902,8 @@ class ScopedKeyRecordVisibilityReviewSpec extends AnyFunSuite with BeforeAndAfte
             incident("inc-5", "tap", "t_hr", evidenceWith(Nil, Nil, e => withRunIds(e, "tap:t_hr@2026-11-18T09:00:00Z"))),
             readPipeline,
             readTap,
-            ownRuns
+            ownRuns,
+            items = IncidentsAPIController.NoItems
         )
         assert(tapRun.evidence.get.has("real"))
     }

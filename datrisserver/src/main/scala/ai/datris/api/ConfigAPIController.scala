@@ -6,15 +6,19 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.common.base.Throwables
-import com.google.gson.{Gson, JsonElement, JsonParseException, JsonParser}
-import ai.datris.model.{DatrisEnvironment, ValidationException}
-import ai.datris.util.{AISchemaUtil, APIKeyValidator, AiSampleValues, ObjectStoreUtil}
+import com.google.gson.{Gson, JsonElement, JsonObject, JsonParseException, JsonParser}
+import ai.datris.audit.AuditLog
+import ai.datris.auth.{CallerVisibility, CapabilityCheck}
+import ai.datris.model.{DatrisEnvironment, PipelineConfig, ResolvedKey, ValidationException}
+import ai.datris.util.{AISchemaUtil, APIKeyValidator, AiSampleValues, CatalogOps, ObjectStoreUtil, PipelineConfigIO}
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 import org.springframework.web.multipart.MultipartFile
 
 import java.io.ByteArrayInputStream
+import java.net.URI
 
 /** Pure request checks for [[ConfigAPIController]]. Every refusal is a
   * [[ValidationException]], which `ApiErrors.classify` maps to
@@ -82,6 +86,161 @@ object ConfigAPIController {
 
         GenerateSchemaRequest(schemaType, sanitizeKeySegment(name.trim), sampleData)
     }
+
+    private val companionLogger: Logger = LoggerFactory.getLogger(classOf[ConfigAPIController])
+
+    /** What POST /config/generate-schema reads and writes, so the handler can
+      * be exercised without the object store, the config DB or a model. */
+    trait GenerateSchemaDeps {
+
+        /** Every stored pipeline config. Throws when they cannot be read. */
+        def pipelines(): Seq[PipelineConfig]
+
+        /** The model call; schemaType is "json-schema" or "xsd". */
+        def generate(schemaType: String, sampleData: String): String
+
+        def write(bucket: String, key: String, bytes: Array[Byte]): Unit
+    }
+
+    /** The live dependencies: config DB, model, object store. */
+    object LiveGenerateSchemaDeps extends GenerateSchemaDeps {
+        override def pipelines(): Seq[PipelineConfig] = PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+        override def generate(schemaType: String, sampleData: String): String = schemaType match {
+            case "json-schema" => AISchemaUtil.generateJsonSchema(sampleData)
+            case "xsd" => AISchemaUtil.generateXsdSchema(sampleData)
+        }
+        override def write(bucket: String, key: String, bytes: Array[Byte]): Unit =
+            ObjectStoreUtil.writeBucketObjectFromStream(bucket, key, new ByteArrayInputStream(bytes), bytes.length.toLong)
+    }
+
+    /** The object (bucket, key) a `dataQuality.validationSchema` value names,
+      * resolved as `DataQuality` and `SchemaValidationUtil` resolve it at run
+      * time: an `s3://` value as given, any other value under
+      * `<configBucket>/validation-schema/`; bucket and key through
+      * `java.net.URI`, so percent-encoding is decoded. None when the value
+      * cannot be parsed (a run cannot read any object through it either). */
+    private[api] def schemaObject(value: String, configBucket: String): Option[(String, String)] = {
+        if (value == null || value.isEmpty) return None
+        val url = if (value.startsWith("s3://")) value else "s3://" + configBucket + "/validation-schema/" + value
+        try {
+            val uri = new URI(url)
+            Option(uri.getPath).map(p => (uri.getHost, if (p.startsWith("/")) p.substring(1) else p))
+        } catch { case _: Exception => None }
+    }
+
+    /** An object key for comparison only: repeated `/` collapsed and a
+      * leading `/` removed, so `validation-schema//orders.json` and
+      * `/validation-schema/orders.json` compare equal to
+      * `validation-schema/orders.json`. */
+    private def comparableKey(key: String): String = key.replaceAll("/+", "/").stripPrefix("/")
+
+    /** [[schemaObject]] with its key in [[comparableKey]] form. */
+    private def comparableObject(value: String, configBucket: String): Option[(String, String)] =
+        schemaObject(value, configBucket).map { case (b, k) => (b, comparableKey(k)) }
+
+    /** The stored pipelines whose validation schema is the object at
+      * configBucket/validation-schema/file, keys compared after
+      * [[comparableKey]]. Keys are case-sensitive. A value that cannot be
+      * parsed names no object and matches nothing. */
+    private[api] def pipelinesUsing(file: String, configBucket: String, all: Seq[PipelineConfig]): Seq[PipelineConfig] = {
+        val target = comparableObject(file, configBucket)
+        all.filter { p =>
+            p != null && p.dataQuality != null &&
+            target.isDefined && comparableObject(p.dataQuality.validationSchema, configBucket) == target
+        }
+    }
+
+    private def inUseMessage(file: String): String =
+        "A validation schema named '" + file + "' is already in use. Choose another schema name."
+
+    /** 409 when a pipeline the caller may not update validates against the
+      * schema `file` (whether or not the file is stored yet): writing it would
+      * change what that pipeline accepts. The answer names no pipeline and is
+      * the same for every caller. None otherwise. */
+    def schemaOverwriteRefusal(file: String, referencing: Seq[PipelineConfig], mayUpdate: PipelineConfig => Boolean): Option[ResponseEntity[String]] =
+        if (referencing.forall(mayUpdate)) None
+        else
+            Some(
+                ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON).body[String](ApiErrors.errorBody(inUseMessage(file)))
+            )
+
+    /** The rule the pipeline update routes apply to a stored pipeline: the
+      * caller's identity grants `pipeline:update` on the pipeline's catalog
+      * and owner, and, for an API key, the key may also read it
+      * ([[CallerVisibility.storedWriteDenial]] for update is empty: a key
+      * writes only what it may read). A signed-in session is decided on its
+      * grants alone. No identity (keys off): yes. */
+    private[api] def mayUpdatePipeline(request: HttpServletRequest)(p: PipelineConfig): Boolean =
+        CapabilityCheck.resolvedKey(request) match {
+            case None => true
+            case Some(rk) =>
+                val context = CatalogOps.scopeContext(p.catalog, p.createdByKeyLabel)
+                rk.grants("pipeline", "update", context) &&
+                (rk.restrictedSession || CallerVisibility.storedWriteDenial(rk, "pipeline", context, Seq("update"), "update").isEmpty)
+        }
+
+    /** Whether the in-use rule needs the stored pipelines for this caller.
+      * False (nothing is read, nothing can be refused) for: no identity
+      * (keys off); full access; a caller that is not a restricted session,
+      * holds `pipeline:update` with no scope, and whose pipeline read cannot
+      * be refused by a key scope ([[CallerVisibility.keyScopeApplies]]),
+      * since [[mayUpdatePipeline]] is true for every pipeline then. True for
+      * everyone else. Pure. */
+    private[api] def pipelineReadNeeded(rk: Option[ResolvedKey]): Boolean = rk match {
+        case None => false
+        case Some(k) =>
+            !(k.isFullAccess ||
+                (!k.restrictedSession && k.grants("pipeline", "update") && !CallerVisibility.keyScopeApplies(k, "pipeline", "read")))
+    }
+
+    /** POST /config/generate-schema after the key check: the request checks
+      * of [[parseGenerateSchema]] (400), then the in-use rule (409), then the
+      * model call and the write. The stored pipelines are read only when
+      * [[pipelineReadNeeded]]; a failed read is then a 500 with nothing
+      * generated or written. */
+    def generateSchemaWith(request: HttpServletRequest, body: String, deps: GenerateSchemaDeps): ResponseEntity[String] = {
+        try {
+            val req = parseGenerateSchema(body)
+            val extension = if (req.schemaType == "xsd") ".xsd" else ".json"
+            val filename = req.name + extension
+            val bucket = DatrisEnvironment.current.environment + "-config"
+            val key = "validation-schema/" + filename
+
+            if (request != null) {
+                val md = new JsonObject()
+                md.addProperty("file", filename)
+                request.setAttribute(AuditLog.MetadataAttr, md)
+            }
+
+            val inUse =
+                if (!pipelineReadNeeded(CapabilityCheck.resolvedKey(request))) None
+                else schemaOverwriteRefusal(filename, pipelinesUsing(filename, bucket, deps.pipelines()), mayUpdatePipeline(request))
+            inUse match {
+                case Some(refusal) =>
+                    companionLogger.info("Generate schema refused: " + filename + " is used by a pipeline the caller may not update")
+                    if (request != null) request.setAttribute(AuditLog.ErrorMessageAttr, inUseMessage(filename))
+                    refusal
+                case None =>
+                    val schema = deps.generate(req.schemaType, req.sampleData)
+                    deps.write(bucket, key, schema.getBytes("UTF-8"))
+
+                    companionLogger.info("Generated schema uploaded: s3://" + bucket + "/" + key)
+
+                    val gson = new Gson
+                    val response = new java.util.LinkedHashMap[String, Any]()
+                    response.put("filename", filename)
+                    response.put("path", "s3://" + bucket + "/" + key)
+                    response.put("schema", schema)
+                    // DATRIS_AI_SAMPLE_VALUES=false: generated from a value-free skeleton.
+                    if (!AiSampleValues.enabled) response.put("valuesWithheld", true)
+                    new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+            }
+        } catch {
+            case e: Exception =>
+                companionLogger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
 }
 
 @RestController
@@ -128,40 +287,19 @@ class ConfigAPIController {
         consumes = Array(MediaType.APPLICATION_JSON_VALUE),
         produces = Array(MediaType.APPLICATION_JSON_VALUE)
     )
-    def generateSchema(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): ResponseEntity[String] = {
+    def generateSchema(
+        request: HttpServletRequest,
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: String
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /config/generate-schema called")
             APIKeyValidator.validate(apiKey)
-
-            val req = ConfigAPIController.parseGenerateSchema(body)
-            val sampleData = req.sampleData
-
-            val (schema, extension) = req.schemaType match {
-                case "json-schema" => (AISchemaUtil.generateJsonSchema(sampleData), ".json")
-                case "xsd" => (AISchemaUtil.generateXsdSchema(sampleData), ".xsd")
-            }
-
-            val filename = req.name + extension
-            val bucket = DatrisEnvironment.current.environment + "-config"
-            val key = "validation-schema/" + filename
-
-            val bytes = schema.getBytes("UTF-8")
-            ObjectStoreUtil.writeBucketObjectFromStream(bucket, key, new java.io.ByteArrayInputStream(bytes), bytes.length.toLong)
-
-            logger.info("Generated schema uploaded: s3://" + bucket + "/" + key)
-
-            val gson = new Gson
-            val response = new java.util.LinkedHashMap[String, Any]()
-            response.put("filename", filename)
-            response.put("path", "s3://" + bucket + "/" + key)
-            response.put("schema", schema)
-            // DATRIS_AI_SAMPLE_VALUES=false: generated from a value-free skeleton.
-            if (!AiSampleValues.enabled) response.put("valuesWithheld", true)
-            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ApiErrors.internal(e)
+                return ApiErrors.internal(e)
         }
+        ConfigAPIController.generateSchemaWith(request, body, ConfigAPIController.LiveGenerateSchemaDeps)
     }
 }

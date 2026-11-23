@@ -62,7 +62,7 @@ grant as little as possible:
 This is **operating-system container isolation** — separate process, filesystem, and network
 namespaces sharing the host kernel. It is the right boundary for a self-hosted, single-operator
 deployment. It is *not* a virtual-machine boundary: a kernel-level container escape would cross
-it, so running fully untrusted, multi-tenant tap code calls for stronger per-run isolation — a
+it, so running fully untrusted tap code from many authors calls for stronger per-run isolation — a
 user-space kernel such as [gVisor](https://gvisor.dev) (`runsc`), or a microVM (Firecracker /
 Kata).
 

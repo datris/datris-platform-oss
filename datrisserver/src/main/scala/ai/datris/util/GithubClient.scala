@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{CodeRepoConfig, DatrisEnvironment, DatrisException}
+import ai.datris.model.{CodeRepoConfig, DatrisEnvironment, DatrisException, ValidationException}
 import com.google.gson.{Gson, JsonObject, JsonParser}
 import org.apache.http.client.config.RequestConfig
 import org.apache.http.client.methods.{HttpDelete, HttpEntityEnclosingRequestBase, HttpGet, HttpPut, HttpUriRequest}
@@ -32,56 +32,117 @@ class CodeRepoConflictException(message: String) extends RuntimeException(messag
   * are authenticated with the tenant's Vault-held token; the UI never talks
   * to GitHub directly. Provider-neutral callers go through TapCodeStore —
   * this class is the github-provider implementation detail.
+  *
+  * `send` executes one request and returns (status, body). The companion
+  * object is the live client; a spec builds a client of its own over a fake
+  * send, so nothing shared is ever replaced.
   */
-object GithubClient {
-    private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private val TimeoutMillis = 30000
-
-    private def token(config: CodeRepoConfig): String = {
-        val secretName = DatrisEnvironment.current.environment + "/" + config.authSecretName
-        SecretsRetrieverUtil.userSecret(secretName)
-            .flatMap(m => Option(m.get("token")))
-            .filter(_.nonEmpty)
-            .getOrElse(throw new DatrisException(
-                "Code repository token not found in secret '" + config.authSecretName + "' (expected a 'token' field)."
-            ))
-    }
+class GithubClient(send: (HttpUriRequest, CodeRepoConfig) => (Int, String)) {
+    private val logger: Logger = LoggerFactory.getLogger(classOf[GithubClient])
 
     private def apiBase(config: CodeRepoConfig): String =
         Option(config.apiBaseUrl).filter(_.nonEmpty).getOrElse("https://api.github.com").stripSuffix("/")
 
-    private def contentsUrl(config: CodeRepoConfig, path: String): String =
+    /** The contents-API URL of `path`, always naming a file inside the
+      * repository's contents: the path is resolved as a repository path
+      * first (empty and `.` segments dropped, each `..` removing the segment
+      * before it, none before the first), then each segment is URL-encoded
+      * (a `%` is sent as `%25`). Writes and deletes use it only for a path
+      * that [[changeRefusal]] accepts, so for them only the configured
+      * prefix can hold a segment that is resolved. */
+    private[datris] def contentsUrl(config: CodeRepoConfig, path: String): String = {
+        val segments = scala.collection.mutable.ArrayBuffer[String]()
+        path.split("/").foreach {
+            case "" | "." => ()
+            case ".." => if (segments.nonEmpty) segments.remove(segments.size - 1)
+            case seg => segments += seg
+        }
         apiBase(config) + "/repos/" + config.repo + "/contents/" +
-            path.split("/").filter(_.nonEmpty).map(seg => java.net.URLEncoder.encode(seg, "UTF-8").replace("+", "%20")).mkString("/")
-
-    /** Executes with auth headers; returns (status, body). */
-    private def execute(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = {
-        request.setHeader("Authorization", "Bearer " + token(config))
-        request.setHeader("Accept", "application/vnd.github+json")
-        request.setHeader("X-GitHub-Api-Version", "2022-11-28")
-        val requestConfig = RequestConfig.custom()
-            .setConnectTimeout(TimeoutMillis)
-            .setSocketTimeout(TimeoutMillis)
-            .setConnectionRequestTimeout(TimeoutMillis)
-            .build()
-        val client = HttpClients.custom().setDefaultRequestConfig(requestConfig).build()
-        try {
-            val response = client.execute(request)
-            try {
-                val entity = response.getEntity
-                val body = if (entity != null) EntityUtils.toString(entity, StandardCharsets.UTF_8) else ""
-                (response.getStatusLine.getStatusCode, body)
-            } finally response.close()
-        } finally client.close()
+            segments.map(seg => java.net.URLEncoder.encode(seg, "UTF-8").replace("+", "%20")).mkString("/")
     }
+
+    /** The spellings of the configured path prefix a stored path may start
+      * with: as the repository store writes it ("" or ending in `/`), in
+      * resolved form, and "" (a path stored under an earlier prefix). */
+    private def prefixForms(config: CodeRepoConfig): Seq[String] = {
+        val raw = Option(config.pathPrefix).getOrElse("")
+        val written = if (raw.isEmpty || raw.endsWith("/")) raw else raw + "/"
+        val resolved = scala.collection.mutable.ArrayBuffer[String]()
+        raw.split("/").foreach {
+            case "" | "." => ()
+            case ".." => if (resolved.nonEmpty) resolved.remove(resolved.size - 1)
+            case seg => resolved += seg
+        }
+        Seq(written, if (resolved.isEmpty) "" else resolved.mkString("/") + "/", "").distinct
+    }
+
+    /** Some(message) when a write or delete of `path` is refused: its part
+      * after the configured path prefix (the operator's setting, not judged)
+      * has an empty, `.` or `..` segment. */
+    private[datris] def changeRefusal(config: CodeRepoConfig, path: String): Option[String] = {
+        val ok = path != null && prefixForms(config).exists(f => path.startsWith(f) && ScriptPaths.plainSegments(path.substring(f.length)))
+        if (ok) None
+        else Some("The code repository path is not valid: it may not contain an empty, '.' or '..' segment after the configured path prefix.")
+    }
+
+    private def refuseChange(config: CodeRepoConfig, path: String): Unit =
+        changeRefusal(config, path).foreach(m => throw new ValidationException(m))
+
+    private def execute(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = send(request, config)
 
     private def parse(body: String): JsonObject = JsonParser.parseString(body).getAsJsonObject
 
-    /** Maps GitHub's 4xx flavors onto messages the UI can show verbatim. */
+    /** The fixed error for a response that could not be read as expected:
+      * the context and status code only, never the response text. */
+    private def unreadable(status: Int, context: String): DatrisException =
+        new DatrisException("Code repository " + context + " failed (HTTP " + status + "): the response could not be read.")
+
+    /** `f` over the response; any failure reading it is [[unreadable]] (no
+      * cause attached, so no part of the response is carried). */
+    private def read[T](status: Int, context: String)(f: => T): T =
+        try f
+        catch { case e: Exception if scala.util.control.NonFatal(e) => throw unreadable(status, context) }
+
+    /** The most characters of the repository's `message` an error shows. */
+    private val MaxReasonShown = 200
+
+    /** The string `message` field of a JSON object body, uncut; empty for
+      * any other body shape (not JSON, an array, a non-string `message`).
+      * No other part of the body is ever used. */
+    private def messageField(body: String): String =
+        try {
+            val element = JsonParser.parseString(body)
+            if (!element.isJsonObject) ""
+            else
+                Option(element.getAsJsonObject.get("message"))
+                    .filter(e => e.isJsonPrimitive && e.getAsJsonPrimitive.isString)
+                    .map(_.getAsString)
+                    .getOrElse("")
+        } catch { case e: Exception if scala.util.control.NonFatal(e) => "" }
+
+    /** The repository's reason as an error shows it: one line (control
+      * characters and line/paragraph separators removed, runs of whitespace
+      * collapsed) and at most [[MaxReasonShown]] characters. */
+    private def shownReason(raw: String): String = {
+        val oneLine = raw
+            .map(c => if (Character.isISOControl(c) || c.toInt == 0x2028 || c.toInt == 0x2029) ' ' else c)
+            .replaceAll("\\s+", " ")
+            .trim
+        if (oneLine.length <= MaxReasonShown) oneLine
+        else {
+            val cut = oneLine.take(MaxReasonShown)
+            (if (Character.isHighSurrogate(cut.last)) cut.dropRight(1) else cut).trim
+        }
+    }
+
+    /** Maps GitHub's 4xx flavors onto messages the UI can show verbatim: the
+      * context, the status code, the repository's short reason ([[shownReason]])
+      * and a fixed hint. Nothing else from the response is copied into the
+      * message. */
     private def fail(status: Int, body: String, context: String): Nothing = {
-        val detail =
-            try { Option(parse(body).get("message")).map(_.getAsString).getOrElse("") }
-            catch { case _: Exception => "" }
+        // the hint is picked from the whole message, as before; only the
+        // bounded one-line reason is shown
+        val detail = messageField(body)
         val hint = status match {
             case 401 => "Token was rejected. It may be expired or revoked — update the repo token secret."
             case 403 if detail.toLowerCase.contains("rate limit") => "GitHub rate limit exceeded. Retry later."
@@ -91,7 +152,7 @@ object GithubClient {
             case 404 => "Repository or path not found — check the repo name, or the token cannot see this repository."
             case _ => ""
         }
-        throw new DatrisException(("Code repository " + context + " failed (HTTP " + status + "). " + detail + " " + hint).trim)
+        throw new DatrisException(("Code repository " + context + " failed (HTTP " + status + "). " + shownReason(detail) + " " + hint).trim)
     }
 
     /** GET /repos/{repo} — used by save-time validation and Test connection.
@@ -100,17 +161,21 @@ object GithubClient {
     def repoInfo(config: CodeRepoConfig): (String, Boolean) = {
         val (status, body) = execute(new HttpGet(apiBase(config) + "/repos/" + config.repo), config)
         if (status != 200) fail(status, body, "validation")
-        val json = parse(body)
-        val defaultBranch = Option(json.get("default_branch")).map(_.getAsString).getOrElse("main")
-        val canPush = Option(json.getAsJsonObject("permissions")).exists(p => Option(p.get("push")).exists(_.getAsBoolean))
-        (defaultBranch, canPush)
+        read(status, "validation") {
+            val json = parse(body)
+            val defaultBranch = Option(json.get("default_branch")).map(_.getAsString).getOrElse("main")
+            val canPush = Option(json.getAsJsonObject("permissions")).exists(p => Option(p.get("push")).exists(_.getAsBoolean))
+            (defaultBranch, canPush)
+        }
     }
 
     def listBranches(config: CodeRepoConfig): List[String] = {
         val (status, body) = execute(new HttpGet(apiBase(config) + "/repos/" + config.repo + "/branches?per_page=100"), config)
         if (status != 200) fail(status, body, "branch listing")
-        val arr = JsonParser.parseString(body).getAsJsonArray
-        (0 until arr.size()).map(i => arr.get(i).getAsJsonObject.get("name").getAsString).toList
+        read(status, "branch listing") {
+            val arr = JsonParser.parseString(body).getAsJsonArray
+            (0 until arr.size()).map(i => arr.get(i).getAsJsonObject.get("name").getAsString).toList
+        }
     }
 
     /** Resolve the configured branch to its current head commit sha. */
@@ -120,20 +185,38 @@ object GithubClient {
             config
         )
         if (status != 200) fail(status, body, "branch lookup for '" + config.branch + "'")
-        parse(body).getAsJsonObject("commit").get("sha").getAsString
+        read(status, "branch lookup for '" + config.branch + "'")(parse(body).getAsJsonObject("commit").get("sha").getAsString)
     }
 
     /** Read a file at a ref (commit sha or branch). None if it doesn't exist
-      * at that ref. `commitShaForPin` is what the caller records as the pin —
-      * pass the resolved head when reading a branch. */
+      * at that ref, and None when the response is a JSON array or a JSON
+      * object that is not a single file (its `type` is not `file`, or it has
+      * no string `content` and `sha`). A body that is not JSON, JSON null
+      * (an empty body included), a bare string, number or boolean, or content
+      * that is not base64, is the fixed [[unreadable]] error. `commitShaForPin` is what
+      * the caller records as the pin — pass the resolved head when reading a
+      * branch. */
     def getFile(config: CodeRepoConfig, path: String, ref: String): Option[RepoFile] = {
         val (status, body) = execute(new HttpGet(contentsUrl(config, path) + "?ref=" + java.net.URLEncoder.encode(ref, "UTF-8")), config)
         if (status == 404) return None
-        if (status != 200) fail(status, body, "read of '" + path + "'")
-        val json = parse(body)
-        val encoded = json.get("content").getAsString.replaceAll("\\s", "")
-        val content = new String(Base64.getDecoder.decode(encoded), StandardCharsets.UTF_8)
-        Some(RepoFile(content, json.get("sha").getAsString, ref))
+        val context = "read of '" + path + "'"
+        if (status != 200) fail(status, body, context)
+        val element = read(status, context)(JsonParser.parseString(body))
+        def stringField(o: JsonObject, name: String): Option[String] =
+            Option(o.get(name)).filter(e => e.isJsonPrimitive && e.getAsJsonPrimitive.isString).map(_.getAsString)
+        if (!element.isJsonArray && !element.isJsonObject) throw unreadable(status, context)
+        val file =
+            if (element.isJsonArray) None
+            else {
+                val json = element.getAsJsonObject
+                val isFile = Option(json.get("type")).forall(t => t.isJsonPrimitive && t.getAsJsonPrimitive.isString && t.getAsString == "file")
+                if (!isFile) None
+                else for (encoded <- stringField(json, "content"); sha <- stringField(json, "sha")) yield (encoded, sha)
+            }
+        file.map { case (encoded, sha) =>
+            val content = read(status, context)(new String(Base64.getDecoder.decode(encoded.replaceAll("\\s", "")), StandardCharsets.UTF_8))
+            RepoFile(content, sha, ref)
+        }
     }
 
     /** Create or update a file; returns the new commit sha.
@@ -143,8 +226,10 @@ object GithubClient {
       * file's blob at the branch head matches its blob at `baseCommitSha` —
       * i.e. nobody changed THIS file since the caller last read it. GitHub's
       * own `sha` parameter enforces the same check race-free at commit time.
+      * Refuses a path [[changeRefusal]] refuses, sending nothing.
       */
     def putFile(config: CodeRepoConfig, path: String, content: String, message: String, baseCommitSha: String): String = {
+        refuseChange(config, path)
         val headBlob = getFile(config, path, config.branch)
         if (baseCommitSha != null && baseCommitSha.nonEmpty && headBlob.isDefined) {
             val baseBlob = getFile(config, path, baseCommitSha)
@@ -172,11 +257,13 @@ object GithubClient {
                 "'" + path + "' changed in the repository since this tap was loaded. Pull the latest script, reapply your edits, and save again."
             )
         if (status != 200 && status != 201) fail(status, body, "write of '" + path + "'")
-        parse(body).getAsJsonObject("commit").get("sha").getAsString
+        read(status, "write of '" + path + "'")(parse(body).getAsJsonObject("commit").get("sha").getAsString)
     }
 
-    /** Commit a file removal. No-op if the file is already absent. */
+    /** Commit a file removal. No-op if the file is already absent. Refuses a
+      * path [[changeRefusal]] refuses, sending nothing. */
     def deleteFile(config: CodeRepoConfig, path: String, message: String): Unit = {
+        refuseChange(config, path)
         getFile(config, path, config.branch) match {
             case None => // already gone
             case Some(file) =>
@@ -218,5 +305,45 @@ object GithubClient {
     private class HttpDeleteWithBody(url: String) extends HttpEntityEnclosingRequestBase {
         setURI(URI.create(url))
         override def getMethod: String = "DELETE"
+    }
+}
+
+/** The live repository client: every request is sent with the tenant's
+  * token ([[GithubLiveSend]]). */
+object GithubClient extends GithubClient(GithubLiveSend.send)
+
+/** Sends one repository request with the tenant's Vault-held token and the
+  * GitHub headers; returns (status, body). */
+private[util] object GithubLiveSend {
+    private val TimeoutMillis = 30000
+
+    private def token(config: CodeRepoConfig): String = {
+        val secretName = DatrisEnvironment.current.environment + "/" + config.authSecretName
+        SecretsRetrieverUtil.userSecret(secretName)
+            .flatMap(m => Option(m.get("token")))
+            .filter(_.nonEmpty)
+            .getOrElse(throw new DatrisException(
+                "Code repository token not found in secret '" + config.authSecretName + "' (expected a 'token' field)."
+            ))
+    }
+
+    def send(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = {
+        request.setHeader("Authorization", "Bearer " + token(config))
+        request.setHeader("Accept", "application/vnd.github+json")
+        request.setHeader("X-GitHub-Api-Version", "2022-11-28")
+        val requestConfig = RequestConfig.custom()
+            .setConnectTimeout(TimeoutMillis)
+            .setSocketTimeout(TimeoutMillis)
+            .setConnectionRequestTimeout(TimeoutMillis)
+            .build()
+        val client = HttpClients.custom().setDefaultRequestConfig(requestConfig).build()
+        try {
+            val response = client.execute(request)
+            try {
+                val entity = response.getEntity
+                val body = if (entity != null) EntityUtils.toString(entity, StandardCharsets.UTF_8) else ""
+                (response.getStatusLine.getStatusCode, body)
+            } finally response.close()
+        } finally client.close()
     }
 }

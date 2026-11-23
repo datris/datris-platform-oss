@@ -38,6 +38,15 @@ object EntityVersionIO {
             .sortBy(_.version)
     }
 
+    /** The `createdBy` of an entity's newest snapshot (highest version):
+      * one document, that field only. None when the entity has no snapshot;
+      * Some(null) when the newest one names no author. */
+    def latestAuthor(tableName: String, entityName: String): Option[String] =
+        NoSQLDbUtil.getNewestItemByKeyAsJSON(tableName, "entityName", entityName, "version", Seq("createdBy")).map { json =>
+            val o = com.google.gson.JsonParser.parseString(json).getAsJsonObject
+            if (o.has("createdBy") && o.get("createdBy").isJsonPrimitive) o.get("createdBy").getAsString else null
+        }
+
     /** Highest version number recorded for an entity, or 0 if none. */
     def latestVersion(tableName: String, entityName: String): Int = {
         val versions = listVersions(tableName, entityName)

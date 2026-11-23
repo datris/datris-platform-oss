@@ -9,7 +9,7 @@ description: "Inject source-specific context into the LLM when you create a tap"
 
 Prompt fragments let you teach the tap generator about a specific data source — its conventions, rate limits, preferred libraries, required env vars — without having to re-type the same hints into every tap description. Once a fragment is configured, its content is **automatically appended to the LLM system prompt** whenever the user's text mentions the fragment's key or any of its aliases (case-insensitive, word-boundary match).
 
-Fragments are per-tenant, stored in MongoDB (`{env}-tap-prompt`), and cached in memory with write-invalidation. No new dependencies and no schema changes — they piggyback on the same infrastructure as tap configs.
+Fragments are per install, stored in MongoDB (`{env}-tap-prompt`), and cached in memory with write-invalidation. No new dependencies and no schema changes — they piggyback on the same infrastructure as tap configs.
 
 ## Where they apply
 
@@ -90,7 +90,7 @@ This makes it easy to see what the LLM saw, and catch cases where a fragment mat
 
 ## HTTP API
 
-The same storage is exposed via REST for scripting and tenant migrations. See [Taps API](/api-reference/taps-api) for field-by-field request/response shapes.
+The same storage is exposed via REST for scripting and for moving fragments between installs. See [Taps API](/api-reference/taps-api) for field-by-field request/response shapes.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -102,8 +102,4 @@ The same storage is exposed via REST for scripting and tenant migrations. See [T
 
 ## Performance
 
-The injector caches matched fragments in a per-tenant `ConcurrentHashMap` with a 60s TTL as a safety net. Writes through the API (create / update / delete) invalidate immediately, so changes take effect on the next LLM call without restart. With zero fragments configured the hot path returns in microseconds — the tap flows pay no measurable cost.
-
-## Multi-tenant
-
-Fragments are fully tenant-scoped. Each tenant's fragments live in their own `{env}-tap-prompt` MongoDB collection and their own injector cache entry. A fragment configured on one tenant never leaks into another's prompts.
+The injector caches matched fragments in a `ConcurrentHashMap` with a 60s TTL as a safety net. Writes through the API (create / update / delete) invalidate immediately, so changes take effect on the next LLM call without restart. With zero fragments configured the hot path returns in microseconds — the tap flows pay no measurable cost.

@@ -20,7 +20,7 @@ built-in storage at any time.
   templated (e.g. `tap(weather-forecast): update via Datris`).
 - **Runs pinned to a commit** — a scheduled run executes exactly the version that was saved,
   served from a local cache, so cron runs make no GitHub API calls and keep working if GitHub
-  is unreachable.
+  is unreachable. The local copy is used only when the recorded commit is a commit SHA.
 - **External editing** — commit changes from your IDE; Datris detects the drift when the tap is
   opened and offers to load the latest version.
 - **Conflict protection** — if the script changed in the repository after you opened it, saving
@@ -94,7 +94,7 @@ Leave it at `https://api.github.com` for github.com.
 | Run a tap (manual or cron) | Nothing — the pinned commit is read from a local cache |
 | Edit the file directly in GitHub | Opening the tap loads the repository's latest version into the editor, with a banner explaining that runs keep the previously saved version until you test and save |
 | Save when the file changed externally | Rejected with a conflict message — pull the latest, reapply your edits, save again |
-| Delete the tap | A delete commit removes the file from the branch head; **git history is preserved** |
+| Delete the tap | A delete commit removes the tap's own script file (`<path prefix><tap-name>.py`) from the branch head when no other tap uses it; **git history is preserved**. Any other file is left in place with a warning (see [Which file a tap owns](#which-file-a-tap-owns)) |
 | Save a pipeline with an AI rule or AI transformation | A commit per script under `pipelines/<pipeline>/`; runs pin to it (see [Pipeline scripts](#pipeline-scripts)) |
 
 Run history records the commit SHA each run executed, so any run can be traced to the exact
@@ -111,6 +111,90 @@ The cloud action on the row moves a tap's script in either direction:
 
 Both directions are recorded as a new tap version, so the move itself is auditable and
 reversible.
+
+A move to GitHub writes the tap's own path, `<path prefix><tap-name>.py`. If another tap already
+runs its script from that file, the move is refused with `409` and nothing is written; the other
+tap's script is never replaced. The same holds for a script stored for a new tap name: pick another
+name, or move the other tap first.
+
+A tap that already stores its script at its own path keeps storing it there, even while another tap
+also runs from that file, for an administrator, an editor without catalog limits or an unrestricted
+API key. A user limited to catalogs, or an API key whose tap access is limited (it cannot read every
+tap, or its `tap:update` is limited to a catalog or to what it created), is refused that upload, with
+nothing written, when another tap's current script is the same file in any spelling of its path: the
+answer is the one above (`403` naming `tap:read` for a key limited to a catalog or to what it
+created, `404` for a user limited to catalogs, the `409` for a key that reads every tap), and the
+refusal is recorded in the audit log. When the list of taps cannot be read, such an upload answers
+`503` and nothing is written. To keep editing such a tap, an administrator gives it its own file
+(move the other tap's script to built-in storage and back, or store a copy for it under its own name).
+
+## Which file a tap owns
+
+Deleting a tap, removing its old script versions, and the first script stored under a tap name
+(or a move into the repository) only ever touch the script file that belongs to that tap:
+
+- **Built-in storage:** the object the platform wrote for the tap (`tap-scripts/<tap-name>_<id>.py`).
+- **Code repository:** `<path prefix><tap-name>.py`, under the current path prefix or one of the
+  repository's **earlier path prefixes** (below). A file in the prefix's `pipelines/` folder is never
+  a tap's own file.
+
+A tap whose stored repository file is not its own (a path placed by hand, or an earlier prefix that
+is not recorded) is the one exception, in this release: a script upload for it by an administrator,
+an editor without catalog limits or an unrestricted API key is still written to that stored file,
+and the same upload by a user limited to catalogs or a key whose tap access is limited is refused
+(see below).
+
+**Deleting a tap** deletes its own script file only when no other tap uses the same file. Otherwise
+the file is left in place, the tap is still deleted, and the delete response's `warnings` says: "The
+tap's script file was left in place because it is not a file this tap alone owns; remove it by hand
+if it is no longer wanted." That happens for a tap pointed at a file by hand, a tap stored under a
+path prefix that is not recorded, and two taps sharing one script (deleting either one no longer
+removes the script the other still runs). Removing old script versions follows the same rule: only
+the tap's own older objects that no tap uses are removed. When the list of taps cannot be read, the
+tap is deleted and its file is kept with the same warning, and the server log says so.
+
+On built-in storage, a script object the platform wrote under another name (a tap created in the
+wizard and renamed before its first save, or a script generated before the tap had its name) is
+removed with the tap, and with its old script versions, when no tap has that other name and no
+other tap uses the object. Otherwise it is kept with the same warning.
+
+**Earlier path prefixes.** Changing the **path prefix** in the settings records the previous prefix
+in the repository configuration's `earlierPathPrefixes` list, so taps already stored under it keep
+being treated as their own files. If you changed the prefix before this was recorded, add the old
+prefix to `earlierPathPrefixes` with `PUT /api/v1/code-repo` (needs `code-repo:write`; send the
+whole configuration with the list). A save that leaves the list out keeps the stored list. There is
+no field for it in the settings page.
+
+A tap whose stored script file is not its own still runs and saves as before in this release. A
+script upload for it by an administrator, an editor without catalog limits or an unrestricted API
+key is still written to its stored file. The same upload by a user limited to catalogs, or by an
+API key whose tap access is limited (it cannot read every tap, or its `tap:update` is limited to a
+catalog or to what it created), is refused with `409` and nothing is written; the message names only
+that tap and asks an administrator to move the script to the tap's own path. When the code
+repository settings cannot be read, such an upload is answered `503` and nothing is written. A key
+limited only for pipelines, whose tap capabilities carry no catalog or owner limit, uploads as
+before.
+`datris doctor` lists such taps under [`tap.references`](/doctor#the-checks); in a later release
+the next script stored for such a tap is written to its own path and the tap is pointed at it,
+leaving the earlier file in place. To give such a tap its own file now, record the earlier prefix
+(if that is the cause) or move the tap's script to built-in storage and back.
+
+A catalog restore into an install that stores tap scripts in a code repository follows the same
+rule as a first upload: a restored tap whose live copy has no repository file of its own (it is
+new here, or on built-in storage) is not written over a file another tap runs from. The restore
+reports it as a clash, with the restored tap's name and file, and nothing is restored. For a user
+limited to catalogs or a key whose tap access is limited, the clash says only that the file cannot
+be written by this restore.
+
+The same restore by a user limited to catalogs or a key whose tap access is limited also follows
+the upload rule above: when a restored tap's live copy is stored in the repository at a file that is
+not its own, the restore lists that tap as a clash, naming only the tap and asking an administrator
+to move its script to the tap's own path, records the refusal in the audit log, and restores
+nothing. Such a restore is refused the same way, with the held wording above and an audit row, when a
+restored tap's live copy is stored at its own file and another tap also runs its script from that
+file. A tap the caller may not write at all is not judged by these checks: it is listed under
+`failed` with its scope refusal and the rest of the archive is restored. Other callers' restores are
+unchanged.
 
 ## Pipeline scripts
 
@@ -198,7 +282,8 @@ can remove it by hand if it is no longer wanted. When the repository cannot be r
 kept the same way, with a warning, and the delete still goes ahead. If the delete request itself fails
 (for example it times out), the warning says the delete could not be confirmed: check the repository
 and remove the file by hand if it is still there. Deleting a tap whose script is in
-the repository follows the same rule. Saving a pipeline without an AI instruction it had before
+the repository follows the same rule, and also leaves in place a file that is not the tap's own (see
+[Which file a tap owns](#which-file-a-tap-owns)). Saving a pipeline without an AI instruction it had before
 removes that script the same way: an edited file is kept and named in the save response's `warnings`.
 
 ## Troubleshooting
@@ -211,4 +296,6 @@ removes that script the same way: an edited file is kept and named in the save r
 | Test connection: access error on an org repo | Org policy blocks fine-grained PATs, the token awaits approval, or SSO authorization is required |
 | New taps still land in built-in storage | **Enable repository storage** isn't checked and saved |
 | Scheduled runs keep working while GitHub is down | Expected — runs read the pinned commit from the local cache |
+| Tap delete warns that the script file "was left in place" | The tap's script file is not one it alone owns: another tap uses it, it was placed by hand, or it is under an unrecorded earlier path prefix (see [Which file a tap owns](#which-file-a-tap-owns)) |
+| Storing a tap's script or moving it to GitHub returns `409` saying another tap runs its script from that file | Another tap runs its script from `<path prefix><tap-name>.py`; use another tap name. For a user or key with limited tap access the same refusal also applies to a tap that already stores its script there; an administrator gives each tap its own file |
 | Pipeline save warns that a script "changed in the code repository" | The script file was edited in GitHub — pull the edit, or regenerate with `overwrite=true` (see [Pipeline scripts](#pipeline-scripts)) |

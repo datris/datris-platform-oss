@@ -72,7 +72,6 @@ Do **not** use `docker compose restart` to apply an `.env` change. `restart` reu
 | `environment` | `oss` | Environment name. Used as prefix for bucket names (`oss-raw`, `oss-data`, etc.) and table names |
 | `useApiKeys` | `false` | Enable API key authentication. See [Authentication](#authentication) and the [API Keys guide](/api-keys) |
 | `useUserAuth` | `false` | Require username/password login for the UI and enforce roles on `/api` (Configuration and Users are `admin`-only; a role-gated endpoint called without a session needs a validated full-access API key). `false` leaves existing deploys unchanged. When the user table is empty the server still seeds an `admin` bootstrap user. Set it from `USE_USER_AUTH` in `.env`. See [Authentication](#authentication) and [User Authentication](/user-auth) |
-| `multiTenant` | `false` | Enable per-request tenant resolution. When true, the postgres database is overridden per-request with the tenant name |
 | `sendPipelineNotifications` | `true` | Enable pipeline event notifications |
 | `ttlFileNotifierQueueMessages` | `60` | Days to retain processed message IDs for deduplication |
 | `tapScriptTimeoutSeconds` | `300` | Wall-clock ceiling for a tap **test** (`mode=test`), in seconds. Set it from `TAP_SCRIPT_TIMEOUT_SECONDS` in `.env` |
@@ -98,7 +97,6 @@ Two independent flags control access. Set them together — see [the supported m
 |---------|---------|-------------|
 | `USE_USER_AUTH` | `false` | Require login for the UI; gate Configuration and Users tabs to `admin`. See [User Authentication](/user-auth) |
 | `USE_API_KEYS` | `false` | Require `x-api-key` on every REST and MCP request. Maps to `useApiKeys` above |
-| `MULTI_TENANT` | `false` | Advanced: per-tenant database isolation. Requires `USE_API_KEYS=true`; each request is routed to the tenant environment its API key belongs to |
 | `OIDC_ENABLED` | `false` | `oidc.enabled`: single sign-on through your identity provider ("Sign in with SSO" on the login page). Only takes effect with `USE_USER_AUTH=true`; a wrong or incomplete setting switches SSO off (ERROR in the log) and never blocks startup or password login. See [Single sign-on (OIDC)](/user-auth#single-sign-on-oidc) |
 | `OIDC_ISSUER` | empty | `oidc.issuer`: the provider's issuer URL; must equal the `issuer` in its discovery document exactly |
 | `OIDC_CLIENT_ID` | empty | `oidc.clientId`: the client id registered at the provider. The client secret is not an env var: it lives in Vault under `oss/oidc` (`oidc.secretName`), key `clientSecret` |
@@ -244,14 +242,14 @@ ActiveMQ credentials are stored in Vault under `secrets.activeMQSecretName`:
 | Property | Description |
 |----------|-------------|
 | `mongodb.connectionString` | MongoDB connection URI (e.g., `mongodb://localhost:27017`) |
-| `mongodb.database` | **User-facing** database name (default: `datris`). Pipelines write here, the UI Data tab reads here (semantic-search panel), and tap scripts get this as `DATRIS_MONGODB_DATABASE`. In multi-tenant mode the tenant environment name is used instead. |
+| `mongodb.database` | **User-facing** database name (default: `datris`). Pipelines write here, the UI Data tab reads here (semantic-search panel), and tap scripts get this as `DATRIS_MONGODB_DATABASE`. |
 | `mongodb.internalDatabase` | **Platform-internal** database name (default: `oss`). Holds pipeline/tap configs, run status, job queues — never surfaced in the UI. Keep it a different database from `mongodb.database`. Queries, metadata listings and pipeline destinations never use the collections that hold platform state, and new pipelines do not write to the internal database unless it is also `mongodb.database`. An install that sets both to the same database keeps working (its pipelines use that database's data collections) and logs a warning at startup recommending separate databases. |
 
 ### PostgreSQL
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `postgres.database` | `datris` | Default database name used by `/api/v1/query/postgres` and `/api/v1/metadata/postgres/*` when no `database` parameter is supplied. Also injected into tap scripts as the `DATRIS_POSTGRES_DATABASE` environment variable. In multi-tenant mode this value is automatically overridden per-request with the tenant name. |
+| `postgres.database` | `datris` | Default database name used by `/api/v1/query/postgres` and `/api/v1/metadata/postgres/*` when no `database` parameter is supplied. Also injected into tap scripts as the `DATRIS_POSTGRES_DATABASE` environment variable. |
 
 PostgreSQL connection details (`username`, `password`, `jdbcUrl`) are stored in Vault under `secrets.postgresSecretName` — see the Vault Secret Formats section below.
 
@@ -289,7 +287,7 @@ vault kv put secret/oss/ai-primary \
   version="2023-06-01"
 ```
 
-`docker/vault-init.sh` seeds all three secrets automatically based on which key is present in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, or the `AZURE_OPENAI_*` trio) or the explicit `AI_PROVIDER=bedrock` selection. For multi-tenant deployments, per-tenant override secrets live at `{env}/ai-primary`, `{env}/codegen`, `{env}/embedding`.
+`docker/vault-init.sh` seeds all three secrets automatically based on which key is present in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, or the `AZURE_OPENAI_*` trio) or the explicit `AI_PROVIDER=bedrock` selection.
 
 These `.env` variables tune what gets seeded. They apply on the **first boot only** — after that, Vault persists and the Configuration tab is the source of truth:
 
@@ -441,8 +439,7 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `SCRATCH_RETENTION_HOURS` | `24` | Override `scratchRetentionHours`: hours a Live Read result object survives before the hourly sweep deletes it. Live Read results hold whatever the source returned, so shorten this rather than lengthen it on shared hosts. |
 | `USE_USER_AUTH` | `false` | Enable username/password login + admin gating. See [User Authentication](/user-auth). |
 | `OIDC_ENABLED` | `false` | Single sign-on through your identity provider; needs `USE_USER_AUTH=true`. With `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`, `OIDC_SCOPES` (`openid email profile`), `OIDC_USERNAME_CLAIM` (`email`) and `OIDC_DEFAULT_ROLE` (empty). Client secret in Vault, `oss/oidc` key `clientSecret`. See [Single sign-on (OIDC)](/user-auth#single-sign-on-oidc). |
-| `USE_API_KEYS` | `false` | Enable per-tenant API-key gating on the REST/MCP API. See [API Keys](/api-keys). |
-| `MULTI_TENANT` | `false` | Advanced: switch to per-tenant database isolation, with each request routed by its API key. Requires `USE_API_KEYS=true`. |
+| `USE_API_KEYS` | `false` | Enable API-key gating on the REST/MCP API. See [API Keys](/api-keys). |
 | `ANTHROPIC_OVERLOAD_FALLBACK_MODEL` | `claude-sonnet-5` | Model the Assistant and the other chat agents use for the current request when Anthropic returns a sustained `overloaded_error` (after the automatic retries). Only consulted when the configured chat model is an Anthropic Opus, Fable or Mythos model — other providers ignore it. Bump when a newer Sonnet ships to keep the fallback current. |
 | `AI_HTTP_MAX_PER_ROUTE` | `96` | Maximum concurrent connections the server's shared AI-provider and MCP clients open to one host. Every chat panel and the Assistant stream to the same provider host, so this is the limit concurrent chats hit first. The default covers the five chat panels at full load (80 concurrent streams) with headroom; when it is exhausted, the AI clients wait up to 10 seconds for a free connection and then fail with `Timeout waiting for connection from pool`. A blank, non-numeric or non-positive value uses the default. |
 | `AI_HTTP_MAX_TOTAL` | `192` | Maximum concurrent connections across all hosts for the same clients. Never lower than `AI_HTTP_MAX_PER_ROUTE`; a smaller value is raised to match. A blank, non-numeric or non-positive value uses the default. |
@@ -464,9 +461,9 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `USE_CODEGEN_RUNNER` / `CODEGEN_RUNNER_URL` / `CODEGEN_RUNNER_API_BLOCK` | `true` / `http://datris-codegen-runner:8090` / `true` | Isolated execution of generated data-quality and transformation scripts in `datris-codegen-runner`, its address (fixed in compose) and the server-side guard that refuses requests from it. Described in full under [Authentication](#authentication). |
 | `MINIO_WEBHOOK_TOKEN` | _(empty)_ | Bearer token MinIO must present on the `/minio-events` bucket-notification webhook (`minio-init.sh` sets the same value as MinIO's `auth_token`). Empty keeps the webhook unauthenticated for existing deployments and logs a loud warning; set it in `.env` to close the exposure. |
 | `DATRIS_ENV`, `DATRIS_ALLOW_PLAINTEXT_DB`, `DATRIS_ALLOW_PRIVATE_EGRESS`, `DATRIS_TAP_SECRET_SCOPE`, `DATRIS_KEY_INERT_SCOPES`, `DATRIS_AI_SAMPLE_VALUES`, `DATRIS_UNITY_CATALOG_SYNC`, `DATRIS_UNITY_CATALOG_DEFAULT`, `DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST` | _(unset)_, `false`, `false`, `tap`, `refuse`, `true`, `true`, `disabled`, _(unset)_ | Hardening switches: environment label and its production TLS rule, private-network egress for HTTP taps / REST endpoints, which secrets a tap may use, whether an API-key capability with a scope the platform does not apply still grants, whether AI helpers see row values, Unity Catalog sync and its default, and the MinIO bucket allowlist. Each is described in full under [Authentication](#authentication). |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AZURE_OPENAI_API_KEY` / `XAI_API_KEY` | _(empty)_ | Provider API keys. Besides selecting what `vault-init` seeds on first boot (see [AI](#ai-required)), they reach the server as a single-tenant **fallback**: an AI slot whose Vault secret has no `apiKey` of its own uses the matching variable. Multi-tenant deployments never fall through to them. |
-| `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | _(empty)_ | Entra ID service principal for keyless Azure OpenAI auth (single-tenant). Blank falls through to managed identity on Azure compute. |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` | _(empty)_ | AWS credentials and region for the Bedrock provider (single-tenant env-var tier). `AWS_SESSION_TOKEN` carries the session token of temporary (STS) credentials. Blank falls through to the IAM role / default credential chain, which reads the same standard names. |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AZURE_OPENAI_API_KEY` / `XAI_API_KEY` | _(empty)_ | Provider API keys. Besides selecting what `vault-init` seeds on first boot (see [AI](#ai-required)), they reach the server as a **fallback**: an AI slot whose Vault secret has no `apiKey` of its own uses the matching variable. |
+| `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | _(empty)_ | Entra ID service principal for keyless Azure OpenAI auth. Blank falls through to managed identity on Azure compute. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` | _(empty)_ | AWS credentials and region for the Bedrock provider (env-var tier). `AWS_SESSION_TOKEN` carries the session token of temporary (STS) credentials. Blank falls through to the IAM role / default credential chain, which reads the same standard names. |
 | `VAULT_ADDR` / `VAULT_TOKEN_FILE` | `http://vault:8200` / `/vault-token/token` | Vault address and the file holding the random per-install token `vault-bootstrap.sh` mints for the server. Fixed in `docker-compose.yml`; pin a token instead with `DATRIS_VAULT_TOKEN` (passed to `vault-init`). See [Secrets (HashiCorp Vault)](#secrets-hashicorp-vault). |
 | `DATRIS_UI_API_KEY` | `default-ui-key` | Passed to `vault-init`, not to `datris`: the API key the bundled UI uses, seeded on first boot into `oss/api-keys` (key `ui`, what the validator checks) and `oss/ui-api-key` (the operator-facing record, rotatable under Configuration → Secrets; a save mirrors the new value back into `oss/api-keys`). The fallback is a well-known value, so give it your own before switching on `USE_API_KEYS`. |
 | `OLLAMA_MODEL` | `qwen2.5:14b-instruct` | Passed to `vault-init`, not read by the server: the model the optional bundled `ollama` service pulls on first start. The service is commented out in `docker-compose.yml`, so this has no effect until you uncomment it and point a slot at it from the Configuration tab. |

@@ -5,6 +5,7 @@ import { OpsAssistantService } from './ops-assistant.service';
 import { OpsChatContextService } from './ops-chat-context.service';
 import { OpsActionBus } from './ops-action-bus.service';
 import { handleRetryEvent } from '../shared/chat-retry';
+import { settleUnrunToolCards } from '../shared/chat-stream-end';
 
 export interface ToolCard {
   kind: 'tool';
@@ -214,6 +215,7 @@ export class OpsAssistantStateService {
       case 'error':
         turn.errorMessage = evt.message;
         turn.done = true;
+        settleUnrunToolCards(turn.segments);
         break;
       case 'secret_request':
         // Ops mode doesn't surface the credentials form — the ops agent

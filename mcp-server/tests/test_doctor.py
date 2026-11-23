@@ -13,6 +13,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import doctor as doc  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_multi_tenant_in_the_shell(monkeypatch):
+    """The multi-tenant check reads MULTI_TENANT from the process environment;
+    the developer's shell must not decide these tests. Tests that need it set
+    it themselves."""
+    monkeypatch.delenv("MULTI_TENANT", raising=False)
+
+
 class FakeRunner(doc.Runner):
     """Answers subprocess calls from a table keyed by the joined argv.
     Unknown commands fail like a missing container would."""
@@ -257,6 +265,256 @@ def test_vault_ai_slots_host_flags_missing_codegen(tmp_path):
     assert doc.check_vault_ai_slots_host(r)["status"] == "skip"
 
 
+# Story: retire the multi-tenant setting (plans/stories/retire-multi-tenant-setting.md).
+# `check_config_multi_tenant(runner, dotenv)`, id `config.multi_tenant`: an error
+# when `.env` holds a true MULTI_TENANT or the running `datris` container holds
+# a true MULTITENANT; ok when off or absent; skip without Docker and without an
+# env file. "True" is every value the server's boolean parser reads as true:
+# true / 1 / yes / on in any case, surrounding spaces ignored.
+MT_ON = ["true", "TRUE", "True", "1", "yes", "YES", "on", "On", " true "]
+MT_OFF = ["false", "FALSE", "False", "0", "no", "NO", "off", "Off", ""]
+MT_CHECK = "config.multi_tenant"
+MT_INSPECT = "docker inspect -f {{json .Config.Env}} datris"
+
+
+def _datris_env(**env):
+    return {MT_INSPECT: json.dumps(["PATH=/usr/bin"] + [f"{k}={v}" for k, v in env.items()])}
+
+
+def _assert_plain_multi_tenant_error(res):
+    assert res["id"] == MT_CHECK
+    assert res["status"] == "error", res
+    text = res["detail"] + " " + res["remediation"]
+    assert "MULTI_TENANT" in text, res
+    assert "no longer supported" in text.lower(), res
+    # what to do: remove the setting, or stay on the version already running
+    assert "remove" in res["remediation"].lower(), res
+    assert "previous version" in text.lower() or "current version" in text.lower(), res
+    assert "Traceback" not in text and "Exception" not in text, res
+
+
+def test_config_multi_tenant_is_an_error_when_the_env_file_turns_the_setting_on(tmp_path):
+    for value in MT_ON:
+        r = FakeRunner({}, str(tmp_path))  # no datris container running
+        _assert_plain_multi_tenant_error(doc.check_config_multi_tenant(r, {"MULTI_TENANT": value}))
+    # read through the same `.env` parser the CLI uses, quoted or not
+    for line in ("MULTI_TENANT=true\n", 'MULTI_TENANT="TRUE"\n', "export MULTI_TENANT=yes\n"):
+        p = tmp_path / ".env"
+        p.write_text("# install\nUSE_API_KEYS=true\n" + line)
+        r = FakeRunner({}, str(tmp_path))
+        _assert_plain_multi_tenant_error(doc.check_config_multi_tenant(r, doc.parse_dotenv(str(p))))
+
+
+def _assert_running_server_multi_tenant_error(res):
+    """On only in the running container: the advice is that the running server
+    is in multi-tenant mode and that upgrading would switch it off."""
+    assert res["id"] == MT_CHECK
+    assert res["status"] == "error", res
+    text = res["detail"] + " " + res["remediation"]
+    assert "no longer supported" in text.lower(), res
+    assert "running datris server is in multi-tenant mode" in res["detail"], res
+    assert "upgrading would switch multi-tenant mode off" in res["remediation"].lower(), res
+    assert doc.UPGRADE_DOCS_URL in res["remediation"], res
+    assert "previous version" in res["remediation"], res
+    # nothing to remove: .env and the shell no longer have it
+    assert "remove multi_tenant" not in res["remediation"].lower(), res
+    assert "Traceback" not in text and "Exception" not in text, res
+
+
+def test_config_multi_tenant_is_an_error_when_the_running_container_has_it_on(tmp_path):
+    for value in MT_ON:
+        r = FakeRunner(_datris_env(MULTITENANT=value, USEAPIKEYS="true"), str(tmp_path))
+        _assert_running_server_multi_tenant_error(doc.check_config_multi_tenant(r, {}))
+        # `.env` holding it off counts as "no longer has it"
+        _assert_running_server_multi_tenant_error(doc.check_config_multi_tenant(r, {"MULTI_TENANT": "false"}))
+
+
+def test_config_multi_tenant_remediation_names_where_to_remove_it(tmp_path, monkeypatch):
+    on_container = FakeRunner(_datris_env(MULTITENANT="true"), str(tmp_path))
+    off_container = FakeRunner(_datris_env(MULTITENANT="false"), str(tmp_path))
+    shell_place = "the shell environment that runs `docker compose`"
+    for r in (on_container, off_container):
+        # .env only
+        monkeypatch.delenv("MULTI_TENANT", raising=False)
+        res = doc.check_config_multi_tenant(r, {"MULTI_TENANT": "true"})
+        _assert_plain_multi_tenant_error(res)
+        assert "Remove MULTI_TENANT from .env (or set it to false)" in res["remediation"], res
+        assert shell_place not in res["remediation"], res
+        # shell only
+        monkeypatch.setenv("MULTI_TENANT", "true")
+        res = doc.check_config_multi_tenant(r, {})
+        _assert_plain_multi_tenant_error(res)
+        assert "Remove MULTI_TENANT from " + shell_place + " (or set it to false)" in res["remediation"], res
+        assert "from .env" not in res["remediation"], res
+        # both
+        res = doc.check_config_multi_tenant(r, {"MULTI_TENANT": "yes"})
+        _assert_plain_multi_tenant_error(res)
+        assert "Remove MULTI_TENANT from .env and from " + shell_place in res["remediation"], res
+        assert doc.UPGRADE_DOCS_URL in res["remediation"], res
+    # without Docker the .env / shell wording is unchanged
+    monkeypatch.delenv("MULTI_TENANT", raising=False)
+    res = doc.check_config_multi_tenant(FakeRunner({}, str(tmp_path), docker=False), {"MULTI_TENANT": "on"})
+    assert "Remove MULTI_TENANT from .env (or set it to false)" in res["remediation"], res
+
+
+def test_config_multi_tenant_reads_an_env_file_inline_comment_as_compose_does(tmp_path):
+    # Docker Compose: on an unquoted value a space then `#` starts a comment;
+    # after a closing quote the rest of the line is ignored; `#` with no space
+    # before it, or inside quotes, stays in the value.
+    on_lines = (
+        "MULTI_TENANT=true # switched on for tenants\n",
+        "MULTI_TENANT=true   #note\n",
+        'MULTI_TENANT="true" # note\n',
+        "MULTI_TENANT='on' # note\n",
+        "export MULTI_TENANT=yes # note\n",
+    )
+    off_lines = (
+        "MULTI_TENANT=false # note\n",
+        "MULTI_TENANT=true#note\n",
+        "MULTI_TENANT='true # x' # y\n",
+        "MULTI_TENANT= # note\n",
+    )
+    p = tmp_path / ".env"
+    for line in on_lines:
+        p.write_text("USE_API_KEYS=true\n" + line)
+        r = FakeRunner({}, str(tmp_path), docker=False)
+        _assert_plain_multi_tenant_error(doc.check_config_multi_tenant(r, doc.parse_dotenv(str(p))))
+    for line in off_lines:
+        p.write_text("USE_API_KEYS=true\n" + line)
+        r = FakeRunner({}, str(tmp_path), docker=False)
+        res = doc.check_config_multi_tenant(r, doc.parse_dotenv(str(p)))
+        assert res["status"] == "ok", (line, res)
+    # parse_dotenv itself is unchanged: other checks read the value as before
+    p.write_text("A=1 # note\n")
+    assert doc.parse_dotenv(str(p)) == {"A": "1 # note"}
+
+
+def test_config_multi_tenant_is_ok_when_off_or_absent(tmp_path):
+    for value in MT_OFF:
+        r = FakeRunner(_datris_env(MULTITENANT=value), str(tmp_path))
+        res = doc.check_config_multi_tenant(r, {"MULTI_TENANT": value})
+        assert res["id"] == MT_CHECK
+        assert res["status"] == "ok", (value, res)
+    # absent from both `.env` and the container
+    r = FakeRunner(_datris_env(USEAPIKEYS="true"), str(tmp_path))
+    res = doc.check_config_multi_tenant(r, {"USE_API_KEYS": "true"})
+    assert res["status"] == "ok", res
+    # the compose default the container gets when `.env` leaves it out
+    r = FakeRunner(_datris_env(MULTITENANT="false"), str(tmp_path))
+    assert doc.check_config_multi_tenant(r, {})["status"] == "ok"
+
+
+def test_config_multi_tenant_skips_without_docker_and_without_an_env_file(tmp_path):
+    r = FakeRunner({}, str(tmp_path), docker=False)
+    for dotenv in ({}, None):
+        res = doc.check_config_multi_tenant(r, dotenv)
+        assert res["id"] == MT_CHECK
+        assert res["status"] == "skip", res
+    # `.env` needs no Docker: a true value there is still reported
+    _assert_plain_multi_tenant_error(doc.check_config_multi_tenant(r, {"MULTI_TENANT": "true"}))
+    assert doc.check_config_multi_tenant(r, {"MULTI_TENANT": "false"})["status"] == "ok"
+    assert not any(c.startswith("docker") for c in r.calls), r.calls
+
+
+def test_config_multi_tenant_pre_upgrade_includes_it_and_the_report_exit_code_is_2_when_it_fires(tmp_path, monkeypatch):
+    monkeypatch.setattr(doc, "check_mcp_reachable", lambda *a, **k: doc.result("mcp.reachable", "ok", ""))
+    for docker in (True, False):
+        r = FakeRunner({}, str(tmp_path), docker=docker)
+        rows = doc.run_host_checks(r, "http://localhost:3000/sse", pre_upgrade=True, dotenv={"MULTI_TENANT": "true"})
+        row = next((x for x in rows if x["id"] == MT_CHECK), None)
+        assert row is not None, [x["id"] for x in rows]
+        assert row["status"] == "error", row
+        report = doc.merge_report(None, rows, "1", mode="pre-upgrade")
+        assert doc.exit_code(report) == 2
+        # off: the check passes and the run is as clean as before
+        rows = doc.run_host_checks(r, "http://localhost:3000/sse", pre_upgrade=True, dotenv={"MULTI_TENANT": "false"})
+        assert [x["status"] for x in rows if x["id"] == MT_CHECK] == ["ok"], rows
+        assert doc.exit_code(doc.merge_report(None, rows, "1", mode="pre-upgrade")) == 0
+    # the full run carries it too
+    r = FakeRunner({}, str(tmp_path))
+    rows = doc.run_host_checks(r, "http://localhost:3000/sse", dotenv={"MULTI_TENANT": "true"})
+    assert [x["status"] for x in rows if x["id"] == MT_CHECK] == ["error"]
+
+
+def _doctor_cli(tmp_path, monkeypatch, env_text):
+    from click.testing import CliRunner
+    import cli
+    (tmp_path / ".env").write_text(env_text)
+    monkeypatch.delenv("MULTI_TENANT", raising=False)
+    monkeypatch.setattr(doc, "Runner", lambda compose_file=None, project_dir=None: FakeRunner({}, project_dir, docker=False))
+    return CliRunner().invoke(cli.cli, ["doctor", "--pre-upgrade", "--project-dir", str(tmp_path)])
+
+
+def test_config_multi_tenant_pre_upgrade_withholds_the_upgrade_command_when_it_fires(tmp_path, monkeypatch):
+    res = _doctor_cli(tmp_path, monkeypatch, "USE_API_KEYS=true\nMULTI_TENANT=true\n")
+    assert res.exit_code == 2, res.output
+    assert MT_CHECK in res.output
+    assert "MULTI_TENANT" in res.output
+    assert "Ready to upgrade" not in res.output
+    assert "docker compose pull" not in res.output
+
+
+def test_config_multi_tenant_pre_upgrade_off_still_prints_the_upgrade_command(tmp_path, monkeypatch):
+    for env_text in ("USE_API_KEYS=true\nMULTI_TENANT=false\n", "USE_API_KEYS=true\n"):
+        res = _doctor_cli(tmp_path, monkeypatch, env_text)
+        assert res.exit_code == 0, res.output
+        assert "Ready to upgrade" in res.output
+        assert "docker compose pull && docker compose up -d --remove-orphans" in res.output
+        # every other host check is reported exactly as before, in the same order
+        ids = [ln.split()[1] for ln in res.output.splitlines() if ln.startswith("  ○ ") or ln.startswith("  ✓ ")]
+        assert MT_CHECK in ids, res.output
+        assert [i for i in ids if i != MT_CHECK] == [
+            "volumes.anonymous", "volumes.dangling", "vault.hcl_drift", "env.not_forwarded", "env.container_drift",
+            "compose.orphans", "build.stale_jar", "disk.usage", "vault.ai_slots",
+        ], res.output
+
+
+def test_config_multi_tenant_is_an_error_when_the_shell_environment_turns_the_setting_on(tmp_path, monkeypatch):
+    # Compose substitutes ${MULTI_TENANT:-false} from the shell too, and the shell wins over `.env`.
+    for docker in (True, False):
+        for value in MT_ON:
+            monkeypatch.setenv("MULTI_TENANT", value)
+            r = FakeRunner({}, str(tmp_path), docker=docker)
+            res = doc.check_config_multi_tenant(r, {})
+            _assert_plain_multi_tenant_error(res)
+            assert "shell environment" in res["detail"], res
+            # on in the shell is reported even when `.env` turns it off
+            res = doc.check_config_multi_tenant(r, {"MULTI_TENANT": "false"})
+            _assert_plain_multi_tenant_error(res)
+            assert "shell environment" in res["detail"] and ".env file" not in res["detail"], res
+    for value in MT_OFF:
+        monkeypatch.setenv("MULTI_TENANT", value)
+        r = FakeRunner(_datris_env(MULTITENANT="false"), str(tmp_path))
+        assert doc.check_config_multi_tenant(r, {})["status"] == "ok", value
+    # an off value in the shell with no Docker and no `.env` value is a value: ok, not skip
+    monkeypatch.setenv("MULTI_TENANT", "false")
+    assert doc.check_config_multi_tenant(FakeRunner({}, str(tmp_path), docker=False), None)["status"] == "ok"
+
+
+def test_config_multi_tenant_names_where_it_found_the_setting(tmp_path, monkeypatch):
+    monkeypatch.delenv("MULTI_TENANT", raising=False)
+    res = doc.check_config_multi_tenant(FakeRunner({}, str(tmp_path)), {"MULTI_TENANT": "true"})
+    assert "the .env file" in res["detail"] and "shell" not in res["detail"] and "container" not in res["detail"], res
+    res = doc.check_config_multi_tenant(FakeRunner(_datris_env(MULTITENANT="true"), str(tmp_path)), {})
+    assert "the running datris container" in res["detail"] and ".env file" not in res["detail"], res
+    monkeypatch.setenv("MULTI_TENANT", "on")
+    res = doc.check_config_multi_tenant(FakeRunner(_datris_env(MULTITENANT="true"), str(tmp_path)), {"MULTI_TENANT": "yes"})
+    for where in ("the .env file", "the shell environment", "the running datris container"):
+        assert where in res["detail"], res
+
+
+def test_config_multi_tenant_pre_upgrade_withholds_the_upgrade_command_when_the_shell_turns_it_on(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    import cli
+    (tmp_path / ".env").write_text("USE_API_KEYS=true\n")
+    monkeypatch.setenv("MULTI_TENANT", "true")
+    monkeypatch.setattr(doc, "Runner", lambda compose_file=None, project_dir=None: FakeRunner({}, project_dir, docker=False))
+    res = CliRunner().invoke(cli.cli, ["doctor", "--pre-upgrade", "--project-dir", str(tmp_path)])
+    assert res.exit_code == 2, res.output
+    assert "shell environment" in res.output
+    assert "Ready to upgrade" not in res.output and "docker compose pull" not in res.output
+
+
 # 11. docker missing → all host checks skip; skips don't affect the exit code
 def test_no_docker_all_host_checks_skip(tmp_path, monkeypatch):
     r = FakeRunner({}, str(tmp_path), docker=False)
@@ -268,7 +526,11 @@ def test_no_docker_all_host_checks_skip(tmp_path, monkeypatch):
     assert "version.update" in [row["id"] for row in rows]
     host_only = [row for row in rows if row["id"] not in ("mcp.reachable", "version.update")]
     assert host_only and all(row["status"] == "skip" for row in host_only)
-    assert all("docker not on PATH" in row["detail"] for row in host_only)
+    # PINNED EDIT (plans/stories/retire-multi-tenant-setting.md): config.multi_tenant
+    # is in the no-Docker list; with no env file it is a skip, and it reads `.env`
+    # without Docker, so its skip need not say "docker not on PATH".
+    assert "config.multi_tenant" in [row["id"] for row in host_only]
+    assert all("docker not on PATH" in row["detail"] for row in host_only if row["id"] != "config.multi_tenant")
     report = doc.merge_report({"surface": {"server": "1.28.2"}, "checks": [doc.result("vault.token_ttl", "ok", "fine", surface="server")]}, rows, "1.28.2")
     assert doc.exit_code(report) == 0
 
@@ -309,6 +571,8 @@ def test_pre_upgrade_runs_vault_slots_not_server_dependent_checks(tmp_path, monk
     rows = doc.run_host_checks(r, "http://localhost:3000/sse", pre_upgrade=True)
     ids = [row["id"] for row in rows]
     assert "vault.ai_slots" in ids
+    # PINNED EDIT (plans/stories/retire-multi-tenant-setting.md): the pre-upgrade list carries config.multi_tenant.
+    assert "config.multi_tenant" in ids
     assert "build.stale_jar" not in ids and "mcp.reachable" not in ids
     assert called == []
 

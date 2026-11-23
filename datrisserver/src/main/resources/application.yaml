@@ -62,6 +62,8 @@ oidc:
   scopes: "openid email profile"
   usernameClaim: "email"         # ID-token claim that becomes the Datris username
   defaultRole: ""                # empty = refuse unknown people; viewer or editor = create them with that role
+# Retired: multi-tenant mode is no longer supported, and the server does not
+# start when this is true (env var: MULTI_TENANT, forwarded as MULTITENANT).
 multiTenant: "false"
 # Durable audit log of who did what (admin-readable under Configuration →
 # Audit Log). Off by default so existing deploys are unchanged; a restart is
@@ -151,8 +153,7 @@ ttlFileNotifierQueueMessages: "60"
 
 # AI configuration — three independent, self-describing Vault secrets.
 # Each secret carries its own provider, endpoint, model, apiKey, and (optionally) version,
-# so the resolver never derives the path from a YAML provider field. Per-tenant overrides
-# in multi-tenant mode live at {env}/ai-primary, {env}/codegen, {env}/embedding.
+# so the resolver never derives the path from a YAML provider field.
 #
 # vault-init.sh seeds all three based on which API key is set in .env:
 #   - OPENAI_API_KEY    → all three point at OpenAI

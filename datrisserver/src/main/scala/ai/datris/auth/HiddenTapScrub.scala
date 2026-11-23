@@ -116,6 +116,187 @@ object HiddenTapScrub {
         }
     }
 
+    /** `text` with the names of items a limited caller may not read
+      * replaced by [[Placeholder]] (plans/stories/limited-caller-read-leaks.md,
+      * D1): every name in `hiddenTaps` or `hiddenPipelines` wherever it stands
+      * as a whole name, in any letter case ([[NameScrubber]]), and each hidden
+      * tap name also in the tap contexts [[scrubText]] knows
+      * (`tap-<name>.csv|json`, `tap-docs/<name>/`). A name inside a longer
+      * name or word is left alone; a dot after a name ends it, so
+      * `<name>.csv` and `<name>.public` read `[hidden].csv` and
+      * `[hidden].public`. Every name in `keep` (the names of items the
+      * caller may read) is left whole where it stands (in its exact spelling
+      * only, when a hidden name differs from it by letter case), so a visible name
+      * holding a dot (`hr.eu`) is never cut by a shorter hidden one (`hr`);
+      * at a position the longest name wins. One pass, so a placeholder is
+      * never nested. Null stays null; `text` itself when both hidden sets
+      * are empty or no name is replaced. For many texts with the same sets,
+      * build one [[NameScrubber]] and apply it to each. */
+    def scrubNames(text: String, hiddenTaps: Set[String], hiddenPipelines: Set[String], keep: Set[String] = Set.empty): String =
+        if (text == null || text.isEmpty || (hiddenTaps.isEmpty && hiddenPipelines.isEmpty)) text
+        else new NameScrubber(hiddenTaps, hiddenPipelines, keep)(text)
+
+    /** Whether `c` can continue a name (a char before or after a whole name
+      * must not be one). A dot is not one: it ends a name. */
+    private def nameChar(c: Char): Boolean =
+        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
+
+    /** The letter case [[NameScrubber]] compares in. */
+    private def fold(c: Char): Char = Character.toLowerCase(c)
+
+    /** [[scrubNames]] for one set of hidden names and kept names, built once
+      * and applied to many texts (one per response). The names are held in a
+      * character trie, compared in lower case, so a text is scanned once
+      * whatever the number of names: at each position where a name can
+      * start, the trie is walked for the names that occur there (no pattern
+      * per name, no pattern per text), and the longest one whose boundaries
+      * hold is taken. A name stands as a whole name when the char before it
+      * cannot continue a name (`A-Z a-z 0-9 _ -`) and the text after it ends
+      * or the next char cannot continue a name (a dot, a space, punctuation).
+      * A hidden tap name is also replaced in a `tap-<name>.csv|json` feed
+      * file and a `tap-docs/<name>/` path. A kept name found there is copied
+      * as it is and the scan resumes after it. A name that is only kept is
+      * kept in every spelling; a name that is only hidden is replaced in
+      * every spelling; a name that is both kept and hidden (in some letter
+      * case) is kept only where the text equals one of its kept spellings
+      * exactly, and replaced in any other spelling. An existing
+      * [[Placeholder]] in the text is passed over whole. Not thread-safe
+      * (its counters); use one per response. */
+    final class NameScrubber(hiddenTaps: Set[String], hiddenPipelines: Set[String], keep: Set[String] = Set.empty) {
+        private final class Node {
+            val next = new java.util.HashMap[Char, Node](4)
+            var name = false
+            var tap = false
+            var kept = false
+            // the exact kept spellings of this name, set when it is kept
+            var keptSpellings: java.util.HashSet[String] = null
+        }
+        private val root = new Node
+        private val hiddenEnds = scala.collection.mutable.LinkedHashSet[Node]()
+
+        private def add(n: String, isTap: Boolean, isKept: Boolean): Unit =
+            if (n != null && n.nonEmpty) {
+                var node = root
+                var k = 0
+                while (k < n.length) {
+                    val c = fold(n.charAt(k))
+                    var child = node.next.get(c)
+                    if (child == null) { child = new Node; node.next.put(c, child) }
+                    node = child
+                    k += 1
+                }
+                if (isKept) {
+                    node.kept = true
+                    if (node.keptSpellings == null) node.keptSpellings = new java.util.HashSet[String](2)
+                    node.keptSpellings.add(n)
+                } else {
+                    node.name = true
+                    if (isTap) node.tap = true
+                    hiddenEnds += node
+                }
+            }
+        Option(hiddenTaps).getOrElse(Set.empty).foreach(add(_, isTap = true, isKept = false))
+        Option(hiddenPipelines).getOrElse(Set.empty).foreach(add(_, isTap = false, isKept = false))
+        Option(keep).getOrElse(Set.empty).foreach(add(_, isTap = false, isKept = true))
+        private val count = hiddenEnds.size
+
+        /** Distinct hidden names held (in lower case); a name that is also
+          * kept counts, as its other spellings are replaced. */
+        def size: Int = count
+
+        /** True when no hidden name is held: every text comes back as it is. */
+        def isEmpty: Boolean = count == 0
+
+        private var stepsTaken = 0L
+        private var tested = 0L
+
+        /** Trie nodes visited over every text so far: at most the text length
+          * times the longest name, plus one per position. */
+        def steps: Long = stepsTaken
+
+        /** Names found in a text and tested for their boundaries, over every
+          * text so far: one per occurrence of a hidden or kept name (or of a
+          * prefix of a longer one), whatever the number of names held. */
+        def namesTested: Long = tested
+
+        private def startsAt(text: String, i: Int, s: String): Boolean = i >= 0 && text.startsWith(s, i)
+
+        /** A context `ctx` ending at `i` whose own start has no name char before it. */
+        private def contextBefore(text: String, i: Int, ctx: String): Boolean = {
+            val at = i - ctx.length
+            startsAt(text, at, ctx) && (at == 0 || !nameChar(text.charAt(at - 1)))
+        }
+
+        private def wholeEnd(text: String, end: Int): Boolean = end >= text.length || !nameChar(text.charAt(end))
+
+        private def feedEnd(text: String, end: Int): Boolean = {
+            val ext = if (startsAt(text, end, ".csv")) 4 else if (startsAt(text, end, ".json")) 5 else 0
+            ext > 0 && (end + ext >= text.length || { val c = text.charAt(end + ext); !(nameChar(c) && c != '-') })
+        }
+
+        /** The name taken at `i`: its length when it is a hidden name to
+          * replace, minus its length when it is a kept name, 0 for none. */
+        private def matchAt(text: String, i: Int): Int = {
+            val wholeStart = i == 0 || !nameChar(text.charAt(i - 1))
+            val feed = contextBefore(text, i, "tap-")
+            val docs = contextBefore(text, i, "tap-docs/")
+            if (!wholeStart && !feed && !docs) return 0
+            // the names that occur at i, shortest first
+            var ends: List[(Int, Node)] = Nil
+            var node = root
+            var j = i
+            while (node != null && j < text.length) {
+                node = node.next.get(fold(text.charAt(j)))
+                stepsTaken += 1
+                j += 1
+                if (node != null && (node.name || node.kept)) ends = (j, node) :: ends
+            }
+            // longest first
+            var rest = ends
+            while (rest.nonEmpty) {
+                val (end, n) = rest.head
+                tested += 1
+                val inContext = (feed && feedEnd(text, end)) || (docs && startsAt(text, end, "/"))
+                // a name both kept and hidden is kept only in an exact kept spelling
+                val keptHere = n.kept && (!n.name || n.keptSpellings.contains(text.substring(i, end)))
+                if (keptHere) {
+                    if ((wholeStart && wholeEnd(text, end)) || inContext) return -(end - i)
+                } else {
+                    if (wholeStart && wholeEnd(text, end)) return end - i
+                    if (n.tap && inContext) return end - i
+                }
+                rest = rest.tail
+            }
+            0
+        }
+
+        /** `text` with every hidden name replaced (see the class). Null stays
+          * null; `text` itself when nothing is replaced. */
+        def apply(text: String): String = {
+            if (text == null || text.isEmpty || count == 0) return text
+            var out: java.lang.StringBuilder = null
+            var copied = 0
+            var i = 0
+            val len = text.length
+            while (i < len) {
+                if (text.charAt(i) == '[' && text.startsWith(Placeholder, i)) i += Placeholder.length
+                else if (!root.next.containsKey(fold(text.charAt(i)))) i += 1
+                else {
+                    val m = matchAt(text, i)
+                    if (m == 0) i += 1
+                    else if (m < 0) i += -m
+                    else {
+                        if (out == null) out = new java.lang.StringBuilder(len + 16)
+                        out.append(text, copied, i).append(Placeholder)
+                        i += m
+                        copied = i
+                    }
+                }
+            }
+            if (out == null) text else out.append(text, copied, len).toString
+        }
+    }
+
     /** A filename scrubbed the same way ([[scrubText]]). */
     def scrubFilename(filename: String, hidden: Set[String]): String = scrubText(filename, hidden)
 

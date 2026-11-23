@@ -144,6 +144,10 @@ object CapabilityRoutes {
         Route("DELETE", "/api/v1/tap", "tap", "delete"),
         Route("POST", "/api/v1/tap/run", "tap", "run"),
         Route("POST", "/api/v1/tap/cron", "tap", "update"),
+        // Changing a tap's owner: an administrator or full-access key only.
+        // The method is role-gated to admin and the handler refuses every
+        // caller that is not full access, before reading anything.
+        Route("POST", "/api/v1/tap/owner", "tap", "update"),
         Route("POST", "/api/v1/tap/script", "tap", "update"),
         Route("POST", "/api/v1/tap/test", "tap", "run"),
         Route("POST", "/api/v1/tap/generate", "tap", "create"),
@@ -209,7 +213,10 @@ object CapabilityRoutes {
         // and so are scope-limited API keys (InstallWideForLimited).
         Route("GET", "/api/v1/metadata/**", "metadata", "read"),
         Route("GET", "/api/v1/vector-stores/available", "metadata", "read"),
-        Route("POST", "/api/v1/config/generate-schema", "metadata", "read"),
+        // Generating a validation schema stores the file pipelines validate
+        // against, so it is a pipeline change: pipeline:update. The handler
+        // also refuses a name used by a pipeline the caller may not update.
+        Route("POST", "/api/v1/config/generate-schema", "pipeline", "update"),
 
         // Config
         Route("POST", "/api/v1/config/upload", "config", "write"),

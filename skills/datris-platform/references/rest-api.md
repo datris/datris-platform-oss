@@ -25,7 +25,7 @@ The OpenAPI document is at `docs/openapi.yaml` in the Datris repository and at h
 | Need | Method and path | Notes |
 |---|---|---|
 | Push a file into a pipeline | `POST /api/v1/pipeline/upload` | multipart form: `file`, `pipeline`, optional `publishertoken`. Returns the pipeline token as text. |
-| Watch a load | `GET /api/v1/pipeline/status` | By pipeline or publisher token. Poll until the rollup is done. |
+| Watch a load | `GET /api/v1/pipeline/status` | By pipeline or publisher token. Poll until the rollup is done. An answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that. |
 | Read Live Read rows | `GET /api/v1/pipeline/result` | Scratch pipelines only; paged by offset and limit. |
 | SQL against landed data | `POST /api/v1/query/postgres`, `/query/snowflake`, `/query/databricks`, `/query/sqlserver`, `/query/objectstore` | Read-only. |
 | Document query | `POST /api/v1/query/mongodb` | Filter and projection. |

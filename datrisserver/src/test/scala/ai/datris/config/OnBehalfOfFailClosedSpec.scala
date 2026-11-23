@@ -286,7 +286,8 @@ class OnBehalfOfFailClosedSpec extends AnyFunSuite with BeforeAndAfterEach {
     test("the platform's internal calls (no cookie) keep the header: chat workers and the approval replay") {
         bothModes {
             assert(preHandle(carrierHeaders("ed"): _*)().identity.contains(TenantInterceptor.onBehalfOfIdentity(carrier, ed, approvalReplay = false)))
-            assert(preHandle(carrierHeaders("ed", replay = true): _*)().identity.contains(carrier.copy(label = "session:ed")))
+            // An approval header with no approval behind it changes nothing: the call acts as the user it names.
+            assert(preHandle(carrierHeaders("ed", replay = true): _*)().identity.contains(TenantInterceptor.onBehalfOfIdentity(carrier, ed)))
             assert(preHandle(carrierHeaders("root"): _*)().identity.contains(carrier.copy(label = "session:root")))
         }
     }

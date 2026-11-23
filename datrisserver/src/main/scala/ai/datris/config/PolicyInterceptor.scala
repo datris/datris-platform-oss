@@ -7,6 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.{AuditActor, AuditLog}
 import ai.datris.policy._
+import ai.datris.util.TokenHash
 import com.google.gson.JsonObject
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
@@ -14,6 +15,8 @@ import org.springframework.stereotype.Component
 import org.springframework.web.method.HandlerMethod
 import org.springframework.web.servlet.HandlerInterceptor
 
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
@@ -30,6 +33,8 @@ import java.time.temporal.ChronoUnit
   *                 approval the stored request is replayed through this same
   *                 chain carrying `X-Datris-Approval`, which this interceptor
   *                 recognizes and consumes (single use) instead of gating.
+  *                 TenantInterceptor has already given that replay the
+  *                 requester's current access ([[ReplayAuthority]]).
   *
   * Humans are never gated (see [[PolicyActor]]). Two rules are not policy
   * but hard-wired: an agent can never change the policy, and can never
@@ -75,7 +80,8 @@ class PolicyInterceptor extends HandlerInterceptor {
         // the recovery mode: `propose` parks EVERY mutation for approval
         // regardless of the action matrix; `off` refuses them outright — the
         // runner should not be acting at all. `autopilot` follows the matrix.
-        val incidentTagged = Option(request.getHeader(AuditActor.HeaderIncident)).exists(_.trim.nonEmpty)
+        // Only the platform's own callers can tag a call (AuditActor.incidentOf).
+        val incidentTagged = AuditActor.incidentOf(request).isDefined
         val effectiveMode =
             if (!incidentTagged) matrixMode
             else policy.effectiveRecoveryMode(resourceType, resourceName.getOrElse("")) match {
@@ -180,7 +186,7 @@ class PolicyInterceptor extends HandlerInterceptor {
                     actor = actor,
                     reason = reasonOf(request),
                     agentSession = Option(request.getHeader(AuditActor.HeaderAgentSession)).map(_.trim).filter(_.nonEmpty).map(_.take(64)),
-                    incidentId = Option(request.getHeader(AuditActor.HeaderIncident)).map(_.trim).filter(_.nonEmpty).map(_.take(64)),
+                    incidentId = AuditActor.incidentOf(request),
                     method = request.getMethod,
                     path = request.getRequestURI,
                     query = query,
@@ -246,13 +252,15 @@ class PolicyInterceptor extends HandlerInterceptor {
     /** `X-Datris-Approval: <id>.<token>` on a replay of an approved action.
       * Some(true): the approved request itself, its single-use token consumed;
       * the policy gate is skipped and the audit row carries the approval.
-      * Some(false): an invalid, used or unapproved token (403, as before).
+      * Some(false): an invalid, used or unapproved token (403, as before),
+      * or a token the platform's own carrier presents on a request that
+      * TenantInterceptor did not verify as that approval (403, the token is
+      * not used).
       * None: a valid token presented on a request other than the approved
       * one ([[PolicyInterceptor.replayMatches]]): nothing is consumed or
       * stamped, and the request is gated as if it carried no token. */
     private def handleReplay(request: HttpServletRequest, response: HttpServletResponse, header: String): Option[Boolean] = {
-        val dot = header.indexOf('.')
-        val (id, token) = if (dot > 0) (header.substring(0, dot), header.substring(dot + 1)) else (header, "")
+        val (id, token) = ReplayAuthority.split(header)
         val store = PolicyInterceptor.store
         val stored =
             try store.get(id)
@@ -262,6 +270,14 @@ class PolicyInterceptor extends HandlerInterceptor {
                 logger.info("agent policy: approval {} presented on a request other than the approved one; gated as usual", pa.id)
                 return None
             case _ =>
+        }
+        // A replay the platform's own carrier presents runs with the identity
+        // TenantInterceptor gave it for THIS approval. Without that record
+        // (or with one for another approval) the token is not used: the
+        // identity on the request was not decided for this approval.
+        if (TenantInterceptor.replayNeedsVerification(request) && !TenantInterceptor.verifiedReplay(request).exists(_.approvalId == id)) {
+            logger.info("agent policy: approval {} presented without the matching verification; refused, token not used", ai.datris.util.LogSafe.text(id))
+            return Some(rejectReplay(request, response, id))
         }
         val ok =
             try store.consumeReplay(id, token)
@@ -277,14 +293,17 @@ class PolicyInterceptor extends HandlerInterceptor {
                 pa.reason.foreach(m.addProperty("reason", _))
                 request.setAttribute(AuditLog.MetadataAttr, m)
                 Some(true)
-            case None =>
-                val body = new JsonObject()
-                body.addProperty("error", "invalid, already used, or unapproved approval token")
-                body.addProperty("errorKind", "policy_replay_rejected")
-                PolicyGate.writeJson(response, HttpServletResponse.SC_FORBIDDEN, body)
-                AuditLog.denied(request, "approval replay rejected for " + ai.datris.util.LogSafe.text(id), HttpServletResponse.SC_FORBIDDEN)
-                Some(false)
+            case None => Some(rejectReplay(request, response, id))
         }
+    }
+
+    private def rejectReplay(request: HttpServletRequest, response: HttpServletResponse, id: String): Boolean = {
+        val body = new JsonObject()
+        body.addProperty("error", "invalid, already used, or unapproved approval token")
+        body.addProperty("errorKind", "policy_replay_rejected")
+        PolicyGate.writeJson(response, HttpServletResponse.SC_FORBIDDEN, body)
+        AuditLog.denied(request, "approval replay rejected for " + ai.datris.util.LogSafe.text(id), HttpServletResponse.SC_FORBIDDEN)
+        false
     }
 
     private def reasonOf(request: HttpServletRequest): Option[String] =
@@ -295,7 +314,7 @@ class PolicyInterceptor extends HandlerInterceptor {
         m.addProperty("policyAction", actionKey)
         approvalId.foreach(m.addProperty("approvalId", _))
         reasonOf(request).foreach(m.addProperty("reason", _))
-        Option(request.getHeader(AuditActor.HeaderIncident)).map(_.trim).filter(_.nonEmpty).foreach(i => m.addProperty("incidentId", i.take(64)))
+        AuditActor.incidentOf(request).foreach(i => m.addProperty("incidentId", i))
         m
     }
 }
@@ -333,10 +352,15 @@ object PolicyInterceptor {
 
     @volatile private[datris] var store: Store = MongoStore
 
-    /** An approved action whose replay token is `token` and not used yet. */
+    /** An approved action that holds the hash of `token` and is not used
+      * yet. The presented value is hashed and the hashes compared in
+      * constant time; a record without a hash accepts nothing. */
     def replayable(pa: PendingAction, token: String): Boolean =
         pa != null && pa.state == PendingAction.Approved && token != null && token.nonEmpty &&
-            pa.replayToken.contains(token) && pa.replayConsumedAt.isEmpty
+            pa.replayConsumedAt.isEmpty && pa.replayTokenHash.exists { stored =>
+                val presented = TokenHash.sha256Hex(token)
+                MessageDigest.isEqual(presented.getBytes(StandardCharsets.UTF_8), stored.getBytes(StandardCharsets.UTF_8))
+            }
 
     /** Is `request` the approved action `pa`: the same canonical method and
       * path ([[ai.datris.auth.RequestPaths]], the stored raw path read the

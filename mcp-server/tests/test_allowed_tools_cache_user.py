@@ -16,13 +16,13 @@ import server  # noqa: E402
 def listing(monkeypatch):
     calls = []
 
-    def fake_call(method, path, **kw):
+    def fake_fetch():
         obo = server._session_on_behalf_of.get()
-        calls.append((method, path, obo))
+        calls.append(("get", "/api/v1/mcp/tools", obo))
         tools = ["get_pipeline"] if obo == "bob" else ["get_pipeline", "delete_pipeline"]
-        return json.dumps({"filtered": True, "tools": tools})
+        return 200, json.dumps({"filtered": True, "tools": tools})
 
-    monkeypatch.setattr(server, "_call", fake_call)
+    monkeypatch.setattr(server, "_fetch_allowed_tools", fake_fetch)
     monkeypatch.setattr(server, "_allowed_tools_cache", {})
     return calls
 

@@ -128,10 +128,11 @@ class AuditInterceptor extends HandlerInterceptor {
                     o
                 }.orElse(withSession)
                 // Incident id from the recovery agent's calls — the audit log is
-                // the incident's ledger, joined on this field.
-                val withIncident = Option(request.getHeader(AuditActor.HeaderIncident)).map(_.trim).filter(_.nonEmpty).map { iid =>
+                // the incident's ledger, joined on this field. Only the
+                // platform's own callers can tag a call (AuditActor.incidentOf).
+                val withIncident = AuditActor.incidentOf(request).map { iid =>
                     val o = withReason.getOrElse(new JsonObject())
-                    if (!o.has("incidentId")) o.addProperty("incidentId", iid.take(64))
+                    if (!o.has("incidentId")) o.addProperty("incidentId", iid)
                     o
                 }.orElse(withReason)
                 // Surface that made an on-behalf-of call (e.g. the Configuration

@@ -113,6 +113,10 @@ Mismatches return **HTTP 400** with a message naming the violation. Also enforce
 
 Remedy, in order: save the tap **without** `cronExpression`; run it with `mode: "test"` until it succeeds (the server stamps the tested script on the tap as `lastTestRunScriptId`); then save again with the `cronExpression`. Clearing a cron, and cadence-only or metadata edits (description, tags, `targetPipeline`, `enabled`) on a tap whose current script has passed a test, are always accepted. Test state is read from the stored tap only — `lastTestRun*` fields in the request body are ignored. Pre-existing scheduled taps keep running and stay editable; the first cron or script change on such a tap is accepted if the tap has ever tested or run successfully, otherwise it needs a test run first. The same rule applies to `POST /api/v1/tap/version/restore`. `POST /api/v1/tap/script` applies the rule up front: storing different bytes for a tap that currently has a `cronExpression` is refused with the same **HTTP 409** body before anything is written to the object store or code repository (so the repository never drifts ahead of the tap's pinned commit). Clear the cron first (save with `cronExpression: null`), then store, test, and set the cron. Storing identical bytes, or storing for an unscheduled tap, is always accepted. The AI script endpoints (`/tap/generate`, `/tap/fix`, `/tap/review`, `/tap/optimize`) still return the new script and its `scriptPath` with HTTP 200, but do not move a scheduled tap onto the new bytes; when that happens the body also carries the gate message under `error`.
 
+**Who the AI script endpoints change a tap for.** `/tap/generate`, `/tap/fix`, `/tap/review` and `/tap/optimize` point a stored tap at the new script only when the request names that tap (`tapName` present and not blank) and the caller may update it: it holds `tap:update` or `tap:create` on the tap's catalog and owner (and may read the tap), or is a user whose role or catalog grant allows editing it. A caller that may read the tap but not update it (a viewer, or a key such as the read-only, reporting or ops template) gets the same HTTP 200 and the new script, the stored tap, its versions and its test state are left as they were, and the body carries `"error": "The stored tap was left unchanged: this caller may not update it"`. A request with no `tapName`, or a blank one, never reads or changes a stored tap, whatever taps exist, so a user limited to catalogs gets the review or optimization of such a request rather than `404`.
+
+**Script references for callers limited to a catalog or to what they created.** For a user limited to catalogs, or an API key limited to a catalog or to what it created, a new or changed `scriptPath` or `scriptRepoPath` must be a tap script: an object under `tap-scripts/` on built-in storage, or a file under the code repository's path prefix and outside its `pipelines/` folder, with no empty, `.` or `..` path segment (so no leading, trailing or doubled `/`). It must also not be the current script of a tap that caller cannot see, however the path is written. Otherwise nothing is saved, and the answer is the one a tap outside the caller's access gets: `404` `Tap: <name> not found` (the tap being saved) for such a user, `403` naming `tap:read` for a key, the same for both reasons and naming nothing of another tap. A reference left as stored, or left out of the body (the stored one is kept), is never refused by this rule; the tap editor, the MCP tools and renaming produce references it accepts. In this release the rule applies to those callers only, and version restore is reported rather than refused; a later release applies the tap script area to every caller's references.
+
 **Version restore is checked like a save:** restoring a version (`POST /api/v1/tap/version/restore`, or Version History in the UI) gives the answer saving that version's configuration would give you today. Every check on this page applies, for every caller including admins: a version whose secret may not be used by a tap, whose `scriptKind` is unknown, whose HTTP endpoint is missing or invalid, whose script is no longer in its storage backend, whose document target pipeline cannot take documents, whose changed `dependsOn` names a tap outside the catalog or closes a cycle, or whose cron is invalid or fails the test-before-cron rule, is refused with the same status and `{"error": "..."}` message as `POST /api/v1/tap`, and nothing is written. A restore brings back the definition only (script reference, kind, endpoint, packages, secret, cron, target, tags, source, dependencies): the tap keeps its current name, catalog, owner, enabled state, and run, retry and test state. To move a tap to another catalog, change its `catalog`; to turn its schedule on or off, save it with `enabled`. A deleted tap is re-created as `POST /api/v1/tap` creates one, so restoring it needs the right to create that tap (`tap:create`, in scope for a scoped key, on the version's catalog with you as owner) as well as `tap:update`; without it the restore answers `403` naming `tap:create` and nothing is written. The re-created tap is in the version's catalog, owned by you, with its test status cleared (so a schedule must pass a test run again before it can be set); its other recorded run details are as they are in the version. If the tap is created, deleted, moved, given another owner, or enabled or disabled while the restore is being checked, it returns `409` (`Tap '<name>' changed while it was being restored; nothing was restored. Try again.`). To recover a refused version, open it (`GET /api/v1/tap/version` returns its configuration and script text, or Version History), fix the field the message names, store the script again if needed (`POST /api/v1/tap/script`) and save it with `POST /api/v1/tap`; the version history is not changed.
 
 ## Delete Tap
@@ -121,7 +125,90 @@ Remedy, in order: save the tap **without** `cronExpression`; run it with `mode: 
 DELETE /api/v1/tap?name={tapName}
 ```
 
-Deletes the tap configuration and its script from MinIO. For document taps, also clears the ledger entries and deletes all staged MinIO objects for that tap.
+Deletes the tap configuration and its script. For document taps, also clears the ledger entries and deletes all staged MinIO objects for that tap.
+
+Only the tap's own script file is deleted (on built-in storage the object the platform wrote for the tap; in a [code repository](/tap-github-storage#which-file-a-tap-owns) `<path prefix><tap name>.py` under the current or a recorded earlier path prefix), and only when no other tap uses the same file. On built-in storage a script object the platform wrote for the tap under another name (a tap renamed before its first save) is also deleted when no tap has that name and no other tap uses it. Any other file the tap points to is left in place; the tap is still deleted. The same rules apply to the script objects of the tap's earlier versions. In a code repository a file edited since the tap's recorded commit is also kept.
+
+**Response:**
+```json
+{
+  "message": "Tap deleted: stock-prices-tap",
+  "warnings": [
+    "The tap's script file was left in place because it is not a file this tap alone owns; remove it by hand if it is no longer wanted."
+  ]
+}
+```
+
+`warnings` is empty when the script file was deleted. Each kept file gives one warning: the text above for a file that is not the tap's own or is still used by another tap (also when the list of taps could not be read), or a message naming a repository file that was edited since its recorded commit, could not be checked, or whose delete could not be confirmed. Deleting a catalog with its items reports the same warnings per tap.
+
+## Change Owner
+
+```
+POST /api/v1/tap/owner
+Content-Type: application/json
+```
+
+Hands an existing tap to another user or API key. The tap keeps its versions, incremental-sync state, document ledger, run history, schedule, enabled state and script; only its owner changes. A tap's owner is otherwise set when it is created and kept on every later save: an owner named in the body of `POST /api/v1/tap`, a version restore or a catalog restore is ignored.
+
+Only an administrator (a signed-in admin, or an API key with full access: unscoped `*:*` or a legacy key) may change a tap's owner. Every other caller, including a key holding `tap:update` or a wildcard limited to a catalog or to what it created, gets `403` and nothing about the tap is read; the error text depends on which check refused the request. For API keys, an [agent policy](/agent-policy) on tap updates applies to this action as it does to any other tap update.
+
+**Body:** the tap and exactly one of `user` or `key`.
+```json
+{
+  "name": "stock-prices-tap",
+  "key": "sales-agent"
+}
+```
+```json
+{
+  "name": "stock-prices-tap",
+  "user": "ed"
+}
+```
+
+- `user` names a user; the tap is stored as owned by `session:<username>`.
+- `key` names an issued API key by its label. A revoked or unknown key is refused. The platform's own identities (`anonymous`, `recovery-agent`, `system`, `agent`) and labels starting `session:` or `tap:` cannot be named; `ui` can, when it is an issued key.
+
+With an API key that has full access:
+```bash
+curl -s -X POST http://localhost:8080/api/v1/tap/owner \
+  -H "x-api-key: $DATRIS_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "stock-prices-tap", "key": "sales-agent"}'
+```
+
+With [user authentication](/user-auth) on and API keys off, sign in as an admin and send the `datris-session` cookie your sign-in set:
+```bash
+curl -s -X POST http://localhost:8080/api/v1/tap/owner \
+  -b "datris-session=$DATRIS_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "stock-prices-tap", "user": "ed"}'
+```
+
+**Response:**
+```json
+{
+  "name": "stock-prices-tap",
+  "owner": "sales-agent",
+  "previousOwner": "session:ada",
+  "changed": true,
+  "warnings": []
+}
+```
+
+`changed` is `false`, and nothing is written, when the tap already has that owner; its audit log entry carries `changed: false`, alongside any details already recorded for the request (an approved request keeps its approval details).
+
+**Who may own the tap.** An administrator, a user with no catalog limits who may edit taps, or a key with full access can always be the owner. Any other new owner is refused with `409` and a message saying what to do, and nothing changes, when:
+- it could not edit the tap where it is: it cannot see the tap's catalog, or may not change taps (a viewer, a read-only key); or
+- it may not load into the tap's target pipeline.
+
+Grant the new owner what it lacks, point the tap at a pipeline it may load into, or pick another owner. Findings that `datris doctor` reports but that do not decide this change are returned in `warnings`, in the words of the [`tap.owner_scope` and `tap.references` rows](/doctor#the-checks), and the owner is still changed: a target pipeline that does not exist yet, callback reads the new owner's access narrows, and a tap secret outside the new owner's tap access.
+
+**Other answers.** `400` when the body names both or neither of `user` and `key`, an unknown user, an unknown, revoked or reserved key, or a catalog placeholder. `404` (`Tap: <name> not found`) for a missing tap. `409` (`Tap '<name>' changed while its owner was being changed; nothing was changed. Try again.`) when the tap was moved to another catalog or pointed at another pipeline while the change was being checked.
+
+**What changes at once.** The owner decides which keys limited to what they created (`owner=self`) reach the tap: from the change on, the new owning key may read and update the tap and the previous owning key may not. The owner also shows in data lineage and in `datris doctor`'s tap rows (which may take up to 15 seconds to catch up). Nothing else a tap does changes in this release (see [Who a tap runs as](/taps#who-a-tap-runs-as)).
+
+**What does not change.** No tap version is written and the tap's update time is kept, so its version history, last editor and schedule are as they were. A run or test in progress finishes as it started and does not put the previous owner back; the next run reads the new owner. Each change is recorded in the [audit log](/audit-log#what-is-recorded) as `tap` / `owner-change` with the previous and new owner, and in the server log.
 
 ## Brainstorm (AI Chat)
 
@@ -312,7 +399,9 @@ Stores a (typically hand-edited) Python script and, when the tap already exists,
 
 `scriptPath` is set for built-in storage; `scriptRepoPath` and `scriptCommitSha` for the repository. Replacing an existing tap's script is a definition edit and lands as a new definition version (`GET /api/v1/tap/versions`) naming who made it; storing identical bytes is a plain write.
 
-**Errors:** **HTTP 409** when `baseCommitSha` is stale (pull the latest, reapply the edit, retry), or when the tap carries a `cronExpression` and the new bytes have not passed a `mode=test` run — the test-before-cron rule, evaluated before anything is written (see [Create or Update Tap](#create-or-update-tap)). **HTTP 500** when `tapName` or `script` is missing.
+**Errors:** **HTTP 409** when `baseCommitSha` is stale (pull the latest, reapply the edit, retry), or when the tap carries a `cronExpression` and the new bytes have not passed a `mode=test` run — the test-before-cron rule, evaluated before anything is written (see [Create or Update Tap](#create-or-update-tap)). **HTTP 409** also when the script would be written to the code repository at `<path prefix><tapName>.py` for a name with no repository script of its own yet (a new name, or a tap moving into the repository with `storage: "github"`) and another tap already runs its script from that file: nothing is written, and the other tap's script is never replaced; use another tap name. A user limited to catalogs, or a key limited to a catalog or to what it created, gets in that case the answer a refused script reference gives on save (`403` naming `tap:read` for a key, `404` for a user). A tap that already stores its script in the repository at its own path keeps storing it there, except for a user limited to catalogs, or an API key whose tap access is limited (it cannot read every tap, or its `tap:update` is limited to a catalog or to what it created): such a caller's upload to the tap's own file is refused the same way, with the same answer, when another tap also runs its script from that file, in any spelling of its path; nothing is written and the refusal is recorded in the [audit log](/audit-log#what-is-recorded) each time. When the tap list cannot be read, such an upload answers **HTTP 503** and writes nothing. **HTTP 409** also when a user limited to catalogs, or an API key whose tap access is limited (it cannot read every tap, or its `tap:update` is limited to a catalog or to what it created) uploads the script of a tap stored in the repository whose stored path is not its own file (see below): nothing is written, and the message names only that tap and asks for an administrator to move the script to the tap's own path. **HTTP 503**, with nothing written, when such a caller uploads the script of a tap stored in the repository and the code repository settings cannot be read; try again. **HTTP 500** when `tapName` or `script` is missing.
+
+A tap stored in the repository whose stored path is not its own file (for example a hand-placed path, or a path under an earlier prefix that is not recorded) still stores its script at that path in this release when an administrator, an editor without catalog limits or an unrestricted key uploads it; the server log and the [audit log](/audit-log#what-is-recorded) note it once a day, and `datris doctor` lists it under [`tap.references`](/doctor#the-checks). The same upload by a user limited to catalogs or a key whose tap access is limited is refused (`409`, above) and recorded in the audit log each time. A key limited only for pipelines whose tap capabilities carry no scope is not held to this: its upload is written as before. A later release stores such a tap's next script at its own path and points the tap at it. A script stored under a name with no saved tap by a key that holds no `tap:create` is noted the same way; a later release refuses it.
 
 ## Pull Script from Repository
 
@@ -381,7 +470,7 @@ Moves a tap's script between backends: reads it from the current backend, writes
 
 **Response:** The migrated tap configuration (same shape as [Get Tap](#get-tap), without `script`), with `scriptStorage`, `scriptPath`, `scriptRepoPath` and `scriptCommitSha` updated.
 
-**Errors:** **HTTP 400** with `{"error": ...}` for an unknown tap, an invalid `target`, or a tap whose current script cannot be read.
+**Errors:** **HTTP 400** with `{"error": ...}` for an unknown tap, an invalid `target`, or a tap whose current script cannot be read. **HTTP 409** with `{"error": ...}` for a move to `github` when another tap already runs its script from `<path prefix><tapName>.py`: nothing is written (a limited user or key gets the answer a refused script reference gives on save).
 
 ## Test Tap
 
@@ -391,6 +480,8 @@ Content-Type: application/json
 ```
 
 Executes the tap script without sending data to a pipeline. Returns results, logs, and AI diagnosis if issues detected.
+
+For a user limited to catalogs, or an API key limited to a catalog or to what it created, the script reference follows the rule `POST /api/v1/tap` applies ([Script references for callers limited to a catalog or to what they created](#create-or-update-tap)): a new or changed reference outside the tap script area, or to the current script of a tap the caller cannot see, is refused before anything runs, with the same `404` or `403` a save gets.
 
 **Query parameters:**
 
@@ -484,6 +575,8 @@ The UI invokes this automatically **before** [Optimize Script](#optimize-script)
   "rewritten": true
 }
 ```
+
+When `rewritten` is `true`, the stored tap named by `tapName` is pointed at the new script only for a caller that may update it; otherwise the body also carries `"error": "The stored tap was left unchanged: this caller may not update it"` and the stored tap is not changed (see [Who the AI script endpoints change a tap for](#create-or-update-tap)). A request without `tapName` changes no stored tap. Review needs only `tap:read` in this release; a later release requires `tap:update` for it, and `datris doctor` lists under `tap.references` the users and keys that used review without it.
 
 When `rewritten` is `false`, `script` / `scriptPath` match the input and `changes` is empty — the reviewer found nothing in the output worth acting on. Prompt fragments configured via [Tap Prompt Fragments](#tap-prompt-fragments) are auto-injected into the reviewer's system prompt when their key or any alias appears in the script.
 
@@ -808,7 +901,7 @@ Probes use the same logic as `/api/v1/health/services`, with a 2-second timeout 
 
 User-configured system prompt fragments that auto-inject into tap AI flows when the user's text matches the fragment's key or any alias. See [Tap Prompt Fragments](/tap-prompts) for the full concept; this section covers the REST endpoints.
 
-Fragments are per-tenant, stored in MongoDB at `{env}-tap-prompt`, and matched case-insensitively with word boundaries.
+Fragments are per install, stored in MongoDB at `{env}-tap-prompt`, and matched case-insensitively with word boundaries.
 
 ### List Fragments
 
@@ -864,7 +957,7 @@ Create-or-update semantics — if a fragment with the same `key` already exists,
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `key` | string | Yes | Primary match keyword. Unique per tenant. Matched case-insensitively with `\b` word boundaries. |
+| `key` | string | Yes | Primary match keyword. Unique per install. Matched case-insensitively with `\b` word boundaries. |
 | `aliases` | string[] | No | Additional match keywords. Same matching rules as `key`. |
 | `content` | string | Yes | System-prompt text appended under a `## User-provided context` block when a match fires. |
 | `enabled` | boolean | No (default `true`) | When `false`, the fragment stays in storage but is excluded from matching. |

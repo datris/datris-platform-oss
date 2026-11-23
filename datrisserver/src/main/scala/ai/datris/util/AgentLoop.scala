@@ -6,6 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{JsonArray, JsonObject, JsonParser}
+import ai.datris.config.TenantInterceptor
 import ai.datris.model.{AIConfig, DatrisException}
 import ai.datris.util.AIUtil.{AIContentBlock, AIStreamEvent, AIToolResponse}
 import org.slf4j.{Logger, LoggerFactory}
@@ -197,7 +198,8 @@ object AgentLoop {
         attachments: Map[String, (String, Array[Byte])] = Map.empty,
         execute: (String, JsonObject) => String = null,
         messageBlocks: List[(String, List[AIContentBlock])] = null,
-        schemaProposalCards: Boolean = false
+        schemaProposalCards: Boolean = false,
+        callModel: (List[(String, List[AIContentBlock])], AIStreamEvent => Unit) => AIToolResponse = null
     ): Unit = {
         // Tool dispatch. Defaults to the MCP catalog; the Configuration chat
         // passes its own executor (Datris-defined tools, confirmation tokens).
@@ -227,8 +229,14 @@ object AgentLoop {
             // pathologically long answer can't loop forever; reset whenever the model
             // makes real progress (emits a tool call).
             var autoContinues = 0
+            // Model iterations in a row whose tool calls failed because the
+            // user store could not be read to check the acting user, with no
+            // successful tool call since. Several such failures in one batch
+            // count once; a successful tool call resets it.
+            var userStoreStreak = 0
             while (continue && iter < maxIterations && !cancelled()) {
                 iter += 1
+                var userStoreCountedThisIteration = false
                 sink(LoopEvent.IterationStart)
 
                 // Tools execute only below, after this call has returned a
@@ -236,18 +244,20 @@ object AgentLoop {
                 // retried inside callWithRetryAndFallback) has run no tool:
                 // its streamed tool_use blocks were only shown, never
                 // dispatched, so a retry cannot run a tool twice.
-                val response: AIToolResponse = callWithRetryAndFallback(
-                    aiConfig = aiConfig,
-                    system = system,
-                    messages = messages,
-                    tools = anthropicTools,
-                    enableThinking = enableThinking,
-                    maxTokens = maxTokensPerCall,
-                    sink = streamSinkAdapter(sink),
-                    cancelled = cancelled,
-                    notice = (msg: String) => sink(LoopEvent.Notice(msg)),
-                    retrying = (a: Int, m: Int, r: String) => sink(LoopEvent.Retrying(a, m, r))
-                )
+                val response: AIToolResponse =
+                    if (callModel != null) callModel(messages, streamSinkAdapter(sink))
+                    else callWithRetryAndFallback(
+                        aiConfig = aiConfig,
+                        system = system,
+                        messages = messages,
+                        tools = anthropicTools,
+                        enableThinking = enableThinking,
+                        maxTokens = maxTokensPerCall,
+                        sink = streamSinkAdapter(sink),
+                        cancelled = cancelled,
+                        notice = (msg: String) => sink(LoopEvent.Notice(msg)),
+                        retrying = (a: Int, m: Int, r: String) => sink(LoopEvent.Retrying(a, m, r))
+                    )
 
                 if (cancelled()) {
                     sink(LoopEvent.Error("Cancelled by user"))
@@ -288,7 +298,13 @@ object AgentLoop {
                 } else {
                     autoContinues = 0
                     var stopAfterBatch = false
-                    val resultBlocks = toolUses.map { t =>
+                    // Set when a tool failure means the run cannot go on for
+                    // its user: the remaining tools of the batch are not
+                    // dispatched and the model is not called again.
+                    var endRun: Option[String] = None
+                    // Lazy: each tool is dispatched only after the previous one's
+                    // outcome is known, so nothing runs once `endRun` is set.
+                    val resultBlocks = toolUses.iterator.takeWhile(_ => endRun.isEmpty).map { t =>
                         if (cancelled()) {
                             AIContentBlock.ToolResultBlock(t.id, "Cancelled by user", isError = true)
                         } else if (t.name == SyntheticSecretTool) {
@@ -364,7 +380,7 @@ object AgentLoop {
                                 // (the Assistant); other chats see the raw result.
                                 val schemaProposal =
                                     if (schemaProposalCards && secretRequest.isEmpty) schemaProposalOf(t.id, t.name, raw) else None
-                                if (schemaProposal.isDefined) {
+                                val result = if (schemaProposal.isDefined) {
                                     sink(schemaProposal.get)
                                     // Close the tool card with the raw proposal for
                                     // UIs that predate the schema_proposal event
@@ -388,14 +404,35 @@ object AgentLoop {
                                         sink(LoopEvent.ToolResult(t.id, t.name, raw, isError = false))
                                         AIContentBlock.ToolResultBlock(t.id, ToolResultTrim.trim(t.name, raw), isError = false)
                                 }
+                                // A successful tool call shows the acting user was checked.
+                                userStoreStreak = 0
+                                userStoreCountedThisIteration = false
+                                result
                             } catch {
                                 case e: Exception =>
                                     val msg = "Tool '" + t.name + "' failed: " + e.getMessage
                                     logger.warn("AgentLoop tool failure: " + msg)
                                     sink(LoopEvent.ToolResult(t.id, t.name, msg, isError = true))
+                                    FatalToolErrors.kindOf(t.name, e) match {
+                                        case Some(FatalToolErrors.UnverifiedUser) =>
+                                            endRun = Some(FatalToolErrors.UnverifiedUserMessage)
+                                        case Some(FatalToolErrors.UserStoreUnavailable) =>
+                                            if (!userStoreCountedThisIteration) {
+                                                userStoreStreak += 1
+                                                userStoreCountedThisIteration = true
+                                            }
+                                            if (userStoreStreak >= FatalToolErrors.UserStoreUnavailableLimit)
+                                                endRun = Some(FatalToolErrors.UserStoreUnavailableMessage)
+                                        case None => ()
+                                    }
                                     AIContentBlock.ToolResultBlock(t.id, ToolResultTrim.trim(t.name, msg), isError = true)
                             }
                         }
+                    }.toList
+                    if (endRun.isDefined) {
+                        logger.warn("AgentLoop run ended: the acting user could not be checked")
+                        sink(LoopEvent.Error(endRun.get))
+                        return
                     }
                     messages = messages :+ ("user", resultBlocks)
                     if (stopAfterBatch) continue = false
@@ -930,4 +967,59 @@ object AgentLoop {
             if (fallback.nonEmpty && fallback != cfg.model) Some(fallback) else None
         } else None
     }
+}
+
+/** Tool failures that mean a chat cannot go on for the user it acts for.
+  * Pure. A failure is recognised only from the failure's own body, the
+  * `errorKind` of the REST refusal a tool call ended with (the text
+  * `MCPClient.callTool` throws as `MCP tool '<name>' returned error: <body>`),
+  * never from text inside a successful result. */
+object FatalToolErrors {
+
+    sealed trait Kind
+    case object UnverifiedUser extends Kind
+    case object UserStoreUnavailable extends Kind
+
+    /** Shown when the acting user could not be verified (unknown or deleted). */
+    val UnverifiedUserMessage: String =
+        "This chat was stopped: the user it was acting for could not be verified. Sign in again to continue."
+
+    /** Shown when the user store could not be read to check the acting user
+      * for [[UserStoreUnavailableLimit]] model iterations in a row. */
+    val UserStoreUnavailableMessage: String =
+        "This chat was stopped: the platform could not check the user it was acting for because its user store is unavailable. Try again in a few minutes."
+
+    /** Model iterations in a row whose tool calls failed with an unavailable
+      * user store (and none succeeded) that end the run. */
+    val UserStoreUnavailableLimit: Int = 2
+
+    private def failurePrefix(toolName: String): String = "MCP tool '" + toolName + "' returned error: "
+
+    /** The kind of a tool failure, or None for every failure that is not
+      * about checking the acting user. */
+    def kindOf(toolName: String, failure: Throwable): Option[Kind] = failure match {
+        case e: DatrisException if e.getMessage != null && e.getMessage.startsWith(failurePrefix(toolName)) =>
+            errorKindOf(e.getMessage.substring(failurePrefix(toolName).length)) match {
+                case Some(k) if k == TenantInterceptor.UnverifiedUserErrorKind => Some(UnverifiedUser)
+                case Some(k) if k == TenantInterceptor.UserStoreUnavailableErrorKind => Some(UserStoreUnavailable)
+                case _ => None
+            }
+        case _ => None
+    }
+
+    /** `errorKind` of a REST error body: a JSON object with an `error` and a
+      * string `errorKind`. */
+    private def errorKindOf(body: String): Option[String] =
+        try {
+            val el = JsonParser.parseString(body.trim)
+            if (!el.isJsonObject) None
+            else {
+                val o = el.getAsJsonObject
+                val k = o.get("errorKind")
+                if (o.has("error") && k != null && k.isJsonPrimitive && k.getAsJsonPrimitive.isString) Some(k.getAsString)
+                else None
+            }
+        } catch {
+            case _: Exception => None
+        }
 }

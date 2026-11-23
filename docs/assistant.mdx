@@ -232,12 +232,12 @@ on an agent that's writing production-bound config.
 
 ## Configuration
 
-The Assistant uses your tenant's **AI primary** config (the chat slot). Tap
+The Assistant uses your install's **AI primary** config (the chat slot). Tap
 script generation, AI data quality, and AI transformations use the separate
 **codegen** slot. On a fresh install the Anthropic default is Claude Opus 5.5
 (`claude-opus-5-5`) for both slots; the OpenAI default is `gpt-5.6-sol`.
 
-There is no per-tenant Assistant configuration to manage beyond what you
+There is no separate Assistant configuration to manage beyond what you
 already have for AI primary. See [AI Configuration](/ai-configuration) for the
 underlying AI primary / codegen / web search / embedding settings.
 
@@ -280,6 +280,12 @@ capability model.
 - **50 iterations per turn.** The agent loop is hard-capped to bound cost. If
   the agent runs out of iterations, it stops and asks you to send a follow-up
   message to continue.
+- **A chat stops when its user can no longer be verified.** If the signed-in
+  user a chat acts for is deleted while it is working, the reply stops at the
+  next tool call with a message asking you to sign in again, instead of
+  carrying on with tool calls that can only be refused. If the user list
+  cannot be read for two replies in a row, the chat stops with a message
+  saying so (see [Roles in the chats](/user-auth#roles-in-the-chats)).
 - **No server-side conversation history.** The transcript lives in the
   browser tab's session storage — it survives a refresh but is gone once the
   tab is closed. Durable persistence is on the roadmap.

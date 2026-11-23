@@ -29,8 +29,7 @@ class CodeRepoAPIController {
     def getCodeRepo(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
-            val config = CodeRepoConfigIO.read().getOrElse(CodeRepoConfig())
-            new ResponseEntity[String](new Gson().toJson(config), HttpStatus.OK)
+            new ResponseEntity[String](CodeRepoAPIController.getBody(CodeRepoConfigIO.read()), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -63,7 +62,9 @@ class CodeRepoAPIController {
                 GithubClient.branchHeadSha(config)
             }
 
-            val saved = CodeRepoConfigIO.write(config)
+            // Earlier path prefixes: a changed prefix is recorded, and a body
+            // without the list keeps the stored one.
+            val saved = CodeRepoConfigIO.write(CodeRepoAPIController.withEarlierPrefixes(CodeRepoConfigIO.read(), config))
             new ResponseEntity[String](new Gson().toJson(saved), HttpStatus.OK)
         } catch {
             case e: DatrisException =>
@@ -189,21 +190,43 @@ class CodeRepoAPIController {
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
+            logger.info("API endpoint POST /tap/migrate-storage called, tapName: " + body.get("tapName") + ", target: " + body.get("target"))
+            APIKeyValidator.validate(apiKey)
+            migrateStorageWith(body, request, TapAPIController.ProductionUploadIO)
+        } catch {
+            case e: DatrisException =>
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": \"" + e.getMessage.replace("\"", "'") + "\"}")
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
+        }
+    }
+
+    /** The storage move after key validation, over `io`'s store reads and
+      * writes. A move into the code repository writes the tap's own path
+      * `<prefix><tap>.py`, so it is refused, with nothing written, when a
+      * stored tap of another name runs its script from that file (rule S2,
+      * [[TapAPIController.uploadTargetRefusal]]). */
+    private[datris] def migrateStorageWith(
+        body: java.util.Map[String, String],
+        request: HttpServletRequest,
+        uploadIO: TapAPIController.TapScriptUploadIO
+    ): ResponseEntity[String] = {
+        val io = uploadIO.memoised
+        try {
             val tapName = body.get("tapName")
             val target = body.get("target")
-            logger.info("API endpoint POST /tap/migrate-storage called, tapName: " + tapName + ", target: " + target)
-            APIKeyValidator.validate(apiKey)
             if (tapName == null || tapName.isEmpty)
                 throw new DatrisException("tapName is required")
-            TapAPIController.restrictedRefusal(request, tapName, "update").foreach(return _)
+            TapAPIController.restrictedRefusal(request, tapName, "update", io.readTap).foreach(return _)
             if (target != "github" && target != "minio")
                 throw new DatrisException("target must be 'github' or 'minio'")
 
-            val tap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+            val tap = io.readTap(tapName)
             if (tap == null)
                 throw new DatrisException("Tap: " + tapName + " not found")
 
-            val currentStore = TapCodeStore.forTap(tap)
+            val currentStore = io.storeFor(null, tap)
             if (currentStore.storage == target) {
                 // Idempotent: already there.
                 return new ResponseEntity[String](new Gson().toJson(tap), HttpStatus.OK)
@@ -212,9 +235,13 @@ class CodeRepoAPIController {
             val script = currentStore.readScript(tap).getOrElse(
                 throw new DatrisException("Tap '" + tapName + "' has no readable script to migrate")
             )
+            val targetStore = io.storeFor(target, tap)
+            // The move writes with no prior reference: never over the file
+            // another stored tap runs from.
+            TapAPIController.uploadTargetRefusal(request, tapName, targetStore, null, io).foreach(return _)
             val actor = ResolvedKeyAccess.keyLabel(request).orNull
-            val stored = TapCodeStore.forStorage(target).storeScript(tapName, script, null, actor)
-            val migrated = TapConfigIO.writeVersioned(
+            val stored = targetStore.storeScript(tapName, script, null, actor)
+            val migrated = io.writeVersioned(
                 tap.copy(
                     scriptStorage = stored.storage,
                     scriptPath = stored.scriptPath,
@@ -232,5 +259,39 @@ class CodeRepoAPIController {
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ApiErrors.internal(e)
         }
+    }
+}
+
+object CodeRepoAPIController {
+
+    /** The `GET /code-repo` body for the `stored` configuration (the defaults
+      * when none is stored). `earlierPathPrefixes` is always present: an
+      * empty list when none are recorded. */
+    private[datris] def getBody(stored: Option[CodeRepoConfig]): String = {
+        val config = stored.filter(_ != null).getOrElse(CodeRepoConfig())
+        val shown =
+            if (config.earlierPathPrefixes == null) config.copy(earlierPathPrefixes = new java.util.ArrayList[String]())
+            else config
+        new Gson().toJson(shown)
+    }
+
+    /** What `PUT /code-repo` stores for `incoming` over the `stored`
+      * configuration: the earlier path prefixes are the body's list, or the
+      * stored list when the body has none (null); a save that changes the
+      * path prefix adds the stored prefix to them (once, compared in
+      * normalised form). Never null. Every other field is the body's. */
+    private[datris] def withEarlierPrefixes(stored: Option[CodeRepoConfig], incoming: CodeRepoConfig): CodeRepoConfig = {
+        def norm(p: String): String = TapReferenceRules.normalizedRef(Option(p).getOrElse(""))
+        val base: Seq[String] =
+            Option(incoming.earlierPathPrefixes)
+                .map(l => scala.collection.JavaConverters.asScalaBuffer(l).toList)
+                .getOrElse(stored.map(TapScriptOwnership.earlierOf).getOrElse(Nil))
+                .filter(_ != null)
+        val changed = stored.map(_.pathPrefix).filter(old => norm(old) != norm(incoming.pathPrefix))
+        val withOld = changed match {
+            case Some(old) if !base.exists(p => norm(p) == norm(old)) => base :+ Option(old).getOrElse("")
+            case _ => base
+        }
+        incoming.copy(earlierPathPrefixes = new java.util.ArrayList[String](scala.collection.JavaConverters.seqAsJavaList(withOld)))
     }
 }

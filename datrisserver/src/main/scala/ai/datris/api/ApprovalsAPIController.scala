@@ -9,6 +9,7 @@ import ai.datris.audit.{AuditActor, AuditLog}
 import ai.datris.config.RequiresRole
 import ai.datris.model.UserContext
 import ai.datris.policy._
+import ai.datris.util.TokenHash
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import jakarta.servlet.http.HttpServletRequest
@@ -20,8 +21,8 @@ import java.time.Instant
 
 /** Pending agent actions parked by the policy, and the human decisions on
   * them. Agents see only what they queued; people see everything. Deciding
-  * is for admins and editors — and never for an agent, whatever key it
-  * holds. */
+  * is for administrators (with API keys turned off, editors can decide too)
+  * — and never for an agent, whatever key it holds. */
 @RestController
 @RequestMapping(Array("/api/v1/approvals"))
 class ApprovalsAPIController {
@@ -50,10 +51,10 @@ class ApprovalsAPIController {
                     if (PolicyActor.isAgent(request)) Some(PolicyActor.label(request))
                     else Option(actor).map(_.trim).filter(_.nonEmpty)
                 val lim = Option(limit).map(_.intValue()).getOrElse(100)
-                val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
+                val listing = IncidentsAPIController.storeListing()
                 val runs = IncidentsAPIController.storeRuns()
                 PendingActionIO.list(st, actorFilter, lim).foreach(pa =>
-                    arr.add(ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, readPipeline, readTap, runs))
+                    arr.add(ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, listing.readPipeline, listing.readTap, runs))
                 )
             }
             out.add("approvals", arr)
@@ -71,8 +72,9 @@ class ApprovalsAPIController {
             if (!PolicyIO.enabled) return disabled()
             visible(id, request) match {
                 case Some(pa) =>
-                    val (readPipeline, readTap) = IncidentsAPIController.storeReaders()
-                    val body = ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, readPipeline, readTap, IncidentsAPIController.storeRuns())
+                    val listing = IncidentsAPIController.storeListing()
+                    val runs = IncidentsAPIController.storeRuns()
+                    val body = ApprovalsAPIController.withIncidentEvidence(request, pa, liveIncident, listing.readPipeline, listing.readTap, runs)
                     new ResponseEntity[String](gson.toJson(body), HttpStatus.OK)
                 case None => notFound(id)
             }
@@ -126,7 +128,9 @@ class ApprovalsAPIController {
                 PendingAction.Approved,
                 "decidedBy" -> approver,
                 "decidedAt" -> now.toString,
-                "replayToken" -> token
+                // only the hash is stored; the token itself stays in memory
+                // and goes to PolicyReplay.execute below
+                "replayTokenHash" -> TokenHash.sha256Hex(token)
             )
             if (!moved)
                 return ResponseEntity.status(HttpStatus.CONFLICT).body[String](errorJson("this approval was decided concurrently"))
@@ -140,9 +144,9 @@ class ApprovalsAPIController {
                         PolicyReplay.Result(0, "replay failed: " + e.getMessage)
                 }
             val ok = result.status >= 200 && result.status < 300
-            PendingActionIO.transition(
+            // the same update removes the token hash, used or not
+            PendingActionIO.finish(
                 pa.id,
-                PendingAction.Approved,
                 if (ok) PendingAction.Executed else PendingAction.Failed,
                 "executedAt" -> Instant.now().toString,
                 "resultStatus" -> (result.status: java.lang.Integer),
@@ -243,7 +247,9 @@ object ApprovalsAPIController {
       * ([[IncidentsAPIController.incidentRefusal]]), as
       * [[IncidentsAPIController.shownIncident]] scrubs it; otherwise the
       * field is left out, exactly as for an approval whose incident does not
-      * exist or has no evidence. A failed lookup leaves the field out. */
+      * exist or has no evidence. A failed lookup leaves the field out. Only
+      * the evidence is added, and it holds no free text, so no free-text
+      * scrub applies. */
     def withIncidentEvidence(
         request: HttpServletRequest,
         pa: PendingAction,
@@ -259,7 +265,7 @@ object ApprovalsAPIController {
                 val shown =
                     if (!ai.datris.auth.CapabilityCheck.isLimited(request)) stored
                     else if (IncidentsAPIController.incidentRefusal(request, iid, stored, readPipeline, readTap).isDefined) None
-                    else stored.map(i => IncidentsAPIController.shownIncident(request, i, readPipeline, readTap, run))
+                    else stored.map(i => IncidentsAPIController.shownEvidence(request, i, readPipeline, readTap, run))
                 shown.flatMap(_.evidence).foreach(e => o.add("incidentEvidence", e))
             } catch { case e: Exception => logger.debug("approval " + pa.id + ": incident evidence lookup failed: " + e.getMessage) }
         }

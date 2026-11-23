@@ -79,6 +79,20 @@ Datris occasionally deprecates secret paths between versions (for example, v1.5.
 - **Targeted (preserves your data):** delete the stale entries one at a time from Configuration → Secrets in the UI, or run `docker compose exec -e VAULT_TOKEN="$(docker compose exec -T datris cat /vault-token/token)" vault vault kv delete secret/oss/<name>` for each deprecated path.
 - **Total reset (destroys all data):** see the next section.
 
+### Multi-tenant mode retired
+
+Multi-tenant mode (`MULTI_TENANT=true`) is no longer supported. One install serves one environment; separate customers need separate installs. An install that never switched it on sees no change.
+
+If your install has it switched on:
+
+- **Before you upgrade**, update the `datris` CLI (`pip install -U datris-mcp-server` or `brew upgrade datris`); an older CLI does not know about this change. Then run `datris doctor --pre-upgrade`. It reports `config.multi_tenant` as an error, says where it found the setting (the `.env` file, the shell environment that runs `docker compose`, or the running `datris` container), and does not print the upgrade command. The installer runs the `datris` CLI installed on the machine, so it stops at the same error only when that CLI is up to date; with an older CLI, or none, it does not catch this.
+- **If the new version is started anyway**, the server stops at once and logs that multi-tenant mode is no longer supported, that it has not started and that nothing was changed. It does not read or write any tenant's data, and every restart stops the same way.
+- **To keep running as you are**, stay on (or go back to) the previous version: pin the image tags as described in [Roll back](#roll-back) and `docker compose up -d`. Your data is untouched and the previous version works exactly as before. This is the recommended path unless you are giving up the tenants.
+- **To run the new version**, remove `MULTI_TENANT` from `.env` and from the shell environment (or set it to `false`) and start the stack again. The server then runs as one install on its default environment. Nothing is deleted, but for an install that was using multi-tenant mode this changes three things:
+  - **The API keys issued to tenants stop working.** They no longer select a tenant. If the install requires API keys, requests that present them are rejected; if it does not, those requests are served as the default environment, not as the tenant.
+  - **The tenants' pipelines, taps and schedules are no longer served or run.** Their configuration and data stay where they are, but nothing reaches them: no API call, no file drop and no schedule.
+  - **The default environment's own data appears to be missing.** In multi-tenant mode the default environment's PostgreSQL tables were written and read, and its MongoDB collections were listed and queried, in a database named after the environment (`oss` unless you changed it). With the setting off, the server uses the configured databases instead (each pipeline's own database, by default `postgres.database`, for PostgreSQL, and `mongodb.database` for MongoDB, both `datris` by default), so tables and collections in the old database are not found. They have not been deleted; they are still in the old database.
+
 ## Roll back
 
 Every release is also published under its version tag, so rolling back is pinning the five `image:` lines in your Compose file to the version you were on (for example `datrisai/datris-server:v1.28.2`, and likewise `datris-ui`, `datris-mcp-server`, and `datris-tap-runner` — used by both the `datris-tap-runner` and `datris-codegen-runner` services), then `docker compose up -d`. Data written by the newer version stays in place; whether the older version reads it depends on what changed — check the changelog entry for the release you are backing out of before rolling back across one that migrated a store.

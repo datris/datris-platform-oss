@@ -24,6 +24,13 @@ object InertOutcome {
 
 object CapabilityInterceptor {
 
+    /** Request attribute set (to `resource:action`) when the route gate let
+      * the request through only because `CAPABILITY_ENFORCEMENT=log-only`
+      * (outcome `would-deny`): the identity does not hold the route's
+      * capability. Absent in enforce mode and for every request the gate
+      * granted. */
+    val LogOnlyWouldDenyAttr = "ai.datris.capability.logOnlyWouldDeny"
+
     /** Body returned when a presented x-api-key failed resolution. */
     val RejectedKeyBody: String = "{\"error\":\"API key is revoked or invalid\"}"
 
@@ -421,6 +428,7 @@ class CapabilityInterceptor extends HandlerInterceptor {
                                 "capability check: route={} {} required={}:{} key={} outcome=would-deny (log-only)",
                                 Array[AnyRef](logMethod, logPath, resource, action, LogSafe.text(rk.label)): _*
                             )
+                            request.setAttribute(CapabilityInterceptor.LogOnlyWouldDenyAttr, resource + ":" + action)
                             true
                         }
                 }
@@ -446,11 +454,16 @@ class CapabilityInterceptor extends HandlerInterceptor {
         response.setContentType("application/json")
         response.getWriter.write(CapabilityInterceptor.deniedBody(rk.label, resource, action, method, path, message))
         response.getWriter.flush()
+        // The verified replay of an approved action: the row names the
+        // approval and its requester, as the replay's other rows do.
+        val replay =
+            TenantInterceptor.verifiedReplay(request).toSeq.flatMap(v => Seq("approvalId" -> v.approvalId) ++ v.originalActor.map("originalActor" -> _))
         AuditLog.denied(
             request,
             auditReason.getOrElse("capability denied for key '" + rk.label + "'"),
             HttpServletResponse.SC_FORBIDDEN,
-            required = Some(resource + ":" + action)
+            required = Some(resource + ":" + action),
+            names = replay
         )
     }
 

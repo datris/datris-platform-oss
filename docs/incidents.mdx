@@ -57,7 +57,7 @@ Guards, all enforced in code: one open incident per resource; a resource whose l
 
 During diagnosis it holds **read-only tools**, so it cannot change anything while investigating. They include the [doctor](/doctor), lineage, provenance, data discovery and pipeline version history, so its summary says what a change touches. For a tap, its proposal may only contain: re-run the tap, fix the tap script (then test it), or "this needs a human" with an explanation. For a pipeline, its only action is regenerating a stored AI script (see [Pipeline incidents](#pipeline-incidents)). Deletes, schema migrations and secret changes are structurally impossible for it. Script fixes land as a new version, so history is never lost.
 
-Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so with the audit log on, the [audit log](/audit-log) is the incident's complete ledger ([strict mode](/audit-log#strict-mode) guarantees no entry is dropped). Revoking that key stops the agent entirely, independent of any flag.
+Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so with the audit log on, the [audit log](/audit-log) is the incident's complete ledger ([strict mode](/audit-log#strict-mode) guarantees no entry is dropped). Only the platform's own callers can tag a call with an incident: an incident id sent by any other API key is ignored (and recorded as a `spoofed-incident` security event), so no other client can add entries to an incident's ledger or make its calls look like recovery work. Revoking that key stops the agent entirely, independent of any flag.
 
 ## What you see before you approve
 
@@ -94,7 +94,7 @@ The verdict decides what happens next:
 | `fail` | The record-count change, a null-rate increase or the DQ pass rate breached its limit. The incident closes as failed with nothing written to the real destination |
 | `needs-human` | A column was removed or a type changed and the policy does not allow it. The incident waits in `awaiting_approval` with the card; **Proceed to real run** (or `POST /api/v1/incidents/{id}/proceed`) lets a person accept the shape change. Agents may not proceed |
 
-If the real run fails verification, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown. `verifyMode: real` skips the rehearsal and goes straight to the real run.
+If the real run fails verification, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown. A tap revert puts back the tap's definition from before the agent's change and leaves its catalog, owner and enabled state as they are now, so a move or a pause someone made during the incident stays. If that definition would not pass today's save checks (for example its secret is no longer a tap secret, or a tap it depends on was deleted), the revert still happens and the incident says what to fix. `verifyMode: real` skips the rehearsal and goes straight to the real run.
 
 ## Schema drift incidents
 
@@ -142,7 +142,7 @@ Set under the agent policy's `recovery` section; enforced by the runner, not the
 - **Agents**: `list_incidents`, `get_incident` and `get_incident_evidence` MCP tools (read-only: only the platform opens incidents).
 - **Metrics**: `datris_incidents_total{kind,outcome}` and `datris_incident_duration_seconds` on the Prometheus endpoint.
 
-The Activity panel's incident list and the three incident tools need the `incident:read` capability (admins, or an API key granted it). An API key limited by `catalog=` or `owner=` on a pipeline or tap capability (see [API Keys](/api-keys#keys-limited-to-a-catalog-or-to-what-they-created)) sees only incidents on pipelines and taps it may read: others are left out of the list, and getting one, its evidence, or abandoning or proceeding it answers `404` as for an unknown incident. Inside an incident it sees, downstream pipelines it may not read read `[hidden]`. The Ops chat context follows the same rule for such a key, and includes open incidents only for admins among signed-in users (an editor's or viewer's role holds no `incident:read`).
+The Activity panel's incident list and the three incident tools need the `incident:read` capability (admins, or an API key granted it). An API key limited by `catalog=` or `owner=` on a pipeline or tap capability (see [API Keys](/api-keys#keys-limited-to-a-catalog-or-to-what-they-created)) sees only incidents on pipelines and taps it may read: others are left out of the list, and getting one, its evidence, or abandoning or proceeding it answers `404` as for an unknown incident. Inside an incident it sees, downstream pipelines it may not read read `[hidden]`, and so do the names of taps and pipelines it may not read, and the earlier names of such a pipeline, in any letter case, in the incident's text (step summaries and details, the trigger's error and AI summary, the outcome and the proposal); the stored incident keeps its text. The list reads up to five times the requested limit (at most 200 incidents) to fill it with incidents the key may see. The Ops chat context follows the same rule for such a key, and includes open incidents only for admins among signed-in users (an editor's or viewer's role holds no `incident:read`).
 
 ## Related
 

@@ -943,13 +943,14 @@ components:
           description: Build time of the running jar, epoch milliseconds
         environment:
           type: string
-          description: Environment name (e.g., oss for self-hosted, or tenant prefix for managed hosting)
+          description: Environment name (oss unless the install renamed it)
         environmentLabel:
           type: string
           description: Deployment label from DATRIS_ENV (e.g. dev, qa, prod); present only when set
         multiTenant:
           type: string
-          description: Whether the server is running in multi-tenant mode (true/false)
+          deprecated: true
+          description: 'Deprecated. Always "false": multi-tenant mode is retired, and a server with it switched on does not start. Kept so existing readers of the field keep working.'
         hosted:
           type: string
         useUserAuth:
@@ -1220,7 +1221,12 @@ components:
         createdByKeyLabel:
           type: string
           readOnly: true
-          description: Label of the API key that created the tap; stamped by the server and used for owner-scoped capability checks
+          description: >-
+            The tap's owner: the label of the API key that created it, or
+            session:<username> for a signed-in user. Stamped by the server,
+            ignored in a save body, and used for owner-scoped capability
+            checks. Only an administrator can change it, with
+            POST /api/v1/tap/owner.
         version:
           type: integer
           readOnly: true
@@ -1235,6 +1241,10 @@ components:
           type: boolean
           readOnly: true
           description: True only when the last failed run provably fed nothing downstream (the script errored before any pipeline submission), so an automatic re-run cannot double-write
+        lastRunUsedCallback:
+          type: boolean
+          readOnly: true
+          description: True when the script of the last real run read platform data through the tap callback during that run. Server-stamped; ignored in a save body. Reported by the `tap.owner_scope` self-check only. False on taps not run since the field was introduced
         retryCount:
           type: integer
           readOnly: true
@@ -1318,6 +1328,17 @@ components:
           description: "Commit message template. Tokens: {name}, {action}, {user}"
         enabled:
           type: boolean
+        earlierPathPrefixes:
+          type: array
+          items:
+            type: string
+          description: >-
+            Path prefixes the repository used before `pathPrefix`. A tap stored
+            under one of them (`{prefix}{tapName}.py`) is treated exactly as one
+            under the current prefix when its script is stored or the tap is
+            deleted. A save that changes `pathPrefix` adds the previous prefix;
+            a save that leaves the field out keeps the stored list. Empty when
+            none are recorded.
 
     TapRunResult:
       type: object
@@ -2137,7 +2158,7 @@ paths:
       tags: [Pipelines]
       summary: Rename a catalog
       description: |
-        Relabels every tap and pipeline whose `catalog` equals `name` to `newName`, each through a versioned write (one new definition version per member, with a change note naming the rename and the actor). Every hidden placeholder of the catalog (a `__catalog__*` tap whose `catalog` field is `name`, or whose name suffix is `name` when that field is empty) is removed, and `__catalog__<newName>` is created with `catalog=newName`. A member already moved out of `name` by a concurrent change is listed under `failed` ("no longer in catalog"), and placeholders are left untouched when no member moved. A rename never merges: if `newName` already exists (any tap or pipeline carries it, or it has a placeholder; matched case-sensitively) the request is refused with 409 and nothing changes. To combine catalogs, move their items. Not transactional: members that fail are listed under `failed` and the rest still move (207). API keys whose capabilities are scoped `catalog=<name>` are listed under `affectedKeys`; their scopes are not rewritten. Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:update`; each member is also checked against the key's owner and catalog scopes. If any member is refused by scope, placeholders are left untouched (`placeholder: skipped`); for a catalog with only a placeholder, the placeholder is scope-checked (403 on denial). Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
+        Relabels every tap and pipeline whose `catalog` equals `name` to `newName`, each through a versioned write (one new definition version per member, with a change note naming the rename and the actor). Every hidden placeholder of the catalog (a `__catalog__*` tap whose `catalog` field is `name`, or whose name suffix is `name` when that field is empty) is removed, and `__catalog__<newName>` is created with `catalog=newName`. A member already moved out of `name` by a concurrent change is listed under `failed` ("no longer in catalog"), and placeholders are left untouched when no member moved. A rename never merges: if `newName` already exists (any tap or pipeline carries it, or it has a placeholder; matched case-sensitively) the request is refused with 409 and nothing changes. To combine catalogs, move their items. Not transactional: members that fail are listed under `failed` and the rest still move (207). API keys whose capabilities are scoped `catalog=<name>` are listed under `affectedKeys`; their scopes are not rewritten. Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:update`; each member is also checked against the key's owner and catalog scopes where it is now, and, for an API key, `create` or `update` in scope (`tap:` or `pipeline:` by member type) under `newName`. The scope check is all or nothing: if any member (or, for a catalog with only a placeholder, the placeholder) is refused, the request answers 403 and nothing changes, so a key limited to one catalog cannot rename it. The 403 names the first refused member only when the key may read it. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -2173,7 +2194,7 @@ paths:
         '400':
           description: Reserved or blank catalog name, missing or invalid `newName`, or `newName` equal to `name`
         '403':
-          description: 'The catalog holds only its placeholder and the key''s scope does not cover it, or a restricted user holds `view`/`edit` but not `own` on it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+          description: 'A member or placeholder the caller may not move, or (API key) may not write under `newName`: nothing is renamed. Or a restricted user holds `view`/`edit` but not `own` on the catalog. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
           description: No tap, pipeline or placeholder carries this catalog, or (restricted user) the catalog is not in the user's grants
         '409':
@@ -2193,7 +2214,7 @@ paths:
       tags: [Pipelines]
       summary: Delete a catalog (detach or cascade)
       description: |
-        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop, a vector container, table or collection kept because another pipeline still names it (it is dropped with the last one), or a vector collection or class, table, collection or object-store files the store could not remove (the pipeline is still listed under `deleted`); warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
+        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes. Detach is all or nothing on scope. A catalog that holds only its placeholder lands nothing in Uncataloged, so only the placeholder is scope-checked where it is (403 on denial). For a catalog with members an API key also needs `create`, `update` or `delete` in scope (`tap:` or `pipeline:` by member type) on each member in Uncataloged, and if any member is refused the request answers 403 and nothing changes, so a key limited to one catalog cannot detach it while it holds items; the 403 names the first refused member only when the key may read it. Cascade keeps a per-member result: refused members are listed under `failed` and the placeholder is left untouched. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`. A cascade response also carries `warnings` (always present, possibly empty): one entry per deleted pipeline that needs a follow-up, such as a Unity Catalog table Datris could not drop, a vector container, table or collection kept because another pipeline still names it (it is dropped with the last one), or a vector collection or class, table, collection or object-store files the store could not remove (the pipeline is still listed under `deleted`); warnings never change the status code. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -2230,7 +2251,7 @@ paths:
         '400':
           description: Reserved or blank catalog name, unknown mode, or cascade without a matching `confirm`
         '403':
-          description: 'The catalog holds only its placeholder and the key''s scope does not cover it, or the caller is a restricted user (only admins and unrestricted users delete catalogs). Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+          description: 'Detach: a member or placeholder the caller may not move, or (API key) may not write in Uncataloged; nothing is detached. Cascade: the catalog holds only its placeholder and the key''s scope does not cover it. Either mode: the caller is a restricted user (only admins and unrestricted users delete catalogs). Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
           description: No tap, pipeline or placeholder carries this catalog, or (restricted user) the catalog is not in the user's grants
         '409':
@@ -2416,7 +2437,7 @@ paths:
       tags: [Pipelines]
       summary: Cancel a catalog's ordered enable
       description: |
-        The test, run or load wait in progress finishes (a running tap script is not killed); every tap not yet started is marked `cancelled` (a tap already enabled whose run had not started reads `enabled; run cancelled`). Requires `tap:run`, checked against the key's catalog scope and the job starter as owner; 403 otherwise.
+        The test, run or load wait in progress finishes (a running tap script is not killed); every tap not yet started is marked `cancelled` (a tap already enabled whose run had not started reads `enabled; run cancelled`). Requires `tap:run`, checked against the key's catalog scope and the job starter as owner; 403 otherwise. A key limited to a catalog or to what it created (a `catalog=` or `owner=` scope on a pipeline or tap capability) also needs `tap:read` on the catalog's taps in that scope, and such a key that may not read them gets the same 403 to a cancel whether or not a job is running. A key that is not limited and holds no tap read gets the same answers as before (200, or 404 when no job is running).
       parameters:
         - name: name
           in: path
@@ -2426,8 +2447,10 @@ paths:
       responses:
         '200':
           description: 'Cancel requested: `{"cancelled": true, "jobId": ...}`'
+        '403':
+          description: 'The key lacks `tap:run` in scope on the catalog''s taps, or is limited to a catalog or to what it created and lacks `tap:read` in scope on them (the same answer to a cancel whether or not a job is running), or a restricted user holds only `view` on the catalog. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
         '404':
-          description: No job is running for this catalog
+          description: No job is running for this catalog, or (restricted user) the catalog is not in the user's grants
         '500':
           description: Error
 
@@ -2436,7 +2459,7 @@ paths:
       tags: [Pipelines]
       summary: Restore a catalog from a zip backup
       description: |
-        Restores an archive produced by `GET /api/v1/catalog/{name}/export` as catalog `name` (the same or a new name, on the same or another install). A restore never merges: with `mode=new` (default) it is refused with 409 when catalog `name` already exists or any archived tap or pipeline name exists anywhere on the install (any catalog, either type), and nothing is written. With `mode=overwrite` (requires `confirm` equal to `name`) items already in `name` may be replaced; a name in another catalog is still a 409. When tap scripts are stored in a code repository, a script file already at branch head with different content is also a clash; identical content is reused without a new commit. Pipelines are saved exactly as `POST /api/v1/pipeline` saves them; tap scripts go to the install's default script storage; taps are saved with `enabled=false` and their run status cleared, so nothing runs until a user tests and enables them. Secrets are never written: `missingSecrets` lists the secrets the archived items reference that are absent on this install. Secrets are only checked where the key may read them: a key without secret read access gets a `<name>: not checked, this key may not read secrets` warning instead, whether or not the secret exists. Each tap's incremental state is restored for taps that did not exist before, unless `restoreState=false`. An archive with no members creates the empty catalog. Not transactional: failed members are listed under `failed` (207). Requires `pipeline:create`. Every member is scope-checked before anything is written: `tap:create` / `pipeline:create` in the target catalog as the caller, and for an item that already exists (overwrite) also `tap:update` / `pipeline:update` against its current catalog and owner. A refused member is listed under `failed` and nothing of it, including its validation schema, is written. Inline credentials (preprocessor and REST destination `bearerToken`/`apiKey`, `restEndpoint` row-function token parameters) are removed at export; the restore response's `warnings` names each one to re-enter. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
+        Restores an archive produced by `GET /api/v1/catalog/{name}/export` as catalog `name` (the same or a new name, on the same or another install). A restore never merges: with `mode=new` (default) it is refused with 409 when catalog `name` already exists or any archived tap or pipeline name exists anywhere on the install (any catalog, either type), and nothing is written. With `mode=overwrite` (requires `confirm` equal to `name`) items already in `name` may be replaced; a name in another catalog is still a 409. When tap scripts are stored in a code repository, a script file already at branch head with different content is also a clash; identical content is reused without a new commit. A tap script the restore would commit for a tap with no repository script of its own (new on this install, or live on built-in storage) is also a clash when its file is the script another stored tap runs from; the clash names only the restored tap and its file (for a user limited to catalogs, or an API key whose tap access is limited, it says only that the file cannot be written by this restore). For such a caller (a user limited to catalogs, or a key that cannot read every tap or whose `tap:update` is limited to a catalog or to what it created), a tap the restore would commit whose live copy is stored in the code repository at a file that is not its own (`{pathPrefix}{tapName}.py` under the current or a recorded earlier prefix) is also a clash, naming only that tap, and each such refusal is recorded in the audit log; so is, for such a caller, a tap whose live copy is stored at its own file while another stored tap also runs its script from that file (the clash says only that the file cannot be written). These script checks judge only the taps the caller may write; a tap it may not write is listed under `failed`. The same checks are made again for such a caller at the moment each tap's script is written; a tap that fails them then is listed under `failed` for the same reason (recorded in the audit log as well), nothing of it is written, and the rest of the restore goes ahead. Pipelines are saved exactly as `POST /api/v1/pipeline` saves them; tap scripts go to the install's default script storage; taps are saved with `enabled=false` and their run status cleared, so nothing runs until a user tests and enables them. Secrets are never written: `missingSecrets` lists the secrets the archived items reference that are absent on this install. Secrets are only checked where the key may read them: a key without secret read access gets a `<name>: not checked, this key may not read secrets` warning instead, whether or not the secret exists. Each tap's incremental state is restored for taps that did not exist before, unless `restoreState=false`. An archive with no members creates the empty catalog. Not transactional: failed members are listed under `failed` (207). Requires `pipeline:create`. Every member is scope-checked before anything is written: `tap:create` / `pipeline:create` in the target catalog as the caller, and for an item that already exists (overwrite) also `tap:update` / `pipeline:update` against its current catalog and owner. A refused member is listed under `failed` and nothing of it, including its validation schema, is written. Inline credentials (preprocessor and REST destination `bearerToken`/`apiKey`, `restEndpoint` row-function token parameters) are removed at export; the restore response's `warnings` names each one to re-enter. Refused with 409 while an ordered enable of the catalog (`POST /api/v1/catalog/{name}/enable-ordered`) is running.
       parameters:
         - name: name
           in: path
@@ -3746,8 +3769,8 @@ paths:
       summary: Get job status
       description: >-
         Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
-        A restricted user sees only the jobs of pipelines in its catalog grants; a `pipelinetoken` / `publishertoken` query that touches a pipeline outside the grants answers 404 `{"error":"Pipeline status not found"}`. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) of a run fed by such a tap, or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
-        An API key limited by `catalog=` or `owner=` on a pipeline or tap capability gets the same filtering and the same 404 for pipelines outside its scope, and the same `[hidden]` tap names and omitted columns when it does not read every tap.
+        A restricted user sees only the jobs of pipelines in its catalog grants. A `pipelinetoken` / `publishertoken` query for a run of a pipeline outside the grants answers exactly what a token with no runs answers: `200` with an empty array, or with `withrollup=true` `{"rollup":{"allDone":false,"status":"processing","jobs":[]},"events":[]}`. A publisher token whose runs span pipelines inside and outside the grants returns only the runs inside them, and the rollup's `allDone` and `status` are computed from those runs. Summary pages (no token) hold only the user's own rows: `page=N` is the Nth page of 20 of the rows the user may see, newest first, so every page is full until the last and every row is reachable by paging. When a visible pipeline was fed by a tap the user cannot read (filed in another catalog, or no longer stored), that tap's name reads `[hidden]` in `filename` (`tap-[hidden].csv`) and where messages name it as a tap (`description`, the AI summary/diagnosis/suggestion, `detail`, `lastError`). Scratch result preview rows (`resultPreview`) of a run fed by such a tap, or whose feeding tap cannot be determined, omit the `_datris_tap_run`, `_datris_script_sha` and `_datris_source` columns.
+        An API key limited by `catalog=` or `owner=` on a pipeline or tap capability gets the same filtering, the same answers for tokens and pages, and the same `[hidden]` tap names and omitted columns when it does not read every tap.
       parameters:
         - name: publishertoken
           in: query
@@ -3834,7 +3857,7 @@ paths:
       tags: [Status]
       summary: Get a Live Read (scratch) pipeline's result
       description: >-
-        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants, and so do API keys limited by `catalog=` or `owner=` for a pipeline outside their scope.
+        Restricted users get the same 404 as an unknown token for a run of a pipeline outside their catalog grants, and so do API keys limited by `catalog=` or `owner=` for a pipeline outside their scope. For them a `publishertoken` is resolved on the runs they may read only: one Live Read run inside the scope is returned even when the token also covers runs outside it.
         Page through the rows a Live Read (scratch destination) pipeline run
         produced. Paging reads the stored result and never re-runs the source.
         Only Live Read pipelines have a result. `limit` is clamped server-side to the
@@ -3923,7 +3946,7 @@ paths:
                 database:
                   type: string
                   default: datris
-                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database, and in multi-tenant installs.
+                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database.
                 limit:
                   type: integer
                   default: 100
@@ -3958,7 +3981,7 @@ paths:
                   description: MongoDB collection name
                 database:
                   type: string
-                  description: MongoDB database name (defaults to the configured database). Ignored in multi-tenant installs, where the tenant's own database is queried. Must not be a MongoDB system database.
+                  description: MongoDB database name (defaults to the configured database). Must not be a MongoDB system database.
                 filter:
                   type: object
                   default: {}
@@ -4237,7 +4260,7 @@ paths:
                 database:
                   type: string
                   default: datris
-                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database, and in multi-tenant installs.
+                  description: PostgreSQL database name, used exactly as written as the name of the database to connect to. Ignored when the platform connection URL already names a database.
                 schema:
                   type: string
                   default: public
@@ -4535,7 +4558,7 @@ paths:
           schema:
             type: string
             default: datris
-          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database.
       responses:
         '200':
           description: Array of schema names
@@ -4559,7 +4582,7 @@ paths:
           schema:
             type: string
             default: datris
-          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database.
         - name: schema
           in: query
           schema:
@@ -4595,7 +4618,7 @@ paths:
           schema:
             type: string
             default: datris
-          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database, and in multi-tenant installs.
+          description: Database name, used exactly as written as the name of the database to connect to. Empty is the default database; ignored when the platform connection URL already names a database.
         - name: schema
           in: query
           schema:
@@ -4960,7 +4983,7 @@ paths:
     post:
       tags: [Configuration]
       summary: AI-generate a validation schema
-      description: Uses AI to generate a JSON Schema (Draft 4) or W3C XSD from sample data. The schema is stored in MinIO.
+      description: Uses AI to generate a JSON Schema (Draft 4) or W3C XSD from sample data. The schema is stored in MinIO. Requires `pipeline:update` (any scope). A name used by a pipeline the caller may not update, whether or not its file is stored yet, is refused with 409.
       requestBody:
         required: true
         content:
@@ -4992,8 +5015,12 @@ paths:
                     type: string
         '400':
           description: 'The body is not valid JSON or not a JSON object; `type`, `name` or `sampleData` is missing, null or not a string; `type` is not `json-schema` or `xsd`; `name` or `sampleData` is blank; or `name` is not a usable file name. Refused before the model is called. Body: `{"error": ...}`'
+        '403':
+          description: 'The caller does not hold `pipeline:update` (`errorKind: capability_denied`). Nothing is generated or stored.'
+        '409':
+          description: 'A pipeline the caller may not update uses this schema name. Body: `{"error": "A validation schema named ''<name>.json'' is already in use. Choose another schema name."}` (`.xsd` for an XSD). Names no pipeline and is the same for every caller; refused before the model is called, nothing is stored.'
         '500':
-          description: 'Model or storage failure. Body: `{"error": ...}`'
+          description: 'Model or storage failure, or the stored pipelines could not be read. Nothing is stored. Body: `{"error": ...}`'
 
   # ── Taps (Beta) ──────────────────────────────────────────
 
@@ -5069,6 +5096,18 @@ paths:
         user's grants answers the pipeline 404 (`{"error": "Pipeline: <name> is
         not configured in the NoSQL database"}`); one the user can view but
         not run is 403.
+
+        Script references: for a user limited to catalogs, or an API key limited
+        to a catalog or to what it created, a new or changed `scriptPath` or
+        `scriptRepoPath` must be a tap script (an object under `tap-scripts/`, or
+        a file under the code repository's path prefix outside its `pipelines/`
+        folder, with no empty, `.` or `..` path segment) and must not be the
+        current script of a tap the caller cannot see, however the path is
+        written. Otherwise nothing is saved: 404
+        `{"error":"Tap: <name> not found"}` for such a user, 403 naming
+        `tap:read` for a key. A reference left as stored, or left out, is never
+        refused by this rule. A later release applies the tap script area to
+        every caller's references.
       parameters:
         - name: changeNote
           in: query
@@ -5093,6 +5132,16 @@ paths:
           description: >-
             Validation error, including a malformed `cronExpression`. Body is
             `{"error": "<tap name + the 6-field Quartz form to resend>"}`.
+        '403':
+          description: >-
+            An API key's scope refuses the tap, its target pipeline, or (for a key
+            limited to a catalog or to what it created) its new script reference.
+            Shared capability-denied body naming the capability, never the item.
+        '404':
+          description: >-
+            A restricted user's tap, catalog or script reference outside its
+            grants: `{"error":"Tap: <name> not found"}` (a target pipeline outside
+            the grants answers the pipeline 404).
         '409':
           description: >-
             Cron set on an untested script (test-before-cron). Body is
@@ -5101,10 +5150,17 @@ paths:
       tags: [Taps]
       summary: Delete a tap
       description: >-
-        Deletes the tap configuration and its script. A script stored in a code
+        Deletes the tap configuration and its script. Only the tap's own script
+        file is deleted (on built-in storage the object written for the tap; in
+        a code repository `{pathPrefix}{name}.py` under the current or a
+        recorded earlier prefix), and only when no other tap uses it. On
+        built-in storage an object the platform wrote for the tap under
+        another name (a tap renamed before its first save) is also deleted
+        when no tap has that name and no other tap uses it. Any other file is
+        left in place and `warnings` says so. A script stored in a code
         repository gets a delete commit unless its file was edited there since
         the recorded commit (or the repository cannot be reached); that file is
-        kept and named in `warnings`.
+        kept and named in `warnings`. The tap is deleted in every case.
       parameters:
         - name: name
           in: query
@@ -5178,7 +5234,7 @@ paths:
     get:
       tags: [Taps]
       summary: Get run history across all taps
-      description: Returns run log entries for every tap, newest window first. Feeds the Ops activity dashboard's aggregation. Defaults to the last 30 days, capped at 2000 rows. Requires `job:read`. A restricted user sees only the runs of taps in its catalog grants.
+      description: Returns run log entries for every tap, newest window first. Feeds the Ops activity dashboard's aggregation. Defaults to the last 30 days, capped at 2000 rows. Requires `job:read`. A restricted user, or an API key limited by `catalog=` or `owner=`, sees only the runs of taps it may read; for them up to five times `limit` of the newest runs (at most 5000) are read so that up to `limit` of their own runs come back.
       parameters:
         - name: since
           in: query
@@ -5251,7 +5307,10 @@ paths:
                   type: string
                 tapName:
                   type: string
-                  description: Defaults to `tap-<epoch millis>` when omitted
+                  description: >-
+                    The tap the script is for. A stored tap of this name is pointed at the
+                    new script when the caller may update it. Missing or blank: no stored tap
+                    is read or changed (the script is named `tap-<epoch millis>` when missing).
                 oldScriptPath:
                   type: string
                   description: Path of a previous script to delete after the new one is written
@@ -5292,7 +5351,14 @@ paths:
                     description: Model that generated the script
                   error:
                     type: string
-                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+                    description: >-
+                      Present when the stored tap was not pointed at the new script: the tap
+                      is scheduled and the test-before-cron gate refused to repoint it at the
+                      new, untested script (the stored tap keeps its tested script until the
+                      new one passes a `mode=test` run), or the caller may read the tap but
+                      not update it (`The stored tap was left unchanged: this caller may not
+                      update it`; the tap, its versions and its test state are unchanged).
+                      The script and `scriptPath` are still returned with 200 either way.
         '400':
           description: 'The named `secretName` may not be used by a tap (a server-managed or unsafe secret name, or a secret not tagged `_type=tap` while tap-secret scoping is enforced). Body: `{"error": ...}`'
         '500':
@@ -5384,7 +5450,14 @@ paths:
                     type: string
                   error:
                     type: string
-                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+                    description: >-
+                      Present when the stored tap was not pointed at the new script: the tap
+                      is scheduled and the test-before-cron gate refused to repoint it at the
+                      new, untested script (the stored tap keeps its tested script until the
+                      new one passes a `mode=test` run), or the caller may read the tap but
+                      not update it (`The stored tap was left unchanged: this caller may not
+                      update it`; the tap, its versions and its test state are unchanged).
+                      The script and `scriptPath` are still returned with 200 either way.
         '500':
           description: Error
 
@@ -5445,9 +5518,41 @@ paths:
                     type: string
                     nullable: true
         '409':
-          description: The script changed in the repository since `baseCommitSha` (pull the latest, reapply edits, and retry), or the tap has a `cronExpression` and the new script has not passed a `mode=test` run (test-before-cron); nothing is stored
+          description: >-
+            The script changed in the repository since `baseCommitSha` (pull the
+            latest, reapply edits, and retry), or the tap has a `cronExpression`
+            and the new script has not passed a `mode=test` run
+            (test-before-cron), or the script would be written to the code
+            repository at `{pathPrefix}{tapName}.py` for a name with no
+            repository script of its own yet and another tap already runs its
+            script from that file (use another tap name); nothing is stored. A
+            user or key limited to catalogs or to what it created gets, in the
+            last case, the answer a refused script reference gives on save (403
+            for a key, 404 for a user). The same refusal, with the same
+            answers, applies to such a caller's upload for a tap that already
+            stores its script at its own repository file when another tap also
+            runs its script from that file (in any spelling of its path); each
+            such refusal is recorded in the audit log. Also 409, with nothing stored, when a
+            user limited to catalogs, or an API key whose tap access is limited
+            (it cannot read every tap, or its `tap:update` is limited to a
+            catalog or to what it created), uploads the script of a tap stored
+            in the code repository whose stored path is not the tap's own file
+            (`{pathPrefix}{tapName}.py` under the current or a recorded earlier
+            prefix); the message names only that tap and asks for an
+            administrator to move the script to the tap's own path. Other
+            callers, including a key limited only for pipelines whose tap
+            capabilities carry no limit, still have such a tap's script written
+            at its stored path.
         '500':
           description: Error (including missing tapName or script)
+        '503':
+          description: >-
+            A user limited to catalogs, or an API key whose tap access is
+            limited, uploaded the script of a tap stored in the code repository
+            and the code repository settings could not be read, or uploaded
+            the script of a tap stored in the code repository at its own file
+            and the list of taps could not be read; nothing is stored. Try
+            again.
 
   /api/v1/tap/script/pull:
     post:
@@ -5523,6 +5628,12 @@ paths:
           description: The migrated tap config
         '400':
           description: Unknown tap, unreadable script, or invalid target
+        '409':
+          description: >-
+            Move to `github` refused because another tap already runs its script
+            from `{pathPrefix}{tapName}.py`; nothing is written. A user or key
+            limited to catalogs or to what it created gets the answer a refused
+            script reference gives on save (403 for a key, 404 for a user).
         '500':
           description: Error
 
@@ -5546,7 +5657,9 @@ paths:
       description: >-
         Validates the connection when `enabled` (token can push, branch
         exists — verified via the repository `permissions` block, no probe
-        commits) and persists the configuration.
+        commits) and persists the configuration. A save that changes
+        `pathPrefix` records the previous prefix in `earlierPathPrefixes`; a
+        body without `earlierPathPrefixes` keeps the stored list.
       requestBody:
         required: true
         content:
@@ -5603,8 +5716,13 @@ paths:
       description: >-
         Uses AI to review a script after a successful test run — correctness,
         robustness, and adherence to tap conventions. May return the script
-        rewritten. When it rewrites and the tap already exists, the tap's
-        `scriptPath` is updated to the new object.
+        rewritten. When it rewrites, the request names the tap (`tapName` present
+        and not blank) and the caller may update that tap (`tap:update` or
+        `tap:create` on it), the tap's `scriptPath` is updated to the new object;
+        a caller that may only read the tap gets the same answer with `error`
+        saying the stored tap was left unchanged. A request with no `tapName`
+        changes no stored tap. This release needs only `tap:read`; a later release
+        requires `tap:update` for review.
       requestBody:
         required: true
         content:
@@ -5659,7 +5777,14 @@ paths:
                     description: True when the AI produced a modified script
                   error:
                     type: string
-                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+                    description: >-
+                      Present when the stored tap was not pointed at the new script: the tap
+                      is scheduled and the test-before-cron gate refused to repoint it at the
+                      new, untested script (the stored tap keeps its tested script until the
+                      new one passes a `mode=test` run), or the caller may read the tap but
+                      not update it (`The stored tap was left unchanged: this caller may not
+                      update it`; the tap, its versions and its test state are unchanged).
+                      The script and `scriptPath` are still returned with 200 either way.
         '500':
           description: Error (including missing script)
 
@@ -5670,7 +5795,9 @@ paths:
       description: >-
         Uses AI to optimize a working script for speed and efficiency (based on
         the latest run's record count and duration). Always stores the returned
-        script; if the tap already exists, its `scriptPath` is updated.
+        script; when the request names an existing tap and the caller may update
+        it, its `scriptPath` is updated (otherwise `error` says the stored tap was
+        left unchanged). A request with no `tapName` changes no stored tap.
       requestBody:
         required: true
         content:
@@ -5717,7 +5844,14 @@ paths:
                       type: string
                   error:
                     type: string
-                    description: Present when the tap is scheduled and the test-before-cron gate refused to repoint it at the new, untested script. The script and `scriptPath` are still returned; the stored tap keeps its tested script until the new one passes a `mode=test` run.
+                    description: >-
+                      Present when the stored tap was not pointed at the new script: the tap
+                      is scheduled and the test-before-cron gate refused to repoint it at the
+                      new, untested script (the stored tap keeps its tested script until the
+                      new one passes a `mode=test` run), or the caller may read the tap but
+                      not update it (`The stored tap was left unchanged: this caller may not
+                      update it`; the tap, its versions and its test state are unchanged).
+                      The script and `scriptPath` are still returned with 200 either way.
         '500':
           description: Error (including missing script)
 
@@ -5729,6 +5863,12 @@ paths:
         Executes the tap script without sending data to a pipeline. Returns a preview of the
         records (the first `testLimit` of a record list, up to 500, or the first 20 when
         `testLimit` is absent or 0, with `recordsTruncated: true` when there were more), logs, and an AI-generated diagnosis if errors or zero records are detected.
+
+        For a user limited to catalogs, or an API key limited to a catalog or to what
+        it created, a new or changed script reference follows the save's rule (see
+        `POST /api/v1/tap`): one outside the tap script area, or the current script of
+        a tap the caller cannot see, is refused before anything runs with the save's
+        answer (404 for such a user, 403 naming `tap:read` for a key).
       parameters:
         - name: testLimit
           in: query
@@ -5772,6 +5912,17 @@ paths:
                     type: string
                   aiExplanation:
                     type: string
+        '403':
+          description: >-
+            An API key whose tap read is scoped tests under the name of a tap it may
+            not read, with a secret its tap read does not cover, or (for a key limited
+            to a catalog or to what it created) with a new script reference outside
+            the tap script area or to the current script of a tap it cannot see.
+            Shared capability-denied body naming `tap:read`, never the item.
+        '404':
+          description: >-
+            The same cases for a restricted user: `{"error":"Tap: <name> not found"}`
+            naming the tap being tested.
 
   /api/v1/tap/run:
     post:
@@ -5886,6 +6037,93 @@ paths:
                   cronExpression:
                     type: string
                     example: 0 0 16 ? * MON-FRI
+
+  /api/v1/tap/owner:
+    post:
+      tags: [Taps]
+      summary: Change a tap's owner
+      description: >-
+        Hands an existing tap to another user or API key. Only the owner
+        changes: the tap keeps its versions, incremental-sync state, ledger,
+        run history, schedule and script; no tap version is written and its
+        update time is kept. Administrators (a signed-in admin, or an API key
+        with unscoped full access) only; every other caller gets 403 and
+        nothing is read. For API keys, an agent policy on tap updates
+        applies to this action as to any other tap update. From the change
+        on, keys limited to what they created (owner=self) reach the tap
+        through the new owner: the new
+        owning key may read and update it, the previous owning key may not.
+        A run or test in progress finishes as it started; the next run reads
+        the new owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              description: Exactly one of user or key.
+              properties:
+                name:
+                  type: string
+                  description: The tap.
+                  example: stock-prices-tap
+                user:
+                  type: string
+                  description: A username; the tap is stored as owned by session:<username>.
+                  example: ed
+                key:
+                  type: string
+                  description: >-
+                    An issued API key's label. Revoked and unknown keys, the
+                    platform's own identities (anonymous, recovery-agent,
+                    system, agent) and labels starting session: or tap: are
+                    refused; ui is accepted when it is an issued key.
+                  example: sales-agent
+      responses:
+        '200':
+          description: The owner was changed, or already was the one named (changed false, nothing written)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  owner:
+                    type: string
+                    example: sales-agent
+                  previousOwner:
+                    type: string
+                    nullable: true
+                    example: session:ada
+                  changed:
+                    type: boolean
+                  warnings:
+                    type: array
+                    description: >-
+                      Findings datris doctor reports that do not decide the
+                      change (a target pipeline that does not exist, callback
+                      reads the new owner's access narrows, a tap secret
+                      outside the new owner's tap access), in the doctor
+                      rows' words.
+                    items:
+                      type: string
+        '400':
+          description: Both or neither of user and key; unknown user; unknown, revoked or reserved key; a catalog placeholder
+        '403':
+          description: >-
+            Refused, and nothing about the tap is read: the caller is not an
+            administrator or a full-access API key, or an agent policy on tap
+            updates refuses the API key. The error text depends on which check
+            refused the request.
+        '404':
+          description: No such tap
+        '409':
+          description: >-
+            The new owner could not edit the tap where it is or may not load
+            into its target pipeline; or the tap was moved or repointed while
+            the change was being checked. Nothing was changed.
 
   /api/v1/tap/ledger:
     get:
@@ -6802,8 +7040,14 @@ paths:
       tags: [Agent Policy]
       summary: Approve a queued action (admin / editor)
       description: >-
-        Performs the original request on the approver's behalf by replaying
-        it through the normal request chain. Never permitted from an
+        Performs the original request by replaying it through the normal
+        request chain, attributed to the approver. With API keys on it runs
+        with the requester's own current access (the requesting API key, or
+        the user an in-platform chat acted for), further limited to the
+        approver's catalogs when the approver is a restricted user; a request
+        made under the UI's own key, and any request with API keys off, runs
+        with full access limited to a restricted approver's catalogs, as
+        before. Never permitted from an
         agent-initiated request. Refused as stale (409) if the target
         pipeline or tap changed since the action was queued.
       parameters:
@@ -6834,7 +7078,15 @@ paths:
         '410':
           description: Expired before a decision
         '502':
-          description: Approved but the replay failed (state `failed`)
+          description: >-
+            Approved but the replay failed (state `failed`); `resultStatus` /
+            `resultBody` carry the reason. Includes the requester's own refusal
+            (403 or 404) when the action is outside the requester's access;
+            401 (`errorKind` `requester_key_invalid` or `requester_user_gone`)
+            when the requesting key was revoked or replaced, or the requesting
+            chat's user was deleted; 503 (`requester_unchecked`) when the
+            requester or the approval could not be checked. In those cases
+            nothing was run.
   /api/v1/approvals/{id}/reject:
     post:
       tags: [Agent Policy]
@@ -6882,6 +7134,13 @@ paths:
         Incidents the platform opened for failed, stale or anomalous data
         flows, newest first. Read-only — only the platform opens incidents.
         `enabled` is false while RECOVERY_AGENT_ENABLED is off.
+        An API key limited by `catalog=` or `owner=` sees only incidents on
+        pipelines and taps it may read; for it up to five times `limit` of the
+        newest incidents (at most 200) are read so that up to `limit` of its
+        own come back. In the incidents it sees, the names of taps and
+        pipelines it may not read read `[hidden]` in the free text (step
+        summaries and details, the trigger's error and AI summary, the
+        outcome and the proposal), as on `GET /api/v1/incidents/{id}`.
       parameters:
         - in: query
           name: state
@@ -6914,6 +7173,13 @@ paths:
     get:
       tags: [Recovery Agent]
       summary: Read one incident
+      description: >-
+        For an API key limited by `catalog=` or `owner=`, an incident on a
+        pipeline or tap it may not read answers 404 as an unknown id does; in
+        one it may read, the names of taps and pipelines outside its scope
+        read `[hidden]` in the free text (step summaries and details, the
+        trigger's error and AI summary, the outcome and the proposal) and in
+        the evidence's downstream pipelines. The stored incident is not changed.
       parameters:
         - in: path
           name: id
@@ -7847,7 +8113,7 @@ paths:
         Proxies the MCP server's activity feed (agent sessions and tool calls)
         with server-side enrichment: timestamps are formatted with the
         platform's date settings and each session/call is labeled with the
-        tenant or key name resolved from its API-key hint. Always returns 200 —
+        key name resolved from its API-key hint. Always returns 200 —
         when the MCP server is unreachable or auth fails, the payload carries
         an `error` message and an `errorKind` of "unreachable" or "auth" with
         empty session/call arrays.
@@ -8271,6 +8537,7 @@ paths:
         between them, freshness for the pipeline the node is (or feeds), and
         optionally the most recent recorded runs touching the node — what each
         read and wrote, per destination.
+        For a restricted user or an API key limited by `catalog=` or `owner=`, freshness is computed only from taps it may read: a pipeline whose feeding tap is outside its scope reports from its own landings only (`state` is `fresh` or `unknown`, never `stale`, and there is no `cursorUpdatedAt`).
         For a restricted user, the walk covers only their granted catalogs: a node outside them is 404 (`no such node`), and hidden upstream or downstream items are left out. In `runs`, a run fed by a tap the user cannot read (filed in another catalog, or no longer stored) keeps `input.kind` but omits `input.tapName`, `tapRunTime`, `scriptSha` and `source`, and its feed filename reads `tap-[hidden].csv` / `.json`.
       parameters:
         - in: path

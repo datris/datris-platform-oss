@@ -5,7 +5,7 @@ description: "Search endpoints"
 
 The Search API provides a single REST endpoint for semantic search across vector databases. The endpoint converts a natural language query into an embedding vector, searches the vector store named in the URL, and returns the most similar results with relevance scores.
 
-Embedding and vector database connection details are stored in HashiCorp Vault and resolved **server-side**. Clients never send secret names — the server always uses its own configured secret names (in multi-tenant mode this enforces tenant isolation), so any secret-name fields in a request body are ignored.
+Embedding and vector database connection details are stored in HashiCorp Vault and resolved **server-side**. Clients never send secret names — the server always uses its own configured secret names, so any secret-name fields in a request body are ignored.
 
 ## Search a Vector Store
 

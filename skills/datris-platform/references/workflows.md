@@ -7,7 +7,7 @@ Each sequence ends with verification by token. Say that data landed only after t
 1. `list_pipelines`. If one fits, skip to 3.
 2. `create_pipeline` with the file as the sample, a destination, and the project's `catalog`. Keep the config to source plus destination unless the user asked for rules or transformations.
 3. `upload_data` with the content.
-4. `get_job_status` with the returned token. Poll with `wait_seconds` until `rollup.allDone`. Read `rollup.status`; on `error` or `warning`, `rollup.jobs[].lastError` names the failing step.
+4. `get_job_status` with the returned token. Poll with `wait_seconds` until `rollup.allDone`. Read `rollup.status`; on `error` or `warning`, `rollup.jobs[].lastError` names the failing step. An answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that.
 
 ## Onboard an external source with a tap
 
@@ -17,7 +17,7 @@ Each sequence ends with verification by token. Say that data landed only after t
 4. `test_tap`. On failure read the error, fix, `create_tap` again with the same name, repeat until it passes.
 5. New pipeline: `propose_pipeline_schema(tap, destination)`. It uses the rows from the tap's last successful test (the tap runs again only when none are held or a higher `limit` asks for more) and returns each column with a recommended type and its evidence. Show the table, let the user confirm or change types (call again with a higher `limit` for more rows), then ask once whether they want data-quality checks (`codegen_rule`, with `codegen_rule_on_failure` = `error` or `warn`), transformations (`codegen_transform`) or field protection; "none" is fine. `create_pipeline` with `schema_fields` (the confirmed `{name, type}` list) plus whatever they chose, then `update_tap` with `target_pipeline`. Vector destinations and `mongodb` return `typeGrid: false`: a vector pipeline needs only a name and destination (no checks, transformations or protection question); `mongodb` takes a few preview rows as a JSON `content_text` sample instead of `schema_fields`. Only a result whose `status` is `schema_proposal` is a proposal: anything else means no schema was shown, so report what failed with the tool's next step and do not ask about types. Fall back to `content_text` only when there is no tap (a file in hand, pasted rows).
 6. `run_tap`. Read `persisted`. False: report `persistedReason` and stop. True: keep `publisherToken`.
-7. `get_pipeline_status(publisher_token=...)` until `rollup.allDone`; then `rollup.status`.
+7. `get_pipeline_status(publisher_token=...)` until `rollup.allDone`; then `rollup.status`. An answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that.
 8. Recurrence: `update_tap` with `cron_expression`. Later, pick a run in `get_tap_logs` and verify it with step 7.
 
 Incremental sources: have the script commit a bookmark so each run fetches only what is new; inspect with `get_tap_state`, rewind or clear with `set_tap_state`. The `datris://tap-workflow-reference` resource covers the state contract and the CRON cookbook.
@@ -27,7 +27,7 @@ Incremental sources: have the script commit a bookmark so each run fetches only 
 1. `create_pipeline` with an `unstructuredAttributes` source and a vector destination, in the project's catalog.
 2. `create_tap` with `tap_type="document"` describing where the documents are. Secret first if the source needs one.
 3. `test_tap`, then `run_tap`; read `persisted` as above.
-4. `get_pipeline_status(publisher_token=...)`. Document taps fan out to one job per file; poll until all are done and check each `lastError`.
+4. `get_pipeline_status(publisher_token=...)`. Document taps fan out to one job per file; poll until all are done and check each `lastError`. An answer with no jobs (`rollup.jobs` empty) means the token has no runs available to you, so stop polling and report that.
 5. `get_tap_ledger` to see what was discovered and processed. Unchanged files are skipped on later runs; `clear_uri` or `clear_all` forces reprocessing.
 6. `search_<store>` to retrieve chunks; `ai_answer` with those chunks and their provenance handles as `sources`.
 

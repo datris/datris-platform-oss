@@ -425,20 +425,30 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
             val shown = PipelineStatusAPIController.restrictedViewWith(r, summaries, pipelines, taps)
             assert(summaryNames(shown) == s.pipelines, s.name)
 
-            // a token (event list or rollup) of a pipeline outside scope: the session's existing 404 (D2)
+            // plans/stories/limited-caller-read-leaks.md (pinned edit, D2 (a)): was "the
+            // session's existing 404"; a token (event list or rollup) of a pipeline outside
+            // scope now reads as a token with no rows, as the session's does
             for (hidden <- AllPipelines -- s.pipelines) {
                 val ev = PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event(hidden)), pipelines, taps)
                 val ru = PipelineStatusAPIController.restrictedViewWith(r, statusResponse(hidden, "upload.csv"), pipelines, taps)
+                val noRows = PipelineStatusAPIController.restrictedViewWith(r, new java.util.ArrayList[PipelineStatus](), pipelines, taps)
                 val session = PipelineStatusAPIController.restrictedViewWith(req(bob), java.util.Arrays.asList(event("payroll")), pipelines, taps)
                 for (got <- Seq(ev, ru)) {
-                    assert(got.isLeft, s.name + " " + hidden + ": expected the 404, got " + got)
-                    assert(status(got.left.get) == 404 && got.left.get.getBody == session.left.get.getBody, s.name + ": " + got.left.get.getBody)
-                    ScopeDenialWording.assertHides(got.left.get.getBody, Seq(hidden, "HR", "someone"))
+                    assert(got.isRight, s.name + " " + hidden + ": expected a token with no rows, got " + got)
+                    ScopeDenialWording.assertHides(gson.toJson(got.right.get), Seq(hidden, "HR", "someone"))
                 }
+                assert(gson.toJson(ev.right.get) == gson.toJson(noRows.right.get), s.name + ": " + gson.toJson(ev.right.get))
+                assert(session.isRight && gson.toJson(session.right.get) == gson.toJson(noRows.right.get), s.name)
             }
-            // a publisher token spanning a visible and a hidden pipeline: 404 too
+            // a publisher token spanning a visible and a hidden pipeline: only the visible run
             val mixed = PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event("orders"), event("payroll")), pipelines, taps)
-            if (!s.pipelines.contains("payroll")) assert(mixed.isLeft, s.name)
+            if (!s.pipelines.contains("payroll")) {
+                assert(mixed.isRight, s.name + ": " + mixed)
+                ScopeDenialWording.assertHides(gson.toJson(mixed.right.get), Seq("payroll"))
+                // the visible run remains
+                val kept = mixed.right.get.asInstanceOf[java.util.List[_]].asScala.map(_.asInstanceOf[PipelineStatus].pipeline)
+                assert(kept == Seq("orders").filter(s.pipelines.contains), s.name + ": " + kept)
+            }
         }
         // in-scope token: shown
         val sales = shapes("job:read").head
@@ -642,7 +652,7 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
     test("incidents list drops, and get/evidence refuse, an incident on a resource outside scope; the Ops chat block matches") {
         for (s <- limited("incident:read")) {
             val r = req(s.rk, uri = "/api/v1/incidents")
-            val shown = IncidentsAPIController.visibleIncidents(r, incidents, readPipeline, readTap)
+            val shown = IncidentsAPIController.visibleIncidents(r, incidents, readPipeline, readTap, items = IncidentsAPIController.NoItems)
             assert(shown.map(_.id) == incidents.filter(i => incidentShown(s, i)).map(_.id), s.name)
             for (i <- incidents) {
                 val refused = IncidentsAPIController.incidentRefusal(req(s.rk, uri = "/api/v1/incidents/" + i.id), i.id, Some(i), readPipeline, readTap)
@@ -655,22 +665,32 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
         }
         // a stored resource that is gone: hidden from a limited caller (fail closed)
         val gone = incident("inc-gone", "pipeline", "deleted_p")
-        assert(IncidentsAPIController.visibleIncidents(req(shapes("incident:read").head.rk), List(gone), readPipeline, readTap).isEmpty)
+        assert(IncidentsAPIController.visibleIncidents(
+            req(shapes("incident:read").head.rk),
+            List(gone),
+            readPipeline,
+            readTap,
+            items = IncidentsAPIController.NoItems
+        ).isEmpty)
 
         // the Ops chat block: a limited key holding incident:read gets exactly the list's filter
         val ctx = new JsonObject()
         ctx.addProperty("window", "24h")
         for (s <- shapes("incident:read")) {
             val id = ChatIdentity(None, Some(s.rk), ownKey = true)
-            val block = OpsChatAPIController.incidentsFor(id, () => incidents, readPipeline, readTap)
-            assert(block.map(_.id) == IncidentsAPIController.visibleIncidents(req(s.rk), incidents, readPipeline, readTap).map(_.id), s.name)
+            val block = OpsChatAPIController.incidentsFor(id, () => incidents, readPipeline, readTap, items = IncidentsAPIController.NoItems)
+            assert(
+                block.map(_.id) == IncidentsAPIController.visibleIncidents(req(s.rk), incidents, readPipeline, readTap, items = IncidentsAPIController.NoItems)
+                    .map(_.id),
+                s.name
+            )
             val msg = OpsAgentPrompt.renderContextMessage(ctx, block)
             for (i <- incidents.filterNot(i => incidentShown(s, i))) assert(!msg.contains(i.id + ":"), s.name + ": " + i.id)
         }
         // a restricted session's chat block stays empty and the store is not read (unchanged)
         val bobUser = User("bob", "h", User.RoleEditor, null, null, null, restricted = true, catalogGrants = grants("Sales" -> "view"))
         val sessId = ChatIdentity(Some(bobUser), Some(bob), ownKey = false)
-        assert(OpsChatAPIController.incidentsFor(sessId, () => fail("not read"), failRead, failReadTap) == Nil)
+        assert(OpsChatAPIController.incidentsFor(sessId, () => fail("not read"), failRead, failReadTap, items = IncidentsAPIController.NoItems) == Nil)
     }
 
     test("every case returns its argument unchanged (same instance, no reader called) for an unrestricted editor and a full key") {
@@ -722,7 +742,7 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
             assert(ActivityAPIController.callerView(r, sg, failReadAll, failReadTaps) eq sg, name)
             // incidents
             val inc = incidents
-            assert(IncidentsAPIController.visibleIncidents(r, inc, failRead, failReadTap) eq inc, name)
+            assert(IncidentsAPIController.visibleIncidents(r, inc, failRead, failReadTap, items = IncidentsAPIController.NoItems) eq inc, name)
             assert(IncidentsAPIController.incidentRefusal(r, incPayroll.id, Some(incPayroll), failRead, failReadTap).isEmpty, name)
         }
         // the Ops chat block: unlimited keys holding incident:read get the loaded list itself.
@@ -730,7 +750,13 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
         // unrestricted editor session's role bundle holds no incident:read, so it gets
         // Nil and the incident store is not read (was: the loaded list itself).
         val edSession = ChatIdentity(Some(User("ed", "h", User.RoleEditor, null, null, null)), Some(editor), ownKey = false)
-        assert(OpsChatAPIController.incidentsFor(edSession, () => fail("the incident store was read for an editor session"), failRead, failReadTap) == Nil)
+        assert(OpsChatAPIController.incidentsFor(
+            edSession,
+            () => fail("the incident store was read for an editor session"),
+            failRead,
+            failReadTap,
+            items = IncidentsAPIController.NoItems
+        ) == Nil)
         val ids = Seq(
             ChatIdentity(None, Some(legacy), ownKey = false),
             ChatIdentity(None, Some(wildcard), ownKey = false),
@@ -739,7 +765,7 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
         )
         for (id <- ids) {
             val loaded = incidents
-            assert(OpsChatAPIController.incidentsFor(id, () => loaded, failRead, failReadTap) eq loaded, id.toString)
+            assert(OpsChatAPIController.incidentsFor(id, () => loaded, failRead, failReadTap, items = IncidentsAPIController.NoItems) eq loaded, id.toString)
         }
     }
 
@@ -766,7 +792,7 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
             assert(LineageAPIController.columnsRefusal(r, "payroll", readPipeline).exists(x => status(x) == 403), m)
             assert(!ActivityAPIController.callerView(r, signals, () => pipelines, () => taps).failing.exists(f => f.name == "payroll" || f.kind == "tap"), m)
             assert(
-                !IncidentsAPIController.visibleIncidents(r, incidents, readPipeline, readTap).exists(i =>
+                !IncidentsAPIController.visibleIncidents(r, incidents, readPipeline, readTap, items = IncidentsAPIController.NoItems).exists(i =>
                     i.resourceName == "payroll" || i.resourceType == "tap"
                 ),
                 m
@@ -795,7 +821,9 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
         val s = shapes("job:read").find(_.name == "pipeline-limited only").get
         val r = req(s.rk)
         assert(summaryNames(PipelineStatusAPIController.restrictedViewWith(r, summaries, pipelines, taps)) == Set("own_p"))
-        assert(PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event("orders")), pipelines, taps).isLeft)
+        // limited-caller-read-leaks (pinned edit, D2 (a)): was isLeft; a hidden token reads as one with no rows
+        val other = PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event("orders")), pipelines, taps)
+        assert(other.isRight && gson.toJson(other.right.get) == "[]", other.toString)
         val ok = PipelineStatusAPIController.restrictedViewWith(r, statusResponse("own_p", "tap-t_hr_feed.csv"), pipelines, taps)
         assert(gson.toJson(ok.toOption.get).contains("tap-t_hr_feed.csv"), "every tap is readable: its name stays")
         assert(!HiddenTapScrub.tapHidden(r, "t_hr_feed", readTap))
@@ -809,7 +837,10 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
         assert(logNames(TapAPIController.visibleTapLogs(r, tapLogs, () => taps)) == Set("t_own"))
         assert(SearchAPIController.searchWriters(r, "qdrant", "own_docs", None, () => searchConfigs).isRight)
         assert(SearchAPIController.searchWriters(r, "qdrant", "sales_docs", None, () => searchConfigs).isLeft)
-        assert(IncidentsAPIController.visibleIncidents(r, incidents, readPipeline, readTap).map(_.id).toSet == Set(incOwn.id, incOwnTap.id))
+        assert(IncidentsAPIController.visibleIncidents(r, incidents, readPipeline, readTap, items = IncidentsAPIController.NoItems).map(_.id).toSet == Set(
+            incOwn.id,
+            incOwnTap.id
+        ))
     }
 
     test(
@@ -866,10 +897,12 @@ class ScopedKeyRecordVisibilitySpec extends AnyFunSuite with BeforeAndAfterEach 
                 assert(x.exists(_.getBody == noIncident(i.id)) && x.exists(xx => status(xx) == 404), s.name + " " + i.id)
             }
             // token: the key's answer is the session's answer (D2: no new oracle)
+            // limited-caller-read-leaks (pinned edit, D2 (a)): was both the 404; both now read
+            // as a token with no rows
             if (!s.pipelines.contains("payroll")) {
                 val k = PipelineStatusAPIController.restrictedViewWith(r, java.util.Arrays.asList(event("payroll")), pipelines, taps)
                 val ss = PipelineStatusAPIController.restrictedViewWith(req(bob), java.util.Arrays.asList(event("payroll")), pipelines, taps)
-                assert(k.isLeft && status(k.left.get) == status(ss.left.get) && k.left.get.getBody == ss.left.get.getBody, s.name)
+                assert(k.isRight && ss.isRight && gson.toJson(k.right.get) == gson.toJson(ss.right.get) && gson.toJson(k.right.get) == "[]", s.name)
             }
         }
     }

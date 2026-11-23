@@ -8,7 +8,7 @@ import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
 import { editableCatalogsOf, isCatalogRefusal, isRestrictedUser } from '../shared/catalog-access';
 import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, tapCatalogName, sanitizeIdentifier } from '../shared/sanitize';
-import { httpErrorText } from '../shared/http-error';
+import { httpErrorExplanation, httpErrorText } from '../shared/http-error';
 
 interface FieldProtect {
   method: string;
@@ -1335,7 +1335,7 @@ export class PipelineCreateComponent implements OnInit {
         this.dqGenerating = false;
       },
       error: (err) => {
-        this.dqGenerateError = 'Failed to generate schema: ' + httpErrorText(err);
+        this.dqGenerateError = 'Failed to generate schema: ' + httpErrorExplanation(err);
         this.dqGenerating = false;
       }
     });

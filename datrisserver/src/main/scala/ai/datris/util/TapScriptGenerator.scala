@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException}
+import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException, TapConfig, ValidationException}
 import com.google.gson.Gson
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -447,7 +447,10 @@ object TapScriptGenerator {
     /**
      * Store a script (user-provided or AI-generated) in MinIO under
      * `keyPrefix` (`tap-scripts/` for taps, `pipeline-scripts/<pipeline>/`
-     * for pipeline CodeGen scripts). Returns the object key.
+     * for pipeline CodeGen scripts). Returns the object key. A name whose key
+     * would have an empty, `.` or `..` segment after `keyPrefix`
+     * ([[ScriptPaths.tapNameRefusal]]) is refused with a
+     * [[ValidationException]] (answered as 400) before anything is written.
      */
     def storeScript(
         tapName: String,
@@ -464,6 +467,7 @@ object TapScriptGenerator {
         // user has no way to recover without regenerating. Cleanup happens on
         // tap delete (deleteTap → deleteScript on the current scriptPath);
         // orphaned older versions are tiny .py files and accumulate slowly.
+        ScriptPaths.tapNameRefusal(tapName).foreach(m => throw new ValidationException(m))
         val env = DatrisEnvironment.current.environment
         val bucketName = env + "-config"
         val uuid = UUID.randomUUID().toString.substring(0, 8)
@@ -474,9 +478,31 @@ object TapScriptGenerator {
     }
 
     /**
-     * Delete a script from MinIO.
+     * Delete the script objects among `paths` that the tap `tapName`'s
+     * versions recorded (version cleanup on a tap delete, and version-cap
+     * pruning): only objects no stored tap currently references that are
+     * the tap's own (`tap-scripts/<tap>_<8 hex>.py`,
+     * [[TapScriptOwnership.ownBuiltIn]]) or of that form under a name no
+     * stored tap has ([[TapScriptOwnership.deletableBuiltIn]]). `allTaps`
+     * (the tap listing) is read once, and only when some path is of that
+     * form; a listing that cannot be read deletes nothing. Any path left in
+     * place gives one INFO line naming the tap (not the key) unless every
+     * such path is in `alreadyReported`.
      */
-    def deleteScript(scriptPath: String): Unit = deleteScriptUnder(scriptPath, null, null)
+    def deleteTapScripts(
+        tapName: String,
+        paths: Seq[String],
+        alreadyReported: Set[String] = Set.empty,
+        objects: ObjectStoreUtility = null,
+        allTaps: () => Seq[TapConfig] = () => TapConfigIO.listing()
+    ): Unit = {
+        val prefix = MinioCodeStore.TapPrefix
+        val all = Option(paths).getOrElse(Nil).filter(p => p != null && p.nonEmpty).distinct
+        val deletable = TapScriptOwnership.deletableBuiltIn(tapName, all, allTaps).toSet
+        all.filter(deletable.contains).foreach(p => deleteScriptUnder(p, prefix, objects))
+        if (all.exists(p => !deletable.contains(p) && !alreadyReported.contains(p)))
+            logger.info("Script of tap '" + LogSafe.text(tapName) + "' left in place: a stored reference is not a script file this tap alone owns")
+    }
 
     /**
      * Delete a script from MinIO. `keyPrefix`, when non-null, must prefix the

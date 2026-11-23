@@ -43,9 +43,21 @@ object ScratchReader {
       * `/pipeline/status` does today; it must resolve to exactly one scratch job
       * (zero → 404, more than one → 400 "pass pipelinetoken").
       */
-    def resolve(pipelinetoken: String, publishertoken: String): PipelineJobRollup = {
+    def resolve(pipelinetoken: String, publishertoken: String): PipelineJobRollup =
+        pick(pipelinetoken, publishertoken, jobsOf(pipelinetoken, publishertoken))
+
+    /** The rollup jobs of the token [[resolve]] reads (`publishertoken` wins);
+      * 400 when neither is given. */
+    def jobsOf(pipelinetoken: String, publishertoken: String): List[PipelineJobRollup] =
+        if (publishertoken != null) PipelineStatusUtil.getPipelineStatusByPublisherWithRollup(publishertoken).rollup.jobs.asScala.toList
+        else if (pipelinetoken != null) PipelineStatusUtil.getPipelineStatusWithRollup(pipelinetoken).rollup.jobs.asScala.toList
+        else throw new ScratchResultException(400, "pipelinetoken or publishertoken is required")
+
+    /** [[resolve]]'s rules on the token's `jobs`: publishertoken wins; no
+      * jobs is 404, a publishertoken with no scratch job is 404, several
+      * scratch jobs are 400; a pipelinetoken reads its first job. */
+    def pick(pipelinetoken: String, publishertoken: String, jobs: List[PipelineJobRollup]): PipelineJobRollup = {
         if (publishertoken != null) {
-            val jobs = PipelineStatusUtil.getPipelineStatusByPublisherWithRollup(publishertoken).rollup.jobs.asScala.toList
             val scratchJobs = jobs.filter(_.resultUri != null)
             if (jobs.isEmpty)
                 throw new ScratchResultException(404, "No pipeline run found for publishertoken '" + publishertoken + "'")
@@ -61,7 +73,6 @@ object ScratchReader {
                 )
             scratchJobs.head
         } else if (pipelinetoken != null) {
-            val jobs = PipelineStatusUtil.getPipelineStatusWithRollup(pipelinetoken).rollup.jobs.asScala.toList
             if (jobs.isEmpty)
                 throw new ScratchResultException(404, "No pipeline run found for pipelinetoken '" + pipelinetoken + "'")
             jobs.head

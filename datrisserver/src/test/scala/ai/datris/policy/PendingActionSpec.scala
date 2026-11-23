@@ -33,18 +33,19 @@ class PendingActionSpec extends AnyFunSuite {
         createdAt = now,
         expiresAt = expiresAt,
         state = state,
-        replayToken = Some("topsecret")
+        replayTokenHash = Some(ai.datris.util.TokenHash.sha256Hex("topsecret"))
     )
 
-    test("document round-trips every field, including the replay token") {
+    test("document round-trips every field, including the replay token hash") {
         val pa = sample().copy(decidedBy = Some("todd"), decidedAt = Some(now), resultStatus = Some(200), resultBody = Some("ok"))
         val back = PendingAction.fromDocument(pa.toDocument)
         assert(back == pa)
     }
 
-    test("public JSON never exposes the replay token and redacts secret-looking values") {
+    test("public JSON never exposes the replay token or its hash and redacts secret-looking values") {
         val json = sample().toPublicJson.toString
         assert(!json.contains("topsecret"))
+        assert(!json.contains(ai.datris.util.TokenHash.sha256Hex("topsecret")))
         assert(!json.contains("hunter2"))
         assert(!json.contains("SECRETVALUE"))
         assert(json.contains("\"id\":\"pa_0123456789abcdef\""))
