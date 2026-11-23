@@ -46,9 +46,32 @@ object TapReferenceScan {
 
     private def placeholder(t: TapConfig): Boolean = CatalogOps.Placeholder.is(t.name)
 
-    /** The script a tap runs, as a comparable key (built-in or repository). */
-    private def scriptKey(t: TapConfig): Option[String] =
-        TapReferenceRules.effectiveBuiltIn(t).map("builtin:" + _).orElse(TapReferenceRules.effectiveRepo(t).map("repo:" + _))
+    /** The script a tap runs, as comparable keys: a built-in key as stored;
+      * a repository path normalised and by its local cache name, so two taps
+      * on one file, or on two paths the cache stores under one name, share
+      * a key ([[TapReferenceRules.sameRepoScript]]). */
+    private def scriptKeys(t: TapConfig): Seq[String] =
+        TapReferenceRules.effectiveBuiltIn(t).map(p => Seq("builtin:" + p)).orElse {
+            TapReferenceRules.effectiveRepo(t).map(p => Seq("repo:" + TapReferenceRules.normalizedRef(p), "repo-cache:" + TapReferenceRules.cacheName(p)))
+        }.getOrElse(Nil)
+
+    /** The groups of `taps` that run one script: taps sharing any key of
+      * [[scriptKeys]], joined transitively. */
+    private def scriptGroups(all: List[TapConfig]): Iterable[List[TapConfig]] = {
+        val taps = all.toVector
+        val parent = Array.tabulate(taps.size)(identity)
+        def root(i: Int): Int = if (parent(i) == i) i else { parent(i) = root(parent(i)); parent(i) }
+        val firstWith = mutable.HashMap[String, Int]()
+        taps.zipWithIndex.foreach { case (t, i) =>
+            scriptKeys(t).foreach { k =>
+                firstWith.get(k) match {
+                    case Some(j) => parent(root(i)) = root(j)
+                    case None => firstWith(k) = i
+                }
+            }
+        }
+        taps.indices.filter(i => scriptKeys(taps(i)).nonEmpty).groupBy(root).values.map(_.map(taps).toList)
+    }
 
     /** Pure. `resolveOwner`: an owner label to its [[TapPrincipal.Resolution]]
       * (may throw); `secretOwner`: a secret's owner (outer None: no such
@@ -85,12 +108,9 @@ object TapReferenceScan {
                 }
         }
 
-        val sharedNames: Set[String] = live
-            .flatMap(t => scriptKey(t).map(_ -> t))
-            .groupBy(_._1)
-            .values
-            .filter(g => g.map { case (_, t) => (t.catalog, t.createdByKeyLabel) }.distinct.size > 1)
-            .flatMap(_.map(_._2.name))
+        val sharedNames: Set[String] = scriptGroups(live)
+            .filter(g => g.map(t => (t.catalog, t.createdByKeyLabel)).distinct.size > 1)
+            .flatMap(_.map(_.name))
             .toSet
         val shared = live.filter(t => sharedNames.contains(t.name)).map(t => Finding(SharedScript, t.name))
 

@@ -50,11 +50,22 @@ object GithubClient {
     private def apiBase(config: CodeRepoConfig): String =
         Option(config.apiBaseUrl).filter(_.nonEmpty).getOrElse("https://api.github.com").stripSuffix("/")
 
-    /** The contents-API URL of `path`: empty segments dropped, each other
-      * segment URL-encoded (a `%` is sent as `%25`). */
-    private[datris] def contentsUrl(config: CodeRepoConfig, path: String): String =
+    /** The contents-API URL of `path`, always naming a file inside the
+      * repository's contents: the path is resolved as a repository path
+      * first (empty and `.` segments dropped, each `..` removing the segment
+      * before it, none before the first), the way an HTTP client resolves
+      * dot segments, then each segment is URL-encoded (a `%` is sent as
+      * `%25`). */
+    private[datris] def contentsUrl(config: CodeRepoConfig, path: String): String = {
+        val segments = scala.collection.mutable.ArrayBuffer[String]()
+        path.split("/").foreach {
+            case "" | "." => ()
+            case ".." => if (segments.nonEmpty) segments.remove(segments.size - 1)
+            case seg => segments += seg
+        }
         apiBase(config) + "/repos/" + config.repo + "/contents/" +
-            path.split("/").filter(_.nonEmpty).map(seg => java.net.URLEncoder.encode(seg, "UTF-8").replace("+", "%20")).mkString("/")
+            segments.map(seg => java.net.URLEncoder.encode(seg, "UTF-8").replace("+", "%20")).mkString("/")
+    }
 
     /** Executes with auth headers; returns (status, body). */
     private def execute(request: HttpUriRequest, config: CodeRepoConfig): (Int, String) = {

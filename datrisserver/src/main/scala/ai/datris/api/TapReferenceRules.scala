@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.auth.CallerVisibility
 import ai.datris.model.{ResolvedKey, TapConfig}
-import ai.datris.util.{CatalogOps, MinioCodeStore}
+import ai.datris.util.{CatalogOps, MinioCodeStore, TapScriptCache}
 
 import scala.util.Try
 
@@ -24,19 +24,24 @@ import scala.util.Try
   * the stored one (the save carries it over) and is unchanged.
   *
   * The tap script area: on built-in storage an object key under
-  * `tap-scripts/` exactly (same case, not the area itself); in a code
-  * repository a path under the repository's path prefix, not under its
-  * `pipelines/` folder. In both, a reference with an empty, `.` or `..`
-  * segment (split keeping trailing empties, so a leading, trailing or
-  * doubled `/` is an empty segment) is outside the area; for a repository
-  * path that holds for the whole path and for the part after the prefix.
-  * Both store clients send a `%` in a reference escaped (`%25`), so a
-  * percent sequence names a file of that literal name and is judged as
-  * written ([[TapReferenceRulesSpec]] pins the encoders).
+  * `tap-scripts/` exactly (same case, not the area itself), with no empty,
+  * `.` or `..` segment (split keeping trailing empties, so a leading,
+  * trailing or doubled `/` is an empty segment). In a code repository a
+  * path that starts with the repository's path prefix, written as
+  * configured or in [[normalizedRef]] form (the prefix is the operator's
+  * setting and is not judged), whose part after the prefix has no empty,
+  * `.` or `..` segment and is not under the `pipelines/` folder; a path
+  * whose local cache name ([[TapScriptCache.fileName]]) is that of a file
+  * under the `pipelines/` folder is under it. Both store clients send a
+  * `%` in a reference escaped (`%25`), so a percent sequence names a file
+  * of that literal name and is judged as written ([[TapReferenceRulesSpec]]
+  * pins the encoders).
   *
   * A candidate is compared with other taps' current scripts in
   * [[normalizedRef]] form, for both storage kinds, so two spellings of one
-  * file compare equal.
+  * file compare equal; a repository path is also compared by its local
+  * cache name, so two paths the cache stores under one name are the same
+  * script.
   *
   * Rules and where they apply:
   *  - 3: a limited caller's new or changed reference must be in the tap
@@ -118,15 +123,39 @@ object TapReferenceRules {
         if (p.isEmpty || p.endsWith("/")) p else p + "/"
     }
 
+    /** The spellings of the path prefix `prefix` a repository path may
+      * start with: as the repository store writes it ("" or ending in `/`)
+      * and in [[normalizedRef]] form. */
+    private def prefixForms(prefix: String): Seq[String] = {
+        val canonical = normalizedRef(Option(prefix).getOrElse(""))
+        Seq(normalizePrefix(prefix), if (canonical.isEmpty) "" else canonical + "/").distinct
+    }
+
+    /** The local cache name of a repository path ([[TapScriptCache.fileName]]). */
+    def cacheName(p: String): String = TapScriptCache.fileName(p)
+
     /** True when `p` is a repository path inside the tap script area for
-      * the path prefix `prefix`. */
+      * the path prefix `prefix`: it starts with a form of the prefix
+      * ([[prefixForms]]), the part after it has plain segments, and neither
+      * that part nor `p`'s cache name is under the `pipelines/` folder. */
     def repoInArea(p: String, prefix: String): Boolean = {
-        val pre = normalizePrefix(prefix)
-        p != null && p.startsWith(pre) && {
-            val rest = p.substring(pre.length)
-            plainSegments(rest) && plainSegments(p) && !rest.startsWith("pipelines/")
+        if (p == null) return false
+        val forms = prefixForms(prefix)
+        val pipelinesCache = forms.map(f => cacheName(f + "pipelines/"))
+        val name = cacheName(p)
+        !pipelinesCache.exists(name.startsWith) &&
+        forms.exists { f =>
+            p.startsWith(f) && {
+                val rest = p.substring(f.length)
+                plainSegments(rest) && !cacheName(rest).startsWith("pipelines_")
+            }
         }
     }
+
+    /** True when the repository paths `a` and `b` are one script: the same
+      * file once normalised, or the same local cache name. */
+    def sameRepoScript(a: String, b: String): Boolean =
+        a != null && b != null && (normalizedRef(a) == normalizedRef(b) || cacheName(a) == cacheName(b))
 
     /** The built-in script a tap runs: its `scriptPath` unless it is an HTTP
       * tap or stored in a code repository. */
@@ -191,10 +220,11 @@ object TapReferenceRules {
                 def outsideArea(): Boolean = changedPath.exists(p => !builtInInArea(p)) || changedRepo.exists(p => !repoInArea(p, prefix))
                 val outside = if (mode3 == Enforced) outsideArea() else Try(outsideArea()).getOrElse(false)
                 def sameRef(stored: String, p: String): Boolean = nonEmpty(stored).exists(s => normalizedRef(s) == normalizedRef(p))
+                def sameRepo(stored: String, p: String): Boolean = nonEmpty(stored).exists(s => sameRepoScript(s, p))
                 def hiddenScript(): Boolean =
                     taps.exists { t =>
                         !mayRead(rk, t) &&
-                        (changedPath.exists(p => sameRef(t.scriptPath, p)) || changedRepo.exists(p => sameRef(t.scriptRepoPath, p)))
+                        (changedPath.exists(p => sameRef(t.scriptPath, p)) || changedRepo.exists(p => sameRepo(t.scriptRepoPath, p)))
                     }
                 val hidden =
                     if (outside) false

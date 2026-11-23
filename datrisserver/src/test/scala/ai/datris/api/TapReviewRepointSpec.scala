@@ -665,17 +665,23 @@ class TapReviewRepointSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(!TapAPIController.passedGateOnlyInLogOnly(null))
     }
 
-    test("log-only: review is unchanged in both modes: a caller who may read but not update the tap still leaves it unchanged") {
+    test("review in both modes: a caller who holds tap read but may not update the tap leaves it unchanged") {
         for (logOnly <- Seq(true, false); rk <- Seq(readOnlyKey, reportingKey, plainReadKey, viewer)) {
             val (r, attrs) = ScopeDenialFixtures.request(rk, "POST", "/api/v1/tap/review")
             assert(gate(interceptor(logOnly), r), rk.label + ": review's gate is tap read, which it holds")
             assert(!attrs.contains(CapabilityInterceptor.LogOnlyWouldDenyAttr))
             assertLeftUnchanged("review", rk, r)
         }
-        // a review request the gate passed only under log-only is still held to rule 1
+    }
+
+    test("log-only: review changes the stored tap as on v1.61.0 for a caller the route gate passed only because of log-only; enforce refuses it at the gate") {
         val noTapRead = key("no-tap-read-" + System.nanoTime(), "pipeline:read")
         val (r, attrs) = ScopeDenialFixtures.request(noTapRead, "POST", "/api/v1/tap/review")
         assert(gate(interceptor(logOnly = true), r) && attrs.contains(CapabilityInterceptor.LogOnlyWouldDenyAttr))
-        assertLeftUnchanged("review", noTapRead, r)
+        assertChangedAsToday("review", noTapRead, r)
+        val (e, eAttrs) = ScopeDenialFixtures.request(noTapRead, "POST", "/api/v1/tap/review")
+        assert(!gate(interceptor(logOnly = false), e), "refused in enforce mode")
+        assert(!eAttrs.contains(CapabilityInterceptor.LogOnlyWouldDenyAttr))
+        assertLeftUnchanged("review", noTapRead, e)
     }
 }

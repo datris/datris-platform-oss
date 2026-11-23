@@ -82,13 +82,144 @@ class TapCodeStoreSpec extends AnyFunSuite {
         val dir = Files.createTempDirectory("tap-cache-spec")
         System.setProperty("datris.tap.cache.dir", dir.toString)
         try {
-            assert(TapScriptCache.get("o/r", "abc123", "taps/x.py").isEmpty)
-            TapScriptCache.put("o/r", "abc123", "taps/x.py", "print('hi')")
-            assert(TapScriptCache.get("o/r", "abc123", "taps/x.py").contains("print('hi')"))
-            assert(TapScriptCache.get("o/r", "def456", "taps/x.py").isEmpty)
-            assert(TapScriptCache.get("other/repo", "abc123", "taps/x.py").isEmpty)
+            assert(TapScriptCache.get("o/r", "abc1234", "taps/x.py").isEmpty)
+            TapScriptCache.put("o/r", "abc1234", "taps/x.py", "print('hi')")
+            assert(TapScriptCache.get("o/r", "abc1234", "taps/x.py").contains("print('hi')"))
+            assert(TapScriptCache.get("o/r", "def4567", "taps/x.py").isEmpty)
+            assert(TapScriptCache.get("other/repo", "abc1234", "taps/x.py").isEmpty)
         } finally {
             System.clearProperty("datris.tap.cache.dir")
+        }
+    }
+
+    // --- script cache: only a commit id names a cache folder ----------------
+
+    private val CacheProp = "datris.tap.cache.dir"
+
+    private def withCacheDir[T](f: java.nio.file.Path => T): T = {
+        val dir = Files.createTempDirectory("tap-cache-commit-id")
+        val old = sys.props.get(CacheProp)
+        sys.props(CacheProp) = dir.toString
+        try f(dir)
+        finally old match { case Some(v) => sys.props(CacheProp) = v; case None => sys.props.remove(CacheProp) }
+    }
+
+    private def filesUnder(dir: java.nio.file.Path): List[java.nio.file.Path] = {
+        import scala.collection.JavaConverters._
+        Files.walk(dir).iterator().asScala.filter(Files.isRegularFile(_)).toList
+    }
+
+    /** A repository store whose reads are answered by a fake client that counts them. */
+    private class CountingRepo(content: String = "print('from the repository')") {
+        val reads = new java.util.concurrent.atomic.AtomicInteger(0)
+        val refs = mutable.Buffer[String]()
+        val store = new GithubScriptStore(
+            n => ScriptFamily.Tap(n),
+            null,
+            () => Some(CodeRepoConfig(repo = "acme/scripts", branch = "main", pathPrefix = "taps/")),
+            _ => "0123456789abcdef0123456789abcdef01234567",
+            (_, _, ref) => {
+                reads.incrementAndGet()
+                refs.synchronized(refs += ref)
+                Some(RepoFile(content, "blob", ref))
+            }
+        )
+    }
+
+    private val NotCommitIds = Seq("main", "release/1", "/abs", "..", "../abc1234", "abc1234/..", "./abc1234", "abc1234/x", "abc12", "g123456", "")
+
+    test("the script cache accepts only a commit id as its folder name: any other value is a miss on get and writes nothing on put") {
+        withCacheDir { dir =>
+            for (sha <- NotCommitIds) {
+                assert(!TapScriptCache.isCommitId(sha), sha)
+                TapScriptCache.put("o/r", sha, "taps/x.py", "print(1)")
+                assert(TapScriptCache.get("o/r", sha, "taps/x.py").isEmpty, sha)
+                assert(TapScriptCache.location("o/r", sha, "taps/x.py").isEmpty, sha)
+            }
+            assert(filesUnder(dir).isEmpty, "nothing written: " + filesUnder(dir))
+            assert(!TapScriptCache.isCommitId(null))
+            for (sha <- Seq("abc1234", "ABC1234", "0123456789abcdef0123456789abcdef01234567", "a" * 64))
+                assert(TapScriptCache.isCommitId(sha), sha)
+            assert(!TapScriptCache.isCommitId("a" * 65))
+        }
+    }
+
+    test("a repository read with a commit value that is not a commit id goes to the repository every time and caches nothing") {
+        withCacheDir { dir =>
+            for (sha <- NotCommitIds.filter(_.nonEmpty)) {
+                val repo = new CountingRepo()
+                val ref = ScriptRef("orders", "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = sha)
+                assert(repo.store.readScript(ref).contains("print('from the repository')"), sha)
+                assert(repo.store.readScript(ref).contains("print('from the repository')"), sha)
+                assert(repo.reads.get == 2, sha + ": each read goes to the repository")
+                assert(repo.refs.toList == List(sha, sha), "the value is sent as the ref, as on a cold cache")
+                assert(repo.store.scriptExists(ref) && repo.reads.get == 3, sha)
+            }
+            assert(filesUnder(dir).isEmpty, "nothing written: " + filesUnder(dir))
+        }
+    }
+
+    test("a short and a long commit id still cache as before: the first read goes to the repository, the next is served locally") {
+        withCacheDir { dir =>
+            for (sha <- Seq("abc1234", "0123456789abcdef0123456789abcdef01234567", "f" * 64)) {
+                val repo = new CountingRepo()
+                val ref = ScriptRef("orders", "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = sha)
+                assert(repo.store.readScript(ref).contains("print('from the repository')"))
+                assert(repo.store.readScript(ref).contains("print('from the repository')"))
+                assert(repo.reads.get == 1, sha + ": " + repo.reads.get)
+                assert(repo.store.scriptExists(ref) && repo.reads.get == 1, sha)
+            }
+            assert(filesUnder(dir).size == 3, filesUnder(dir).toString)
+        }
+    }
+
+    test("cache files written by v1.61.0 are still found: <root>/<uuid of repo>/<commit id>/<path with / as _>") {
+        withCacheDir { dir =>
+            val sha = "0123456789abcdef0123456789abcdef01234567"
+            val repoDir = dir.resolve(java.util.UUID.nameUUIDFromBytes("acme/scripts".getBytes("UTF-8")).toString)
+            Files.createDirectories(repoDir.resolve(sha))
+            Files.write(repoDir.resolve(sha).resolve("taps_orders.py"), "print('cached by v1.61.0')".getBytes("UTF-8"))
+            val repo = new CountingRepo()
+            val ref = ScriptRef("orders", "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = sha)
+            assert(repo.store.readScript(ref).contains("print('cached by v1.61.0')"))
+            assert(repo.reads.get == 0, "served from the existing cache file")
+            // and a write lands where v1.61.0 put it
+            TapScriptCache.put("acme/scripts", "abcdef1", "taps/sub/x.py", "print(2)")
+            assert(Files.isRegularFile(repoDir.resolve("abcdef1").resolve("taps_sub_x.py")))
+        }
+    }
+
+    test("the script cache reads and writes only a file directly inside a commit folder of its directory") {
+        withCacheDir { dir =>
+            val sha = "abc1234"
+            for (path <- Seq("..", ".", "")) {
+                TapScriptCache.put("o/r", sha, path, "print(1)")
+                assert(TapScriptCache.get("o/r", sha, path).isEmpty, "'" + path + "'")
+                assert(TapScriptCache.location("o/r", sha, path).isEmpty, "'" + path + "'")
+            }
+            assert(filesUnder(dir).isEmpty, filesUnder(dir).toString)
+            // the containment check on its own, whatever the commit value
+            val root = dir
+            assert(TapScriptCache.inside(root, root.resolve("r").resolve("c").resolve("f.py")))
+            assert(!TapScriptCache.inside(root, root.resolve("r").resolve("c")))
+            assert(!TapScriptCache.inside(root, root.resolve("r").resolve("..").resolve("..").resolve("x").resolve("y").resolve("f.py")))
+            assert(!TapScriptCache.inside(root, root.resolve("r").resolve("c").resolve("..").resolve("f.py")))
+            assert(!TapScriptCache.inside(root, root.getParent.resolve("other").resolve("r").resolve("c").resolve("f.py")))
+            assert(!TapScriptCache.inside(root, root.resolve("r").resolve("c").resolve("d").resolve("f.py")))
+            assert(TapScriptCache.location("o/r", sha, "taps/x.py").exists(p => TapScriptCache.inside(root, p)))
+        }
+    }
+
+    test("the contents URL of a repository path always names a file inside the repository's contents") {
+        val cfg = CodeRepoConfig(repo = "o/r", authSecretName = "s")
+        val base = "https://api.github.com/repos/o/r/contents/"
+        assert(GithubClient.contentsUrl(cfg, "taps/x.py") == base + "taps/x.py")
+        assert(GithubClient.contentsUrl(cfg, "/taps//x.py") == base + "taps/x.py", "empty segments dropped as before")
+        assert(GithubClient.contentsUrl(cfg, "./taps/./x.py") == base + "taps/x.py")
+        assert(GithubClient.contentsUrl(cfg, "taps/sub/../x.py") == base + "taps/x.py")
+        for (p <- Seq("../x.py", "taps/../../x.py", "../../../x.py")) {
+            val url = GithubClient.contentsUrl(cfg, p)
+            assert(url == base + "x.py", p + " -> " + url)
         }
     }
 

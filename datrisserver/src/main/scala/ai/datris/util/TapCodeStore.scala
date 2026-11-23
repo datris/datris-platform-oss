@@ -305,7 +305,7 @@ class GithubScriptStore(
                 case cached @ Some(_) => cached
                 case None =>
                     try {
-                        GithubClient.getFile(cfg, ref.scriptRepoPath, sha).map { file =>
+                        fileAt(cfg, ref.scriptRepoPath, sha).map { file =>
                             TapScriptCache.put(cfg.repo, sha, ref.scriptRepoPath, file.content)
                             file.content
                         }
@@ -321,7 +321,7 @@ class GithubScriptStore(
             }
         } else {
             // No pin yet (pre-first-save edge) — read branch head, don't cache.
-            GithubClient.getFile(cfg, ref.scriptRepoPath, cfg.branch).map(_.content)
+            fileAt(cfg, ref.scriptRepoPath, cfg.branch).map(_.content)
         }
     }
 
@@ -352,7 +352,7 @@ class GithubScriptStore(
             val cfg = config
             val gitRef = if (ref.scriptCommitSha != null && ref.scriptCommitSha.nonEmpty) ref.scriptCommitSha else cfg.branch
             TapScriptCache.get(cfg.repo, gitRef, ref.scriptRepoPath).isDefined ||
-            GithubClient.getFile(cfg, ref.scriptRepoPath, gitRef).isDefined
+            fileAt(cfg, ref.scriptRepoPath, gitRef).isDefined
         }
     }
 
@@ -386,8 +386,8 @@ class GithubScriptStore(
     override def pullLatest(ref: ScriptRef): Option[(String, String)] = {
         if (ref == null || ref.scriptRepoPath == null || ref.scriptRepoPath.isEmpty) return None
         val cfg = config
-        val headSha = GithubClient.branchHeadSha(cfg)
-        GithubClient.getFile(cfg, ref.scriptRepoPath, headSha).map { file =>
+        val headSha = branchHead(cfg)
+        fileAt(cfg, ref.scriptRepoPath, headSha).map { file =>
             TapScriptCache.put(cfg.repo, headSha, ref.scriptRepoPath, file.content)
             (file.content, headSha)
         }
@@ -485,38 +485,74 @@ object GithubCodeStore extends TapCodeStore {
 
 /** Immutable on-disk cache of repo scripts, keyed by commit sha — safe to keep
   * forever, bounded by pruning old sha directories per repo. Lives under the
-  * datris home dir so it survives restarts but not image rebuilds. */
+  * datris home dir so it survives restarts but not image rebuilds.
+  *
+  * Layout (unchanged since v1.61.0): `<root>/<uuid of repo>/<commit id>/<file
+  * name>`, the file name being the repository path with every `/` replaced
+  * by `_` ([[fileName]]). Only a commit id (7 to 64 hexadecimal characters)
+  * is used as a folder name: for any other value [[get]] is a miss and
+  * [[put]] writes nothing, so the read goes to the repository as on a cold
+  * cache. Independently of that, a location that does not resolve to a file
+  * directly inside a commit folder of the cache directory is never read or
+  * written. */
 object TapScriptCache {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
     private val MaxShasPerRepo = 50
+
+    private val CommitIdPattern = java.util.regex.Pattern.compile("[0-9a-fA-F]{7,64}")
+
+    /** True when `sha` is a hexadecimal commit id of 7 to 64 characters. */
+    def isCommitId(sha: String): Boolean = sha != null && CommitIdPattern.matcher(sha).matches()
+
+    /** The file name a repository path is cached under: every `/` replaced
+      * by `_`. Two paths with the same file name are one cache entry, so the
+      * script reference rules treat them as the same script. Null for null. */
+    def fileName(path: String): String = if (path == null) null else path.replace('/', '_')
 
     private def cacheRoot: Path =
         Paths.get(
             sys.props.get("datris.tap.cache.dir")
                 .orElse(sys.env.get("DATRIS_TAP_CACHE_DIR"))
                 .getOrElse(sys.props("user.home") + "/datris/tap-cache")
-        )
+        ).toAbsolutePath.normalize
 
-    private def repoDir(repo: String): Path =
-        cacheRoot.resolve(java.util.UUID.nameUUIDFromBytes(repo.getBytes(StandardCharsets.UTF_8)).toString)
+    private def repoDir(root: Path, repo: String): Path =
+        root.resolve(java.util.UUID.nameUUIDFromBytes(repo.getBytes(StandardCharsets.UTF_8)).toString)
 
-    private def entry(repo: String, sha: String, path: String): Path =
-        repoDir(repo).resolve(sha).resolve(path.replace('/', '_'))
-
-    def get(repo: String, sha: String, path: String): Option[String] = {
-        val file = entry(repo, sha, path)
-        if (Files.isRegularFile(file))
-            try Some(new String(Files.readAllBytes(file), StandardCharsets.UTF_8))
-            catch { case _: Exception => None }
-        else None
+    /** True when `file`, normalised, is a file directly inside a commit
+      * folder of a repository folder of `root` (three levels below it). */
+    private[util] def inside(root: Path, file: Path): Boolean = {
+        val r = root.toAbsolutePath.normalize
+        val f = file.toAbsolutePath.normalize
+        f.startsWith(r) && f.getNameCount == r.getNameCount + 3
     }
+
+    /** The cache file of (`repo`, `sha`, `path`), or None when `sha` is not a
+      * commit id or the location is not inside the cache directory. */
+    private[util] def location(repo: String, sha: String, path: String): Option[Path] =
+        if (repo == null || path == null || path.isEmpty || !isCommitId(sha)) None
+        else
+            try {
+                val root = cacheRoot
+                val file = repoDir(root, repo).resolve(sha).resolve(fileName(path)).normalize
+                if (inside(root, file)) Some(file) else None
+            } catch { case _: Exception => None }
+
+    def get(repo: String, sha: String, path: String): Option[String] =
+        location(repo, sha, path).flatMap { file =>
+            if (Files.isRegularFile(file))
+                try Some(new String(Files.readAllBytes(file), StandardCharsets.UTF_8))
+                catch { case _: Exception => None }
+            else None
+        }
 
     def put(repo: String, sha: String, path: String, content: String): Unit = {
         try {
-            val file = entry(repo, sha, path)
-            Files.createDirectories(file.getParent)
-            Files.write(file, content.getBytes(StandardCharsets.UTF_8))
-            prune(repo)
+            location(repo, sha, path).foreach { file =>
+                Files.createDirectories(file.getParent)
+                Files.write(file, content.getBytes(StandardCharsets.UTF_8))
+                prune(repo)
+            }
         } catch {
             case e: Exception => logger.warn("Tap script cache write failed (non-fatal): " + e.getMessage)
         }
@@ -524,7 +560,7 @@ object TapScriptCache {
 
     /** Keep the most recently touched N sha directories per repo. */
     private def prune(repo: String): Unit = {
-        val dir = repoDir(repo)
+        val dir = repoDir(cacheRoot, repo)
         if (!Files.isDirectory(dir)) return
         val shaDirs = Files.list(dir).toArray.map(_.asInstanceOf[Path]).filter(Files.isDirectory(_))
         if (shaDirs.length > MaxShasPerRepo) {

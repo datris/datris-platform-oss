@@ -290,13 +290,14 @@ object TapOwnerScopeReport {
       * refuse this `site` (save, test, restore, run, generate) of `tapName`
       * for the request's caller: one WARN line and one
       * `tap/reference-would-be-refused` audit row (outcome `warning`,
-      * metadata `rule`, `site`, `enforced: false`), at most once per tap and
-      * rule a UTC day. `reason` names nothing of another tap. Never marks
-      * the request as audited; never throws. */
+      * metadata `rule`, `site`, `enforced: false`), at most once per
+      * environment, tap and rule a UTC day. `reason` names nothing of
+      * another tap. Never marks the request as audited; never throws. */
     def referenceWouldBeRefused(request: HttpServletRequest, tapName: String, rule: Int, site: String, reason: String): Unit =
         safe("reference") {
             if (tapName == null || tapName.isEmpty || CatalogOps.Placeholder.is(tapName)) return
-            if (!firstToday(ReferenceWouldBeRefusedAction + "|" + rule + "|" + tapName)) return
+            val env = Option(ai.datris.model.DatrisEnvironment.current).map(e => String.valueOf(e.environment)).getOrElse("null")
+            if (!firstToday(ReferenceWouldBeRefusedAction + "|" + env + "|" + rule + "|" + tapName)) return
             val label = CapabilityCheck.resolvedKey(request).map(_.label).orNull
             logger.warn(
                 "Tap " + q(LogSafe.text(tapName)) + ": " + reason + " (" + site + " by " + q(LogSafe.text(label)) + "). " +

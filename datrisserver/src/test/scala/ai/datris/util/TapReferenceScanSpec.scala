@@ -152,6 +152,38 @@ class TapReferenceScanSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(r.unreadable.isEmpty, r.toString)
     }
 
+    test("scan: on an install whose path prefix has an empty or dot segment, the repository taps the store wrote are not listed; the rest still is") {
+        for (prefix <- Seq("/datris-taps", "//datris-taps/", "datris-taps//", "./datris-taps/", "org//taps/", "/", "./")) {
+            val pre = TapReferenceRules.normalizePrefix(prefix)
+            val taps = List(
+                repoTap("repo-in", pre + "repo-in.py"),
+                repoTap("repo-doubled", pre + "/repo-doubled.py"),
+                repoTap("repo-pipelines", pre + "pipelines/p/transformation.py"),
+                repoTap("repo-pipelines-name", pre + "pipelines_p_transformation.py")
+            )
+            val r = TapReferenceScan.scan(taps, resolve, n => secretOwners.get(n), Nil, () => pre)
+            assert(names(r, TapReferenceScan.OutsideArea) == List("repo-doubled", "repo-pipelines", "repo-pipelines-name"), prefix + ": " + r)
+        }
+    }
+
+    test("scan: taps of different catalogs on two repository paths that the script cache stores under one name share one script") {
+        val r = TapReferenceScan.scan(
+            List(
+                repoTap("c-sales", "datris-taps/shared/x.py"),
+                repoTap("c-finance", "datris-taps/shared_x.py").copy(catalog = "Finance"),
+                repoTap("n-sales", "datris-taps/n.py"),
+                repoTap("n-finance", "datris-taps//n.py").copy(catalog = "Finance"),
+                repoTap("alone-sales", "datris-taps/alone-x.py"),
+                repoTap("alone-finance", "datris-taps/alone_y.py").copy(catalog = "Finance")
+            ),
+            resolve,
+            n => secretOwners.get(n),
+            Nil,
+            () => "datris-taps/"
+        )
+        assert(names(r, TapReferenceScan.SharedScript).toSet == Set("c-sales", "c-finance", "n-sales", "n-finance"), r.toString)
+    }
+
     test("scan: the repository settings are not read when no tap is stored in a repository; a failed read lists the repository taps as unreadable") {
         val reads = new AtomicInteger(0)
         TapReferenceScan.scan(

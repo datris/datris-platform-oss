@@ -520,9 +520,11 @@ object TapAPIController {
     /** True when the route gate let `request` through only because
       * `CAPABILITY_ENFORCEMENT=log-only` (it noted a would-deny,
       * [[ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr]]).
-      * Log-only refuses nothing, so generate, fix and optimize then change
-      * the stored tap as v1.61.0 did instead of applying
-      * [[mayWriteStoredTap]]; review (whose gate is tap read) does not ask. */
+      * Log-only refuses nothing, so review, generate, fix and optimize then
+      * change the stored tap as v1.61.0 did instead of applying
+      * [[mayWriteStoredTap]]. A caller that holds the route's capability
+      * (for review, tap read) is not marked, so rule 1 holds for it in both
+      * modes. */
     private[api] def passedGateOnlyInLogOnly(request: HttpServletRequest): Boolean =
         request != null && request.getAttribute(ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr) != null
 
@@ -1777,8 +1779,8 @@ class TapAPIController {
       * A caller who may not update the stored tap
       * ([[TapAPIController.mayWriteStoredTap]], asked first) never changes it:
       * [[TapAPIController.StoredTapLeftUnchanged]] is returned instead,
-      * except when `logOnlyAsBefore` (generate, fix and optimize, for a
-      * request the route gate passed only under log-only): then the tap is
+      * except when `logOnlyAsBefore` (review, generate, fix and optimize, for
+      * a request the route gate passed only under log-only): then the tap is
       * changed as on v1.61.0. */
     private def repointUnlessGated(
         existing: TapConfig,
@@ -2276,7 +2278,14 @@ class TapAPIController {
                 if (result.rewritten && named) {
                     val existingTap = io.readTap(tapName)
                     if (existingTap != null && result.scriptPath != null && result.scriptPath != oldScriptPath)
-                        repointUnlessGated(existingTap, result.scriptPath, request, TapScriptStoreVersioning.ScriptReviewed, io)
+                        repointUnlessGated(
+                            existingTap,
+                            result.scriptPath,
+                            request,
+                            TapScriptStoreVersioning.ScriptReviewed,
+                            io,
+                            TapAPIController.passedGateOnlyInLogOnly(request)
+                        )
                     else None
                 } else None
 

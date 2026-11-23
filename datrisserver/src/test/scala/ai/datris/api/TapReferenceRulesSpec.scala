@@ -1008,4 +1008,150 @@ class TapReferenceRulesSpec extends AnyFunSuite with BeforeAndAfterEach {
             TapAPIController.testRefusal(r, builderTap.copy(secretName = "builder-secret"), n => allTaps.find(_.name == n).orNull, n => secretOwners.get(n)).isEmpty
         )
     }
+
+    // ================================================================ repository paths and the local script cache
+
+    /** A hidden tap (Finance, for the Sales callers) on a repository path with an underscore. */
+    private val financeUnderscore = financeRepoTap.copy(name = "finance_ledger", scriptRepoPath = RepoPrefix + "finance_ledger.py")
+
+    /** A hidden tap on a repository path with a folder. */
+    private val financeFolder = financeRepoTap.copy(name = "finance-folder", scriptRepoPath = RepoPrefix + "finance/ledger.py")
+
+    private val cacheTaps = allTaps ++ Seq(financeUnderscore, financeFolder)
+
+    private def cacheLookups(prefix: String = RepoPrefix): Lookups = Lookups(() => cacheTaps, n => secretOwners.get(n), () => prefix)
+
+    /** Paths that the local script cache stores under the name of a hidden tap's script. */
+    private val sameCacheNameAsHidden = Seq(RepoPrefix + "finance/ledger.py", RepoPrefix + "finance_ledger.py")
+
+    /** Paths that the local script cache stores under the name of a file under the `pipelines/` folder. */
+    private val sameCacheNameAsPipelines = Seq(
+        RepoPrefix + "pipelines_sales-orders_transformation.py",
+        RepoPrefix + "pipelines_sales-orders/transformation.py",
+        RepoPrefix + "pipelines/sales-orders_transformation.py",
+        "datris-taps_pipelines/sales-orders/transformation.py"
+    )
+
+    test("rule 3: two repository paths that the script cache would store under one name are the same script: enforced on save and test, reported on restore") {
+        assert(TapReferenceRules.sameRepoScript(RepoPrefix + "finance/ledger.py", RepoPrefix + "finance_ledger.py"))
+        assert(!TapReferenceRules.sameRepoScript(RepoPrefix + "finance-ledger.py", RepoPrefix + "finance_ledger.py"))
+        for (rk <- Seq(rita, salesKey); site <- Sites3; p <- sameCacheNameAsHidden) {
+            // the path differs from the hidden tap's own (the other one of the pair), and is inside the area
+            assert(TapReferenceRules.repoInArea(p, RepoPrefix), p)
+            val fs = TapReferenceRules.judge(Some(rk), site, newRepoTap("new-tap", p), null, cacheLookups())
+            assert(rule3At(site, fs), rk.label + " " + site + " '" + p + "': " + fs)
+            Seq("finance_ledger", "finance-folder", "Finance", "session:ada").foreach(h => assert(!fs.exists(_.reason.contains(h)), fs.toString))
+        }
+        // a caller that may read both taps is not refused
+        for (site <- Sites3; p <- sameCacheNameAsHidden) {
+            val fs = TapReferenceRules.judge(Some(fullKey), site, newRepoTap("new-tap", p), null, cacheLookups())
+            assert(enforced(fs).isEmpty, site + " " + p + ": " + fs)
+        }
+    }
+
+    test(
+        "rule 3: a repository path that shares a cache name with a file under the pipelines folder is outside the tap script area: enforced on save and test, reported on restore"
+    ) {
+        for (p <- sameCacheNameAsPipelines) assert(!TapReferenceRules.repoInArea(p, RepoPrefix), p)
+        for (rk <- limited; site <- Sites3; p <- sameCacheNameAsPipelines) {
+            val fs = judge(rk, site, newRepoTap("new-tap", p), null)
+            assert(rule3At(site, fs), rk.label + " " + site + " '" + p + "': " + fs)
+        }
+        // still inside: a name that only starts like the folder
+        for (p <- Seq(RepoPrefix + "pipelines.py", RepoPrefix + "pipelines-tap.py", RepoPrefix + "my_pipelines_tap.py"))
+            assert(TapReferenceRules.repoInArea(p, RepoPrefix), p)
+    }
+
+    test(
+        "rule 3 at POST /tap and POST /tap/test: a path sharing a cache name with a hidden tap's script or a pipelines file gets the same refusal, and nothing is read or written"
+    ) {
+        for (rk <- Seq(rita, salesKey); p <- sameCacheNameAsHidden ++ sameCacheNameAsPipelines) {
+            val store = new Store(cacheTaps)
+            val saved = save(rk, store, newRepoTap("cache-tap", p))
+            assert(saved.isLeft, rk.label + " '" + p + "': " + saved)
+            assertRefusal(rk, "cache-tap", saved.left.get, Seq("finance_ledger", "finance-folder", "Finance", "session:ada"))
+            store.nothingDone()
+            val (r, _) = req(rk, "/api/v1/tap/test")
+            val t = TapAPIController.referenceRefusal(r, TapReferenceRules.Test, newRepoTap("cache-tap", p), null, cacheLookups())
+            assert(t.isDefined && t.get.getStatusCode == saved.left.get.getStatusCode && t.get.getBody == saved.left.get.getBody, rk.label + " " + p)
+        }
+    }
+
+    test("rule 3 at version restore: a path sharing a cache name with a hidden tap's script is restored as before, with the rule 3 report") {
+        for (rk <- Seq(rita, salesKey); p <- sameCacheNameAsHidden) {
+            val live = newRepoTap("restore-cache-" + System.nanoTime(), RepoPrefix + "own.py")
+            val (r, _) = req(rk, "/api/v1/tap/version/restore")
+            val out = TapAPIController.referenceRefusal(r, TapReferenceRules.Restore, live.copy(scriptRepoPath = p), live, cacheLookups())
+            assert(out.isEmpty, rk.label + " " + p)
+            val rule3 = rowsFor(live.name).filter(_.metadata.exists(md => md.get("rule").getAsString == "3"))
+            assert(rule3.size == 1 && !rule3.head.metadata.get.get("enforced").getAsBoolean, rowsFor(live.name).toString)
+        }
+    }
+
+    /** Path prefixes with an empty or dot segment: saved as is by the settings, working on v1.61.0. */
+    private val oddPrefixes = Seq("/datris-taps", "//datris-taps/", "datris-taps//", "./datris-taps/", "org//taps/", "/", "./")
+
+    test(
+        "rule 3: on an install whose path prefix has an empty or dot segment, the references the store writes, and the prefix in normalised form, are inside the area at save and test"
+    ) {
+        for (prefix <- oddPrefixes) {
+            val written = TapReferenceRules.normalizePrefix(prefix) + "new-tap.py"
+            val canonical = Option(TapReferenceRules.normalizedRef(prefix)).filter(_.nonEmpty).map(_ + "/").getOrElse("") + "new-tap.py"
+            for (p <- Seq(written, canonical)) {
+                assert(TapReferenceRules.repoInArea(p, TapReferenceRules.normalizePrefix(prefix)), prefix + " " + p)
+                for (rk <- limited; site <- EnforcedSites) {
+                    val lk = Lookups(() => allTaps, n => secretOwners.get(n), () => TapReferenceRules.normalizePrefix(prefix))
+                    val fs = TapReferenceRules.judge(Some(rk), site, newRepoTap("new-tap", p), null, lk)
+                    assert(fs.isEmpty, rk.label + " " + site + " prefix '" + prefix + "' '" + p + "': " + fs)
+                }
+            }
+        }
+    }
+
+    test("rule 3: on such an install, an empty or dot segment after the prefix, or the pipelines folder, is still outside the area") {
+        for (prefix <- oddPrefixes) {
+            val pre = TapReferenceRules.normalizePrefix(prefix)
+            val outside = Seq(
+                pre + "/new-tap.py",
+                pre + "./new-tap.py",
+                pre + "sub/../new-tap.py",
+                pre + "new-tap.py/",
+                pre + "pipelines/sales-orders/transformation.py",
+                pre + "pipelines_sales-orders_transformation.py"
+            )
+            for (p <- outside; rk <- limited; site <- EnforcedSites) {
+                val lk = Lookups(() => allTaps, n => secretOwners.get(n), () => pre)
+                val fs = TapReferenceRules.judge(Some(rk), site, newRepoTap("new-tap", p), null, lk)
+                assert(rule3At(site, fs), rk.label + " " + site + " prefix '" + prefix + "' '" + p + "': " + fs)
+            }
+        }
+    }
+
+    test("rule 3 at POST /tap and POST /tap/test: on such an install a limited caller saves and tests the reference the store wrote, as on v1.61.0") {
+        for (prefix <- oddPrefixes; rk <- limited) {
+            val pre = TapReferenceRules.normalizePrefix(prefix)
+            val body = newRepoTap("odd-prefix-tap", pre + "odd-prefix-tap.py")
+            val store = new Store()
+            val io = store.io.copy(repoPathPrefix = () => pre)
+            val out = new TapAPIController().saveTapInternalWith(body, null, req(rk)._1, restored = false, io)
+            assert(out.isRight && store.writes.size == 1, rk.label + " prefix '" + prefix + "': " + out)
+            val (r, _) = req(rk, "/api/v1/tap/test")
+            val lk = Lookups(() => allTaps, n => secretOwners.get(n), () => pre)
+            assert(TapAPIController.referenceRefusal(r, TapReferenceRules.Test, body, null, lk).isEmpty, rk.label + " prefix '" + prefix + "'")
+        }
+    }
+
+    test("rules 5-8: the once-a-day bound is kept per environment") {
+        val n = "r6-env-" + System.nanoTime()
+        val (_, first) = withWarns(refusal(admin, TapReferenceRules.Save, newTap(n, "uploads/legacy/x.py"), null))
+        assert(first.exists(_.contains(n)), first.mkString("\n"))
+        ScopeDenialFixtures.install(env.copy(environment = "test-other"))
+        try {
+            val (_, other) = withWarns(refusal(admin, TapReferenceRules.Save, newTap(n, "uploads/legacy/x.py"), null))
+            assert(other.exists(_.contains(n)), "another environment reports it too: " + other.mkString("\n"))
+            val (_, again) = withWarns(refusal(admin, TapReferenceRules.Save, newTap(n, "uploads/legacy/x.py"), null))
+            assert(!again.exists(_.contains(n)), again.mkString("\n"))
+        } finally ScopeDenialFixtures.install(env)
+        assert(rowsFor(n).size == 2, rowsFor(n).toString)
+    }
 }
