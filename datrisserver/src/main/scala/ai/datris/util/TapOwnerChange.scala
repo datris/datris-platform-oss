@@ -65,7 +65,8 @@ object TapOwnerChange {
                         Right((SessionPrefix + found.username, Resolved(APIKeyValidator.resolveFromSession(found))))
                     case _ => Left("No user named '" + u.trim + "'.")
                 }
-            case (None, Some(k)) =>
+            case (None, Some(raw)) =>
+                val k = raw.trim
                 if (ReservedLabels.contains(k) || ReservedPrefixes.exists(k.startsWith))
                     Left("'" + k + "' is not an API key a tap can be handed to; name a user with 'user', or an issued API key with 'key'.")
                 else

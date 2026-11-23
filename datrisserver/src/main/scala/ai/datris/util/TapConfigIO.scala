@@ -40,19 +40,29 @@ object TapConfigIO {
     }
 
     /** `toWrite` with `live`'s owner (`createdByKeyLabel`) when `live` is
-      * non-null and its owner differs; otherwise `toWrite` itself. Nothing
-      * else is taken from `live`. Pure. */
+      * the same tap ([[sameTap]]) and its owner differs; otherwise `toWrite`
+      * itself. A tap deleted and created again under the same name while a
+      * run held the earlier one is not the same tap: the run's copy is
+      * written unchanged. Nothing else is taken from `live`. Pure. */
     def keepLiveOwner(toWrite: TapConfig, live: TapConfig): TapConfig =
-        if (toWrite == null || live == null || live.createdByKeyLabel == toWrite.createdByKeyLabel) toWrite
+        if (toWrite == null || live == null || !sameTap(toWrite, live) || live.createdByKeyLabel == toWrite.createdByKeyLabel) toWrite
         else toWrite.copy(createdByKeyLabel = live.createdByKeyLabel)
+
+    /** True when `a` and `b` are the same stored tap: equal creation times
+      * (`createdAt`), a missing or blank time on both sides counting as
+      * equal (taps stored before creation times were recorded). */
+    def sameTap(a: TapConfig, b: TapConfig): Boolean = {
+        def created(t: TapConfig): Option[String] = Option(t.createdAt).map(_.trim).filter(_.nonEmpty)
+        a != null && b != null && created(a) == created(b)
+    }
 
     /** A run or test status write. A run or test holds the tap as it was when
       * it started; when an administrator changed the tap's owner meanwhile
       * (`POST /api/v1/tap/owner`), the status write keeps the stored owner
       * rather than putting the previous one back. The tap is re-read by name
       * (`read`), its owner kept ([[keepLiveOwner]]) and the result written
-      * (`write`). A re-read that fails, or finds no tap, writes `tap` as given,
-      * as before. */
+      * (`write`). A re-read that fails, finds no tap, or finds a different
+      * tap of the same name, writes `tap` as given, as before. */
     def writeRunStateWith(tap: TapConfig, read: String => TapConfig, write: TapConfig => Unit): Unit = {
         val live =
             if (tap == null || tap.name == null) null

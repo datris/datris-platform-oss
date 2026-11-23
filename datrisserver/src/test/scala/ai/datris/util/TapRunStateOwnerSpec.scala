@@ -98,6 +98,32 @@ class TapRunStateOwnerSpec extends AnyFunSuite {
         assert(kept == runWrite.copy(createdByKeyLabel = "new-agent"), kept.toString)
     }
 
+    // A tap deleted and created again under the same name while a run held
+    // the earlier one is not the same tap: the run's copy is written
+    // unchanged, as before the owner change existed. The stored tap is the
+    // same tap when its creation time equals the run's copy's; taps stored
+    // before creation times were recorded (missing or blank on both sides)
+    // count as the same tap.
+
+    test("keepLiveOwner leaves the write unchanged when the stored tap was created again under the same name") {
+        val run = runWrite.copy(createdAt = "2026-01-01 00:00:00")
+        val recreated = stored.copy(createdAt = "2026-11-22 03:00:30", createdByKeyLabel = "someone-else")
+        assert(TapConfigIO.keepLiveOwner(run, recreated) eq run)
+        // a legacy tap with no creation time replaced by a new one
+        assert(TapConfigIO.keepLiveOwner(runWrite, recreated) eq runWrite)
+        assert(TapConfigIO.keepLiveOwner(run, stored.copy(createdAt = null)) eq run)
+    }
+
+    test("keepLiveOwner keeps the stored owner of the same tap: equal creation times, or none recorded on either side") {
+        val run = runWrite.copy(createdAt = "2026-01-01 00:00:00")
+        assert(TapConfigIO.keepLiveOwner(run, stored.copy(createdAt = "2026-01-01 00:00:00")) == run.copy(createdByKeyLabel = "new-agent"))
+        for ((a, b) <- Seq[(String, String)]((null, null), ("", null), (null, "  "), ("", "")))
+            assert(
+                TapConfigIO.keepLiveOwner(runWrite.copy(createdAt = a), stored.copy(createdAt = b)).createdByKeyLabel == "new-agent",
+                s"[$a] [$b]"
+            )
+    }
+
     // ================================================================ writeRunStateWith
 
     private class Tables(initial: TapConfig, failRead: Boolean = false) {
@@ -136,6 +162,13 @@ class TapRunStateOwnerSpec extends AnyFunSuite {
         val t = new Tables(stored, failRead = true)
         TapConfigIO.writeRunStateWith(runWrite, t.read, t.write)
         assert(t.writes == Seq(runWrite), t.writes.toString)
+    }
+
+    test("when the tap was deleted and created again during the run, the status write is the run's tap, as before") {
+        val run = runWrite.copy(createdAt = "2026-01-01 00:00:00")
+        val t = new Tables(stored.copy(createdAt = "2026-11-22 03:00:30", createdByKeyLabel = "someone-else"))
+        TapConfigIO.writeRunStateWith(run, t.read, t.write)
+        assert(t.writes == Seq(run), t.writes.toString)
     }
 
     test("when the tap is no longer stored, the status write is the run's tap, as before") {

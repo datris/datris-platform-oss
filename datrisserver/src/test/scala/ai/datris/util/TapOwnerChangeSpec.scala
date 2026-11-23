@@ -153,6 +153,14 @@ class TapOwnerChangeSpec extends AnyFunSuite with BeforeAndAfterEach {
         }
     }
 
+    test("a key value is trimmed the same way a user value is") {
+        assert(TapOwnerChange.newOwner(null, "  builder ", findUser, keyByLabel) == Right(("builder", Resolved(builder))))
+        assert(TapOwnerChange.newOwner(" ed ", null, findUser, keyByLabel) == Right(("session:ed", Resolved(session(ed)))))
+        val answersAnything: String => Option[ResolvedKey] = l => Some(key(l, "*:*"))
+        for (label <- Seq(" anonymous", "system ", " session:ed", " tap:orders-feed "))
+            assert(TapOwnerChange.newOwner(null, label, findUser, answersAnything).isLeft, "[" + label + "]")
+    }
+
     test("both fields, or neither, are refused with a reason") {
         for ((u, k) <- Seq(("ed", "builder"), (null, null), ("", ""))) {
             val r = TapOwnerChange.newOwner(u, k, findUser, keyByLabel)

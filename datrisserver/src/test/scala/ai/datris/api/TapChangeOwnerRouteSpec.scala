@@ -416,6 +416,24 @@ class TapChangeOwnerRouteSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(twice.writes.isEmpty)
     }
 
+    test("the same owner as stored writes no owner-change audit row of its own, whether found before or under the lock") {
+        val r = req(adminSession)
+        ok(new Store(), r, body("name" -> "orders-feed", "key" -> "old-builder"))
+        assert(ownerChangeRows.isEmpty, audit.toString)
+        // the request's ordinary audit entry says nothing changed
+        r.getAttribute(AuditLog.MetadataAttr) match {
+            case md: com.google.gson.JsonObject => assert(!md.get("changed").getAsBoolean, md.toString)
+            case other => fail("no metadata for the request's audit entry: " + other)
+        }
+        assert(r.getAttribute(AuditLog.RecordedAttr) == null, "the request is still audited by the interceptor")
+        // changed by someone else to this owner between the decision and the write
+        ok(new Store(reads = Seq(stored, stored.copy(createdByKeyLabel = "builder"))), req(adminSession), body("name" -> "orders-feed", "key" -> "builder"))
+        assert(ownerChangeRows.isEmpty, audit.toString)
+        // a change still writes its row
+        ok(new Store(), req(adminSession), body("name" -> "orders-feed", "key" -> "builder"))
+        assert(ownerChangeRows.size == 1, audit.toString)
+    }
+
     test("a tap moved to another catalog, repointed or deleted between the decision and the write is not changed") {
         val moved = stored.copy(catalog = "Ops")
         val repointed = stored.copy(targetPipeline = "finance-ledger")

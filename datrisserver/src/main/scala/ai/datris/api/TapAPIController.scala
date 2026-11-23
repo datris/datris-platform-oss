@@ -2295,12 +2295,17 @@ class TapAPIController {
                 case Right(owner) => owner
             }
 
+            // Only a change writes the owner-change audit row. Asking for the
+            // owner the tap already has writes no row of its own: the
+            // request's ordinary audit entry carries `changed: false`, so it
+            // never reads as a change.
             def done(previous: String, changed: Boolean, warnings: List[String]): ResponseEntity[String] = {
                 val md = new com.google.gson.JsonObject
                 md.addProperty("from", previous)
                 md.addProperty("to", newLabel)
                 md.addProperty("changed", changed)
-                ai.datris.audit.AuditLog.record(request, "tap", "owner-change", "tap", name, metadata = md)
+                if (changed) ai.datris.audit.AuditLog.record(request, "tap", "owner-change", "tap", name, metadata = md)
+                else request.setAttribute(ai.datris.audit.AuditLog.MetadataAttr, md)
                 val out = new com.google.gson.JsonObject
                 out.addProperty("name", name)
                 out.addProperty("owner", newLabel)

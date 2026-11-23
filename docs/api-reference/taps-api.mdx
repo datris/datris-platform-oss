@@ -150,7 +150,7 @@ Content-Type: application/json
 
 Hands an existing tap to another user or API key. The tap keeps its versions, incremental-sync state, document ledger, run history, schedule, enabled state and script; only its owner changes. A tap's owner is otherwise set when it is created and kept on every later save: an owner named in the body of `POST /api/v1/tap`, a version restore or a catalog restore is ignored.
 
-Only an administrator (a signed-in admin, or an API key with full access: unscoped `*:*` or a legacy key) may change a tap's owner. Every other caller, including a key holding `tap:update` or a wildcard limited to a catalog or to what it created, gets `403` `Changing a tap's owner needs an administrator or a full-access API key`, and nothing about the tap is read.
+Only an administrator (a signed-in admin, or an API key with full access: unscoped `*:*` or a legacy key) may change a tap's owner. Every other caller, including a key holding `tap:update` or a wildcard limited to a catalog or to what it created, gets `403` and nothing about the tap is read; the error text depends on which check refused the request. For API keys, an [agent policy](/agent-policy) on tap updates applies to this action as it does to any other tap update.
 
 **Body:** the tap and exactly one of `user` or `key`.
 ```json
@@ -196,7 +196,7 @@ curl -s -X POST http://localhost:8080/api/v1/tap/owner \
 }
 ```
 
-`changed` is `false`, and nothing is written, when the tap already has that owner.
+`changed` is `false`, and nothing is written, when the tap already has that owner; its audit log entry carries `changed: false`.
 
 **Who may own the tap.** An administrator, a user with no catalog limits who may edit taps, or a key with full access can always be the owner. Any other new owner is refused with `409` and a message saying what to do, and nothing changes, when:
 - it could not edit the tap where it is: it cannot see the tap's catalog, or may not change taps (a viewer, a read-only key); or

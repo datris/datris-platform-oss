@@ -6033,8 +6033,10 @@ paths:
         run history, schedule and script; no tap version is written and its
         update time is kept. Administrators (a signed-in admin, or an API key
         with unscoped full access) only; every other caller gets 403 and
-        nothing is read. From the change on, keys limited to what they
-        created (owner=self) reach the tap through the new owner: the new
+        nothing is read. For API keys, an agent policy on tap updates
+        applies to this action as to any other tap update. From the change
+        on, keys limited to what they created (owner=self) reach the tap
+        through the new owner: the new
         owning key may read and update it, the previous owning key may not.
         A run or test in progress finishes as it started; the next run reads
         the new owner.
@@ -6095,7 +6097,11 @@ paths:
         '400':
           description: Both or neither of user and key; unknown user; unknown, revoked or reserved key; a catalog placeholder
         '403':
-          description: The caller is not an administrator or a full-access API key
+          description: >-
+            Refused, and nothing about the tap is read: the caller is not an
+            administrator or a full-access API key, or an agent policy on tap
+            updates refuses the API key. The error text depends on which check
+            refused the request.
         '404':
           description: No such tap
         '409':
