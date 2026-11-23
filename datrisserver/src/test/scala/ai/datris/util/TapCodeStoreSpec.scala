@@ -1294,13 +1294,18 @@ class TapCodeStoreSpec extends AnyFunSuite {
             val bucket = SpecEnv.testEnv.environment + "-config"
             val keys = Seq("tap-scripts/orders_0000000a.py", "tap-scripts/other_1a2b3c4d.py", "tap-scripts/orders_1.py", "uploads/data.csv")
             keys.foreach(k => objects.objects((bucket, k)) = "x")
+            val noFormReads = new java.util.concurrent.atomic.AtomicInteger(0)
+            TapScriptGenerator.deleteTapScripts("orders", keys.drop(2), objects = objects, allTaps = () => { noFormReads.incrementAndGet(); Nil })
+            assert(noFormReads.get == 0, "no listing read for files that are not built-in scripts of the store's form: " + noFormReads.get)
+            assert(objects.objects.keys.map(_._2).toSet == keys.toSet, objects.objects.keys.toString)
+            val failingReads = new java.util.concurrent.atomic.AtomicInteger(0)
             TapScriptGenerator.deleteTapScripts(
                 "orders",
-                keys.drop(2),
+                keys,
                 objects = objects,
-                allTaps = () => throw new AssertionError("no listing read for files that are not built-in scripts of the store's form")
+                allTaps = () => { failingReads.incrementAndGet(); throw new IllegalStateException("mongo down") }
             )
-            TapScriptGenerator.deleteTapScripts("orders", keys, objects = objects, allTaps = () => throw new IllegalStateException("mongo down"))
+            assert(failingReads.get == 1, "the listing is asked for once and its failure deletes nothing: " + failingReads.get)
             assert(objects.objects.keys.map(_._2).toSet == keys.toSet, objects.objects.keys.toString)
         } finally TenantContext.clear()
     }

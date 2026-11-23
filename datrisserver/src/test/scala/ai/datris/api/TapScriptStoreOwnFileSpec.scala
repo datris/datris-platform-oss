@@ -501,6 +501,106 @@ class TapScriptStoreOwnFileSpec extends AnyFunSuite with BeforeAndAfterEach {
         assertReportedOnce(name, warns)
     }
 
+    // ================================================================ who is held to its own tap's script file
+    //
+    // One decision (TapAPIController.heldToOwnScriptFile): a restricted
+    // session, a key limited for taps, or a key whose tap update carries a
+    // scope. Not held: no identity, full-access keys, unrestricted sessions,
+    // and a key limited only for pipelines whose tap capabilities carry no
+    // scope (its upload goes ahead as on the released version).
+
+    /** Reads every tap and pipeline, but its tap update is limited to Sales. */
+    private val scopedUpdater = key("scoped-updater", "pipeline:read", "tap:read", "tap:create:catalog=Sales", "tap:update:catalog=Sales")
+
+    /** Limited for pipelines only: every tap capability is unscoped. */
+    private val pipelineOnly =
+        key("pipeline-only", "pipeline:read:catalog=Sales", "pipeline:run:catalog=Sales", "tap:read", "tap:create", "tap:update", "tap:run")
+
+    private val editor = session(User("ed", "h", User.RoleEditor, null, null, null))
+
+    private def uploadAs(r: HttpServletRequest, io: TapAPIController.TapScriptUploadIO, name: String): ResponseEntity[String] =
+        new TapAPIController().storeScriptWith(uploadBody(name), r, io)
+
+    private def deniedRows(name: String): List[AuditEntry] = reportRows(name).filter(_.outcome == "denied")
+
+    test("held to its own tap's script file: restricted sessions, keys limited for taps, keys whose tap update carries a scope") {
+        for (rk <- Seq(rita, salesKey, builder, scopedUpdater))
+            assert(TapAPIController.heldToOwnScriptFile(req(rk, "/api/v1/tap/script")), rk.label)
+        for (rk <- Seq(admin, editor, fullKey, pipelineOnly, updater))
+            assert(!TapAPIController.heldToOwnScriptFile(req(rk, "/api/v1/tap/script")), rk.label)
+        assert(!TapAPIController.heldToOwnScriptFile(ScopeDenialFixtures.request(null, "POST", "/api/v1/tap/script")._1), "auth off")
+        assert(!TapAPIController.heldToOwnScriptFile(null))
+    }
+
+    test("S4: a key that reads every tap but whose tap update carries a scope is refused on a tap whose stored path is not its own file") {
+        val name = uniq("hand-placed-scoped")
+        val w = new World(Seq(repoTap(name, Prefix + "lib/shared.py")))
+        val (r, _) = withWarns(upload(scopedUpdater, w, name))
+        assert(status(r) == 409, r.toString)
+        assert(JsonParser.parseString(r.getBody).getAsJsonObject.get("error").getAsString == TapAPIController.notOwnUploadMessage(name), r.getBody)
+        w.nothingWritten()
+        assert(deniedRows(name).size == 1, reportRows(name).toString)
+    }
+
+    test("S4: a key limited only for pipelines, an editor session and auth off write at the stored path as on the released version") {
+        val callers =
+            Seq(req(pipelineOnly, "/api/v1/tap/script"), req(editor, "/api/v1/tap/script"), ScopeDenialFixtures.request(null, "POST", "/api/v1/tap/script")._1)
+        for (r <- callers) {
+            val name = uniq("hand-placed-free")
+            val path = Prefix + "lib/shared.py"
+            val w = new World(Seq(repoTap(name, path)))
+            val (resp, _) = withWarns(uploadAs(r, w.io, name))
+            assert(status(resp) == 200, resp.toString)
+            assert(w.repo.writes.toList == List(name -> path), w.repo.writes.toString)
+            assert(deniedRows(name).isEmpty, reportRows(name).toString)
+        }
+    }
+
+    test("a held caller's upload for a stored repository tap writes nothing and is a 503 when the repository settings cannot be read") {
+        for (rk <- Seq(rita, salesKey, builder, scopedUpdater)) {
+            val name = uniq("unreadable-settings")
+            val owner = if (rk == builder) "builder" else "session:ada"
+            val w = new World(Seq(repoTap(name, Prefix + name + ".py", owner = owner)))
+            val failing = w.io.copy(repoConfig = () => throw new IllegalStateException("db password=s3cr3t unreachable"))
+            val (r, _) = withWarns(uploadAs(req(rk, "/api/v1/tap/script"), failing, name))
+            assert(status(r) == 503, rk.label + ": " + r)
+            assert(
+                JsonParser.parseString(r.getBody).getAsJsonObject.get("error").getAsString == TapAPIController.ownScriptFileUndecidedMessage(name),
+                r.getBody
+            )
+            assert(!r.getBody.contains("s3cr3t") && !r.getBody.contains(Prefix), r.getBody)
+            w.nothingWritten()
+        }
+    }
+
+    test("unchanged: an unheld caller's upload for a stored repository tap goes ahead when the repository settings cannot be read") {
+        for (rk <- Seq(admin, fullKey, pipelineOnly)) {
+            val name = uniq("unreadable-settings-free")
+            val path = Prefix + name + ".py"
+            val w = new World(Seq(repoTap(name, path)))
+            val failing = w.io.copy(repoConfig = () => throw new IllegalStateException("down"))
+            val (r, _) = withWarns(uploadAs(req(rk, "/api/v1/tap/script"), failing, name))
+            assert(status(r) == 200, rk.label + ": " + r)
+            assert(w.repo.writes.toList == List(name -> path), w.repo.writes.toString)
+        }
+        // a held caller's upload of a built-in tap reads no repository settings and goes ahead
+        val name = uniq("builtin-unreadable")
+        val w = new World(Seq(builtInTap(name, "tap-scripts/" + name + "_1a2b3c4d.py")))
+        val failing = w.io.copy(repoConfig = () => throw new IllegalStateException("down"))
+        assert(status(uploadAs(req(salesKey, "/api/v1/tap/script"), failing, name)) == 200)
+        assert(w.builtIn.writes.size == 1 && w.repo.writes.isEmpty)
+    }
+
+    test("under log-only capability mode a held caller's upload goes ahead when the repository settings cannot be read, as before") {
+        val name = uniq("unreadable-logonly")
+        val path = Prefix + "lib/shared.py"
+        val w = new World(Seq(repoTap(name, path)))
+        val failing = w.io.copy(repoConfig = () => throw new IllegalStateException("down"))
+        val (r, _) = withWarns(uploadAs(logOnlyReq(salesKey, "/api/v1/tap/script"), failing, name))
+        assert(status(r) == 200, r.toString)
+        assert(w.repo.writes.toList == List(name -> path), w.repo.writes.toString)
+    }
+
     // ================================================================ built-in scripts written under another name
 
     test("a tap delete removes a built-in script written under a name no stored tap has, with no warning") {

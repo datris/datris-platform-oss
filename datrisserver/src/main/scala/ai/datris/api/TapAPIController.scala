@@ -535,6 +535,41 @@ object TapAPIController {
     private[api] def passedGateOnlyInLogOnly(request: HttpServletRequest): Boolean =
         request != null && request.getAttribute(ai.datris.config.CapabilityInterceptor.LogOnlyWouldDenyAttr) != null
 
+    /** `existing` (the request's audit metadata attribute: a JsonObject, or
+      * anything else = none) with every key of `added` set; other keys are
+      * kept, as `PipelineAPIController.renameAuditMetadata` does. */
+    private[api] def mergedAuditMetadata(existing: Any, added: com.google.gson.JsonObject): com.google.gson.JsonObject = {
+        val m = existing match {
+            case o: com.google.gson.JsonObject => o
+            case _ => new com.google.gson.JsonObject
+        }
+        added.entrySet().forEach(e => m.add(e.getKey, e.getValue))
+        m
+    }
+
+    /** Whether the caller of `request` is held to its own tap's script file
+      * (rule S4 enforced at the script upload and the catalog restore):
+      * [[ai.datris.auth.CallerVisibility.heldToOwnTapScriptFile]] on the
+      * request's identity. False with no identity (auth off) and for a null
+      * request. The log-only exemption ([[passedGateOnlyInLogOnly]]) is
+      * applied by each site on top of this. */
+    private[api] def heldToOwnScriptFile(request: HttpServletRequest): Boolean =
+        request != null && CapabilityCheck.resolvedKey(request).exists(ai.datris.auth.CallerVisibility.heldToOwnTapScriptFile)
+
+    /** The 503 a held caller ([[heldToOwnScriptFile]]) gets when the stored
+      * tap is a repository tap and the code repository settings cannot be
+      * read, so whether its stored file is its own cannot be decided: nothing
+      * is written. Names only the caller's own tap. */
+    private[api] def ownScriptFileUndecided(tapName: String): ResponseEntity[String] =
+        ResponseEntity
+            .status(HttpStatus.SERVICE_UNAVAILABLE)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body[String](ApiErrors.errorBody(ownScriptFileUndecidedMessage(tapName)))
+
+    /** The answer of [[ownScriptFileUndecided]]. */
+    def ownScriptFileUndecidedMessage(tapName: String): String =
+        "The code repository settings could not be read, so the script of tap '" + tapName + "' was not written. Try again later."
+
     /** The store reads, writes, secret reads and model calls of the review,
       * generate, fix and optimize routes, so specs can drive them without
       * Mongo, Vault, a script store or a model. [[ProductionAiIO]] makes the
@@ -662,19 +697,20 @@ object TapAPIController {
         }
     }
 
-    /** Rule S4 for a caller limited to a catalog or to what it created
-      * ([[CapabilityCheck.isLimited]]): Some when `store` would write the
-      * script of the stored repository tap `existing` at its stored path and
-      * that path is not the tap's own file ([[TapScriptOwnership.ownRepo]]
-      * under the current or a recorded earlier prefix). Then nothing may be
-      * written: 409 telling the caller to ask an administrator to move the
-      * script to the tap's own path, naming no path and no other tap, with
-      * one log line and one audit row ([[TapOwnerScopeReport.scriptStoreRefused]]).
-      * Never for an unrestricted caller (reported after the write, as
-      * before), and never when the route gate passed the request only under
-      * log-only capability mode ([[passedGateOnlyInLogOnly]]), which refuses
-      * nothing. Reads the repository configuration only for such a write; a
-      * configuration that cannot be read refuses nothing here. */
+    /** Rule S4 for a caller held to its own tap's script file
+      * ([[heldToOwnScriptFile]]): Some when `store` would write the script of
+      * the stored repository tap `existing` at its stored path and that path
+      * is not the tap's own file ([[TapScriptOwnership.ownRepo]] under the
+      * current or a recorded earlier prefix). Then nothing may be written:
+      * 409 telling the caller to ask an administrator to move the script to
+      * the tap's own path, naming no path and no other tap, with one log line
+      * and one audit row ([[TapOwnerScopeReport.scriptStoreRefused]]). When
+      * the repository configuration cannot be read, the answer is the 503 of
+      * [[ownScriptFileUndecided]] and nothing is written. Never for any other
+      * caller (reported after the write, as before), and never when the route
+      * gate passed the request only under log-only capability mode
+      * ([[passedGateOnlyInLogOnly]]), which refuses nothing. Reads the
+      * repository configuration only for such a write. */
     private[api] def notOwnUploadRefusal(
         request: HttpServletRequest,
         tapName: String,
@@ -684,13 +720,18 @@ object TapAPIController {
     ): Option[ResponseEntity[String]] = {
         val writesAtStoredPath = store != null && store.storage == "github" && existing != null && existing.scriptStorage == "github" &&
             existing.scriptRepoPath != null && existing.scriptRepoPath.nonEmpty
-        if (!writesAtStoredPath || !CapabilityCheck.isLimited(request) || passedGateOnlyInLogOnly(request)) None
+        if (!writesAtStoredPath || !heldToOwnScriptFile(request) || passedGateOnlyInLogOnly(request)) None
         else {
-            val notOwn = scala.util
-                .Try(io.repoConfig())
-                .toOption
-                .flatten
-                .exists(cfg => !TapScriptOwnership.ownRepo(tapName, existing.scriptRepoPath, TapScriptOwnership.prefixesOf(cfg)))
+            val cfg = scala.util.Try(io.repoConfig()) match {
+                case scala.util.Success(c) => c
+                case scala.util.Failure(e) =>
+                    uploadLogger.warn(
+                        "Script upload for tap '" + LogSafe.text(tapName) + "' not written: the code repository settings could not be read (" +
+                            LogSafe.text(e.getClass.getSimpleName) + ")"
+                    )
+                    return Some(ownScriptFileUndecided(tapName))
+            }
+            val notOwn = cfg.exists(c => !TapScriptOwnership.ownRepo(tapName, existing.scriptRepoPath, TapScriptOwnership.prefixesOf(c)))
             if (!notOwn) None
             else {
                 TapOwnerScopeReport.scriptStoreRefused(
@@ -698,7 +739,7 @@ object TapAPIController {
                     tapName,
                     "S4",
                     "script",
-                    "a script upload by a caller limited to a catalog or to what it created was refused: the tap's stored code repository path " +
+                    "a script upload by a caller whose tap access is limited to a catalog or to what it created was refused: the tap's stored code repository path " +
                         "is not the tap's own script file"
                 )
                 Some(
@@ -714,7 +755,7 @@ object TapAPIController {
     /** The answer of [[notOwnUploadRefusal]]: names only the caller's own tap. */
     def notOwnUploadMessage(tapName: String): String =
         "The script of tap '" + tapName + "' is stored in the code repository at a file that is not this tap's own script file, " +
-            "so it cannot be updated by a user or key limited to a catalog or to what it created; nothing was written. " +
+            "so it cannot be updated by a user or key whose tap access is limited to a catalog or to what it created; nothing was written. " +
             "Ask an administrator to move the script to the tap's own path (for example by moving it to built-in storage and back)."
 
     /** Rules S4 and S5, reported only: after the script upload stored a
@@ -2112,7 +2153,7 @@ class TapAPIController {
 
     /** The script upload after key validation, over `io`'s store reads and
       * writes. Rule S2 ([[TapAPIController.uploadTargetRefusal]]) and, for a
-      * limited caller, rule S4 ([[TapAPIController.notOwnUploadRefusal]]) are
+      * caller held to its own tap's script file, rule S4 ([[TapAPIController.notOwnUploadRefusal]]) are
       * decided before anything is written; otherwise rules S4 and S5 are
       * reported after the script was stored ([[TapAPIController.reportScriptStore]]). */
     private[datris] def storeScriptWith(
@@ -2155,7 +2196,7 @@ class TapAPIController {
             // Rule S2: a write with no repository reference of this tap behind
             // it never replaces the file another stored tap runs from.
             TapAPIController.uploadTargetRefusal(request, tapName, store, existing, io).foreach(return _)
-            // Rule S4 for a limited caller: a stored repository tap whose
+            // Rule S4 for a caller held to its own tap's script file: a stored repository tap whose
             // stored path is not its own file is not written through.
             TapAPIController.notOwnUploadRefusal(request, tapName, store, existing, io).foreach(return _)
 
@@ -2297,15 +2338,20 @@ class TapAPIController {
 
             // Only a change writes the owner-change audit row. Asking for the
             // owner the tap already has writes no row of its own: the
-            // request's ordinary audit entry carries `changed: false`, so it
-            // never reads as a change.
+            // request's ordinary audit entry carries `changed: false`, merged
+            // into the metadata already on the request (an approved replay's
+            // approval trail is kept), so it never reads as a change.
             def done(previous: String, changed: Boolean, warnings: List[String]): ResponseEntity[String] = {
                 val md = new com.google.gson.JsonObject
                 md.addProperty("from", previous)
                 md.addProperty("to", newLabel)
                 md.addProperty("changed", changed)
                 if (changed) ai.datris.audit.AuditLog.record(request, "tap", "owner-change", "tap", name, metadata = md)
-                else request.setAttribute(ai.datris.audit.AuditLog.MetadataAttr, md)
+                else
+                    request.setAttribute(
+                        ai.datris.audit.AuditLog.MetadataAttr,
+                        TapAPIController.mergedAuditMetadata(request.getAttribute(ai.datris.audit.AuditLog.MetadataAttr), md)
+                    )
                 val out = new com.google.gson.JsonObject
                 out.addProperty("name", name)
                 out.addProperty("owner", newLabel)

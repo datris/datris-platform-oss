@@ -325,16 +325,24 @@ object TapOwnerScopeReport {
             reportReference(request, tapName, rule, site, reason, later)
         }
 
-    /** Rule S4 at the script upload (`site` "script") enforced for a caller
-      * limited to a catalog or to what it created: the upload was refused
-      * and nothing was written. One WARN line and one
+    /** Rule S4 enforced for a caller held to its own tap's script file, at
+      * the script upload (`site` "script") or the catalog restore (`site`
+      * "catalog-restore"): the upload or restore was refused and nothing was
+      * written (`later` says which). One WARN line and one
       * `tap/reference-would-be-refused` audit row (outcome `denied`, metadata
       * `rule`, `site`, `enforced: true`) for every refusal. `reason` names
       * nothing of another tap. Never marks the request as audited; never
       * throws. */
-    def scriptStoreRefused(request: HttpServletRequest, tapName: String, rule: String, site: String, reason: String): Unit =
+    def scriptStoreRefused(
+        request: HttpServletRequest,
+        tapName: String,
+        rule: String,
+        site: String,
+        reason: String,
+        later: String = "The upload was refused and nothing was written."
+    ): Unit =
         safe("script store refused") {
-            reportReference(request, tapName, rule, site, reason, "The upload was refused and nothing was written.", enforced = true)
+            reportReference(request, tapName, rule, site, reason, later, enforced = true)
         }
 
     private def reportReference(

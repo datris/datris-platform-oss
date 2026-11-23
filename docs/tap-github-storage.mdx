@@ -130,8 +130,8 @@ Deleting a tap, removing its old script versions, and the first script stored un
 A tap whose stored repository file is not its own (a path placed by hand, or an earlier prefix that
 is not recorded) is the one exception, in this release: a script upload for it by an administrator,
 an editor without catalog limits or an unrestricted API key is still written to that stored file,
-and the same upload by a user limited to catalogs or a key limited to a catalog or to what it
-created is refused (see below).
+and the same upload by a user limited to catalogs or a key whose tap access is limited is refused
+(see below).
 
 **Deleting a tap** deletes its own script file only when no other tap uses the same file. Otherwise
 the file is left in place, the tap is still deleted, and the delete response's `warnings` says: "The
@@ -156,9 +156,13 @@ no field for it in the settings page.
 
 A tap whose stored script file is not its own still runs and saves as before in this release. A
 script upload for it by an administrator, an editor without catalog limits or an unrestricted API
-key is still written to its stored file. The same upload by a user limited to catalogs, or by a
-key limited to a catalog or to what it created, is refused with `409` and nothing is written; the
-message names only that tap and asks an administrator to move the script to the tap's own path.
+key is still written to its stored file. The same upload by a user limited to catalogs, or by an
+API key whose tap access is limited (it cannot read every tap, or its `tap:update` is limited to a
+catalog or to what it created), is refused with `409` and nothing is written; the message names only
+that tap and asks an administrator to move the script to the tap's own path. When the code
+repository settings cannot be read, such an upload is answered `503` and nothing is written. A key
+limited only for pipelines, whose tap capabilities carry no catalog or owner limit, uploads as
+before.
 `datris doctor` lists such taps under [`tap.references`](/doctor#the-checks); in a later release
 the next script stored for such a tap is written to its own path and the tap is pointed at it,
 leaving the earlier file in place. To give such a tap its own file now, record the earlier prefix
@@ -167,7 +171,15 @@ leaving the earlier file in place. To give such a tap its own file now, record t
 A catalog restore into an install that stores tap scripts in a code repository follows the same
 rule as a first upload: a restored tap whose live copy has no repository file of its own (it is
 new here, or on built-in storage) is not written over a file another tap runs from. The restore
-reports it as a clash, with the restored tap's name and file, and nothing is restored.
+reports it as a clash, with the restored tap's name and file, and nothing is restored. For a user
+limited to catalogs or a key whose tap access is limited, the clash says only that the file cannot
+be written by this restore.
+
+The same restore by a user limited to catalogs or a key whose tap access is limited also follows
+the upload rule above: when a restored tap's live copy is stored in the repository at a file that is
+not its own, the restore lists that tap as a clash, naming only the tap and asking an administrator
+to move its script to the tap's own path, records the refusal in the audit log, and restores
+nothing. Other callers' restores are unchanged.
 
 ## Pipeline scripts
 

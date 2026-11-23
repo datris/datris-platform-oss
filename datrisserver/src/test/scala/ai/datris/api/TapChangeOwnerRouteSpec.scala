@@ -434,6 +434,31 @@ class TapChangeOwnerRouteSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(ownerChangeRows.size == 1, audit.toString)
     }
 
+    test("the same owner as stored keeps the audit metadata already on the request, so an approved replay keeps its approval trail") {
+        val (r, attrs) = ScopeDenialFixtures.request(adminSession, "POST", Path)
+        val trail = new com.google.gson.JsonObject
+        trail.addProperty("approvalId", "appr-1")
+        trail.addProperty("approvedBy", "session:ada")
+        attrs.put(AuditLog.MetadataAttr, trail)
+        ok(new Store(), r, body("name" -> "orders-feed", "key" -> "old-builder"))
+        r.getAttribute(AuditLog.MetadataAttr) match {
+            case md: com.google.gson.JsonObject =>
+                assert(md.get("approvalId").getAsString == "appr-1" && md.get("approvedBy").getAsString == "session:ada", md.toString)
+                assert(md.get("from").getAsString == "old-builder" && md.get("to").getAsString == "old-builder", md.toString)
+                assert(!md.get("changed").getAsBoolean, md.toString)
+            case other => fail("no metadata for the request's audit entry: " + other)
+        }
+        assert(ownerChangeRows.isEmpty, audit.toString)
+        // metadata that is not an object is replaced, as before
+        val (r2, attrs2) = ScopeDenialFixtures.request(adminSession, "POST", Path)
+        attrs2.put(AuditLog.MetadataAttr, "not an object")
+        ok(new Store(), r2, body("name" -> "orders-feed", "key" -> "old-builder"))
+        r2.getAttribute(AuditLog.MetadataAttr) match {
+            case md: com.google.gson.JsonObject => assert(md.keySet.asScala == Set("from", "to", "changed"), md.toString)
+            case other => fail("no metadata: " + other)
+        }
+    }
+
     test("a tap moved to another catalog, repointed or deleted between the decision and the write is not changed") {
         val moved = stored.copy(catalog = "Ops")
         val repointed = stored.copy(targetPipeline = "finance-ledger")

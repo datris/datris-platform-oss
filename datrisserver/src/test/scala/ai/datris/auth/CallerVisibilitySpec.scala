@@ -151,4 +151,37 @@ class CallerVisibilitySpec extends AnyFunSuite {
             taps = false
         )
     }
+
+    // ================================================================ held to its own tap's script file
+    //
+    // Story tap-script-store-writes-and-deletes-in-scope, rule S4: one
+    // decision says which callers are held to their own tap's script file.
+
+    test("held to its own tap's script file: a restricted session, a key limited for taps, a key whose tap update carries a scope") {
+        val held = Seq(
+            restricted("Sales" -> "edit"),
+            restricted(),
+            key("sales", "pipeline:read:catalog=Sales", "tap:read:catalog=Sales", "tap:create:catalog=Sales", "tap:update:catalog=Sales"),
+            key("builder", "pipeline:read", "tap:read:owner=self", "tap:create", "tap:update:owner=self"),
+            // unscoped tap and pipeline read, so not limited for taps, but its tap update carries a scope
+            key("scoped-updater", "pipeline:read", "tap:read", "tap:create:catalog=Sales", "tap:update:catalog=Sales"),
+            key("own-updater", "pipeline:read", "tap:read", "tap:update:owner=self")
+        )
+        for (rk <- held) assert(CallerVisibility.heldToOwnTapScriptFile(rk), rk.label)
+    }
+
+    test("not held to its own tap's script file: no identity, full access, unrestricted sessions, a key limited only for pipelines") {
+        val legacy = ResolvedKey(None, "legacy", Seq(Capability.FullAccess), isLegacyFullAccess = true)
+        val notHeld = Seq(legacy, key("full", "*:*")) ++
+            Seq(User.RoleAdmin, User.RoleEditor, User.RoleViewer).map(role => session(User("u-" + role, "h", role, null, null, null))) ++
+            Seq(
+                // scoped on pipelines only; every tap capability unscoped
+                key("pipe-limited", "pipeline:read:catalog=Sales", "tap:read", "tap:create", "tap:update", "tap:run"),
+                // no tap update at all and not limited for taps
+                key("pipe-reader", "pipeline:read:catalog=Sales", "tap:read"),
+                key("monitor", "job:read")
+            )
+        for (rk <- notHeld) assert(!CallerVisibility.heldToOwnTapScriptFile(rk), rk.label)
+        assert(!CallerVisibility.heldToOwnTapScriptFile(null))
+    }
 }

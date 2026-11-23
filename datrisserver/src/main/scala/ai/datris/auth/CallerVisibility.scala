@@ -90,6 +90,16 @@ object CallerVisibility {
         rk != null && !rk.restrictedSession && !rk.isFullAccess && !holdsUnscoped(rk, resource, action) &&
             (holdsAny(rk, resource, action) || limitedFor(rk, resource))
 
+    /** Whether `rk` is held to its own tap's script file: a script it writes
+      * for a stored repository tap must land on that tap's own file. True for
+      * a restricted session, a key limited for taps ([[limitedTaps]]) and a
+      * key whose tap update can be refused by its scope
+      * ([[keyScopeApplies]] on `tap` / `update`). False for no identity,
+      * full-access keys, unrestricted sessions, and a key limited only for
+      * pipelines whose tap capabilities carry no scope. Pure. */
+    def heldToOwnTapScriptFile(rk: ResolvedKey): Boolean =
+        rk != null && (rk.restrictedSession || limitedTaps(rk) || keyScopeApplies(rk, "tap", "update"))
+
     /** True when an API key is refused (resource, action) on an item whose
       * scope context is `context` ([[keyScopeApplies]] and no granting
       * capability covers it). Always false for sessions. */
