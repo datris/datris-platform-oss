@@ -495,6 +495,8 @@ class DoctorServiceSpec extends AnyFunSuite {
             "tap.secret_scope",
             // plans/stories/tap-runs-hold-owner-scope.md: position pinned by the tap.owner_scope tests below.
             "tap.owner_scope",
+            // plans/stories/tap-save-references-in-scope.md: position pinned in TapReferenceScanSpec.
+            "tap.references",
             "keys.inert_scopes",
             "ai.sample_values",
             "codegen.isolation",
